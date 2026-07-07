@@ -52,11 +52,13 @@ export const workerListCommand = withRemoteOptions(
     .description(
       "List workers in the pool: status, labels, platform, and last seen",
     )
-    .example("List all workers", "swamp worker list")
+    .example("List connected workers", "swamp worker list")
+    .example("Include disconnected workers", "swamp worker list --all")
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
-    ),
+    )
+    .option("--all", "Include disconnected workers"),
 ).action(async function (options: AnyOptions) {
   const cliCtx = createContext(options as GlobalOptions, [
     "worker",
@@ -69,11 +71,12 @@ export const workerListCommand = withRemoteOptions(
       server,
       options.token as string | undefined,
     );
+    const showAll = options.all ?? false;
     const response = await requestServerResponse<WorkerListResponse>(
       { server, token },
       {
         type: "worker.list",
-        payload: {},
+        payload: { showAll },
       },
     );
     renderWorkerList(
@@ -92,7 +95,9 @@ export const workerListCommand = withRemoteOptions(
   const deps = createWorkerListDeps(repoContext.dataQueryService);
 
   await consumeStream(
-    workerList(libCtx, deps),
+    workerList(libCtx, deps, {
+      includeDisconnected: options.all ?? false,
+    }),
     withDefaults<WorkerListEvent>({
       completed: (event) => {
         renderWorkerList(event.data, cliCtx.outputMode);

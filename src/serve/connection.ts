@@ -655,6 +655,9 @@ const VaultAnnotateRequestSchema = z.object({
 const WorkerListRequestSchema = z.object({
   type: z.literal("worker.list"),
   id: z.string().min(1).max(256),
+  payload: z.object({
+    showAll: z.boolean().optional(),
+  }).optional(),
 });
 
 const WorkerQueueListRequestSchema = z.object({
@@ -1480,6 +1483,7 @@ export function handleMessage(
         request.id,
         controller,
         principal,
+        request.payload,
       );
       break;
     case "worker.queue.list":

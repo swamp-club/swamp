@@ -359,6 +359,7 @@ export {
   type WorkerListDeps,
   type WorkerListEvent,
   type WorkerListItem,
+  type WorkerListOptions,
   workerTokenList,
   type WorkerTokenListData,
   type WorkerTokenListEvent,

@@ -50,6 +50,7 @@ import type {
   ExtensionInfoPayload,
   ExtensionRmPayload,
   ExtensionSearchPayload,
+  WorkerListPayload,
   WorkerProbeResult,
   WorkerVerifyPayload,
 } from "../protocol.ts";
@@ -76,6 +77,7 @@ export async function handleWorkerList(
   requestId: string,
   controller: AbortController,
   principal: Principal | null,
+  payload?: WorkerListPayload,
 ): Promise<void> {
   if (
     !authorizeOrReject(socket, requestId, principal, "admin", {
@@ -91,7 +93,9 @@ export async function handleWorkerList(
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
-      workerList(libCtx, deps),
+      workerList(libCtx, deps, {
+        includeDisconnected: payload?.showAll ?? false,
+      }),
       {
         resolving: () => {},
         completed: (e) => {

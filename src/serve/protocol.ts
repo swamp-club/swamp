@@ -339,7 +339,9 @@ export interface VaultAnnotatePayload {
 
 // ── Server admin ─────────────────────────────────────────────────────
 
-export type WorkerListPayload = Record<string, never>;
+export interface WorkerListPayload {
+  showAll?: boolean;
+}
 
 export type WorkerQueueListPayload = Record<string, never>;
 

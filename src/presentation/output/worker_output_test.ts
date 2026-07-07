@@ -251,13 +251,80 @@ Deno.test("renderWorkerList: log mode shows empty-state hint", () => {
   assertStringIncludes(output, "No workers found.");
 });
 
-Deno.test("renderWorkerList: json mode emits the array of records", () => {
+Deno.test("renderWorkerList: log mode shows disconnected hint when all filtered", () => {
+  const output = stripAnsiCode(
+    captureLogs(() =>
+      renderWorkerList(
+        { workers: [], count: 0, filteredDisconnectedCount: 3 },
+        "log",
+      )
+    ),
+  );
+  assertStringIncludes(output, "No connected workers found.");
+  assertStringIncludes(output, "3 disconnected workers hidden");
+  assertStringIncludes(output, "swamp worker list --all");
+});
+
+Deno.test("renderWorkerList: log mode shows disconnected hint after table", () => {
+  const data: WorkerListData = {
+    workers: [
+      {
+        name: "live-worker",
+        status: "idle",
+        labels: {},
+        platform: "linux",
+        arch: "x86_64",
+        instanceUuid: "uuid-1",
+        enrolledAt: "2026-06-09T00:00:00.000Z",
+        lastSeenAt: "2026-06-09T12:00:00.000Z",
+        capacity: 1,
+        activeDispatchIds: [],
+      },
+    ],
+    count: 1,
+    filteredDisconnectedCount: 2,
+  };
+  const output = stripAnsiCode(
+    captureLogs(() => renderWorkerList(data, "log")),
+  );
+  assertStringIncludes(output, "live-worker");
+  assertStringIncludes(output, "2 disconnected workers hidden");
+  assertStringIncludes(output, "swamp worker list --all");
+});
+
+Deno.test("renderWorkerList: json mode emits the full data envelope", () => {
   const output = captureLogs(() => renderWorkerList(workerListData, "json"));
-  const parsed = JSON.parse(output) as WorkerListData["workers"];
-  assertEquals(parsed.length, 2);
-  assertEquals(parsed[0].status, "busy");
-  assertEquals(parsed[0].labels, { os: "linux", gpu: "none" });
-  assertEquals(parsed[1].activeDispatchIds, []);
+  const parsed = JSON.parse(output) as WorkerListData;
+  assertEquals(parsed.workers.length, 2);
+  assertEquals(parsed.count, 2);
+  assertEquals(parsed.workers[0].status, "busy");
+  assertEquals(parsed.workers[0].labels, { os: "linux", gpu: "none" });
+  assertEquals(parsed.workers[1].activeDispatchIds, []);
+});
+
+Deno.test("renderWorkerList: json mode includes filteredDisconnectedCount when present", () => {
+  const data: WorkerListData = {
+    workers: [
+      {
+        name: "live-worker",
+        status: "idle",
+        labels: {},
+        platform: "linux",
+        arch: "x86_64",
+        instanceUuid: "uuid-1",
+        enrolledAt: "2026-06-09T00:00:00.000Z",
+        lastSeenAt: "2026-06-09T12:00:00.000Z",
+        capacity: 1,
+        activeDispatchIds: [],
+      },
+    ],
+    count: 1,
+    filteredDisconnectedCount: 2,
+  };
+  const output = captureLogs(() => renderWorkerList(data, "json"));
+  const parsed = JSON.parse(output) as WorkerListData;
+  assertEquals(parsed.count, 1);
+  assertEquals(parsed.filteredDisconnectedCount, 2);
 });
 
 Deno.test("renderWorkerStatus: dispatch lifecycle renders start and finish", () => {

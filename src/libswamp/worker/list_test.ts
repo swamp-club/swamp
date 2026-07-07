@@ -26,6 +26,7 @@ import {
   workerList,
   type WorkerListDeps,
   type WorkerListEvent,
+  type WorkerListOptions,
   workerTokenList,
   type WorkerTokenListEvent,
 } from "./list.ts";
@@ -250,6 +251,87 @@ Deno.test("workerList: yields error when the query fails", async () => {
   const error = events[1] as Extract<WorkerListEvent, { kind: "error" }>;
   assertEquals(error.kind, "error");
   assertStringIncludes(error.error.message, "boom");
+});
+
+Deno.test("workerList: filters disconnected workers by default", async () => {
+  const deps = makeDeps([
+    makeRecord(
+      "worker-a",
+      "state-main",
+      workerAttributes("worker-a", { status: "idle" }),
+    ),
+    makeRecord(
+      "worker-b",
+      "state-main",
+      workerAttributes("worker-b", { status: "disconnected" }),
+    ),
+    makeRecord(
+      "worker-c",
+      "state-main",
+      workerAttributes("worker-c", { status: "busy" }),
+    ),
+  ]);
+  const events = await collect<WorkerListEvent>(
+    workerList(createLibSwampContext(), deps),
+  );
+  const completed = events[1] as Extract<
+    WorkerListEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.count, 2);
+  assertEquals(
+    completed.data.workers.map((w) => w.name),
+    ["worker-a", "worker-c"],
+  );
+  assertEquals(completed.data.filteredDisconnectedCount, 1);
+});
+
+Deno.test("workerList: includes disconnected workers with includeDisconnected", async () => {
+  const deps = makeDeps([
+    makeRecord(
+      "worker-a",
+      "state-main",
+      workerAttributes("worker-a", { status: "idle" }),
+    ),
+    makeRecord(
+      "worker-b",
+      "state-main",
+      workerAttributes("worker-b", { status: "disconnected" }),
+    ),
+  ]);
+  const options: WorkerListOptions = { includeDisconnected: true };
+  const events = await collect<WorkerListEvent>(
+    workerList(createLibSwampContext(), deps, options),
+  );
+  const completed = events[1] as Extract<
+    WorkerListEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.count, 2);
+  assertEquals(
+    completed.data.workers.map((w) => w.name),
+    ["worker-a", "worker-b"],
+  );
+  assertEquals(completed.data.filteredDisconnectedCount, undefined);
+});
+
+Deno.test("workerList: omits filteredDisconnectedCount when no workers are disconnected", async () => {
+  const deps = makeDeps([
+    makeRecord(
+      "worker-a",
+      "state-main",
+      workerAttributes("worker-a", { status: "idle" }),
+    ),
+  ]);
+  const events = await collect<WorkerListEvent>(
+    workerList(createLibSwampContext(), deps),
+  );
+  const completed = events[1] as Extract<
+    WorkerListEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.count, 1);
+  assertEquals(completed.data.filteredDisconnectedCount, undefined);
 });
 
 Deno.test("effectiveTokenState: live states past expiry display as expired", () => {
