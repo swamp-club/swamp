@@ -1480,6 +1480,7 @@ export function handleMessage(
         request.id,
         controller,
         principal,
+        request.payload,
       );
       break;
     case "worker.queue.list":

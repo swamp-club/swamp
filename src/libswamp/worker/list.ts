@@ -96,6 +96,12 @@ export interface WorkerListItem {
 export interface WorkerListData {
   workers: WorkerListItem[];
   count: number;
+  filteredDisconnectedCount?: number;
+}
+
+/** Options for the worker list query. */
+export interface WorkerListOptions {
+  includeDisconnected?: boolean;
 }
 
 export type WorkerListEvent =
@@ -203,11 +209,15 @@ export async function* workerTokenList(
 }
 
 /**
- * Lists all workers known to the pool, sorted by name.
+ * Lists workers known to the pool, sorted by name.
+ *
+ * By default disconnected workers are excluded from the results.
+ * Pass `{ includeDisconnected: true }` to include them.
  */
 export async function* workerList(
   _ctx: LibSwampContext,
   deps: WorkerListDeps,
+  options?: WorkerListOptions,
 ): AsyncGenerator<WorkerListEvent> {
   yield* withGeneratorSpan(
     "swamp.worker.list",
@@ -219,12 +229,12 @@ export async function* workerList(
           `modelType == "${WORKER_MODEL_TYPE.normalized}" && ` +
             `name == "${WORKER_STATE_DATA_NAME}"`,
         );
-        const workers: WorkerListItem[] = [];
+        const allWorkers: WorkerListItem[] = [];
         for (const record of records) {
           const parsed = WorkerStateSchema.safeParse(record.attributes);
           if (!parsed.success) continue;
           const state = parsed.data;
-          workers.push({
+          allWorkers.push({
             name: state.name,
             status: state.status,
             labels: state.labels,
@@ -237,10 +247,23 @@ export async function* workerList(
             activeDispatchIds: state.activeDispatchIds ?? [],
           });
         }
-        workers.sort((a, b) => a.name.localeCompare(b.name));
+        allWorkers.sort((a, b) => a.name.localeCompare(b.name));
+
+        const includeDisconnected = options?.includeDisconnected ?? false;
+        const workers = includeDisconnected
+          ? allWorkers
+          : allWorkers.filter((w) => w.status !== "disconnected");
+        const filteredDisconnectedCount = allWorkers.length - workers.length;
+
         yield {
           kind: "completed" as const,
-          data: { workers, count: workers.length },
+          data: {
+            workers,
+            count: workers.length,
+            ...(filteredDisconnectedCount > 0
+              ? { filteredDisconnectedCount }
+              : {}),
+          },
         };
       } catch (error) {
         yield {

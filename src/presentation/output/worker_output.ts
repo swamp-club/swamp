@@ -224,14 +224,25 @@ export function renderWorkerList(
     return;
   }
   if (data.workers.length === 0) {
-    writeOutput(
-      [
-        "No workers found.",
-        dim(
-          "Workers appear here after enrolling with: swamp worker token create <name> --duration 24h",
-        ),
-      ].join("\n"),
-    );
+    if (data.filteredDisconnectedCount) {
+      writeOutput(
+        [
+          "No connected workers found.",
+          dim(
+            `${data.filteredDisconnectedCount} disconnected worker(s) hidden — use --all to show all.`,
+          ),
+        ].join("\n"),
+      );
+    } else {
+      writeOutput(
+        [
+          "No workers found.",
+          dim(
+            "Workers appear here after enrolling with: swamp worker token create <name> --duration 24h",
+          ),
+        ].join("\n"),
+      );
+    }
     return;
   }
   const rows = data.workers.map((worker) => {
@@ -251,6 +262,13 @@ export function renderWorkerList(
     (column, value) => (column === 1 ? colorWorkerStatus(value) : value),
   );
   writeOutput(lines.join("\n"));
+  if (data.filteredDisconnectedCount) {
+    writeOutput(
+      dim(
+        `${data.filteredDisconnectedCount} disconnected worker(s) hidden — use --all to show all.`,
+      ),
+    );
+  }
   if (data.workers.some((w) => w.status === "unverified")) {
     writeOutput(
       dim(
