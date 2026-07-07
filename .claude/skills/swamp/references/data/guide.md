@@ -35,24 +35,26 @@ for the full list of queryable fields and predicate operators.
 
 ## Quick Reference
 
-| Task                   | Command                                               |
-| ---------------------- | ----------------------------------------------------- |
-| Query by model         | `swamp data query 'modelName == "my-model"'`          |
-| Query by type          | `swamp data query 'dataType == "resource"'`           |
-| Query with projection  | `swamp data query 'modelName == "x"' --select 'name'` |
-| Query by tags          | `swamp data query 'tags.env == "prod"'`               |
-| Query by content       | `swamp data query 'attributes.status == "failed"'`    |
-| List model data        | `swamp data list <model> --json`                      |
-| List workflow data     | `swamp data list --workflow <name> --json`            |
-| Get specific data      | `swamp data get <model> <name> --json`                |
-| Get metadata only      | `swamp data get <model> <name> --no-content --json`   |
-| Get data via workflow  | `swamp data get --workflow <name> <data_name> --json` |
-| View version history   | `swamp data versions <model> <name> --json`           |
-| Run garbage collection | `swamp data gc --json`                                |
-| Rename data instance   | `swamp data rename <model> <old> <new>`               |
-| Delete data artifact   | `swamp data delete <model> <name> --force`            |
-| Delete one version     | `swamp data delete <model> <name> --version 3`        |
-| Preview GC (dry run)   | `swamp data gc --dry-run --json`                      |
+| Task                    | Command                                               |
+| ----------------------- | ----------------------------------------------------- |
+| Query by model          | `swamp data query 'modelName == "my-model"'`          |
+| Query by type           | `swamp data query 'dataType == "resource"'`           |
+| Query with projection   | `swamp data query 'modelName == "x"' --select 'name'` |
+| Query by tags           | `swamp data query 'tags.env == "prod"'`               |
+| Query by content        | `swamp data query 'attributes.status == "failed"'`    |
+| List model data         | `swamp data list <model> --json`                      |
+| List workflow data      | `swamp data list --workflow <name> --json`            |
+| Get specific data       | `swamp data get <model> <name> --json`                |
+| Get metadata only       | `swamp data get <model> <name> --no-content --json`   |
+| Get data via workflow   | `swamp data get --workflow <name> <data_name> --json` |
+| View version history    | `swamp data versions <model> <name> --json`           |
+| Run garbage collection  | `swamp data gc --json`                                |
+| Prune orphaned data     | `swamp data prune --force --json`                     |
+| Preview prune (dry run) | `swamp data prune --dry-run --json`                   |
+| Rename data instance    | `swamp data rename <model> <old> <new>`               |
+| Delete data artifact    | `swamp data delete <model> <name> --force`            |
+| Delete one version      | `swamp data delete <model> <name> --version 3`        |
+| Preview GC (dry run)    | `swamp data gc --dry-run --json`                      |
 
 See [references/concepts.md](references/concepts.md) for lifetime types, tags,
 and version GC policies.

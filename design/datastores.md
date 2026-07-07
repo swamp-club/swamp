@@ -254,6 +254,45 @@ Two things are deliberately **not** namespaced:
   the namespace prefix cannot reach them — vaults stay repo-local by
   construction.
 
+#### Orphaned data reclamation (`swamp data prune`)
+
+**Orphaned data** is persisted data whose owning model definition no longer
+exists in its namespace — e.g. after the definition is deleted from the repo, or
+after a model instance is migrated to a different namespace leaving its
+historical data behind. Because the on-disk layout and the catalog `DELETE`
+predicate are keyed by model **type** (`{typeDir}/{modelId}/...` and
+`type_normalized`), and the type is normally re-derived by resolving the
+definition, both `swamp data delete` and `swamp data gc` fail on orphaned data:
+`delete` throws `Model not found`, and `gc` only enforces each item's frozen
+`lifetime`/`garbageCollection` policy (so `infinite`-lifetime orphans are never
+collected). The rows then accumulate in the catalog indefinitely, inflating
+index size and per-write sync cost.
+
+`swamp data prune` reclaims them. It walks the datastore data root
+(`findAllGlobal`), groups by `(type, modelId)`, and for each group asks a
+per-item predicate whether the owning model definition still exists. The
+predicate uses the definition repository's `findById` — which resolves **both**
+`models/` and `.swamp/auto-definitions/`, matching `swamp model get` — so
+auto-definition-backed models (auto-created model-run/workflow models, installed
+`@swamp/*` models) are correctly treated as live and never pruned. Groups with
+no live definition are reclaimed via the existing definition-free
+`delete(type, modelId, dataName)`, which removes all versions on disk and their
+catalog rows. Reclamation is irreversible and inferential (a definition can be
+transiently absent — a branch switch or an in-flight migration), so prune is
+opt-in per invocation, defaults to a confirmation prompt, supports `--dry-run`
+for a preview, and acquires the global datastore lock (via
+`requireInitializedRepo`) like `gc`/`delete`.
+
+This is distinct from two neighbouring concepts:
+
+- **`swamp data gc`** enforces the retention policy a model *declared*
+  (lifetime + version-cap). `prune` removes data whose model is *gone*. They are
+  deliberately separate commands; `gc` stays safe to run unattended, while
+  `prune` gates the inferential deletion behind its own verb.
+- **"Orphan recovery"** in `data_access_service.ts` is the *opposite* intent — a
+  read-time mechanism that keeps data reachable across a model's UUID change. It
+  never deletes anything.
+
 ## Remote Datastore Sync
 
 When a remote datastore (e.g., S3 via `@swamp/s3-datastore`) is configured,
