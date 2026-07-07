@@ -21,8 +21,10 @@ import { assertRejects } from "@std/assert";
 import { assertEquals } from "@std/assert";
 import { CapabilityService } from "./capability_service.ts";
 import { DispatchRegistry } from "./dispatch_registry.ts";
+import type { ActiveDispatch } from "./dispatch_registry.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
+import type { VaultExtractionResult } from "../domain/expressions/vault_reference_extractor.ts";
 
 function stubRepoContext(
   queryResult: unknown[] = [],
@@ -51,6 +53,28 @@ function createService(
     repoContext: stubRepoContext(queryResult),
     dispatches,
     createVaultService: () => Promise.reject(new Error("no vault")),
+  });
+}
+
+function createServiceWithVault(
+  dispatches?: DispatchRegistry,
+  secrets: Record<string, string> = {},
+): CapabilityService {
+  return new CapabilityService({
+    repoDir: "/tmp/test",
+    repoContext: stubRepoContext(),
+    dispatches,
+    createVaultService: () =>
+      Promise.resolve({
+        get: (_vault: string, key: string) => {
+          if (key in secrets) return Promise.resolve(secrets[key]);
+          throw new Error(`secret not found: ${key}`);
+        },
+        getAnnotation: () => Promise.resolve(null),
+        put: () => Promise.resolve(),
+        putAnnotation: () => Promise.resolve(),
+        deleteAnnotation: () => Promise.resolve(),
+      } as never),
   });
 }
 
@@ -289,4 +313,241 @@ Deno.test("getData: passes when no dispatch registry configured", async () => {
     dataName: "result",
   });
   assertEquals(result.found, false);
+});
+
+// ── secret key denylist tests ──────────────────────────────────────────
+
+function withDispatchAndSecrets(
+  dispatches: DispatchRegistry,
+  allowedSecrets?: VaultExtractionResult,
+  workerName = "worker-1",
+): void {
+  const dispatch: ActiveDispatch = {
+    workerName,
+    dispatchId: "d-1",
+    leaseId: "l-1",
+    modelDef: {} as never,
+    modelType: ModelType.create("acme/invoices"),
+    modelId: "m-1",
+    methodName: "run",
+    definitionName: "my-invoice",
+    definitionTags: {},
+    allowedSecrets,
+  };
+  dispatches.register(dispatch);
+}
+
+Deno.test("resolveSecret: rejects server-token-* keys", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatchAndSecrets(dispatches, {
+    staticRefs: [],
+    hasDynamicRefs: true,
+  });
+  const service = createServiceWithVault(dispatches);
+  await assertRejects(
+    () =>
+      service.resolveSecret("worker-1", {
+        vaultName: "default",
+        secretKey: "server-token-admin",
+      }),
+    Error,
+    "access denied",
+  );
+});
+
+Deno.test("resolveSecret: rejects worker-token-* keys", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatchAndSecrets(dispatches, {
+    staticRefs: [],
+    hasDynamicRefs: true,
+  });
+  const service = createServiceWithVault(dispatches);
+  await assertRejects(
+    () =>
+      service.resolveSecret("worker-1", {
+        vaultName: "default",
+        secretKey: "worker-token-ci-runner",
+      }),
+    Error,
+    "access denied",
+  );
+});
+
+Deno.test("resolveSecret: denylist is case-insensitive", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatchAndSecrets(dispatches, {
+    staticRefs: [],
+    hasDynamicRefs: true,
+  });
+  const service = createServiceWithVault(dispatches);
+  await assertRejects(
+    () =>
+      service.resolveSecret("worker-1", {
+        vaultName: "default",
+        secretKey: "Server-Token-Admin",
+      }),
+    Error,
+    "access denied",
+  );
+});
+
+Deno.test("putSecret: rejects server-token-* keys", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatchAndSecrets(dispatches, {
+    staticRefs: [],
+    hasDynamicRefs: true,
+  });
+  const service = createServiceWithVault(dispatches);
+  await assertRejects(
+    () =>
+      service.putSecret("worker-1", {
+        vaultName: "default",
+        secretKey: "server-token-admin",
+        secretValue: "evil",
+      }),
+    Error,
+    "access denied",
+  );
+});
+
+Deno.test("putSecret: rejects worker-token-* keys", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatchAndSecrets(dispatches, {
+    staticRefs: [],
+    hasDynamicRefs: true,
+  });
+  const service = createServiceWithVault(dispatches);
+  await assertRejects(
+    () =>
+      service.putSecret("worker-1", {
+        vaultName: "default",
+        secretKey: "worker-token-ci-runner",
+        secretValue: "evil",
+      }),
+    Error,
+    "access denied",
+  );
+});
+
+Deno.test("putSecret: denylist is case-insensitive", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatchAndSecrets(dispatches, {
+    staticRefs: [],
+    hasDynamicRefs: true,
+  });
+  const service = createServiceWithVault(dispatches);
+  await assertRejects(
+    () =>
+      service.putSecret("worker-1", {
+        vaultName: "default",
+        secretKey: "Worker-Token-CI",
+        secretValue: "evil",
+      }),
+    Error,
+    "access denied",
+  );
+});
+
+// ── per-step allowlist tests (resolveSecret only) ──────────────────────
+
+Deno.test("resolveSecret: allows key present in static allowlist", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatchAndSecrets(dispatches, {
+    staticRefs: [{ vaultName: "default", secretKey: "api-key" }],
+    hasDynamicRefs: false,
+  });
+  const service = createServiceWithVault(dispatches, { "api-key": "secret" });
+  const result = await service.resolveSecret("worker-1", {
+    vaultName: "default",
+    secretKey: "api-key",
+  });
+  assertEquals(result.value, "secret");
+});
+
+Deno.test("resolveSecret: rejects key not in static allowlist", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatchAndSecrets(dispatches, {
+    staticRefs: [{ vaultName: "default", secretKey: "api-key" }],
+    hasDynamicRefs: false,
+  });
+  const service = createServiceWithVault(dispatches);
+  await assertRejects(
+    () =>
+      service.resolveSecret("worker-1", {
+        vaultName: "default",
+        secretKey: "other-key",
+      }),
+    Error,
+    "not referenced by the dispatched step",
+  );
+});
+
+Deno.test("resolveSecret: skips allowlist when dispatch has dynamic refs", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatchAndSecrets(dispatches, {
+    staticRefs: [{ vaultName: "default", secretKey: "api-key" }],
+    hasDynamicRefs: true,
+  });
+  const service = createServiceWithVault(dispatches, {
+    "other-key": "value",
+  });
+  const result = await service.resolveSecret("worker-1", {
+    vaultName: "default",
+    secretKey: "other-key",
+  });
+  assertEquals(result.value, "value");
+});
+
+Deno.test("resolveSecret: empty allowlist denies all keys", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatchAndSecrets(dispatches, {
+    staticRefs: [],
+    hasDynamicRefs: false,
+  });
+  const service = createServiceWithVault(dispatches);
+  await assertRejects(
+    () =>
+      service.resolveSecret("worker-1", {
+        vaultName: "default",
+        secretKey: "any-key",
+      }),
+    Error,
+    "not referenced by the dispatched step",
+  );
+});
+
+Deno.test("putSecret: allows keys not in allowlist (denylist-only)", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatchAndSecrets(dispatches, {
+    staticRefs: [{ vaultName: "default", secretKey: "api-key" }],
+    hasDynamicRefs: false,
+  });
+  const service = createServiceWithVault(dispatches);
+  const result = await service.putSecret("worker-1", {
+    vaultName: "default",
+    secretKey: "new-output-key",
+    secretValue: "value",
+  });
+  assertEquals(result.ok, true);
+});
+
+Deno.test("resolveSecret: passes without dispatch registry (no scoping)", async () => {
+  const service = createServiceWithVault(undefined, {
+    "any-key": "value",
+  });
+  const result = await service.resolveSecret("worker-1", {
+    vaultName: "default",
+    secretKey: "any-key",
+  });
+  assertEquals(result.value, "value");
+});
+
+Deno.test("putSecret: passes without dispatch registry (no scoping)", async () => {
+  const service = createServiceWithVault(undefined);
+  const result = await service.putSecret("worker-1", {
+    vaultName: "default",
+    secretKey: "any-key",
+    secretValue: "value",
+  });
+  assertEquals(result.ok, true);
 });

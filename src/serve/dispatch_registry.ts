@@ -27,6 +27,9 @@
 import type { UnifiedDataRepository } from "../domain/data/repositories.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
 import type { ModelType } from "../domain/models/model_type.ts";
+import type {
+  VaultExtractionResult,
+} from "../domain/expressions/vault_reference_extractor.ts";
 
 export interface ActiveDispatch {
   workerName: string;
@@ -41,6 +44,7 @@ export interface ActiveDispatch {
   definitionTags: Record<string, string>;
   runtimeTags?: Record<string, string>;
   dataRepo?: UnifiedDataRepository;
+  allowedSecrets?: VaultExtractionResult;
 }
 
 export class DispatchRegistry {

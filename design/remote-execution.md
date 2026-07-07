@@ -462,8 +462,8 @@ disposition — a proxy verb, worker-local, or shipped state. Fourteen verbs:
 | `persistFile`      | file writer `writeAll`/`writeText`/`writeStream`                           | h2        | Streams bytes; durable immediately     |
 | `appendData`       | `DataWriter.writeLine` → `repo.append`                                     | h2        | Incremental append; durable per request (live logs) |
 | `deleteData`       | `repo.delete`, `repo.removeLatestMarker`                                   | ws        | Lifecycle/GC-aware methods use these   |
-| `resolveSecret`    | `vaultService.get` / `getAnnotation`                                       | ws        | Authorized per step                    |
-| `putSecret`        | `vaultService.put` / `putAnnotation` / `deleteAnnotation`                  | ws        | Vault writes — the mint model's own path |
+| `resolveSecret`    | `vaultService.get` / `getAnnotation`                                       | ws        | Authorized per step: infrastructure key denylist (`server-token-*`, `worker-token-*`) + expression-based allowlist from dispatched step's args |
+| `putSecret`        | `vaultService.put` / `putAnnotation` / `deleteAnnotation`                  | ws        | Infrastructure key denylist (`server-token-*`, `worker-token-*`); no expression-based allowlist (write targets are not declared in vault expressions) |
 | `readDefinition`   | `definitionRepository` reads                                               | ws        | Lazy-load; cacheable for the run       |
 | `readOutput`       | `outputRepository` execution-history reads                                 | ws        | Optional context member; same lazy/cache rule |
 | `resolveModel`     | catalog / `catalogStore`                                                   | ws        | Workflow step model resolution         |
