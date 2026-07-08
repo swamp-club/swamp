@@ -594,10 +594,22 @@ export interface AccessCanIResponse {
   decisions: AccessCanIDecision[];
 }
 
+export interface AccessReloadFileResult {
+  filename: string;
+  entryCount: number;
+  created: number;
+  revoked: number;
+  reactivated: number;
+  unchanged: number;
+}
+
 export interface AccessReloadResponse {
   success: boolean;
   grantCount: number;
   groupCount: number;
+  filesProcessed?: number;
+  fileResults?: AccessReloadFileResult[];
+  errors?: string[];
 }
 
 export interface DataGetResponse {

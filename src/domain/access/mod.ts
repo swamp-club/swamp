@@ -37,8 +37,28 @@ export { type PrincipalContext } from "./principal_context.ts";
 export { type Effect, EffectSchema } from "./effect.ts";
 
 export {
+  collectErrors,
+  type ConditionValidator,
+  type GrantFileEntry,
+  type GrantFileError,
+  type GrantFileParseResult,
+  parseGrantFile,
+  readGrantFiles,
+} from "./grant_file.ts";
+
+export {
+  createFileGrantStore,
+  type FileGrantStore,
+  reconcileAllFileGrants,
+  type ReconcileAllResult,
+  reconcileFileGrants,
+} from "./grant_file_reconciler.ts";
+
+export {
   type GrantSource,
   GrantSourceSchema,
+  isFileSource,
+  parseFileSourceFilename,
   parseGrantSource,
 } from "./grant_source.ts";
 

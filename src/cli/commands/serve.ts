@@ -76,6 +76,15 @@ import {
   materializeAdmins,
   migrateGrantDefinitions,
 } from "../../domain/access/admin_materializer.ts";
+import {
+  collectErrors,
+  readGrantFiles,
+} from "../../domain/access/grant_file.ts";
+import { validateGrantCondition } from "../../infrastructure/cel/grant_condition_environment.ts";
+import {
+  createFileGrantStore,
+  reconcileAllFileGrants,
+} from "../../domain/access/grant_file_reconciler.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { GRANT_MODEL_TYPE } from "../../domain/models/access/grant_model.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
@@ -1016,6 +1025,57 @@ export const serveCommand = new Command()
     ) {
       logger
         .info`Admin grants materialized: ${materializeResult.created} created, ${materializeResult.revoked} revoked, ${materializeResult.reactivated} reactivated, ${materializeResult.unchanged} unchanged`;
+    }
+
+    const grantsDir = join(resolvedRepoDir, "grants");
+    const grantFileResults = await readGrantFiles(
+      grantsDir,
+      validateGrantCondition,
+    );
+    const grantFileErrors = collectErrors(grantFileResults);
+
+    if (grantFileErrors.length > 0) {
+      const errorMessages = grantFileErrors.map((e) => {
+        const loc = e.entryIndex !== undefined
+          ? `${e.filename} entry ${e.entryIndex + 1}`
+          : e.filename;
+        return `  ${loc}: ${e.message}`;
+      });
+      throw new UserError(
+        `Grant file validation failed — refusing to start:\n${
+          errorMessages.join("\n")
+        }`,
+      );
+    }
+
+    if (grantFileResults.size > 0) {
+      const validEntries = new Map<
+        string,
+        import("../../domain/access/grant_file.ts").GrantFileEntry[]
+      >();
+      for (const [filename, result] of grantFileResults) {
+        validEntries.set(filename, result.entries);
+      }
+
+      const fileGrantStore = createFileGrantStore(
+        repoContext.definitionRepo,
+        autoDefRepo,
+        repoContext.unifiedDataRepo,
+      );
+
+      const fileReconcileResult = await reconcileAllFileGrants(
+        validEntries,
+        fileGrantStore,
+      );
+
+      if (
+        fileReconcileResult.totalCreated > 0 ||
+        fileReconcileResult.totalRevoked > 0 ||
+        fileReconcileResult.totalReactivated > 0
+      ) {
+        logger
+          .info`File grants reconciled (${fileReconcileResult.filesProcessed} file(s)): ${fileReconcileResult.totalCreated} created, ${fileReconcileResult.totalRevoked} revoked, ${fileReconcileResult.totalReactivated} reactivated, ${fileReconcileResult.totalUnchanged} unchanged`;
+      }
     }
 
     const policySnapshotLoader = new PolicySnapshotLoader(

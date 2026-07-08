@@ -2046,7 +2046,7 @@ export const SwampAudit: Plugin = async ({ directory }) => {
     repoPath: RepoPath,
   ): Promise<void> {
     // Top-level directories for source-of-truth files
-    const topLevelDirs = ["models", "workflows", "vaults"];
+    const topLevelDirs = ["models", "workflows", "vaults", "grants"];
     for (const dir of topLevelDirs) {
       await ensureDir(join(repoPath.value, dir));
     }

@@ -19,18 +19,21 @@
 
 import { z } from "zod";
 
-const FIXED_SOURCES = ["method", "file", "config"] as const;
+const FIXED_SOURCES = ["method", "config"] as const;
+
+const PREFIXED_SOURCES = ["file:", "extension:"] as const;
 
 export const GrantSourceSchema = z.string().min(1).refine(
   (value) => {
     if ((FIXED_SOURCES as readonly string[]).includes(value)) {
       return true;
     }
-    return value.startsWith("extension:");
+    return PREFIXED_SOURCES.some((prefix) => value.startsWith(prefix)) &&
+      !PREFIXED_SOURCES.some((prefix) => value === prefix);
   },
   {
     message:
-      'Grant source must be "method", "file", "config", or "extension:<name>"',
+      'Grant source must be "method", "config", "file:<filename>", or "extension:<name>"',
   },
 );
 
@@ -40,8 +43,21 @@ export function parseGrantSource(value: string): GrantSource {
   const result = GrantSourceSchema.safeParse(value);
   if (!result.success) {
     throw new Error(
-      `Invalid grant source "${value}": must be "method", "file", "config", or "extension:<name>"`,
+      `Invalid grant source "${value}": must be "method", "config", "file:<filename>", or "extension:<name>"`,
     );
   }
   return result.data;
+}
+
+export function isFileSource(source: string): boolean {
+  return source.startsWith("file:");
+}
+
+export function parseFileSourceFilename(source: string): string {
+  if (!isFileSource(source)) {
+    throw new Error(
+      `Cannot parse filename from non-file source "${source}"`,
+    );
+  }
+  return source.slice("file:".length);
 }

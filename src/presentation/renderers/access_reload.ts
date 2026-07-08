@@ -23,10 +23,22 @@ import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["access", "reload"]);
 
+export interface AccessReloadFileResult {
+  filename: string;
+  entryCount: number;
+  created: number;
+  revoked: number;
+  reactivated: number;
+  unchanged: number;
+}
+
 export interface AccessReloadResult {
   success: boolean;
   grantCount: number;
   groupCount: number;
+  filesProcessed?: number;
+  fileResults?: AccessReloadFileResult[];
+  errors?: string[];
 }
 
 export interface AccessReloadRenderer {
@@ -35,6 +47,38 @@ export interface AccessReloadRenderer {
 
 class LogAccessReloadRenderer implements AccessReloadRenderer {
   render(result: AccessReloadResult): void {
+    if (!result.success && result.errors) {
+      logger
+        .error`Reconciliation aborted. Current policy unchanged.`;
+      for (const error of result.errors) {
+        logger.error`${error}`;
+      }
+      return;
+    }
+
+    if (result.fileResults && result.fileResults.length > 0) {
+      for (const fr of result.fileResults) {
+        logger
+          .info`Reading grants/${fr.filename}... ${fr.entryCount} grant(s)`;
+      }
+      logger.info`Validating... ok`;
+
+      const totalCreated = result.fileResults.reduce(
+        (s, f) => s + f.created,
+        0,
+      );
+      const totalRevoked = result.fileResults.reduce(
+        (s, f) => s + f.revoked,
+        0,
+      );
+      const totalUnchanged = result.fileResults.reduce(
+        (s, f) => s + f.unchanged,
+        0,
+      );
+      logger
+        .info`Reconciling files: ${totalCreated} created, ${totalRevoked} revoked, ${totalUnchanged} unchanged`;
+    }
+
     logger
       .info`Policy snapshot reloaded: ${result.grantCount} grant(s), ${result.groupCount} group(s)`;
   }
@@ -42,17 +86,21 @@ class LogAccessReloadRenderer implements AccessReloadRenderer {
 
 class JsonAccessReloadRenderer implements AccessReloadRenderer {
   render(result: AccessReloadResult): void {
-    writeOutput(
-      JSON.stringify(
-        {
-          success: result.success,
-          grantCount: result.grantCount,
-          groupCount: result.groupCount,
-        },
-        null,
-        2,
-      ),
-    );
+    const output: Record<string, unknown> = {
+      success: result.success,
+      grantCount: result.grantCount,
+      groupCount: result.groupCount,
+    };
+    if (result.filesProcessed !== undefined) {
+      output.filesProcessed = result.filesProcessed;
+    }
+    if (result.fileResults) {
+      output.fileResults = result.fileResults;
+    }
+    if (result.errors) {
+      output.errors = result.errors;
+    }
+    writeOutput(JSON.stringify(output, null, 2));
   }
 }
 

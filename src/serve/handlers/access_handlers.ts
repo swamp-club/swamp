@@ -21,12 +21,25 @@
  * Access-control request handlers (access.* verbs).
  */
 
+import { join } from "@std/path";
 import type {
   AccessCanIPayload,
   AccessCheckPayload,
   AccessGrantListPayload,
   AccessGroupListPayload,
+  AccessReloadFileResult,
 } from "../protocol.ts";
+import {
+  collectErrors,
+  type GrantFileError,
+  readGrantFiles,
+} from "../../domain/access/grant_file.ts";
+import {
+  createFileGrantStore,
+  reconcileAllFileGrants,
+} from "../../domain/access/grant_file_reconciler.ts";
+import { validateGrantCondition } from "../../infrastructure/cel/grant_condition_environment.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import {
   type Grant,
   GRANT_MODEL_TYPE,
@@ -364,6 +377,15 @@ export function handleAccessCanI(
   }
 }
 
+function formatGrantFileErrors(errors: GrantFileError[]): string[] {
+  return errors.map((e) => {
+    const loc = e.entryIndex !== undefined
+      ? `${e.filename} entry ${e.entryIndex + 1}`
+      : e.filename;
+    return `${loc}: ${e.message}`;
+  });
+}
+
 export async function handleAccessReload(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -389,17 +411,90 @@ export async function handleAccessReload(
       return;
     }
 
-    const result = await ctx.policySnapshotLoader.loadWithCounts();
+    const grantsDir = join(ctx.repoDir, "grants");
+    const fileResults = await readGrantFiles(grantsDir, validateGrantCondition);
+    const allErrors = collectErrors(fileResults);
 
-    send(socket, {
-      type: "access.reload",
-      id: requestId,
-      payload: {
-        success: true,
-        grantCount: result.grantCount,
-        groupCount: result.groupCount,
-      },
-    });
+    if (allErrors.length > 0) {
+      send(socket, {
+        type: "access.reload",
+        id: requestId,
+        payload: {
+          success: false,
+          grantCount: 0,
+          groupCount: 0,
+          errors: formatGrantFileErrors(allErrors),
+        },
+      });
+      return;
+    }
+
+    if (fileResults.size > 0) {
+      const validEntries = new Map<
+        string,
+        import("../../domain/access/grant_file.ts").GrantFileEntry[]
+      >();
+      for (const [filename, result] of fileResults) {
+        validEntries.set(filename, result.entries);
+      }
+
+      const autoDefDir = join(ctx.repoDir, ".swamp", "auto-definitions");
+      const autoDefRepo = new YamlDefinitionRepository(
+        ctx.repoDir,
+        undefined,
+        autoDefDir,
+        false,
+      );
+      const fileGrantStore = createFileGrantStore(
+        ctx.repoContext.definitionRepo,
+        autoDefRepo,
+        ctx.repoContext.unifiedDataRepo,
+      );
+
+      const reconcileResult = await reconcileAllFileGrants(
+        validEntries,
+        fileGrantStore,
+      );
+
+      const fileResultList: AccessReloadFileResult[] = [];
+      for (const [filename, result] of fileResults) {
+        const perFile = reconcileResult.perFile.get(filename);
+        fileResultList.push({
+          filename,
+          entryCount: result.entries.length,
+          created: perFile?.created ?? 0,
+          revoked: perFile?.revoked ?? 0,
+          reactivated: perFile?.reactivated ?? 0,
+          unchanged: perFile?.unchanged ?? 0,
+        });
+      }
+
+      const snapshotResult = await ctx.policySnapshotLoader.loadWithCounts();
+
+      send(socket, {
+        type: "access.reload",
+        id: requestId,
+        payload: {
+          success: true,
+          grantCount: snapshotResult.grantCount,
+          groupCount: snapshotResult.groupCount,
+          filesProcessed: reconcileResult.filesProcessed,
+          fileResults: fileResultList,
+        },
+      });
+    } else {
+      const result = await ctx.policySnapshotLoader.loadWithCounts();
+
+      send(socket, {
+        type: "access.reload",
+        id: requestId,
+        payload: {
+          success: true,
+          grantCount: result.grantCount,
+          groupCount: result.groupCount,
+        },
+      });
+    }
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_reload_failed", message);
