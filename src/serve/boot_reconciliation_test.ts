@@ -24,58 +24,73 @@ import {
   type TransitionInput,
 } from "./boot_reconciliation.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
-import type { DataRecord } from "../domain/data/data_record.ts";
+import { Data } from "../domain/data/data.ts";
+import { ModelType } from "../domain/models/model_type.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 
 await initializeLogging({});
 
-function record(
-  overrides: Partial<DataRecord> & {
-    modelName: string;
-    attributes: Record<string, unknown>;
-  },
-): DataRecord {
-  return {
-    id: "rec-1",
-    name: "data-main",
-    version: 1,
-    isLatest: true,
-    createdAt: "2026-07-04T00:00:00.000Z",
-    namespace: "",
-    tags: {},
-    modelId: "def-1",
-    modelType: "swamp/step-lease",
-    specName: "lease",
-    dataType: "resource",
-    contentType: "application/json",
-    lifetime: "infinite",
-    ownerType: "model-method",
-    streaming: false,
-    size: 0,
-    content: "",
-    ownerRef: "",
-    workflowRunId: "",
-    workflowName: "",
-    jobName: "",
-    stepName: "",
-    source: "",
-    ...overrides,
-  };
+const encoder = new TextEncoder();
+
+interface DataItem {
+  modelName: string;
+  dataName: string;
+  modelType: string;
+  attrs: Record<string, unknown>;
 }
 
-function createHarness(queryResults: Map<string, DataRecord[]>) {
+function makeData(
+  item: DataItem,
+): { data: Data; modelType: ModelType; modelId: string } {
+  const modelType = ModelType.create(item.modelType);
+  const modelId = `def-${item.modelName}`;
+  const data = Data.create({
+    name: item.dataName,
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "resource", modelName: item.modelName },
+    ownerDefinition: { ownerType: "model-method", ownerRef: modelId },
+  });
+  return { data, modelType, modelId };
+}
+
+function createHarness(items: Map<string, DataItem[]>) {
   const transitions: TransitionInput[] = [];
   let failOn: string | null = null;
+  const contentMap = new Map<string, Uint8Array>();
+  const dataByType = new Map<
+    string,
+    Array<{ data: Data; modelType: ModelType; modelId: string }>
+  >();
+
+  for (const [typeKey, typeItems] of items) {
+    const dataItems: Array<
+      { data: Data; modelType: ModelType; modelId: string }
+    > = [];
+    for (const item of typeItems) {
+      const d = makeData(item);
+      dataItems.push(d);
+      const key = `${d.modelType.normalized}/${d.modelId}/${d.data.name}`;
+      contentMap.set(key, encoder.encode(JSON.stringify(item.attrs)));
+    }
+    dataByType.set(typeKey, dataItems);
+  }
 
   const deps: BootReconciliationDeps = {
     repoDir: "/tmp/test",
     repoContext: {
-      dataQueryService: {
-        query: (predicate: string) => {
-          for (const [key, records] of queryResults) {
-            if (predicate.includes(key)) return Promise.resolve(records);
-          }
-          return Promise.resolve([]);
+      unifiedDataRepo: {
+        findAllForType: (type: ModelType) => {
+          return Promise.resolve(dataByType.get(type.normalized) ?? []);
+        },
+        getContent: (
+          type: ModelType,
+          modelId: string,
+          dataName: string,
+        ) => {
+          const key = `${type.normalized}/${modelId}/${dataName}`;
+          return Promise.resolve(contentMap.get(key) ?? null);
         },
       },
     } as unknown as RepositoryContext,
@@ -109,16 +124,18 @@ Deno.test("sweepStaleRecords: expires active leases", async () => {
   const h = createHarness(
     new Map([
       ["swamp/step-lease", [
-        record({
+        {
           modelName: "leases",
+          dataName: "data-main",
           modelType: "swamp/step-lease",
-          attributes: { leaseId: "lease-1", state: "active" },
-        }),
-        record({
+          attrs: { leaseId: "lease-1", state: "active" },
+        },
+        {
           modelName: "leases",
+          dataName: "data-secondary",
           modelType: "swamp/step-lease",
-          attributes: { leaseId: "lease-2", state: "active" },
-        }),
+          attrs: { leaseId: "lease-2", state: "active" },
+        },
       ]],
     ]),
   );
@@ -138,11 +155,12 @@ Deno.test("sweepStaleRecords: orphans waiting pending dispatches", async () => {
   const h = createHarness(
     new Map([
       ["swamp/pending-dispatch", [
-        record({
+        {
           modelName: "pending",
+          dataName: "data-main",
           modelType: "swamp/pending-dispatch",
-          attributes: { queueId: "q-1", state: "waiting" },
-        }),
+          attrs: { queueId: "q-1", state: "waiting" },
+        },
       ]],
     ]),
   );
@@ -161,12 +179,12 @@ Deno.test("sweepStaleRecords: disconnects stale workers", async () => {
   const h = createHarness(
     new Map([
       ["swamp/worker", [
-        record({
+        {
           modelName: "worker-w1",
+          dataName: "state-main",
           modelType: "swamp/worker",
-          name: "state-main",
-          attributes: { name: "w1", status: "idle" },
-        }),
+          attrs: { name: "w1", status: "idle" },
+        },
       ]],
     ]),
   );
@@ -185,16 +203,18 @@ Deno.test("sweepStaleRecords: transition failure warns but continues sweeping", 
   const h = createHarness(
     new Map([
       ["swamp/step-lease", [
-        record({
+        {
           modelName: "leases",
+          dataName: "data-main",
           modelType: "swamp/step-lease",
-          attributes: { leaseId: "bad-lease", state: "active" },
-        }),
-        record({
+          attrs: { leaseId: "bad-lease", state: "active" },
+        },
+        {
           modelName: "leases",
+          dataName: "data-secondary",
           modelType: "swamp/step-lease",
-          attributes: { leaseId: "good-lease", state: "active" },
-        }),
+          attrs: { leaseId: "good-lease", state: "active" },
+        },
       ]],
     ]),
   );
@@ -208,31 +228,52 @@ Deno.test("sweepStaleRecords: transition failure warns but continues sweeping", 
 
 Deno.test("sweepStaleRecords: mixed failure and success across model types", async () => {
   let callCount = 0;
+  const leaseItem = makeData({
+    modelName: "leases",
+    dataName: "data-main",
+    modelType: "swamp/step-lease",
+    attrs: { leaseId: "l1", state: "active" },
+  });
+  const leaseAttrs = { leaseId: "l1", state: "active" };
+
+  const workerItem = makeData({
+    modelName: "worker-w1",
+    dataName: "state-main",
+    modelType: "swamp/worker",
+    attrs: { name: "w1", status: "busy" },
+  });
+  const workerAttrs = { name: "w1", status: "busy" };
+
+  const contentMap = new Map<string, Uint8Array>();
+  contentMap.set(
+    `${leaseItem.modelType.normalized}/${leaseItem.modelId}/${leaseItem.data.name}`,
+    encoder.encode(JSON.stringify(leaseAttrs)),
+  );
+  contentMap.set(
+    `${workerItem.modelType.normalized}/${workerItem.modelId}/${workerItem.data.name}`,
+    encoder.encode(JSON.stringify(workerAttrs)),
+  );
+
   const deps: BootReconciliationDeps = {
     repoDir: "/tmp/test",
     repoContext: {
-      dataQueryService: {
-        query: (predicate: string) => {
-          if (predicate.includes("swamp/step-lease")) {
-            return Promise.resolve([
-              record({
-                modelName: "leases",
-                modelType: "swamp/step-lease",
-                attributes: { leaseId: "l1", state: "active" },
-              }),
-            ]);
+      unifiedDataRepo: {
+        findAllForType: (type: ModelType) => {
+          if (type.normalized === "swamp/step-lease") {
+            return Promise.resolve([leaseItem]);
           }
-          if (predicate.includes("swamp/worker")) {
-            return Promise.resolve([
-              record({
-                modelName: "worker-w1",
-                modelType: "swamp/worker",
-                name: "state-main",
-                attributes: { name: "w1", status: "busy" },
-              }),
-            ]);
+          if (type.normalized === "swamp/worker") {
+            return Promise.resolve([workerItem]);
           }
           return Promise.resolve([]);
+        },
+        getContent: (
+          type: ModelType,
+          modelId: string,
+          dataName: string,
+        ) => {
+          const key = `${type.normalized}/${modelId}/${dataName}`;
+          return Promise.resolve(contentMap.get(key) ?? null);
         },
       },
     } as unknown as RepositoryContext,
@@ -256,11 +297,12 @@ Deno.test("sweepStaleRecords: skips records with missing leaseId attribute", asy
   const h = createHarness(
     new Map([
       ["swamp/step-lease", [
-        record({
+        {
           modelName: "leases",
+          dataName: "data-main",
           modelType: "swamp/step-lease",
-          attributes: { state: "active" },
-        }),
+          attrs: { state: "active" },
+        },
       ]],
     ]),
   );
@@ -275,11 +317,12 @@ Deno.test("sweepStaleRecords: skips records with missing queueId attribute", asy
   const h = createHarness(
     new Map([
       ["swamp/pending-dispatch", [
-        record({
+        {
           modelName: "pending",
+          dataName: "data-main",
           modelType: "swamp/pending-dispatch",
-          attributes: { state: "waiting" },
-        }),
+          attrs: { state: "waiting" },
+        },
       ]],
     ]),
   );
@@ -294,12 +337,12 @@ Deno.test("sweepStaleRecords: skips records with missing worker name attribute",
   const h = createHarness(
     new Map([
       ["swamp/worker", [
-        record({
+        {
           modelName: "worker-orphan",
+          dataName: "state-main",
           modelType: "swamp/worker",
-          name: "state-main",
-          attributes: { status: "idle" },
-        }),
+          attrs: { status: "idle" },
+        },
       ]],
     ]),
   );
@@ -314,26 +357,28 @@ Deno.test("sweepStaleRecords: sweeps all three model types together", async () =
   const h = createHarness(
     new Map([
       ["swamp/step-lease", [
-        record({
+        {
           modelName: "leases",
+          dataName: "data-main",
           modelType: "swamp/step-lease",
-          attributes: { leaseId: "l1", state: "active" },
-        }),
+          attrs: { leaseId: "l1", state: "active" },
+        },
       ]],
       ["swamp/pending-dispatch", [
-        record({
+        {
           modelName: "pending",
+          dataName: "data-main",
           modelType: "swamp/pending-dispatch",
-          attributes: { queueId: "q1", state: "waiting" },
-        }),
+          attrs: { queueId: "q1", state: "waiting" },
+        },
       ]],
       ["swamp/worker", [
-        record({
+        {
           modelName: "worker-w1",
+          dataName: "state-main",
           modelType: "swamp/worker",
-          name: "state-main",
-          attributes: { name: "w1", status: "idle" },
-        }),
+          attrs: { name: "w1", status: "idle" },
+        },
       ]],
     ]),
   );
