@@ -66,6 +66,10 @@ import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
 import { acquireModelLocks } from "../cli/repo_context.ts";
+import {
+  extractTraceContext,
+  runWithParentTrace,
+} from "../infrastructure/tracing/mod.ts";
 
 export async function createWorkflowRunDeps(
   repoDir: string,
@@ -347,7 +351,20 @@ export async function executeWorkflowWithLocks(
     }
     : input;
 
-  for await (const event of workflowRun(libCtx, deps, effectiveInput)) {
-    onEvent(event);
+  const run = async () => {
+    for await (const event of workflowRun(libCtx, deps, effectiveInput)) {
+      onEvent(event);
+    }
+  };
+
+  if (input.traceparent) {
+    const headers: Record<string, string> = {
+      traceparent: input.traceparent,
+    };
+    if (input.tracestate) headers.tracestate = input.tracestate;
+    const traceCtx = extractTraceContext(headers);
+    await runWithParentTrace(traceCtx, run);
+  } else {
+    await run();
   }
 }

@@ -73,6 +73,10 @@ import type {
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
 import { acquireModelLocks } from "../../cli/repo_context.ts";
+import {
+  extractTraceContext,
+  runWithParentTrace,
+} from "../../infrastructure/tracing/mod.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { Principal } from "../../domain/access/principal.ts";
@@ -177,25 +181,40 @@ export async function handleModelMethodRun(
       ctx.cancelRegistry.register("method-run", requestId, controller);
     }
 
-    for await (
-      const event of modelMethodRun(libCtx, deps, {
-        modelIdOrName: payload.modelIdOrName,
-        methodName: payload.methodName,
-        inputs: payload.inputs ?? {},
-        lastEvaluated: payload.lastEvaluated ?? false,
-        runtimeTags: payload.runtimeTags,
-        typeArg: payload.typeArg,
-        definitionName: payload.definitionName,
-        skipAllReports: isDirectExecution,
-      })
-    ) {
-      if (socket.readyState !== WebSocket.OPEN) break;
-      const serialized = serializeEvent(
-        event as { kind: string; [key: string]: unknown },
-      );
-      send(socket, { type: "event", id: requestId, event: serialized });
+    const runMethod = async () => {
+      for await (
+        const event of modelMethodRun(libCtx, deps, {
+          modelIdOrName: payload.modelIdOrName,
+          methodName: payload.methodName,
+          inputs: payload.inputs ?? {},
+          lastEvaluated: payload.lastEvaluated ?? false,
+          runtimeTags: payload.runtimeTags,
+          typeArg: payload.typeArg,
+          definitionName: payload.definitionName,
+          skipAllReports: isDirectExecution,
+          traceparent: payload.traceparent,
+          tracestate: payload.tracestate,
+        })
+      ) {
+        if (socket.readyState !== WebSocket.OPEN) break;
+        const serialized = serializeEvent(
+          event as { kind: string; [key: string]: unknown },
+        );
+        send(socket, { type: "event", id: requestId, event: serialized });
+      }
+      send(socket, { type: "done", id: requestId });
+    };
+
+    if (payload.traceparent) {
+      const headers: Record<string, string> = {
+        traceparent: payload.traceparent,
+      };
+      if (payload.tracestate) headers.tracestate = payload.tracestate;
+      const traceCtx = extractTraceContext(headers);
+      await runWithParentTrace(traceCtx, runMethod);
+    } else {
+      await runMethod();
     }
-    send(socket, { type: "done", id: requestId });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");

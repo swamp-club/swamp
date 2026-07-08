@@ -153,6 +153,36 @@ export function resolveRepoDir(cliValue: string | undefined): string {
 }
 
 /**
+ * Resolves the traceparent for a command, given the Cliffy parsed
+ * `--traceparent` option value.
+ *
+ * Priority: --traceparent flag > TRACEPARENT env var > undefined.
+ */
+export function resolveTraceparent(
+  cliValue: string | undefined,
+): string | undefined {
+  if (cliValue !== undefined) {
+    return cliValue;
+  }
+  return Deno.env.get("TRACEPARENT") || undefined;
+}
+
+/**
+ * Resolves the tracestate for a command, given the Cliffy parsed
+ * `--tracestate` option value.
+ *
+ * Priority: --tracestate flag > TRACESTATE env var > undefined.
+ */
+export function resolveTracestate(
+  cliValue: string | undefined,
+): string | undefined {
+  if (cliValue !== undefined) {
+    return cliValue;
+  }
+  return Deno.env.get("TRACESTATE") || undefined;
+}
+
+/**
  * Pre-parses --extensions-dir from raw CLI arguments before Cliffy option
  * parsing.
  *

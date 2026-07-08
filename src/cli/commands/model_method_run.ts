@@ -23,6 +23,8 @@ import {
   createContext,
   type GlobalOptions,
   resolveRepoDir,
+  resolveTraceparent,
+  resolveTracestate,
 } from "../context.ts";
 import {
   acquireModelLocks,
@@ -206,6 +208,14 @@ Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — 
   .option(
     "--token <token:string>",
     "Server token in <name>.<secret> format; only applies with --server (overrides stored credentials and SWAMP_SERVER_TOKEN)",
+  )
+  .option(
+    "--traceparent <value:string>",
+    "W3C traceparent for per-invocation trace context (env: TRACEPARENT)",
+  )
+  .option(
+    "--tracestate <value:string>",
+    "W3C tracestate for per-invocation trace context (env: TRACESTATE)",
   )
   .action(
     // @ts-expect-error - Cliffy custom type returns unknown instead of string
@@ -449,6 +459,12 @@ Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — 
                 reportLabels: options.reportLabel as string[] | undefined,
                 swampSha: GIT_SHA || undefined,
                 autoGc,
+                traceparent: resolveTraceparent(
+                  options.traceparent as string | undefined,
+                ),
+                tracestate: resolveTracestate(
+                  options.tracestate as string | undefined,
+                ),
               }),
               renderer.handlers(),
             );
@@ -608,6 +624,12 @@ async function runMethodViaServer(
             inputs: inputSets[i],
             lastEvaluated: options.lastEvaluated as boolean,
             runtimeTags,
+            traceparent: resolveTraceparent(
+              options.traceparent as string | undefined,
+            ),
+            tracestate: resolveTracestate(
+              options.tracestate as string | undefined,
+            ),
           },
         }) as AsyncIterable<ModelMethodRunEvent>,
         renderer.handlers(),

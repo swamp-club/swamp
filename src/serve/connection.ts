@@ -132,6 +132,8 @@ const WorkflowRunRequestSchema = z.object({
     lastEvaluated: z.boolean().optional(),
     verbose: z.boolean().optional(),
     runtimeTags: z.record(z.string(), z.string()).optional(),
+    traceparent: z.string().optional(),
+    tracestate: z.string().optional(),
   }),
 });
 
@@ -146,6 +148,8 @@ const ModelMethodRunRequestSchema = z.object({
     runtimeTags: z.record(z.string(), z.string()).optional(),
     typeArg: z.string().optional(),
     definitionName: z.string().optional(),
+    traceparent: z.string().optional(),
+    tracestate: z.string().optional(),
   }),
 });
 
