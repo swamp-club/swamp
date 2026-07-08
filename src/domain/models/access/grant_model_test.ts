@@ -183,7 +183,14 @@ Deno.test("create: schema rejects invalid source value", () => {
 });
 
 Deno.test("create: schema accepts valid source values", () => {
-  for (const source of ["method", "file", "config", "extension:my-ext"]) {
+  for (
+    const source of [
+      "method",
+      "config",
+      "file:test.yaml",
+      "extension:my-ext",
+    ]
+  ) {
     const result = GrantSourceSchema.safeParse(source);
     assertEquals(result.success, true, `Expected "${source}" to be valid`);
   }
@@ -192,13 +199,13 @@ Deno.test("create: schema accepts valid source values", () => {
 Deno.test("create: source field is set at creation and persisted", async () => {
   const { context, store } = createTestContext();
   await grantModel.methods.create.execute(
-    { ...VALID_CREATE_ARGS, source: "file" },
+    { ...VALID_CREATE_ARGS, source: "file:test.yaml" },
     context,
   );
   const grant = store.get("grant-main") as unknown as Grant;
-  assertEquals(grant.source, "file");
+  assertEquals(grant.source, "file:test.yaml");
 
   await grantModel.methods.revoke.execute({}, context);
   const revoked = store.get("grant-main") as unknown as Grant;
-  assertEquals(revoked.source, "file");
+  assertEquals(revoked.source, "file:test.yaml");
 });

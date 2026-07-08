@@ -76,6 +76,11 @@ Source-of-truth files live in top-level directories tracked in git:
 - **`models/`** — Model definitions: `models/{normalized-type}/{id}.yaml`
 - **`workflows/`** — Workflow definitions: `workflows/workflow-{id}.yaml`
 - **`vaults/`** — Vault configurations: `vaults/{vault-type}/{id}.yaml`
+- **`grants/`** — Declarative access grant files: `grants/{name}.yaml` or
+  `grants/{name}.yml`. Each file contains a `grants:` array of grant entries
+  (subject, effect, actions, resource, optional condition). Reconciled against
+  stored `source: file:<filename>` grants on `swamp serve` startup and
+  `swamp access reload`.
 
 Runtime data (versioned model data, workflow runs, method outputs, secrets) is
 stored through a datastore abstraction. The default datastore uses the `.swamp/`

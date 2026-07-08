@@ -21,12 +21,25 @@
  * Access-control request handlers (access.* verbs).
  */
 
+import { join } from "@std/path";
 import type {
   AccessCanIPayload,
   AccessCheckPayload,
   AccessGrantListPayload,
   AccessGroupListPayload,
+  AccessReloadFileResult,
 } from "../protocol.ts";
+import {
+  collectErrors,
+  type GrantFileError,
+  readGrantFiles,
+} from "../../domain/access/grant_file.ts";
+import {
+  createFileGrantStore,
+  reconcileAllFileGrants,
+} from "../../domain/access/grant_file_reconciler.ts";
+import { validateGrantCondition } from "../../infrastructure/cel/grant_condition_environment.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import {
   type Grant,
   GRANT_MODEL_TYPE,
@@ -364,6 +377,15 @@ export function handleAccessCanI(
   }
 }
 
+function formatGrantFileErrors(errors: GrantFileError[]): string[] {
+  return errors.map((e) => {
+    const loc = e.entryIndex !== undefined
+      ? `${e.filename} entry ${e.entryIndex + 1}`
+      : e.filename;
+    return `${loc}: ${e.message}`;
+  });
+}
+
 export async function handleAccessReload(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -389,15 +411,74 @@ export async function handleAccessReload(
       return;
     }
 
-    const result = await ctx.policySnapshotLoader.loadWithCounts();
+    const grantsDir = join(ctx.repoDir, "grants");
+    const fileResults = await readGrantFiles(grantsDir, validateGrantCondition);
+    const allErrors = collectErrors(fileResults);
+
+    if (allErrors.length > 0) {
+      send(socket, {
+        type: "access.reload",
+        id: requestId,
+        payload: {
+          success: false,
+          grantCount: 0,
+          groupCount: 0,
+          errors: formatGrantFileErrors(allErrors),
+        },
+      });
+      return;
+    }
+
+    const validEntries = new Map<
+      string,
+      import("../../domain/access/grant_file.ts").GrantFileEntry[]
+    >();
+    for (const [filename, result] of fileResults) {
+      validEntries.set(filename, result.entries);
+    }
+
+    const autoDefDir = join(ctx.repoDir, ".swamp", "auto-definitions");
+    const autoDefRepo = new YamlDefinitionRepository(
+      ctx.repoDir,
+      undefined,
+      autoDefDir,
+      false,
+    );
+    const fileGrantStore = createFileGrantStore(
+      ctx.repoContext.definitionRepo,
+      autoDefRepo,
+      ctx.repoContext.unifiedDataRepo,
+    );
+
+    const reconcileResult = await reconcileAllFileGrants(
+      validEntries,
+      fileGrantStore,
+    );
+
+    const fileResultList: AccessReloadFileResult[] = [];
+    for (const [filename, perFile] of reconcileResult.perFile) {
+      const parsed = fileResults.get(filename);
+      fileResultList.push({
+        filename,
+        entryCount: parsed?.entries.length ?? 0,
+        created: perFile.created,
+        revoked: perFile.revoked,
+        reactivated: perFile.reactivated,
+        unchanged: perFile.unchanged,
+      });
+    }
+
+    const snapshotResult = await ctx.policySnapshotLoader.loadWithCounts();
 
     send(socket, {
       type: "access.reload",
       id: requestId,
       payload: {
         success: true,
-        grantCount: result.grantCount,
-        groupCount: result.groupCount,
+        grantCount: snapshotResult.grantCount,
+        groupCount: snapshotResult.groupCount,
+        filesProcessed: reconcileResult.filesProcessed,
+        fileResults: fileResultList.length > 0 ? fileResultList : undefined,
       },
     });
   } catch (error) {
