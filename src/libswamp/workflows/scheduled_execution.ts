@@ -40,6 +40,7 @@ import {
   extractFirstStepError,
   type WorkflowRunView,
 } from "./workflow_run_view.ts";
+import { withSpan } from "../../infrastructure/tracing/mod.ts";
 
 const logger = getSwampLogger(["scheduled-execution"]);
 
@@ -343,24 +344,29 @@ export class ScheduledExecutionService {
       let completedRun: WorkflowRunView | undefined;
       let streamError: string | undefined;
 
-      await this.deps.executeWorkflow(
-        { workflowIdOrName: workflowName },
-        controller.signal,
-        (event) => {
-          if (event.kind === "started") {
-            runId = event.runId;
-            // Update the running entry with the actual run ID
-            this.running.set(workflowId, { controller, runId });
-          }
-          if (event.kind === "completed") {
-            completedRun = event.run;
-          }
-          if (event.kind === "cancelled") {
-            completedRun = event.run;
-          }
-          if (event.kind === "error") {
-            streamError = event.error.message;
-          }
+      await withSpan(
+        "swamp.scheduled.fire",
+        { "workflow.id": String(workflowId), "workflow.name": workflowName },
+        async (_span) => {
+          await this.deps.executeWorkflow(
+            { workflowIdOrName: workflowName },
+            controller.signal,
+            (event) => {
+              if (event.kind === "started") {
+                runId = event.runId;
+                this.running.set(workflowId, { controller, runId });
+              }
+              if (event.kind === "completed") {
+                completedRun = event.run;
+              }
+              if (event.kind === "cancelled") {
+                completedRun = event.run;
+              }
+              if (event.kind === "error") {
+                streamError = event.error.message;
+              }
+            },
+          );
         },
       );
 

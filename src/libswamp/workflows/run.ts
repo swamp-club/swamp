@@ -52,7 +52,10 @@ import type { CatalogStore } from "../../infrastructure/persistence/catalog_stor
 import type { UnifiedDataRepository } from "../../domain/data/repositories.ts";
 import { createEphemeralStore } from "../../infrastructure/persistence/ephemeral_store.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
-import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  withGeneratorSpan,
+  withGeneratorTraceContext,
+} from "../../infrastructure/tracing/mod.ts";
 import { WorkflowTelemetryBridge } from "./telemetry_bridge.ts";
 
 /**
@@ -271,6 +274,10 @@ export interface WorkflowRunInput {
   skipCheckNames?: string[];
   skipCheckLabels?: string[];
   skipAllChecks?: boolean;
+  /** W3C traceparent header for per-invocation trace context. */
+  traceparent?: string;
+  /** W3C tracestate header for per-invocation trace context. */
+  tracestate?: string;
 }
 
 /**
@@ -474,167 +481,174 @@ export async function* workflowRun(
   deps: WorkflowRunDeps,
   input: WorkflowRunInput,
 ): AsyncGenerator<WorkflowRunEvent> {
-  yield* withGeneratorSpan(
-    "swamp.workflow.run.command",
-    { "workflow.id_or_name": input.workflowIdOrName },
-    (async function* () {
-      const ephemeral = createEphemeralStore();
-      let resolvedInput = input;
+  yield* withGeneratorTraceContext(
+    input.traceparent,
+    input.tracestate,
+    withGeneratorSpan(
+      "swamp.workflow.run.command",
+      { "workflow.id_or_name": input.workflowIdOrName },
+      (async function* () {
+        const ephemeral = createEphemeralStore();
+        let resolvedInput = input;
 
-      yield { kind: "validating_inputs" };
+        yield { kind: "validating_inputs" };
 
-      // Look up workflow
-      const workflow = await deps.lookupWorkflow(
-        deps.workflowRepo,
-        input.workflowIdOrName,
-      );
-      if (!workflow) {
-        yield {
-          kind: "error",
-          error: workflowNotFound(input.workflowIdOrName),
-        };
-        return;
-      }
-
-      // Coerce and validate inputs
-      if (workflow.inputs && !input.lastEvaluated) {
-        const coercedInputs = coerceInputTypes(
-          input.inputs ?? {},
-          workflow.inputs,
+        // Look up workflow
+        const workflow = await deps.lookupWorkflow(
+          deps.workflowRepo,
+          input.workflowIdOrName,
         );
-        const validationService = new InputValidationService();
-        const inputsWithDefaults = validationService.applyDefaults(
-          coercedInputs,
-          workflow.inputs,
-        );
-        const result = validationService.validate(
-          inputsWithDefaults,
-          workflow.inputs,
-        );
-        if (!result.valid) {
-          yield { kind: "error", error: inputValidationFailed(result.errors) };
+        if (!workflow) {
+          yield {
+            kind: "error",
+            error: workflowNotFound(input.workflowIdOrName),
+          };
           return;
         }
-        resolvedInput = { ...input, inputs: inputsWithDefaults };
-      } else if (workflow.inputs) {
-        // lastEvaluated: still coerce types but skip validation
-        resolvedInput = {
-          ...input,
-          inputs: coerceInputTypes(input.inputs ?? {}, workflow.inputs),
-        };
-      }
 
-      yield { kind: "evaluating_workflow" };
-
-      const service = deps.createExecutionService(
-        deps.workflowRepo,
-        deps.runRepo,
-        deps.repoDir,
-        deps.catalogStore,
-        ephemeral.repo,
-        ephemeral.catalog,
-      );
-
-      // Per-method-invocation telemetry bridge. Constructed once per
-      // stream consumption and finalized in the outer try/finally so
-      // any in-flight invocations on cancellation / throw are still
-      // recorded as error child entries.
-      const telemetryBridge = deps.telemetrySink
-        ? new WorkflowTelemetryBridge(deps.telemetrySink)
-        : undefined;
-
-      try {
-        // Aggregate report results from both method-scope (yielded during
-        // step execution) and workflow-scope (yielded by the execution
-        // service after run.complete()). All report_completed and
-        // report_failed events arrive before the completed event, so the
-        // accumulated list is attached to the run view at that point.
-        const reportResults: ReportResultView[] = [];
-
-        for await (
-          const event of service.run(resolvedInput.workflowIdOrName, {
-            lastEvaluated: resolvedInput.lastEvaluated,
-            inputs: resolvedInput.inputs,
-            runtimeTags: resolvedInput.runtimeTags,
-            signal: ctx.signal,
-            reportFilterOptions: {
-              skipAllReports: resolvedInput.skipAllReports,
-              skipReportNames: resolvedInput.skipReportNames,
-              skipReportLabels: resolvedInput.skipReportLabels,
-              reportNames: resolvedInput.reportNames,
-              reportLabels: resolvedInput.reportLabels,
-            },
-            swampSha: resolvedInput.swampSha,
-            skipCheckNames: resolvedInput.skipCheckNames,
-            skipCheckLabels: resolvedInput.skipCheckLabels,
-            skipAllChecks: resolvedInput.skipAllChecks,
-          })
-        ) {
-          if (event.kind === "report_completed") {
-            reportResults.push({
-              name: event.reportName,
-              scope: event.scope,
-              success: true,
-              markdown: event.markdown,
-              json: event.json,
-            });
-          } else if (event.kind === "report_failed") {
-            reportResults.push({
-              name: event.reportName,
-              scope: event.scope,
-              success: false,
-              error: event.error,
-            });
-          }
-
-          let mapped = mapWorkflowExecutionEvent(
-            event,
-            deps.runRepo,
-            resolvedInput.verbose,
+        // Coerce and validate inputs
+        if (workflow.inputs && !input.lastEvaluated) {
+          const coercedInputs = coerceInputTypes(
+            input.inputs ?? {},
+            workflow.inputs,
           );
-
-          // Per-method telemetry observer — runs alongside existing
-          // event handling. Skipped when telemetry is disabled.
-          if (telemetryBridge) {
-            await telemetryBridge.observe(mapped);
-          }
-
-          if (
-            (mapped.kind === "completed" || mapped.kind === "cancelled" ||
-              mapped.kind === "suspended") &&
-            reportResults.length > 0
-          ) {
-            mapped = {
-              ...mapped,
-              run: { ...mapped.run, reports: reportResults },
+          const validationService = new InputValidationService();
+          const inputsWithDefaults = validationService.applyDefaults(
+            coercedInputs,
+            workflow.inputs,
+          );
+          const result = validationService.validate(
+            inputsWithDefaults,
+            workflow.inputs,
+          );
+          if (!result.valid) {
+            yield {
+              kind: "error",
+              error: inputValidationFailed(result.errors),
             };
+            return;
           }
+          resolvedInput = { ...input, inputs: inputsWithDefaults };
+        } else if (workflow.inputs) {
+          // lastEvaluated: still coerce types but skip validation
+          resolvedInput = {
+            ...input,
+            inputs: coerceInputTypes(input.inputs ?? {}, workflow.inputs),
+          };
+        }
 
-          yield mapped;
+        yield { kind: "evaluating_workflow" };
+
+        const service = deps.createExecutionService(
+          deps.workflowRepo,
+          deps.runRepo,
+          deps.repoDir,
+          deps.catalogStore,
+          ephemeral.repo,
+          ephemeral.catalog,
+        );
+
+        // Per-method-invocation telemetry bridge. Constructed once per
+        // stream consumption and finalized in the outer try/finally so
+        // any in-flight invocations on cancellation / throw are still
+        // recorded as error child entries.
+        const telemetryBridge = deps.telemetrySink
+          ? new WorkflowTelemetryBridge(deps.telemetrySink)
+          : undefined;
+
+        try {
+          // Aggregate report results from both method-scope (yielded during
+          // step execution) and workflow-scope (yielded by the execution
+          // service after run.complete()). All report_completed and
+          // report_failed events arrive before the completed event, so the
+          // accumulated list is attached to the run view at that point.
+          const reportResults: ReportResultView[] = [];
+
+          for await (
+            const event of service.run(resolvedInput.workflowIdOrName, {
+              lastEvaluated: resolvedInput.lastEvaluated,
+              inputs: resolvedInput.inputs,
+              runtimeTags: resolvedInput.runtimeTags,
+              signal: ctx.signal,
+              reportFilterOptions: {
+                skipAllReports: resolvedInput.skipAllReports,
+                skipReportNames: resolvedInput.skipReportNames,
+                skipReportLabels: resolvedInput.skipReportLabels,
+                reportNames: resolvedInput.reportNames,
+                reportLabels: resolvedInput.reportLabels,
+              },
+              swampSha: resolvedInput.swampSha,
+              skipCheckNames: resolvedInput.skipCheckNames,
+              skipCheckLabels: resolvedInput.skipCheckLabels,
+              skipAllChecks: resolvedInput.skipAllChecks,
+            })
+          ) {
+            if (event.kind === "report_completed") {
+              reportResults.push({
+                name: event.reportName,
+                scope: event.scope,
+                success: true,
+                markdown: event.markdown,
+                json: event.json,
+              });
+            } else if (event.kind === "report_failed") {
+              reportResults.push({
+                name: event.reportName,
+                scope: event.scope,
+                success: false,
+                error: event.error,
+              });
+            }
+
+            let mapped = mapWorkflowExecutionEvent(
+              event,
+              deps.runRepo,
+              resolvedInput.verbose,
+            );
+
+            // Per-method telemetry observer — runs alongside existing
+            // event handling. Skipped when telemetry is disabled.
+            if (telemetryBridge) {
+              await telemetryBridge.observe(mapped);
+            }
+
+            if (
+              (mapped.kind === "completed" || mapped.kind === "cancelled" ||
+                mapped.kind === "suspended") &&
+              reportResults.length > 0
+            ) {
+              mapped = {
+                ...mapped,
+                run: { ...mapped.run, reports: reportResults },
+              };
+            }
+
+            yield mapped;
+          }
+        } catch (error) {
+          if (
+            error instanceof DOMException && error.name === "AbortError"
+          ) {
+            yield { kind: "error", error: cancelled(error) };
+            return;
+          }
+          yield {
+            kind: "error",
+            error: workflowExecutionFailed(error),
+          };
+        } finally {
+          // Drain any in-flight method invocations as error entries. Runs
+          // on every stream termination — normal completion, thrown
+          // errors, and AbortSignal cancellation — so methods that
+          // started but never received a terminal event don't disappear
+          // from telemetry.
+          if (telemetryBridge) {
+            await telemetryBridge.finalize();
+          }
+          ephemeral.dispose();
         }
-      } catch (error) {
-        if (
-          error instanceof DOMException && error.name === "AbortError"
-        ) {
-          yield { kind: "error", error: cancelled(error) };
-          return;
-        }
-        yield {
-          kind: "error",
-          error: workflowExecutionFailed(error),
-        };
-      } finally {
-        // Drain any in-flight method invocations as error entries. Runs
-        // on every stream termination — normal completion, thrown
-        // errors, and AbortSignal cancellation — so methods that
-        // started but never received a terminal event don't disappear
-        // from telemetry.
-        if (telemetryBridge) {
-          await telemetryBridge.finalize();
-        }
-        ephemeral.dispose();
-      }
-    })(),
+      })(),
+    ),
   );
 }
 

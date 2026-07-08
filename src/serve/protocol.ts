@@ -33,6 +33,8 @@ export interface WorkflowRunPayload {
   lastEvaluated?: boolean;
   verbose?: boolean;
   runtimeTags?: Record<string, string>;
+  traceparent?: string;
+  tracestate?: string;
 }
 
 export interface ModelMethodRunPayload {
@@ -43,6 +45,8 @@ export interface ModelMethodRunPayload {
   runtimeTags?: Record<string, string>;
   typeArg?: string;
   definitionName?: string;
+  traceparent?: string;
+  tracestate?: string;
 }
 
 export interface AccessGrantListPayload {

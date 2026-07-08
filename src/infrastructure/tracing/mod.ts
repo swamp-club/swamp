@@ -26,4 +26,7 @@ export {
 } from "./tracer.ts";
 export { extractTraceContext, injectTraceContext } from "./propagation.ts";
 
-export { runWithParentTrace } from "./parent_trace.ts";
+export {
+  runWithParentTrace,
+  withGeneratorTraceContext,
+} from "./parent_trace.ts";

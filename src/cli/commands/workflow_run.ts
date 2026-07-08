@@ -22,6 +22,8 @@ import {
   createContext,
   type GlobalOptions,
   resolveRepoDir,
+  resolveTraceparent,
+  resolveTracestate,
 } from "../context.ts";
 import {
   acquireModelLocks,
@@ -183,6 +185,14 @@ export const workflowRunCommand = new Command()
   .option(
     "--token <token:string>",
     "Server token in <name>.<secret> format; only applies with --server (overrides stored credentials and SWAMP_SERVER_TOKEN)",
+  )
+  .option(
+    "--traceparent <value:string>",
+    "W3C traceparent for per-invocation trace context (env: TRACEPARENT)",
+  )
+  .option(
+    "--tracestate <value:string>",
+    "W3C tracestate for per-invocation trace context (env: TRACESTATE)",
   )
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, workflowIdOrName: string) {
@@ -419,6 +429,12 @@ export const workflowRunCommand = new Command()
           skipAllChecks: options.skipChecks as boolean | undefined,
           skipCheckNames: options.skipCheck as string[] | undefined,
           skipCheckLabels: options.skipCheckLabel as string[] | undefined,
+          traceparent: resolveTraceparent(
+            options.traceparent as string | undefined,
+          ),
+          tracestate: resolveTracestate(
+            options.tracestate as string | undefined,
+          ),
         });
 
         const baseHandlers = renderer.handlers();
@@ -583,6 +599,12 @@ async function runWorkflowViaServer(
             lastEvaluated: options.lastEvaluated as boolean,
             verbose: ctx.verbosity === "verbose",
             runtimeTags,
+            traceparent: resolveTraceparent(
+              options.traceparent as string | undefined,
+            ),
+            tracestate: resolveTracestate(
+              options.tracestate as string | undefined,
+            ),
           },
         }) as AsyncIterable<WorkflowRunEvent>,
         renderer.handlers(),

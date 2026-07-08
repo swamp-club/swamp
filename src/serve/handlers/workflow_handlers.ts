@@ -109,6 +109,8 @@ export async function handleWorkflowRun(
         lastEvaluated: payload.lastEvaluated,
         verbose: payload.verbose,
         runtimeTags: payload.runtimeTags,
+        traceparent: payload.traceparent,
+        tracestate: payload.tracestate,
       },
       controller.signal,
       (event) => {

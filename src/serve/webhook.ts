@@ -311,6 +311,8 @@ export class WebhookService {
     workflowIdOrName: string;
     route: string;
     payload: WebhookPayload;
+    traceparent?: string;
+    tracestate?: string;
   }> = [];
   private processing = false;
   private processingPromise: Promise<void> = Promise.resolve();
@@ -422,6 +424,8 @@ export class WebhookService {
         endpoint.route,
         verifier.signatureHeader,
       ),
+      traceparent: req.headers.get("traceparent") ?? undefined,
+      tracestate: req.headers.get("tracestate") ?? undefined,
     });
 
     this.emit({
@@ -469,8 +473,15 @@ export class WebhookService {
 
     try {
       while (this.runQueue.length > 0) {
-        const { workflowIdOrName, route, payload } = this.runQueue.shift()!;
-        await this.executeWorkflow(workflowIdOrName, route, payload);
+        const { workflowIdOrName, route, payload, traceparent, tracestate } =
+          this.runQueue.shift()!;
+        await this.executeWorkflow(
+          workflowIdOrName,
+          route,
+          payload,
+          traceparent,
+          tracestate,
+        );
       }
     } finally {
       this.processing = false;
@@ -481,6 +492,8 @@ export class WebhookService {
     workflowIdOrName: string,
     route: string,
     payload: WebhookPayload,
+    traceparent?: string,
+    tracestate?: string,
   ): Promise<void> {
     const controller = new AbortController();
     const execId = crypto.randomUUID();
@@ -494,7 +507,7 @@ export class WebhookService {
         this.deps.repoDir,
         this.deps.repoContext,
         this.deps.datastoreConfig,
-        { workflowIdOrName, webhook: payload },
+        { workflowIdOrName, webhook: payload, traceparent, tracestate },
         controller.signal,
         (event) => {
           if (event.kind === "started") {

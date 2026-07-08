@@ -19,7 +19,10 @@
 
 import { assertEquals } from "@std/assert";
 import { ROOT_CONTEXT } from "@opentelemetry/api";
-import { runWithParentTrace } from "./parent_trace.ts";
+import {
+  runWithParentTrace,
+  withGeneratorTraceContext,
+} from "./parent_trace.ts";
 
 Deno.test("runWithParentTrace: passes through when parentCtx is undefined", () => {
   const result = runWithParentTrace(undefined, () => 42);
@@ -37,4 +40,58 @@ Deno.test("runWithParentTrace: propagates async return values", async () => {
     () => Promise.resolve("async-value"),
   );
   assertEquals(result, "async-value");
+});
+
+// ============================================================================
+// withGeneratorTraceContext Tests
+// ============================================================================
+
+Deno.test("withGeneratorTraceContext: passes through when traceparent is undefined", async () => {
+  async function* source() {
+    yield 1;
+    yield 2;
+    yield 3;
+  }
+  const results: number[] = [];
+  for await (
+    const value of withGeneratorTraceContext(undefined, undefined, source())
+  ) {
+    results.push(value);
+  }
+  assertEquals(results, [1, 2, 3]);
+});
+
+Deno.test("withGeneratorTraceContext: yields all values with traceparent set", async () => {
+  async function* source() {
+    yield "a";
+    yield "b";
+  }
+  const results: string[] = [];
+  for await (
+    const value of withGeneratorTraceContext(
+      "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+      undefined,
+      source(),
+    )
+  ) {
+    results.push(value);
+  }
+  assertEquals(results, ["a", "b"]);
+});
+
+Deno.test("withGeneratorTraceContext: handles empty generator", async () => {
+  async function* source(): AsyncGenerator<never> {
+    // empty
+  }
+  const results: never[] = [];
+  for await (
+    const value of withGeneratorTraceContext(
+      "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+      "vendor=value",
+      source(),
+    )
+  ) {
+    results.push(value);
+  }
+  assertEquals(results, []);
 });
