@@ -20,17 +20,9 @@
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import type { AccessReloadFileResult } from "../../serve/protocol.ts";
 
 const logger = getSwampLogger(["access", "reload"]);
-
-export interface AccessReloadFileResult {
-  filename: string;
-  entryCount: number;
-  created: number;
-  revoked: number;
-  reactivated: number;
-  unchanged: number;
-}
 
 export interface AccessReloadResult {
   success: boolean;
@@ -48,8 +40,7 @@ export interface AccessReloadRenderer {
 class LogAccessReloadRenderer implements AccessReloadRenderer {
   render(result: AccessReloadResult): void {
     if (!result.success && result.errors) {
-      logger
-        .error`Reconciliation aborted. Current policy unchanged.`;
+      logger.error`Reconciliation aborted. Current policy unchanged.`;
       for (const error of result.errors) {
         logger.error`${error}`;
       }
@@ -71,12 +62,16 @@ class LogAccessReloadRenderer implements AccessReloadRenderer {
         (s, f) => s + f.revoked,
         0,
       );
+      const totalReactivated = result.fileResults.reduce(
+        (s, f) => s + f.reactivated,
+        0,
+      );
       const totalUnchanged = result.fileResults.reduce(
         (s, f) => s + f.unchanged,
         0,
       );
       logger
-        .info`Reconciling files: ${totalCreated} created, ${totalRevoked} revoked, ${totalUnchanged} unchanged`;
+        .info`Reconciling files: ${totalCreated} created, ${totalRevoked} revoked, ${totalReactivated} reactivated, ${totalUnchanged} unchanged`;
     }
 
     logger

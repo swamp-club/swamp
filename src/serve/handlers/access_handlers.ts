@@ -429,72 +429,58 @@ export async function handleAccessReload(
       return;
     }
 
-    if (fileResults.size > 0) {
-      const validEntries = new Map<
-        string,
-        import("../../domain/access/grant_file.ts").GrantFileEntry[]
-      >();
-      for (const [filename, result] of fileResults) {
-        validEntries.set(filename, result.entries);
-      }
+    const validEntries = new Map<
+      string,
+      import("../../domain/access/grant_file.ts").GrantFileEntry[]
+    >();
+    for (const [filename, result] of fileResults) {
+      validEntries.set(filename, result.entries);
+    }
 
-      const autoDefDir = join(ctx.repoDir, ".swamp", "auto-definitions");
-      const autoDefRepo = new YamlDefinitionRepository(
-        ctx.repoDir,
-        undefined,
-        autoDefDir,
-        false,
-      );
-      const fileGrantStore = createFileGrantStore(
-        ctx.repoContext.definitionRepo,
-        autoDefRepo,
-        ctx.repoContext.unifiedDataRepo,
-      );
+    const autoDefDir = join(ctx.repoDir, ".swamp", "auto-definitions");
+    const autoDefRepo = new YamlDefinitionRepository(
+      ctx.repoDir,
+      undefined,
+      autoDefDir,
+      false,
+    );
+    const fileGrantStore = createFileGrantStore(
+      ctx.repoContext.definitionRepo,
+      autoDefRepo,
+      ctx.repoContext.unifiedDataRepo,
+    );
 
-      const reconcileResult = await reconcileAllFileGrants(
-        validEntries,
-        fileGrantStore,
-      );
+    const reconcileResult = await reconcileAllFileGrants(
+      validEntries,
+      fileGrantStore,
+    );
 
-      const fileResultList: AccessReloadFileResult[] = [];
-      for (const [filename, result] of fileResults) {
-        const perFile = reconcileResult.perFile.get(filename);
-        fileResultList.push({
-          filename,
-          entryCount: result.entries.length,
-          created: perFile?.created ?? 0,
-          revoked: perFile?.revoked ?? 0,
-          reactivated: perFile?.reactivated ?? 0,
-          unchanged: perFile?.unchanged ?? 0,
-        });
-      }
-
-      const snapshotResult = await ctx.policySnapshotLoader.loadWithCounts();
-
-      send(socket, {
-        type: "access.reload",
-        id: requestId,
-        payload: {
-          success: true,
-          grantCount: snapshotResult.grantCount,
-          groupCount: snapshotResult.groupCount,
-          filesProcessed: reconcileResult.filesProcessed,
-          fileResults: fileResultList,
-        },
-      });
-    } else {
-      const result = await ctx.policySnapshotLoader.loadWithCounts();
-
-      send(socket, {
-        type: "access.reload",
-        id: requestId,
-        payload: {
-          success: true,
-          grantCount: result.grantCount,
-          groupCount: result.groupCount,
-        },
+    const fileResultList: AccessReloadFileResult[] = [];
+    for (const [filename, perFile] of reconcileResult.perFile) {
+      const parsed = fileResults.get(filename);
+      fileResultList.push({
+        filename,
+        entryCount: parsed?.entries.length ?? 0,
+        created: perFile.created,
+        revoked: perFile.revoked,
+        reactivated: perFile.reactivated,
+        unchanged: perFile.unchanged,
       });
     }
+
+    const snapshotResult = await ctx.policySnapshotLoader.loadWithCounts();
+
+    send(socket, {
+      type: "access.reload",
+      id: requestId,
+      payload: {
+        success: true,
+        grantCount: snapshotResult.grantCount,
+        groupCount: snapshotResult.groupCount,
+        filesProcessed: reconcileResult.filesProcessed,
+        fileResults: fileResultList.length > 0 ? fileResultList : undefined,
+      },
+    });
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_reload_failed", message);

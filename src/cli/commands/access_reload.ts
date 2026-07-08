@@ -89,6 +89,12 @@ export const accessReloadCommand = new Command()
       );
 
       if (!response.success) {
+        renderer.render({
+          success: false,
+          grantCount: 0,
+          groupCount: 0,
+          errors: response.errors,
+        });
         throw new UserError("Policy reload failed on the server");
       }
 
@@ -96,6 +102,8 @@ export const accessReloadCommand = new Command()
         success: true,
         grantCount: response.grantCount,
         groupCount: response.groupCount,
+        filesProcessed: response.filesProcessed,
+        fileResults: response.fileResults,
       });
       return;
     }

@@ -39,6 +39,7 @@ export { type Effect, EffectSchema } from "./effect.ts";
 export {
   collectErrors,
   type ConditionValidator,
+  entryIdentityKey,
   type GrantFileEntry,
   type GrantFileError,
   type GrantFileParseResult,
@@ -51,7 +52,6 @@ export {
   type FileGrantStore,
   reconcileAllFileGrants,
   type ReconcileAllResult,
-  reconcileFileGrants,
 } from "./grant_file_reconciler.ts";
 
 export {

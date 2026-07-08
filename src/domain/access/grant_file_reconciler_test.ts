@@ -24,7 +24,6 @@ import type { GrantFileEntry } from "./grant_file.ts";
 import {
   type FileGrantStore,
   reconcileAllFileGrants,
-  reconcileFileGrants,
 } from "./grant_file_reconciler.ts";
 
 await initializeLogging({});
@@ -94,18 +93,17 @@ const entry2: GrantFileEntry = {
   resource: { kind: "data", pattern: "*" },
 };
 
-Deno.test("reconcileFileGrants: creates grants for new entries", async () => {
+Deno.test("reconcileAllFileGrants: creates grants for new entries", async () => {
   const store = createMockStore();
-  const result = await reconcileFileGrants(
-    "platform-team.yaml",
-    [entry1],
+  const result = await reconcileAllFileGrants(
+    new Map([["platform-team.yaml", [entry1]]]),
     store,
   );
 
-  assertEquals(result.created, 1);
-  assertEquals(result.revoked, 0);
-  assertEquals(result.reactivated, 0);
-  assertEquals(result.unchanged, 0);
+  assertEquals(result.totalCreated, 1);
+  assertEquals(result.totalRevoked, 0);
+  assertEquals(result.totalReactivated, 0);
+  assertEquals(result.totalUnchanged, 0);
   assertEquals(store.written.size, 1);
 
   const grant = [...store.written.values()][0];
@@ -114,10 +112,10 @@ Deno.test("reconcileFileGrants: creates grants for new entries", async () => {
   assertEquals(grant.state, "active");
 });
 
-Deno.test("reconcileFileGrants: leaves unchanged grants untouched", async () => {
+Deno.test("reconcileAllFileGrants: leaves unchanged grants untouched", async () => {
   const existing = new Map([
     [
-      "inst-1",
+      "model-1",
       {
         grant: makeFileGrant({
           source: "file:team.yaml",
@@ -132,19 +130,22 @@ Deno.test("reconcileFileGrants: leaves unchanged grants untouched", async () => 
   ]);
   const store = createMockStore(existing);
 
-  const result = await reconcileFileGrants("team.yaml", [entry1], store);
+  const result = await reconcileAllFileGrants(
+    new Map([["team.yaml", [entry1]]]),
+    store,
+  );
 
-  assertEquals(result.created, 0);
-  assertEquals(result.revoked, 0);
-  assertEquals(result.reactivated, 0);
-  assertEquals(result.unchanged, 1);
+  assertEquals(result.totalCreated, 0);
+  assertEquals(result.totalRevoked, 0);
+  assertEquals(result.totalReactivated, 0);
+  assertEquals(result.totalUnchanged, 1);
   assertEquals(store.written.size, 0);
 });
 
-Deno.test("reconcileFileGrants: revokes grants removed from file", async () => {
+Deno.test("reconcileAllFileGrants: revokes grants removed from file", async () => {
   const existing = new Map([
     [
-      "inst-1",
+      "model-1",
       {
         grant: makeFileGrant({
           source: "file:team.yaml",
@@ -157,7 +158,7 @@ Deno.test("reconcileFileGrants: revokes grants removed from file", async () => {
       },
     ],
     [
-      "inst-2",
+      "model-2",
       {
         grant: makeFileGrant({
           source: "file:team.yaml",
@@ -172,20 +173,23 @@ Deno.test("reconcileFileGrants: revokes grants removed from file", async () => {
   ]);
   const store = createMockStore(existing);
 
-  const result = await reconcileFileGrants("team.yaml", [entry1], store);
+  const result = await reconcileAllFileGrants(
+    new Map([["team.yaml", [entry1]]]),
+    store,
+  );
 
-  assertEquals(result.created, 0);
-  assertEquals(result.revoked, 1);
-  assertEquals(result.unchanged, 1);
+  assertEquals(result.totalCreated, 0);
+  assertEquals(result.totalRevoked, 1);
+  assertEquals(result.totalUnchanged, 1);
 
   const revokedGrant = store.written.get("inst-2")!;
   assertEquals(revokedGrant.state, "revoked");
 });
 
-Deno.test("reconcileFileGrants: reactivates revoked grant when re-added", async () => {
+Deno.test("reconcileAllFileGrants: reactivates revoked grant when re-added", async () => {
   const existing = new Map([
     [
-      "inst-1",
+      "model-1",
       {
         grant: makeFileGrant({
           source: "file:team.yaml",
@@ -201,47 +205,24 @@ Deno.test("reconcileFileGrants: reactivates revoked grant when re-added", async 
   ]);
   const store = createMockStore(existing);
 
-  const result = await reconcileFileGrants("team.yaml", [entry1], store);
+  const result = await reconcileAllFileGrants(
+    new Map([["team.yaml", [entry1]]]),
+    store,
+  );
 
-  assertEquals(result.created, 0);
-  assertEquals(result.revoked, 0);
-  assertEquals(result.reactivated, 1);
-  assertEquals(result.unchanged, 0);
+  assertEquals(result.totalCreated, 0);
+  assertEquals(result.totalRevoked, 0);
+  assertEquals(result.totalReactivated, 1);
+  assertEquals(result.totalUnchanged, 0);
 
   const reactivated = store.written.get("inst-1")!;
   assertEquals(reactivated.state, "active");
 });
 
-Deno.test("reconcileFileGrants: does not touch grants from other files", async () => {
+Deno.test("reconcileAllFileGrants: does not touch method or config grants", async () => {
   const existing = new Map([
     [
-      "inst-1",
-      {
-        grant: makeFileGrant({
-          source: "file:other-team.yaml",
-          subject: { kind: "idp-group", name: "platform-eng" },
-          actions: ["run"],
-          resource: { kind: "workflow", pattern: "@acme/*" },
-        }),
-        modelId: "model-1",
-        instanceName: "inst-1",
-      },
-    ],
-  ]);
-  const store = createMockStore(existing);
-
-  const result = await reconcileFileGrants("team.yaml", [], store);
-
-  assertEquals(result.created, 0);
-  assertEquals(result.revoked, 0);
-  assertEquals(result.unchanged, 0);
-  assertEquals(store.written.size, 0);
-});
-
-Deno.test("reconcileFileGrants: does not touch method or config grants", async () => {
-  const existing = new Map([
-    [
-      "inst-1",
+      "model-1",
       {
         grant: makeFileGrant({
           source: "method",
@@ -254,7 +235,7 @@ Deno.test("reconcileFileGrants: does not touch method or config grants", async (
       },
     ],
     [
-      "inst-2",
+      "model-2",
       {
         grant: makeFileGrant({
           source: "config",
@@ -269,17 +250,20 @@ Deno.test("reconcileFileGrants: does not touch method or config grants", async (
   ]);
   const store = createMockStore(existing);
 
-  const result = await reconcileFileGrants("team.yaml", [], store);
+  const result = await reconcileAllFileGrants(
+    new Map([["team.yaml", []]]),
+    store,
+  );
 
-  assertEquals(result.created, 0);
-  assertEquals(result.revoked, 0);
+  assertEquals(result.totalCreated, 0);
+  assertEquals(result.totalRevoked, 0);
   assertEquals(store.written.size, 0);
 });
 
-Deno.test("reconcileFileGrants: matches with different action order", async () => {
+Deno.test("reconcileAllFileGrants: matches with different action order", async () => {
   const existing = new Map([
     [
-      "inst-1",
+      "model-1",
       {
         grant: makeFileGrant({
           source: "file:team.yaml",
@@ -301,17 +285,20 @@ Deno.test("reconcileFileGrants: matches with different action order", async () =
     resource: { kind: "workflow", pattern: "*" },
   };
 
-  const result = await reconcileFileGrants("team.yaml", [entry], store);
+  const result = await reconcileAllFileGrants(
+    new Map([["team.yaml", [entry]]]),
+    store,
+  );
 
-  assertEquals(result.unchanged, 1);
-  assertEquals(result.created, 0);
+  assertEquals(result.totalUnchanged, 1);
+  assertEquals(result.totalCreated, 0);
   assertEquals(store.written.size, 0);
 });
 
-Deno.test("reconcileFileGrants: matches with trimmed condition whitespace", async () => {
+Deno.test("reconcileAllFileGrants: matches with trimmed condition whitespace", async () => {
   const existing = new Map([
     [
-      "inst-1",
+      "model-1",
       {
         grant: makeFileGrant({
           source: "file:team.yaml",
@@ -335,10 +322,13 @@ Deno.test("reconcileFileGrants: matches with trimmed condition whitespace", asyn
     condition: 'tags.env == "prod"',
   };
 
-  const result = await reconcileFileGrants("team.yaml", [entry], store);
+  const result = await reconcileAllFileGrants(
+    new Map([["team.yaml", [entry]]]),
+    store,
+  );
 
-  assertEquals(result.unchanged, 1);
-  assertEquals(result.created, 0);
+  assertEquals(result.totalUnchanged, 1);
+  assertEquals(result.totalCreated, 0);
   assertEquals(store.written.size, 0);
 });
 
@@ -366,4 +356,83 @@ Deno.test("reconcileAllFileGrants: empty file map is no-op", async () => {
   assertEquals(result.filesProcessed, 0);
   assertEquals(result.totalCreated, 0);
   assertEquals(result.totalRevoked, 0);
+});
+
+Deno.test("reconcileAllFileGrants: revokes grants from deleted files", async () => {
+  const existing = new Map([
+    [
+      "model-1",
+      {
+        grant: makeFileGrant({
+          source: "file:deleted.yaml",
+          subject: { kind: "idp-group", name: "interns" },
+          actions: ["run"],
+          resource: { kind: "workflow", pattern: "@acme/*" },
+        }),
+        modelId: "model-1",
+        instanceName: "inst-1",
+      },
+    ],
+  ]);
+  const store = createMockStore(existing);
+
+  const result = await reconcileAllFileGrants(new Map(), store);
+
+  assertEquals(result.totalRevoked, 1);
+  assertEquals(result.totalCreated, 0);
+
+  const revokedGrant = store.written.get("inst-1")!;
+  assertEquals(revokedGrant.state, "revoked");
+});
+
+Deno.test("reconcileAllFileGrants: does not touch other files' grants when one is deleted", async () => {
+  const existing = new Map([
+    [
+      "model-1",
+      {
+        grant: makeFileGrant({
+          source: "file:keep.yaml",
+          subject: { kind: "user", name: "adam" },
+          actions: ["run"],
+          resource: { kind: "workflow", pattern: "*" },
+        }),
+        modelId: "model-1",
+        instanceName: "inst-1",
+      },
+    ],
+    [
+      "model-2",
+      {
+        grant: makeFileGrant({
+          source: "file:deleted.yaml",
+          subject: { kind: "idp-group", name: "interns" },
+          actions: ["run"],
+          resource: { kind: "workflow", pattern: "@acme/*" },
+        }),
+        modelId: "model-2",
+        instanceName: "inst-2",
+      },
+    ],
+  ]);
+  const store = createMockStore(existing);
+
+  const keepEntry: GrantFileEntry = {
+    subject: { kind: "user", name: "adam" },
+    effect: "allow",
+    actions: ["run"],
+    resource: { kind: "workflow", pattern: "*" },
+  };
+
+  const result = await reconcileAllFileGrants(
+    new Map([["keep.yaml", [keepEntry]]]),
+    store,
+  );
+
+  assertEquals(result.totalUnchanged, 1);
+  assertEquals(result.totalRevoked, 1);
+  assertEquals(result.totalCreated, 0);
+
+  const revokedGrant = store.written.get("inst-2")!;
+  assertEquals(revokedGrant.state, "revoked");
+  assertEquals(store.written.has("inst-1"), false);
 });

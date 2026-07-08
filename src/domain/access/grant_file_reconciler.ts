@@ -24,7 +24,7 @@ import {
   grantModel,
   GrantSchema,
 } from "../models/access/grant_model.ts";
-import type { GrantFileEntry } from "./grant_file.ts";
+import { entryIdentityKey, type GrantFileEntry } from "./grant_file.ts";
 import { isFileSource, parseFileSourceFilename } from "./grant_source.ts";
 import { subjectToString } from "./subject.ts";
 import { resourceSelectorToString } from "./resource_selector.ts";
@@ -46,14 +46,6 @@ export interface FileGrantStore {
     instanceName: string,
     grant: Grant,
   ): Promise<void>;
-}
-
-function entryIdentityKey(entry: GrantFileEntry): string {
-  const subject = `${entry.subject.kind}:${entry.subject.name}`;
-  const actions = [...entry.actions].sort().join(",");
-  const resource = `${entry.resource.kind}:${entry.resource.pattern}`;
-  const condition = entry.condition?.trim() ?? "";
-  return `${subject}|${entry.effect}|${actions}|${resource}|${condition}`;
 }
 
 function grantIdentityKey(grant: Grant): string {
@@ -79,34 +71,43 @@ function buildFileGrant(entry: GrantFileEntry, filename: string): Grant {
   };
 }
 
-export async function reconcileFileGrants(
+interface StoredFileGrant {
+  grant: Grant;
+  modelId: string;
+  instanceName: string;
+}
+
+function groupByFilename(
+  allFileGrants: Map<string, StoredFileGrant>,
+): Map<string, Map<string, StoredFileGrant>> {
+  const byFile = new Map<string, Map<string, StoredFileGrant>>();
+  for (const [_id, entry] of allFileGrants) {
+    if (!isFileSource(entry.grant.source)) continue;
+    const filename = parseFileSourceFilename(entry.grant.source);
+    let fileMap = byFile.get(filename);
+    if (!fileMap) {
+      fileMap = new Map();
+      byFile.set(filename, fileMap);
+    }
+    const key = grantIdentityKey(entry.grant);
+    fileMap.set(key, entry);
+  }
+  return byFile;
+}
+
+function reconcileOneFile(
   filename: string,
   entries: GrantFileEntry[],
+  grantsForFile: Map<string, StoredFileGrant>,
   store: FileGrantStore,
-): Promise<MaterializeResult> {
+): { result: MaterializeResult; writes: Promise<void>[] } {
   const result: MaterializeResult = {
     created: 0,
     revoked: 0,
     reactivated: 0,
     unchanged: 0,
   };
-
-  const allFileGrants = await store.queryFileGrants();
-
-  const grantsForFile = new Map<
-    string,
-    { grant: Grant; modelId: string; instanceName: string; key: string }
-  >();
-  for (const [_id, entry] of allFileGrants) {
-    if (
-      isFileSource(entry.grant.source) &&
-      parseFileSourceFilename(entry.grant.source) === filename
-    ) {
-      const key = grantIdentityKey(entry.grant);
-      grantsForFile.set(key, { ...entry, key });
-    }
-  }
-
+  const writes: Promise<void>[] = [];
   const desiredKeys = new Set<string>();
 
   for (const entry of entries) {
@@ -122,10 +123,12 @@ export async function reconcileFileGrants(
 
     if (existing && existing.grant.state === "revoked") {
       const reactivated: Grant = { ...existing.grant, state: "active" };
-      await store.writeGrant(
-        existing.modelId,
-        existing.instanceName,
-        reactivated,
+      writes.push(
+        store.writeGrant(
+          existing.modelId,
+          existing.instanceName,
+          reactivated,
+        ),
       );
       result.reactivated++;
       const subjectStr = subjectToString(entry.subject);
@@ -136,9 +139,12 @@ export async function reconcileFileGrants(
     }
 
     const instanceName = `grant-file-${crypto.randomUUID().slice(0, 16)}`;
-    const modelId = await store.ensureDefinition(instanceName);
-    const grant = buildFileGrant(entry, filename);
-    await store.writeGrant(modelId, instanceName, grant);
+    writes.push(
+      store.ensureDefinition(instanceName).then((modelId) => {
+        const grant = buildFileGrant(entry, filename);
+        return store.writeGrant(modelId, instanceName, grant);
+      }),
+    );
     result.created++;
     const subjectStr = subjectToString(entry.subject);
     const resourceStr = resourceSelectorToString(entry.resource);
@@ -154,7 +160,7 @@ export async function reconcileFileGrants(
     }
 
     const revoked: Grant = { ...grant, state: "revoked" };
-    await store.writeGrant(modelId, instanceName, revoked);
+    writes.push(store.writeGrant(modelId, instanceName, revoked));
     const subjectStr = subjectToString(grant.subject);
     const resourceStr = resourceSelectorToString(grant.resource);
     result.revoked++;
@@ -162,7 +168,7 @@ export async function reconcileFileGrants(
       .info`Revoked file grant for ${subjectStr} on ${resourceStr} from ${filename}`;
   }
 
-  return result;
+  return { result, writes };
 }
 
 export interface ReconcileAllResult {
@@ -178,20 +184,49 @@ export async function reconcileAllFileGrants(
   fileEntries: Map<string, GrantFileEntry[]>,
   store: FileGrantStore,
 ): Promise<ReconcileAllResult> {
+  const allFileGrants = await store.queryFileGrants();
+  const grantsByFile = groupByFilename(allFileGrants);
+
   const perFile = new Map<string, MaterializeResult>();
+  const allWrites: Promise<void>[] = [];
   let totalCreated = 0;
   let totalRevoked = 0;
   let totalReactivated = 0;
   let totalUnchanged = 0;
 
   for (const [filename, entries] of fileEntries) {
-    const result = await reconcileFileGrants(filename, entries, store);
+    const grantsForFile = grantsByFile.get(filename) ?? new Map();
+    const { result, writes } = reconcileOneFile(
+      filename,
+      entries,
+      grantsForFile,
+      store,
+    );
     perFile.set(filename, result);
+    allWrites.push(...writes);
     totalCreated += result.created;
     totalRevoked += result.revoked;
     totalReactivated += result.reactivated;
     totalUnchanged += result.unchanged;
   }
+
+  for (const [filename, grantsForFile] of grantsByFile) {
+    if (fileEntries.has(filename)) continue;
+    const { result, writes } = reconcileOneFile(
+      filename,
+      [],
+      grantsForFile,
+      store,
+    );
+    perFile.set(filename, result);
+    allWrites.push(...writes);
+    totalCreated += result.created;
+    totalRevoked += result.revoked;
+    totalReactivated += result.reactivated;
+    totalUnchanged += result.unchanged;
+  }
+
+  await Promise.all(allWrites);
 
   return {
     totalCreated,
@@ -237,7 +272,7 @@ export function createFileGrantStore(
         const parsed = GrantSchema.safeParse(attrs);
         if (parsed.success && isFileSource(parsed.data.source)) {
           const modelName = data.tags["modelName"] ?? "";
-          fileGrants.set(modelName, {
+          fileGrants.set(modelId, {
             grant: parsed.data,
             modelId,
             instanceName: modelName,

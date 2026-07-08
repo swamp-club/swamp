@@ -1048,34 +1048,32 @@ export const serveCommand = new Command()
       );
     }
 
-    if (grantFileResults.size > 0) {
-      const validEntries = new Map<
-        string,
-        import("../../domain/access/grant_file.ts").GrantFileEntry[]
-      >();
-      for (const [filename, result] of grantFileResults) {
-        validEntries.set(filename, result.entries);
-      }
+    const validEntries = new Map<
+      string,
+      import("../../domain/access/grant_file.ts").GrantFileEntry[]
+    >();
+    for (const [filename, result] of grantFileResults) {
+      validEntries.set(filename, result.entries);
+    }
 
-      const fileGrantStore = createFileGrantStore(
-        repoContext.definitionRepo,
-        autoDefRepo,
-        repoContext.unifiedDataRepo,
-      );
+    const fileGrantStore = createFileGrantStore(
+      repoContext.definitionRepo,
+      autoDefRepo,
+      repoContext.unifiedDataRepo,
+    );
 
-      const fileReconcileResult = await reconcileAllFileGrants(
-        validEntries,
-        fileGrantStore,
-      );
+    const fileReconcileResult = await reconcileAllFileGrants(
+      validEntries,
+      fileGrantStore,
+    );
 
-      if (
-        fileReconcileResult.totalCreated > 0 ||
-        fileReconcileResult.totalRevoked > 0 ||
-        fileReconcileResult.totalReactivated > 0
-      ) {
-        logger
-          .info`File grants reconciled (${fileReconcileResult.filesProcessed} file(s)): ${fileReconcileResult.totalCreated} created, ${fileReconcileResult.totalRevoked} revoked, ${fileReconcileResult.totalReactivated} reactivated, ${fileReconcileResult.totalUnchanged} unchanged`;
-      }
+    if (
+      fileReconcileResult.totalCreated > 0 ||
+      fileReconcileResult.totalRevoked > 0 ||
+      fileReconcileResult.totalReactivated > 0
+    ) {
+      logger
+        .info`File grants reconciled (${fileReconcileResult.filesProcessed} file(s)): ${fileReconcileResult.totalCreated} created, ${fileReconcileResult.totalRevoked} revoked, ${fileReconcileResult.totalReactivated} reactivated, ${fileReconcileResult.totalUnchanged} unchanged`;
     }
 
     const policySnapshotLoader = new PolicySnapshotLoader(

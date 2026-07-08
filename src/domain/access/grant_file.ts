@@ -68,7 +68,7 @@ export interface ConditionValidator {
   };
 }
 
-function entryIdentityKey(entry: GrantFileEntry): string {
+export function entryIdentityKey(entry: GrantFileEntry): string {
   const subject = `${entry.subject.kind}:${entry.subject.name}`;
   const actions = [...entry.actions].sort().join(",");
   const resource = `${entry.resource.kind}:${entry.resource.pattern}`;
