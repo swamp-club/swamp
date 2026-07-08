@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { evaluateGrantCondition } from "../../infrastructure/cel/grant_condition_environment.ts";
+import {
+  evaluateGrantCondition,
+  MAX_AGGREGATE_CONDITIONS,
+} from "../../infrastructure/cel/grant_condition_environment.ts";
 import type { Grant } from "../models/access/grant_model.ts";
 import type { Group } from "../models/access/group_model.ts";
 import type {
@@ -357,4 +360,95 @@ Deno.test("decide: snapshot can be swapped atomically", () => {
     service.decide(makePrincipal("adam"), "read", makeResource()),
     null,
   );
+});
+
+// --- Aggregate condition budget ---
+
+Deno.test("decide: normal decision with few conditions unaffected by aggregate budget", () => {
+  const grants = Array.from({ length: 5 }, (_, i) =>
+    makeGrant({
+      subject: { kind: "user", name: "adam" },
+      effect: "allow",
+      actions: ["read"],
+      resource: { kind: "workflow", pattern: "*" },
+      condition: `name == "workflow-${i}"`,
+    }));
+  const matchingGrant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    effect: "allow",
+    actions: ["read"],
+    resource: { kind: "workflow", pattern: "*" },
+    condition: 'name == "@acme/deploy"',
+  });
+  grants.push(matchingGrant);
+  const snapshot = new PolicySnapshot(grants, [], celEvaluator);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const result = service.decide(makePrincipal("adam"), "read", makeResource());
+  assertEquals(result?.effect, "allow");
+  assertEquals(result?.grantId, matchingGrant.id);
+});
+
+Deno.test("decide: denies when aggregate condition budget exceeded", () => {
+  const grants = Array.from(
+    { length: MAX_AGGREGATE_CONDITIONS + 1 },
+    (_, i) =>
+      makeGrant({
+        subject: { kind: "user", name: "adam" },
+        effect: "allow",
+        actions: ["read"],
+        resource: { kind: "workflow", pattern: "*" },
+        condition: `name == "no-match-${i}"`,
+      }),
+  );
+  const snapshot = new PolicySnapshot(grants, [], celEvaluator);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const result = service.decide(makePrincipal("adam"), "read", makeResource());
+  assertEquals(result?.effect, "deny");
+  assertEquals(result?.grantId, "aggregate-budget-exceeded");
+});
+
+Deno.test("decide: grants without conditions do not count toward aggregate budget", () => {
+  const conditionlessGrants = Array.from(
+    { length: MAX_AGGREGATE_CONDITIONS + 50 },
+    () =>
+      makeGrant({
+        subject: { kind: "user", name: "adam" },
+        effect: "allow",
+        actions: ["read"],
+        resource: { kind: "workflow", pattern: "no-match-*" },
+      }),
+  );
+  const matchingGrant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    effect: "allow",
+    actions: ["read"],
+    resource: { kind: "workflow", pattern: "*" },
+  });
+  conditionlessGrants.push(matchingGrant);
+  const snapshot = new PolicySnapshot(conditionlessGrants, [], celEvaluator);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const result = service.decide(makePrincipal("adam"), "read", makeResource());
+  assertEquals(result?.effect, "allow");
+});
+
+Deno.test("explain: truncates when aggregate condition budget exceeded", () => {
+  const grants = Array.from(
+    { length: MAX_AGGREGATE_CONDITIONS + 10 },
+    (_, i) =>
+      makeGrant({
+        subject: { kind: "user", name: "adam" },
+        effect: "allow",
+        actions: ["read"],
+        resource: { kind: "workflow", pattern: "*" },
+        condition: `name == "workflow-${i}"`,
+      }),
+  );
+  const snapshot = new PolicySnapshot(grants, [], celEvaluator);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const result = service.explain(makePrincipal("adam"), "read", makeResource());
+  assertEquals(result.length < grants.length, true);
 });

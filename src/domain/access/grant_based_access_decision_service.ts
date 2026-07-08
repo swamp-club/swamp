@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { getLogger } from "@logtape/logtape";
 import type { Grant } from "../models/access/grant_model.ts";
 import type {
   AccessDecision,
@@ -29,6 +30,15 @@ import type { PolicySnapshot } from "./policy_snapshot.ts";
 import { principalToString } from "./principal.ts";
 import type { PrincipalContext } from "./principal_context.ts";
 import { resourceSelectorMatches } from "./resource_selector.ts";
+
+export const MAX_AGGREGATE_CONDITIONS = 100;
+
+const logger = getLogger([
+  "swamp",
+  "domain",
+  "access",
+  "decision-service",
+]);
 
 function resolveSubjects(
   accessPrincipal: AccessPrincipal,
@@ -138,13 +148,39 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
       }
     }
 
+    let conditionsEvaluated = 0;
+
     for (const grant of denies) {
+      if (grant.condition) {
+        conditionsEvaluated++;
+        if (conditionsEvaluated > MAX_AGGREGATE_CONDITIONS) {
+          logger
+            .warn`Aggregate condition budget exceeded (${conditionsEvaluated} > ${MAX_AGGREGATE_CONDITIONS}) for principal ${principalKey} action ${action} on ${resource.kind}:${resource.name} — denying`;
+          return {
+            effect: "deny",
+            grantId: "aggregate-budget-exceeded",
+            subject: { kind: "user", name: principal.principal.id },
+          };
+        }
+      }
       if (evaluateGrant(grant, snapshot, resource, principalContext)) {
         return toDecision(grant);
       }
     }
 
     for (const grant of allows) {
+      if (grant.condition) {
+        conditionsEvaluated++;
+        if (conditionsEvaluated > MAX_AGGREGATE_CONDITIONS) {
+          logger
+            .warn`Aggregate condition budget exceeded (${conditionsEvaluated} > ${MAX_AGGREGATE_CONDITIONS}) for principal ${principalKey} action ${action} on ${resource.kind}:${resource.name} — denying`;
+          return {
+            effect: "deny",
+            grantId: "aggregate-budget-exceeded",
+            subject: { kind: "user", name: principal.principal.id },
+          };
+        }
+      }
       if (evaluateGrant(grant, snapshot, resource, principalContext)) {
         return toDecision(grant);
       }
@@ -165,10 +201,19 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     const candidates = snapshot.grantsForSubjects(subjects);
     const principalContext = buildPrincipalContext(principal, localGroups);
 
+    let conditionsEvaluated = 0;
     const decisions: AccessDecision[] = [];
     for (const grant of candidates) {
       if (!grantMatchesResource(grant, resource)) continue;
       if (!grantMatchesAction(grant, action)) continue;
+      if (grant.condition) {
+        conditionsEvaluated++;
+        if (conditionsEvaluated > MAX_AGGREGATE_CONDITIONS) {
+          logger
+            .warn`Aggregate condition budget exceeded (${conditionsEvaluated} > ${MAX_AGGREGATE_CONDITIONS}) for principal ${principalKey} action ${action} on ${resource.kind}:${resource.name} — truncating explain`;
+          break;
+        }
+      }
       if (evaluateGrant(grant, snapshot, resource, principalContext)) {
         decisions.push(toDecision(grant));
       }

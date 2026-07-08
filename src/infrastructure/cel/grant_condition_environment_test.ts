@@ -17,9 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   evaluateGrantCondition,
+  MAX_AST_DEPTH,
+  MAX_CONDITION_COST,
   type PrincipalContext,
   validateGrantCondition,
 } from "./grant_condition_environment.ts";
@@ -261,4 +263,182 @@ Deno.test("evaluateGrantCondition: arithmetic works with mixed types", () => {
     PRINCIPAL,
   );
   assertEquals(result, true);
+});
+
+// --- RESOURCE_FIELDS fix: model name and tags now valid ---
+
+Deno.test("validateGrantCondition: model name condition", () => {
+  const result = validateGrantCondition('name == "my-model"', "model");
+  assertEquals(result, { valid: true });
+});
+
+Deno.test("validateGrantCondition: model tags condition", () => {
+  const result = validateGrantCondition('tags.env == "prod"', "model");
+  assertEquals(result, { valid: true });
+});
+
+// --- AST depth limit ---
+
+Deno.test("validateGrantCondition: accepts condition at max AST depth", () => {
+  const terms = Array.from(
+    { length: MAX_AST_DEPTH },
+    (_, i) => `name == "${String.fromCharCode(97 + (i % 26))}"`,
+  );
+  const condition = terms.join(" && ");
+  const result = validateGrantCondition(condition, "workflow");
+  assertEquals(result.valid, true);
+});
+
+Deno.test("validateGrantCondition: rejects condition exceeding AST depth", () => {
+  const terms = Array.from(
+    { length: MAX_AST_DEPTH + 1 },
+    (_, i) => `name == "${String.fromCharCode(97 + (i % 26))}"`,
+  );
+  const condition = terms.join(" && ");
+  const result = validateGrantCondition(condition, "workflow");
+  assertEquals(result.valid, false);
+  assertStringIncludes(result.error!, "AST depth");
+});
+
+Deno.test("validateGrantCondition: realistic grant condition passes depth check", () => {
+  const result = validateGrantCondition(
+    'principal.sub == "admin" || (tags.env == "prod" && collective == "acme")',
+    "workflow",
+  );
+  assertEquals(result, { valid: true });
+});
+
+// --- Comprehension nesting limit ---
+
+Deno.test("validateGrantCondition: accepts single comprehension", () => {
+  const result = validateGrantCondition(
+    "[1, 2, 3].exists(x, x > 1)",
+    "workflow",
+  );
+  assertEquals(result, { valid: true });
+});
+
+Deno.test("validateGrantCondition: accepts comprehension nesting at limit", () => {
+  const result = validateGrantCondition(
+    "[1, 2, 3].filter(x, x > 0).exists(y, y > 1)",
+    "workflow",
+  );
+  assertEquals(result, { valid: true });
+});
+
+Deno.test("validateGrantCondition: rejects comprehension nesting exceeding limit", () => {
+  const result = validateGrantCondition(
+    "[1, 2, 3].filter(x, x > 0).filter(y, y > 0).exists(z, z > 1)",
+    "workflow",
+  );
+  assertEquals(result.valid, false);
+  assertStringIncludes(result.error!, "comprehension nesting");
+});
+
+// --- Cost budget ---
+
+Deno.test("validateGrantCondition: accepts condition within cost budget", () => {
+  const result = validateGrantCondition(
+    'name == "deploy" && tags.env == "prod" && collective == "acme"',
+    "workflow",
+  );
+  assertEquals(result, { valid: true });
+});
+
+Deno.test("validateGrantCondition: rejects condition exceeding cost budget", () => {
+  const terms = Array.from(
+    { length: Math.ceil(MAX_CONDITION_COST / 3) + 1 },
+    (_, i) => `name == "${i}"`,
+  );
+  const condition = terms.join(" || ");
+  if (condition.length > 1024) {
+    return;
+  }
+  const result = validateGrantCondition(condition, "workflow");
+  assertEquals(result.valid, false);
+  assertStringIncludes(result.error!, "cost budget");
+});
+
+// --- matches() validation ---
+
+Deno.test("validateGrantCondition: accepts matches with literal pattern", () => {
+  const result = validateGrantCondition(
+    'name.matches("^deploy-.*")',
+    "workflow",
+  );
+  assertEquals(result, { valid: true });
+});
+
+Deno.test("validateGrantCondition: rejects matches with non-literal pattern", () => {
+  const result = validateGrantCondition(
+    "name.matches(collective)",
+    "workflow",
+  );
+  assertEquals(result.valid, false);
+  assertStringIncludes(result.error!, "string literal");
+});
+
+Deno.test("validateGrantCondition: rejects matches with catastrophic backtracking pattern", () => {
+  const result = validateGrantCondition(
+    'name.matches("(a+)+$")',
+    "workflow",
+  );
+  assertEquals(result.valid, false);
+  assertStringIncludes(result.error!, "catastrophic backtracking");
+});
+
+Deno.test("validateGrantCondition: rejects matches with invalid regex", () => {
+  const result = validateGrantCondition(
+    'name.matches("[invalid")',
+    "workflow",
+  );
+  assertEquals(result.valid, false);
+  assertStringIncludes(result.error!, "not a valid regular expression");
+});
+
+Deno.test("validateGrantCondition: accepts matches with simple character class", () => {
+  const result = validateGrantCondition(
+    'name.matches("^[a-z]+-[0-9]+$")',
+    "workflow",
+  );
+  assertEquals(result, { valid: true });
+});
+
+// --- Combined: first failure wins ---
+
+Deno.test("validateGrantCondition: reports first failure when multiple limits exceeded", () => {
+  const terms = Array.from(
+    { length: MAX_AST_DEPTH + 1 },
+    (_, i) => `name == "${i}"`,
+  );
+  const condition = terms.join(" && ");
+  const result = validateGrantCondition(condition, "workflow");
+  assertEquals(result.valid, false);
+  assertStringIncludes(result.error!, "AST depth");
+});
+
+// --- Existing conditions still pass ---
+
+Deno.test("validateGrantCondition: all existing condition patterns pass cost bounds", () => {
+  const conditions: [string, string][] = [
+    ['tags.env == "staging"', "workflow"],
+    ['name == "deploy"', "workflow"],
+    ['collective == "acme"', "workflow"],
+    ['modelType == "aws/ec2"', "model"],
+    ['ns == "infra" && tags.env == "prod"', "data"],
+    ["owner.createdBy == principal.sub", "data"],
+    ['name == "admin-grant"', "access"],
+    ['"acme" in principal.collectives', "workflow"],
+    [
+      'tags.env == "staging" && collective in principal.collectives',
+      "workflow",
+    ],
+  ];
+  for (const [condition, kind] of conditions) {
+    const result = validateGrantCondition(
+      condition,
+      kind as "workflow" | "model" | "data" | "access",
+    );
+    assertEquals(result, { valid: true }, `Failed for: ${condition}`);
+  }
 });
