@@ -17,8 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
-import { parseByteSize } from "./ephemeral_store.ts";
+import { assertEquals, assertThrows } from "@std/assert";
+import { createEphemeralStore, parseByteSize } from "./ephemeral_store.ts";
 
 Deno.test("parseByteSize: parses plain bytes", () => {
   assertEquals(parseByteSize("1024"), 1024);
@@ -60,4 +60,14 @@ Deno.test("parseByteSize: returns undefined for invalid input", () => {
   assertEquals(parseByteSize("abc"), undefined);
   assertEquals(parseByteSize("-1m"), undefined);
   assertEquals(parseByteSize("1t"), undefined);
+});
+
+Deno.test("createEphemeralStore: dispose closes the catalog SQLite database", () => {
+  const store = createEphemeralStore();
+  store.dispose();
+
+  assertThrows(
+    () => store.catalog.markPopulated(),
+    Error,
+  );
 });

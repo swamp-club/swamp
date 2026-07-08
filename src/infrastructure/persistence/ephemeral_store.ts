@@ -98,6 +98,7 @@ export function createEphemeralStore(
     catalog,
     dispose() {
       repo.dispose();
+      catalog.close();
     },
   };
 }
