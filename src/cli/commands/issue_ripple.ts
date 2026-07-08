@@ -32,6 +32,10 @@ import {
 } from "../../presentation/renderers/issue_create.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  formatRedactionSummary,
+  redactIssueContent,
+} from "../../domain/issues/content_redactor.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
 import { loadIdentity } from "../load_identity.ts";
@@ -137,6 +141,13 @@ export const issueRippleCommand = new Command()
         }
       }
     }
+
+    // Redact sensitive content before submission.
+    const redacted = redactIssueContent(body);
+    if (redacted.summary.totalRedactions > 0) {
+      ctx.logger.info`${formatRedactionSummary(redacted.summary)}`;
+    }
+    body = redacted.text;
 
     const statusTransition: IssueStatusTransition | undefined = options.close
       ? "closed"
