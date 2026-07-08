@@ -220,6 +220,104 @@ const other = z.object({}).meta({ sensitive: true });`,
   );
 });
 
+Deno.test("credentials-sensitive-field: no warning for z.number() with sensitive name", () => {
+  const result = evaluateReviewRules([
+    source({
+      kind: "model",
+      content: "  tokens: z.number().nullable(),",
+    }),
+  ]);
+  assertEquals(
+    result.warnings.filter((w) => w.ruleId === "credentials-sensitive-field")
+      .length,
+    0,
+  );
+});
+
+Deno.test("credentials-sensitive-field: no warning for z.boolean() with sensitive name", () => {
+  const result = evaluateReviewRules([
+    source({
+      kind: "model",
+      content: "  hasApiToken: z.boolean(),",
+    }),
+  ]);
+  assertEquals(
+    result.warnings.filter((w) => w.ruleId === "credentials-sensitive-field")
+      .length,
+    0,
+  );
+});
+
+Deno.test("credentials-sensitive-field: no warning for z.literal() with sensitive name", () => {
+  const result = evaluateReviewRules([
+    source({
+      kind: "model",
+      content: '  credentialsScope: z.literal("deferred-to-capture"),',
+    }),
+  ]);
+  assertEquals(
+    result.warnings.filter((w) => w.ruleId === "credentials-sensitive-field")
+      .length,
+    0,
+  );
+});
+
+Deno.test("credentials-sensitive-field: no warning for z.enum() with sensitive name", () => {
+  const result = evaluateReviewRules([
+    source({
+      kind: "model",
+      content: '  tokenStatus: z.enum(["active", "revoked"]),',
+    }),
+  ]);
+  assertEquals(
+    result.warnings.filter((w) => w.ruleId === "credentials-sensitive-field")
+      .length,
+    0,
+  );
+});
+
+Deno.test("credentials-sensitive-field: no warning for z.array() with sensitive name", () => {
+  const result = evaluateReviewRules([
+    source({
+      kind: "model",
+      content: "  tokenTypes: z.array(z.string()),",
+    }),
+  ]);
+  assertEquals(
+    result.warnings.filter((w) => w.ruleId === "credentials-sensitive-field")
+      .length,
+    0,
+  );
+});
+
+Deno.test("credentials-sensitive-field: no warning for schema/type-alias declaration", () => {
+  const result = evaluateReviewRules([
+    source({
+      kind: "model",
+      content: "export const CredentialsSchema = z.object({",
+    }),
+  ]);
+  assertEquals(
+    result.warnings.filter((w) => w.ruleId === "credentials-sensitive-field")
+      .length,
+    0,
+  );
+});
+
+Deno.test("credentials-sensitive-field: still warns on z.string() with sensitive name", () => {
+  const result = evaluateReviewRules([
+    source({
+      kind: "model",
+      content: "  apiToken: z.string(),",
+    }),
+  ]);
+  assertEquals(
+    result.warnings.filter((w) => w.ruleId === "credentials-sensitive-field")
+      .length,
+    1,
+  );
+});
+
 Deno.test("testing-completeness: warns when entry point lacks a sibling test", () => {
   const result = evaluateReviewRules([
     source({ isEntryPoint: true, hasSiblingTest: false, content: "" }),
