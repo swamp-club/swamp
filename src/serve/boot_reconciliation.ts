@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
-import type { DataRecord } from "../domain/data/data_record.ts";
 import {
   createLibSwampContext,
   createWorkerModelRunDeps,
@@ -31,6 +30,9 @@ import {
   workerDefinitionName,
 } from "../domain/models/worker/worker_model.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import type { ModelType } from "../domain/models/model_type.ts";
+import type { Data } from "../domain/data/data.ts";
+import type { FileSystemUnifiedDataRepository } from "../infrastructure/persistence/unified_data_repository.ts";
 
 const logger = getSwampLogger(["serve", "boot-reconciliation"]);
 
@@ -89,20 +91,21 @@ export async function sweepStaleRecords(
       defaultRunTransition(deps.repoDir, deps.repoContext, input));
 
   const result: SweepResult = { leases: 0, pendingDispatches: 0, workers: 0 };
+  const repo = deps.repoContext.unifiedDataRepo;
 
-  const activeLeases = await deps.repoContext.dataQueryService.query(
-    `modelType == "${STEP_LEASE_MODEL_TYPE.normalized}" && ` +
-      `attributes.state == "active"`,
-    { loadAttributes: true },
-  ) as DataRecord[];
-
-  for (const lease of activeLeases) {
-    const leaseId = lease.attributes?.leaseId;
+  for (
+    const { attrs, modelName } of await loadAttrsForType(
+      repo,
+      STEP_LEASE_MODEL_TYPE,
+    )
+  ) {
+    if (attrs.state !== "active") continue;
+    const leaseId = attrs.leaseId;
     if (typeof leaseId !== "string") continue;
     try {
       await transition({
         typeArg: STEP_LEASE_MODEL_TYPE.normalized,
-        definitionName: lease.modelName,
+        definitionName: modelName,
         methodName: "expire",
         inputs: { leaseId, error: "orchestrator restart" },
       });
@@ -115,19 +118,19 @@ export async function sweepStaleRecords(
     }
   }
 
-  const waitingDispatches = await deps.repoContext.dataQueryService.query(
-    `modelType == "${PENDING_DISPATCH_MODEL_TYPE.normalized}" && ` +
-      `attributes.state == "waiting"`,
-    { loadAttributes: true },
-  ) as DataRecord[];
-
-  for (const pd of waitingDispatches) {
-    const queueId = pd.attributes?.queueId;
+  for (
+    const { attrs, modelName } of await loadAttrsForType(
+      repo,
+      PENDING_DISPATCH_MODEL_TYPE,
+    )
+  ) {
+    if (attrs.state !== "waiting") continue;
+    const queueId = attrs.queueId;
     if (typeof queueId !== "string") continue;
     try {
       await transition({
         typeArg: PENDING_DISPATCH_MODEL_TYPE.normalized,
-        definitionName: pd.modelName,
+        definitionName: modelName,
         methodName: "orphan",
         inputs: { queueId, endedAt: new Date().toISOString() },
       });
@@ -143,15 +146,15 @@ export async function sweepStaleRecords(
     }
   }
 
-  const staleWorkers = await deps.repoContext.dataQueryService.query(
-    `modelType == "${WORKER_MODEL_TYPE.normalized}" && ` +
-      `name == "state-main" && ` +
-      `attributes.status != "disconnected"`,
-    { loadAttributes: true },
-  ) as DataRecord[];
-
-  for (const w of staleWorkers) {
-    const workerName = w.attributes?.name;
+  for (
+    const { attrs, data } of await loadAttrsForType(
+      repo,
+      WORKER_MODEL_TYPE,
+    )
+  ) {
+    if (data.name !== "state-main") continue;
+    if (attrs.status === "disconnected") continue;
+    const workerName = attrs.name;
     if (typeof workerName !== "string") continue;
     try {
       await transition({
@@ -173,4 +176,31 @@ export async function sweepStaleRecords(
   }
 
   return result;
+}
+
+async function loadAttrsForType(
+  repo: FileSystemUnifiedDataRepository,
+  modelType: ModelType,
+): Promise<
+  Array<{ data: Data; modelName: string; attrs: Record<string, unknown> }>
+> {
+  const items = await repo.findAllForType(modelType);
+  const results: Array<
+    { data: Data; modelName: string; attrs: Record<string, unknown> }
+  > = [];
+  for (const { data, modelType: mt, modelId } of items) {
+    if (data.isRenamed || data.isDeleted) continue;
+    const content = await repo.getContent(mt, modelId, data.name);
+    if (!content) continue;
+    try {
+      const attrs = JSON.parse(new TextDecoder().decode(content)) as Record<
+        string,
+        unknown
+      >;
+      results.push({ data, modelName: data.tags["modelName"] ?? "", attrs });
+    } catch {
+      // Skip items with unparseable content
+    }
+  }
+  return results;
 }
