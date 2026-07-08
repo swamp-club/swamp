@@ -324,22 +324,11 @@ export async function* repoUpgrade(
       // idempotent: on repos with no legacy layout and no missing
       // files, it's a no-op.
       if (input.extensionInstallDeps) {
-        const failures: Array<{ name: string; error: string }> = [];
         try {
           for await (
             const event of extensionInstall(ctx, input.extensionInstallDeps)
           ) {
             yield { kind: "extensions", event };
-            if (event.kind === "completed") {
-              for (const entry of event.data.entries) {
-                if (entry.status === "failed") {
-                  failures.push({
-                    name: entry.name,
-                    error: entry.error ?? "unknown error",
-                  });
-                }
-              }
-            }
           }
         } catch (error) {
           // extensionInstall catches per-entry failures internally;
@@ -352,21 +341,6 @@ export async function* repoUpgrade(
             kind: "error",
             error: validationFailed(
               error instanceof Error ? error.message : String(error),
-            ),
-          };
-          return;
-        }
-        if (failures.length > 0) {
-          const list = failures
-            .map((f) => `  - ${f.name}: ${f.error}`)
-            .join("\n");
-          yield {
-            kind: "error",
-            error: validationFailed(
-              `Extension migration failed for ${failures.length} ` +
-                `extension(s). Legacy files have been preserved. ` +
-                `Re-run 'swamp repo upgrade' once the issue is ` +
-                `resolved (usually registry access):\n${list}`,
             ),
           };
           return;

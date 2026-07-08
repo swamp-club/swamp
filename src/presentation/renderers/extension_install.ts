@@ -98,6 +98,9 @@ class LogExtensionInstallRenderer implements Renderer<ExtensionInstallEvent> {
               });
             }
           }
+          logger.warn(
+            "Run 'swamp extension update <name>' to resolve failed extensions.",
+          );
         }
       },
       error: (e) => {

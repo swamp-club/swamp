@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { join } from "@std/path";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -28,6 +29,7 @@ import {
   type RepoUpgradeDeps,
   type RepoUpgradeEvent,
 } from "./init.ts";
+import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 
 function makeInitDeps(
   overrides: Partial<RepoInitDeps> = {},
@@ -261,4 +263,57 @@ Deno.test("repoUpgrade: yields completed on successful upgrade", async () => {
   assertEquals(completed.data.gitignoreAction, "updated");
   assertEquals(completed.data.tools, ["claude"]);
   assertEquals(completed.data.tool, "claude");
+});
+
+Deno.test("repoUpgrade: completes with warning when extension install fails", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const lockfilePath = join(tmpDir, "upstream_extensions.json");
+    await Deno.writeTextFile(
+      lockfilePath,
+      JSON.stringify({
+        "@test/yanked-ext": {
+          version: "1.0.0",
+          pulledAt: "2026-01-01T00:00:00Z",
+          files: [".swamp/pulled-extensions/@test/yanked-ext/models/m.ts"],
+        },
+      }),
+    );
+
+    const deps = makeUpgradeDeps();
+    const events = await collect<RepoUpgradeEvent>(
+      repoUpgrade(createLibSwampContext(), deps, {
+        path: tmpDir,
+        version: "1.0.0",
+        extensionInstallDeps: {
+          lockfilePath,
+          repoDir: tmpDir,
+          createInstallContext: async () => ({
+            getExtension: () => Promise.resolve(null),
+            downloadArchive: () =>
+              Promise.reject(
+                new Error(
+                  "Extension API error (HTTP 410): Version has been yanked",
+                ),
+              ),
+            getChecksum: () => Promise.resolve(null),
+            lockfileRepository: await LockfileRepository.create(lockfilePath),
+            skillsDir: join(tmpDir, ".swamp/pulled-extensions/skills"),
+            repoDir: tmpDir,
+            force: true,
+            alreadyPulled: new Set<string>(),
+            depth: 0,
+          }),
+        },
+      }),
+    );
+
+    const errorEvents = events.filter((e) => e.kind === "error");
+    assertEquals(errorEvents.length, 0, "upgrade must not emit error events");
+
+    const completed = events.find((e) => e.kind === "completed");
+    assertEquals(completed?.kind, "completed");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
 });
