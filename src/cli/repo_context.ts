@@ -1481,116 +1481,19 @@ export interface VaultSyncResult {
 }
 
 /**
- * Acquires a lockless pull/push lifecycle for vault commands.
+ * Lifecycle hook for vault commands.
  *
- * Vault writes (put, annotate, read-secret refresh) only touch individual
- * secret files — they don't need a distributed lock during execution. But
- * push must still hold the global lock to protect the `.datastore-index.json`
- * from concurrent read-modify-write corruption (same reason
- * `acquireModelLocks` flush acquires the global lock at push time).
- *
- * Flow: lockless pull → caller executes → push under global lock.
+ * Vault data lives entirely in `.swamp/secrets/` which is always-local
+ * (ALWAYS_LOCAL_SUBDIRS) — it never enters the datastore. There is nothing
+ * to pull or push, so the returned flush is a no-op. The function and its
+ * interface are preserved to keep callers stable.
  */
-export async function acquireVaultSync(
-  config: DatastoreConfig,
-  syncService?: DatastoreSyncService,
-  repoDir?: string,
+export function acquireVaultSync(
+  _config: DatastoreConfig,
+  _syncService?: DatastoreSyncService,
+  _repoDir?: string,
 ): Promise<VaultSyncResult> {
-  const logger = getSwampLogger(["datastore", "sync"]);
-
-  let customProvider: DatastoreProvider | undefined;
-  let customSyncService = syncService;
-  if (isCustomDatastoreConfig(config)) {
-    customProvider = await resolveCustomProvider(config);
-    if (!customSyncService && config.cachePath) {
-      customSyncService = customProvider.createSyncService?.(
-        repoDir ?? ".",
-        config.cachePath,
-      );
-    }
-  }
-
-  // Pull (no lock — vault reads don't conflict with structural writes)
-  if (customSyncService) {
-    const ns = isCustomDatastoreConfig(config) ? config.namespace : undefined;
-    try {
-      logger.info("Syncing vault data from datastore...");
-      if (ns) {
-        await customSyncService.pullChanged({ namespace: ns });
-      } else {
-        await customSyncService.pullChanged();
-      }
-    } catch (error) {
-      const { summary, fields } = summarizeSyncError(
-        "pull",
-        isCustomDatastoreConfig(config) ? config.type : "filesystem",
-        error,
-      );
-      logger.error("{summary}", { summary, ...fields });
-      throw new Error(summary, { cause: error });
-    }
-  }
-
-  const flush = async () => {
-    // Push under global lock (protects .datastore-index.json)
-    if (
-      customSyncService && customProvider && isCustomDatastoreConfig(config)
-    ) {
-      const pushLock = customProvider.createLock(
-        config.datastorePath,
-        {
-          ...datastoreGlobalLockOptions(config),
-          maxWaitMs: resolveLockTimeoutMs(),
-        },
-      );
-      try {
-        const lockStart = Date.now();
-        await pushLock.acquire();
-        const lockMs = Date.now() - lockStart;
-        if (lockMs > 5_000 && !config.namespace) {
-          logger.warn(
-            "Lock acquisition took {ms}ms — multiple repos sharing this " +
-              "datastore without namespaces serialize all writes behind a " +
-              "single global lock. Run 'swamp datastore namespace set " +
-              "<name>' to scope each repo to its own lock and index",
-            { ms: lockMs },
-          );
-        }
-        logger.info`Pushing vault changes to datastore...`;
-
-        const pushNs = config.namespace;
-        let pushed: number | void;
-        if (pushNs) {
-          pushed = await customSyncService.pushChanged({ namespace: pushNs });
-        } else {
-          pushed = await customSyncService.pushChanged();
-        }
-        if (pushed && pushed > 0) {
-          logger.info("Pushed {count} vault file(s) to datastore", {
-            count: pushed,
-          });
-        } else {
-          logger.info`Vault push complete, no changes`;
-        }
-      } catch (error) {
-        const { summary, fields } = summarizeSyncError(
-          "push",
-          config.type,
-          error,
-        );
-        logger.error("{summary}", { summary, ...fields });
-        throw new Error(summary, { cause: error });
-      } finally {
-        try {
-          await pushLock.release();
-        } catch {
-          // Best-effort release — lock expires via TTL if release fails.
-        }
-      }
-    }
-  };
-
-  return { flush };
+  return Promise.resolve({ flush: () => Promise.resolve() });
 }
 
 /**
