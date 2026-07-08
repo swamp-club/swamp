@@ -28,6 +28,7 @@ import {
   sweepLegacyPaths,
 } from "./install.ts";
 import { pruneOrphanFiles } from "../../infrastructure/persistence/directory_cleanup.ts";
+import { readInstalledExtensionDigest } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
 import { createLibSwampContext } from "../context.ts";
 import type { InstallContext } from "./pull.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
@@ -125,6 +126,199 @@ Deno.test("extensionInstall: skips extensions with all files present", async () 
     }
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extensionInstall: reinstalls when filesChecksum mismatches on-disk digest", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const pulledDir = join(
+      tmpDir,
+      ".swamp",
+      "pulled-extensions",
+      "@test",
+      "ext",
+      "models",
+    );
+    await ensureDir(pulledDir);
+    await Deno.writeTextFile(join(pulledDir, "test.ts"), "// old version");
+
+    const extRoot = join(
+      tmpDir,
+      ".swamp",
+      "pulled-extensions",
+      "@test",
+      "ext",
+    );
+    const realDigest = await readInstalledExtensionDigest(extRoot);
+
+    const lockfilePath = join(tmpDir, "upstream_extensions.json");
+    await Deno.writeTextFile(
+      lockfilePath,
+      JSON.stringify({
+        "@test/ext": {
+          version: "2.0.0",
+          pulledAt: "2026-01-01T00:00:00Z",
+          files: [".swamp/pulled-extensions/@test/ext/models/test.ts"],
+          filesChecksum: "a".repeat(64),
+        },
+      }),
+    );
+
+    // Sanity: on-disk digest differs from the fake lockfile checksum
+    if (realDigest === "a".repeat(64)) {
+      throw new Error("test setup: digest should not match the fake checksum");
+    }
+
+    let installCalled = false;
+    const ctx = createLibSwampContext({});
+    const events = await collectEvents(
+      extensionInstall(ctx, {
+        lockfilePath,
+        repoDir: tmpDir,
+        createInstallContext: async () => {
+          installCalled = true;
+          return {
+            getExtension: () => Promise.resolve(null),
+            downloadArchive: () => Promise.reject(new Error("test stub")),
+            getChecksum: () => Promise.resolve(null),
+            lockfileRepository: await LockfileRepository.create(lockfilePath),
+            skillsDir: join(tmpDir, ".swamp/pulled-extensions/skills"),
+            repoDir: tmpDir,
+            force: true,
+            alreadyPulled: new Set<string>(),
+            depth: 0,
+          };
+        },
+      }),
+    );
+
+    assertEquals(installCalled, true);
+
+    const installing = events.find((e) => e.kind === "installing");
+    assertEquals(installing?.kind, "installing");
+
+    const completed = events.find((e) => e.kind === "completed");
+    assertEquals(completed?.kind, "completed");
+    if (completed?.kind === "completed") {
+      assertEquals(completed.data.failed, 1);
+      assertEquals(completed.data.upToDate, 0);
+    }
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("extensionInstall: stays up_to_date when filesChecksum matches", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const pulledDir = join(
+      tmpDir,
+      ".swamp",
+      "pulled-extensions",
+      "@test",
+      "ext",
+      "models",
+    );
+    await ensureDir(pulledDir);
+    await Deno.writeTextFile(join(pulledDir, "test.ts"), "// current version");
+
+    const extRoot = join(
+      tmpDir,
+      ".swamp",
+      "pulled-extensions",
+      "@test",
+      "ext",
+    );
+    const realDigest = await readInstalledExtensionDigest(extRoot);
+
+    const lockfilePath = join(tmpDir, "upstream_extensions.json");
+    await Deno.writeTextFile(
+      lockfilePath,
+      JSON.stringify({
+        "@test/ext": {
+          version: "1.0.0",
+          pulledAt: "2026-01-01T00:00:00Z",
+          files: [".swamp/pulled-extensions/@test/ext/models/test.ts"],
+          filesChecksum: realDigest,
+        },
+      }),
+    );
+
+    const ctx = createLibSwampContext({});
+    const events = await collectEvents(
+      extensionInstall(ctx, {
+        lockfilePath,
+        repoDir: tmpDir,
+        createInstallContext: () => {
+          return Promise.reject(
+            new Error("should not be called for up-to-date"),
+          );
+        },
+      }),
+    );
+
+    const completed = events.find((e) => e.kind === "completed");
+    assertEquals(completed?.kind, "completed");
+    if (completed?.kind === "completed") {
+      assertEquals(completed.data.upToDate, 1);
+      assertEquals(completed.data.installed, 0);
+      assertEquals(completed.data.entries[0].status, "up_to_date");
+    }
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("extensionInstall: no filesChecksum in lockfile skips digest check (grandfather)", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const pulledDir = join(
+      tmpDir,
+      ".swamp",
+      "pulled-extensions",
+      "@test",
+      "ext",
+      "models",
+    );
+    await ensureDir(pulledDir);
+    await Deno.writeTextFile(join(pulledDir, "test.ts"), "// old version");
+
+    const lockfilePath = join(tmpDir, "upstream_extensions.json");
+    await Deno.writeTextFile(
+      lockfilePath,
+      JSON.stringify({
+        "@test/ext": {
+          version: "2.0.0",
+          pulledAt: "2026-01-01T00:00:00Z",
+          files: [".swamp/pulled-extensions/@test/ext/models/test.ts"],
+          // No filesChecksum — pre-filesChecksum entry
+        },
+      }),
+    );
+
+    const ctx = createLibSwampContext({});
+    const events = await collectEvents(
+      extensionInstall(ctx, {
+        lockfilePath,
+        repoDir: tmpDir,
+        createInstallContext: () => {
+          return Promise.reject(
+            new Error("should not be called for up-to-date"),
+          );
+        },
+      }),
+    );
+
+    const completed = events.find((e) => e.kind === "completed");
+    assertEquals(completed?.kind, "completed");
+    if (completed?.kind === "completed") {
+      assertEquals(completed.data.upToDate, 1);
+      assertEquals(completed.data.installed, 0);
+      assertEquals(completed.data.entries[0].status, "up_to_date");
+    }
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
 

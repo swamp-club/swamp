@@ -17,9 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
+import { join, resolve } from "@std/path";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
+import { readInstalledExtensionDigest } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
 import { assertContainedPath } from "../../infrastructure/persistence/safe_path.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -166,11 +167,32 @@ export async function* extensionInstall(
         // when any of its files are absent from disk, OR when any are at
         // a legacy layout (gen-1 or gen-2) and must be migrated to the
         // current per-extension subtree.
-        const needs = await needsInstallOrMigration(
+        let needs = await needsInstallOrMigration(
           originalFiles,
           deps.repoDir,
           deps.skillsDirRelative,
         );
+
+        // When all files exist at current layout, verify their content
+        // matches the lockfile's filesChecksum. This catches the case
+        // where upstream_extensions.json was updated via git but the
+        // on-disk files weren't re-fetched (swamp-club#1021).
+        if (needs === "up_to_date" && entry.filesChecksum) {
+          try {
+            const extRoot = join(
+              resolve(deps.repoDir),
+              ".swamp",
+              "pulled-extensions",
+              name,
+            );
+            const onDisk = await readInstalledExtensionDigest(extRoot);
+            if (onDisk !== entry.filesChecksum) {
+              needs = "install";
+            }
+          } catch {
+            // Degrade gracefully on I/O errors — don't block install.
+          }
+        }
 
         if (needs === "up_to_date") {
           entries.push({ name, version, status: "up_to_date" });
