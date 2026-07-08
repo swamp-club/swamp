@@ -21,7 +21,6 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   evaluateGrantCondition,
   MAX_AST_DEPTH,
-  MAX_CONDITION_COST,
   type PrincipalContext,
   validateGrantCondition,
 } from "./grant_condition_environment.ts";
@@ -346,14 +345,15 @@ Deno.test("validateGrantCondition: accepts condition within cost budget", () => 
 });
 
 Deno.test("validateGrantCondition: rejects condition exceeding cost budget", () => {
-  const terms = Array.from(
-    { length: Math.ceil(MAX_CONDITION_COST / 3) + 1 },
-    (_, i) => `name == "${i}"`,
+  const listElements = Array.from({ length: 50 }, () => "1").join(",");
+  const clause = `[${listElements}].all(x, true)`;
+  const clauses = Array.from({ length: 8 }, () => clause);
+  const condition = clauses.join(" && ");
+  assertEquals(
+    condition.length <= 1024,
+    true,
+    "test condition must fit in 1KB",
   );
-  const condition = terms.join(" || ");
-  if (condition.length > 1024) {
-    return;
-  }
   const result = validateGrantCondition(condition, "workflow");
   assertEquals(result.valid, false);
   assertStringIncludes(result.error!, "cost budget");

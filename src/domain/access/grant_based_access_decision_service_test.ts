@@ -435,7 +435,14 @@ Deno.test("decide: grants without conditions do not count toward aggregate budge
 });
 
 Deno.test("explain: truncates when aggregate condition budget exceeded", () => {
-  const grants = Array.from(
+  const matchingGrant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    effect: "allow",
+    actions: ["read"],
+    resource: { kind: "workflow", pattern: "*" },
+    condition: 'name == "@acme/deploy"',
+  });
+  const nonMatchingGrants = Array.from(
     { length: MAX_AGGREGATE_CONDITIONS + 10 },
     (_, i) =>
       makeGrant({
@@ -443,12 +450,18 @@ Deno.test("explain: truncates when aggregate condition budget exceeded", () => {
         effect: "allow",
         actions: ["read"],
         resource: { kind: "workflow", pattern: "*" },
-        condition: `name == "workflow-${i}"`,
+        condition: `name == "no-match-${i}"`,
       }),
   );
+  const grants = [matchingGrant, ...nonMatchingGrants];
   const snapshot = new PolicySnapshot(grants, [], celEvaluator);
   const service = new GrantBasedAccessDecisionService(snapshot);
 
   const result = service.explain(makePrincipal("adam"), "read", makeResource());
-  assertEquals(result.length < grants.length, true);
+  assertEquals(
+    result.length,
+    1,
+    "matching grant before budget should be included",
+  );
+  assertEquals(result[0].grantId, matchingGrant.id);
 });
