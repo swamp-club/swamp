@@ -143,6 +143,14 @@ function stripLineComment(line: string): string {
 const SENSITIVE_FIELD_PATTERN =
   /password|passwd|secret|token|api[_-]?key|access[_-]?key|credential|private[_-]?key/i;
 
+/**
+ * Zod types that cannot hold a secret value. When a line's Zod call matches
+ * one of these, the credentials-sensitive-field rule skips it even if the
+ * field name looks sensitive.
+ */
+const NON_SECRET_ZOD_TYPE =
+  /z\s*\.\s*(number|boolean|literal|object|array|enum)\s*\(/;
+
 /** Matches `z.object({}).passthrough()` — an empty-object passthrough. */
 const EMPTY_OBJECT_PASSTHROUGH =
   /z\s*\.\s*object\s*\(\s*\{\s*\}\s*\)\s*\.\s*passthrough\s*\(/;
@@ -207,6 +215,8 @@ export const DEFAULT_REVIEW_RULES: ReviewRule[] = [
           !SENSITIVE_FIELD_PATTERN.test(line) ||
           !/z\s*\./.test(line)
         ) continue;
+
+        if (NON_SECRET_ZOD_TYPE.test(line)) continue;
 
         if (/sensitive/i.test(line)) continue;
 
