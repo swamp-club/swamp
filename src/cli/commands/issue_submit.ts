@@ -48,6 +48,10 @@ import { openBrowser } from "../../infrastructure/process/browser.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
 import {
+  formatRedactionSummary,
+  redactIssueTitleAndBody,
+} from "../../domain/issues/content_redactor.ts";
+import {
   dispatchRepositoryReport,
   type ExtensionTarget,
   resolveExtensionTarget,
@@ -186,6 +190,16 @@ export async function dispatchExtensionRepositoryReport(
   target: Extract<UsableExtensionTarget, { kind: "repository" }>,
   input: { type: "bug" | "feature" | "security"; title: string; body: string },
 ): Promise<void> {
+  // Redact sensitive content before dispatching to a third-party repo.
+  const redacted = redactIssueTitleAndBody(input.title, input.body);
+  if (redacted.summary.totalRedactions > 0) {
+    const msg = formatRedactionSummary(redacted.summary);
+    ctx.logger.info`${msg}`;
+    if (ctx.outputMode === "json") {
+      console.error(msg);
+    }
+  }
+
   const reporterContext = collectReporterContext({
     extensionName: target.extensionName,
     extensionVersion: target.extensionVersion,
@@ -195,8 +209,8 @@ export async function dispatchExtensionRepositoryReport(
     target,
     {
       type: input.type,
-      title: input.title,
-      body: input.body,
+      title: redacted.title.text,
+      body: redacted.body.text,
       reporterContext,
       outputMode: ctx.outputMode,
     },
@@ -224,6 +238,17 @@ export async function submitIssue(
 ): Promise<void> {
   const libCtx = createLibSwampContext({ logger: ctx.logger });
   const renderer = createIssueCreateRenderer(ctx.outputMode);
+
+  // Redact sensitive content before any submission path.
+  const redacted = redactIssueTitleAndBody(input.title, input.body);
+  if (redacted.summary.totalRedactions > 0) {
+    const msg = formatRedactionSummary(redacted.summary);
+    libCtx.logger.info`${msg}`;
+    if (ctx.outputMode === "json") {
+      console.error(msg);
+    }
+  }
+  input = { ...input, title: redacted.title.text, body: redacted.body.text };
 
   if (destination.method === "abort") {
     libCtx.logger

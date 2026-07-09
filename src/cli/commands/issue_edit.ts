@@ -31,6 +31,10 @@ import {
 import { createIssueEditRenderer } from "../../presentation/renderers/issue_edit.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  formatRedactionSummary,
+  redactIssueTitleAndBody,
+} from "../../domain/issues/content_redactor.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
 import { loadIdentity } from "../load_identity.ts";
@@ -228,6 +232,18 @@ export const issueEditCommand = new Command()
         }
       }
     }
+
+    // Redact sensitive content before submission.
+    const redacted = redactIssueTitleAndBody(title, body);
+    if (redacted.summary.totalRedactions > 0) {
+      const msg = formatRedactionSummary(redacted.summary);
+      ctx.logger.info`${msg}`;
+      if (ctx.outputMode === "json") {
+        console.error(msg);
+      }
+    }
+    title = redacted.title.text;
+    body = redacted.body.text;
 
     const libCtx = createLibSwampContext({ logger: ctx.logger });
     const renderer = createIssueEditRenderer(ctx.outputMode);
