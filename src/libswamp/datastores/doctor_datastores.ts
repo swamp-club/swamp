@@ -21,12 +21,6 @@ import {
   type DatastoreConfig,
   isCustomDatastoreConfig,
 } from "../../domain/datastore/datastore_config.ts";
-import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
-import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
-import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
-import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
-import { RepoPath } from "../../domain/repo/repo_path.ts";
-import { resolveDatastoreConfig } from "../../cli/resolve_datastore.ts";
 
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -66,50 +60,6 @@ export interface DoctorDatastoresDeps {
     config: DatastoreConfig,
   ) => Promise<{ healthy: boolean; message: string; latencyMs: number }>;
   getVaultConfigs: () => Promise<Array<{ name: string; type: string }>>;
-}
-
-/**
- * Wires real infrastructure into {@link DoctorDatastoresDeps}.
- */
-export async function createDoctorDatastoresDeps(
-  repoDir: string,
-): Promise<DoctorDatastoresDeps> {
-  await datastoreTypeRegistry.ensureLoaded();
-  return {
-    getDatastoreConfig: async () => {
-      const markerRepo = new RepoMarkerRepository();
-      const marker = await markerRepo.read(RepoPath.create(repoDir));
-      return await resolveDatastoreConfig(marker, undefined, repoDir);
-    },
-    checkHealth: async (config: DatastoreConfig) => {
-      if (isCustomDatastoreConfig(config)) {
-        await datastoreTypeRegistry.ensureTypeLoaded(config.type);
-        const typeInfo = datastoreTypeRegistry.get(config.type);
-        if (typeInfo?.createProvider) {
-          const provider = typeInfo.createProvider(config.config);
-          const verifier = provider.createVerifier();
-          return await verifier.verify();
-        }
-        return {
-          healthy: false,
-          message: "No provider available for datastore type",
-          latencyMs: 0,
-        };
-      } else {
-        const verifier = new FilesystemDatastoreVerifier(config.path);
-        return await verifier.verify();
-      }
-    },
-    getVaultConfigs: async () => {
-      const vaultRepo = new YamlVaultConfigRepository(repoDir);
-      try {
-        const vaultConfigs = await vaultRepo.findAll();
-        return vaultConfigs.map((vc) => ({ name: vc.name, type: vc.type }));
-      } catch {
-        return [];
-      }
-    },
-  };
 }
 
 /**

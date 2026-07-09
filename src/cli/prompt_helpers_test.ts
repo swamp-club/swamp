@@ -175,17 +175,15 @@ Deno.test("promptConfirmation: rejects arbitrary text", async () => {
 
 Deno.test("promptChoice: selects a numbered choice", async () => {
   const choices = ["alpha", "beta", "gamma"];
-  // Simulate user typing "2" to pick "beta"
   const io = stubIO("2\n");
   try {
     const result = await promptChoice("Pick one:", choices);
     assertEquals(result, "beta");
-    // Verify it printed the menu
     const output = io.written.join("");
     assertEquals(output.includes("1. alpha"), true);
     assertEquals(output.includes("2. beta"), true);
     assertEquals(output.includes("3. gamma"), true);
-    assertEquals(output.includes("4. Other path"), true);
+    assertEquals(output.includes("Other path"), false);
   } finally {
     io.restore();
   }

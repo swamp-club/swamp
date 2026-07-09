@@ -61,24 +61,23 @@ export async function promptChoice(
   message: string,
   choices: string[],
 ): Promise<string> {
-  await Deno.stdout.write(encoder.encode(`${message}\n`));
-  for (let i = 0; i < choices.length; i++) {
+  while (true) {
+    await Deno.stdout.write(encoder.encode(`${message}\n`));
+    for (let i = 0; i < choices.length; i++) {
+      await Deno.stdout.write(
+        encoder.encode(`  ${i + 1}. ${choices[i]}\n`),
+      );
+    }
+    const response = await promptLine("> ");
+    const index = parseInt(response, 10) - 1;
+    if (index >= 0 && index < choices.length) {
+      return choices[index];
+    }
+    if (response === "") return choices[0];
     await Deno.stdout.write(
-      encoder.encode(`  ${i + 1}. ${choices[i]}\n`),
+      encoder.encode(`Invalid choice. Please enter 1-${choices.length}.\n`),
     );
   }
-  await Deno.stdout.write(
-    encoder.encode(`  ${choices.length + 1}. Other path\n`),
-  );
-  const response = await promptLine("> ");
-  const index = parseInt(response, 10) - 1;
-  if (index >= 0 && index < choices.length) {
-    return choices[index];
-  }
-  if (index === choices.length) {
-    return await promptLine("Path: ");
-  }
-  return response || choices[0];
 }
 
 /**

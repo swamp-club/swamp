@@ -133,10 +133,13 @@ the scanner at it and swamp will detect what it can.
     }
 
     const choices = buildInstructionsChoices(detection, name);
-    const instructionsPath = await promptChoice(
+    let instructionsPath = await promptChoice(
       `\nWhere does ${name} read rules/instructions from?`,
-      choices,
+      [...choices, "Other path"],
     );
+    if (instructionsPath === "Other path") {
+      instructionsPath = await promptLine("Path: ");
+    }
 
     let frontmatter: string | undefined;
     await Deno.stdout.write(encoder.encode(`
@@ -165,10 +168,13 @@ Some tools need a header like this to auto-load rules:
     const skillsDirChoices = buildSkillsDirChoices(detection, def.skillsDir);
     let chosenSkillsDir: string | undefined;
     if (skillsDirChoices.length > 1) {
-      const chosen = await promptChoice(
+      let chosen = await promptChoice(
         `\nWhere should swamp write skills for ${name}?`,
-        skillsDirChoices,
+        [...skillsDirChoices, "Other path"],
       );
+      if (chosen === "Other path") {
+        chosen = await promptLine("Path: ");
+      }
       if (chosen !== def.skillsDir) {
         chosenSkillsDir = chosen;
       }

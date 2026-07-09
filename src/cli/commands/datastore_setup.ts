@@ -397,12 +397,13 @@ export const datastoreSetupCommand = new Command()
           "extension",
           "search",
           query,
-          "--label",
-          "datastore",
+          "--content-type",
+          "datastores",
           "--json",
         ],
         stdout: "piped",
         stderr: "piped",
+        signal: AbortSignal.timeout(30_000),
       });
       const searchOutput = await searchCmd.output();
       let searchResults: Array<{ type: string; description: string }> = [];
@@ -414,15 +415,12 @@ export const datastoreSetupCommand = new Command()
             extensions?: Array<{
               name: string;
               description: string;
-              contentTypes: string[];
             }>;
           };
-          searchResults = (parsed.extensions ?? [])
-            .filter((r) => r.contentTypes.includes("datastores"))
-            .map((r) => ({
-              type: r.name,
-              description: r.description,
-            }));
+          searchResults = (parsed.extensions ?? []).map((r) => ({
+            type: r.name,
+            description: r.description,
+          }));
         } catch {
           // If JSON parsing fails, treat as no results
         }

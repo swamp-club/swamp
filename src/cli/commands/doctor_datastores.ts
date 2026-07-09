@@ -20,10 +20,10 @@
 import { Command } from "@cliffy/command";
 import {
   consumeStream,
-  createDoctorDatastoresDeps,
   createLibSwampContext,
   doctorDatastores,
   type DoctorDatastoresData,
+  type DoctorDatastoresDeps,
 } from "../../libswamp/mod.ts";
 import { createDoctorDatastoresRenderer } from "../../presentation/renderers/doctor_datastores.ts";
 import {
@@ -39,9 +39,59 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { DoctorDatastoresResponse } from "../../serve/protocol.ts";
+import {
+  isCustomDatastoreConfig,
+} from "../../domain/datastore/datastore_config.ts";
+import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
+import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
+import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
+import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { resolveDatastoreConfig } from "../resolve_datastore.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+async function createDoctorDatastoresDeps(
+  repoDir: string,
+): Promise<DoctorDatastoresDeps> {
+  await datastoreTypeRegistry.ensureLoaded();
+  return {
+    getDatastoreConfig: async () => {
+      const markerRepo = new RepoMarkerRepository();
+      const marker = await markerRepo.read(RepoPath.create(repoDir));
+      return await resolveDatastoreConfig(marker, undefined, repoDir);
+    },
+    checkHealth: async (config) => {
+      if (isCustomDatastoreConfig(config)) {
+        await datastoreTypeRegistry.ensureTypeLoaded(config.type);
+        const typeInfo = datastoreTypeRegistry.get(config.type);
+        if (typeInfo?.createProvider) {
+          const provider = typeInfo.createProvider(config.config);
+          const verifier = provider.createVerifier();
+          return await verifier.verify();
+        }
+        return {
+          healthy: false,
+          message: "No provider available for datastore type",
+          latencyMs: 0,
+        };
+      } else {
+        const verifier = new FilesystemDatastoreVerifier(config.path);
+        return await verifier.verify();
+      }
+    },
+    getVaultConfigs: async () => {
+      const vaultRepo = new YamlVaultConfigRepository(repoDir);
+      try {
+        const vaultConfigs = await vaultRepo.findAll();
+        return vaultConfigs.map((vc) => ({ name: vc.name, type: vc.type }));
+      } catch {
+        return [];
+      }
+    },
+  };
+}
 
 export const doctorDatastoresCommand = withRemoteOptions(
   new Command()

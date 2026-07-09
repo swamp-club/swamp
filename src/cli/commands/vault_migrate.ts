@@ -182,12 +182,13 @@ Both the source and target vaults must be different types.`,
             "extension",
             "search",
             query,
-            "--label",
-            "vault",
+            "--content-type",
+            "vaults",
             "--json",
           ],
           stdout: "piped",
           stderr: "piped",
+          signal: AbortSignal.timeout(30_000),
         });
         const searchOutput = await searchCmd.output();
         let searchResults: Array<{ type: string; description: string }> = [];
@@ -199,15 +200,12 @@ Both the source and target vaults must be different types.`,
               extensions?: Array<{
                 name: string;
                 description: string;
-                contentTypes: string[];
               }>;
             };
-            searchResults = (parsed.extensions ?? [])
-              .filter((r) => r.contentTypes.includes("vaults"))
-              .map((r) => ({
-                type: r.name,
-                description: r.description,
-              }));
+            searchResults = (parsed.extensions ?? []).map((r) => ({
+              type: r.name,
+              description: r.description,
+            }));
           } catch {
             // Treat parse failure as no results
           }
