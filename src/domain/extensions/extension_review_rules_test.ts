@@ -29,6 +29,7 @@ import {
   type ExtensionReviewReport,
   isBlockingSeverity,
   parseReviewReport,
+  REVIEW_VERDICT_VALUES,
   type ReviewDimension,
   reviewReportPath,
   type ReviewRule,
@@ -501,10 +502,33 @@ Deno.test("reviewReportPath: falls back to OS temp when env var is unset", () =>
   }
 });
 
-Deno.test("parseReviewReport: returns null on malformed JSON or bad shape", () => {
+Deno.test("parseReviewReport: returns null on non-JSON input", () => {
   assertEquals(parseReviewReport("not json"), null);
-  assertEquals(parseReviewReport('{"extension":"x"}'), null);
-  const ok = parseReviewReport(
+});
+
+Deno.test("parseReviewReport: returns errors on valid JSON with invalid shape", () => {
+  const result = parseReviewReport('{"extension":"x"}');
+  assert(result !== null);
+  assert(!result.ok);
+  assert(result.errors.length > 0);
+});
+
+Deno.test("parseReviewReport: returns errors on invalid verdict values", () => {
+  const result = parseReviewReport(
+    JSON.stringify({
+      extension: "@a/b",
+      version: "1",
+      reviewedAt: "now",
+      dimensions: [{ id: "credentials-secrets", verdict: "fail" }],
+    }),
+  );
+  assert(result !== null);
+  assert(!result.ok);
+  assert(result.errors.some((e) => e.includes("dimensions.0.verdict")));
+});
+
+Deno.test("parseReviewReport: returns report on valid input", () => {
+  const result = parseReviewReport(
     JSON.stringify({
       extension: "@a/b",
       version: "1",
@@ -512,12 +536,15 @@ Deno.test("parseReviewReport: returns null on malformed JSON or bad shape", () =
       dimensions: [{ id: "credentials-secrets", verdict: "pass" }],
     }),
   );
-  assert(ok !== null);
+  assert(result !== null);
+  assert(result.ok);
+  assertEquals(result.report.extension, "@a/b");
 });
 
 function reportCtx(
   report: ExtensionReviewReport | null,
   dims: ReviewDimension[],
+  parseErrors?: string[],
 ) {
   return {
     report,
@@ -526,6 +553,7 @@ function reportCtx(
     extensionVersion: "1",
     applicableDimensions: dims,
     skeleton: "{}",
+    parseErrors,
   };
 }
 
@@ -542,6 +570,25 @@ Deno.test("evaluateReviewReport: missing report is a warning (prompt), never a h
   assert(!findings[0].message.includes("{"));
   // The skeleton rides on its own field for JSON consumers.
   assertEquals(findings[0].skeleton, "{}");
+});
+
+Deno.test("evaluateReviewReport: parse errors surface explicit message with allowed values", () => {
+  const parseErrors = [
+    "dimensions.0.verdict: Invalid enum value. Expected 'pass' | 'issue' | 'na' | 'pending', received 'fail'",
+  ];
+  const findings = evaluateReviewReport(
+    reportCtx(null, applicableDimensions(["model"]), parseErrors),
+  );
+  assertEquals(findings.length, 1);
+  assertEquals(findings[0].severity, "medium");
+  assert(findings[0].message.includes("invalid content"));
+  for (const v of REVIEW_VERDICT_VALUES) {
+    assert(
+      findings[0].message.includes(v),
+      `Expected message to include "${v}"`,
+    );
+  }
+  assertEquals(findings[0].skeleton, undefined);
 });
 
 Deno.test("evaluateReviewReport: name/version mismatch warns (e.g. manual version bump)", () => {

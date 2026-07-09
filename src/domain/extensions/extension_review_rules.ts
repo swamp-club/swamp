@@ -420,8 +420,16 @@ export function applicableDimensions(
   );
 }
 
+/** Accepted verdict values for the adversarial-review report. */
+export const REVIEW_VERDICT_VALUES = [
+  "pass",
+  "issue",
+  "na",
+  "pending",
+] as const;
+
 /** A per-dimension verdict recorded by the reviewer. */
-const ReviewVerdictSchema = z.enum(["pass", "issue", "na", "pending"]);
+const ReviewVerdictSchema = z.enum(REVIEW_VERDICT_VALUES);
 
 /** Schema for the on-disk adversarial-review report. */
 const ExtensionReviewReportSchema = z.object({
@@ -438,14 +446,29 @@ const ExtensionReviewReportSchema = z.object({
 /** The on-disk adversarial-review report. */
 export type ExtensionReviewReport = z.infer<typeof ExtensionReviewReportSchema>;
 
-/** Parses report JSON, returning null when missing or malformed. */
-export function parseReviewReport(raw: string): ExtensionReviewReport | null {
+/** Result of parsing a review report: success, validation errors, or null (not JSON). */
+export type ReviewReportParseResult =
+  | { ok: true; report: ExtensionReviewReport }
+  | { ok: false; errors: string[] }
+  | null;
+
+/** Parses report JSON. Returns null for non-JSON, structured errors for valid JSON that fails validation. */
+export function parseReviewReport(raw: string): ReviewReportParseResult {
+  let parsed: unknown;
   try {
-    const result = ExtensionReviewReportSchema.safeParse(JSON.parse(raw));
-    return result.success ? result.data : null;
+    parsed = JSON.parse(raw);
   } catch {
     return null;
   }
+  const result = ExtensionReviewReportSchema.safeParse(parsed);
+  if (result.success) {
+    return { ok: true, report: result.data };
+  }
+  const errors = result.error.issues.map((issue) => {
+    const path = issue.path.join(".");
+    return path ? `${path}: ${issue.message}` : issue.message;
+  });
+  return { ok: false, errors };
 }
 
 function reviewBaseDir(): string {
@@ -503,8 +526,10 @@ export function buildReviewReportSkeleton(
 
 /** Context for evaluating the adversarial-review report at push time. */
 export interface ReviewReportContext {
-  /** Parsed report, or null when missing/malformed. */
+  /** Parsed report, or null when missing or not JSON. */
   report: ExtensionReviewReport | null;
+  /** Validation errors when the report is valid JSON but fails schema validation. */
+  parseErrors?: string[];
   /** The content-hash-bound path the report was looked up at. */
   reportPath: string;
   /** Expected extension name (from the manifest). */
@@ -534,6 +559,20 @@ export function evaluateReviewReport(
 ): ReviewFinding[] {
   const findings: ReviewFinding[] = [];
   const gate: ReviewSeverity = "medium";
+
+  if (ctx.parseErrors && ctx.parseErrors.length > 0) {
+    const allowed = REVIEW_VERDICT_VALUES.join(", ");
+    findings.push({
+      ruleId: REVIEW_REPORT_RULE,
+      dimension: REVIEW_REPORT_DIMENSION,
+      severity: gate,
+      file: ctx.reportPath,
+      message:
+        `Review report has invalid content — ${ctx.parseErrors.join("; ")}. ` +
+        `Allowed verdict values: ${allowed}.`,
+    });
+    return findings;
+  }
 
   if (!ctx.report) {
     findings.push({
@@ -718,8 +757,21 @@ export async function checkReviewRules(
     } catch {
       raw = null;
     }
-    const report = raw === null ? null : parseReviewReport(raw);
-    findings.push(...evaluateReviewReport({ ...input.report, report }));
+    let report: ExtensionReviewReport | null = null;
+    let parseErrors: string[] | undefined;
+    if (raw !== null) {
+      const parsed = parseReviewReport(raw);
+      if (parsed === null) {
+        report = null;
+      } else if (parsed.ok) {
+        report = parsed.report;
+      } else {
+        parseErrors = parsed.errors;
+      }
+    }
+    findings.push(
+      ...evaluateReviewReport({ ...input.report, report, parseErrors }),
+    );
   }
 
   const errors = findings.filter((f) => isBlockingSeverity(f.severity));
