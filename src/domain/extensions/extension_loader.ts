@@ -78,21 +78,43 @@ export function extractExtensionNameFromPath(
   repoDir: string | null,
 ): string | undefined {
   if (!repoDir) return undefined;
-  let realRepoDir: string;
-  try {
-    realRepoDir = Deno.realPathSync(repoDir);
-  } catch {
-    realRepoDir = resolve(repoDir);
+
+  const cheapRepoDir = resolve(repoDir);
+  const cheapPulledRoot = join(
+    cheapRepoDir,
+    SWAMP_DATA_DIR,
+    "pulled-extensions",
+  );
+  const cheapResolved = resolve(absolutePath);
+
+  let relative: string;
+  if (cheapResolved.startsWith(cheapPulledRoot + SEPARATOR)) {
+    relative = cheapResolved.slice(cheapPulledRoot.length + 1);
+  } else {
+    // Symlink-aware fallback — only pay for realPathSync when the cheap
+    // check fails (e.g. /tmp -> /private/tmp on macOS).
+    let realRepoDir: string;
+    try {
+      realRepoDir = Deno.realPathSync(repoDir);
+    } catch {
+      return undefined;
+    }
+    if (realRepoDir === cheapRepoDir) return undefined;
+    const realPulledRoot = join(
+      realRepoDir,
+      SWAMP_DATA_DIR,
+      "pulled-extensions",
+    );
+    let realResolved: string;
+    try {
+      realResolved = Deno.realPathSync(absolutePath);
+    } catch {
+      return undefined;
+    }
+    if (!realResolved.startsWith(realPulledRoot + SEPARATOR)) return undefined;
+    relative = realResolved.slice(realPulledRoot.length + 1);
   }
-  const pulledRoot = join(realRepoDir, SWAMP_DATA_DIR, "pulled-extensions");
-  let resolved: string;
-  try {
-    resolved = Deno.realPathSync(absolutePath);
-  } catch {
-    resolved = resolve(absolutePath);
-  }
-  if (!resolved.startsWith(pulledRoot + SEPARATOR)) return undefined;
-  const relative = resolved.slice(pulledRoot.length + 1);
+
   const segments = relative.split(SEPARATOR);
   if (segments.length < 2) return undefined;
   let name: string;
