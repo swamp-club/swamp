@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
+import { join, resolve, SEPARATOR } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import type { Definition } from "../definitions/definition.ts";
 import { parseExtensionManifest } from "../extensions/extension_manifest.ts";
@@ -381,14 +381,29 @@ export class ModelInvocationService {
     const cached = this.#manifestCache.get(extensionName);
     if (cached) return cached;
 
+    if (
+      extensionName.includes("..") ||
+      extensionName.includes("\0") ||
+      extensionName.includes("\\")
+    ) {
+      return null;
+    }
+
     try {
-      const manifestPath = join(
+      const pulledRoot = join(
         this.#deps.repoDir,
         ".swamp",
         "pulled-extensions",
+      );
+      const manifestPath = join(
+        pulledRoot,
         extensionName,
         "manifest.yaml",
       );
+      const resolved = resolve(manifestPath);
+      if (!resolved.startsWith(resolve(pulledRoot) + SEPARATOR)) {
+        return null;
+      }
       const content = await Deno.readTextFile(manifestPath);
       const manifest = parseExtensionManifest(content);
       this.#manifestCache.set(extensionName, manifest.dependencies);

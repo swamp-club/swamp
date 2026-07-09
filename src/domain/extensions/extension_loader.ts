@@ -95,10 +95,14 @@ export function extractExtensionNameFromPath(
   const relative = resolved.slice(pulledRoot.length + 1);
   const segments = relative.split(SEPARATOR);
   if (segments.length < 2) return undefined;
+  let name: string;
   if (segments[0].startsWith("@") && segments.length >= 3) {
-    return `${segments[0]}/${segments[1]}`;
+    name = `${segments[0]}/${segments[1]}`;
+  } else {
+    name = segments[0];
   }
-  return segments[0];
+  if (name.includes("..") || name.includes("\0")) return undefined;
+  return name;
 }
 
 export class ExtensionLoader {
