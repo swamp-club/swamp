@@ -45,6 +45,7 @@ import { removeSupersededSkills } from "./superseded_skills.ts";
 import { assertPathContained, type ToolConfig } from "./custom_tool.ts";
 import { ToolResolver } from "./tool_resolver.ts";
 import { readCustomTools } from "../../infrastructure/persistence/custom_tools_repository.ts";
+import { BuiltInToolSkillDirsRepository } from "../../infrastructure/persistence/builtin_tool_skill_dirs_repository.ts";
 import { CustomToolSkillDirsRepository } from "../../infrastructure/persistence/custom_tool_skill_dirs_repository.ts";
 
 const logger = getLogger(["swamp", "repo", "service"]);
@@ -539,6 +540,18 @@ export class RepoService {
       logger.warn`Skipping global skill install: home directory not available`;
       return [];
     }
+
+    try {
+      const builtInRepo = new BuiltInToolSkillDirsRepository();
+      if (globalDirs.length > 0) {
+        await builtInRepo.addDirs(globalDirs);
+      } else if (!await builtInRepo.exists()) {
+        await builtInRepo.write([]);
+      }
+    } catch {
+      logger.warn`Failed to register built-in tool skill dirs`;
+    }
+
     if (globalDirs.length === 0) return [];
 
     for (const dir of globalDirs) {

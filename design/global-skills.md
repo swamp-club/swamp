@@ -114,11 +114,13 @@ Today these commands copy skills into the repo. Under the new model:
 Global skills are synced automatically in three places:
 
 1. **`swamp update`** — after the binary is updated (interactive and background),
-   skills are written to existing global tool directories. For built-in tools,
-   only directories that already exist on disk are synced — `swamp update` does
-   not create new directories. For custom tools, directories registered in
+   skills are written to enrolled global tool directories. For built-in tools,
+   directories registered in `~/.config/swamp/builtin-tool-skill-dirs.json` are
+   synced (see below). For custom tools, directories registered in
    `custom-tool-skill-dirs.json` are synced (see below). Stale registry entries
-   for deleted directories are pruned automatically.
+   for deleted directories are pruned automatically. If no built-in registry
+   file exists (pre-registry CLI version), a heuristic fallback syncs to all
+   built-in directories that already exist on disk.
 2. **`swamp repo init`** — writes global skills as part of first-time setup.
    Creates built-in tool directories and custom tool global directories.
 3. **`swamp repo upgrade`** — writes global skills as part of the upgrade flow.
@@ -154,6 +156,27 @@ registered — those are project-local directories, not global skill targets.
 > the `~/` prefix on the existing `skillsDir` field instead. This is simpler and
 > covers the common case. The `globalSkillsDir` field can be added later if
 > finer-grained control is needed.
+
+### Built-in Tool Global Skills Registry
+
+Built-in tools (claude, cursor, opencode, codex, copilot, kiro) use a parallel
+registry at `~/.config/swamp/builtin-tool-skill-dirs.json`. During `repo init`
+and `repo upgrade`, swamp registers the resolved global skill directories for
+each enrolled built-in tool. The registry is additive — initializing multiple
+repos with different tools unions their directories.
+
+The registry is a simple JSON array of absolute directory paths:
+
+```json
+["/home/user/.claude/skills", "/home/user/.agents/skills"]
+```
+
+When `swamp update` runs, it reads this registry to determine which built-in
+directories to sync. If the registry file does not exist (pre-registry CLI
+version or no repo has been initialized), `swamp update` falls back to a
+directory-existence heuristic for backwards compatibility. If the registry
+exists but is empty (user has no built-in tools enrolled), no built-in
+directories are synced.
 
 ## Migration: Local to Global
 

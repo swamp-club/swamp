@@ -57,6 +57,7 @@ import {
   resolveUniqueGlobalSkillsDirs,
 } from "../../domain/repo/skill_dirs.ts";
 import { removeSupersededSkills } from "../../domain/repo/superseded_skills.ts";
+import { BuiltInToolSkillDirsRepository } from "../../infrastructure/persistence/builtin_tool_skill_dirs_repository.ts";
 import { CustomToolSkillDirsRepository } from "../../infrastructure/persistence/custom_tool_skill_dirs_repository.ts";
 import { resolve, SEPARATOR } from "@std/path";
 import { homeDirectory } from "../../infrastructure/persistence/paths.ts";
@@ -78,14 +79,15 @@ async function dirExists(path: string): Promise<boolean> {
 async function syncGlobalSkills(
   logger: ReturnType<typeof getSwampLogger>,
 ): Promise<void> {
-  const allTools = Object.keys(GLOBAL_SKILL_DIRS);
-  let globalDirs: string[];
+  let home: string | null = null;
   try {
-    globalDirs = resolveUniqueGlobalSkillsDirs(allTools);
+    home = homeDirectory();
   } catch {
     logger.warn`Skipping global skill sync: home directory not available`;
     return;
   }
+
+  const builtInDirs = await resolveBuiltInDirs(logger);
 
   let customToolRepo: CustomToolSkillDirsRepository | null = null;
   let customDirs: string[] = [];
@@ -98,26 +100,23 @@ async function syncGlobalSkills(
 
   const skillAssets = new SkillAssets();
 
-  for (const dir of globalDirs) {
-    if (!await dirExists(dir)) {
-      logger
-        .debug`Skipping global skill sync for ${dir}: directory does not exist`;
+  for (const dir of builtInDirs) {
+    const resolved = resolve(dir);
+    if (!resolved.startsWith(home + SEPARATOR) && resolved !== home) {
+      logger.debug`Skipping built-in tool skill dir outside home: ${dir}`;
       continue;
     }
-    await skillAssets.copySkillsTo(dir);
-    await removeSupersededSkills(dir);
-    logger.info`Synced global skills to ${dir}`;
+    if (!await dirExists(resolved)) {
+      logger
+        .debug`Skipping global skill sync for ${resolved}: directory does not exist`;
+      continue;
+    }
+    await skillAssets.copySkillsTo(resolved);
+    await removeSupersededSkills(resolved);
+    logger.info`Synced global skills to ${resolved}`;
   }
 
   if (customDirs.length === 0) return;
-
-  let home: string | null = null;
-  try {
-    home = homeDirectory();
-  } catch {
-    // Can't validate containment — skip custom dirs entirely
-  }
-  if (!home) return;
 
   const survivingCustomDirs: string[] = [];
   for (const dir of customDirs) {
@@ -144,6 +143,33 @@ async function syncGlobalSkills(
     } catch {
       logger.warn`Failed to update custom tool skill dirs registry`;
     }
+  }
+}
+
+async function resolveBuiltInDirs(
+  logger: ReturnType<typeof getSwampLogger>,
+): Promise<string[]> {
+  let builtInRepo: BuiltInToolSkillDirsRepository | null = null;
+  try {
+    builtInRepo = new BuiltInToolSkillDirsRepository();
+  } catch {
+    // Config dir not available — fall through to heuristic
+  }
+
+  if (builtInRepo && await builtInRepo.exists()) {
+    return await builtInRepo.read();
+  }
+
+  // No registry file yet — no repo has been initialized with this version.
+  // Fall back to the pre-registry heuristic (all built-in dirs that exist)
+  // so existing users aren't broken before they run repo upgrade.
+  logger
+    .debug`Built-in tool skill dirs registry not found, using directory-existence heuristic`;
+  const allTools = Object.keys(GLOBAL_SKILL_DIRS);
+  try {
+    return resolveUniqueGlobalSkillsDirs(allTools);
+  } catch {
+    return [];
   }
 }
 
