@@ -36,6 +36,8 @@ import {
   createLibSwampContext,
   createWorkerListDeps,
   createWorkerQueueListDeps,
+  doctorDatastores,
+  type DoctorDatastoresDeps,
   doctorSecrets,
   doctorVaults,
   doctorWorkflows,
@@ -45,6 +47,13 @@ import {
   workerList,
   workerQueueList,
 } from "../../libswamp/mod.ts";
+import {
+  isCustomDatastoreConfig,
+} from "../../domain/datastore/datastore_config.ts";
+import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
+import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
+import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
+import { resolveDatastoreConfig } from "../../cli/resolve_datastore.ts";
 import type {
   AuditTimelinePayload,
   ExtensionInfoPayload,
@@ -540,6 +549,94 @@ export async function handleDoctorVaults(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "doctor_vaults_failed", message);
+  }
+}
+
+export async function handleDoctorDatastores(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    await datastoreTypeRegistry.ensureLoaded();
+    const repoDir = ctx.repoDir;
+    const deps: DoctorDatastoresDeps = {
+      getDatastoreConfig: async () => {
+        const markerRepo = new RepoMarkerRepository();
+        const marker = await markerRepo.read(RepoPath.create(repoDir));
+        return await resolveDatastoreConfig(marker, undefined, repoDir);
+      },
+      checkHealth: async (config) => {
+        if (isCustomDatastoreConfig(config)) {
+          await datastoreTypeRegistry.ensureTypeLoaded(config.type);
+          const typeInfo = datastoreTypeRegistry.get(config.type);
+          if (typeInfo?.createProvider) {
+            const provider = typeInfo.createProvider(config.config);
+            const verifier = provider.createVerifier();
+            return await verifier.verify();
+          }
+          return {
+            healthy: false,
+            message: "No provider available for datastore type",
+            latencyMs: 0,
+          };
+        } else {
+          const verifier = new FilesystemDatastoreVerifier(config.path);
+          return await verifier.verify();
+        }
+      },
+      getVaultConfigs: async () => {
+        const vaultRepo = new YamlVaultConfigRepository(repoDir);
+        try {
+          const vaultConfigs = await vaultRepo.findAll();
+          return vaultConfigs.map((vc) => ({
+            name: vc.name,
+            type: vc.type,
+          }));
+        } catch {
+          return [];
+        }
+      },
+    };
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      doctorDatastores(libCtx, deps),
+      {
+        scanning: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "doctor.datastores",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "doctor_datastores_failed", message);
   }
 }
 

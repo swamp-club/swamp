@@ -92,6 +92,7 @@ import {
 import {
   handleAuditTimeline,
   handleDatastoreStatus,
+  handleDoctorDatastores,
   handleDoctorExtensions,
   handleDoctorSecrets,
   handleDoctorVaults,
@@ -1568,6 +1569,15 @@ export function handleMessage(
       break;
     case "extension.outdated":
       task = handleExtensionOutdated(
+        socket,
+        ctx,
+        request.id,
+        controller,
+        principal,
+      );
+      break;
+    case "doctor.datastores":
+      task = handleDoctorDatastores(
         socket,
         ctx,
         request.id,

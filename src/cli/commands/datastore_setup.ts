@@ -36,16 +36,53 @@ import {
   datastoreSetupFilesystem,
 } from "../../libswamp/mod.ts";
 import { createDatastoreSetupRenderer } from "../../presentation/renderers/datastore_setup.ts";
-import { DEFAULT_DATASTORE_SUBDIRS } from "../../domain/datastore/datastore_config.ts";
+import {
+  type DatastoreConfig,
+  DEFAULT_DATASTORE_SUBDIRS,
+  isCustomDatastoreConfig,
+} from "../../domain/datastore/datastore_config.ts";
 import { expandEnvVars } from "../../infrastructure/persistence/env_path.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import { resolveDatastoreType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
 import { RENAMED_DATASTORE_TYPES } from "../resolve_datastore.ts";
 import { UserError } from "../../domain/errors.ts";
+import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
+import { dim, yellow } from "@std/fmt/colors";
+import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import {
+  promptChoice,
+  promptLine,
+  promptLineWithDefault,
+} from "../prompt_helpers.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+const encoder = new TextEncoder();
+
+async function nudgeVaultMigration(repoDir: string): Promise<void> {
+  try {
+    const vaultRepo = new YamlVaultConfigRepository(repoDir);
+    const configs = await vaultRepo.findAll();
+    const localVaults = configs.filter((vc) => vc.type === "local_encryption");
+    if (localVaults.length > 0) {
+      const names = localVaults.map((v) => v.name).join(", ");
+      writeOutput(
+        `\n${
+          yellow("⚠")
+        } ${localVaults.length} vault(s) still use local encryption: ${names}` +
+          `\n${
+            dim(
+              "  Local encryption keys won't work on other machines. Migrate with: swamp vault migrate <vault>",
+            )
+          }`,
+      );
+    }
+  } catch {
+    // Best-effort — vault discovery failure should never block datastore setup
+  }
+}
 
 const datastoreSetupFilesystemCommand = new Command()
   .description("Set up a filesystem datastore")
@@ -212,6 +249,8 @@ const datastoreSetupExtensionCommand = new Command()
       }),
       renderer.handlers(),
     );
+
+    await nudgeVaultMigration(repoDir);
   });
 
 const datastoreSetupS3DeprecatedCommand = new Command()
@@ -229,9 +268,254 @@ const datastoreSetupS3DeprecatedCommand = new Command()
     );
   });
 
+/**
+ * Describes the current datastore configuration for display during
+ * interactive setup.
+ */
+function describeCurrentDatastore(
+  datastoreConfig: DatastoreConfig,
+): string {
+  if (isCustomDatastoreConfig(datastoreConfig)) {
+    return `${datastoreConfig.type} (${datastoreConfig.datastorePath})`;
+  }
+  return `filesystem (${datastoreConfig.path})`;
+}
+
 /** Configure a datastore for this repository. */
 export const datastoreSetupCommand = new Command()
   .description("Configure a datastore for this repository")
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
+  .action(async function (options: AnyOptions) {
+    const cliCtx = createContext(options as GlobalOptions, [
+      "datastore",
+      "setup",
+    ]);
+
+    if (cliCtx.outputMode === "json") {
+      throw new UserError(
+        "Interactive datastore setup is not available in JSON mode. " +
+          "Use 'swamp datastore setup filesystem' or " +
+          "'swamp datastore setup extension' with explicit flags.",
+      );
+    }
+
+    const repoDir = resolveRepoDir(options.repoDir);
+
+    // Show the current datastore configuration
+    try {
+      const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
+      await Deno.stdout.write(
+        encoder.encode(
+          `\nCurrent datastore: ${
+            describeCurrentDatastore(datastoreConfig)
+          }\n\n`,
+        ),
+      );
+    } catch {
+      await Deno.stdout.write(
+        encoder.encode("\nNo datastore currently configured.\n\n"),
+      );
+    }
+
+    // Ask where to store data
+    const CHOICES = [
+      "AWS S3 / S3-compatible",
+      "Google Cloud Storage",
+      "Shared filesystem",
+      "Other",
+    ];
+    const choice = await promptChoice(
+      "Where do you want to store data?",
+      CHOICES,
+    );
+
+    let extensionType: string | undefined;
+    let datastoreConfig: Record<string, unknown> | undefined;
+    let filesystemPath: string | undefined;
+
+    if (choice === "AWS S3 / S3-compatible") {
+      extensionType = "@swamp/s3-datastore";
+      const defaultRegion = Deno.env.get("AWS_DEFAULT_REGION") ??
+        Deno.env.get("AWS_REGION") ?? "us-east-1";
+
+      const bucket = await promptLine("S3 bucket name: ");
+      if (!bucket) {
+        throw new UserError("No bucket name provided.");
+      }
+      const prefix = await promptLineWithDefault("Key prefix:", "");
+      const region = await promptLineWithDefault("AWS region:", defaultRegion);
+
+      const endpoint = await promptLine(
+        "Custom endpoint (for MinIO/S3-compatible, or Enter to skip): ",
+      );
+
+      datastoreConfig = { bucket, region };
+      if (prefix) {
+        datastoreConfig.prefix = prefix;
+      }
+      if (endpoint) {
+        datastoreConfig.endpoint = endpoint;
+        datastoreConfig.forcePathStyle = true;
+      }
+    } else if (choice === "Google Cloud Storage") {
+      extensionType = "@swamp/gcs-datastore";
+
+      const bucket = await promptLine("GCS bucket name: ");
+      if (!bucket) {
+        throw new UserError("No bucket name provided.");
+      }
+      const prefix = await promptLineWithDefault("Key prefix:", "");
+
+      datastoreConfig = { bucket };
+      if (prefix) {
+        datastoreConfig.prefix = prefix;
+      }
+    } else if (choice === "Shared filesystem") {
+      const path = await promptLine("Datastore path: ");
+      if (!path) {
+        throw new UserError("No path provided.");
+      }
+      filesystemPath = path;
+    } else {
+      // Other: search for a datastore extension by name
+      const query = await promptLine(
+        "Search for a datastore extension (e.g. azure, minio): ",
+      );
+      if (!query) {
+        throw new UserError("No search query provided.");
+      }
+
+      await Deno.stdout.write(
+        encoder.encode(`\nSearching for "${query}" datastore extensions…\n`),
+      );
+
+      const searchCmd = new Deno.Command(Deno.execPath(), {
+        args: [
+          "extension",
+          "search",
+          query,
+          "--content-type",
+          "datastores",
+          "--json",
+        ],
+        stdout: "piped",
+        stderr: "piped",
+        signal: AbortSignal.timeout(30_000),
+      });
+      const searchOutput = await searchCmd.output();
+      let searchResults: Array<{ type: string; description: string }> = [];
+      if (searchOutput.success) {
+        try {
+          const parsed = JSON.parse(
+            new TextDecoder().decode(searchOutput.stdout),
+          ) as {
+            extensions?: Array<{
+              name: string;
+              description: string;
+            }>;
+          };
+          searchResults = (parsed.extensions ?? []).map((r) => ({
+            type: r.name,
+            description: r.description,
+          }));
+        } catch {
+          // If JSON parsing fails, treat as no results
+        }
+      }
+
+      if (searchResults.length === 0) {
+        throw new UserError(
+          `No datastore extensions found for "${query}". ` +
+            `Browse available extensions at https://swamp-club.com/extensions`,
+        );
+      }
+
+      const typeChoices = searchResults.map((r) =>
+        `${r.type} — ${r.description}`
+      );
+      const chosen = await promptChoice(
+        "Which datastore extension?",
+        typeChoices,
+      );
+      extensionType = chosen.split(" — ")[0];
+
+      const configJson = await promptLine(
+        `Config JSON for ${extensionType} (e.g. {}): `,
+      );
+      try {
+        datastoreConfig = JSON.parse(configJson || "{}") as Record<
+          string,
+          unknown
+        >;
+      } catch {
+        throw new UserError(`Invalid JSON: ${configJson}`);
+      }
+    }
+
+    // Execute the chosen setup path
+    if (filesystemPath) {
+      const { repoDir: resolvedRepoDir } = await requireInitializedRepo({
+        repoDir,
+        outputMode: cliCtx.outputMode,
+      });
+
+      const expandedPath = expandEnvVars(filesystemPath);
+      const datastorePath = isAbsolute(expandedPath)
+        ? expandedPath
+        : resolve(resolvedRepoDir, expandedPath);
+
+      const ctx = createLibSwampContext({ logger: cliCtx.logger });
+      const deps = createDatastoreSetupDeps(resolvedRepoDir);
+      const renderer = createDatastoreSetupRenderer(cliCtx.outputMode);
+
+      await consumeStream(
+        datastoreSetupFilesystem(ctx, deps, {
+          datastorePath,
+          repoDir: resolvedRepoDir,
+          directories: [...DEFAULT_DATASTORE_SUBDIRS],
+          skipMigration: false,
+        }),
+        renderer.handlers(),
+      );
+    } else if (extensionType) {
+      await datastoreTypeRegistry.ensureLoaded();
+      try {
+        await resolveDatastoreType(extensionType, getAutoResolver());
+      } catch {
+        // Fall through to registry check
+      }
+      if (!datastoreTypeRegistry.has(extensionType)) {
+        throw new UserError(
+          `Datastore type "${extensionType}" is not registered. ` +
+            `Install it with: swamp extension pull ${extensionType}`,
+        );
+      }
+
+      const { repoDir: resolvedRepoDir, marker } =
+        await resolveDatastoreForRepo(repoDir);
+
+      const ctx = createLibSwampContext({ logger: cliCtx.logger });
+      const deps = createDatastoreSetupDeps(resolvedRepoDir);
+      const renderer = createDatastoreSetupRenderer(cliCtx.outputMode);
+
+      await consumeStream(
+        datastoreSetupExtension(ctx, deps, {
+          type: extensionType,
+          config: datastoreConfig ?? {},
+          repoDir: resolvedRepoDir,
+          repoId: marker?.repoId,
+          skipMigration: false,
+          namespace: marker?.datastore?.namespace,
+        }),
+        renderer.handlers(),
+      );
+
+      await nudgeVaultMigration(resolvedRepoDir);
+    }
+  })
   .command("filesystem", datastoreSetupFilesystemCommand)
   .command("extension", datastoreSetupExtensionCommand)
   .command("s3", datastoreSetupS3DeprecatedCommand);

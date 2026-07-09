@@ -352,6 +352,23 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     relativePath: "swamp/references/troubleshooting/references/tracing.md",
     name: "swamp",
   },
+  // swamp share guide area
+  {
+    relativePath: "swamp/references/share/guide.md",
+    name: "swamp",
+  },
+  {
+    relativePath: "swamp/references/share/reference.md",
+    name: "swamp",
+  },
+  {
+    relativePath: "swamp/references/share/references/joiner-instructions.md",
+    name: "swamp",
+  },
+  {
+    relativePath: "swamp/references/share/references/troubleshooting.md",
+    name: "swamp",
+  },
   // swamp-getting-started (standalone skill)
   {
     relativePath: "swamp-getting-started/SKILL.md",

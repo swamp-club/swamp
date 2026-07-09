@@ -51,20 +51,7 @@ import {
 } from "../remote_run.ts";
 import type { DataDeleteResponse } from "../../serve/protocol.ts";
 import { UserError } from "../../domain/errors.ts";
-
-async function promptConfirmation(message: string): Promise<boolean> {
-  const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
-
-  await Deno.stdout.write(encoder.encode(`${message} [y/N] `));
-
-  const buf = new Uint8Array(1024);
-  const n = await Deno.stdin.read(buf);
-  if (n === null) return false;
-
-  const response = decoder.decode(buf.subarray(0, n)).trim().toLowerCase();
-  return response === "y" || response === "yes";
-}
+import { promptConfirmation } from "../prompt_helpers.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;

@@ -45,6 +45,7 @@ Route to the right guide based on what the user needs.
 | Issues — file bugs, features, security reports               | [references/issue/guide.md](references/issue/guide.md)                         |
 | Run tracking — active runs, stale detection, diagnostics     | [references/model/guide.md](references/model/guide.md)                         |
 | Architecture — which primitive to use, design trade-offs     | [references/architecture/guide.md](references/architecture/guide.md)           |
+| Sharing — promote solo repo to team, datastore + vault setup | [references/share/guide.md](references/share/guide.md)                         |
 | Troubleshooting — errors, health checks, diagnostics         | [references/troubleshooting/guide.md](references/troubleshooting/guide.md)     |
 
 ## Common Commands
