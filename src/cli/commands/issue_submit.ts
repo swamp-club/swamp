@@ -49,7 +49,7 @@ import { UserError } from "../../domain/errors.ts";
 import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
 import {
   formatRedactionSummary,
-  redactIssueContent,
+  redactIssueTitleAndBody,
 } from "../../domain/issues/content_redactor.ts";
 import {
   dispatchRepositoryReport,
@@ -191,23 +191,13 @@ export async function dispatchExtensionRepositoryReport(
   input: { type: "bug" | "feature" | "security"; title: string; body: string },
 ): Promise<void> {
   // Redact sensitive content before dispatching to a third-party repo.
-  const titleResult = redactIssueContent(input.title);
-  const bodyResult = redactIssueContent(input.body);
-  const totalRedactions = titleResult.summary.totalRedactions +
-    bodyResult.summary.totalRedactions;
-  if (totalRedactions > 0) {
-    const merged = new Map<string, number>();
-    for (const [cat, n] of titleResult.summary.categories) {
-      merged.set(cat, (merged.get(cat) ?? 0) + n);
-    }
-    for (const [cat, n] of bodyResult.summary.categories) {
-      merged.set(cat, (merged.get(cat) ?? 0) + n);
-    }
-    const msg = formatRedactionSummary({
-      totalRedactions,
-      categories: merged,
-    });
+  const redacted = redactIssueTitleAndBody(input.title, input.body);
+  if (redacted.summary.totalRedactions > 0) {
+    const msg = formatRedactionSummary(redacted.summary);
     ctx.logger.info`${msg}`;
+    if (ctx.outputMode === "json") {
+      console.error(msg);
+    }
   }
 
   const reporterContext = collectReporterContext({
@@ -219,8 +209,8 @@ export async function dispatchExtensionRepositoryReport(
     target,
     {
       type: input.type,
-      title: titleResult.text,
-      body: bodyResult.text,
+      title: redacted.title.text,
+      body: redacted.body.text,
       reporterContext,
       outputMode: ctx.outputMode,
     },
@@ -250,25 +240,15 @@ export async function submitIssue(
   const renderer = createIssueCreateRenderer(ctx.outputMode);
 
   // Redact sensitive content before any submission path.
-  const titleResult = redactIssueContent(input.title);
-  const bodyResult = redactIssueContent(input.body);
-  const totalRedactions = titleResult.summary.totalRedactions +
-    bodyResult.summary.totalRedactions;
-  if (totalRedactions > 0) {
-    const merged = new Map<string, number>();
-    for (const [cat, n] of titleResult.summary.categories) {
-      merged.set(cat, (merged.get(cat) ?? 0) + n);
-    }
-    for (const [cat, n] of bodyResult.summary.categories) {
-      merged.set(cat, (merged.get(cat) ?? 0) + n);
-    }
-    const msg = formatRedactionSummary({
-      totalRedactions,
-      categories: merged,
-    });
+  const redacted = redactIssueTitleAndBody(input.title, input.body);
+  if (redacted.summary.totalRedactions > 0) {
+    const msg = formatRedactionSummary(redacted.summary);
     libCtx.logger.info`${msg}`;
+    if (ctx.outputMode === "json") {
+      console.error(msg);
+    }
   }
-  input = { ...input, title: titleResult.text, body: bodyResult.text };
+  input = { ...input, title: redacted.title.text, body: redacted.body.text };
 
   if (destination.method === "abort") {
     libCtx.logger

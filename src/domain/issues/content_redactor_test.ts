@@ -21,6 +21,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   formatRedactionSummary,
   redactIssueContent,
+  redactIssueTitleAndBody,
 } from "./content_redactor.ts";
 
 Deno.test("redactIssueContent: returns text unchanged when nothing sensitive", () => {
@@ -63,6 +64,13 @@ Deno.test("redactIssueContent: redacts Bearer tokens", () => {
   assertStringIncludes(result.text, "Bearer [REDACTED-SECRET]");
 });
 
+Deno.test("redactIssueContent: redacts padded Bearer tokens", () => {
+  const result = redactIssueContent(
+    "Bearer dG9rZW5WYWx1ZTEyMzQ1Njc4OTAxMjM0NTY3ODkw== next",
+  );
+  assertEquals(result.text, "Bearer [REDACTED-SECRET] next");
+});
+
 Deno.test("redactIssueContent: redacts prefixed API keys", () => {
   const result = redactIssueContent(
     "API key sk_test_00000000000000000000",
@@ -92,15 +100,18 @@ Deno.test("redactIssueContent: redacts credit cards with Luhn validation", () =>
 
 Deno.test("redactIssueContent: leaves invalid credit card numbers alone", () => {
   const result = redactIssueContent("ID 1234567890123456 in database");
-  // Not a valid Luhn number, so should not be redacted as CC
-  // (may or may not be redacted by other patterns)
   const text = result.text;
   assertEquals(text.includes("[REDACTED-CC]"), false);
 });
 
-Deno.test("redactIssueContent: redacts phone numbers", () => {
+Deno.test("redactIssueContent: redacts phone numbers with separators", () => {
   const result = redactIssueContent("Call +1 555-867-5309 for support");
   assertStringIncludes(result.text, "[REDACTED-PHONE]");
+});
+
+Deno.test("redactIssueContent: does not match bare digit runs as phone numbers", () => {
+  const result = redactIssueContent("batch 20260708 at offset 12345678");
+  assertEquals(result.text.includes("[REDACTED-PHONE]"), false);
 });
 
 Deno.test("redactIssueContent: redacts connection string credentials", () => {
@@ -141,6 +152,11 @@ Deno.test("redactIssueContent: redacts home directory usernames on Windows", () 
     result.text,
     "Path C:\\Users\\[REDACTED]\\AppData\\Local\\swamp",
   );
+});
+
+Deno.test("redactIssueContent: handles /home/home without leaking username", () => {
+  const result = redactIssueContent("Path /home/home/.config/swamp");
+  assertEquals(result.text, "Path /home/[REDACTED]/.config/swamp");
 });
 
 Deno.test("redactIssueContent: replaces IPv4 with stable placeholders", () => {
@@ -189,7 +205,6 @@ Deno.test("redactIssueContent: same hostname gets same placeholder", () => {
   const result = redactIssueContent(
     "Tried db.corp twice: first db.corp then db.corp",
   );
-  // All three occurrences should be the same placeholder
   const matches = result.text.match(/\[HOST-1\]/g);
   assertEquals(matches?.length, 3);
 });
@@ -260,6 +275,35 @@ Deno.test("redactIssueContent: IPv6 addresses are redacted", () => {
   );
 });
 
+// --- redactIssueTitleAndBody ---
+
+Deno.test("redactIssueTitleAndBody: shares placeholders across title and body", () => {
+  const result = redactIssueTitleAndBody(
+    "Error on 10.0.3.47",
+    "The server 10.0.3.47 returned 500, also tried 10.0.3.48",
+  );
+  // Same IP in title and body should get the same placeholder
+  assertStringIncludes(result.title.text, "[IP-1]");
+  assertStringIncludes(result.body.text, "[IP-1]");
+  assertStringIncludes(result.body.text, "[IP-2]");
+  assertEquals(result.title.text.includes("10.0.3.47"), false);
+  assertEquals(result.body.text.includes("10.0.3.47"), false);
+});
+
+Deno.test("redactIssueTitleAndBody: returns combined summary", () => {
+  const result = redactIssueTitleAndBody(
+    "Bug on 10.0.1.1",
+    "Contact admin@example.org for 10.0.1.2",
+  );
+  assertEquals(result.summary.totalRedactions >= 3, true);
+  assertEquals(
+    (result.summary.categories.get("IP address") ?? 0) >= 2,
+    true,
+  );
+});
+
+// --- formatRedactionSummary ---
+
 Deno.test("formatRedactionSummary: returns empty string for zero redactions", () => {
   assertEquals(
     formatRedactionSummary({ totalRedactions: 0, categories: new Map() }),
@@ -267,23 +311,22 @@ Deno.test("formatRedactionSummary: returns empty string for zero redactions", ()
   );
 });
 
-Deno.test("formatRedactionSummary: formats single category", () => {
-  const summary = {
-    totalRedactions: 2,
-    categories: new Map([["email", 2]]),
-  };
-  assertEquals(
-    formatRedactionSummary(summary),
-    "Redacted 2 email from issue content.",
-  );
-});
-
-Deno.test("formatRedactionSummary: formats multiple categories", () => {
+Deno.test("formatRedactionSummary: uses human-readable names with pluralization", () => {
   const summary = {
     totalRedactions: 5,
-    categories: new Map([["secret", 3], ["IP", 2]]),
+    categories: new Map([["secret", 3], ["IP address", 2]]),
   };
   const msg = formatRedactionSummary(summary);
-  assertStringIncludes(msg, "3 secret");
-  assertStringIncludes(msg, "2 IP");
+  assertStringIncludes(msg, "3 secrets");
+  assertStringIncludes(msg, "2 IP addresses");
+});
+
+Deno.test("formatRedactionSummary: singular form for count of 1", () => {
+  const summary = {
+    totalRedactions: 1,
+    categories: new Map([["email", 1]]),
+  };
+  const msg = formatRedactionSummary(summary);
+  assertStringIncludes(msg, "1 email");
+  assertEquals(msg.includes("emails"), false);
 });

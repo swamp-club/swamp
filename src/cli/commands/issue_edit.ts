@@ -33,7 +33,7 @@ import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   formatRedactionSummary,
-  redactIssueContent,
+  redactIssueTitleAndBody,
 } from "../../domain/issues/content_redactor.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
@@ -234,24 +234,16 @@ export const issueEditCommand = new Command()
     }
 
     // Redact sensitive content before submission.
-    const titleResult = redactIssueContent(title);
-    const bodyResult = redactIssueContent(body);
-    const totalRedactions = titleResult.summary.totalRedactions +
-      bodyResult.summary.totalRedactions;
-    if (totalRedactions > 0) {
-      const merged = new Map<string, number>();
-      for (const [cat, n] of titleResult.summary.categories) {
-        merged.set(cat, (merged.get(cat) ?? 0) + n);
+    const redacted = redactIssueTitleAndBody(title, body);
+    if (redacted.summary.totalRedactions > 0) {
+      const msg = formatRedactionSummary(redacted.summary);
+      ctx.logger.info`${msg}`;
+      if (ctx.outputMode === "json") {
+        console.error(msg);
       }
-      for (const [cat, n] of bodyResult.summary.categories) {
-        merged.set(cat, (merged.get(cat) ?? 0) + n);
-      }
-      ctx.logger.info`${
-        formatRedactionSummary({ totalRedactions, categories: merged })
-      }`;
     }
-    title = titleResult.text;
-    body = bodyResult.text;
+    title = redacted.title.text;
+    body = redacted.body.text;
 
     const libCtx = createLibSwampContext({ logger: ctx.logger });
     const renderer = createIssueEditRenderer(ctx.outputMode);

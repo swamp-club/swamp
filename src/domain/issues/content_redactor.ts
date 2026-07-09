@@ -77,9 +77,10 @@ const CREDIT_CARD_RE = /\b(?:\d[ -]*?){12,18}\d\b/g;
 // SSN / national ID: XXX-XX-XXXX
 const SSN_RE = /\b\d{3}-\d{2}-\d{4}\b/g;
 
-// Phone numbers: various formats
+// Phone numbers: require a + prefix or at least one separator to avoid
+// matching bare digit runs like batch IDs or offsets.
 const PHONE_RE =
-  /(?:\+\d{1,3}[\s.-]?)?\(?\d{2,4}\)?[\s.-]?\d{3,4}[\s.-]?\d{3,4}\b/g;
+  /(?:\+\d{1,3}[\s.-]?)\(?\d{2,4}\)?[\s.-]?\d{3,4}[\s.-]?\d{3,4}\b|\(?\d{2,4}\)?[\s.-]\d{3,4}[\s.-]\d{3,4}\b/g;
 
 // Email addresses
 const EMAIL_RE =
@@ -91,16 +92,19 @@ const AWS_KEY_RE = /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g;
 // GitHub tokens
 const GITHUB_TOKEN_RE = /\b(?:ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9_]{36,}\b/g;
 
-// Generic API keys / bearer tokens: long base64-ish strings with a prefix
-const BEARER_RE = /\bBearer\s+[A-Za-z0-9_\-.~+/]+=*\b/g;
+// Generic API keys / bearer tokens: long base64-ish strings with a prefix.
+// Use lookahead instead of \b after =* since = is non-word and \b fails
+// between two non-word characters (e.g. "==" followed by space).
+const BEARER_RE = /\bBearer\s+[A-Za-z0-9_\-.~+/]+=*(?=\s|$)/g;
 const PREFIXED_KEY_RE =
   /\b(?:sk|pk|rk|ak|key|token|secret)[-_][a-zA-Z0-9_\-]{20,}\b/gi;
 
 // Generic long hex strings (40+ chars, like SHA tokens / API keys)
 const LONG_HEX_RE = /\b[0-9a-fA-F]{40,}\b/g;
 
-// Generic long base64 strings (32+ chars, often tokens/secrets)
-const LONG_BASE64_RE = /\b[A-Za-z0-9+/]{32,}={0,2}\b/g;
+// Generic long base64 strings (32+ chars, often tokens/secrets).
+// Same =* lookahead fix as BEARER_RE.
+const LONG_BASE64_RE = /\b[A-Za-z0-9+/]{32,}={0,2}(?=\s|$)/g;
 
 // env-var style secrets: VAR_NAME=value where name contains sensitive keywords
 const ENV_SECRET_RE =
@@ -117,9 +121,9 @@ const IPV4_RE = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
 const IPV6_RE =
   /\b(?:[0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{1,4}\b|::(?:[0-9a-fA-F]{1,4}:){0,5}[0-9a-fA-F]{1,4}\b|(?:[0-9a-fA-F]{1,4}:){1,6}::[0-9a-fA-F]{0,4}\b/g;
 
-// Home directory paths with usernames
-const HOME_PATH_RE =
-  /(?:\/Users\/|\/home\/|C:\\Users\\|C:\/Users\/)([^\s/\\]+)/g;
+// Home directory paths with usernames — captures the prefix and username
+// separately so we can reconstruct positionally.
+const HOME_PATH_RE = /(\/Users\/|\/home\/|C:\\Users\\|C:\/Users\/)([^\s/\\]+)/g;
 
 // FQDNs: at least 2 dots, not a version number, not in the allowlist
 const FQDN_RE =
@@ -157,16 +161,11 @@ function isPublicHost(host: string): boolean {
   return false;
 }
 
-/**
- * Redacts sensitive and identifying information from issue content.
- *
- * Produces stable placeholders ([HOST-1], [IP-1], etc.) so the same raw
- * value maps to the same placeholder throughout the text, preserving
- * diagnostic structure without leaking identifying details.
- */
-export function redactIssueContent(text: string): RedactionResult {
-  const placeholders = new PlaceholderMap();
-  const counts = new Map<string, number>();
+function applyRedactions(
+  text: string,
+  placeholders: PlaceholderMap,
+  counts: Map<string, number>,
+): string {
   let result = text;
 
   function count(category: string): void {
@@ -190,7 +189,7 @@ export function redactIssueContent(text: string): RedactionResult {
       fragment: string | undefined,
     ) => {
       count("secret");
-      count("HOST");
+      count("hostname");
       const hostPlaceholder = placeholders.get("HOST", host);
       return `${scheme}[REDACTED-USER]:***@${hostPlaceholder}${port ?? ""}${
         path ?? ""
@@ -236,7 +235,7 @@ export function redactIssueContent(text: string): RedactionResult {
 
   // 8. SSNs
   result = result.replace(SSN_RE, () => {
-    count("national-id");
+    count("national ID");
     return "[REDACTED-ID]";
   });
 
@@ -244,7 +243,7 @@ export function redactIssueContent(text: string): RedactionResult {
   result = result.replace(CREDIT_CARD_RE, (match) => {
     const digits = match.replace(/[\s-]/g, "");
     if (digits.length >= 13 && digits.length <= 19 && isLuhnValid(digits)) {
-      count("credit-card");
+      count("credit card");
       return "[REDACTED-CC]";
     }
     return match;
@@ -252,41 +251,42 @@ export function redactIssueContent(text: string): RedactionResult {
 
   // 10. Phone numbers
   result = result.replace(PHONE_RE, (match) => {
-    // Avoid matching version numbers, port numbers, and short digit sequences
     const digits = match.replace(/\D/g, "");
     if (digits.length >= 7 && digits.length <= 15) {
-      count("phone");
+      count("phone number");
       return "[REDACTED-PHONE]";
     }
     return match;
   });
 
-  // 11. Home directory usernames
+  // 11. Home directory usernames — reconstruct positionally to avoid
+  //     wrong-substring replacement when username equals a path component
+  //     (e.g. /home/home).
   result = result.replace(
     HOME_PATH_RE,
-    (match, username: string) => {
-      count("path-username");
-      return match.replace(username, "[REDACTED]");
+    (_match, prefix: string, _username: string) => {
+      count("home directory path");
+      return `${prefix}[REDACTED]`;
     },
   );
 
   // 12. IPv6 (before IPv4 to avoid partial matches on mapped addresses)
   result = result.replace(IPV6_RE, (match) => {
-    count("IP");
+    count("IP address");
     return placeholders.get("IP", match);
   });
 
   // 13. IPv4 (the regex requires exactly 4 octets, so 3-segment version
   //     strings like "1.23.4" never match — no version guard needed)
   result = result.replace(IPV4_RE, (match) => {
-    count("IP");
+    count("IP address");
     return placeholders.get("IP", match);
   });
 
   // 14. Internal hostnames (.internal, .local, .lan, .corp, etc.)
   result = result.replace(INTERNAL_HOST_RE, (match) => {
     if (isPublicHost(match)) return match;
-    count("HOST");
+    count("hostname");
     return placeholders.get("HOST", match);
   });
 
@@ -294,7 +294,7 @@ export function redactIssueContent(text: string): RedactionResult {
   result = result.replace(FQDN_RE, (match) => {
     if (isPublicHost(match)) return match;
     if (isVersionString(match)) return match;
-    count("HOST");
+    count("hostname");
     return placeholders.get("HOST", match);
   });
 
@@ -306,7 +306,6 @@ export function redactIssueContent(text: string): RedactionResult {
 
   // 17. Long base64 strings
   result = result.replace(LONG_BASE64_RE, (match) => {
-    // Only redact if it looks like a real token (mixed case or has +/=)
     if (/[a-z]/.test(match) && /[A-Z]/.test(match)) {
       count("secret");
       return "[REDACTED-SECRET]";
@@ -314,18 +313,71 @@ export function redactIssueContent(text: string): RedactionResult {
     return match;
   });
 
+  return result;
+}
+
+function buildSummary(counts: Map<string, number>): RedactionSummary {
   let totalRedactions = 0;
   for (const c of counts.values()) {
     totalRedactions += c;
   }
+  return { totalRedactions, categories: counts };
+}
+
+/**
+ * Redacts sensitive and identifying information from a single text string.
+ *
+ * Produces stable placeholders ([HOST-1], [IP-1], etc.) so the same raw
+ * value maps to the same placeholder throughout the text, preserving
+ * diagnostic structure without leaking identifying details.
+ */
+export function redactIssueContent(text: string): RedactionResult {
+  const placeholders = new PlaceholderMap();
+  const counts = new Map<string, number>();
+  const redacted = applyRedactions(text, placeholders, counts);
+  return { text: redacted, summary: buildSummary(counts) };
+}
+
+/**
+ * Redacts title and body together, sharing a single placeholder map so the
+ * same raw value (e.g. an IP) gets the same placeholder in both fields.
+ */
+export function redactIssueTitleAndBody(
+  title: string,
+  body: string,
+): {
+  title: RedactionResult;
+  body: RedactionResult;
+  summary: RedactionSummary;
+} {
+  const placeholders = new PlaceholderMap();
+  const counts = new Map<string, number>();
+
+  const titleText = applyRedactions(title, placeholders, counts);
+  const titleSnapshot = new Map(counts);
+
+  const bodyText = applyRedactions(body, placeholders, counts);
+
+  const titleCounts = new Map<string, number>();
+  for (const [cat, n] of titleSnapshot) {
+    titleCounts.set(cat, n);
+  }
+  const bodyCounts = new Map<string, number>();
+  for (const [cat, n] of counts) {
+    bodyCounts.set(cat, n - (titleSnapshot.get(cat) ?? 0));
+  }
 
   return {
-    text: result,
-    summary: {
-      totalRedactions,
-      categories: counts,
-    },
+    title: { text: titleText, summary: buildSummary(titleCounts) },
+    body: { text: bodyText, summary: buildSummary(bodyCounts) },
+    summary: buildSummary(counts),
   };
+}
+
+function pluralize(word: string, count: number): string {
+  if (count === 1) return word;
+  if (word.endsWith("s") || word.endsWith("x")) return word + "es";
+  return word + "s";
 }
 
 /** Formats the redaction summary into a human-readable log line. */
@@ -333,7 +385,7 @@ export function formatRedactionSummary(summary: RedactionSummary): string {
   if (summary.totalRedactions === 0) return "";
   const parts: string[] = [];
   for (const [category, count] of summary.categories) {
-    parts.push(`${count} ${category}`);
+    parts.push(`${count} ${pluralize(category, count)}`);
   }
   return `Redacted ${parts.join(", ")} from issue content.`;
 }

@@ -145,7 +145,11 @@ export const issueRippleCommand = new Command()
     // Redact sensitive content before submission.
     const redacted = redactIssueContent(body);
     if (redacted.summary.totalRedactions > 0) {
-      ctx.logger.info`${formatRedactionSummary(redacted.summary)}`;
+      const msg = formatRedactionSummary(redacted.summary);
+      ctx.logger.info`${msg}`;
+      if (ctx.outputMode === "json") {
+        console.error(msg);
+      }
     }
     body = redacted.text;
 
