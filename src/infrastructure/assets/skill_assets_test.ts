@@ -432,3 +432,70 @@ Deno.test("SkillAssets.copySkillsTo copies extension datastore references", asyn
     assertEquals(apiStat.isFile, true);
   });
 });
+
+Deno.test("SkillAssets.copySkillsTo copies share guide and references", async () => {
+  await withTempDir(async (dir) => {
+    const assets = new SkillAssets();
+    await assets.copySkillsTo(dir);
+
+    const guidePath = join(
+      dir,
+      "swamp",
+      "references",
+      "share",
+      "guide.md",
+    );
+    const referencePath = join(
+      dir,
+      "swamp",
+      "references",
+      "share",
+      "reference.md",
+    );
+    const joinerPath = join(
+      dir,
+      "swamp",
+      "references",
+      "share",
+      "references",
+      "joiner-instructions.md",
+    );
+    const troubleshootingPath = join(
+      dir,
+      "swamp",
+      "references",
+      "share",
+      "references",
+      "troubleshooting.md",
+    );
+
+    const guideStat = await Deno.stat(guidePath);
+    assertEquals(guideStat.isFile, true);
+
+    const referenceStat = await Deno.stat(referencePath);
+    assertEquals(referenceStat.isFile, true);
+
+    const joinerStat = await Deno.stat(joinerPath);
+    assertEquals(joinerStat.isFile, true);
+
+    const troubleshootingStat = await Deno.stat(troubleshootingPath);
+    assertEquals(troubleshootingStat.isFile, true);
+  });
+});
+
+Deno.test("SkillAssets.listSkills includes share guide entries", () => {
+  const assets = new SkillAssets();
+  const skills = assets.listSkills();
+
+  const shareGuide = skills.find((s) =>
+    s.relativePath === "swamp/references/share/guide.md"
+  );
+  assertEquals(shareGuide !== undefined, true);
+  assertEquals(shareGuide?.name, "swamp");
+
+  const joiner = skills.find((s) =>
+    s.relativePath ===
+      "swamp/references/share/references/joiner-instructions.md"
+  );
+  assertEquals(joiner !== undefined, true);
+});

@@ -34,23 +34,10 @@ import {
   acquireVaultSync,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
+import { promptConfirmation } from "../prompt_helpers.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
-
-async function promptConfirmation(message: string): Promise<boolean> {
-  const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
-
-  await Deno.stdout.write(encoder.encode(`${message} [y/N] `));
-
-  const buf = new Uint8Array(1024);
-  const n = await Deno.stdin.read(buf);
-  if (n === null) return false;
-
-  const response = decoder.decode(buf.subarray(0, n)).trim().toLowerCase();
-  return response === "y" || response === "yes";
-}
 
 export const vaultReadSecretCommand = new Command()
   .name("read-secret")

@@ -39,49 +39,16 @@ import { UserError } from "../../domain/errors.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoService } from "../../domain/repo/repo_service.ts";
 import { VERSION } from "./version.ts";
+import {
+  promptChoice,
+  promptConfirmation,
+  promptLine,
+} from "../prompt_helpers.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
-
-async function promptLine(message: string): Promise<string> {
-  await Deno.stdout.write(encoder.encode(message));
-  const buf = new Uint8Array(1024);
-  const n = await Deno.stdin.read(buf);
-  if (n === null) return "";
-  return decoder.decode(buf.subarray(0, n)).trim();
-}
-
-async function promptConfirmation(message: string): Promise<boolean> {
-  const response = await promptLine(`${message} [y/N] `);
-  return response === "y" || response === "yes";
-}
-
-async function promptChoice(
-  message: string,
-  choices: string[],
-): Promise<string> {
-  await Deno.stdout.write(encoder.encode(`${message}\n`));
-  for (let i = 0; i < choices.length; i++) {
-    await Deno.stdout.write(
-      encoder.encode(`  ${i + 1}. ${choices[i]}\n`),
-    );
-  }
-  await Deno.stdout.write(
-    encoder.encode(`  ${choices.length + 1}. Other path\n`),
-  );
-  const response = await promptLine("> ");
-  const index = parseInt(response, 10) - 1;
-  if (index >= 0 && index < choices.length) {
-    return choices[index];
-  }
-  if (index === choices.length) {
-    return await promptLine("Path: ");
-  }
-  return response || choices[0];
-}
 
 async function promptMultilineFrontmatter(): Promise<string> {
   await Deno.stdout.write(

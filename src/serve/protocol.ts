@@ -388,6 +388,8 @@ export type ExtensionOutdatedPayload = Record<string, never>;
 
 export type DoctorVaultsPayload = Record<string, never>;
 
+export type DoctorDatastoresPayload = Record<string, never>;
+
 export type DoctorSecretsPayload = Record<string, never>;
 
 export type DoctorWorkflowsPayload = Record<string, never>;
@@ -530,6 +532,11 @@ export type ServerRequest =
     payload?: ExtensionOutdatedPayload;
   }
   | { type: "doctor.vaults"; id: string; payload?: DoctorVaultsPayload }
+  | {
+    type: "doctor.datastores";
+    id: string;
+    payload?: DoctorDatastoresPayload;
+  }
   | { type: "doctor.secrets"; id: string; payload?: DoctorSecretsPayload }
   | {
     type: "doctor.workflows";
@@ -855,6 +862,10 @@ export interface DoctorVaultsResponse {
   data: Record<string, unknown>;
 }
 
+export interface DoctorDatastoresResponse {
+  data: Record<string, unknown>;
+}
+
 export interface DoctorSecretsResponse {
   data: Record<string, unknown>;
 }
@@ -1023,6 +1034,11 @@ export type ServerMessage =
     payload: ExtensionOutdatedResponse;
   }
   | { type: "doctor.vaults"; id: string; payload: DoctorVaultsResponse }
+  | {
+    type: "doctor.datastores";
+    id: string;
+    payload: DoctorDatastoresResponse;
+  }
   | { type: "doctor.secrets"; id: string; payload: DoctorSecretsResponse }
   | { type: "doctor.workflows"; id: string; payload: DoctorWorkflowsResponse }
   | {

@@ -29,6 +29,7 @@ import {
   auditTimeline,
   consumeStream,
   createAuditTimelineDeps,
+  createDoctorDatastoresDeps,
   createDoctorSecretsDeps,
   createDoctorVaultsDeps,
   createExtensionInfoDeps,
@@ -36,6 +37,7 @@ import {
   createLibSwampContext,
   createWorkerListDeps,
   createWorkerQueueListDeps,
+  doctorDatastores,
   doctorSecrets,
   doctorVaults,
   doctorWorkflows,
@@ -540,6 +542,55 @@ export async function handleDoctorVaults(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "doctor_vaults_failed", message);
+  }
+}
+
+export async function handleDoctorDatastores(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = await createDoctorDatastoresDeps(ctx.repoDir);
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      doctorDatastores(libCtx, deps),
+      {
+        scanning: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "doctor.datastores",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "doctor_datastores_failed", message);
   }
 }
 

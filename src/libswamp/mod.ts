@@ -220,6 +220,15 @@ export {
   type VaultRequiredFinding,
 } from "./models/doctor_vaults.ts";
 export {
+  createDoctorDatastoresDeps,
+  type DatastoreHealthFinding,
+  doctorDatastores,
+  type DoctorDatastoresData,
+  type DoctorDatastoresDeps,
+  type DoctorDatastoresEvent,
+  type VaultMismatchFinding,
+} from "./datastores/doctor_datastores.ts";
+export {
   modelOutputSearch,
   type ModelOutputSearchData,
   type ModelOutputSearchDeps,

@@ -20,6 +20,7 @@
 import { Command } from "@cliffy/command";
 import { groupCommandAction } from "../group_action.ts";
 import { doctorAuditCommand } from "./doctor_audit.ts";
+import { doctorDatastoresCommand } from "./doctor_datastores.ts";
 import { doctorExtensionsCommand } from "./doctor_extensions.ts";
 import { doctorInstallCommand } from "./doctor_install.ts";
 import { doctorSecretsCommand } from "./doctor_secrets.ts";
@@ -58,6 +59,10 @@ export const doctorCommand = new Command()
     "Check models with sensitive outputs have a vault configured",
     "swamp doctor vaults",
   )
+  .example(
+    "Check datastore health and vault compatibility",
+    "swamp doctor datastores",
+  )
   // `--repo-dir` is accepted on the top-level command for consistency
   // with subcommands and other repo-scoped commands. The top-level
   // action only shows help; subcommands consume the option.
@@ -67,6 +72,7 @@ export const doctorCommand = new Command()
   )
   .action(groupCommandAction)
   .command("audit", doctorAuditCommand)
+  .command("datastores", doctorDatastoresCommand)
   .command("extensions", doctorExtensionsCommand)
   .command("install", doctorInstallCommand)
   .command("secrets", doctorSecretsCommand)
