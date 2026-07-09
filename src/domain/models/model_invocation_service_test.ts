@@ -1,0 +1,229 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 Elder Swamp Club, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+import "../../domain/models/models.ts";
+import type {
+  InvocationTracking,
+  MethodContext,
+  RunModelResult,
+} from "./model.ts";
+import type { MethodExecutionService } from "./method_execution_service.ts";
+import type { CommonMethodContextDeps } from "./method_context.ts";
+import { ModelInvocationService } from "./model_invocation_service.ts";
+
+await initializeLogging({});
+
+function makeStubContext(
+  overrides: Partial<MethodContext> = {},
+): MethodContext {
+  return {
+    signal: AbortSignal.timeout(30_000),
+    repoDir: "/tmp/test-repo",
+    modelType: {
+      normalized: "test/caller",
+      raw: "test/caller",
+    } as MethodContext["modelType"],
+    modelId: "caller-def-id",
+    globalArgs: {},
+    definition: {
+      id: "caller-def-id",
+      name: "my-caller",
+      version: 1,
+      tags: {},
+    },
+    methodName: "invoke",
+    logger: {
+      debug() {},
+      info() {},
+      warn() {},
+      error() {},
+    } as unknown as MethodContext["logger"],
+    dataRepository: {} as MethodContext["dataRepository"],
+    definitionRepository: {} as MethodContext["definitionRepository"],
+    extensionFile: () => "",
+    createCelEnvironment: () =>
+      ({}) as ReturnType<MethodContext["createCelEnvironment"]>,
+    ...overrides,
+  };
+}
+
+function makeSvc(
+  depOverrides: {
+    definitionRepo?: Partial<CommonMethodContextDeps["definitionRepository"]>;
+  } = {},
+) {
+  return new ModelInvocationService({
+    executionService: {} as MethodExecutionService,
+    commonDeps: {
+      definitionRepository: {
+        findByNameGlobal: () => Promise.resolve(null),
+        findById: () => Promise.resolve(null),
+        ...depOverrides.definitionRepo,
+      },
+    } as unknown as CommonMethodContextDeps,
+    repoDir: "/tmp/test-repo",
+  });
+}
+
+Deno.test("ModelInvocationService: rejects when depth limit exceeded", async () => {
+  const svc = makeSvc();
+  const tracking: InvocationTracking = {
+    depth: 10,
+    ancestors: new Set(),
+    breadthCounter: { count: 0 },
+  };
+
+  const ctx = makeStubContext({ _invocationTracking: tracking });
+  const result = await svc.invoke(
+    { definition: "some-def", method: "read" },
+    ctx,
+  );
+
+  assertEquals(result.ok, false);
+  assertStringIncludes(
+    (result as RunModelResult & { ok: false }).error.message,
+    "Maximum cross-model invocation depth",
+  );
+});
+
+Deno.test("ModelInvocationService: rejects when breadth limit exceeded", async () => {
+  const svc = makeSvc();
+  const tracking: InvocationTracking = {
+    depth: 0,
+    ancestors: new Set(),
+    breadthCounter: { count: 100 },
+  };
+
+  const ctx = makeStubContext({ _invocationTracking: tracking });
+  const result = await svc.invoke(
+    { definition: "some-def", method: "read" },
+    ctx,
+  );
+
+  assertEquals(result.ok, false);
+  assertStringIncludes(
+    (result as RunModelResult & { ok: false }).error.message,
+    "Maximum cross-model invocation count",
+  );
+});
+
+Deno.test("ModelInvocationService: breadth counter is shared across calls", async () => {
+  const svc = makeSvc();
+  const counter = { count: 98 };
+  const tracking: InvocationTracking = {
+    depth: 0,
+    ancestors: new Set(),
+    breadthCounter: counter,
+  };
+
+  const ctx = makeStubContext({ _invocationTracking: tracking });
+
+  // count 98 -> 99 (under limit), fails on definition lookup
+  await svc.invoke({ definition: "a", method: "read" }, ctx);
+  assertEquals(counter.count, 99);
+
+  // count 99 -> 100 (at limit but not over)
+  await svc.invoke({ definition: "b", method: "read" }, ctx);
+  assertEquals(counter.count, 100);
+
+  // count 100 -> 101 (OVER limit)
+  const result = await svc.invoke(
+    { definition: "c", method: "read" },
+    ctx,
+  );
+  assertEquals(result.ok, false);
+  assertStringIncludes(
+    (result as RunModelResult & { ok: false }).error.message,
+    "Maximum cross-model invocation count",
+  );
+});
+
+Deno.test("ModelInvocationService: returns error for nonexistent definition", async () => {
+  const svc = makeSvc();
+  const ctx = makeStubContext();
+  const result = await svc.invoke(
+    { definition: "does-not-exist", method: "greet" },
+    ctx,
+  );
+
+  assertEquals(result.ok, false);
+  const err = (result as RunModelResult & { ok: false }).error;
+  assertStringIncludes(err.message, "does-not-exist");
+  assertStringIncludes(err.message, "not found");
+});
+
+Deno.test("ModelInvocationService: initializes tracking when not present on context", async () => {
+  const svc = makeSvc();
+  const ctx = makeStubContext();
+  assertEquals(ctx._invocationTracking, undefined);
+
+  const result = await svc.invoke(
+    { definition: "nonexistent", method: "read" },
+    ctx,
+  );
+
+  // Should fail on lookup, not on tracking
+  assertEquals(result.ok, false);
+  assertStringIncludes(
+    (result as RunModelResult & { ok: false }).error.message,
+    "not found",
+  );
+});
+
+Deno.test("ModelInvocationService: depth 0 with no tracking allows first call", async () => {
+  const svc = makeSvc();
+  const ctx = makeStubContext();
+
+  // No tracking = first call = depth 0. Should pass depth check
+  // and fail on definition lookup instead.
+  const result = await svc.invoke(
+    { definition: "nonexistent", method: "read" },
+    ctx,
+  );
+
+  assertEquals(result.ok, false);
+  assertStringIncludes(
+    (result as RunModelResult & { ok: false }).error.message,
+    "not found",
+  );
+});
+
+Deno.test("ModelInvocationService: depth 9 allows call (under limit of 10)", async () => {
+  const svc = makeSvc();
+  const tracking: InvocationTracking = {
+    depth: 9,
+    ancestors: new Set(),
+    breadthCounter: { count: 0 },
+  };
+
+  const ctx = makeStubContext({ _invocationTracking: tracking });
+  const result = await svc.invoke(
+    { definition: "nonexistent", method: "read" },
+    ctx,
+  );
+
+  // Should pass depth check (9 < 10) and fail on lookup
+  assertEquals(result.ok, false);
+  assertStringIncludes(
+    (result as RunModelResult & { ok: false }).error.message,
+    "not found",
+  );
+});
