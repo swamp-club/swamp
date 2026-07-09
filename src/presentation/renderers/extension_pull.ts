@@ -84,6 +84,14 @@ function renderInstallResultLog(result: InstallResult): void {
     }
   }
 
+  if (result.dependencies.length > 0) {
+    logger.info``;
+    logger
+      .info`Model dependencies: ${result.dependencies.join(", ")}`;
+    logger
+      .info`  This extension invokes models from the above extensions via context.runModel()`;
+  }
+
   logger.info`Pulled ${result.name}@${result.version}`;
   logger.info`Extracted ${result.extractedFiles.length} files:`;
   for (const f of result.extractedFiles) {

@@ -593,7 +593,8 @@ function makeInstallWithPruned(
       hasSkills: false,
       hasSkillScripts: false,
       skillFiles: [],
-      dependencyResults: [],
+      dependencies: [],
+    dependencyResults: [],
       pruned: prunedPaths,
     };
   };

@@ -97,6 +97,7 @@ export interface InstallResult {
   hasSkills: boolean;
   hasSkillScripts: boolean;
   skillFiles: string[];
+  dependencies: string[];
   dependencyResults: InstallResult[];
   /**
    * Repo-relative paths that were declared in the prior version's
@@ -1207,6 +1208,7 @@ export async function installExtension(
       hasSkills,
       hasSkillScripts,
       skillFiles,
+      dependencies: manifest.dependencies,
       dependencyResults,
       pruned,
     };

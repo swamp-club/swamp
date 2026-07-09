@@ -61,6 +61,7 @@ export interface ExtensionInfoData {
   pullCount: number;
   score: ExtensionScoreSummary | null;
   contentMetadata: ExtensionContentMetadata | null;
+  dependencies: string[];
 }
 
 export type ExtensionInfoEvent =
@@ -151,6 +152,7 @@ export async function* extensionInfo(
             pullCount: info.pullCount,
             score: info.score,
             contentMetadata: versionDetail?.contentMetadata ?? null,
+            dependencies: info.dependencies ?? [],
           },
         };
       } catch (error) {

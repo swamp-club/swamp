@@ -167,6 +167,14 @@ class LogExtensionInfoRenderer implements Renderer<ExtensionInfoEvent> {
           logger.info`Exports:     ${d.contentNames.join(", ")}`;
         }
 
+        if (d.dependencies.length > 0) {
+          logger.info``;
+          logger
+            .info`Dependencies: ${d.dependencies.join(", ")}`;
+          logger
+            .info`  Models from these extensions may be invoked via context.runModel()`;
+        }
+
         if (d.contentMetadata) {
           renderContentMetadata(logger, d.contentMetadata, verbose);
         }
