@@ -47,7 +47,7 @@ export type ExecutionStatus = typeof ExecutionStatuses[number];
 /**
  * What triggered the execution.
  */
-export const TriggerTypes = ["manual", "workflow"] as const;
+export const TriggerTypes = ["manual", "workflow", "model"] as const;
 export type TriggerType = typeof TriggerTypes[number];
 
 /**
@@ -76,6 +76,8 @@ export const ExecutionProvenanceSchema = z.object({
   workflowId: z.string().optional(),
   workflowRunId: z.string().optional(),
   stepName: z.string().optional(),
+  parentOutputId: z.string().uuid().optional(),
+  callerExtension: z.string().optional(),
 });
 
 /**

@@ -434,6 +434,7 @@ export const modelKindAdapter: KindAdapter = {
       context.absolutePath,
       context.repoDir,
     );
+    modelDef.extensionName = context.extensionName;
 
     let bundlePromise: Promise<string> | undefined;
     modelDef.bundleSourceFactory = () => {
@@ -478,6 +479,7 @@ export const modelKindAdapter: KindAdapter = {
       context.absolutePath,
       context.repoDir,
     );
+    modelDef.extensionName = context.extensionName;
 
     let bundlePromise: Promise<string> | undefined;
     modelDef.bundleSourceFactory = () => {

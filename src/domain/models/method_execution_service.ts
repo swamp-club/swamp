@@ -153,6 +153,13 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
   private readonly dataOutputValidationService =
     new DataOutputValidationService();
 
+  modelInvocationService?: {
+    invoke: (
+      options: Parameters<NonNullable<MethodContext["runModel"]>>[0],
+      callerContext: MethodContext,
+    ) => ReturnType<NonNullable<MethodContext["runModel"]>>;
+  };
+
   async execute(
     definition: Definition,
     method: MethodDefinition,
@@ -780,6 +787,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           modelDef,
           context,
           methodName,
+          this.modelInvocationService,
         );
         const executionResult = await withSpan("swamp.method.execute", {
           "model.type": context.modelType.normalized,

@@ -377,6 +377,72 @@ export interface MethodContext {
    * operators on top.
    */
   createCelEnvironment: () => Environment;
+
+  /**
+   * Invoke another model's method mid-execution and use the result inline.
+   * Supports two calling conventions: by existing definition name, or by
+   * model type with auto-created definition (direct type execution).
+   *
+   * Runtime authorization enforces that the caller's extension has declared
+   * the target extension in its manifest `dependencies`. Built-in types,
+   * user-authored models, and same-extension calls are always allowed.
+   *
+   * Not available in remote execution contexts.
+   */
+  runModel?: (options: RunModelOptions) => Promise<RunModelResult>;
+
+  /** @internal Invocation tracking — not part of the extension author API. */
+  _invocationTracking?: InvocationTracking;
+}
+
+/**
+ * Options for `context.runModel()`. Discriminated on whether the caller
+ * specifies an existing definition by name or a model type for direct
+ * type execution (auto-creates the definition).
+ */
+export type RunModelOptions =
+  | RunModelByDefinition
+  | RunModelByType;
+
+export interface RunModelByDefinition {
+  definition: string;
+  method: string;
+  arguments?: Record<string, unknown>;
+}
+
+export interface RunModelByType {
+  modelType: string;
+  name: string;
+  method: string;
+  arguments?: Record<string, unknown>;
+}
+
+/**
+ * Result of `context.runModel()`. Discriminated on `ok` so callers can
+ * branch without catching exceptions.
+ */
+export type RunModelResult =
+  | RunModelSuccess
+  | RunModelFailure;
+
+export interface RunModelSuccess {
+  ok: true;
+  resources: DataHandle[];
+}
+
+export interface RunModelFailure {
+  ok: false;
+  error: { message: string; stack?: string };
+}
+
+/**
+ * Internal invocation tracking state threaded through nested runModel
+ * calls and follow-up actions. Not part of the extension author API.
+ */
+export interface InvocationTracking {
+  depth: number;
+  ancestors: ReadonlySet<string>;
+  breadthCounter: { count: number };
 }
 
 /**
@@ -712,6 +778,15 @@ export interface ModelDefinition<
    * context's `extensionFile()` helper closes over this value.
    */
   extensionFilesRoot?: string;
+
+  /**
+   * Scoped name of the extension that provides this model type (e.g.
+   * `@keeb/network`). Populated by the extension loader at registration
+   * time. Undefined for built-in types and user-authored models in
+   * `models/`. Used by `ModelInvocationService` for runtime dependency
+   * authorization.
+   */
+  extensionName?: string;
 }
 
 /**

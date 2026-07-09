@@ -50,7 +50,10 @@ import {
   createEphemeralStore,
   wrapWithEphemeral,
 } from "../../infrastructure/persistence/ephemeral_store.ts";
-import { buildMethodContext } from "../../domain/models/method_context.ts";
+import {
+  buildMethodContext,
+  type CommonMethodContextDeps,
+} from "../../domain/models/method_context.ts";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import type {
   DataArtifactView,
@@ -640,6 +643,29 @@ export async function* modelMethodRun(
 
           const vaultService = await deps.createVaultService();
           const executionService = deps.createExecutionService();
+
+          if (
+            "modelInvocationService" in executionService &&
+            !executionService.modelInvocationService
+          ) {
+            const { ModelInvocationService } = await import(
+              "../../domain/models/model_invocation_service.ts"
+            );
+            const commonDeps: CommonMethodContextDeps = {
+              dataRepository: deps.dataRepo,
+              definitionRepository: deps.definitionRepo,
+              vaultService,
+              redactor,
+              dataQueryService: deps.dataQueryService,
+              createCelEnvironment: createExtensionCelEnvironment,
+            };
+            (executionService as { modelInvocationService?: unknown })
+              .modelInvocationService = new ModelInvocationService({
+                executionService,
+                commonDeps,
+                repoDir: deps.repoDir,
+              });
+          }
 
           // Start heartbeat inside the try so it's always cleaned up on error.
           if (deps.runTracker) {

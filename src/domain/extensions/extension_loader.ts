@@ -65,6 +65,42 @@ import {
 } from "./source_failure_recorder.ts";
 import { makeSourceLocation } from "./source_location.ts";
 
+/**
+ * Extract the extension name from an absolute path within the
+ * pulled-extensions directory. Returns undefined for paths outside
+ * pulled-extensions (user-authored or built-in models).
+ *
+ * Path format: .../.swamp/pulled-extensions/@scope/name/<kind>/...
+ * For scoped: @scope/name. For unscoped: name.
+ */
+export function extractExtensionNameFromPath(
+  absolutePath: string,
+  repoDir: string | null,
+): string | undefined {
+  if (!repoDir) return undefined;
+  let realRepoDir: string;
+  try {
+    realRepoDir = Deno.realPathSync(repoDir);
+  } catch {
+    realRepoDir = resolve(repoDir);
+  }
+  const pulledRoot = join(realRepoDir, SWAMP_DATA_DIR, "pulled-extensions");
+  let resolved: string;
+  try {
+    resolved = Deno.realPathSync(absolutePath);
+  } catch {
+    resolved = resolve(absolutePath);
+  }
+  if (!resolved.startsWith(pulledRoot + SEPARATOR)) return undefined;
+  const relative = resolved.slice(pulledRoot.length + 1);
+  const segments = relative.split(SEPARATOR);
+  if (segments.length < 2) return undefined;
+  if (segments[0].startsWith("@") && segments.length >= 3) {
+    return `${segments[0]}/${segments[1]}`;
+  }
+  return segments[0];
+}
+
 export class ExtensionLoader {
   private readonly denoRuntime: DenoRuntime;
   private readonly repoDir: string | null;
@@ -238,7 +274,14 @@ export class ExtensionLoader {
           typeNormalized,
           validated,
           module,
-          { ...ctx, absolutePath },
+          {
+            ...ctx,
+            absolutePath,
+            extensionName: extractExtensionNameFromPath(
+              absolutePath,
+              this.repoDir,
+            ),
+          },
         );
         result.loaded.push(file);
       } catch (error) {
@@ -679,6 +722,10 @@ export class ExtensionLoader {
         denoPath,
         denoRuntime: this.denoRuntime,
         repoDir: this.repoDir,
+        extensionName: extractExtensionNameFromPath(
+          entry.source_path,
+          this.repoDir,
+        ),
       },
     );
   }
@@ -930,6 +977,10 @@ export class ExtensionLoader {
             denoPath,
             denoRuntime: this.denoRuntime,
             repoDir: this.repoDir,
+            extensionName: extractExtensionNameFromPath(
+              absolutePath,
+              this.repoDir,
+            ),
           },
         );
       }
