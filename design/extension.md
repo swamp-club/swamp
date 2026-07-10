@@ -1160,7 +1160,25 @@ mirror the archive structure:
 | `driver-bundles/`    | `.swamp/driver-bundles/<bundleNamespace(…drivers dir)>/`     |
 | `datastore-bundles/` | `.swamp/datastore-bundles/<bundleNamespace(…datastores dir)>/` |
 | `report-bundles/`    | `.swamp/report-bundles/<bundleNamespace(…reports dir)>/`     |
-| `skills/`            | Tool-specific skills dir (e.g. `.claude/skills/<skill-name>/`) |
+| `skills/`            | Every enrolled tool's skills dir (deduplicated)                |
+
+### Multi-tool skill materialization
+
+In repos enrolled for multiple AI tools (`marker.tools` has 2+ entries),
+`extension pull`, `extension update`, `extension install`, and
+`extension source add` extract skills to **every** enrolled tool's
+project-local skills directory. The directories are deduplicated so
+shared-path tools (codex/cursor/opencode/copilot, all mapping to
+`.agents/skills/`) are written only once.
+
+All skill directory roots are tracked in the lockfile's `files[]` array,
+so `extension rm` and orphan pruning correctly handle multi-tool repos:
+removal deletes all copies, and re-pulling after a tool change prunes the
+old tool's stale skill paths.
+
+The `resolveUniqueLocalSkillsDirs(repoDir, tools)` helper mirrors the
+existing `resolveUniqueGlobalSkillsDirs(tools)` pattern used for
+user-level skill directories.
 
 ### Why extension-first?
 

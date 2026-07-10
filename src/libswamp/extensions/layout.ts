@@ -160,6 +160,21 @@ export function isSkillDirEntry(
 }
 
 /**
+ * Multi-dir variant of {@link isSkillDirEntry}. Returns true when the
+ * file matches ANY of the provided skill dirs.
+ */
+export function isSkillDirEntryMulti(
+  file: string,
+  skillsDirs: string[] | undefined,
+): boolean {
+  if (!skillsDirs) return false;
+  for (const dir of skillsDirs) {
+    if (isSkillDirEntry(file, dir)) return true;
+  }
+  return false;
+}
+
+/**
  * Returns the per-extension root subtree that owns a tracked file path,
  * or `null` when the path does not anchor to a root that
  * `doctor extensions` should walk for orphan detection.
@@ -238,6 +253,50 @@ export function extractTopLevelRoot(
 
   // Anything else current-layout but not under a known root — no
   // orphan walk possible.
+  return null;
+}
+
+/**
+ * Multi-dir variant of {@link extractTopLevelRoot}. Returns null when
+ * the file is a skill entry under ANY of the provided skill dirs.
+ */
+export function extractTopLevelRootMulti(
+  filePath: string,
+  skillsDirs: string[],
+  extensionName: string,
+): string | null {
+  if (classifyExtensionFile(filePath) !== "current") {
+    return null;
+  }
+  for (const dir of skillsDirs) {
+    if (isSkillDirEntry(filePath, dir)) {
+      return null;
+    }
+  }
+  if (filePath.startsWith(PULLED_PREFIX)) {
+    const nameSegments = extensionName.split("/");
+    const rest = filePath.slice(PULLED_PREFIX.length);
+    const segments = rest.split("/");
+    if (segments.length < nameSegments.length) return null;
+    return `${PULLED_PREFIX}${
+      segments.slice(0, nameSegments.length).join("/")
+    }`;
+  }
+  const BUNDLE_KINDS = [
+    "bundles",
+    "vault-bundles",
+    "driver-bundles",
+    "datastore-bundles",
+    "report-bundles",
+  ];
+  for (const kind of BUNDLE_KINDS) {
+    const prefix = `${SWAMP_DATA_DIR}/${kind}/`;
+    if (filePath.startsWith(prefix)) {
+      const segments = filePath.slice(prefix.length).split("/");
+      if (segments.length < 1) continue;
+      return `${prefix}${segments[0]}`;
+    }
+  }
   return null;
 }
 

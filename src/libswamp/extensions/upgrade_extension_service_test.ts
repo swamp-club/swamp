@@ -123,7 +123,7 @@ function makeInstallContext(
     downloadArchive: () => Promise.reject(new Error("stub")),
     getChecksum: () => Promise.resolve(null),
     lockfileRepository,
-    skillsDir: join(repoDir, ".claude", "skills"),
+    skillsDirs: [join(repoDir, ".claude", "skills")],
     repoDir,
     force: false,
     alreadyPulled: new Set(),

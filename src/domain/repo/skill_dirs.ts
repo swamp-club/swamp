@@ -74,6 +74,35 @@ export function resolveGlobalSkillsDir(tool: string): string | null {
 }
 
 /**
+ * Returns deduplicated absolute project-local skill directory paths for
+ * a set of enrolled tools. Since multiple tools may share the same path
+ * (e.g., codex/cursor/opencode/copilot all use `.agents/skills/`), this
+ * deduplicates so each directory is only written to once.
+ *
+ * When tools is empty, returns a single-element array with the fallback
+ * `.swamp/pulled-extensions/skills/` directory — there is always at
+ * least one target dir so callers don't need to special-case.
+ */
+export function resolveUniqueLocalSkillsDirs(
+  repoDir: string,
+  tools: readonly string[],
+): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const tool of tools) {
+    const dir = resolveSkillsDir(repoDir, tool);
+    if (!seen.has(dir)) {
+      seen.add(dir);
+      result.push(dir);
+    }
+  }
+  if (result.length === 0) {
+    result.push(swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills));
+  }
+  return result;
+}
+
+/**
  * Returns deduplicated absolute global skill directory paths for a set of
  * enrolled tools. Since multiple tools may share the same global path
  * (e.g., codex/cursor/opencode/copilot all use ~/.agents/skills/), this

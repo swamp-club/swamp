@@ -46,8 +46,9 @@ export interface SourceRemoveDeps {
 /** Wires real infrastructure into SourceRemoveDeps. */
 export function createSourceRemoveDeps(
   repoDir: string,
-  skillsDir?: string,
+  skillsDirs?: string[],
 ): SourceRemoveDeps {
+  const dirs = skillsDirs?.length ? skillsDirs : [];
   return {
     readSources: () => readSwampSources(repoDir),
     writeSources: (config) => writeSwampSources(repoDir, config),
@@ -69,8 +70,11 @@ export function createSourceRemoveDeps(
       );
       return expanded.map((s) => s.path);
     },
-    removeSkills: (skillNames) =>
-      skillsDir ? removeSourceSkills(skillNames, skillsDir) : Promise.resolve(),
+    removeSkills: async (skillNames) => {
+      for (const dir of dirs) {
+        await removeSourceSkills(skillNames, dir);
+      }
+    },
   };
 }
 

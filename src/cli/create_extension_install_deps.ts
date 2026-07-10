@@ -20,8 +20,7 @@
 import { join, relative, resolve } from "@std/path";
 import type { Logger } from "@logtape/logtape";
 import { RepoPath } from "../domain/repo/repo_path.ts";
-import { resolveSkillsDir } from "../domain/repo/skill_dirs.ts";
-import { resolvePrimaryTool } from "../domain/repo/primary_tool.ts";
+import { resolveUniqueLocalSkillsDirs } from "../domain/repo/skill_dirs.ts";
 import { RepoMarkerRepository } from "../infrastructure/persistence/repo_marker_repository.ts";
 import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
 import { loadIdentity } from "./load_identity.ts";
@@ -56,16 +55,20 @@ export async function createExtensionInstallDeps(
   const modelsDir = resolveModelsDir(marker);
   const absoluteModelsDir = resolve(absoluteRepoDir, modelsDir);
   const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
-  const tool = resolvePrimaryTool(marker);
-  const absoluteSkillsDir = resolveSkillsDir(absoluteRepoDir, tool);
+  const tools = marker?.tools?.length ? marker.tools : ["claude"];
+  const absoluteSkillsDirs = resolveUniqueLocalSkillsDirs(
+    absoluteRepoDir,
+    tools,
+  );
   // `entry.files[]` paths in the lockfile are relative to the repo
   // root, so the skill-dir filter in needsInstallOrMigration /
   // sweepLegacyPaths must compare against a repo-relative skillsDir.
-  // The InstallContext's `skillsDir` stays absolute — pull.ts joins it
-  // with the destination dir and that path is independent of the
-  // lockfile's relative-path convention. Two fields with the same
-  // logical role but different conventions; keep them named distinctly.
-  const skillsDirRelative = relative(absoluteRepoDir, absoluteSkillsDir);
+  // The InstallContext's `skillsDirs` stays absolute — pull.ts joins
+  // them with the destination dir and that path is independent of the
+  // lockfile's relative-path convention.
+  const skillsDirsRelative = absoluteSkillsDirs.map((d) =>
+    relative(absoluteRepoDir, d)
+  );
 
   const serverUrl = resolveServerUrl();
   const identity = await loadIdentity();
@@ -74,7 +77,7 @@ export async function createExtensionInstallDeps(
   return {
     lockfilePath,
     repoDir: absoluteRepoDir,
-    skillsDirRelative,
+    skillsDirsRelative,
     createInstallContext: async (_name, _version) => ({
       getExtension: (n) => client.getExtension(n),
       downloadArchive: (n, v, ch) =>
@@ -82,7 +85,7 @@ export async function createExtensionInstallDeps(
       getChecksum: (n, v, ch) => client.getChecksum(n, v, ch),
       logger,
       lockfileRepository: await LockfileRepository.create(lockfilePath),
-      skillsDir: absoluteSkillsDir,
+      skillsDirs: absoluteSkillsDirs,
       repoDir: absoluteRepoDir,
       force: true,
       alreadyPulled: new Set(),

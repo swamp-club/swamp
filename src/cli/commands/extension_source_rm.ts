@@ -32,8 +32,7 @@ import {
 import { createSourceModifyRenderer } from "../../presentation/renderers/extension_source_modify.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
-import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
-import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
+import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -62,9 +61,9 @@ export const extensionSourceRmCommand = new Command()
     const repoDir = resolveRepoDir(options.repoDir);
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(RepoPath.create(repoDir));
-    const primaryTool = resolvePrimaryTool(marker);
-    const skillsDir = resolveSkillsDir(repoDir, primaryTool);
-    const deps = createSourceRemoveDeps(repoDir, skillsDir);
+    const tools = marker?.tools?.length ? marker.tools : ["claude"];
+    const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
+    const deps = createSourceRemoveDeps(repoDir, skillsDirs);
 
     const renderer = createSourceModifyRenderer(cliCtx.outputMode);
     await consumeStream(

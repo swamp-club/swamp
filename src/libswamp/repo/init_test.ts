@@ -298,7 +298,7 @@ Deno.test("repoUpgrade: completes with warning when extension install fails", as
               ),
             getChecksum: () => Promise.resolve(null),
             lockfileRepository: await LockfileRepository.create(lockfilePath),
-            skillsDir: join(tmpDir, ".swamp/pulled-extensions/skills"),
+            skillsDirs: [join(tmpDir, ".swamp/pulled-extensions/skills")],
             repoDir: tmpDir,
             force: true,
             alreadyPulled: new Set<string>(),

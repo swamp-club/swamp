@@ -183,7 +183,7 @@ Deno.test("extensionInstall: reinstalls when filesChecksum mismatches on-disk di
             downloadArchive: () => Promise.reject(new Error("test stub")),
             getChecksum: () => Promise.resolve(null),
             lockfileRepository: await LockfileRepository.create(lockfilePath),
-            skillsDir: join(tmpDir, ".swamp/pulled-extensions/skills"),
+            skillsDirs: [join(tmpDir, ".swamp/pulled-extensions/skills")],
             repoDir: tmpDir,
             force: true,
             alreadyPulled: new Set<string>(),
@@ -352,7 +352,7 @@ Deno.test("extensionInstall: detects missing files and calls install", async () 
             downloadArchive: () => Promise.reject(new Error("test stub")),
             getChecksum: () => Promise.resolve(null),
             lockfileRepository: await LockfileRepository.create(lockfilePath),
-            skillsDir: join(tmpDir, ".swamp/pulled-extensions/skills"),
+            skillsDirs: [join(tmpDir, ".swamp/pulled-extensions/skills")],
             repoDir: tmpDir,
             force: true,
             alreadyPulled: new Set<string>(),
@@ -449,7 +449,7 @@ Deno.test("extensionInstall: lockfile-anchored checksum mismatch fails with drif
             Promise.resolve(new TextEncoder().encode("drifted content")),
           getChecksum: () => Promise.resolve(null),
           lockfileRepository: await LockfileRepository.create(lockfilePath),
-          skillsDir: "unused",
+          skillsDirs: ["unused"],
           repoDir: tmpDir,
           force: true,
           alreadyPulled: new Set<string>(),
@@ -493,7 +493,7 @@ async function makeStubInstallContext(
     downloadArchive: () => Promise.reject(new Error("unused")),
     getChecksum: () => Promise.resolve(null),
     lockfileRepository: await LockfileRepository.create(lockfilePath),
-    skillsDir: join(tmpDir, ".swamp/pulled-extensions/skills"),
+    skillsDirs: [join(tmpDir, ".swamp/pulled-extensions/skills")],
     repoDir: tmpDir,
     force: true,
     alreadyPulled: new Set<string>(),
@@ -695,7 +695,7 @@ Deno.test(
           ".claude/skills/foo",
         ],
         tmpDir,
-        ".claude/skills",
+        [".claude/skills"],
       );
       assertEquals(result, "up_to_date");
     } finally {
@@ -732,7 +732,7 @@ Deno.test(
           ".swamp/pulled-extensions/skills/foo",
         ],
         tmpDir,
-        ".swamp/pulled-extensions/skills",
+        [".swamp/pulled-extensions/skills"],
       );
       assertEquals(result, "up_to_date");
     } finally {
@@ -766,7 +766,7 @@ Deno.test(
           ".claude/skills/foo",
         ],
         tmpDir,
-        ".claude/skills",
+        [".claude/skills"],
       );
       assertEquals(result, "install");
     } finally {
@@ -1098,7 +1098,7 @@ Deno.test(
         extensionInstall(ctx, {
           lockfilePath,
           repoDir: tmpDir,
-          skillsDirRelative: ".claude/skills",
+          skillsDirsRelative: [".claude/skills"],
           createInstallContext: () =>
             makeStubInstallContext(tmpDir, lockfilePath),
           installExtensionFn: makeSuccessfulInstallWithSkill(
@@ -1185,7 +1185,7 @@ Deno.test(
         extensionInstall(ctx, {
           lockfilePath,
           repoDir: tmpDir,
-          skillsDirRelative: ".swamp/pulled-extensions/skills",
+          skillsDirsRelative: [".swamp/pulled-extensions/skills"],
           createInstallContext: () =>
             makeStubInstallContext(tmpDir, lockfilePath),
           installExtensionFn: makeSuccessfulInstallWithSkill(
@@ -1372,7 +1372,7 @@ Deno.test(
       await sweepLegacyPaths(
         ["extensions/models/legacy.ts", ".claude/skills/good-planning"],
         tmpDir,
-        ".claude/skills",
+        [".claude/skills"],
       );
 
       // gen-1 path swept.
@@ -1413,7 +1413,7 @@ Deno.test(
       await sweepLegacyPaths(
         [".swamp/pulled-extensions/skills/good-planning"],
         tmpDir,
-        ".swamp/pulled-extensions/skills",
+        [".swamp/pulled-extensions/skills"],
       );
 
       const stat = await Deno.stat(skillDir);
