@@ -26,6 +26,7 @@ import {
 } from "./for_each_expansion_service.ts";
 import { coerceToSuffix } from "./data_suffix.ts";
 import { deepMerge } from "../inputs/input_merge.ts";
+import { InputValidationService } from "../inputs/input_validation_service.ts";
 // deno-lint-ignore verbatim-module-syntax
 import { JobRun, WorkflowRun } from "./workflow_run.ts";
 import {
@@ -2850,6 +2851,18 @@ export class WorkflowExecutionService {
         task.inputs,
         expressionContext,
       ) as Record<string, unknown>;
+    }
+
+    // Apply the child workflow's input defaults — the top-level
+    // workflowRun() libswamp layer does this, but nested invocations
+    // bypass it entirely and call run() directly.
+    const childWorkflow = await this.lookupWorkflow(task.workflowIdOrName);
+    if (childWorkflow?.inputs) {
+      const validationService = new InputValidationService();
+      evaluatedInputs = validationService.applyDefaults(
+        evaluatedInputs ?? {},
+        childWorkflow.inputs,
+      );
     }
 
     // Create a child WorkflowExecutionService with nesting context.

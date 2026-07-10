@@ -1449,6 +1449,164 @@ Deno.test("DefaultStepExecutor rejects workflow task type", async () => {
   );
 });
 
+Deno.test("workflow step applies child workflow's input defaults", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    // Child workflow declares "verbose" with a default of false
+    const childWorkflow = Workflow.create({
+      name: "child-workflow",
+      inputs: {
+        properties: {
+          name: { type: "string" },
+          verbose: { type: "boolean", default: false },
+        },
+        required: ["name"],
+      },
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "child-step",
+              task: StepTask.modelMethod("some-model", "run", {
+                name: "${{ inputs.name }}",
+                verbose: "${{ inputs.verbose }}",
+              }),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(childWorkflow);
+
+    // Parent invokes the child WITHOUT passing "verbose"
+    const parentWorkflow = Workflow.create({
+      name: "parent-workflow",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "call-child",
+              task: StepTask.workflow("child-workflow", {
+                name: "test-value",
+              }),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(parentWorkflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const events: { kind: string; error?: string }[] = [];
+    for await (const event of service.run(parentWorkflow.name)) {
+      if (event.kind === "step_failed") {
+        events.push({ kind: event.kind, error: event.error });
+      }
+    }
+
+    const failures = events.filter((e) => e.kind === "step_failed");
+    assertEquals(
+      failures.length,
+      0,
+      `Child step should not fail — input defaults should be applied. Failures: ${
+        JSON.stringify(failures)
+      }`,
+    );
+    assertEquals(executor.executedSteps.includes("job1/child-step"), true);
+  });
+});
+
+Deno.test("workflow step applies child defaults when parent passes no inputs", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    // Child workflow where ALL inputs have defaults (none required)
+    const childWorkflow = Workflow.create({
+      name: "child-workflow",
+      inputs: {
+        properties: {
+          verbose: { type: "boolean", default: false },
+        },
+        required: [],
+      },
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "child-step",
+              task: StepTask.modelMethod("some-model", "run", {
+                verbose: "${{ inputs.verbose }}",
+              }),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(childWorkflow);
+
+    // Parent invokes the child with NO inputs field at all
+    const parentWorkflow = Workflow.create({
+      name: "parent-workflow",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "call-child",
+              task: StepTask.workflow("child-workflow"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(parentWorkflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const events: { kind: string; error?: string }[] = [];
+    for await (const event of service.run(parentWorkflow.name)) {
+      if (event.kind === "step_failed") {
+        events.push({ kind: event.kind, error: event.error });
+      }
+    }
+
+    const failures = events.filter((e) => e.kind === "step_failed");
+    assertEquals(
+      failures.length,
+      0,
+      `Child step should not fail when parent passes no inputs — defaults should apply. Failures: ${
+        JSON.stringify(failures)
+      }`,
+    );
+    assertEquals(executor.executedSteps.includes("job1/child-step"), true);
+  });
+});
+
 Deno.test("evaluateWorkflow skips task.inputs with step-output dependencies", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
