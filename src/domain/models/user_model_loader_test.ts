@@ -23,6 +23,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { dirname, join } from "@std/path";
+import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import { ExtensionLoader } from "../extensions/extension_loader.ts";
 import {
@@ -3608,7 +3609,9 @@ export const model = {
     const catalog2 = new ExtensionCatalogStore(dbPath);
     const repository2 = makeRepoForCatalog(catalog2, repoDir);
     const allRows = catalog2.findByKind("model");
-    const broken = allRows.find((r) => r.source_path === brokenSourcePath);
+    const broken = allRows.find((r) =>
+      r.source_path === canonicalizePath(brokenSourcePath)
+    );
     const healthyRow = allRows.find((r) =>
       r.type_normalized === `@user/issue209-healthy-${ts}`
     );
