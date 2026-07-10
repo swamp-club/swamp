@@ -56,6 +56,7 @@ export interface RegistrationContext {
   denoPath: string;
   denoRuntime: DenoRuntime;
   repoDir: string | null;
+  extensionName?: string;
 }
 
 export interface KindAdapter {

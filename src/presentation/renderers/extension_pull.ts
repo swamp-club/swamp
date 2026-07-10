@@ -84,6 +84,14 @@ function renderInstallResultLog(result: InstallResult): void {
     }
   }
 
+  if (result.dependencies.length > 0) {
+    logger.info``;
+    logger
+      .info`Dependencies: ${result.dependencies.join(", ")}`;
+    logger
+      .info`  This extension invokes models from the above extensions via context.runModel()`;
+  }
+
   logger.info`Pulled ${result.name}@${result.version}`;
   logger.info`Extracted ${result.extractedFiles.length} files:`;
   for (const f of result.extractedFiles) {
@@ -160,6 +168,12 @@ function renderInstallResultJson(result: InstallResult): void {
         null,
         2,
       ),
+    );
+  }
+
+  if (result.dependencies.length > 0) {
+    console.log(
+      JSON.stringify({ dependencies: result.dependencies }, null, 2),
     );
   }
 

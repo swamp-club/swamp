@@ -60,6 +60,7 @@ function makeInfoData(
     pullCount: 142,
     score: { percentage: 85, grade: "A" },
     contentMetadata: null,
+    dependencies: [],
     ...overrides,
   };
 }

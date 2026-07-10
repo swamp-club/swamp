@@ -580,6 +580,15 @@ export function createRemoteMethodContext(
       return join(extensionFilesDir, ...relPath.split("/"));
     },
     createCelEnvironment: createExtensionCelEnvironment,
+    runModel: () =>
+      Promise.resolve({
+        ok: false as const,
+        error: {
+          message:
+            "context.runModel() is not available in remote execution — " +
+            "move the runModel call to a local orchestrator model or workflow.",
+        },
+      }),
   };
 
   return { context, getHandles: writers.getHandles };

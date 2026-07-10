@@ -49,4 +49,11 @@ export type MethodExecutionEvent =
   | {
     type: "step_queued";
     requirement: string;
+  }
+  | {
+    type: "nested_model_invocation";
+    targetModelType: string;
+    targetMethod: string;
+    callerModelType: string;
+    callerMethod: string;
   };

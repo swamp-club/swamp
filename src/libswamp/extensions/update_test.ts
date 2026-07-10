@@ -258,6 +258,7 @@ function buildInstallResult(
     hasSkills: false,
     hasSkillScripts: false,
     skillFiles: [],
+    dependencies: [],
     dependencyResults: [],
     pruned,
   };

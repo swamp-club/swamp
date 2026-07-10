@@ -117,6 +117,7 @@ export interface ExtensionInfo {
   score: ExtensionScoreSummary | null;
   latestRc: string | null;
   latestBeta: string | null;
+  dependencies?: string[];
 }
 
 /** Parameters for the extension search endpoint. */

@@ -521,6 +521,26 @@ export class DefaultStepExecutor implements StepExecutor {
       expressionEvaluator,
     } = allDeps;
 
+    if (
+      executionService instanceof DefaultMethodExecutionService &&
+      !executionService.modelInvocationService
+    ) {
+      const { ModelInvocationService } = await import(
+        "../models/model_invocation_service.ts"
+      );
+      executionService.modelInvocationService = new ModelInvocationService({
+        executionService,
+        commonDeps: {
+          dataRepository: unifiedDataRepo,
+          definitionRepository: definitionRepo,
+          vaultService,
+          dataQueryService,
+          createCelEnvironment: createExtensionCelEnvironment,
+        },
+        repoDir: ctx.repoDir,
+      });
+    }
+
     // Resolve every available expression (self.* from the forEach variable,
     // run.*, etc.) anywhere in the task before model lookup. The expression
     // context has self populated with the forEach variable by runStep().

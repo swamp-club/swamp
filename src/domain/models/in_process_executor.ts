@@ -83,6 +83,12 @@ export class InProcessExecutor {
     private readonly modelDef: ModelDefinition,
     private readonly context: MethodContext,
     private readonly methodName: string,
+    private readonly modelInvocationService?: {
+      invoke: (
+        options: Parameters<NonNullable<MethodContext["runModel"]>>[0],
+        callerContext: MethodContext,
+      ) => ReturnType<NonNullable<MethodContext["runModel"]>>;
+    },
   ) {}
 
   async execute(
@@ -172,6 +178,13 @@ export class InProcessExecutor {
       queryData,
       createFileWriter,
     };
+
+    if (this.modelInvocationService?.invoke) {
+      const svc = this.modelInvocationService;
+      const callerCtx = this.contextWithWriters;
+      this.contextWithWriters.runModel = (options) =>
+        svc.invoke(options, callerCtx);
+    }
 
     const savedTraceparent = Deno.env.get("TRACEPARENT");
     const savedTracestate = Deno.env.get("TRACESTATE");

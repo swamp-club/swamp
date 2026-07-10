@@ -65,6 +65,68 @@ import {
 } from "./source_failure_recorder.ts";
 import { makeSourceLocation } from "./source_location.ts";
 
+/**
+ * Extract the extension name from an absolute path within the
+ * pulled-extensions directory. Returns undefined for paths outside
+ * pulled-extensions (user-authored or built-in models).
+ *
+ * Path format: .../.swamp/pulled-extensions/@scope/name/<kind>/...
+ * For scoped: @scope/name. For unscoped: name.
+ */
+export function extractExtensionNameFromPath(
+  absolutePath: string,
+  repoDir: string | null,
+): string | undefined {
+  if (!repoDir) return undefined;
+
+  const cheapRepoDir = resolve(repoDir);
+  const cheapPulledRoot = join(
+    cheapRepoDir,
+    SWAMP_DATA_DIR,
+    "pulled-extensions",
+  );
+  const cheapResolved = resolve(absolutePath);
+
+  let relative: string;
+  if (cheapResolved.startsWith(cheapPulledRoot + SEPARATOR)) {
+    relative = cheapResolved.slice(cheapPulledRoot.length + 1);
+  } else {
+    // Symlink-aware fallback — only pay for realPathSync when the cheap
+    // check fails (e.g. /tmp -> /private/tmp on macOS).
+    let realRepoDir: string;
+    try {
+      realRepoDir = Deno.realPathSync(repoDir);
+    } catch {
+      return undefined;
+    }
+    if (realRepoDir === cheapRepoDir) return undefined;
+    const realPulledRoot = join(
+      realRepoDir,
+      SWAMP_DATA_DIR,
+      "pulled-extensions",
+    );
+    let realResolved: string;
+    try {
+      realResolved = Deno.realPathSync(absolutePath);
+    } catch {
+      return undefined;
+    }
+    if (!realResolved.startsWith(realPulledRoot + SEPARATOR)) return undefined;
+    relative = realResolved.slice(realPulledRoot.length + 1);
+  }
+
+  const segments = relative.split(SEPARATOR);
+  if (segments.length < 2) return undefined;
+  let name: string;
+  if (segments[0].startsWith("@") && segments.length >= 3) {
+    name = `${segments[0]}/${segments[1]}`;
+  } else {
+    name = segments[0];
+  }
+  if (name.includes("..") || name.includes("\0")) return undefined;
+  return name;
+}
+
 export class ExtensionLoader {
   private readonly denoRuntime: DenoRuntime;
   private readonly repoDir: string | null;
@@ -238,7 +300,14 @@ export class ExtensionLoader {
           typeNormalized,
           validated,
           module,
-          { ...ctx, absolutePath },
+          {
+            ...ctx,
+            absolutePath,
+            extensionName: extractExtensionNameFromPath(
+              absolutePath,
+              this.repoDir,
+            ),
+          },
         );
         result.loaded.push(file);
       } catch (error) {
@@ -679,6 +748,10 @@ export class ExtensionLoader {
         denoPath,
         denoRuntime: this.denoRuntime,
         repoDir: this.repoDir,
+        extensionName: extractExtensionNameFromPath(
+          entry.source_path,
+          this.repoDir,
+        ),
       },
     );
   }
@@ -930,6 +1003,10 @@ export class ExtensionLoader {
             denoPath,
             denoRuntime: this.denoRuntime,
             repoDir: this.repoDir,
+            extensionName: extractExtensionNameFromPath(
+              absolutePath,
+              this.repoDir,
+            ),
           },
         );
       }

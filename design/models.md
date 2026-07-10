@@ -238,6 +238,61 @@ called.
 
 Methods can also instantiate a model, from either an existing definition by name
 or by supplying the definiton directly, then can invoke methods on those models.
+This is implemented via `context.runModel()`.
+
+### Cross-Model Invocation (`context.runModel`)
+
+`context.runModel(options)` lets a model method invoke another model's method
+during its own execution and use the result inline. Two calling conventions:
+
+```typescript
+// Call an existing definition by name
+const result = await context.runModel({
+  definition: "my-vpc",
+  method: "read",
+});
+
+// Direct type execution (auto-creates definition)
+const result = await context.runModel({
+  modelType: "aws/ec2/vpc",
+  name: "my-new-vpc",
+  method: "create",
+  arguments: { cidrBlock: "10.0.0.0/16" },
+});
+```
+
+Returns a discriminated result:
+
+- `{ ok: true, resources: DataHandle[] }` on success
+- `{ ok: false, error: { message, stack? } }` on failure
+
+**Data ownership:** When model X calls model Y, Y's data writes scope to Y's
+definition, not X's. This is consistent regardless of whether Y was run
+standalone, from a workflow, or from inside X.
+
+**Failure semantics:** Y's failure surfaces as `{ ok: false }` to X. X decides
+how to handle it. Already-persisted data from both X and Y stays.
+
+**Depth and cycle limits:** Maximum 10 levels deep (matching workflow nesting).
+Cycles are detected via an ancestor chain tracking `(modelType, method)` pairs.
+Maximum 100 total `runModel` calls per top-level execution (matching follow-up
+action limits).
+
+**Vault isolation:** The caller's `VaultSecretBag` does not propagate to the
+nested model. Each nested execution resolves its own vault expressions.
+
+**Runtime authorization:** Extension models must declare dependencies in
+`manifest.yaml` to invoke models from other extensions. Built-in types and
+user-authored models are unrestricted. Same-extension calls are always allowed.
+Unauthorized calls return `{ ok: false }` with an actionable error message.
+
+**Remote execution:** `context.runModel()` is not available in remote worker
+contexts. Models that need cross-model invocation should run locally or use a
+workflow for orchestration.
+
+**Output lineage:** Nested invocations produce `ModelOutput` records with
+`triggeredBy: "model"`, `parentOutputId` pointing to the caller's output, and
+`callerExtension` for provenance tracking.
 
 ## Pre-flight Checks
 
