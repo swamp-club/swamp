@@ -1053,3 +1053,42 @@ Deno.test("ExtensionRepository: saveAll preserves source-mounted rows outside re
     );
   });
 });
+
+Deno.test("saveAll: upsertWithIdentity canonicalizes source_path preventing ghost rows", () => {
+  withRepository((repo, cat, repoRoot) => {
+    const loc = makeSourceLocation(
+      join(repoRoot, "extensions/models/foo.ts"),
+      repoRoot,
+    );
+    const source = makeSource({
+      id: loc,
+      kind: "model",
+      fingerprint: "abc123",
+      state: {
+        tag: "Indexed",
+        type: "@org/foo",
+        bundle: makeBundleLocation("b.js", "abc123"),
+      },
+      sourceMtime: "",
+    });
+    const ext = makeExtension({
+      name: "@local/test",
+      version: "0.0.0",
+      origin: "local",
+      extensionRoot: repoRoot,
+      sources: [source],
+    });
+
+    repo.saveAll([ext]);
+
+    const rows = cat.findAll();
+    assertEquals(rows.length, 1);
+    assertEquals(
+      rows[0].source_path,
+      canonicalizePath(
+        join(repoRoot, "extensions/models/foo.ts"),
+      ),
+    );
+    assertEquals(rows[0].extension_name, "@local/test");
+  });
+});
