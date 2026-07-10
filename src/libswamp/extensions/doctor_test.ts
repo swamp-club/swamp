@@ -74,7 +74,7 @@ function buildDeps(
       {},
     ),
     repoDir: options.repoDir ?? "/tmp/swamp-test-repo",
-    skillsDir: options.skillsDir ?? ".claude/skills",
+    skillsDirs: [options.skillsDir ?? ".claude/skills"],
     abortSignal: new AbortController().signal,
     buildAggregateState: options.aggregateState
       ? () => Promise.resolve(options.aggregateState!)

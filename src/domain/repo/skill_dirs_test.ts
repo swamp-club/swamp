@@ -24,6 +24,7 @@ import {
   GLOBAL_SKILL_DIRS,
   resolveGlobalSkillsDir,
   resolveUniqueGlobalSkillsDirs,
+  resolveUniqueLocalSkillsDirs,
 } from "./skill_dirs.ts";
 
 Deno.test("GLOBAL_SKILL_DIRS: claude uses vendor-specific path", () => {
@@ -78,4 +79,38 @@ Deno.test("resolveUniqueGlobalSkillsDirs: skips none tool", () => {
 Deno.test("resolveUniqueGlobalSkillsDirs: empty tools returns empty", () => {
   const dirs = resolveUniqueGlobalSkillsDirs([]);
   assertEquals(dirs.length, 0);
+});
+
+Deno.test("resolveUniqueLocalSkillsDirs: deduplicates shared paths", () => {
+  const dirs = resolveUniqueLocalSkillsDirs("/repo", [
+    "claude",
+    "codex",
+    "cursor",
+    "opencode",
+    "copilot",
+    "kiro",
+  ]);
+  assertEquals(dirs.length, 4);
+  assertPathStringIncludes(dirs[0], `.claude${SEPARATOR}skills`);
+  assertPathStringIncludes(dirs[1], `.agents${SEPARATOR}skills`);
+  assertPathStringIncludes(dirs[2], `.cursor${SEPARATOR}skills`);
+  assertPathStringIncludes(dirs[3], `.kiro${SEPARATOR}skills`);
+});
+
+Deno.test("resolveUniqueLocalSkillsDirs: empty tools returns fallback", () => {
+  const dirs = resolveUniqueLocalSkillsDirs("/repo", []);
+  assertEquals(dirs.length, 1);
+  assertPathStringIncludes(dirs[0], "pulled-extensions");
+});
+
+Deno.test("resolveUniqueLocalSkillsDirs: single tool returns one dir", () => {
+  const dirs = resolveUniqueLocalSkillsDirs("/repo", ["claude"]);
+  assertEquals(dirs.length, 1);
+  assertPathStringIncludes(dirs[0], `.claude${SEPARATOR}skills`);
+});
+
+Deno.test("resolveUniqueLocalSkillsDirs: unknown tool uses fallback path", () => {
+  const dirs = resolveUniqueLocalSkillsDirs("/repo", ["unknown-tool"]);
+  assertEquals(dirs.length, 1);
+  assertPathStringIncludes(dirs[0], "pulled-extensions");
 });

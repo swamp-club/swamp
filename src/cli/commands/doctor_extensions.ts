@@ -83,10 +83,9 @@ import {
 } from "../remote_run.ts";
 import type { DoctorExtensionsResponse } from "../../serve/protocol.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
-import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
+import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
-import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
 import { readLocalManifestIdentity } from "../../infrastructure/persistence/local_manifest_reader.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
 
@@ -277,11 +276,13 @@ export const doctorExtensionsCommand = withRemoteOptions(
     // per-extension roots referenced by the lockfile. (lockfilePath /
     // marker / repoPath / modelsDir / absoluteModelsDir are hoisted
     // above the rescan call earlier in this function.)
-    const tool = resolvePrimaryTool(marker);
-    const absoluteSkillsDir = resolveSkillsDir(repoDir, tool);
-    // detectOrphanFiles wants a repo-relative skills dir so it can
+    const tools = marker?.tools?.length ? marker.tools : ["claude"];
+    const absoluteSkillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
+    // detectOrphanFiles wants repo-relative skills dirs so it can
     // compare against entry.files[] paths (which are repo-relative).
-    const repoRelativeSkillsDir = relative(repoDir, absoluteSkillsDir);
+    const repoRelativeSkillsDirs = absoluteSkillsDirs.map((d) =>
+      relative(repoDir, d)
+    );
 
     const controller = new AbortController();
     const renderer = createDoctorExtensionsRenderer(cliCtx.outputMode, {
@@ -294,7 +295,7 @@ export const doctorExtensionsCommand = withRemoteOptions(
         registries,
         lockfileRepository: doctorLockfileRepo,
         repoDir,
-        skillsDir: repoRelativeSkillsDir,
+        skillsDirs: repoRelativeSkillsDirs,
         abortSignal: controller.signal,
         buildAggregateState: async () => {
           const aggLockfileRepo = await LockfileRepository.create(
@@ -361,8 +362,6 @@ export const doctorExtensionsCommand = withRemoteOptions(
                 const pullLockfileRepo = await LockfileRepository.create(
                   lockfilePath,
                 );
-                const pullTool = resolvePrimaryTool(marker);
-                const skillsDir = resolveSkillsDir(repoDir, pullTool);
                 const denoRuntime = new EmbeddedDenoRuntime();
                 const pullRepo = new ExtensionRepository({
                   catalog: sharedCatalog,
@@ -373,7 +372,7 @@ export const doctorExtensionsCommand = withRemoteOptions(
                 const deps = await createExtensionPullDeps(
                   serverUrl,
                   lockfilePath,
-                  skillsDir,
+                  absoluteSkillsDirs,
                   repoDir,
                   { identity },
                 );
@@ -385,7 +384,7 @@ export const doctorExtensionsCommand = withRemoteOptions(
                     getChecksum: deps.getChecksum,
                     logger: cliCtx.logger,
                     lockfileRepository: deps.lockfileRepository,
-                    skillsDir,
+                    skillsDirs: absoluteSkillsDirs,
                     repoDir,
                     force: true,
                     outputMode: cliCtx.outputMode,

@@ -234,7 +234,7 @@ async function makeStubDeps(
     lockfileRepository: await LockfileRepository.create(
       join(tmpDir, "upstream_extensions.json"),
     ),
-    skillsDir: join(tmpDir, "skills"),
+    skillsDirs: [join(tmpDir, "skills")],
     repoDir: tmpDir,
     alreadyPulled: new Set(),
     depth: 0,

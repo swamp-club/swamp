@@ -40,8 +40,7 @@ import { ExtensionCatalogStore } from "../../infrastructure/persistence/extensio
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { createExtensionUpdateRenderer } from "../../presentation/renderers/extension_update.ts";
-import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
-import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
+import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 import { loadIdentity } from "../load_identity.ts";
 
@@ -83,14 +82,14 @@ export const extensionUpdateCommand = new Command()
     // Per-extension models/workflows/vaults/drivers/datastores/reports
     // destinations are derived inside installExtension from the
     // extension's scoped name. Only skillsDir is tool-dependent.
-    const tool = resolvePrimaryTool(marker);
-    const skillsDir = resolveSkillsDir(repoDir, tool);
+    const tools = marker?.tools?.length ? marker.tools : ["claude"];
+    const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
 
-    const skillsDirRelative = relative(repoDir, skillsDir);
+    const primarySkillsDirRelative = relative(repoDir, skillsDirs[0]);
     await warnLegacyExtensionLayout(
       lockfilePath,
       (msg) => cliCtx.logger.warn(msg),
-      skillsDirRelative,
+      primarySkillsDirRelative,
     );
 
     // 4. Parse extension name if given
@@ -131,7 +130,7 @@ export const extensionUpdateCommand = new Command()
           const installCtx = await createInstallContext(serverUrl, {
             logger: cliCtx.logger,
             lockfilePath,
-            skillsDir,
+            skillsDirs,
             repoDir,
             force: true,
             identity,

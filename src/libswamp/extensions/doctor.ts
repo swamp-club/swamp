@@ -25,7 +25,7 @@ import type { SwampError } from "../errors.ts";
 import type { DoctorAggregateReport } from "./doctor_aggregate.ts";
 import type { RepairReport } from "./doctor_repair.ts";
 import type { ReconcileTransition } from "./reconcile_from_disk_service.ts";
-import { extractTopLevelRoot } from "./layout.ts";
+import { extractTopLevelRootMulti } from "./layout.ts";
 
 /**
  * Public registry name for the doctor report. The infrastructure-layer
@@ -160,11 +160,12 @@ export interface DoctorExtensionsDeps {
   /** Repo root used to resolve repo-relative paths for filesystem walks. */
   repoDir: string;
   /**
-   * Tool-aware skills directory (e.g. `.claude/skills`). Repo-relative.
-   * Skill paths are tracked as directory paths only, so the orphan walk
-   * skips them — extractTopLevelRoot needs this to recognise skill paths.
+   * Tool-aware skills directories (e.g. `[".claude/skills", ".kiro/skills"]`).
+   * Repo-relative. Skill paths are tracked as directory paths only, so the
+   * orphan walk skips them — extractTopLevelRoot needs these to recognise
+   * skill paths.
    */
-  skillsDir: string;
+  skillsDirs: string[];
   abortSignal: AbortSignal;
   /**
    * W6: Callback that builds aggregate state from the catalog after
@@ -237,10 +238,10 @@ function toForwardSlashes(p: string): string {
 async function detectOrphanFiles(
   upstreamMap: UpstreamExtensionsMap,
   repoDir: string,
-  skillsDir: string,
+  skillsDirs: string[],
 ): Promise<DoctorOrphanFile[]> {
   const orphans: DoctorOrphanFile[] = [];
-  const normalizedSkillsDir = toForwardSlashes(skillsDir);
+  const normalizedSkillsDirs = skillsDirs.map(toForwardSlashes);
 
   for (const [extensionName, entry] of Object.entries(upstreamMap)) {
     const trackedFiles = (entry.files ?? []).map(toForwardSlashes);
@@ -249,9 +250,9 @@ async function detectOrphanFiles(
     const tracked = new Set(trackedFiles);
     const roots = new Set<string>();
     for (const file of trackedFiles) {
-      const root = extractTopLevelRoot(
+      const root = extractTopLevelRootMulti(
         file,
-        normalizedSkillsDir,
+        normalizedSkillsDirs,
         extensionName,
       );
       if (root !== null) {
@@ -371,7 +372,7 @@ export async function* doctorExtensions(
     orphanFiles = await detectOrphanFiles(
       upstreamMap,
       deps.repoDir,
-      deps.skillsDir,
+      deps.skillsDirs,
     );
   }
 

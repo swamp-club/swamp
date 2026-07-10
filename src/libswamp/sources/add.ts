@@ -62,9 +62,10 @@ export interface SourceAddDeps {
 export function createSourceAddDeps(
   repoDir: string,
   tools?: string[],
-  skillsDir?: string,
+  skillsDirs?: string[],
 ): SourceAddDeps {
   const resolvedTools = tools?.length ? tools : ["claude"];
+  const dirs = skillsDirs?.length ? skillsDirs : [];
   return {
     readSources: () => readSwampSources(repoDir),
     writeSources: (config) => writeSwampSources(repoDir, config),
@@ -72,10 +73,19 @@ export function createSourceAddDeps(
     expandSource: (source) => expandSourcePaths({ sources: [source] }, repoDir),
     resolveSkills: (sourcePath) =>
       resolveSourceSkills(sourcePath, resolvedTools),
-    copySkills: (skills) =>
-      skillsDir ? copySourceSkills(skills, skillsDir) : Promise.resolve([]),
-    cleanupSkills: (skillNames) =>
-      skillsDir ? removeSourceSkills(skillNames, skillsDir) : Promise.resolve(),
+    copySkills: async (skills) => {
+      const allCopied: string[] = [];
+      for (const dir of dirs) {
+        const copied = await copySourceSkills(skills, dir);
+        allCopied.push(...copied);
+      }
+      return allCopied;
+    },
+    cleanupSkills: async (skillNames) => {
+      for (const dir of dirs) {
+        await removeSourceSkills(skillNames, dir);
+      }
+    },
   };
 }
 

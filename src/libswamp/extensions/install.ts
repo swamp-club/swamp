@@ -32,7 +32,7 @@ import {
   type InstallResult,
   parseExtensionRef,
 } from "./pull.ts";
-import { classifyExtensionFile, isSkillDirEntry } from "./layout.ts";
+import { classifyExtensionFile, isSkillDirEntryMulti } from "./layout.ts";
 
 /**
  * Test seam for `extensionInstall`. Production always uses
@@ -86,13 +86,13 @@ export interface ExtensionInstallDeps {
   lockfilePath: string;
   repoDir: string;
   /**
-   * Tool-aware skills destination as a **repo-relative** path (e.g.
-   * `.claude/skills`, `.cursor/skills`, or
-   * `.swamp/pulled-extensions/skills` for `tool=none`). Repo-relative
+   * Tool-aware skills destinations as **repo-relative** paths (e.g.
+   * `[".claude/skills", ".kiro/skills"]`, or
+   * `[".swamp/pulled-extensions/skills"]` for `tool=none`). Repo-relative
    * is load-bearing: `entry.files[]` paths in the lockfile are
    * repo-relative, and `isSkillDirEntry` compares them directly. Note
-   * the deliberate asymmetry with `InstallContext.skillsDir`, which is
-   * **absolute** because `pull.ts` joins it with destination dirs to
+   * the deliberate asymmetry with `InstallContext.skillsDirs`, which is
+   * **absolute** because `pull.ts` joins them with destination dirs to
    * write skill files. Don't conflate the two.
    *
    * Optional for source-compat with direct libswamp consumers that
@@ -104,7 +104,7 @@ export interface ExtensionInstallDeps {
    * indistinguishable from a gen-2 path and would be destructively
    * removed.
    */
-  skillsDirRelative?: string;
+  skillsDirsRelative?: string[];
   /**
    * Async factory that constructs a fresh {@link InstallContext} for
    * each install entry. The async return type matters: each context
@@ -170,7 +170,7 @@ export async function* extensionInstall(
         let needs = await needsInstallOrMigration(
           originalFiles,
           deps.repoDir,
-          deps.skillsDirRelative,
+          deps.skillsDirsRelative,
         );
 
         // When all files exist at current layout, verify their content
@@ -227,7 +227,7 @@ export async function* extensionInstall(
             await sweepLegacyPaths(
               originalFiles,
               deps.repoDir,
-              deps.skillsDirRelative,
+              deps.skillsDirsRelative,
             );
             entries.push({ name, version, status: "migrated" });
             migrated++;
@@ -282,7 +282,7 @@ export async function* extensionInstall(
  * Missing beats legacy: a missing file cannot be migrated without a
  * re-pull, so the flow is the same either way.
  *
- * `skillsDirRelative` (when provided, repo-relative) filters skill
+ * `skillsDirsRelative` (when provided, repo-relative) filters skill
  * directory entries out of legacy classification — they are always
  * considered current-layout regardless of physical location. Their
  * on-disk presence is still checked so a skill dir deleted by a prior
@@ -292,7 +292,7 @@ export async function* extensionInstall(
 export async function needsInstallOrMigration(
   files: string[],
   repoDir: string,
-  skillsDirRelative?: string,
+  skillsDirsRelative?: string[],
 ): Promise<"install" | "migrate" | "up_to_date"> {
   let hasLegacy = false;
   for (const file of files) {
@@ -306,7 +306,7 @@ export async function needsInstallOrMigration(
       }
       throw error;
     }
-    if (isSkillDirEntry(file, skillsDirRelative)) {
+    if (isSkillDirEntryMulti(file, skillsDirsRelative)) {
       continue;
     }
     const generation = classifyExtensionFile(file);
@@ -328,7 +328,7 @@ export async function needsInstallOrMigration(
  * tracked by their root, with nested files inside) are handled — a plain
  * Deno.remove fails on non-empty directories.
  *
- * `skillsDirRelative` (when provided, repo-relative) excludes skill
+ * `skillsDirsRelative` (when provided, repo-relative) excludes skill
  * directory entries from the sweep — skill paths are current-layout
  * regardless of physical location and the freshly-restored skill dir
  * must survive the post-install cleanup. Without this filter, the
@@ -342,11 +342,11 @@ export async function needsInstallOrMigration(
 export async function sweepLegacyPaths(
   originalFiles: string[],
   repoDir: string,
-  skillsDirRelative?: string,
+  skillsDirsRelative?: string[],
 ): Promise<void> {
   for (const file of originalFiles) {
     assertContainedPath(file, repoDir);
-    if (isSkillDirEntry(file, skillsDirRelative)) {
+    if (isSkillDirEntryMulti(file, skillsDirsRelative)) {
       continue;
     }
     if (classifyExtensionFile(file) === "current") {

@@ -218,7 +218,7 @@ export function createAutoResolveInstallerAdapter(
           getChecksum,
           logger,
           lockfileRepository,
-          skillsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills),
+          skillsDirs: [swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills)],
           repoDir,
           force: false,
           alreadyPulled: new Set<string>(),

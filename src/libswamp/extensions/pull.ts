@@ -119,9 +119,9 @@ export interface InstallResult {
  * datastores/reports) are deliberately NOT fields on this context —
  * `installExtension` derives them itself as
  * `.swamp/pulled-extensions/<ref.name>/<type>/` so filesystem state is
- * strictly per-extension (issue 120). Only `skillsDir` remains because
- * skills land in a tool-specific dir (`.claude/skills/`, etc.) that
- * the caller owns.
+ * strictly per-extension (issue 120). Only `skillsDirs` remains because
+ * skills land in tool-specific dirs (`.claude/skills/`, `.kiro/skills/`,
+ * etc.) that the caller owns — one per enrolled tool.
  */
 export interface InstallContext {
   getExtension: (name: string) => Promise<ExtensionRegistryInfo | null>;
@@ -153,8 +153,14 @@ export interface InstallContext {
    * preserves that timing.
    */
   lockfileRepository: LockfileRepository;
-  /** Tool-aware skills destination (e.g. `.claude/skills/`). */
-  skillsDir: string;
+  /**
+   * Tool-aware skills destinations — one per unique enrolled tool
+   * (e.g. `["/repo/.claude/skills", "/repo/.kiro/skills"]`). Skills are
+   * extracted to every directory in this array; all paths are tracked in
+   * the lockfile so orphan pruning and extension rm handle multi-tool
+   * repos correctly.
+   */
+  skillsDirs: string[];
   repoDir: string;
   force: boolean;
   alreadyPulled: Set<string>;
@@ -232,8 +238,11 @@ export interface ExtensionPullDeps {
    * and the single-use rule.
    */
   lockfileRepository: LockfileRepository;
-  /** Tool-aware skills destination (e.g. `.claude/skills/`). */
-  skillsDir: string;
+  /**
+   * Tool-aware skills destinations — one per unique enrolled tool.
+   * See {@link InstallContext.skillsDirs}.
+   */
+  skillsDirs: string[];
   repoDir: string;
   alreadyPulled: Set<string>;
   depth: number;
@@ -847,7 +856,7 @@ export async function installExtension(
     // dedicated subtree under .swamp/pulled-extensions/<ext-name>/. Prevents
     // cross-extension filename collisions (e.g. _lib/aws.ts shared between
     // @swamp/aws/ec2 and @swamp/aws/eks, or README.md across unrelated
-    // extensions). Skills remain at ctx.skillsDir — already per-skill.
+    // extensions). Skills fan out to ctx.skillsDirs — one per enrolled tool.
     const absoluteExtRoot = join(
       swampPath(repoDir, "pulled-extensions"),
       ref.name,
@@ -1017,7 +1026,7 @@ export async function installExtension(
       }
     }
 
-    // Extract skills to tool-specific skill directory.
+    // Extract skills to every enrolled tool's skill directory.
     // Track only the skill directory root (not individual files) so that
     // extension rm can delete the entire directory in one shot.
     let hasSkills = false;
@@ -1031,28 +1040,35 @@ export async function installExtension(
       }
       if (skillEntries.length > 0) {
         hasSkills = true;
-        const absoluteSkillsDir = resolve(repoDir, ctx.skillsDir);
-        await Deno.mkdir(absoluteSkillsDir, { recursive: true });
-        for (const entry of skillEntries) {
-          if (!entry.isDirectory) continue;
-          const srcSkillDir = join(skillsSrc, entry.name);
-          const destSkillDir = join(absoluteSkillsDir, entry.name);
-          await Deno.mkdir(destSkillDir, { recursive: true });
-          const extracted = await copyDir(srcSkillDir, destSkillDir, repoDir);
-          // Track the skill directory root, not individual files
-          const skillDirRelative = relative(repoDir, destSkillDir);
-          extractedFiles.push(skillDirRelative);
-          skillFiles.push(...extracted);
+        for (const skillsDir of ctx.skillsDirs) {
+          const absoluteSkillsDir = resolve(repoDir, skillsDir);
+          await Deno.mkdir(absoluteSkillsDir, { recursive: true });
+          for (const entry of skillEntries) {
+            if (!entry.isDirectory) continue;
+            const srcSkillDir = join(skillsSrc, entry.name);
+            const destSkillDir = join(absoluteSkillsDir, entry.name);
+            await Deno.mkdir(destSkillDir, { recursive: true });
+            const extracted = await copyDir(
+              srcSkillDir,
+              destSkillDir,
+              repoDir,
+            );
+            const skillDirRelative = relative(repoDir, destSkillDir);
+            extractedFiles.push(skillDirRelative);
+            skillFiles.push(...extracted);
 
-          // Check for scripts/ directory
-          try {
-            const scriptsDir = join(srcSkillDir, "scripts");
-            const stat = await Deno.stat(scriptsDir);
-            if (stat.isDirectory) {
-              hasSkillScripts = true;
+            // Check for scripts/ directory (once per skill, not per tool)
+            if (!hasSkillScripts) {
+              try {
+                const scriptsDir = join(srcSkillDir, "scripts");
+                const stat = await Deno.stat(scriptsDir);
+                if (stat.isDirectory) {
+                  hasSkillScripts = true;
+                }
+              } catch {
+                // No scripts/ directory
+              }
             }
-          } catch {
-            // No scripts/ directory
           }
         }
       }
@@ -1275,7 +1291,7 @@ export async function* extensionPull(
         getChecksum: deps.getChecksum,
         logger: ctx.logger,
         lockfileRepository: deps.lockfileRepository,
-        skillsDir: deps.skillsDir,
+        skillsDirs: deps.skillsDirs,
         repoDir: deps.repoDir,
         force: input.force,
         alreadyPulled: deps.alreadyPulled,
@@ -1335,7 +1351,7 @@ export async function* extensionPull(
 export async function createExtensionPullDeps(
   serverUrl: string,
   lockfilePath: string,
-  skillsDir: string,
+  skillsDirs: string[],
   repoDir: string,
   args?: {
     denoRuntime?: DenoRuntime;
@@ -1356,7 +1372,7 @@ export async function createExtensionPullDeps(
     getChecksum: (name, version, channel) =>
       client.getChecksum(name, version, channel),
     lockfileRepository,
-    skillsDir,
+    skillsDirs,
     repoDir,
     alreadyPulled: new Set(),
     depth: 0,
@@ -1376,7 +1392,7 @@ export async function createInstallContext(
   serverUrl: string,
   opts: {
     lockfilePath: string;
-    skillsDir: string;
+    skillsDirs: string[];
     repoDir: string;
     force: boolean;
     logger?: Logger;
@@ -1394,7 +1410,7 @@ export async function createInstallContext(
       client.getChecksum(name, version, channel),
     logger: opts.logger,
     lockfileRepository,
-    skillsDir: opts.skillsDir,
+    skillsDirs: opts.skillsDirs,
     repoDir: opts.repoDir,
     force: opts.force,
     alreadyPulled: new Set(),

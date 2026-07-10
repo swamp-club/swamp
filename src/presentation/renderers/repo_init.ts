@@ -252,8 +252,8 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
             logger.info(
               `  ${entry.names.length} extension(s) installed for the ` +
                 `previous tool were NOT copied to ${entry.tool}. ` +
-                `Re-run \`swamp extension pull <name>\` to install ` +
-                `for ${entry.tool}: ${list}`,
+                `Run \`swamp extension pull <name> --force\` to install ` +
+                `for all enrolled tools: ${list}`,
             );
           }
         }

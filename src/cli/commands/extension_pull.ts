@@ -34,8 +34,7 @@ import {
 import { requireRepoMarker } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
 import { UserError } from "../../domain/errors.ts";
-import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
-import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
+import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { loadIdentity } from "../load_identity.ts";
 import {
   ConflictError,
@@ -100,8 +99,11 @@ export interface PullContext {
    * Captures a snapshot at construction; construct fresh per pull.
    */
   lockfileRepository: LockfileRepository;
-  /** Tool-aware skills destination (e.g. `.claude/skills/`). */
-  skillsDir: string;
+  /**
+   * Tool-aware skills destinations — one per unique enrolled tool.
+   * See {@link InstallContext.skillsDirs}.
+   */
+  skillsDirs: string[];
   repoDir: string;
   force: boolean;
   outputMode: "log" | "json";
@@ -135,7 +137,7 @@ export async function pullExtension(
     downloadArchive: ctx.downloadArchive,
     getChecksum: ctx.getChecksum,
     lockfileRepository: ctx.lockfileRepository,
-    skillsDir: ctx.skillsDir,
+    skillsDirs: ctx.skillsDirs,
     repoDir: ctx.repoDir,
     alreadyPulled: ctx.alreadyPulled,
     depth: ctx.depth,
@@ -230,13 +232,13 @@ export const extensionPullCommand = new Command()
     const absoluteModelsDir = resolve(repoDir, modelsDir);
     const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
 
-    const tool = resolvePrimaryTool(marker);
-    const skillsDir = resolveSkillsDir(repoDir, tool);
-    const skillsDirRelative = relative(repoDir, skillsDir);
+    const tools = marker?.tools?.length ? marker.tools : ["claude"];
+    const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
+    const primarySkillsDirRelative = relative(repoDir, skillsDirs[0]);
     await warnLegacyExtensionLayout(
       lockfilePath,
       (msg) => ctx.logger.warn(msg),
-      skillsDirRelative,
+      primarySkillsDirRelative,
     );
 
     // 7. Construct W2 service deps (denoRuntime + ExtensionRepository)
@@ -253,7 +255,7 @@ export const extensionPullCommand = new Command()
       const deps = await createExtensionPullDeps(
         serverUrl,
         lockfilePath,
-        skillsDir,
+        skillsDirs,
         repoDir,
         { identity },
       );
@@ -271,7 +273,7 @@ export const extensionPullCommand = new Command()
         getChecksum: deps.getChecksum,
         logger: ctx.logger,
         lockfileRepository: deps.lockfileRepository,
-        skillsDir,
+        skillsDirs,
         repoDir,
         force: options.force ?? false,
         outputMode: ctx.outputMode,

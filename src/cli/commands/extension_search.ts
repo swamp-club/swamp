@@ -45,8 +45,7 @@ import {
   warnLegacyExtensionLayout,
 } from "../../libswamp/mod.ts";
 import { createExtensionSearchRenderer } from "../../presentation/renderers/extension_search.tsx";
-import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
-import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
+import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 import { loadIdentity } from "../load_identity.ts";
 import {
@@ -263,14 +262,13 @@ export const extensionSearchCommand = withRemoteOptions(
       "upstream_extensions.json",
     );
 
-    const skillsDirRelative = relative(
-      repoDir,
-      resolveSkillsDir(repoDir, resolvePrimaryTool(marker)),
-    );
+    const tools = marker?.tools?.length ? marker.tools : ["claude"];
+    const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
+    const primarySkillsDirRelative = relative(repoDir, skillsDirs[0]);
     await warnLegacyExtensionLayout(
       lockfilePath,
       (msg) => ctx.logger.warn(msg),
-      skillsDirRelative,
+      primarySkillsDirRelative,
     );
 
     const lockfileRepository = await LockfileRepository.create(lockfilePath);
@@ -282,7 +280,7 @@ export const extensionSearchCommand = withRemoteOptions(
         client.getChecksum(name, version, channel),
       logger: ctx.logger,
       lockfileRepository,
-      skillsDir: resolveSkillsDir(repoDir, resolvePrimaryTool(marker)),
+      skillsDirs,
       repoDir,
       force: false,
       outputMode: ctx.outputMode,
