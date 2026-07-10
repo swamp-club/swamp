@@ -33,6 +33,14 @@ export interface WorkflowRunPayload {
   lastEvaluated?: boolean;
   verbose?: boolean;
   runtimeTags?: Record<string, string>;
+  skipAllReports?: boolean;
+  skipReportNames?: string[];
+  skipReportLabels?: string[];
+  reportNames?: string[];
+  reportLabels?: string[];
+  skipAllChecks?: boolean;
+  skipCheckNames?: string[];
+  skipCheckLabels?: string[];
   traceparent?: string;
   tracestate?: string;
 }
@@ -45,6 +53,14 @@ export interface ModelMethodRunPayload {
   runtimeTags?: Record<string, string>;
   typeArg?: string;
   definitionName?: string;
+  skipAllReports?: boolean;
+  skipReportNames?: string[];
+  skipReportLabels?: string[];
+  reportNames?: string[];
+  reportLabels?: string[];
+  skipAllChecks?: boolean;
+  skipCheckNames?: string[];
+  skipCheckLabels?: string[];
   traceparent?: string;
   tracestate?: string;
 }
@@ -286,7 +302,7 @@ export interface WorkflowRunSearchPayload {
 }
 
 export interface WorkflowSchemaPayload {
-  workflowIdOrName: string;
+  workflowIdOrName?: string;
 }
 
 export interface WorkflowApprovePayload {
