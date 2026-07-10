@@ -2026,3 +2026,134 @@ Deno.test("validateServerRequest: rejects request ID over 256 chars", () => {
   assertEquals(typeof result, "string");
   assertStringIncludes(result as string, "id");
 });
+
+// ── Report/check filter fields on run payloads ──────────────────────────
+
+Deno.test("validateServerRequest: model.method.run accepts report filter fields", () => {
+  const input = {
+    type: "model.method.run",
+    id: "req-filter-1",
+    payload: {
+      modelIdOrName: "test-model",
+      methodName: "run",
+      skipAllReports: true,
+      skipReportNames: ["summary"],
+      skipReportLabels: ["verbose"],
+      reportNames: ["compact"],
+      reportLabels: ["required"],
+      skipAllChecks: true,
+      skipCheckNames: ["schema-check"],
+      skipCheckLabels: ["optional"],
+    },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "object");
+});
+
+Deno.test("validateServerRequest: model.method.run accepts request without filter fields", () => {
+  const input = {
+    type: "model.method.run",
+    id: "req-no-filter",
+    payload: {
+      modelIdOrName: "test-model",
+      methodName: "run",
+    },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "object");
+});
+
+Deno.test("validateServerRequest: model.method.run rejects non-boolean skipAllReports", () => {
+  const input = {
+    type: "model.method.run",
+    id: "req-bad-type",
+    payload: {
+      modelIdOrName: "test-model",
+      methodName: "run",
+      skipAllReports: "yes",
+    },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "string");
+});
+
+Deno.test("validateServerRequest: model.method.run rejects non-array skipReportNames", () => {
+  const input = {
+    type: "model.method.run",
+    id: "req-bad-array",
+    payload: {
+      modelIdOrName: "test-model",
+      methodName: "run",
+      skipReportNames: "summary",
+    },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "string");
+});
+
+Deno.test("validateServerRequest: workflow.run accepts report filter fields", () => {
+  const input = {
+    type: "workflow.run",
+    id: "req-wf-filter",
+    payload: {
+      workflowIdOrName: "deploy",
+      skipAllReports: true,
+      skipReportNames: ["summary"],
+      skipReportLabels: ["verbose"],
+      reportNames: ["compact"],
+      reportLabels: ["required"],
+      skipAllChecks: true,
+      skipCheckNames: ["schema-check"],
+      skipCheckLabels: ["optional"],
+    },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "object");
+});
+
+Deno.test("validateServerRequest: workflow.run accepts request without filter fields", () => {
+  const input = {
+    type: "workflow.run",
+    id: "req-wf-no-filter",
+    payload: {
+      workflowIdOrName: "deploy",
+    },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "object");
+});
+
+Deno.test("validateServerRequest: workflow.run rejects non-boolean skipAllChecks", () => {
+  const input = {
+    type: "workflow.run",
+    id: "req-wf-bad-type",
+    payload: {
+      workflowIdOrName: "deploy",
+      skipAllChecks: 1,
+    },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "string");
+});
+
+// ── workflow.schema empty payload fix ───────────────────────────────────
+
+Deno.test("validateServerRequest: workflow.schema accepts empty payload", () => {
+  const input = {
+    type: "workflow.schema",
+    id: "req-schema-empty",
+    payload: {},
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "object");
+});
+
+Deno.test("validateServerRequest: workflow.schema accepts payload with workflowIdOrName", () => {
+  const input = {
+    type: "workflow.schema",
+    id: "req-schema-named",
+    payload: { workflowIdOrName: "deploy" },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "object");
+});

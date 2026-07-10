@@ -545,25 +545,6 @@ async function runMethodViaServer(
         "run against an existing model name instead",
     );
   }
-  const unsupported: string[] = [];
-  if (options.skipChecks) unsupported.push("--skip-checks");
-  if (options.skipCheck?.length) unsupported.push("--skip-check");
-  if (options.skipCheckLabel?.length) unsupported.push("--skip-check-label");
-  if (options.skipReports) unsupported.push("--skip-reports");
-  if (options.skipReport?.length) unsupported.push("--skip-report");
-  if (options.skipReportLabel?.length) unsupported.push("--skip-report-label");
-  if (options.report?.length) unsupported.push("--report");
-  if (options.reportLabel?.length) unsupported.push("--report-label");
-  if (unsupported.length > 0) {
-    throw new UserError(
-      `${unsupported.join(", ")} ${
-        unsupported.length === 1 ? "is" : "are"
-      } not supported with --server yet — the serve protocol does not carry ${
-        unsupported.length === 1 ? "it" : "them"
-      }`,
-    );
-  }
-
   const stdinContent = options.stdin ? await readStdin() : null;
   let stdinItems: Record<string, unknown>[] | null = null;
   if (stdinContent !== null) {
@@ -624,6 +605,18 @@ async function runMethodViaServer(
             inputs: inputSets[i],
             lastEvaluated: options.lastEvaluated as boolean,
             runtimeTags,
+            skipAllReports: options.skipReports as boolean | undefined,
+            skipReportNames: options.skipReport as string[] | undefined,
+            skipReportLabels: options.skipReportLabel as
+              | string[]
+              | undefined,
+            reportNames: options.report as string[] | undefined,
+            reportLabels: options.reportLabel as string[] | undefined,
+            skipAllChecks: options.skipChecks as boolean | undefined,
+            skipCheckNames: options.skipCheck as string[] | undefined,
+            skipCheckLabels: options.skipCheckLabel as
+              | string[]
+              | undefined,
             traceparent: resolveTraceparent(
               options.traceparent as string | undefined,
             ),
