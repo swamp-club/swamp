@@ -3366,3 +3366,74 @@ Deno.test("resume merges override inputs over the suspended run's inputs", async
     );
   });
 });
+
+Deno.test("manual_approval suspension does not mark job span as ERROR", async () => {
+  const {
+    BasicTracerProvider,
+    InMemorySpanExporter,
+    SimpleSpanProcessor,
+  } = await import("@opentelemetry/sdk-trace-base");
+  const otelApi = await import("@opentelemetry/api");
+
+  const exporter = new InMemorySpanExporter();
+  const provider = new BasicTracerProvider();
+  provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
+  provider.register();
+
+  try {
+    await withTempDir(async (tempDir) => {
+      const workflowRepo = new InMemoryWorkflowRepository();
+      const runRepo = new InMemoryWorkflowRunRepository();
+      const executor = new MockStepExecutor();
+
+      const workflow = Workflow.create({
+        name: "approval-span-test",
+        jobs: [
+          Job.create({
+            name: "gated-job",
+            steps: [
+              Step.create({
+                name: "gate",
+                task: StepTask.manualApproval("Approve deployment"),
+              }),
+              Step.create({
+                name: "deploy",
+                task: StepTask.model("deploy-model", "run"),
+                dependsOn: [
+                  { step: "gate", condition: TriggerCondition.succeeded() },
+                ],
+              }),
+            ],
+          }),
+        ],
+      });
+      await workflowRepo.save(workflow);
+
+      const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        executor,
+        undefined,
+        catalogStore,
+      );
+
+      const run = await service.execute(workflow.name);
+      assertEquals(run.status, "suspended");
+
+      const jobSpans = exporter.getFinishedSpans().filter((s) =>
+        s.name === "swamp.workflow.job"
+      );
+      assertEquals(jobSpans.length, 1);
+      assertNotEquals(
+        jobSpans[0].status.code,
+        otelApi.SpanStatusCode.ERROR,
+        "Job span should not be ERROR when workflow suspends at manual_approval",
+      );
+    });
+  } finally {
+    provider.shutdown();
+    otelApi.trace.disable();
+  }
+});
