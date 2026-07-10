@@ -2084,6 +2084,205 @@ Deno.test("mix of allowFailure and regular failing steps causes job failure", as
   });
 });
 
+// allowFailure tests for workflow-type task steps (issue #1061)
+
+Deno.test("workflow-task step with allowFailure true: child fails, step marked allowedFailure, job succeeds", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+    executor.shouldFail.add("child-step");
+
+    const childWorkflow = Workflow.create({
+      name: "child-that-fails",
+      jobs: [
+        Job.create({
+          name: "child-job",
+          steps: [
+            Step.create({
+              name: "child-step",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(childWorkflow);
+
+    const parentWorkflow = Workflow.create({
+      name: "parent-allow-failure",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "optional-workflow-step",
+              task: StepTask.workflow("child-that-fails"),
+              allowFailure: true,
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(parentWorkflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const run = await service.execute(parentWorkflow.name);
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(run.getJob("job1")?.status, "succeeded");
+    const stepRun = run.getJob("job1")?.getStep("optional-workflow-step");
+    assertEquals(stepRun?.status, "failed");
+    assertEquals(stepRun?.allowedFailure, true);
+  });
+});
+
+Deno.test("workflow-task step with allowFailure true: downstream completed dep runs after child fails", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+    executor.shouldFail.add("child-step");
+
+    const childWorkflow = Workflow.create({
+      name: "child-that-fails",
+      jobs: [
+        Job.create({
+          name: "child-job",
+          steps: [
+            Step.create({
+              name: "child-step",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(childWorkflow);
+
+    const parentWorkflow = Workflow.create({
+      name: "parent-completed-dep",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "first",
+              task: StepTask.workflow("child-that-fails"),
+              allowFailure: true,
+            }),
+            Step.create({
+              name: "second",
+              task: StepTask.model("test-model", "run"),
+              dependsOn: [{
+                step: "first",
+                condition: TriggerCondition.completed(),
+              }],
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(parentWorkflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const run = await service.execute(parentWorkflow.name);
+
+    assertEquals(run.status, "succeeded");
+    const firstStep = run.getJob("job1")?.getStep("first");
+    assertEquals(firstStep?.status, "failed");
+    assertEquals(firstStep?.allowedFailure, true);
+    const secondStep = run.getJob("job1")?.getStep("second");
+    assertEquals(secondStep?.status, "succeeded");
+  });
+});
+
+Deno.test("workflow-task step without allowFailure: child fails, job fails", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+    executor.shouldFail.add("child-step");
+
+    const childWorkflow = Workflow.create({
+      name: "child-that-fails",
+      jobs: [
+        Job.create({
+          name: "child-job",
+          steps: [
+            Step.create({
+              name: "child-step",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(childWorkflow);
+
+    const parentWorkflow = Workflow.create({
+      name: "parent-no-allow-failure",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "workflow-step",
+              task: StepTask.workflow("child-that-fails"),
+            }),
+            Step.create({
+              name: "second",
+              task: StepTask.model("test-model", "run"),
+              dependsOn: [{
+                step: "workflow-step",
+                condition: TriggerCondition.completed(),
+              }],
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(parentWorkflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const run = await service.execute(parentWorkflow.name);
+
+    assertEquals(run.status, "failed");
+    assertEquals(run.getJob("job1")?.status, "failed");
+    const stepRun = run.getJob("job1")?.getStep("workflow-step");
+    assertEquals(stepRun?.status, "failed");
+    assertEquals(stepRun?.allowedFailure, false);
+    assertEquals(run.getJob("job1")?.getStep("second")?.status, "pending");
+  });
+});
+
 // Issue #947: Check skip options and swampSha propagation through StepExecutionContext
 Deno.test("check skip options and swampSha are threaded to step context", async () => {
   await withTempDir(async (tempDir) => {
