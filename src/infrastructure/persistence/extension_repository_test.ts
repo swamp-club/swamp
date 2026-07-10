@@ -1053,3 +1053,69 @@ Deno.test("ExtensionRepository: saveAll preserves source-mounted rows outside re
     );
   });
 });
+
+Deno.test("saveAll: heals ghost non-canonical rows before assertIRepo1", function () {
+  // The dedup migration only has work to do on Windows where
+  // canonicalizePath lowercases and replaces backslashes. On POSIX
+  // canonicalizePath is a no-op so ghost rows can't exist.
+  if (Deno.build.os !== "windows") return;
+
+  withRepository((repo, cat, repoRoot) => {
+    const canonicalPath = canonicalizePath(
+      join(repoRoot, "extensions/models/foo.ts"),
+    );
+    const ghostPath = canonicalPath.replaceAll("/", "\\").toUpperCase();
+
+    const loc = makeSourceLocation(
+      join(repoRoot, "extensions/models/foo.ts"),
+      repoRoot,
+    );
+    const source = makeSource({
+      id: loc,
+      kind: "model",
+      fingerprint: "abc123",
+      state: {
+        tag: "Indexed",
+        type: "@org/foo",
+        bundle: makeBundleLocation("b.js", "abc123"),
+      },
+      sourceMtime: "",
+    });
+    const ext = makeExtension({
+      name: "@local/test",
+      version: "0.0.0",
+      origin: "local",
+      extensionRoot: repoRoot,
+      sources: [source],
+    });
+
+    const db =
+      (cat as unknown as { db: import("node:sqlite").DatabaseSync }).db;
+    db.prepare(`
+      INSERT INTO bundle_types (
+        source_path, type_normalized, kind, bundle_path,
+        version, description, extends_type, source_mtime,
+        source_fingerprint, state, last_error
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      ghostPath,
+      "@org/foo",
+      "model",
+      "b.js",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "Indexed",
+      "",
+    );
+
+    repo.saveAll([ext]);
+
+    const rows = cat.findAll();
+    assertEquals(rows.length, 1);
+    assertEquals(rows[0].source_path, canonicalPath);
+    assertEquals(rows[0].extension_name, "@local/test");
+  });
+});

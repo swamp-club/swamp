@@ -60,6 +60,9 @@ const VALIDATION_FAILED_DROPPED_MIGRATION_KEY =
 const EXTENDS_TYPE_BACKFILL_MIGRATION_KEY =
   "migration_applied:extension-extends-type-backfill-v1";
 
+const DEDUP_NON_CANONICAL_MIGRATION_KEY =
+  "migration_applied:dedup-non-canonical-source-paths-v1";
+
 /**
  * Bundle layout version stored in `bundle_meta`. Bumped whenever the
  * on-disk bundle path scheme changes; loaders compare this against the
@@ -301,6 +304,9 @@ export class ExtensionCatalogStore {
     // extends_type before the aggregate-writer fix. Runs last so `state`
     // and `extends_type` are guaranteed present; gated on its own marker.
     this.backfillExtensionExtendsType();
+    // swamp-club#1065: heal ghost rows written with non-canonical Windows
+    // paths by a pre-fix warm-path loader. Runs last; gated on its own marker.
+    this.deduplicateNonCanonicalPaths();
   }
 
   /**
@@ -777,7 +783,7 @@ export class ExtensionCatalogStore {
         ${updateClauses.join(",\n        ")}
     `);
     stmt.run(
-      row.source_path,
+      canonicalizePath(row.source_path),
       row.type_normalized,
       row.kind,
       row.bundle_path,
@@ -811,7 +817,7 @@ export class ExtensionCatalogStore {
     const stmt = this.db.prepare(
       "DELETE FROM bundle_types WHERE source_path = ?",
     );
-    stmt.run(sourcePath);
+    stmt.run(canonicalizePath(sourcePath));
   }
 
   /**
@@ -1138,7 +1144,7 @@ export class ExtensionCatalogStore {
         last_error         = excluded.last_error
     `);
     stmt.run(
-      row.source_path,
+      canonicalizePath(row.source_path),
       row.type_normalized,
       row.kind,
       row.bundle_path,
@@ -1152,6 +1158,53 @@ export class ExtensionCatalogStore {
       row.extension_version,
       row.last_error ?? "",
     );
+  }
+
+  /**
+   * One-time migration: removes ghost rows whose source_path differs
+   * from its canonical form. A pre-fix warm-path code path wrote
+   * non-canonical Windows paths (backslash, original casing) alongside
+   * canonical rows for the same file, causing I-Repo-1 violations.
+   *
+   * For each non-canonical row, if a canonical row already exists for
+   * the same file, the non-canonical ghost is deleted. If no canonical
+   * row exists, the ghost is rewritten to its canonical form.
+   *
+   * Gated by a bundle_meta marker so it runs at most once per catalog.
+   */
+  deduplicateNonCanonicalPaths(): number {
+    if (this.isDeduplicateNonCanonicalApplied()) return 0;
+    const rows = this.findAll();
+    let removed = 0;
+    for (const row of rows) {
+      const canonical = canonicalizePath(row.source_path);
+      if (canonical === row.source_path) continue;
+      const existingCanonical = this.findBySourcePath(canonical);
+      if (existingCanonical) {
+        this.db.prepare(
+          "DELETE FROM bundle_types WHERE source_path = ?",
+        ).run(row.source_path);
+      } else {
+        this.db.prepare(
+          "UPDATE bundle_types SET source_path = ? WHERE source_path = ?",
+        ).run(canonical, row.source_path);
+      }
+      removed++;
+    }
+    this.db.prepare(
+      "INSERT OR REPLACE INTO bundle_meta (key, value) VALUES (?, 'true')",
+    ).run(DEDUP_NON_CANONICAL_MIGRATION_KEY);
+    return removed;
+  }
+
+  private isDeduplicateNonCanonicalApplied(): boolean {
+    const stmt = this.db.prepare(
+      "SELECT value FROM bundle_meta WHERE key = ?",
+    );
+    const row = stmt.get(DEDUP_NON_CANONICAL_MIGRATION_KEY) as
+      | { value: string }
+      | undefined;
+    return row?.value === "true";
   }
 
   /**

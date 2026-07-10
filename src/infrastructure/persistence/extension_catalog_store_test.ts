@@ -2307,3 +2307,102 @@ Deno.test("resolveOriginConflicts: different kinds do not conflict", () => {
   assertEquals(pulled?.type_normalized, "@ns/foo");
   store.close();
 });
+
+// -- deduplicateNonCanonicalPaths ----------------------------------------
+
+Deno.test("deduplicateNonCanonicalPaths: removes ghost row when canonical row exists", () => {
+  // This test simulates the Windows scenario: a canonical row (lowercase,
+  // forward-slash) coexists with a ghost row (original casing, backslash)
+  // for the same physical file. On POSIX canonicalizePath is a no-op so
+  // we skip — the bug only manifests on Windows.
+  if (Deno.build.os !== "windows") return;
+
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  const canonicalPath = "c:/project/extensions/models/foo.ts";
+  const ghostPath = "C:\\Project\\extensions\\models\\foo.ts";
+
+  store.upsertWithIdentity({
+    ...makeRow({
+      source_path: canonicalPath,
+      type_normalized: "@ns/foo",
+      kind: "model",
+    }),
+    extension_name: "@local/project",
+    extension_version: "0.0.0",
+  });
+
+  const db = (store as unknown as { db: DatabaseSync }).db;
+  db.prepare(`
+    INSERT INTO bundle_types (
+      source_path, type_normalized, kind, bundle_path,
+      version, description, extends_type, source_mtime,
+      source_fingerprint, state, last_error
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    ghostPath,
+    "@ns/foo",
+    "model",
+    "/repo/.swamp/bundles/foo.js",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "Indexed",
+    "",
+  );
+
+  assertEquals(store.count(), 2);
+  const removed = store.deduplicateNonCanonicalPaths();
+  assertEquals(removed, 1);
+  assertEquals(store.count(), 1);
+
+  const surviving = store.findBySourcePath(canonicalPath);
+  assertEquals(surviving?.extension_name, "@local/project");
+  store.close();
+});
+
+Deno.test("deduplicateNonCanonicalPaths: is idempotent (gated by migration marker)", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  store.upsert(makeRow({ source_path: "/repo/extensions/models/baz.ts" }));
+  const first = store.deduplicateNonCanonicalPaths();
+  assertEquals(first, 0);
+
+  const second = store.deduplicateNonCanonicalPaths();
+  assertEquals(second, 0);
+  store.close();
+});
+
+Deno.test("upsert: stores source_path through canonicalizePath", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  const inputPath = "/repo/extensions/models/foo.ts";
+  store.upsert(makeRow({
+    source_path: inputPath,
+    type_normalized: "@ns/foo",
+  }));
+
+  const row = store.findBySourcePath(inputPath);
+  assertEquals(row?.type_normalized, "@ns/foo");
+  assertEquals(row?.source_path, canonicalizePath(inputPath));
+  assertEquals(store.count(), 1);
+  store.close();
+});
+
+Deno.test("removeBySourcePath: deletes by canonicalized path", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  const path = "/repo/extensions/models/foo.ts";
+  store.upsert(makeRow({ source_path: path }));
+  assertEquals(store.count(), 1);
+
+  store.removeBySourcePath(path);
+  assertEquals(store.count(), 0);
+  store.close();
+});
