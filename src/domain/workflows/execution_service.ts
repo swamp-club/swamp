@@ -2569,6 +2569,7 @@ export class WorkflowExecutionService {
           task,
           stepExprContext,
           options,
+          !!step.allowFailure,
         );
         return;
       }
@@ -2771,6 +2772,7 @@ export class WorkflowExecutionService {
     },
     expressionContext: ExpressionContext | undefined,
     options: StepOptions,
+    allowFailure: boolean,
   ): AsyncGenerator<WorkflowExecutionEvent> {
     // Resolve every available expression (self.* from the forEach variable,
     // run.*, etc.) in the task BEFORE the recursion-depth guard, cycle
@@ -2807,11 +2809,15 @@ export class WorkflowExecutionService {
           depth + 1
         }.`;
       stepRun.fail(errorMessage);
+      if (allowFailure) {
+        stepRun.markAllowedFailure();
+      }
       yield {
         kind: "step_failed",
         jobId: job.name,
         stepId: stepName,
         error: errorMessage,
+        allowedFailure: allowFailure || undefined,
       };
       return;
     }
@@ -2823,11 +2829,15 @@ export class WorkflowExecutionService {
       const errorMessage = `Workflow cycle detected: ${chain}. ` +
         `A workflow cannot invoke itself directly or indirectly.`;
       stepRun.fail(errorMessage);
+      if (allowFailure) {
+        stepRun.markAllowedFailure();
+      }
       yield {
         kind: "step_failed",
         jobId: job.name,
         stepId: stepName,
         error: errorMessage,
+        allowedFailure: allowFailure || undefined,
       };
       return;
     }
@@ -2876,8 +2886,14 @@ export class WorkflowExecutionService {
       ) {
         if (event.kind === "completed") {
           childRun = event.run;
+        } else if (event.kind === "step_failed" && allowFailure) {
+          // When the parent step allows failure, mark child step_failed
+          // events as allowed so they don't set jobFailed in the parent
+          // job runner. The parent emits its own step_failed with the
+          // correct allowedFailure flag after the child finishes.
+          yield { ...event, allowedFailure: true };
         } else {
-          yield event; // Forward child events to parent stream
+          yield event;
         }
       }
     } catch (error) {
@@ -2885,11 +2901,15 @@ export class WorkflowExecutionService {
         ? error.message
         : String(error);
       stepRun.fail(errorMessage);
+      if (allowFailure) {
+        stepRun.markAllowedFailure();
+      }
       yield {
         kind: "step_failed",
         jobId: job.name,
         stepId: stepName,
         error: errorMessage,
+        allowedFailure: allowFailure || undefined,
       };
       return;
     }
@@ -2897,11 +2917,15 @@ export class WorkflowExecutionService {
     if (!childRun || childRun.status === "failed") {
       const errorMessage = `Nested workflow "${task.workflowIdOrName}" failed.`;
       stepRun.fail(errorMessage);
+      if (allowFailure) {
+        stepRun.markAllowedFailure();
+      }
       yield {
         kind: "step_failed",
         jobId: job.name,
         stepId: stepName,
         error: errorMessage,
+        allowedFailure: allowFailure || undefined,
       };
       return;
     }
