@@ -935,8 +935,12 @@ Deno.test("ExtensionCatalogStore: findByKind returns rows regardless of state", 
 
   const rows = store.findByKind("model");
   assertEquals(rows.length, 2);
-  const failed = rows.find((r) => r.source_path === brokenPath);
-  const healthy = rows.find((r) => r.source_path === healthyPath);
+  const failed = rows.find((r) =>
+    r.source_path === canonicalizePath(brokenPath)
+  );
+  const healthy = rows.find((r) =>
+    r.source_path === canonicalizePath(healthyPath)
+  );
   assertEquals(failed?.state, "ValidationFailed");
   assertEquals(healthy?.state, "Indexed");
   store.close();
@@ -2310,53 +2314,59 @@ Deno.test("resolveOriginConflicts: different kinds do not conflict", () => {
 
 // -- deduplicateNonCanonicalPaths ----------------------------------------
 
-Deno.test("deduplicateNonCanonicalPaths: removes ghost row when canonical row exists", () => {
-  // This test simulates the Windows scenario: a canonical row (lowercase,
-  // forward-slash) coexists with a ghost row (original casing, backslash)
-  // for the same physical file. On POSIX canonicalizePath is a no-op so
-  // we skip — the bug only manifests on Windows.
+Deno.test("deduplicateNonCanonicalPaths: heals ghost row during startup migration", () => {
+  // Simulates the production scenario: a corrupted catalog (ghost rows
+  // from pre-fix warm-path) is opened by a fixed build. The constructor's
+  // migrateSchema → deduplicateNonCanonicalPaths heals the ghost.
+  // On POSIX canonicalizePath is a no-op — ghost rows can't exist.
   if (Deno.build.os !== "windows") return;
 
   const dbPath = makeTempDbPath();
-  const store = new ExtensionCatalogStore(dbPath);
-
   const canonicalPath = "c:/project/extensions/models/foo.ts";
   const ghostPath = "C:\\Project\\extensions\\models\\foo.ts";
 
-  store.upsertWithIdentity({
-    ...makeRow({
-      source_path: canonicalPath,
-      type_normalized: "@ns/foo",
-      kind: "model",
-    }),
-    extension_name: "@local/project",
-    extension_version: "0.0.0",
-  });
+  // Seed the DB: canonical row + ghost row, then clear the dedup marker
+  // so the next open re-runs the migration.
+  {
+    const seed = new ExtensionCatalogStore(dbPath);
+    seed.upsertWithIdentity({
+      ...makeRow({
+        source_path: canonicalPath,
+        type_normalized: "@ns/foo",
+        kind: "model",
+      }),
+      extension_name: "@local/project",
+      extension_version: "0.0.0",
+    });
+    const db = (seed as unknown as { db: DatabaseSync }).db;
+    db.prepare(`
+      INSERT INTO bundle_types (
+        source_path, type_normalized, kind, bundle_path,
+        version, description, extends_type, source_mtime,
+        source_fingerprint, state, last_error
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      ghostPath,
+      "@ns/foo",
+      "model",
+      "/repo/.swamp/bundles/foo.js",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "Indexed",
+      "",
+    );
+    db.prepare(
+      "DELETE FROM bundle_meta WHERE key = 'migration_applied:dedup-non-canonical-source-paths-v1'",
+    ).run();
+    assertEquals(seed.count(), 2);
+    seed.close();
+  }
 
-  const db = (store as unknown as { db: DatabaseSync }).db;
-  db.prepare(`
-    INSERT INTO bundle_types (
-      source_path, type_normalized, kind, bundle_path,
-      version, description, extends_type, source_mtime,
-      source_fingerprint, state, last_error
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    ghostPath,
-    "@ns/foo",
-    "model",
-    "/repo/.swamp/bundles/foo.js",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "Indexed",
-    "",
-  );
-
-  assertEquals(store.count(), 2);
-  const removed = store.deduplicateNonCanonicalPaths();
-  assertEquals(removed, 1);
+  // Re-open: migrateSchema → deduplicateNonCanonicalPaths heals the ghost
+  const store = new ExtensionCatalogStore(dbPath);
   assertEquals(store.count(), 1);
 
   const surviving = store.findBySourcePath(canonicalPath);

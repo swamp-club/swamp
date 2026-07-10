@@ -237,11 +237,6 @@ export class ExtensionRepository {
         logger
           .info`Pruned ${pruned.length} catalog row(s) with unreachable source path(s)`;
       }
-      const deduped = this.catalog.deduplicateNonCanonicalPaths();
-      if (deduped > 0) {
-        logger
-          .info`Healed ${deduped} catalog row(s) with non-canonical source path(s)`;
-      }
       this.catalog.resolveOriginConflicts(this.repoRoot);
       this.assertIRepo1();
     });
