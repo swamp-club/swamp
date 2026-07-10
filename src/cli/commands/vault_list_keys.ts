@@ -48,13 +48,12 @@ export const vaultListKeysCommand = withRemoteOptions(
     .name("list-keys")
     .description("List all secret keys in a vault (without values)")
     .example("List keys in a vault", "swamp vault list-keys my-vault")
-    .example("List all vault keys", "swamp vault list-keys")
-    .arguments("[vault_name:string]")
+    .arguments("<vault_name:string>")
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
     ),
-).action(async function (options: AnyOptions, vaultName?: string) {
+).action(async function (options: AnyOptions, vaultName: string) {
   const cliCtx = createContext(options as GlobalOptions, [
     "vault",
     "list-keys",
@@ -97,7 +96,7 @@ export const vaultListKeysCommand = withRemoteOptions(
 
   const renderer = createVaultListKeysRenderer(cliCtx.outputMode);
   await consumeStream(
-    vaultListKeys(ctx, deps, { vaultName: vaultName ?? "" }),
+    vaultListKeys(ctx, deps, { vaultName }),
     renderer.handlers(),
   );
 

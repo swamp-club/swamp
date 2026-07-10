@@ -54,6 +54,19 @@ Deno.test("vaultListKeys yields resolving then completed", async () => {
   assertEquals(completed.data.count, 2);
 });
 
+Deno.test("vaultListKeys: yields validation error for empty vaultName", async () => {
+  const deps = makeDeps();
+  const events = await collect<VaultListKeysEvent>(
+    vaultListKeys(createLibSwampContext(), deps, { vaultName: "" }),
+  );
+
+  assertEquals(events.length, 2);
+  assertEquals(events[0], { kind: "resolving" });
+  assertEquals(events[1].kind, "error");
+  const error = events[1] as Extract<VaultListKeysEvent, { kind: "error" }>;
+  assertEquals(error.error.code, "validation_failed");
+});
+
 Deno.test("vaultListKeys yields error when vault not found", async () => {
   const deps = makeDeps({
     findVaultByName: () => Promise.resolve(null),
