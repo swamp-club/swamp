@@ -183,7 +183,7 @@ export class InProcessExecutor {
       const svc = this.modelInvocationService;
       const callerCtx = this.contextWithWriters;
       this.contextWithWriters.runModel = (options) =>
-        svc.invoke!(options, callerCtx);
+        svc.invoke(options, callerCtx);
     }
 
     const savedTraceparent = Deno.env.get("TRACEPARENT");

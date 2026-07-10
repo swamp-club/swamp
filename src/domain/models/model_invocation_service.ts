@@ -168,6 +168,10 @@ export class ModelInvocationService {
       breadthCounter: tracking.breadthCounter,
     };
 
+    const mergedGlobalArgs = options.arguments
+      ? { ...definition.globalArguments, ...options.arguments }
+      : (definition.globalArguments ?? {});
+
     const childContext = buildMethodContext(
       this.#deps.commonDeps,
       {
@@ -175,7 +179,7 @@ export class ModelInvocationService {
         repoDir: this.#deps.repoDir,
         modelType: modelDef.type,
         modelId: definition.id,
-        globalArgs: definition.globalArguments ?? {},
+        globalArgs: mergedGlobalArgs,
         definition: {
           id: definition.id,
           name: definition.name,
@@ -194,12 +198,6 @@ export class ModelInvocationService {
       },
     );
     childContext._invocationTracking = childTracking;
-
-    if (options.arguments) {
-      for (const [key, value] of Object.entries(options.arguments)) {
-        definition.setGlobalArgument(key, value);
-      }
-    }
 
     try {
       const result = await this.#deps.executionService.executeWorkflow(
@@ -295,6 +293,16 @@ export class ModelInvocationService {
     let definition: Definition;
 
     if (existing) {
+      if (existing.type.normalized !== modelDef.type.normalized) {
+        return {
+          ok: false,
+          error: {
+            message:
+              `Definition "${options.name}" exists but has type "${existing.type.normalized}", ` +
+              `not "${modelDef.type.normalized}".`,
+          },
+        };
+      }
       definition = existing.definition;
     } else {
       const { Definition: DefinitionClass } = await import(

@@ -87,7 +87,7 @@ function renderInstallResultLog(result: InstallResult): void {
   if (result.dependencies.length > 0) {
     logger.info``;
     logger
-      .info`Model dependencies: ${result.dependencies.join(", ")}`;
+      .info`Dependencies: ${result.dependencies.join(", ")}`;
     logger
       .info`  This extension invokes models from the above extensions via context.runModel()`;
   }
@@ -168,6 +168,12 @@ function renderInstallResultJson(result: InstallResult): void {
         null,
         2,
       ),
+    );
+  }
+
+  if (result.dependencies.length > 0) {
+    console.log(
+      JSON.stringify({ dependencies: result.dependencies }, null, 2),
     );
   }
 
