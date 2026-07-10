@@ -3643,8 +3643,8 @@ export const model = {
     );
     catalog2.close();
   } finally {
-    await Deno.remove(repoDir, { recursive: true });
-    await Deno.remove(modelsDir, { recursive: true });
+    await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+    await Deno.remove(modelsDir, { recursive: true }).catch(() => {});
   }
 });
 
