@@ -2426,6 +2426,10 @@ export class WorkflowExecutionService {
       jobSpan.setAttribute("job.status", jobRun.status);
       yield { kind: "job_completed", jobId: jobName, status: jobRun.status };
     } catch (error) {
+      if (error instanceof WorkflowSuspendedError) {
+        jobSpan.setStatus({ code: SpanStatusCode.OK });
+        throw error;
+      }
       jobSpan.setStatus({
         code: SpanStatusCode.ERROR,
         message: error instanceof Error ? error.message : String(error),
