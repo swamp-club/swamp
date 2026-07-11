@@ -1009,6 +1009,7 @@ This repository is managed with [swamp](https://github.com/swamp-club/swamp).
 9. **"Workflow" means a swamp workflow.** In this repository the word "workflow" (and "create/run/execute/validate/debug workflow", "automate", "orchestrate", "automated/nightly job") refers to a swamp workflow — a declarative YAML DAG of model-method steps authored via \`swamp workflow create\`. ${
       skillAction("swamp", "Load and follow")
     } for these requests. Do NOT interpret these as a request to build an agent task list, spin up worktrees, or schedule a cron/remote agent. Only use those orchestration mechanisms when the user explicitly names one (e.g. "task list", "subagent", "worktree", "cron", "remote agent") or explicitly asks you to do the work yourself step by step rather than author a swamp workflow.
+10. **Use swamp, don't bypass it.** Always work through swamp commands — don't go around them with raw shell tools. Use \`swamp data query\` to find data, not \`grep\`/\`find\` on \`.swamp/\` files. Use model methods to interact with resources, not \`curl\`/\`aws\`/\`gcloud\`/\`kubectl\` when a model type already wraps that API — check with \`swamp model type search\`. Use \`swamp help\` for CLI discovery, not guesswork. Composing with swamp output is fine (e.g. piping \`--json\` through \`jq\`) — the anti-pattern is bypassing swamp entirely.
 
 ## Skills
 

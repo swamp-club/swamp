@@ -79,4 +79,18 @@ create per-input ephemeral instances for concurrent dispatch. See
 | Recent runs         | `swamp run history`                                                  |
 | Diagnose stale runs | `swamp run doctor`                                                   |
 
+## Discover Before Shelling Out
+
+Before reaching for raw CLI tools (`aws`, `gcloud`, `kubectl`, `curl`), check
+whether a model type already wraps that API:
+
+```bash
+swamp model type search "ec2"          # find types by keyword
+swamp extension search "kubernetes"    # find community extensions
+swamp model type describe <type> --compact --json  # see available methods
+```
+
+If a type exists, use its methods instead of shelling out — model methods
+produce versioned data, wire into workflows, and compose with CEL expressions.
+
 For detailed walkthroughs of each operation, see [reference.md](reference.md).

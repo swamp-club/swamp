@@ -59,4 +59,16 @@ for the full list of queryable fields and predicate operators.
 See [references/concepts.md](references/concepts.md) for lifetime types, tags,
 and version GC policies.
 
+## Common Mistakes
+
+| Don't do this                             | Do this instead                                       |
+| ----------------------------------------- | ----------------------------------------------------- |
+| `grep`/`find` on `.swamp/data/` files     | `swamp data query '<predicate>'`                      |
+| `cat .swamp/data/.../raw \| jq`           | `swamp data get <model> <name> --json`                |
+| `ls .swamp/data/` to list artifacts       | `swamp data list <model>`                             |
+| Re-fetching data a model already produced | Use CEL: `data.latest("<name>", "<data>").attributes` |
+
+Composing with swamp's `--json` output (e.g. piping through `jq` to reshape for
+`--stdin`) is fine — the anti-pattern is bypassing swamp's data layer entirely.
+
 For detailed walkthroughs of each operation, see [reference.md](reference.md).

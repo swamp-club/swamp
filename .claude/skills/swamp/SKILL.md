@@ -112,3 +112,10 @@ swamp extension init <name>                    # scaffold a new extension
    explaining a design trade-off to a human, load
    [references/architecture/guide.md](references/architecture/guide.md) and cite
    the design doc or manual page you relied on.
+8. **Use swamp commands, don't go around them.** Query data with
+   `swamp data query`, not by grepping `.swamp/` files. Interact with resources
+   through model methods, not raw CLI tools (`curl`, `aws`, `gcloud`, `kubectl`)
+   when a model type already wraps the API — check with
+   `swamp model type search`. Use `swamp help` for CLI discovery. Composing with
+   swamp `--json` output (e.g. piping through `jq`) is fine — the anti-pattern
+   is bypassing swamp entirely.
