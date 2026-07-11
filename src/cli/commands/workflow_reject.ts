@@ -39,6 +39,8 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { WorkflowRejectResponse } from "../../serve/protocol.ts";
+import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
+import { swampPath } from "../../infrastructure/persistence/paths.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -117,39 +119,45 @@ export const workflowRejectCommand = withRemoteOptions(
       return;
     }
 
-    const { repoContext } = await requireInitializedRepoUnlocked({
+    const { repoDir, repoContext } = await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
 
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createWorkflowRejectDeps(
-      repoContext.workflowRepo,
-      repoContext.workflowRunRepo,
-    );
+    const runTracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
+    try {
+      const ctx = createLibSwampContext({ logger: cliCtx.logger });
+      const deps = createWorkflowRejectDeps(
+        repoContext.workflowRepo,
+        repoContext.workflowRunRepo,
+        runTracker,
+      );
 
-    await consumeStream(
-      workflowReject(ctx, deps, {
-        workflowIdOrName,
-        stepName,
-        reason: options.reason as string | undefined,
-        runId: options.run as string | undefined,
-      }),
-      {
-        resolving: () => {},
-        completed: (e) => {
-          if (cliCtx.outputMode === "json") {
-            console.log(JSON.stringify(e.data));
-          } else {
-            cliCtx.logger
-              .info`Rejected step ${e.data.stepName} in workflow ${e.data.workflowName}`;
-            cliCtx.logger.info("Workflow run marked as failed.");
-          }
+      await consumeStream(
+        workflowReject(ctx, deps, {
+          workflowIdOrName,
+          stepName,
+          reason: options.reason as string | undefined,
+          runId: options.run as string | undefined,
+        }),
+        {
+          resolving: () => {},
+          completed: (e) => {
+            if (cliCtx.outputMode === "json") {
+              console.log(JSON.stringify(e.data));
+            } else {
+              cliCtx.logger
+                .info`Rejected step ${e.data.stepName} in workflow ${e.data.workflowName}`;
+              cliCtx.logger.info("Workflow run marked as failed.");
+            }
+          },
+          error: (e) => {
+            throw new Error(e.error.message);
+          },
         },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      },
-    );
+      );
+    } finally {
+      runTracker.close();
+    }
   },
 );

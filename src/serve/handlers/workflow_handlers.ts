@@ -24,12 +24,15 @@
 import {
   consumeStream,
   createLibSwampContext,
+  createWorkflowApprovalsDeps,
   createWorkflowApproveDeps,
   createWorkflowGetDeps,
   createWorkflowHistoryGetDeps,
   createWorkflowHistoryLogsDeps,
   createWorkflowRejectDeps,
   mapWorkflowExecutionEvent,
+  workflowApprovals,
+  type WorkflowApprovalsEvent,
   workflowApprove,
   workflowGet,
   workflowHistoryGet,
@@ -206,6 +209,58 @@ export async function handleWorkflowSearch(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "workflow_search_failed", message);
+  }
+}
+
+export async function handleWorkflowApprovals(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "workflow",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = createWorkflowApprovalsDeps(
+      ctx.repoContext.workflowRepo,
+      ctx.repoContext.workflowRunRepo,
+    );
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream<WorkflowApprovalsEvent>(
+      workflowApprovals(libCtx, deps),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "workflow.approvals",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "workflow_approvals_failed", message);
   }
 }
 
@@ -658,6 +713,7 @@ export async function handleWorkflowReject(
     const deps = createWorkflowRejectDeps(
       ctx.repoContext.workflowRepo,
       ctx.repoContext.workflowRunRepo,
+      ctx.runTracker,
     );
 
     let result: Record<string, unknown> | undefined;

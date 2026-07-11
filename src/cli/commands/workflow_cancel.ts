@@ -36,6 +36,11 @@ import type {
   WorkflowRunRepository,
 } from "../../domain/workflows/repositories.ts";
 import { killProcessTree } from "../../infrastructure/process/process_kill.ts";
+import {
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -77,166 +82,243 @@ async function findAllActiveRuns(
   return results;
 }
 
-export const workflowCancelCommand = new Command()
-  .name("cancel")
-  .description("Cancel a running workflow run")
-  .example(
-    "Cancel latest running run",
-    "swamp workflow cancel my-workflow",
-  )
-  .example(
-    "Cancel a specific run",
-    "swamp workflow cancel my-workflow --run <run-id>",
-  )
-  .example(
-    "Cancel all running runs",
-    "swamp workflow cancel --all",
-  )
-  .example(
-    "Cancel with reason",
-    "swamp workflow cancel my-workflow --reason 'No longer needed'",
-  )
-  .arguments("[workflow_id_or_name:string]")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option("--run <run_id:string>", "Target a specific run ID")
-  .option("--all", "Cancel all running workflow runs")
-  .option("--reason <reason:string>", "Reason for cancellation")
-  .action(
-    async function (
-      options: AnyOptions,
-      workflowIdOrName?: string,
-    ) {
-      const cliCtx = createContext(options as GlobalOptions, [
-        "workflow",
-        "cancel",
-      ]);
+export const workflowCancelCommand = withRemoteOptions(
+  new Command()
+    .name("cancel")
+    .description("Cancel a running workflow run")
+    .example(
+      "Cancel latest running run",
+      "swamp workflow cancel my-workflow",
+    )
+    .example(
+      "Cancel a specific run",
+      "swamp workflow cancel my-workflow --run <run-id>",
+    )
+    .example(
+      "Cancel all running runs",
+      "swamp workflow cancel --all",
+    )
+    .example(
+      "Cancel with reason",
+      "swamp workflow cancel my-workflow --reason 'No longer needed'",
+    )
+    .example(
+      "Cancel via server",
+      "swamp workflow cancel --run <run-id> --server ws://localhost:9090",
+    )
+    .arguments("[workflow_id_or_name:string]")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option(
+      "--run <run_id:string>",
+      "Target a specific run ID (required with --server)",
+    )
+    .option("--all", "Cancel all running workflow runs")
+    .option("--reason <reason:string>", "Reason for cancellation"),
+).action(
+  async function (
+    options: AnyOptions,
+    workflowIdOrName?: string,
+  ) {
+    const cliCtx = createContext(options as GlobalOptions, [
+      "workflow",
+      "cancel",
+    ]);
 
-      if (!options.all && !workflowIdOrName) {
+    const server = resolveServeUrl(options.server as string | undefined);
+    if (server) {
+      if (!options.run) {
         throw new UserError(
-          "Provide a workflow name or ID, or use --all to cancel all running runs",
+          "Remote cancel requires --run <run-id>. Use 'swamp workflow history search --server' to find run IDs.",
         );
       }
-
-      const { repoContext } = await requireInitializedRepoUnlocked({
-        repoDir: resolveRepoDir(options.repoDir),
-        outputMode: cliCtx.outputMode,
-      });
-
-      const workflowRepo = repoContext.workflowRepo;
-      const runRepo = repoContext.workflowRunRepo;
-      const reason = options.reason ?? "Cancelled by user";
-
       if (options.all) {
-        const activeRuns = await findAllActiveRuns(workflowRepo, runRepo);
-        if (activeRuns.length === 0) {
-          if (cliCtx.outputMode === "json") {
-            console.log(JSON.stringify({ cancelled: [] }));
-          } else {
-            cliCtx.logger.info("No active workflow runs found to cancel.");
-          }
-          return;
+        throw new UserError(
+          "--all is not supported with --server",
+        );
+      }
+      if (options.reason) {
+        cliCtx.logger
+          .warn`--reason is ignored with --server (the cancel endpoint does not accept a reason)`;
+      }
+      const token = await resolveServerToken(
+        server,
+        options.token as string | undefined,
+      );
+      const httpUrl = server.replace(/^ws(s?):/, "http$1:");
+      const cancelUrl = `${httpUrl}/api/v1/cancel/workflow-run/${
+        encodeURIComponent(options.run as string)
+      }`;
+      const headers: Record<string, string> = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      let body: Record<string, unknown>;
+      try {
+        const response = await fetch(cancelUrl, {
+          method: "POST",
+          headers,
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (!response.ok) {
+          const text = await response.text();
+          throw new UserError(
+            `Server returned ${response.status}: ${
+              text || response.statusText
+            }`,
+          );
         }
+        body = await response.json();
+      } catch (error) {
+        if (error instanceof UserError) throw error;
+        throw new UserError(
+          `Could not connect to ${server}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      if (body.status !== "cancelled") {
+        throw new UserError(
+          (body.message as string | undefined) ??
+            `Failed to cancel run ${options.run as string}: ${body.status}`,
+        );
+      }
+      if (cliCtx.outputMode === "json") {
+        console.log(JSON.stringify({
+          runId: body.executionId ?? options.run,
+          status: "cancelled",
+          reason: options.reason ?? "Cancelled by user",
+        }));
+      } else {
+        cliCtx.logger
+          .info`Cancelled run ${options.run as string} on server`;
+      }
+      return;
+    }
 
-        const cancelled: {
-          runId: string;
-          workflowName: string;
-          previousStatus: string;
-        }[] = [];
-        for (const { run, workflowId, workflowName } of activeRuns) {
-          const previousStatus = run.status;
-          await cancelRun(run, reason);
-          await runRepo.save(workflowId, run);
-          cancelled.push({
-            runId: run.id,
-            workflowName,
-            previousStatus,
-          });
-        }
+    if (!options.all && !workflowIdOrName) {
+      throw new UserError(
+        "Provide a workflow name or ID, or use --all to cancel all running runs",
+      );
+    }
 
+    const { repoContext } = await requireInitializedRepoUnlocked({
+      repoDir: resolveRepoDir(options.repoDir),
+      outputMode: cliCtx.outputMode,
+    });
+
+    const workflowRepo = repoContext.workflowRepo;
+    const runRepo = repoContext.workflowRunRepo;
+    const reason = options.reason ?? "Cancelled by user";
+
+    if (options.all) {
+      const activeRuns = await findAllActiveRuns(workflowRepo, runRepo);
+      if (activeRuns.length === 0) {
         if (cliCtx.outputMode === "json") {
-          console.log(JSON.stringify({
-            cancelled,
-            count: cancelled.length,
-            reason,
-          }));
+          console.log(JSON.stringify({ cancelled: [] }));
         } else {
-          cliCtx.logger
-            .info`Cancelled ${cancelled.length} workflow run(s)`;
-          for (const entry of cancelled) {
-            cliCtx.logger
-              .info`  ${entry.workflowName} (${entry.runId}): ${entry.previousStatus} -> cancelled`;
-          }
+          cliCtx.logger.info("No active workflow runs found to cancel.");
         }
         return;
       }
 
-      // Single workflow cancel path
-      const workflow = await workflowRepo.findByName(workflowIdOrName!) ??
-        await workflowRepo.findById(
-          createWorkflowId(workflowIdOrName!),
-        );
-      if (!workflow) {
-        throw new UserError(`Workflow not found: ${workflowIdOrName}`);
-      }
-
-      let run: WorkflowRun;
-      if (options.run) {
-        const found = await runRepo.findById(
-          workflow.id,
-          createWorkflowRunId(options.run),
-        );
-        if (!found) {
-          throw new UserError(`Workflow run not found: ${options.run}`);
-        }
-        run = found;
-      } else {
-        const allRuns = await runRepo.findAllByWorkflowId(workflow.id);
-        const activeRuns = allRuns.filter(
-          (r) => !TERMINAL_STATUSES.has(r.status),
-        );
-
-        if (activeRuns.length === 0) {
-          throw new UserError(
-            `No active runs found for workflow "${workflow.name}"`,
-          );
-        }
-
-        run = activeRuns.reduce((latest, current) => {
-          if (!latest.startedAt) return current;
-          if (!current.startedAt) return latest;
-          return current.startedAt > latest.startedAt ? current : latest;
+      const cancelled: {
+        runId: string;
+        workflowName: string;
+        previousStatus: string;
+      }[] = [];
+      for (const { run, workflowId, workflowName } of activeRuns) {
+        const previousStatus = run.status;
+        await cancelRun(run, reason);
+        await runRepo.save(workflowId, run);
+        cancelled.push({
+          runId: run.id,
+          workflowName,
+          previousStatus,
         });
       }
 
-      if (TERMINAL_STATUSES.has(run.status)) {
-        throw new UserError(
-          `Run ${run.id} is already in a terminal state (status: ${run.status})`,
-        );
-      }
-
-      const previousStatus = run.status;
-      await cancelRun(run, reason);
-      await runRepo.save(createWorkflowId(workflow.id), run);
-
       if (cliCtx.outputMode === "json") {
         console.log(JSON.stringify({
-          runId: run.id,
-          workflowName: workflow.name,
-          previousStatus,
-          status: "cancelled",
+          cancelled,
+          count: cancelled.length,
           reason,
         }));
       } else {
         cliCtx.logger
-          .info`Cancelled run ${run.id} of workflow ${workflow.name}`;
-        cliCtx.logger
-          .info`Status: ${previousStatus} -> cancelled`;
-        if (options.reason) {
-          cliCtx.logger.info`Reason: ${reason}`;
+          .info`Cancelled ${cancelled.length} workflow run(s)`;
+        for (const entry of cancelled) {
+          cliCtx.logger
+            .info`  ${entry.workflowName} (${entry.runId}): ${entry.previousStatus} -> cancelled`;
         }
       }
-    },
-  );
+      return;
+    }
+
+    // Single workflow cancel path
+    const workflow = await workflowRepo.findByName(workflowIdOrName!) ??
+      await workflowRepo.findById(
+        createWorkflowId(workflowIdOrName!),
+      );
+    if (!workflow) {
+      throw new UserError(`Workflow not found: ${workflowIdOrName}`);
+    }
+
+    let run: WorkflowRun;
+    if (options.run) {
+      const found = await runRepo.findById(
+        workflow.id,
+        createWorkflowRunId(options.run),
+      );
+      if (!found) {
+        throw new UserError(`Workflow run not found: ${options.run}`);
+      }
+      run = found;
+    } else {
+      const allRuns = await runRepo.findAllByWorkflowId(workflow.id);
+      const activeRuns = allRuns.filter(
+        (r) => !TERMINAL_STATUSES.has(r.status),
+      );
+
+      if (activeRuns.length === 0) {
+        throw new UserError(
+          `No active runs found for workflow "${workflow.name}"`,
+        );
+      }
+
+      run = activeRuns.reduce((latest, current) => {
+        if (!latest.startedAt) return current;
+        if (!current.startedAt) return latest;
+        return current.startedAt > latest.startedAt ? current : latest;
+      });
+    }
+
+    if (TERMINAL_STATUSES.has(run.status)) {
+      throw new UserError(
+        `Run ${run.id} is already in a terminal state (status: ${run.status})`,
+      );
+    }
+
+    const previousStatus = run.status;
+    await cancelRun(run, reason);
+    await runRepo.save(createWorkflowId(workflow.id), run);
+
+    if (cliCtx.outputMode === "json") {
+      console.log(JSON.stringify({
+        runId: run.id,
+        workflowName: workflow.name,
+        previousStatus,
+        status: "cancelled",
+        reason,
+      }));
+    } else {
+      cliCtx.logger
+        .info`Cancelled run ${run.id} of workflow ${workflow.name}`;
+      cliCtx.logger
+        .info`Status: ${previousStatus} -> cancelled`;
+      if (options.reason) {
+        cliCtx.logger.info`Reason: ${reason}`;
+      }
+    }
+  },
+);

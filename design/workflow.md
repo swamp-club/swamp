@@ -145,7 +145,9 @@ steps:
 `swamp workflow reject <workflow> <step>` marks the step as failed and the run as
 failed. No resume needed.
 
-`swamp workflow approvals` lists all suspended runs awaiting approval.
+`swamp workflow approvals` lists all suspended runs awaiting approval. Supports
+`--server` / `SWAMP_SERVE_URL` via the `workflow.approvals` wire-protocol
+endpoint (read-only, `read` authorization verb).
 
 **Resume inputs (`--input`):** `swamp workflow resume` accepts `--input`,
 `--input-file`, and `--stdin` (same parsing as `swamp workflow run`). These let

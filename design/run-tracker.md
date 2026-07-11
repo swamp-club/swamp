@@ -59,8 +59,8 @@ are purged on startup.
   `DefaultStepExecutor.executeModelMethod()` register with the tracker.
 - **Workflow runs** themselves register at the `WorkflowExecutionService.run()`
   level, tracking the overall workflow lifecycle.
-- Workflow suspend/approve/resume transitions are tracked (suspended → running →
-  completed).
+- Workflow suspend/approve/resume/reject transitions are tracked (suspended →
+  running → completed, or suspended → failed on reject).
 
 ### CLI Commands
 

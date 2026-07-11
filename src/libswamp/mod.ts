@@ -286,6 +286,14 @@ export {
   type WorkflowRejectEvent,
   type WorkflowRejectInput,
 } from "./workflows/reject.ts";
+export {
+  createWorkflowApprovalsDeps,
+  type PendingApproval,
+  workflowApprovals,
+  type WorkflowApprovalsData,
+  type WorkflowApprovalsDeps,
+  type WorkflowApprovalsEvent,
+} from "./workflows/approvals.ts";
 
 // Vault operations
 export {
