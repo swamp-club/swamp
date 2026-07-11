@@ -47,7 +47,7 @@ export async function initTracing(): Promise<Context | undefined> {
       ConsoleSpanExporter,
     },
     { AsyncLocalStorageContextManager },
-    { Resource },
+    { Resource, envDetectorSync },
     { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION },
     contextApi,
   ] = await Promise.all([
@@ -70,10 +70,14 @@ export async function initTracing(): Promise<Context | undefined> {
 
   const serviceName = Deno.env.get("OTEL_SERVICE_NAME") ?? "swamp";
 
-  const resource = new Resource({
-    [ATTR_SERVICE_NAME]: serviceName,
-    [ATTR_SERVICE_VERSION]: Deno.env.get("SWAMP_VERSION") ?? "dev",
-  });
+  const resource = Resource.default()
+    .merge(envDetectorSync.detect())
+    .merge(
+      new Resource({
+        [ATTR_SERVICE_NAME]: serviceName,
+        [ATTR_SERVICE_VERSION]: Deno.env.get("SWAMP_VERSION") ?? "dev",
+      }),
+    );
 
   const provider = new BasicTracerProvider({ resource });
 
