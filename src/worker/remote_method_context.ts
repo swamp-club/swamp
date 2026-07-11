@@ -589,6 +589,24 @@ export function createRemoteMethodContext(
             "move the runModel call to a local orchestrator model or workflow.",
         },
       }),
+    approveWorkflowGate: () =>
+      Promise.resolve({
+        ok: false as const,
+        error: {
+          message:
+            "context.approveWorkflowGate() is not available in remote execution — " +
+            "move the call to a local orchestrator model or workflow.",
+        },
+      }),
+    rejectWorkflowGate: () =>
+      Promise.resolve({
+        ok: false as const,
+        error: {
+          message:
+            "context.rejectWorkflowGate() is not available in remote execution — " +
+            "move the call to a local orchestrator model or workflow.",
+        },
+      }),
   };
 
   return { context, getHandles: writers.getHandles };

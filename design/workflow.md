@@ -149,6 +149,12 @@ failed. No resume needed.
 `--server` / `SWAMP_SERVE_URL` via the `workflow.approvals` wire-protocol
 endpoint (read-only, `read` authorization verb).
 
+**Programmatic gate control:** Gates can also be approved or rejected from within
+a model method via `context.approveWorkflowGate()` and
+`context.rejectWorkflowGate()`. This enables webhook-driven and
+scheduler-driven approvals without shelling out to a child `swamp` process. See
+[models.md](./models.md) for the API reference.
+
 **Resume inputs (`--input`):** `swamp workflow resume` accepts `--input`,
 `--input-file`, and `--stdin` (same parsing as `swamp workflow run`). These let
 an operator supply values that were not available at the original run time —

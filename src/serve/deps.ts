@@ -270,6 +270,8 @@ export async function createModelMethodRunDeps(
       }
       : undefined,
     runTracker: options?.runTracker,
+    workflowRepo: repoContext.workflowRepo,
+    workflowRunRepo: repoContext.workflowRunRepo,
   };
 }
 
