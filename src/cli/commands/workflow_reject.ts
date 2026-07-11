@@ -125,35 +125,39 @@ export const workflowRejectCommand = withRemoteOptions(
     });
 
     const runTracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createWorkflowRejectDeps(
-      repoContext.workflowRepo,
-      repoContext.workflowRunRepo,
-      runTracker,
-    );
+    try {
+      const ctx = createLibSwampContext({ logger: cliCtx.logger });
+      const deps = createWorkflowRejectDeps(
+        repoContext.workflowRepo,
+        repoContext.workflowRunRepo,
+        runTracker,
+      );
 
-    await consumeStream(
-      workflowReject(ctx, deps, {
-        workflowIdOrName,
-        stepName,
-        reason: options.reason as string | undefined,
-        runId: options.run as string | undefined,
-      }),
-      {
-        resolving: () => {},
-        completed: (e) => {
-          if (cliCtx.outputMode === "json") {
-            console.log(JSON.stringify(e.data));
-          } else {
-            cliCtx.logger
-              .info`Rejected step ${e.data.stepName} in workflow ${e.data.workflowName}`;
-            cliCtx.logger.info("Workflow run marked as failed.");
-          }
+      await consumeStream(
+        workflowReject(ctx, deps, {
+          workflowIdOrName,
+          stepName,
+          reason: options.reason as string | undefined,
+          runId: options.run as string | undefined,
+        }),
+        {
+          resolving: () => {},
+          completed: (e) => {
+            if (cliCtx.outputMode === "json") {
+              console.log(JSON.stringify(e.data));
+            } else {
+              cliCtx.logger
+                .info`Rejected step ${e.data.stepName} in workflow ${e.data.workflowName}`;
+              cliCtx.logger.info("Workflow run marked as failed.");
+            }
+          },
+          error: (e) => {
+            throw new Error(e.error.message);
+          },
         },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      },
-    );
+      );
+    } finally {
+      runTracker.close();
+    }
   },
 );

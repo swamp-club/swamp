@@ -136,6 +136,10 @@ export const workflowCancelCommand = withRemoteOptions(
           "--all is not supported with --server",
         );
       }
+      if (options.reason) {
+        cliCtx.logger
+          .warn`--reason is ignored with --server (the cancel endpoint does not accept a reason)`;
+      }
       const token = await resolveServerToken(
         server,
         options.token as string | undefined,
@@ -146,22 +150,38 @@ export const workflowCancelCommand = withRemoteOptions(
       }`;
       const headers: Record<string, string> = {};
       if (token) headers["Authorization"] = `Bearer ${token}`;
-      const response = await fetch(cancelUrl, {
-        method: "POST",
-        headers,
-        signal: AbortSignal.timeout(15_000),
-      });
+      let response: Response;
+      try {
+        response = await fetch(cancelUrl, {
+          method: "POST",
+          headers,
+          signal: AbortSignal.timeout(15_000),
+        });
+      } catch (error) {
+        throw new UserError(
+          `Could not connect to ${server}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      if (!response.ok) {
+        const text = await response.text();
+        throw new UserError(
+          `Server returned ${response.status}: ${text || response.statusText}`,
+        );
+      }
       const body = await response.json();
-      if (cliCtx.outputMode === "json") {
-        console.log(JSON.stringify(body));
-      } else if (body.status === "cancelled") {
-        cliCtx.logger
-          .info`Cancelled run ${options.run as string} on server`;
-      } else {
+      if (body.status !== "cancelled") {
         throw new UserError(
           body.message ??
             `Failed to cancel run ${options.run as string}: ${body.status}`,
         );
+      }
+      if (cliCtx.outputMode === "json") {
+        console.log(JSON.stringify(body));
+      } else {
+        cliCtx.logger
+          .info`Cancelled run ${options.run as string} on server`;
       }
       return;
     }
