@@ -523,7 +523,11 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
       orphans.push({
         type: group.type,
         modelId: group.modelId,
-        modelName: group.items[0]?.tags.modelName,
+        // Report entries carry no modelName tag — take it from whichever
+        // item has a non-empty one.
+        modelName: group.items
+          .map((d) => d.tags["modelName"])
+          .find((n) => n !== undefined && n !== ""),
         dataNames,
         versionCount,
         bytesReclaimed,

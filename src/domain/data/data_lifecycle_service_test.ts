@@ -772,6 +772,82 @@ Deno.test("findOrphanedData - surfaces modelName from data tags", async () => {
   assertEquals(orphans[0].modelName, "my-model");
 });
 
+Deno.test("findOrphanedData - surfaces modelName when an untagged report entry is first", async () => {
+  const mockRepo = new MockDataRepository();
+  const modelType = ModelType.create("test/model");
+  const report = Data.create({
+    name: "report-swamp-method-summary",
+    contentType: "text/markdown",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "report" },
+    ownerDefinition: { ownerType: "model-method", ownerRef: "test-ref" },
+  });
+  const result = Data.create({
+    name: "result",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "test", modelName: "shell-echo" },
+    ownerDefinition: { ownerType: "model-method", ownerRef: "test-ref" },
+  });
+
+  mockRepo.findAllGlobal = () =>
+    Promise.resolve([
+      { data: report, modelType, modelId: "orphan" },
+      { data: result, modelType, modelId: "orphan" },
+    ]);
+  mockRepo.listVersions = () => Promise.resolve([1]);
+
+  const service = new DefaultDataLifecycleService(
+    mockRepo as never,
+    new MockWorkflowRunRepository() as never,
+  );
+
+  const orphans = await service.findOrphanedData(isModelLiveFor([]));
+
+  assertEquals(orphans.length, 1);
+  assertEquals(orphans[0].modelName, "shell-echo");
+});
+
+Deno.test("findOrphanedData - skips empty-string modelName tags in favor of a later non-empty tag", async () => {
+  const mockRepo = new MockDataRepository();
+  const modelType = ModelType.create("test/model");
+  const untagged = Data.create({
+    name: "report-swamp-method-summary",
+    contentType: "text/markdown",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "report", modelName: "" },
+    ownerDefinition: { ownerType: "model-method", ownerRef: "test-ref" },
+  });
+  const named = Data.create({
+    name: "result",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "test", modelName: "shell-echo" },
+    ownerDefinition: { ownerType: "model-method", ownerRef: "test-ref" },
+  });
+
+  mockRepo.findAllGlobal = () =>
+    Promise.resolve([
+      { data: untagged, modelType, modelId: "orphan" },
+      { data: named, modelType, modelId: "orphan" },
+    ]);
+  mockRepo.listVersions = () => Promise.resolve([1]);
+
+  const service = new DefaultDataLifecycleService(
+    mockRepo as never,
+    new MockWorkflowRunRepository() as never,
+  );
+
+  const orphans = await service.findOrphanedData(isModelLiveFor([]));
+
+  assertEquals(orphans.length, 1);
+  assertEquals(orphans[0].modelName, "shell-echo");
+});
+
 Deno.test("deleteOrphanedData - hard-deletes orphaned data, leaves live untouched", async () => {
   const mockRepo = new MockDataRepository();
   const modelType = ModelType.create("test/model");
