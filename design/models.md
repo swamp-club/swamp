@@ -266,6 +266,13 @@ Returns a discriminated result:
 - `{ ok: true, resources: DataHandle[] }` on success
 - `{ ok: false, error: { message, stack? } }` on failure
 
+**Argument routing:** The `arguments` object is routed between globalArguments
+and method arguments using the target type's Zod schemas — the same mechanism as
+CLI `--input`. Method arguments take precedence on ambiguous keys. Unknown keys
+return `{ ok: false }`. For direct type execution, only global-arg values are
+persisted in the auto-created definition; method-arg values are applied
+ephemerally for that invocation.
+
 **Data ownership:** When model X calls model Y, Y's data writes scope to Y's
 definition, not X's. This is consistent regardless of whether Y was run
 standalone, from a workflow, or from inside X.

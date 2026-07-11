@@ -353,3 +353,277 @@ Deno.test("ModelInvocationService: parentOutputId is undefined when caller has n
     undefined,
   );
 });
+
+// ── Argument routing tests ──
+
+const ARG_ROUTING_TYPE = ModelType.create("test/arg-routing-target");
+if (!modelRegistry.get(ARG_ROUTING_TYPE)) {
+  const targetModel: ModelDefinition = {
+    type: ARG_ROUTING_TYPE,
+    version: "2026.07.11.1",
+    globalArguments: z.object({
+      region: z.string().default("us-east-1"),
+    }),
+    methods: {
+      greet: {
+        description: "test method with per-method args",
+        arguments: z.object({
+          name: z.string(),
+        }),
+        execute: (_args) => Promise.resolve({ dataHandles: [] }),
+      },
+      noargs: {
+        description: "test method with no args",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  };
+  defineModel(targetModel);
+}
+
+function makeArgRoutingSvc(options: {
+  captureDefinition: (def: Definition) => void;
+  captureContext: (ctx: MethodContext) => void;
+  targetDefName: string;
+  targetDef: Definition;
+  saveDefinition?: (type: unknown, def: Definition) => Promise<void>;
+}) {
+  const mockExecutionService: MethodExecutionService = {
+    execute: () => Promise.resolve({ dataHandles: [] }),
+    executeWorkflow: (def, _modelDef, _method, ctx) => {
+      options.captureDefinition(def);
+      options.captureContext(ctx);
+      return Promise.resolve({ dataHandles: [] });
+    },
+  };
+
+  const stubDataRepo = {
+    findAllForModel: () => Promise.resolve([]),
+    getContent: () => Promise.resolve(null),
+  };
+
+  return new ModelInvocationService({
+    executionService: mockExecutionService,
+    commonDeps: {
+      dataRepository: stubDataRepo,
+      definitionRepository: {
+        findByNameGlobal: (name: string) => {
+          if (name === options.targetDefName) {
+            return Promise.resolve({
+              definition: options.targetDef,
+              type: ARG_ROUTING_TYPE,
+            });
+          }
+          return Promise.resolve(null);
+        },
+        findById: () => Promise.resolve(null),
+        save: options.saveDefinition ??
+          (() => Promise.resolve()),
+      },
+      createCelEnvironment: () =>
+        ({}) as ReturnType<MethodContext["createCelEnvironment"]>,
+    } as unknown as CommonMethodContextDeps,
+    repoDir: "/tmp/test-repo",
+  });
+}
+
+Deno.test("ModelInvocationService: routes method args to child definition (by-definition)", async () => {
+  let capturedDef: Definition | undefined;
+  let capturedCtx: MethodContext | undefined;
+
+  const targetDef = Definition.create({
+    name: "routed-def",
+    type: "test/arg-routing-target",
+    globalArguments: { region: "eu-west-1" },
+  });
+
+  const svc = makeArgRoutingSvc({
+    captureDefinition: (def) => {
+      capturedDef = def;
+    },
+    captureContext: (ctx) => {
+      capturedCtx = ctx;
+    },
+    targetDefName: "routed-def",
+    targetDef,
+  });
+
+  const callerCtx = makeStubContext();
+  const result = await svc.invoke(
+    { definition: "routed-def", method: "greet", arguments: { name: "World" } },
+    callerCtx,
+  );
+
+  assertEquals(result.ok, true);
+  assertEquals(capturedDef!.getMethodArguments("greet"), { name: "World" });
+  assertEquals(capturedCtx!.globalArgs, { region: "eu-west-1" });
+});
+
+Deno.test("ModelInvocationService: routes mixed global and method args (by-definition)", async () => {
+  let capturedDef: Definition | undefined;
+  let capturedCtx: MethodContext | undefined;
+
+  const targetDef = Definition.create({
+    name: "mixed-def",
+    type: "test/arg-routing-target",
+    globalArguments: { region: "us-east-1" },
+  });
+
+  const svc = makeArgRoutingSvc({
+    captureDefinition: (def) => {
+      capturedDef = def;
+    },
+    captureContext: (ctx) => {
+      capturedCtx = ctx;
+    },
+    targetDefName: "mixed-def",
+    targetDef,
+  });
+
+  const callerCtx = makeStubContext();
+  const result = await svc.invoke(
+    {
+      definition: "mixed-def",
+      method: "greet",
+      arguments: { name: "World", region: "ap-south-1" },
+    },
+    callerCtx,
+  );
+
+  assertEquals(result.ok, true);
+  assertEquals(capturedDef!.getMethodArguments("greet"), { name: "World" });
+  assertEquals(capturedCtx!.globalArgs, { region: "ap-south-1" });
+});
+
+Deno.test("ModelInvocationService: unknown arguments return error", async () => {
+  const targetDef = Definition.create({
+    name: "unknown-def",
+    type: "test/arg-routing-target",
+    globalArguments: {},
+  });
+
+  const svc = makeArgRoutingSvc({
+    captureDefinition: () => {},
+    captureContext: () => {},
+    targetDefName: "unknown-def",
+    targetDef,
+  });
+
+  const callerCtx = makeStubContext();
+  const result = await svc.invoke(
+    {
+      definition: "unknown-def",
+      method: "greet",
+      arguments: { bogus: "value" },
+    },
+    callerCtx,
+  );
+
+  assertEquals(result.ok, false);
+  assertStringIncludes(
+    (result as RunModelResult & { ok: false }).error.message,
+    "Unknown argument(s): bogus",
+  );
+});
+
+Deno.test("ModelInvocationService: no arguments preserves existing behavior", async () => {
+  let capturedDef: Definition | undefined;
+  let capturedCtx: MethodContext | undefined;
+
+  const targetDef = Definition.create({
+    name: "noargs-def",
+    type: "test/arg-routing-target",
+    globalArguments: { region: "us-west-2" },
+  });
+
+  const svc = makeArgRoutingSvc({
+    captureDefinition: (def) => {
+      capturedDef = def;
+    },
+    captureContext: (ctx) => {
+      capturedCtx = ctx;
+    },
+    targetDefName: "noargs-def",
+    targetDef,
+  });
+
+  const callerCtx = makeStubContext();
+  const result = await svc.invoke(
+    { definition: "noargs-def", method: "noargs" },
+    callerCtx,
+  );
+
+  assertEquals(result.ok, true);
+  assertEquals(capturedCtx!.globalArgs, { region: "us-west-2" });
+  assertEquals(capturedDef!.getMethodArguments("noargs"), {});
+});
+
+Deno.test("ModelInvocationService: does not mutate original definition", async () => {
+  const targetDef = Definition.create({
+    name: "immutable-def",
+    type: "test/arg-routing-target",
+    globalArguments: { region: "eu-central-1" },
+  });
+
+  const svc = makeArgRoutingSvc({
+    captureDefinition: () => {},
+    captureContext: () => {},
+    targetDefName: "immutable-def",
+    targetDef,
+  });
+
+  const callerCtx = makeStubContext();
+  await svc.invoke(
+    {
+      definition: "immutable-def",
+      method: "greet",
+      arguments: { name: "Test" },
+    },
+    callerCtx,
+  );
+
+  assertEquals(targetDef.getMethodArguments("greet"), {});
+  assertEquals(targetDef.globalArguments, { region: "eu-central-1" });
+});
+
+Deno.test("ModelInvocationService: routes method args for by-type auto-creation", async () => {
+  let capturedDef: Definition | undefined;
+  let capturedCtx: MethodContext | undefined;
+  let savedDef: Definition | undefined;
+
+  const svc = makeArgRoutingSvc({
+    captureDefinition: (def) => {
+      capturedDef = def;
+    },
+    captureContext: (ctx) => {
+      capturedCtx = ctx;
+    },
+    targetDefName: "__no_match__",
+    targetDef: Definition.create({
+      name: "unused",
+      type: "test/arg-routing-target",
+      globalArguments: {},
+    }),
+    saveDefinition: (_type, def) => {
+      savedDef = def;
+      return Promise.resolve();
+    },
+  });
+
+  const callerCtx = makeStubContext();
+  const result = await svc.invoke(
+    {
+      modelType: "test/arg-routing-target",
+      name: "new-instance",
+      method: "greet",
+      arguments: { name: "World", region: "us-west-2" },
+    },
+    callerCtx,
+  );
+
+  assertEquals(result.ok, true);
+  assertEquals(savedDef!.globalArguments, { region: "us-west-2" });
+  assertEquals(capturedDef!.getMethodArguments("greet"), { name: "World" });
+  assertEquals(capturedCtx!.globalArgs, { region: "us-west-2" });
+});

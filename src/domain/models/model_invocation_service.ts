@@ -19,7 +19,7 @@
 
 import { join, resolve, SEPARATOR } from "@std/path";
 import { getLogger } from "@logtape/logtape";
-import type { Definition } from "../definitions/definition.ts";
+import { Definition } from "../definitions/definition.ts";
 import { parseExtensionManifest } from "../extensions/extension_manifest.ts";
 import type {
   InvocationTracking,
@@ -38,6 +38,7 @@ import { resolveModelType } from "../extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../extensions/auto_resolver_context.ts";
 import { buildMethodContext } from "./method_context.ts";
 import type { CommonMethodContextDeps } from "./method_context.ts";
+import { getObjectShape } from "./zod_type_coercion.ts";
 
 const MAX_INVOCATION_DEPTH = 10;
 const MAX_INVOCATION_BREADTH = 100;
@@ -70,6 +71,73 @@ function isResolveSuccess(r: ResolveResult): r is ResolveSuccess {
 
 function ancestorKey(modelType: string, method: string): string {
   return `${modelType}::${method}`;
+}
+
+interface RoutedArgs {
+  globalArgs: Record<string, unknown>;
+  methodArgs: Record<string, unknown>;
+}
+
+function routeArguments(
+  args: Record<string, unknown>,
+  methodName: string,
+  modelDef: ModelDefinition,
+): RoutedArgs | RunModelResult {
+  const method = modelDef.methods[methodName];
+  if (!method) {
+    return {
+      ok: false,
+      error: {
+        message:
+          `Method "${methodName}" not found on model type "${modelDef.type.normalized}".`,
+      },
+    };
+  }
+
+  const methodShape = getObjectShape(method.arguments);
+  const globalShape = modelDef.globalArguments
+    ? getObjectShape(modelDef.globalArguments)
+    : null;
+
+  const methodKeys = methodShape
+    ? new Set(Object.keys(methodShape))
+    : new Set<string>();
+  const globalKeys = globalShape
+    ? new Set(Object.keys(globalShape))
+    : new Set<string>();
+
+  const globalArgs: Record<string, unknown> = {};
+  const methodArgs: Record<string, unknown> = {};
+  const unknownKeys: string[] = [];
+
+  for (const [key, value] of Object.entries(args)) {
+    if (methodKeys.has(key)) {
+      methodArgs[key] = value;
+    } else if (globalKeys.has(key)) {
+      globalArgs[key] = value;
+    } else {
+      unknownKeys.push(key);
+    }
+  }
+
+  if (unknownKeys.length > 0) {
+    const allValid = [...methodKeys, ...globalKeys];
+    return {
+      ok: false,
+      error: {
+        message: `Unknown argument(s): ${unknownKeys.join(", ")}. ` +
+          `Valid arguments are: ${allValid.join(", ") || "none"}`,
+      },
+    };
+  }
+
+  return { globalArgs, methodArgs };
+}
+
+function isRoutedArgs(
+  r: RoutedArgs | RunModelResult,
+): r is RoutedArgs {
+  return "globalArgs" in r;
 }
 
 export class ModelInvocationService {
@@ -168,9 +236,22 @@ export class ModelInvocationService {
       breadthCounter: tracking.breadthCounter,
     };
 
-    const mergedGlobalArgs = options.arguments
-      ? { ...definition.globalArguments, ...options.arguments }
-      : (definition.globalArguments ?? {});
+    let childDefinition = definition;
+    let mergedGlobalArgs = definition.globalArguments ?? {};
+
+    if (options.arguments && Object.keys(options.arguments).length > 0) {
+      const routed = routeArguments(options.arguments, methodName, modelDef);
+      if (!isRoutedArgs(routed)) return routed;
+
+      childDefinition = Definition.fromData(definition.toData());
+      for (const [key, value] of Object.entries(routed.methodArgs)) {
+        childDefinition.setMethodArgument(methodName, key, value);
+      }
+      mergedGlobalArgs = {
+        ...definition.globalArguments,
+        ...routed.globalArgs,
+      };
+    }
 
     const childContext = buildMethodContext(
       this.#deps.commonDeps,
@@ -178,20 +259,20 @@ export class ModelInvocationService {
         signal: callerContext.signal,
         repoDir: this.#deps.repoDir,
         modelType: modelDef.type,
-        modelId: definition.id,
+        modelId: childDefinition.id,
         globalArgs: mergedGlobalArgs,
         definition: {
-          id: definition.id,
-          name: definition.name,
-          version: definition.version,
-          tags: definition.tags ?? {},
+          id: childDefinition.id,
+          name: childDefinition.name,
+          version: childDefinition.version,
+          tags: childDefinition.tags ?? {},
         },
         methodName,
         logger: getLogger([
           "swamp",
           "model",
           "run",
-          definition.name,
+          childDefinition.name,
           methodName,
         ]),
         extensionFilesRoot: modelDef.extensionFilesRoot,
@@ -208,7 +289,7 @@ export class ModelInvocationService {
 
     try {
       const result = await this.#deps.executionService.executeWorkflow(
-        definition,
+        childDefinition,
         modelDef,
         methodName,
         childContext,
@@ -312,14 +393,21 @@ export class ModelInvocationService {
       }
       definition = existing.definition;
     } else {
-      const { Definition: DefinitionClass } = await import(
-        "../definitions/definition.ts"
-      );
-      definition = DefinitionClass.create({
+      let globalArgs: Record<string, unknown> = {};
+      if (options.arguments && Object.keys(options.arguments).length > 0) {
+        const routed = routeArguments(
+          options.arguments,
+          options.method,
+          modelDef,
+        );
+        if (!isRoutedArgs(routed)) return routed;
+        globalArgs = routed.globalArgs;
+      }
+      definition = Definition.create({
         name: options.name,
         type: modelDef.type.normalized,
         typeVersion: modelDef.version,
-        globalArguments: options.arguments ?? {},
+        globalArguments: globalArgs,
       });
       await definitionRepo.save(modelDef.type, definition);
       logger
