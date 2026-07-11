@@ -19,7 +19,8 @@
 
 import { assertEquals } from "@std/assert";
 import { assertPathStringIncludes } from "../persistence/path_test_helpers.ts";
-import { join } from "@std/path";
+import { join, relative, SEPARATOR } from "@std/path";
+import { walk } from "@std/fs/walk";
 import { SkillAssets } from "./skill_assets.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -481,6 +482,30 @@ Deno.test("SkillAssets.copySkillsTo copies share guide and references", async ()
     const troubleshootingStat = await Deno.stat(troubleshootingPath);
     assertEquals(troubleshootingStat.isFile, true);
   });
+});
+
+Deno.test("SkillAssets.listSkills includes every skill markdown file", async () => {
+  const assets = new SkillAssets();
+  const skillsDir = assets.getSkillsDir();
+  const bundledNames = assets.getSkillNames();
+  const sourcePaths: string[] = [];
+
+  for (const name of bundledNames) {
+    const skillDir = join(skillsDir, name);
+    for await (
+      const entry of walk(skillDir, {
+        includeDirs: false,
+        exts: [".md"],
+      })
+    ) {
+      const rel = relative(skillsDir, entry.path).split(SEPARATOR).join("/");
+      sourcePaths.push(rel);
+    }
+  }
+
+  const bundledPaths = assets.listSkills().map((skill) => skill.relativePath);
+
+  assertEquals(bundledPaths.toSorted(), sourcePaths.toSorted());
 });
 
 Deno.test("SkillAssets.listSkills includes share guide entries", () => {
