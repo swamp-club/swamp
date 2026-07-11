@@ -556,6 +556,26 @@ Deno.test("RepoService.init generates CLAUDE.md disambiguating workflow to swamp
   });
 });
 
+Deno.test("RepoService.init generates CLAUDE.md with anti-bypass guidance", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath);
+
+    const claudeMdPath = join(tempDir, "CLAUDE.md");
+    const content = await Deno.readTextFile(claudeMdPath);
+
+    assertStringIncludes(content, "Use swamp, don't bypass it");
+    assertStringIncludes(content, "swamp data query");
+    assertStringIncludes(content, "swamp model type search");
+    assertStringIncludes(
+      content,
+      "the anti-pattern is bypassing swamp entirely",
+    );
+  });
+});
+
 Deno.test("RepoService.init always creates .gitignore with managed section", async () => {
   await withTempDir(async (tempDir) => {
     const service = new RepoService("0.1.0");
