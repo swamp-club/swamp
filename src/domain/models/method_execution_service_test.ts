@@ -39,6 +39,7 @@ import { type DataId, generateDataId } from "../data/data_id.ts";
 import { Data } from "../data/data.ts";
 import { UserError } from "../errors.ts";
 import { getLogger } from "@logtape/logtape";
+import { createModelOutputId, type ModelOutput } from "./model_output.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 
 /**
@@ -3275,3 +3276,179 @@ Deno.test("executeWorkflow - placed step with a vanished output record fails lou
     setRemoteStepDispatcher(null);
   }
 });
+
+// ---------- Invocation Provenance Tests ----------
+
+function createMockOutputRepo(): {
+  repo: MethodContext["outputRepository"];
+  saved: Array<{ type: ModelType; method: string; output: ModelOutput }>;
+} {
+  const saved: Array<{
+    type: ModelType;
+    method: string;
+    output: ModelOutput;
+  }> = [];
+  return {
+    repo: {
+      findById: () => Promise.resolve(null),
+      findByDefinition: () => Promise.resolve([]),
+      findLatestByDefinition: () => Promise.resolve(null),
+      findAll: () => Promise.resolve([]),
+      findAllGlobal: () => Promise.resolve([]),
+      findAllGlobalSince: () => Promise.resolve([]),
+      save: (type: ModelType, method: string, output: ModelOutput) => {
+        saved.push({ type, method, output });
+        return Promise.resolve();
+      },
+      delete: () => Promise.resolve(),
+      nextId: () => createModelOutputId(crypto.randomUUID()),
+      getPath: () => "",
+    },
+    saved,
+  };
+}
+
+Deno.test(
+  "executeWorkflow: output has triggeredBy 'manual' for top-level execution",
+  async () => {
+    const service = new DefaultMethodExecutionService();
+    const model = createTestModel({});
+    const definition = Definition.create({
+      name: "test-provenance-manual",
+      globalArguments: { value: "test" },
+    });
+
+    const { repo, saved } = createMockOutputRepo();
+    const { context } = createTestContext({
+      modelType: model.type,
+      outputRepository: repo,
+    });
+
+    await service.executeWorkflow(definition, model, "start", context);
+
+    const lastSave = saved[saved.length - 1];
+    assertEquals(lastSave.output.status, "succeeded");
+    assertEquals(lastSave.output.provenance.triggeredBy, "manual");
+    assertEquals(lastSave.output.provenance.parentOutputId, undefined);
+    assertEquals(lastSave.output.provenance.callerExtension, undefined);
+  },
+);
+
+Deno.test(
+  "executeWorkflow: output uses _invocationProvenance when set",
+  async () => {
+    const service = new DefaultMethodExecutionService();
+    const model = createTestModel({});
+    const definition = Definition.create({
+      name: "test-provenance-model",
+      globalArguments: { value: "test" },
+    });
+
+    const { repo, saved } = createMockOutputRepo();
+    const { context } = createTestContext({
+      modelType: model.type,
+      outputRepository: repo,
+      _invocationProvenance: {
+        triggeredBy: "model",
+        parentOutputId: "aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee",
+        callerExtension: "@test/caller-ext",
+      },
+    });
+
+    await service.executeWorkflow(definition, model, "start", context);
+
+    const lastSave = saved[saved.length - 1];
+    assertEquals(lastSave.output.status, "succeeded");
+    assertEquals(lastSave.output.provenance.triggeredBy, "model");
+    assertEquals(
+      lastSave.output.provenance.parentOutputId,
+      "aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee",
+    );
+    assertEquals(
+      lastSave.output.provenance.callerExtension,
+      "@test/caller-ext",
+    );
+  },
+);
+
+Deno.test(
+  "executeWorkflow: sets _currentOutputId on context before execution",
+  async () => {
+    const service = new DefaultMethodExecutionService();
+
+    let capturedOutputId: string | undefined;
+    const model: ModelDefinition = {
+      type: ModelType.create("test/capture-output-id"),
+      version: "2026.07.11.1",
+      globalArguments: z.object({}),
+      methods: {
+        run: {
+          description: "capture output id",
+          arguments: z.object({}),
+          execute: (_args: Record<string, unknown>, ctx: MethodContext) => {
+            capturedOutputId = ctx._currentOutputId;
+            return Promise.resolve({ dataHandles: [] });
+          },
+        },
+      },
+    };
+
+    const definition = Definition.create({
+      name: "test-capture-output-id",
+      globalArguments: {},
+    });
+
+    const { repo } = createMockOutputRepo();
+    const { context } = createTestContext({
+      modelType: model.type,
+      outputRepository: repo,
+    });
+
+    await service.executeWorkflow(definition, model, "run", context);
+
+    assertEquals(typeof capturedOutputId, "string");
+    assertEquals(capturedOutputId!.length > 0, true);
+  },
+);
+
+Deno.test(
+  "executeWorkflow: failed execution persists output with failed status",
+  async () => {
+    const service = new DefaultMethodExecutionService();
+    const model: ModelDefinition = {
+      type: ModelType.create("test/fail-output"),
+      version: "2026.07.11.1",
+      globalArguments: z.object({}),
+      methods: {
+        boom: {
+          description: "always fails",
+          arguments: z.object({}),
+          execute: () => {
+            throw new Error("intentional failure");
+          },
+        },
+      },
+    };
+
+    const definition = Definition.create({
+      name: "test-fail-output",
+      globalArguments: {},
+    });
+
+    const { repo, saved } = createMockOutputRepo();
+    const { context } = createTestContext({
+      modelType: model.type,
+      outputRepository: repo,
+    });
+
+    await assertRejects(
+      () => service.executeWorkflow(definition, model, "boom", context),
+      Error,
+      "intentional failure",
+    );
+
+    const lastSave = saved[saved.length - 1];
+    assertEquals(lastSave.output.status, "failed");
+    assertEquals(lastSave.output.error?.message, "intentional failure");
+  },
+);
