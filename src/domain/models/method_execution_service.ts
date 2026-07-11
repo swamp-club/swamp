@@ -746,82 +746,124 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           traceHeaders: injectTraceContext(),
         };
 
+      // Pre-create ModelOutput before execution so its ID is available
+      // as parentOutputId for nested runModel() invocations.
+      let output: ModelOutput | undefined;
+      if (context.outputRepository) {
+        const provenance = context._invocationProvenance
+          ? {
+            definitionHash,
+            modelVersion: modelDef.version,
+            triggeredBy: context._invocationProvenance.triggeredBy,
+            parentOutputId: context._invocationProvenance.parentOutputId,
+            callerExtension: context._invocationProvenance.callerExtension,
+          }
+          : {
+            definitionHash,
+            modelVersion: modelDef.version,
+            triggeredBy: "manual" as const,
+          };
+        output = ModelOutput.create({
+          definitionId: currentDefinition.id,
+          methodName,
+          status: "running",
+          provenance,
+        });
+        context._currentOutputId = output.id;
+        await context.outputRepository.save(modelDef.type, methodName, output);
+      }
+
       let currentHandles: DataHandle[];
       let result: MethodResult;
       let executionContext: MethodContext = context;
 
-      if (context.placement && hasPlacement(context.placement)) {
-        // Remote placement: the method body runs on a matching worker; the
-        // surrounding pipeline (checks above, output records and follow-up
-        // actions below) stays at the orchestrator. See
-        // design/remote-execution.md.
-        const remoteResult = await this.#executeRemotely(
-          context,
-          executionRequest,
-          modelDef,
-          currentDefinition,
-          methodName,
-        );
-        // Rebuild full handles from the durable records the data plane
-        // persisted — downstream consumers (data-record mapping, workflow
-        // artifact tracking) read metadata like ownerDefinition, which the
-        // wire-thin dispatch outputs do not carry.
-        currentHandles = await Promise.all(
-          remoteResult.outputs.map((output) =>
-            this.#rebuildRemoteHandle(context, output)
-          ),
-        );
-        result = {
-          dataHandles: currentHandles,
-          followUpActions: remoteResult
-            .followUpActions as FollowUpAction[] | undefined,
-          executor: remoteResult.workerName,
-        };
-      } else {
-        // Execute in-process — the single-host path (see
-        // design/remote-execution.md "No execution drivers").
-        const inProcessExecutor = new InProcessExecutor(
-          this,
-          currentDefinition,
-          method,
-          modelDef,
-          context,
-          methodName,
-          this.modelInvocationService,
-        );
-        const executionResult = await withSpan("swamp.method.execute", {
-          "model.type": context.modelType.normalized,
-        }, () => inProcessExecutor.execute(executionRequest));
+      try {
+        if (context.placement && hasPlacement(context.placement)) {
+          // Remote placement: the method body runs on a matching worker; the
+          // surrounding pipeline (checks above, output records and follow-up
+          // actions below) stays at the orchestrator. See
+          // design/remote-execution.md.
+          const remoteResult = await this.#executeRemotely(
+            context,
+            executionRequest,
+            modelDef,
+            currentDefinition,
+            methodName,
+          );
+          // Rebuild full handles from the durable records the data plane
+          // persisted — downstream consumers (data-record mapping, workflow
+          // artifact tracking) read metadata like ownerDefinition, which the
+          // wire-thin dispatch outputs do not carry.
+          currentHandles = await Promise.all(
+            remoteResult.outputs.map((output) =>
+              this.#rebuildRemoteHandle(context, output)
+            ),
+          );
+          result = {
+            dataHandles: currentHandles,
+            followUpActions: remoteResult
+              .followUpActions as FollowUpAction[] | undefined,
+            executor: remoteResult.workerName,
+          };
+        } else {
+          // Execute in-process — the single-host path (see
+          // design/remote-execution.md "No execution drivers").
+          const inProcessExecutor = new InProcessExecutor(
+            this,
+            currentDefinition,
+            method,
+            modelDef,
+            context,
+            methodName,
+            this.modelInvocationService,
+          );
+          const executionResult = await withSpan("swamp.method.execute", {
+            "model.type": context.modelType.normalized,
+          }, () => inProcessExecutor.execute(executionRequest));
 
-        if (executionResult.outputs.some((o) => o.kind === "pending")) {
-          throw new Error(
-            "In-process execution unexpectedly produced pending outputs — " +
-              "this is a bug; in-process execution should only produce " +
-              "persisted outputs",
+          if (executionResult.outputs.some((o) => o.kind === "pending")) {
+            throw new Error(
+              "In-process execution unexpectedly produced pending outputs — " +
+                "this is a bug; in-process execution should only produce " +
+                "persisted outputs",
+            );
+          }
+          // Process outputs first — even on error, data may have been written
+          // to disk before the method threw (e.g. code-review writes log then
+          // throws on verdict=FAIL). Handles must survive the error path.
+          currentHandles = collectPersistedHandles(executionResult.outputs);
+
+          if (executionResult.status === "error") {
+            const err = new Error(
+              executionResult.error ?? "Method execution failed",
+            );
+            (err as unknown as Record<string, unknown>).dataHandles =
+              currentHandles;
+            throw err;
+          }
+
+          result = {
+            dataHandles: currentHandles,
+            followUpActions: executionResult
+              .followUpActions as FollowUpAction[] | undefined,
+            executor: "loopback",
+          };
+          // Use the executor's context with writers for follow-up actions
+          executionContext = inProcessExecutor.contextWithWriters ?? context;
+        }
+      } catch (error) {
+        if (output && context.outputRepository) {
+          output.markFailed({
+            message: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : undefined,
+          });
+          await context.outputRepository.save(
+            modelDef.type,
+            methodName,
+            output,
           );
         }
-        // Process outputs first — even on error, data may have been written
-        // to disk before the method threw (e.g. code-review writes log then
-        // throws on verdict=FAIL). Handles must survive the error path.
-        currentHandles = collectPersistedHandles(executionResult.outputs);
-
-        if (executionResult.status === "error") {
-          const err = new Error(
-            executionResult.error ?? "Method execution failed",
-          );
-          (err as unknown as Record<string, unknown>).dataHandles =
-            currentHandles;
-          throw err;
-        }
-
-        result = {
-          dataHandles: currentHandles,
-          followUpActions: executionResult
-            .followUpActions as FollowUpAction[] | undefined,
-          executor: "loopback",
-        };
-        // Use the executor's context with writers for follow-up actions
-        executionContext = inProcessExecutor.contextWithWriters ?? context;
+        throw error;
       }
 
       // Collect artifact refs from handles (data is already persisted)
@@ -832,19 +874,10 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         tags: h.tags,
       }));
 
-      // Create ModelOutput if output repository is available
-      if (context.outputRepository) {
-        const output = ModelOutput.create({
-          definitionId: currentDefinition.id,
-          methodName,
-          status: "running",
-          provenance: {
-            definitionHash,
-            modelVersion: modelDef.version,
-            triggeredBy: "manual",
-          },
-          artifacts: { dataArtifacts: storedArtifacts },
-        });
+      if (output && context.outputRepository) {
+        for (const artifact of storedArtifacts) {
+          output.addDataArtifact(artifact);
+        }
         output.markSucceeded();
         await context.outputRepository.save(modelDef.type, methodName, output);
       }

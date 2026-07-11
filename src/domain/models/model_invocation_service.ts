@@ -199,6 +199,13 @@ export class ModelInvocationService {
     );
     childContext._invocationTracking = childTracking;
 
+    const callerModelDef = modelRegistry.get(callerContext.modelType);
+    childContext._invocationProvenance = {
+      triggeredBy: "model",
+      parentOutputId: callerContext._currentOutputId,
+      callerExtension: callerModelDef?.extensionName,
+    };
+
     try {
       const result = await this.#deps.executionService.executeWorkflow(
         definition,

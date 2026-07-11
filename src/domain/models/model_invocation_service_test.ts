@@ -23,11 +23,16 @@ import "../../domain/models/models.ts";
 import type {
   InvocationTracking,
   MethodContext,
+  ModelDefinition,
   RunModelResult,
 } from "./model.ts";
+import { defineModel, modelRegistry } from "./model.ts";
 import type { MethodExecutionService } from "./method_execution_service.ts";
 import type { CommonMethodContextDeps } from "./method_context.ts";
 import { ModelInvocationService } from "./model_invocation_service.ts";
+import { ModelType } from "./model_type.ts";
+import { Definition } from "../definitions/definition.ts";
+import { z } from "zod";
 
 await initializeLogging({});
 
@@ -225,5 +230,126 @@ Deno.test("ModelInvocationService: depth 9 allows call (under limit of 10)", asy
   assertStringIncludes(
     (result as RunModelResult & { ok: false }).error.message,
     "not found",
+  );
+});
+
+// ── Invocation provenance tests ──
+
+const PROVENANCE_TARGET_TYPE = ModelType.create("test/provenance-target");
+if (!modelRegistry.get(PROVENANCE_TARGET_TYPE)) {
+  const targetModel: ModelDefinition = {
+    type: PROVENANCE_TARGET_TYPE,
+    version: "2026.07.11.1",
+    methods: {
+      greet: {
+        description: "test method",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  };
+  defineModel(targetModel);
+}
+
+function makeProvenanceSvc(options: {
+  captureContext: (ctx: MethodContext) => void;
+  targetDefName: string;
+  targetDef: Definition;
+}) {
+  const mockExecutionService: MethodExecutionService = {
+    execute: () => Promise.resolve({ dataHandles: [] }),
+    executeWorkflow: (_def, _modelDef, _method, ctx) => {
+      options.captureContext(ctx);
+      return Promise.resolve({ dataHandles: [] });
+    },
+  };
+
+  const stubDataRepo = {
+    findAllForModel: () => Promise.resolve([]),
+    getContent: () => Promise.resolve(null),
+  };
+
+  return new ModelInvocationService({
+    executionService: mockExecutionService,
+    commonDeps: {
+      dataRepository: stubDataRepo,
+      definitionRepository: {
+        findByNameGlobal: (name: string) => {
+          if (name === options.targetDefName) {
+            return Promise.resolve({
+              definition: options.targetDef,
+              type: PROVENANCE_TARGET_TYPE,
+            });
+          }
+          return Promise.resolve(null);
+        },
+        findById: () => Promise.resolve(null),
+      },
+      createCelEnvironment: () =>
+        ({}) as ReturnType<MethodContext["createCelEnvironment"]>,
+    } as unknown as CommonMethodContextDeps,
+    repoDir: "/tmp/test-repo",
+  });
+}
+
+Deno.test("ModelInvocationService: sets _invocationProvenance on child context", async () => {
+  let capturedContext: MethodContext | undefined;
+
+  const targetDef = Definition.create({
+    name: "target-def",
+    type: "test/provenance-target",
+    globalArguments: {},
+  });
+
+  const svc = makeProvenanceSvc({
+    captureContext: (ctx) => {
+      capturedContext = ctx;
+    },
+    targetDefName: "target-def",
+    targetDef,
+  });
+
+  const callerCtx = makeStubContext({ _currentOutputId: "parent-output-123" });
+  const result = await svc.invoke(
+    { definition: "target-def", method: "greet" },
+    callerCtx,
+  );
+
+  assertEquals(result.ok, true);
+  assertEquals(capturedContext?._invocationProvenance?.triggeredBy, "model");
+  assertEquals(
+    capturedContext?._invocationProvenance?.parentOutputId,
+    "parent-output-123",
+  );
+});
+
+Deno.test("ModelInvocationService: parentOutputId is undefined when caller has no output", async () => {
+  let capturedContext: MethodContext | undefined;
+
+  const targetDef = Definition.create({
+    name: "target-def-2",
+    type: "test/provenance-target",
+    globalArguments: {},
+  });
+
+  const svc = makeProvenanceSvc({
+    captureContext: (ctx) => {
+      capturedContext = ctx;
+    },
+    targetDefName: "target-def-2",
+    targetDef,
+  });
+
+  const callerCtx = makeStubContext();
+  const result = await svc.invoke(
+    { definition: "target-def-2", method: "greet" },
+    callerCtx,
+  );
+
+  assertEquals(result.ok, true);
+  assertEquals(capturedContext?._invocationProvenance?.triggeredBy, "model");
+  assertEquals(
+    capturedContext?._invocationProvenance?.parentOutputId,
+    undefined,
   );
 });

@@ -393,6 +393,16 @@ export interface MethodContext {
 
   /** @internal Invocation tracking — not part of the extension author API. */
   _invocationTracking?: InvocationTracking;
+
+  /** @internal Output ID of the ModelOutput pre-created for this execution. */
+  _currentOutputId?: string;
+
+  /** @internal Provenance override when this execution was triggered by a model invocation. */
+  _invocationProvenance?: {
+    triggeredBy: "model";
+    parentOutputId?: string;
+    callerExtension?: string;
+  };
 }
 
 /**
