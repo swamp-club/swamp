@@ -287,6 +287,8 @@ export interface StepExecutionContext {
   runTracker?: RunTrackerRepository;
   ephemeralRepo?: UnifiedDataRepository;
   ephemeralCatalog?: CatalogStore;
+  workflowRepo?: WorkflowRepository;
+  workflowRunRepo?: WorkflowRunRepository;
 }
 
 /**
@@ -540,6 +542,21 @@ export class DefaultStepExecutor implements StepExecutor {
         },
         repoDir: ctx.repoDir,
       });
+    }
+
+    if (
+      executionService instanceof DefaultMethodExecutionService &&
+      !executionService.workflowGateService &&
+      ctx.workflowRepo &&
+      ctx.workflowRunRepo
+    ) {
+      const { createWorkflowGateService } = await import(
+        "../../libswamp/models/workflow_gate.ts"
+      );
+      executionService.workflowGateService = createWorkflowGateService(
+        ctx.workflowRepo,
+        ctx.workflowRunRepo,
+      );
     }
 
     // Resolve every available expression (self.* from the forEach variable,
@@ -2610,6 +2627,8 @@ export class WorkflowExecutionService {
           runTracker: this.runTracker,
           ephemeralRepo: this.ephemeralRepo,
           ephemeralCatalog: this.ephemeralCatalog,
+          workflowRepo: this.workflowRepo,
+          workflowRunRepo: this.runRepo,
         };
         return this.executor.execute(step, ctx);
       });

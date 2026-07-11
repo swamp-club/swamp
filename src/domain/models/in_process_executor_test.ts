@@ -29,7 +29,11 @@ import type {
   MethodContext,
   MethodDefinition,
   ModelDefinition,
+  WorkflowGateApproveOptions,
+  WorkflowGateRejectOptions,
+  WorkflowGateResult,
 } from "./model.ts";
+import type { WorkflowGateService } from "./workflow_gate_service.ts";
 import { z } from "zod";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
@@ -550,4 +554,167 @@ Deno.test("InProcessExecutor: wires deleteResource onto context", async () => {
 
   assertEquals(result.status, "success");
   assertEquals(deletedName, "stale-resource");
+});
+
+Deno.test("InProcessExecutor: wires approveWorkflowGate when workflowGateService is provided", async () => {
+  let capturedOptions: WorkflowGateApproveOptions | undefined;
+  let capturedCallerInfo:
+    | { definitionName: string; methodName: string }
+    | undefined;
+
+  const mockGateService: WorkflowGateService = {
+    approve: (options, callerContext, _signal, _logger) => {
+      capturedOptions = options;
+      capturedCallerInfo = callerContext;
+      return Promise.resolve({
+        ok: true as const,
+        runId: "run-123",
+        workflowName: "test-workflow",
+        stepName: "gate-step",
+        approved: true,
+        decidedBy:
+          `model:${callerContext.definitionName}/${callerContext.methodName}`,
+      });
+    },
+    reject: () =>
+      Promise.resolve({
+        ok: true as const,
+        runId: "",
+        workflowName: "",
+        stepName: "",
+        approved: false,
+        decidedBy: "",
+      }),
+  };
+
+  let gateResult: WorkflowGateResult | undefined;
+  const executor: MethodExecutor = {
+    execute: async (_def, _method, context) => {
+      gateResult = await context.approveWorkflowGate!({
+        workflowIdOrName: "my-workflow",
+        stepName: "approval-gate",
+        reason: "webhook approved",
+      });
+      return {};
+    },
+  };
+
+  const context = createMockContext();
+  const inProcessExecutor = new InProcessExecutor(
+    executor,
+    testDefinition,
+    testMethod,
+    testModelDef,
+    context,
+    "test",
+    undefined,
+    mockGateService,
+  );
+
+  const result = await inProcessExecutor.execute(createMockRequest());
+
+  assertEquals(result.status, "success");
+  assertEquals(capturedOptions?.workflowIdOrName, "my-workflow");
+  assertEquals(capturedOptions?.stepName, "approval-gate");
+  assertEquals(capturedOptions?.reason, "webhook approved");
+  assertEquals(capturedCallerInfo?.definitionName, "test-model");
+  assertEquals(capturedCallerInfo?.methodName, "test");
+  assertEquals(gateResult?.ok, true);
+  if (gateResult?.ok) {
+    assertEquals(gateResult.runId, "run-123");
+    assertEquals(gateResult.workflowName, "test-workflow");
+    assertEquals(gateResult.approved, true);
+    assertEquals(gateResult.decidedBy, "model:test-model/test");
+  }
+});
+
+Deno.test("InProcessExecutor: wires rejectWorkflowGate when workflowGateService is provided", async () => {
+  let capturedOptions: WorkflowGateRejectOptions | undefined;
+
+  const mockGateService: WorkflowGateService = {
+    approve: () =>
+      Promise.resolve({
+        ok: true as const,
+        runId: "",
+        workflowName: "",
+        stepName: "",
+        approved: true,
+        decidedBy: "",
+      }),
+    reject: (options, callerContext, _signal, _logger) => {
+      capturedOptions = options;
+      return Promise.resolve({
+        ok: true as const,
+        runId: "run-456",
+        workflowName: "deploy-wf",
+        stepName: "prod-gate",
+        approved: false,
+        decidedBy:
+          `model:${callerContext.definitionName}/${callerContext.methodName}`,
+      });
+    },
+  };
+
+  let gateResult: WorkflowGateResult | undefined;
+  const executor: MethodExecutor = {
+    execute: async (_def, _method, context) => {
+      gateResult = await context.rejectWorkflowGate!({
+        workflowIdOrName: "deploy-wf",
+        stepName: "prod-gate",
+        reason: "reviewer rejected",
+      });
+      return {};
+    },
+  };
+
+  const context = createMockContext();
+  const inProcessExecutor = new InProcessExecutor(
+    executor,
+    testDefinition,
+    testMethod,
+    testModelDef,
+    context,
+    "test",
+    undefined,
+    mockGateService,
+  );
+
+  const result = await inProcessExecutor.execute(createMockRequest());
+
+  assertEquals(result.status, "success");
+  assertEquals(capturedOptions?.workflowIdOrName, "deploy-wf");
+  assertEquals(capturedOptions?.stepName, "prod-gate");
+  assertEquals(gateResult?.ok, true);
+  if (gateResult?.ok) {
+    assertEquals(gateResult.approved, false);
+    assertEquals(gateResult.decidedBy, "model:test-model/test");
+  }
+});
+
+Deno.test("InProcessExecutor: does not wire gate methods when no workflowGateService", async () => {
+  let hasApprove = false;
+  let hasReject = false;
+
+  const executor: MethodExecutor = {
+    execute: (_def, _method, context) => {
+      hasApprove = context.approveWorkflowGate !== undefined;
+      hasReject = context.rejectWorkflowGate !== undefined;
+      return Promise.resolve({});
+    },
+  };
+
+  const context = createMockContext();
+  const inProcessExecutor = new InProcessExecutor(
+    executor,
+    testDefinition,
+    testMethod,
+    testModelDef,
+    context,
+    "test",
+  );
+
+  await inProcessExecutor.execute(createMockRequest());
+
+  assertEquals(hasApprove, false);
+  assertEquals(hasReject, false);
 });

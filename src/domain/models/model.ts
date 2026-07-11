@@ -391,6 +391,34 @@ export interface MethodContext {
    */
   runModel?: (options: RunModelOptions) => Promise<RunModelResult>;
 
+  /**
+   * Approve a suspended workflow's manual_approval gate by workflow
+   * name/ID and step name. Records the decision and marks the step as
+   * succeeded. The workflow remains suspended until explicitly resumed.
+   *
+   * `decidedBy` is auto-populated from the calling model and method
+   * for audit integrity — extensions cannot override it.
+   *
+   * Not available in remote execution contexts.
+   */
+  approveWorkflowGate?: (
+    options: WorkflowGateApproveOptions,
+  ) => Promise<WorkflowGateResult>;
+
+  /**
+   * Reject a suspended workflow's manual_approval gate by workflow
+   * name/ID and step name. Records the decision, marks the step as
+   * failed, fails the job, and completes the run as failed.
+   *
+   * `decidedBy` is auto-populated from the calling model and method
+   * for audit integrity — extensions cannot override it.
+   *
+   * Not available in remote execution contexts.
+   */
+  rejectWorkflowGate?: (
+    options: WorkflowGateRejectOptions,
+  ) => Promise<WorkflowGateResult>;
+
   /** @internal Invocation tracking — not part of the extension author API. */
   _invocationTracking?: InvocationTracking;
 
@@ -443,6 +471,48 @@ export interface RunModelSuccess {
 export interface RunModelFailure {
   ok: false;
   error: { message: string; stack?: string };
+}
+
+/**
+ * Options for `context.approveWorkflowGate()`.
+ */
+export interface WorkflowGateApproveOptions {
+  workflowIdOrName: string;
+  stepName: string;
+  runId?: string;
+  reason?: string;
+}
+
+/**
+ * Options for `context.rejectWorkflowGate()`.
+ */
+export interface WorkflowGateRejectOptions {
+  workflowIdOrName: string;
+  stepName: string;
+  runId?: string;
+  reason?: string;
+}
+
+/**
+ * Result of `context.approveWorkflowGate()` or `context.rejectWorkflowGate()`.
+ * Carries correlation data for logging and audit.
+ */
+export type WorkflowGateResult =
+  | WorkflowGateSuccess
+  | WorkflowGateFailure;
+
+export interface WorkflowGateSuccess {
+  ok: true;
+  runId: string;
+  workflowName: string;
+  stepName: string;
+  approved: boolean;
+  decidedBy: string;
+}
+
+export interface WorkflowGateFailure {
+  ok: false;
+  error: { message: string };
 }
 
 /**

@@ -160,6 +160,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     ) => ReturnType<NonNullable<MethodContext["runModel"]>>;
   };
 
+  workflowGateService?:
+    import("./workflow_gate_service.ts").WorkflowGateService;
+
   async execute(
     definition: Definition,
     method: MethodDefinition,
@@ -816,6 +819,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             context,
             methodName,
             this.modelInvocationService,
+            this.workflowGateService,
           );
           const executionResult = await withSpan("swamp.method.execute", {
             "model.type": context.modelType.normalized,

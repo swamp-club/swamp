@@ -210,5 +210,7 @@ export function buildModelMethodRunDeps(
         );
       }
       : undefined,
+    workflowRepo: repoContext.workflowRepo,
+    workflowRunRepo: repoContext.workflowRunRepo,
   };
 }

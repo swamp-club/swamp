@@ -301,6 +301,48 @@ workflow for orchestration.
 `triggeredBy: "model"`, `parentOutputId` pointing to the caller's output, and
 `callerExtension` for provenance tracking.
 
+### Workflow Gate Control (`context.approveWorkflowGate`, `context.rejectWorkflowGate`)
+
+`context.approveWorkflowGate(options)` and `context.rejectWorkflowGate(options)`
+let a model method programmatically approve or reject a suspended workflow's
+`manual_approval` gate without shelling out to a child `swamp` process. This
+enables webhook-driven approvals, scheduler-driven gates, and other in-process
+automation.
+
+```typescript
+// Approve a suspended gate
+const result = await context.approveWorkflowGate({
+  workflowIdOrName: "deploy-pipeline",
+  stepName: "prod-approval",
+  reason: "Approved via Linear webhook",
+});
+
+// Reject a gate
+const result = await context.rejectWorkflowGate({
+  workflowIdOrName: "deploy-pipeline",
+  stepName: "prod-approval",
+  reason: "Reviewer rejected",
+});
+```
+
+Returns a discriminated result:
+
+- `{ ok: true, runId, workflowName, stepName, approved, decidedBy }` on success
+- `{ ok: false, error: { message } }` on failure
+
+**Approve** marks the step as succeeded and saves the run. The workflow remains
+suspended until explicitly resumed via `swamp workflow resume`.
+
+**Reject** marks the step as failed, fails the job, and completes the run as
+failed. No resume is needed.
+
+**`decidedBy` is auto-populated** from the calling model's definition name and
+method name (e.g. `model:webhook-handler/on_comment`). Extensions cannot
+override this value — it is enforced for audit integrity.
+
+**Remote execution:** Not available in remote worker contexts. Returns
+`{ ok: false }` with an actionable error message.
+
 ## Pre-flight Checks
 
 Pre-flight checks are optional guards that run automatically before any
