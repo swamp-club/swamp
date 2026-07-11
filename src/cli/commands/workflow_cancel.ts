@@ -111,7 +111,10 @@ export const workflowCancelCommand = withRemoteOptions(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
     )
-    .option("--run <run_id:string>", "Target a specific run ID")
+    .option(
+      "--run <run_id:string>",
+      "Target a specific run ID (required with --server)",
+    )
     .option("--all", "Cancel all running workflow runs")
     .option("--reason <reason:string>", "Reason for cancellation"),
 ).action(
@@ -150,35 +153,42 @@ export const workflowCancelCommand = withRemoteOptions(
       }`;
       const headers: Record<string, string> = {};
       if (token) headers["Authorization"] = `Bearer ${token}`;
-      let response: Response;
+      let body: Record<string, unknown>;
       try {
-        response = await fetch(cancelUrl, {
+        const response = await fetch(cancelUrl, {
           method: "POST",
           headers,
           signal: AbortSignal.timeout(15_000),
         });
+        if (!response.ok) {
+          const text = await response.text();
+          throw new UserError(
+            `Server returned ${response.status}: ${
+              text || response.statusText
+            }`,
+          );
+        }
+        body = await response.json();
       } catch (error) {
+        if (error instanceof UserError) throw error;
         throw new UserError(
           `Could not connect to ${server}: ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
       }
-      if (!response.ok) {
-        const text = await response.text();
-        throw new UserError(
-          `Server returned ${response.status}: ${text || response.statusText}`,
-        );
-      }
-      const body = await response.json();
       if (body.status !== "cancelled") {
         throw new UserError(
-          body.message ??
+          (body.message as string | undefined) ??
             `Failed to cancel run ${options.run as string}: ${body.status}`,
         );
       }
       if (cliCtx.outputMode === "json") {
-        console.log(JSON.stringify(body));
+        console.log(JSON.stringify({
+          runId: body.executionId ?? options.run,
+          status: "cancelled",
+          reason: options.reason ?? "Cancelled by user",
+        }));
       } else {
         cliCtx.logger
           .info`Cancelled run ${options.run as string} on server`;
