@@ -23,12 +23,7 @@ import {
   mergeIdentityHeaders,
 } from "./client_identity.ts";
 import { parseRetryAfter, rateLimitError } from "./rate_limit.ts";
-import type { QuestEventResult } from "../../domain/quest/quest_event.ts";
-import type {
-  QuestBoard,
-  QuestHistoryEntry,
-  QuestProgress,
-} from "../../domain/quest/quest_progress.ts";
+import type { GenesisPass } from "../../domain/quest/genesis_pass.ts";
 
 export type { ClientIdentity };
 
@@ -530,106 +525,62 @@ export class SwampClubClient {
     return { issues, total: data.total ?? issues.length };
   }
 
-  async submitQuestEvent(
-    apiKey: string,
-    event: { type: string; metadata?: Record<string, unknown> },
+  /**
+   * Fetch an operative's Genesis quest pass — the linear battle-pass read model
+   * that swamp-club derives from telemetry and serves as the single source of
+   * truth for both the web profile and `swamp quest`.
+   *
+   * This is a public read keyed by username (the CLI resolves its own username
+   * via {@link whoami}). It carries no x-api-key: the endpoint is public and
+   * `canClaim` is only true for the owner's own authenticated session on the
+   * web — the CLI renders read-only.
+   */
+  async fetchGenesisPass(
+    username: string,
     signal?: AbortSignal,
-  ): Promise<QuestEventResult> {
+  ): Promise<GenesisPass> {
     const res = await this.fetch(
-      "/api/v1/quest/events",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": apiKey,
-        },
-        body: JSON.stringify(event),
-      },
+      `/api/u/${encodeURIComponent(username)}/genesis`,
+      { method: "GET", headers: {} },
       signal,
     );
 
     if (!res.ok) {
       const text = await res.text();
+      if (res.status === 404) {
+        throw new UserError(`No quest pass found for ${username}.`);
+      }
       throw new UserError(
-        `Failed to submit quest event (HTTP ${res.status}): ${text}`,
+        `Failed to fetch quest pass (HTTP ${res.status}): ${text}`,
       );
     }
 
     return await res.json();
   }
 
-  async fetchQuestProgress(
-    apiKey: string,
+  /**
+   * Fetch the UNAUTHENTICATED (ghost) Genesis pass — the progress this device
+   * has accrued in the event stream, keyed by its `Swamp-Distinct-Id` (attached
+   * automatically from the client identity). Every reward reads unclaimed until
+   * the distinct_id is bound to an account via `swamp auth login`.
+   */
+  async fetchGhostGenesisPass(
     signal?: AbortSignal,
-  ): Promise<QuestProgress> {
+  ): Promise<GenesisPass> {
     const res = await this.fetch(
-      "/api/v1/quest/progress",
-      {
-        method: "GET",
-        headers: { "x-api-key": apiKey },
-      },
+      "/api/quest/genesis/ghost",
+      { method: "GET", headers: {} },
       signal,
     );
 
     if (!res.ok) {
       const text = await res.text();
       throw new UserError(
-        `Failed to fetch quest progress (HTTP ${res.status}): ${text}`,
+        `Failed to fetch ghost quest pass (HTTP ${res.status}): ${text}`,
       );
     }
 
     return await res.json();
-  }
-
-  async fetchQuestBoard(
-    apiKey: string,
-    seasonSlug?: string,
-    signal?: AbortSignal,
-  ): Promise<QuestBoard> {
-    const path = seasonSlug
-      ? `/api/v1/quest/board?season=${encodeURIComponent(seasonSlug)}`
-      : "/api/v1/quest/board";
-    const res = await this.fetch(
-      path,
-      {
-        method: "GET",
-        headers: { "x-api-key": apiKey },
-      },
-      signal,
-    );
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new UserError(
-        `Failed to fetch quest board (HTTP ${res.status}): ${text}`,
-      );
-    }
-
-    return await res.json();
-  }
-
-  async fetchQuestHistory(
-    apiKey: string,
-    signal?: AbortSignal,
-  ): Promise<QuestHistoryEntry[]> {
-    const res = await this.fetch(
-      "/api/v1/quest/history",
-      {
-        method: "GET",
-        headers: { "x-api-key": apiKey },
-      },
-      signal,
-    );
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new UserError(
-        `Failed to fetch quest history (HTTP ${res.status}): ${text}`,
-      );
-    }
-
-    const data = await res.json();
-    return data.seasons ?? [];
   }
 
   private async fetch(

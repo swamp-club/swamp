@@ -28,7 +28,6 @@ import {
 } from "../../presentation/renderers/issue_create.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
-import { maybeEmitQuestEvent } from "../quest_event_emitter.ts";
 import {
   dispatchExtensionRepositoryReport,
   resolveDestination,
@@ -239,6 +238,5 @@ export const issueBugCommand = new Command()
         : undefined,
     });
 
-    await maybeEmitQuestEvent(ctx.outputMode, "issue.create");
     ctx.logger.debug("Bug report submitted successfully");
   });

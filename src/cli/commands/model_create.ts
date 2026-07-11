@@ -52,7 +52,6 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { ModelCreateResponse } from "../../serve/protocol.ts";
-import { maybeEmitQuestEvent } from "../quest_event_emitter.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -128,7 +127,6 @@ export const modelCreateCommand = withRemoteOptions(
       renderer.handlers(),
     );
 
-    await maybeEmitQuestEvent(cliCtx.outputMode, "model.create", { name });
     cliCtx.logger.debug("Model create command completed");
   },
 );

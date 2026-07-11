@@ -42,7 +42,6 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { DataGetResponse } from "../../serve/protocol.ts";
-import { maybeEmitQuestEvent } from "../quest_event_emitter.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -166,7 +165,6 @@ export const dataGetCommand = withRemoteOptions(
       renderer.handlers(),
     );
 
-    await maybeEmitQuestEvent(cliCtx.outputMode, "data.query");
     cliCtx.logger.debug("Data get command completed");
   },
 );

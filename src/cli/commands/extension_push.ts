@@ -56,7 +56,6 @@ import type { ReviewFinding } from "../../domain/extensions/extension_review_rul
 import type {
   CollectiveMismatch,
 } from "../../domain/extensions/extension_collective_validator.ts";
-import { maybeEmitQuestEvent } from "../quest_event_emitter.ts";
 import type { CompilationError, SwampError } from "../../libswamp/mod.ts";
 import { loadIdentity } from "../load_identity.ts";
 import { ReleaseChannel } from "../../domain/extensions/release_channel.ts";
@@ -576,7 +575,6 @@ export const extensionPushCommand = new Command()
       renderer.handlers(),
     );
 
-    await maybeEmitQuestEvent(cliCtx.outputMode, "extension.push");
     cliCtx.logger.debug("Extension push command completed");
   });
 

@@ -1494,22 +1494,8 @@ export {
   type SubdirPreview,
 } from "./datastores/namespace_migrate.ts";
 export {
-  questProgress,
-  type QuestProgressData,
-  type QuestProgressDeps,
-  type QuestProgressEvent,
-} from "./quest/progress.ts";
-export {
-  questBoard,
-  type QuestBoardData,
-  type QuestBoardDeps,
-  type QuestBoardEvent,
-  type QuestBoardInput,
-} from "./quest/board.ts";
-export {
-  questHistory,
-  type QuestHistoryData,
-  type QuestHistoryDeps,
-  type QuestHistoryEvent,
-} from "./quest/history.ts";
-export { emitQuestEvent, type QuestEmitDeps } from "./quest/emit_event.ts";
+  questPass,
+  type QuestPassData,
+  type QuestPassDeps,
+  type QuestPassEvent,
+} from "./quest/pass.ts";

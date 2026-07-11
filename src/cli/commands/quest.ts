@@ -22,17 +22,15 @@ import { createContext, type GlobalOptions } from "../context.ts";
 import {
   consumeStream,
   createLibSwampContext,
-  questProgress,
-  type QuestProgressDeps,
+  questPass,
+  type QuestPassDeps,
 } from "../../libswamp/mod.ts";
-import { createQuestProgressRenderer } from "../../presentation/renderers/quest_progress.ts";
+import { createQuestPassRenderer } from "../../presentation/renderers/quest_pass.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
 import { loadIdentity } from "../load_identity.ts";
 import { UserError } from "../../domain/errors.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
-import { questBoardCommand } from "./quest_board.ts";
-import { questHistoryCommand } from "./quest_history.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -40,42 +38,55 @@ type AnyOptions = any;
 export const questCommand = new Command()
   .name("quest")
   .description(
-    "View your seasonal quest bingo card and track progress",
+    "View your Genesis quest pass and track progress toward the next tier",
   )
-  .example("View quest progress", "swamp quest")
-  .example("View bingo card", "swamp quest board")
-  .example("View past seasons", "swamp quest history")
+  .example("View quest pass", "swamp quest")
   .action(async function (options: AnyOptions) {
-    const ctx = createContext(options as GlobalOptions, ["quest", "progress"]);
+    const ctx = createContext(options as GlobalOptions, ["quest", "pass"]);
 
     const credentials = await new AuthRepository().load();
-    if (!credentials?.apiKey) {
-      throw new UserError(
-        "Not authenticated. Run `swamp auth login` first.",
-      );
-    }
-
     const identity = await loadIdentity();
-    const serverUrl = credentials.serverUrl ??
+    const serverUrl = credentials?.serverUrl ??
       Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
 
     const client = new SwampClubClient(serverUrl, identity);
-    const deps: QuestProgressDeps = {
-      fetchQuestProgress: async () => {
-        const progress = await client.fetchQuestProgress(
-          credentials.apiKey,
+
+    // Authenticated → your own pass, claimable on the web. Otherwise the ghost
+    // read: the progress this device accrued, keyed by its distinct_id, every
+    // reward unclaimed until `swamp auth login` binds it to an account.
+    let deps: QuestPassDeps;
+    if (credentials?.apiKey) {
+      const apiKey = credentials.apiKey;
+      deps = {
+        ghost: false,
+        fetchPass: async () => {
+          const who = await client.whoami(apiKey);
+          if (!who.authenticated || !who.username) {
+            throw new UserError(
+              "Could not resolve your identity. Run `swamp auth login` again.",
+            );
+          }
+          return client.fetchGenesisPass(who.username);
+        },
+      };
+    } else {
+      if (!identity.distinctId) {
+        throw new UserError(
+          "No device identity yet — run a swamp command inside a repo first, " +
+            "or `swamp auth login` to claim your pass.",
         );
-        return { progress };
-      },
-    };
+      }
+      deps = {
+        ghost: true,
+        fetchPass: () => client.fetchGhostGenesisPass(),
+      };
+    }
 
     const libCtx = createLibSwampContext({ logger: ctx.logger });
-    const renderer = createQuestProgressRenderer(ctx.outputMode);
+    const renderer = createQuestPassRenderer(ctx.outputMode);
 
     await consumeStream(
-      questProgress(libCtx, deps),
+      questPass(libCtx, deps),
       renderer.handlers(),
     );
-  })
-  .command("board", questBoardCommand)
-  .command("history", questHistoryCommand);
+  });

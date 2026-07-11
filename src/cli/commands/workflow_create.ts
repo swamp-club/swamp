@@ -31,7 +31,6 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
-import { maybeEmitQuestEvent } from "../quest_event_emitter.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -64,6 +63,5 @@ export const workflowCreateCommand = new Command()
       renderer.handlers(),
     );
 
-    await maybeEmitQuestEvent(cliCtx.outputMode, "workflow.create", { name });
     cliCtx.logger.debug("Workflow create command completed");
   });
