@@ -174,6 +174,76 @@ Deno.test("initTracing: returns undefined when no TRACEPARENT is set", async () 
   }
 });
 
+Deno.test("initTracing: includes OTEL_RESOURCE_ATTRIBUTES in resource", async () => {
+  const originalResAttrs = Deno.env.get("OTEL_RESOURCE_ATTRIBUTES");
+  try {
+    Deno.env.set(
+      "OTEL_RESOURCE_ATTRIBUTES",
+      "site=bed,deployment.environment=prod",
+    );
+
+    const { Resource, envDetectorSync } = await import(
+      "@opentelemetry/resources"
+    );
+    const { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } = await import(
+      "@opentelemetry/semantic-conventions"
+    );
+
+    const resource = Resource.default()
+      .merge(envDetectorSync.detect())
+      .merge(
+        new Resource({
+          [ATTR_SERVICE_NAME]: "swamp-test",
+          [ATTR_SERVICE_VERSION]: "1.0.0",
+        }),
+      );
+
+    const attrs = resource.attributes;
+    assertEquals(attrs["site"], "bed");
+    assertEquals(attrs["deployment.environment"], "prod");
+    assertEquals(attrs["service.name"], "swamp-test");
+    assertEquals(attrs["service.version"], "1.0.0");
+    assertEquals(attrs["telemetry.sdk.language"], "nodejs");
+  } finally {
+    if (originalResAttrs) {
+      Deno.env.set("OTEL_RESOURCE_ATTRIBUTES", originalResAttrs);
+    } else {
+      Deno.env.delete("OTEL_RESOURCE_ATTRIBUTES");
+    }
+  }
+});
+
+Deno.test("initTracing: explicit service.name wins over OTEL_RESOURCE_ATTRIBUTES", async () => {
+  const originalResAttrs = Deno.env.get("OTEL_RESOURCE_ATTRIBUTES");
+  try {
+    Deno.env.set("OTEL_RESOURCE_ATTRIBUTES", "service.name=from-env");
+
+    const { Resource, envDetectorSync } = await import(
+      "@opentelemetry/resources"
+    );
+    const { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } = await import(
+      "@opentelemetry/semantic-conventions"
+    );
+
+    const resource = Resource.default()
+      .merge(envDetectorSync.detect())
+      .merge(
+        new Resource({
+          [ATTR_SERVICE_NAME]: "swamp",
+          [ATTR_SERVICE_VERSION]: "dev",
+        }),
+      );
+
+    assertEquals(resource.attributes["service.name"], "swamp");
+  } finally {
+    if (originalResAttrs) {
+      Deno.env.set("OTEL_RESOURCE_ATTRIBUTES", originalResAttrs);
+    } else {
+      Deno.env.delete("OTEL_RESOURCE_ATTRIBUTES");
+    }
+  }
+});
+
 Deno.test("shutdownTracing: no-op when tracing was not initialized", async () => {
   // Should not throw
   await shutdownTracing();
