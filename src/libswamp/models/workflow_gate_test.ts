@@ -18,16 +18,16 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { createWorkflowGateService } from "../../libswamp/models/workflow_gate.ts";
-import { Workflow } from "../workflows/workflow.ts";
-import { Job } from "../workflows/job.ts";
-import { Step } from "../workflows/step.ts";
-import { StepTask } from "../workflows/step_task.ts";
-import { WorkflowRun } from "../workflows/workflow_run.ts";
+import { createWorkflowGateService } from "./workflow_gate.ts";
+import { Workflow } from "../../domain/workflows/workflow.ts";
+import { Job } from "../../domain/workflows/job.ts";
+import { Step } from "../../domain/workflows/step.ts";
+import { StepTask } from "../../domain/workflows/step_task.ts";
+import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type {
   WorkflowRepository,
   WorkflowRunRepository,
-} from "../workflows/repositories.ts";
+} from "../../domain/workflows/repositories.ts";
 import { getLogger } from "@logtape/logtape";
 
 function createSuspendedWorkflowAndRun(): {

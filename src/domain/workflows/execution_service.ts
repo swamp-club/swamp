@@ -289,6 +289,8 @@ export interface StepExecutionContext {
   ephemeralCatalog?: CatalogStore;
   workflowRepo?: WorkflowRepository;
   workflowRunRepo?: WorkflowRunRepository;
+  workflowGateService?:
+    import("../models/workflow_gate_service.ts").WorkflowGateService;
 }
 
 /**
@@ -547,16 +549,9 @@ export class DefaultStepExecutor implements StepExecutor {
     if (
       executionService instanceof DefaultMethodExecutionService &&
       !executionService.workflowGateService &&
-      ctx.workflowRepo &&
-      ctx.workflowRunRepo
+      ctx.workflowGateService
     ) {
-      const { createWorkflowGateService } = await import(
-        "../../libswamp/models/workflow_gate.ts"
-      );
-      executionService.workflowGateService = createWorkflowGateService(
-        ctx.workflowRepo,
-        ctx.workflowRunRepo,
-      );
+      executionService.workflowGateService = ctx.workflowGateService;
     }
 
     // Resolve every available expression (self.* from the forEach variable,
@@ -1454,6 +1449,9 @@ export class WorkflowExecutionService {
   private readonly workflowReportRunner = new WorkflowReportRunner();
   /** Evaluator for sub-workflow input expressions. Per-instance, not per-call. */
   private readonly expressionEvaluator: ExpressionEvaluationService;
+
+  workflowGateService?:
+    import("../models/workflow_gate_service.ts").WorkflowGateService;
 
   constructor(
     private readonly workflowRepo: WorkflowRepository,
@@ -2629,6 +2627,7 @@ export class WorkflowExecutionService {
           ephemeralCatalog: this.ephemeralCatalog,
           workflowRepo: this.workflowRepo,
           workflowRunRepo: this.runRepo,
+          workflowGateService: this.workflowGateService,
         };
         return this.executor.execute(step, ctx);
       });
