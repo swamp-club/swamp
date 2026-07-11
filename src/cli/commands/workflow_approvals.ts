@@ -19,120 +19,128 @@
 
 import { Command } from "@cliffy/command";
 import {
+  consumeStream,
+  createLibSwampContext,
+  createWorkflowApprovalsDeps,
+  type PendingApproval,
+  workflowApprovals,
+  type WorkflowApprovalsEvent,
+} from "../../libswamp/mod.ts";
+import {
   createContext,
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
+import type { CommandContext } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
-import { evaluateApprovalTimeout } from "../../domain/workflows/approval_timeout.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { WorkflowApprovalsResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const workflowApprovalsCommand = new Command()
-  .name("approvals")
-  .description("List all workflow runs awaiting manual approval")
-  .example("List pending approvals", "swamp workflow approvals")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .action(async function (options: AnyOptions) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "workflow",
-      "approvals",
-    ]);
-
-    const { repoContext } = await requireInitializedRepoUnlocked({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
-
-    // Use the datastore-aware repositories from the RepositoryContext so the
-    // pending-approval scan reads the same workflow-runs path suspended runs
-    // are written to. Constructing YamlWorkflowRunRepository(repoDir) directly
-    // would bind to repo-local .swamp/workflow-runs/ and miss runs stored in a
-    // configured datastore, yielding an empty approvals list.
-    const workflowRepo = repoContext.workflowRepo;
-    const runRepo = repoContext.workflowRunRepo;
-
-    const workflows = await workflowRepo.findAll();
-
-    interface PendingApproval {
-      workflowName: string;
-      runId: string;
-      stepName: string;
-      suspendedAt: string | undefined;
-      prompt: string | undefined;
-    }
-
-    const pending: PendingApproval[] = [];
-
-    for (const workflow of workflows) {
-      const runs = await runRepo.findAllByWorkflowId(workflow.id);
-      for (const run of runs) {
-        if (run.status !== "suspended") continue;
-        const waiting = run.findWaitingApprovalStep();
-        if (!waiting) continue;
-
-        const job = run.getJob(waiting.jobName);
-        const step = job?.getStep(waiting.stepName);
-        const taskData = workflow.jobs
-          .find((j) => j.name === waiting.jobName)?.steps
-          .find((s) => s.name === waiting.stepName)?.task.data;
-
-        // A run whose approval deadline has lapsed is no longer actionable —
-        // `swamp workflow approve` would reject it — so apply the same
-        // deadline check here and drop expired entries from the listing.
-        const timeout = evaluateApprovalTimeout(
-          step?.startedAt,
-          taskData,
-          new Date(),
-        );
-        if (timeout?.expired) continue;
-
-        const prompt = taskData && taskData.type === "manual_approval"
-          ? taskData.prompt
-          : undefined;
-
-        pending.push({
-          workflowName: workflow.name,
-          runId: run.id,
-          stepName: waiting.stepName,
-          suspendedAt: step?.startedAt?.toISOString(),
-          prompt,
-        });
-      }
-    }
-
-    if (cliCtx.outputMode === "json") {
-      console.log(JSON.stringify({ approvals: pending }, null, 2));
+function renderApprovals(
+  cliCtx: CommandContext,
+  pending: PendingApproval[],
+): void {
+  if (cliCtx.outputMode === "json") {
+    console.log(JSON.stringify({ approvals: pending }, null, 2));
+  } else {
+    if (pending.length === 0) {
+      cliCtx.logger.info("No workflows awaiting approval");
     } else {
-      if (pending.length === 0) {
-        cliCtx.logger.info("No workflows awaiting approval");
-      } else {
-        for (const item of pending) {
-          cliCtx.logger.info(
-            "{workflowName} / {stepName} — {prompt}",
-            {
-              workflowName: item.workflowName,
-              stepName: item.stepName,
-              prompt: item.prompt ?? "(no prompt)",
-            },
-          );
-          cliCtx.logger.info(
-            "  swamp workflow approve {workflowName} {stepName}",
-            { workflowName: item.workflowName, stepName: item.stepName },
-          );
-          cliCtx.logger.info(
-            "  swamp workflow reject  {workflowName} {stepName}",
-            { workflowName: item.workflowName, stepName: item.stepName },
-          );
-          cliCtx.logger.info(
-            "  After approval: swamp workflow resume {workflowName}",
-            { workflowName: item.workflowName },
-          );
-        }
+      for (const item of pending) {
+        cliCtx.logger.info(
+          "{workflowName} / {stepName} — {prompt}",
+          {
+            workflowName: item.workflowName,
+            stepName: item.stepName,
+            prompt: item.prompt ?? "(no prompt)",
+          },
+        );
+        cliCtx.logger.info(
+          "  swamp workflow approve {workflowName} {stepName}",
+          { workflowName: item.workflowName, stepName: item.stepName },
+        );
+        cliCtx.logger.info(
+          "  swamp workflow reject  {workflowName} {stepName}",
+          { workflowName: item.workflowName, stepName: item.stepName },
+        );
+        cliCtx.logger.info(
+          "  After approval: swamp workflow resume {workflowName}",
+          { workflowName: item.workflowName },
+        );
       }
     }
+  }
+}
+
+export const workflowApprovalsCommand = withRemoteOptions(
+  new Command()
+    .name("approvals")
+    .description("List all workflow runs awaiting manual approval")
+    .example("List pending approvals", "swamp workflow approvals")
+    .example(
+      "List via server",
+      "swamp workflow approvals --server ws://localhost:9090",
+    )
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(async function (options: AnyOptions) {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "workflow",
+    "approvals",
+  ]);
+
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<WorkflowApprovalsResponse>(
+      { server, token },
+      {
+        type: "workflow.approvals",
+        payload: {},
+      },
+    );
+    const data = response.data as { approvals?: PendingApproval[] };
+    renderApprovals(cliCtx, data.approvals ?? []);
+    return;
+  }
+
+  const { repoContext } = await requireInitializedRepoUnlocked({
+    repoDir: resolveRepoDir(options.repoDir),
+    outputMode: cliCtx.outputMode,
   });
+
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = createWorkflowApprovalsDeps(
+    repoContext.workflowRepo,
+    repoContext.workflowRunRepo,
+  );
+
+  let pending: PendingApproval[] = [];
+  await consumeStream<WorkflowApprovalsEvent>(
+    workflowApprovals(ctx, deps),
+    {
+      resolving: () => {},
+      completed: (e) => {
+        pending = e.data.approvals;
+      },
+      error: (e) => {
+        throw new Error(e.error.message);
+      },
+    },
+  );
+
+  renderApprovals(cliCtx, pending);
+});

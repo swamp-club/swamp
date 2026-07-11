@@ -39,6 +39,8 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { WorkflowRejectResponse } from "../../serve/protocol.ts";
+import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
+import { swampPath } from "../../infrastructure/persistence/paths.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -117,15 +119,17 @@ export const workflowRejectCommand = withRemoteOptions(
       return;
     }
 
-    const { repoContext } = await requireInitializedRepoUnlocked({
+    const { repoDir, repoContext } = await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
 
+    const runTracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = createWorkflowRejectDeps(
       repoContext.workflowRepo,
       repoContext.workflowRunRepo,
+      runTracker,
     );
 
     await consumeStream(

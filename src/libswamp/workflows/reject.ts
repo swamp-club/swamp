@@ -23,6 +23,7 @@ import type {
   WorkflowRepository,
   WorkflowRunRepository,
 } from "../../domain/workflows/repositories.ts";
+import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
 import { resolveSuspendedRun } from "../../domain/workflows/suspended_run_resolver.ts";
 import { evaluateApprovalTimeout } from "../../domain/workflows/approval_timeout.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
@@ -57,13 +58,15 @@ export interface WorkflowRejectInput {
 export interface WorkflowRejectDeps {
   workflowRepo: WorkflowRepository;
   runRepo: WorkflowRunRepository;
+  runTracker?: RunTrackerRepository;
 }
 
 export function createWorkflowRejectDeps(
   workflowRepo: WorkflowRepository,
   runRepo: WorkflowRunRepository,
+  runTracker?: RunTrackerRepository,
 ): WorkflowRejectDeps {
-  return { workflowRepo, runRepo };
+  return { workflowRepo, runRepo, runTracker };
 }
 
 export async function* workflowReject(
@@ -162,6 +165,9 @@ export async function* workflowReject(
       matchedJob.fail();
       run.complete();
       await deps.runRepo.save(createWorkflowId(workflowId), run);
+      if (deps.runTracker) {
+        deps.runTracker.complete(run.id, "failed");
+      }
 
       yield {
         kind: "completed",
