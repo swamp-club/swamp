@@ -45,6 +45,8 @@ import type {
   WorkflowRunRepository,
 } from "./repositories.ts";
 import type { WorkflowRun } from "./workflow_run.ts";
+import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
+import type { ExportResult } from "@opentelemetry/core";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
@@ -3842,12 +3844,34 @@ Deno.test("resume() releases the log file sink when the consumer abandons the st
 Deno.test("manual_approval suspension does not mark job span as ERROR", async () => {
   const {
     BasicTracerProvider,
-    InMemorySpanExporter,
     SimpleSpanProcessor,
   } = await import("@opentelemetry/sdk-trace-base");
+  const { ExportResultCode } = await import("@opentelemetry/core");
   const otelApi = await import("@opentelemetry/api");
 
-  const exporter = new InMemorySpanExporter();
+  // A synchronous in-memory span exporter. OTel's own InMemorySpanExporter
+  // defers its result callback via setTimeout(0) and never clears it
+  // (forceFlush/shutdown are no-ops), so one timer per exported span leaks and
+  // Deno's resource sanitizer fails the test. This exporter resolves the
+  // callback inline, so no timer is queued. See swamp-club#1121.
+  class SyncInMemorySpanExporter implements SpanExporter {
+    readonly finishedSpans: ReadableSpan[] = [];
+    export(
+      spans: ReadableSpan[],
+      resultCallback: (result: ExportResult) => void,
+    ): void {
+      this.finishedSpans.push(...spans);
+      resultCallback({ code: ExportResultCode.SUCCESS });
+    }
+    shutdown(): Promise<void> {
+      return Promise.resolve();
+    }
+    forceFlush(): Promise<void> {
+      return Promise.resolve();
+    }
+  }
+
+  const exporter = new SyncInMemorySpanExporter();
   const provider = new BasicTracerProvider();
   provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
   provider.register();
@@ -3894,7 +3918,7 @@ Deno.test("manual_approval suspension does not mark job span as ERROR", async ()
       const run = await service.execute(workflow.name);
       assertEquals(run.status, "suspended");
 
-      const jobSpans = exporter.getFinishedSpans().filter((s) =>
+      const jobSpans = exporter.finishedSpans.filter((s) =>
         s.name === "swamp.workflow.job"
       );
       assertEquals(jobSpans.length, 1);
@@ -3905,7 +3929,7 @@ Deno.test("manual_approval suspension does not mark job span as ERROR", async ()
       );
     });
   } finally {
-    provider.shutdown();
+    await provider.shutdown();
     otelApi.trace.disable();
   }
 });
