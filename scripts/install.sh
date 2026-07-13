@@ -90,12 +90,12 @@ main() {
   # Prompt to connect to SWAMP CLUB when running interactively
   if [ -t 0 ] && [ -t 1 ]; then
     echo
-    section "Swamp is powered by SWAMP CLUB (swamp-club.com)"
+    section "Swamp is better with SWAMP CLUB (swamp-club.com)"
     info ""
     info "Connect your account to unlock:"
-    info "  - Share extensions with the community"
-    info "  - Higher rate limits"
-    info "  - Community features"
+    info "  - Submit bug reports and feature requests"
+    info "  - Publish extensions to share with the community"
+    info "  - Higher rate limits on CLI usage"
     info ""
     printf "  Set up your SWAMP CLUB account now? [Y/n] "
     read -r _answer </dev/tty || _answer=""

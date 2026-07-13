@@ -329,12 +329,12 @@ function Main {
     # Prompt to connect to SWAMP CLUB when running interactively
     if ([Environment]::UserInteractive -and [Console]::KeyAvailable -ne $null) {
         Write-Host ""
-        Write-Header "Swamp is powered by SWAMP CLUB (swamp-club.com)"
+        Write-Header "Swamp is better with SWAMP CLUB (swamp-club.com)"
         Write-Info ""
         Write-Info "Connect your account to unlock:"
-        Write-Info "  - Share extensions with the community"
-        Write-Info "  - Higher rate limits"
-        Write-Info "  - Community features"
+        Write-Info "  - Submit bug reports and feature requests"
+        Write-Info "  - Publish extensions to share with the community"
+        Write-Info "  - Higher rate limits on CLI usage"
         Write-Info ""
         $answer = Read-Host "  Set up your SWAMP CLUB account now? [Y/n]"
         if ($answer -match '^[nN]') {

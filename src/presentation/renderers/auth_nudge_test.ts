@@ -62,7 +62,7 @@ Deno.test("renderFirstRunNudge: outputs boxed first-run message to stderr", () =
 
   assertStringIncludes(stripped.join("\n"), "SWAMP CLUB");
   assertStringIncludes(stripped.join("\n"), "swamp auth login");
-  assertStringIncludes(stripped.join("\n"), "Community features");
+  assertStringIncludes(stripped.join("\n"), "bug reports and feature requests");
 
   const topBorder = stripped.find((l) => l.includes("┌"));
   const bottomBorder = stripped.find((l) => l.includes("└"));
