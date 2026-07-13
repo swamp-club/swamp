@@ -120,6 +120,22 @@ export class VaultTypeRegistry {
   }
 
   /**
+   * Surgically removes a single type from the registry so it can be
+   * re-registered with updated metadata after a bundle upgrade.
+   */
+  invalidateType(type: string): void {
+    const key = type.toLowerCase();
+    this.types.delete(key);
+    this.lazyTypes.delete(key);
+    this.typeLoadPromises.delete(key);
+  }
+
+  /** Returns true if a per-type loader has been configured. */
+  hasTypeLoader(): boolean {
+    return this.typeLoader !== null;
+  }
+
+  /**
    * Ensures a specific vault type's bundle has been imported.
    * If the type is lazy, invokes the type loader to import just that bundle.
    * Concurrent callers for the same type share the same promise.

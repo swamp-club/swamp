@@ -449,6 +449,9 @@ export async function executeReports(
     return { results, failures };
   }
 
+  if (context.scope !== "workflow") {
+    await modelRegistry.ensureTypeLoaded(context.modelType);
+  }
   context.redactSensitiveArgs = buildRedactSensitiveArgs(context);
 
   for (const { name, report } of applicable) {

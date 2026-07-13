@@ -904,6 +904,25 @@ export class ModelRegistry {
   }
 
   /**
+   * Surgically removes a single type from the registry so it can be
+   * re-registered with updated metadata (e.g. after an extension
+   * bundle upgrade). Removes from both {@link models} and
+   * {@link lazyTypes}, and clears any in-flight load promise.
+   */
+  invalidateType(type: string | ModelType): void {
+    const modelType = typeof type === "string" ? ModelType.create(type) : type;
+    const key = modelType.normalized;
+    this.models.delete(key);
+    this.lazyTypes.delete(key);
+    this.typeLoadPromises.delete(key);
+  }
+
+  /** Returns true if a per-type loader has been configured. */
+  hasTypeLoader(): boolean {
+    return this.typeLoader !== null;
+  }
+
+  /**
    * Ensures a specific model type's bundle has been imported.
    * If the type is lazy, invokes the type loader to import just that bundle
    * (and any extensions targeting it). Concurrent callers for the same type

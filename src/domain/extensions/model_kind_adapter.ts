@@ -62,6 +62,12 @@ export function clearAttachedExtensions(): void {
   attachedExtensions.clear();
 }
 
+export function removeAttachedExtensionsForType(
+  typeNormalized: string,
+): void {
+  attachedExtensions.delete(typeNormalized);
+}
+
 function markExtensionAttached(
   typeNormalized: string,
   sourcePath: string,

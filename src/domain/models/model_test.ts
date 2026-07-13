@@ -1139,3 +1139,63 @@ Deno.test("ModelRegistry.ensureTypeLoaded: retries after transient failure", asy
   assertEquals(callCount, 2);
   assertEquals(registry.get("@myorg/echo")?.version, "2026.02.09.1");
 });
+
+Deno.test("ModelRegistry.invalidateType: removes lazy type", () => {
+  const registry = new ModelRegistry();
+  registry.registerLazy(createLazyEntry("@myorg/echo"));
+  assertEquals(registry.has("@myorg/echo"), true);
+
+  registry.invalidateType("@myorg/echo");
+  assertEquals(registry.has("@myorg/echo"), false);
+  assertEquals(registry.isLazy("@myorg/echo"), false);
+});
+
+Deno.test("ModelRegistry.invalidateType: removes promoted type", () => {
+  const registry = new ModelRegistry();
+  registry.registerLazy(createLazyEntry("@myorg/echo"));
+  registry.promoteFromLazy(createTestModel("@myorg/echo"));
+  assertEquals(registry.get("@myorg/echo") !== undefined, true);
+
+  registry.invalidateType("@myorg/echo");
+  assertEquals(registry.get("@myorg/echo"), undefined);
+  assertEquals(registry.has("@myorg/echo"), false);
+});
+
+Deno.test("ModelRegistry.invalidateType: no-op for unknown type", () => {
+  const registry = new ModelRegistry();
+  registry.invalidateType("@myorg/nonexistent");
+  assertEquals(registry.has("@myorg/nonexistent"), false);
+});
+
+Deno.test("ModelRegistry.invalidateType: re-register and reload after invalidation", async () => {
+  const registry = new ModelRegistry();
+  registry.registerLazy(createLazyEntry("@myorg/echo"));
+  registry.setTypeLoader((type) => {
+    registry.promoteFromLazy(createTestModel(type));
+    return Promise.resolve();
+  });
+
+  await registry.ensureTypeLoaded("@myorg/echo");
+  assertEquals(registry.get("@myorg/echo")?.version, "2026.02.09.1");
+
+  registry.invalidateType("@myorg/echo");
+  assertEquals(registry.get("@myorg/echo"), undefined);
+
+  registry.registerLazy({
+    ...createLazyEntry("@myorg/echo"),
+    sourceFingerprint: "new-fingerprint",
+  });
+  await registry.ensureTypeLoaded("@myorg/echo");
+  assertEquals(registry.get("@myorg/echo")?.version, "2026.02.09.1");
+});
+
+Deno.test("ModelRegistry.hasTypeLoader: false by default", () => {
+  const registry = new ModelRegistry();
+  assertEquals(registry.hasTypeLoader(), false);
+});
+
+Deno.test("ModelRegistry.hasTypeLoader: true after setTypeLoader", () => {
+  const registry = new ModelRegistry();
+  registry.setTypeLoader(() => Promise.resolve());
+  assertEquals(registry.hasTypeLoader(), true);
+});

@@ -160,6 +160,7 @@ export class MethodReportRunner {
       },
     };
 
+    await modelRegistry.ensureTypeLoaded(args.modelType);
     const stepModelDef = modelRegistry.get(args.modelType);
     const stepModelTypeReports = [
       ...BUILTIN_METHOD_REPORTS,
@@ -267,6 +268,7 @@ export class MethodReportRunner {
         },
       };
 
+      await modelRegistry.ensureTypeLoaded(args.modelType);
       const stepModelDef = modelRegistry.get(args.modelType);
       const stepModelTypeReports = [
         ...BUILTIN_METHOD_REPORTS,
