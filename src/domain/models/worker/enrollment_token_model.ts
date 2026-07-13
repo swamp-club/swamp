@@ -203,6 +203,7 @@ async function redeem(
   const secret = await context.vaultService.get(
     token.vaultName,
     token.secretKey,
+    "model:enrollment-token-verify",
   );
   if (!timingSafeEqual(secret, args.presentedToken)) {
     throw new Error(`Enrollment token '${name}' does not match`);

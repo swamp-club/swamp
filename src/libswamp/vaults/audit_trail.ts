@@ -91,6 +91,15 @@ export async function* vaultAuditTrail(
       const rangeDays = Math.ceil(
         (until.getTime() - since.getTime()) / (24 * 60 * 60 * 1000),
       );
+      if (rangeDays < 0) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            `--since (${since.toISOString()}) is after --until (${until.toISOString()}). The start date must be before the end date.`,
+          ),
+        };
+        return;
+      }
       if (rangeDays > MAX_RANGE_DAYS) {
         yield {
           kind: "error",
