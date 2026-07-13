@@ -406,7 +406,11 @@ export class CapabilityService {
       );
       return { value: annotation };
     }
-    const value = await vault.get(params.vaultName, params.secretKey);
+    const value = await vault.get(
+      params.vaultName,
+      params.secretKey,
+      `serve:${workerName}`,
+    );
     return { value };
   }
 

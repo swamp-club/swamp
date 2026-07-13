@@ -1106,6 +1106,16 @@ export {
   type VaultInspectEvent,
 } from "./vaults/inspect.ts";
 
+// Vault audit trail operations
+export {
+  createVaultAuditTrailDeps,
+  vaultAuditTrail,
+  type VaultAuditTrailData,
+  type VaultAuditTrailDeps,
+  type VaultAuditTrailEvent,
+  type VaultAuditTrailInput,
+} from "./vaults/audit_trail.ts";
+
 // Data GC operations
 export {
   createDataGcDeps,

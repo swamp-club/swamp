@@ -35,6 +35,7 @@ import { vaultInspectCommand } from "./vault_inspect.ts";
 import { vaultListKeysCommand } from "./vault_list_keys.ts";
 import { vaultMigrateCommand } from "./vault_migrate.ts";
 import { vaultReadSecretCommand } from "./vault_read_secret.ts";
+import { vaultAuditTrailCommand } from "./vault_audit_trail.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 
 /**
@@ -75,6 +76,7 @@ export const vaultCommand = new Command()
   .command("migrate", vaultMigrateCommand)
   .command("read-secret", vaultReadSecretCommand)
   .command("list-keys", vaultListKeysCommand)
+  .command("audit-trail", vaultAuditTrailCommand)
   .command(
     "list",
     new Command()

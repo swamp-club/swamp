@@ -1089,7 +1089,11 @@ export class ModelResolver {
       const vaultName = match[2] ?? match[3];
       const secretKey = match[5] ?? match[6];
       try {
-        const secretValue = await vaultService.get(vaultName, secretKey);
+        const secretValue = await vaultService.get(
+          vaultName,
+          secretKey,
+          "expression:vault-resolve",
+        );
         redactor?.addSecret(secretValue);
 
         let celReplacement: string;

@@ -96,7 +96,7 @@ export function createVaultInspectDeps(repoDir: string): VaultInspectDeps {
     },
     measureSecretSize: async (vaultName, key) => {
       const svc = await getVaultService();
-      const value = await svc.get(vaultName, key);
+      const value = await svc.get(vaultName, key, "cli:vault-inspect");
       return {
         bytes: new TextEncoder().encode(value).byteLength,
         chars: value.length,

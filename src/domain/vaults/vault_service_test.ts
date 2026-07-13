@@ -28,6 +28,11 @@ import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { VaultService } from "./vault_service.ts";
 import { vaultTypeRegistry } from "./vault_type_registry.ts";
+import type { VaultAuditEntry } from "./vault_audit_entry.ts";
+import type {
+  VaultAuditQueryOptions,
+  VaultAuditRepository,
+} from "./vault_audit_repository.ts";
 
 Deno.test("VaultService - missing vault configuration error handling", async (t) => {
   await t.step(
@@ -655,4 +660,127 @@ Deno.test("VaultService - supportsDelete", async (t) => {
     const vaultService = new VaultService();
     assertEquals(vaultService.supportsDelete("nonexistent"), false);
   });
+});
+
+class InMemoryVaultAuditRepository implements VaultAuditRepository {
+  readonly entries: VaultAuditEntry[] = [];
+
+  async append(entry: VaultAuditEntry): Promise<void> {
+    this.entries.push(entry);
+    await Promise.resolve();
+  }
+
+  async findByTimeRange(
+    _startTime: Date,
+    _endTime: Date,
+    _options?: VaultAuditQueryOptions,
+  ): Promise<VaultAuditEntry[]> {
+    return await Promise.resolve(this.entries);
+  }
+}
+
+Deno.test("VaultService - audit trail", async (t) => {
+  await t.step(
+    "should record audit entry when audit is enabled on vault",
+    async () => {
+      const svc = new VaultService();
+      const auditRepo = new InMemoryVaultAuditRepository();
+      svc.setAuditRepository(auditRepo);
+
+      svc.registerVault({
+        name: "audited-vault",
+        type: "mock",
+        config: { "key": "val" },
+        auditReads: true,
+      });
+
+      await svc.get("audited-vault", "key", "test-caller");
+
+      assertEquals(auditRepo.entries.length, 1);
+      assertEquals(auditRepo.entries[0].vaultName, "audited-vault");
+      assertEquals(auditRepo.entries[0].vaultType, "mock");
+      assertEquals(auditRepo.entries[0].secretKey, "key");
+      assertEquals(auditRepo.entries[0].callerContext, "test-caller");
+    },
+  );
+
+  await t.step(
+    "should not record audit entry when audit is disabled on vault",
+    async () => {
+      const svc = new VaultService();
+      const auditRepo = new InMemoryVaultAuditRepository();
+      svc.setAuditRepository(auditRepo);
+
+      svc.registerVault({
+        name: "unaudited-vault",
+        type: "mock",
+        config: { "key": "val" },
+      });
+
+      await svc.get("unaudited-vault", "key");
+
+      assertEquals(auditRepo.entries.length, 0);
+    },
+  );
+
+  await t.step(
+    "should not record audit entry when no audit repository is set",
+    async () => {
+      const svc = new VaultService();
+
+      svc.registerVault({
+        name: "vault",
+        type: "mock",
+        config: { "key": "val" },
+        auditReads: true,
+      });
+
+      // Should not throw even though auditReads is true but no repo
+      const result = await svc.get("vault", "key");
+      assertEquals(result, "val");
+    },
+  );
+
+  await t.step(
+    "should default callerContext to 'unknown' when not provided",
+    async () => {
+      const svc = new VaultService();
+      const auditRepo = new InMemoryVaultAuditRepository();
+      svc.setAuditRepository(auditRepo);
+
+      svc.registerVault({
+        name: "vault",
+        type: "mock",
+        config: { "key": "val" },
+        auditReads: true,
+      });
+
+      await svc.get("vault", "key");
+
+      assertEquals(auditRepo.entries.length, 1);
+      assertEquals(auditRepo.entries[0].callerContext, "unknown");
+    },
+  );
+
+  await t.step(
+    "should not throw when audit repository append fails",
+    async () => {
+      const svc = new VaultService();
+      const failingRepo: VaultAuditRepository = {
+        append: () => Promise.reject(new Error("disk full")),
+        findByTimeRange: () => Promise.resolve([]),
+      };
+      svc.setAuditRepository(failingRepo);
+
+      svc.registerVault({
+        name: "vault",
+        type: "mock",
+        config: { "key": "val" },
+        auditReads: true,
+      });
+
+      const result = await svc.get("vault", "key");
+      assertEquals(result, "val");
+    },
+  );
 });

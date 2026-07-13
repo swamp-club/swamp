@@ -39,6 +39,9 @@ import type { LocalEncryptionConfig } from "./local_encryption_vault_provider.ts
 import { join } from "@std/path";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { createVaultProvider } from "./vault_provider_factory.ts";
+import { createVaultAuditEntry } from "./vault_audit_entry.ts";
+import type { VaultAuditRepository } from "./vault_audit_repository.ts";
+import { JsonlVaultAuditRepository } from "../../infrastructure/persistence/jsonl_vault_audit_repository.ts";
 
 export interface ProcessRunResult {
   success: boolean;
@@ -55,10 +58,17 @@ export interface VaultRefreshOptions {
  */
 export class VaultService {
   private readonly providers = new Map<string, VaultProvider>();
+  private readonly vaultTypes = new Map<string, string>();
+  private readonly auditFlags = new Map<string, boolean>();
   private readonly refreshOptions?: VaultRefreshOptions;
+  private auditRepository?: VaultAuditRepository;
 
   constructor(refreshOptions?: VaultRefreshOptions) {
     this.refreshOptions = refreshOptions;
+  }
+
+  setAuditRepository(repo: VaultAuditRepository): void {
+    this.auditRepository = repo;
   }
 
   /**
@@ -126,6 +136,7 @@ export class VaultService {
           name: vaultConfig.name,
           type: vaultType,
           config,
+          auditReads: vaultConfig.auditReads,
         });
       } catch (error) {
         if (
@@ -140,7 +151,19 @@ export class VaultService {
       }
     }
     vaultService.ensureDefaultVaults();
+    if (vaultService.hasAnyAuditEnabled()) {
+      vaultService.setAuditRepository(
+        new JsonlVaultAuditRepository(repoDir),
+      );
+    }
     return vaultService;
+  }
+
+  private hasAnyAuditEnabled(): boolean {
+    for (const enabled of this.auditFlags.values()) {
+      if (enabled) return true;
+    }
+    return false;
   }
 
   /**
@@ -153,6 +176,10 @@ export class VaultService {
       config.config,
     );
     this.providers.set(config.name, provider);
+    this.vaultTypes.set(config.name, config.type);
+    if (config.auditReads) {
+      this.auditFlags.set(config.name, true);
+    }
   }
 
   /**
@@ -160,7 +187,11 @@ export class VaultService {
    * on the key and refreshOptions were provided, transparently re-runs the
    * refresh command when the TTL has lapsed.
    */
-  async get(vaultName: string, secretKey: string): Promise<string> {
+  async get(
+    vaultName: string,
+    secretKey: string,
+    callerContext?: string,
+  ): Promise<string> {
     const provider = this.requireProvider(vaultName);
 
     if (this.refreshOptions && isVaultRefreshHookProvider(provider)) {
@@ -181,6 +212,11 @@ export class VaultService {
               );
               getLogger("vaults")
                 .info`Refreshed secret ${secretKey} in vault ${vaultName}`;
+              await this.recordAuditEntry(
+                vaultName,
+                secretKey,
+                callerContext,
+              );
               return freshValue;
             }
           } else {
@@ -194,7 +230,34 @@ export class VaultService {
       }
     }
 
-    return await provider.get(secretKey);
+    const value = await provider.get(secretKey);
+    await this.recordAuditEntry(
+      vaultName,
+      secretKey,
+      callerContext,
+    );
+    return value;
+  }
+
+  private async recordAuditEntry(
+    vaultName: string,
+    secretKey: string,
+    callerContext?: string,
+  ): Promise<void> {
+    if (!this.auditRepository || !this.auditFlags.get(vaultName)) return;
+    try {
+      const vaultType = this.vaultTypes.get(vaultName) ?? "unknown";
+      const entry = createVaultAuditEntry(
+        vaultName,
+        vaultType,
+        secretKey,
+        callerContext ?? "unknown",
+      );
+      await this.auditRepository.append(entry);
+    } catch (error) {
+      getLogger("vaults")
+        .warn`Failed to record vault audit entry for ${secretKey} in ${vaultName}: ${error}`;
+    }
   }
 
   private requireProvider(vaultName: string): VaultProvider {

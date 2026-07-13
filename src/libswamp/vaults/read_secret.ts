@@ -88,7 +88,7 @@ export function createVaultReadSecretDeps(
     },
     readSecret: async (vaultName, secretKey) => {
       const svc = await getVaultService();
-      return await svc.get(vaultName, secretKey);
+      return await svc.get(vaultName, secretKey, "cli:vault-read-secret");
     },
     publishSecretRead: async (vaultId, vaultType, vaultName, secretKey) => {
       const event = createVaultSecretRead(

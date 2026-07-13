@@ -164,6 +164,7 @@ async function redeem(
   const secret = await context.vaultService.get(
     token.vaultName,
     token.secretKey,
+    "model:server-token-verify",
   );
   if (!timingSafeEqual(secret, presentedSecret)) {
     throw new Error(`Server token '${name}' does not match`);

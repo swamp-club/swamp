@@ -40,6 +40,7 @@ export const VaultConfigDataSchema = z.object({
   type: z.string(),
   config: z.record(z.string(), z.unknown()).default({}),
   createdAt: z.string(),
+  auditReads: z.boolean().optional(),
 });
 
 /**
@@ -51,6 +52,7 @@ export interface VaultConfigData {
   type: string;
   config: Record<string, unknown>;
   createdAt: string;
+  auditReads?: boolean;
 }
 
 /**
@@ -63,6 +65,7 @@ export class VaultConfig {
     public readonly type: string,
     public readonly config: Record<string, unknown>,
     public readonly createdAt: Date,
+    public readonly auditReads: boolean,
   ) {}
 
   /**
@@ -73,8 +76,16 @@ export class VaultConfig {
     name: string,
     type: string,
     config: Record<string, unknown>,
+    auditReads?: boolean,
   ): VaultConfig {
-    return new VaultConfig(id, name, type, config, new Date());
+    return new VaultConfig(
+      id,
+      name,
+      type,
+      config,
+      new Date(),
+      auditReads ?? false,
+    );
   }
 
   /**
@@ -87,6 +98,7 @@ export class VaultConfig {
       data.type,
       data.config,
       new Date(data.createdAt),
+      data.auditReads ?? false,
     );
   }
 
@@ -94,12 +106,16 @@ export class VaultConfig {
    * Converts the VaultConfig to a data object for persistence.
    */
   toData(): VaultConfigData {
-    return {
+    const data: VaultConfigData = {
       id: this.id,
       name: this.name,
       type: this.type,
       config: this.config,
       createdAt: this.createdAt.toISOString(),
     };
+    if (this.auditReads) {
+      data.auditReads = true;
+    }
+    return data;
   }
 }

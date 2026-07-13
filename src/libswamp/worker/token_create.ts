@@ -105,7 +105,7 @@ export async function createWorkerTokenCreateDeps(
         definitionName: input.name,
       }),
     readSecret: (vaultName, secretKey) =>
-      vaultService.get(vaultName, secretKey),
+      vaultService.get(vaultName, secretKey, "worker:token-create"),
   };
 }
 

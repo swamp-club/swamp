@@ -68,7 +68,7 @@ export async function createServerTokenRotateDeps(
         lastEvaluated: false,
       }),
     readSecret: (vaultName, secretKey) =>
-      vaultService.get(vaultName, secretKey),
+      vaultService.get(vaultName, secretKey, "access:server-token-rotate"),
   };
 }
 

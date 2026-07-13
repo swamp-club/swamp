@@ -94,7 +94,7 @@ export async function createServerTokenCreateDeps(
         definitionName: input.name,
       }),
     readSecret: (vaultName, secretKey) =>
-      vaultService.get(vaultName, secretKey),
+      vaultService.get(vaultName, secretKey, "access:server-token-create"),
   };
 }
 
