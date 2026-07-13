@@ -112,7 +112,7 @@ export function builtInToolConfig(tool: AiTool): ToolConfig {
         isBuiltIn: true,
         skillsDir: ".cursor/skills",
         instructionsFile: ".cursor/rules/swamp.mdc",
-        instructionsMode: "owned",
+        instructionsMode: "shared",
         frontmatter:
           "---\ndescription: Swamp automation rules\nalwaysApply: true\n---\n",
         skillReferenceStyle: "path",
@@ -150,7 +150,7 @@ export function builtInToolConfig(tool: AiTool): ToolConfig {
         isBuiltIn: true,
         skillsDir: ".kiro/skills",
         instructionsFile: ".kiro/steering/swamp-rules.md",
-        instructionsMode: "owned",
+        instructionsMode: "shared",
         frontmatter: "---\ninclusion: always\n---\n",
         skillReferenceStyle: "path",
       };

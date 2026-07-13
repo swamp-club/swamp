@@ -62,6 +62,38 @@ primary stable.
 Duplicate `--tool` values are silently collapsed. `--tool none` cannot be
 combined with other `--tool` values.
 
+### Instructions mode
+
+Each tool's instructions file uses one of two modes that control how
+`repo upgrade` handles the file:
+
+- **`shared`** — swamp manages a marked section
+  (`<!-- BEGIN swamp managed
+  section -->` / `<!-- END ... -->`) inside the
+  file, preserving any user content outside the markers. Used by all built-in
+  tools (Claude, Cursor, Kiro, OpenCode, Codex, Copilot).
+- **`owned`** — swamp fully controls the file and overwrites it on every
+  `repo upgrade`. No user content is preserved. Used when you explicitly want
+  swamp to own the entire file.
+
+For custom tools defined via `swamp agent setup`, the wizard asks which mode to
+use. The default is derived from the filename: root-level files matching a known
+set (`AGENTS.md`, `AGENT.md`, `CLAUDE.md`, `CONVENTIONS.md`) default to
+`shared`; all other paths default to `owned`.
+
+To override the mode after setup, edit `.swamp-custom-tools.yaml` directly:
+
+```yaml
+tools:
+  - name: mytool
+    instructionsFile: .mytool/rules/swamp.md
+    instructionsMode: shared # or "owned"
+    skillsDir: .mytool/skills
+    skillReferenceStyle: path
+```
+
+Use `swamp agent list` to see the current mode for each custom tool.
+
 **Output shape:**
 
 ```json
