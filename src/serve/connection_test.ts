@@ -2157,3 +2157,27 @@ Deno.test("validateServerRequest: workflow.schema accepts payload with workflowI
   const result = validateServerRequest(input);
   assertEquals(typeof result, "object");
 });
+
+Deno.test("validateServerRequest: workflow.resume accepts traceparent and tracestate", () => {
+  const input = {
+    type: "workflow.resume",
+    id: "req-resume-trace",
+    payload: {
+      workflowIdOrName: "deploy",
+      traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+      tracestate: "congo=t61rcWkgMzE",
+    },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "object");
+});
+
+Deno.test("validateServerRequest: workflow.resume accepts request without trace fields", () => {
+  const input = {
+    type: "workflow.resume",
+    id: "req-resume-no-trace",
+    payload: { workflowIdOrName: "deploy" },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "object");
+});

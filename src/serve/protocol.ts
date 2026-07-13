@@ -325,6 +325,8 @@ export interface WorkflowResumePayload {
   workflowIdOrName: string;
   runId?: string;
   inputs?: Record<string, unknown>;
+  traceparent?: string;
+  tracestate?: string;
 }
 
 // ── Vault operations ─────────────────────────────────────────────────

@@ -624,6 +624,8 @@ const WorkflowResumeRequestSchema = z.object({
     workflowIdOrName: z.string(),
     runId: z.string().optional(),
     inputs: z.record(z.string(), z.unknown()).optional(),
+    traceparent: z.string().optional(),
+    tracestate: z.string().optional(),
   }),
 });
 
