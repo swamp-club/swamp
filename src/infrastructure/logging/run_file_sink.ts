@@ -65,6 +65,16 @@ export class RunFileSink {
   private writers = new Map<string, FileWriter>();
 
   /**
+   * Number of currently registered writers (each holds one open file
+   * descriptor). Test-only observability: lets tests assert that a run's log
+   * handle was released without counting raw OS file descriptors (which is not
+   * portable across Linux, macOS, and Windows). Not used by production code.
+   */
+  get activeCount(): number {
+    return this.writers.size;
+  }
+
+  /**
    * Register a log file for a category prefix and return an opaque handle that
    * identifies this registration. All log records matching the prefix while the
    * registration is active are written to the file. Pass the returned handle to

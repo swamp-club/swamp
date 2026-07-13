@@ -488,7 +488,6 @@ export async function* workflowRun(
       "swamp.workflow.run.command",
       { "workflow.id_or_name": input.workflowIdOrName },
       (async function* () {
-        const ephemeral = createEphemeralStore();
         let resolvedInput = input;
 
         yield { kind: "validating_inputs" };
@@ -539,6 +538,11 @@ export async function* workflowRun(
 
         yield { kind: "evaluating_workflow" };
 
+        // Created here — after the input-validation early returns above — so the
+        // scratch store is only allocated once the run will actually execute,
+        // and those early-return paths never leak it. Disposed in the finally
+        // below on every exit, including early consumer abandonment.
+        const ephemeral = createEphemeralStore();
         const service = deps.createExecutionService(
           deps.workflowRepo,
           deps.runRepo,

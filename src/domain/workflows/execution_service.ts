@@ -1826,7 +1826,6 @@ export class WorkflowExecutionService {
         );
         await this.saveRun(workflow.id, run);
         yield { kind: "cancelled" as const, run };
-        runFileSink.unregister(workflowLogHandle);
         runSpan.setStatus({ code: SpanStatusCode.OK });
         return;
       }
@@ -1864,9 +1863,6 @@ export class WorkflowExecutionService {
         } finally {
           wfSaveSpan.end();
         }
-
-        // Unregister workflow log file sink
-        runFileSink.unregister(workflowLogHandle);
       } finally {
         wfTeardownSpan.end();
       }
@@ -1877,7 +1873,6 @@ export class WorkflowExecutionService {
         if (this.runTracker) {
           this.runTracker.complete(workflowRun.id, "suspended");
         }
-        runFileSink.unregister(workflowLogHandle);
         yield {
           kind: "suspended" as const,
           run: workflowRun,
@@ -1903,7 +1898,6 @@ export class WorkflowExecutionService {
           workflowRun,
         );
         yield { kind: "cancelled" as const, run: workflowRun };
-        runFileSink.unregister(workflowLogHandle);
         runSpan.setStatus({ code: SpanStatusCode.OK });
         return;
       }
@@ -1918,13 +1912,17 @@ export class WorkflowExecutionService {
         );
         yield { kind: "completed" as const, run: workflowRun };
       }
-      runFileSink.unregister(workflowLogHandle);
       runSpan.setStatus({
         code: SpanStatusCode.ERROR,
         message: error instanceof Error ? error.message : String(error),
       });
       throw error;
     } finally {
+      // Always release the per-run log file sink when the generator is
+      // disposed — including early abandonment via generator.return() (e.g. a
+      // streaming consumer that breaks on socket close). Cleanup placed after a
+      // yield would be skipped on .return(); only finally blocks unwind.
+      runFileSink.unregister(workflowLogHandle);
       runSpan.end();
     }
   }
@@ -2040,69 +2038,77 @@ export class WorkflowExecutionService {
       swampPath(this.repoDir),
     );
 
-    yield {
-      kind: "started",
-      runId: existingRun.id,
-      workflowName: resolvedWorkflow.name,
-      logPath: workflowLogPath,
-      jobs: resolvedWorkflow.jobs.map((job) => ({
-        id: job.name,
-        stepCount: job.steps.length,
-        dependsOn: job.getDependencyNames(),
-      })),
-    };
-
-    const stepOpts: StepOptions = {
-      workflowTags: resolvedWorkflow.tags,
-      runtimeTags: options?.runtimeTags,
-      secretRedactor,
-      signal: options?.signal,
-      // workflow resume never receives CLI report flags — default so
-      // resumed runs still execute reports instead of silently skipping.
-      reportFilterOptions: options?.reportFilterOptions ?? {},
-      swampSha: options?.swampSha,
-    };
-
-    // Re-activate the tracker row (suspended → running) and start heartbeat
+    // Declared before the try so the finally at the end of this method can
+    // clear it. The try opens immediately after register() — before the
+    // "started" yield — so early consumer abandonment (a client that receives
+    // "started" then disconnects) still unwinds the finally and releases the
+    // log sink.
     let resumeHeartbeatInterval: ReturnType<typeof setInterval> | undefined;
-    if (this.runTracker) {
-      this.runTracker.reactivate(existingRun.id);
-      const tracker = this.runTracker;
-      const runId = existingRun.id;
-      resumeHeartbeatInterval = setInterval(() => {
-        try {
-          tracker.heartbeat(runId);
-        } catch {
-          // Heartbeat failure is non-fatal
-        }
-      }, 30_000);
-    }
-
-    const jobNodes: GraphNode[] = resolvedWorkflow.jobs.map((job) => ({
-      name: job.name,
-      weight: job.weight,
-      dependencies: job.getDependencyNames(),
-    }));
-    const sortedJobs = this.sortService.sort(jobNodes);
-    const jobConcurrency = resolvedWorkflow.concurrency;
-
-    const modelInfoByStep = new Map<
-      string,
-      {
-        modelName: string;
-        modelType: string;
-        modelId: string;
-        methodName: string;
-      }
-    >();
-    const stepStatuses = new Map<string, "succeeded" | "failed" | "skipped">();
-    const stepJobNames = new Map<string, string>();
-    const dataHandlesByStep = new Map<
-      string,
-      import("../models/model.ts").DataHandle[]
-    >();
-
     try {
+      yield {
+        kind: "started",
+        runId: existingRun.id,
+        workflowName: resolvedWorkflow.name,
+        logPath: workflowLogPath,
+        jobs: resolvedWorkflow.jobs.map((job) => ({
+          id: job.name,
+          stepCount: job.steps.length,
+          dependsOn: job.getDependencyNames(),
+        })),
+      };
+
+      const stepOpts: StepOptions = {
+        workflowTags: resolvedWorkflow.tags,
+        runtimeTags: options?.runtimeTags,
+        secretRedactor,
+        signal: options?.signal,
+        // workflow resume never receives CLI report flags — default so
+        // resumed runs still execute reports instead of silently skipping.
+        reportFilterOptions: options?.reportFilterOptions ?? {},
+        swampSha: options?.swampSha,
+      };
+
+      // Re-activate the tracker row (suspended → running) and start heartbeat
+      if (this.runTracker) {
+        this.runTracker.reactivate(existingRun.id);
+        const tracker = this.runTracker;
+        const runId = existingRun.id;
+        resumeHeartbeatInterval = setInterval(() => {
+          try {
+            tracker.heartbeat(runId);
+          } catch {
+            // Heartbeat failure is non-fatal
+          }
+        }, 30_000);
+      }
+
+      const jobNodes: GraphNode[] = resolvedWorkflow.jobs.map((job) => ({
+        name: job.name,
+        weight: job.weight,
+        dependencies: job.getDependencyNames(),
+      }));
+      const sortedJobs = this.sortService.sort(jobNodes);
+      const jobConcurrency = resolvedWorkflow.concurrency;
+
+      const modelInfoByStep = new Map<
+        string,
+        {
+          modelName: string;
+          modelType: string;
+          modelId: string;
+          methodName: string;
+        }
+      >();
+      const stepStatuses = new Map<
+        string,
+        "succeeded" | "failed" | "skipped"
+      >();
+      const stepJobNames = new Map<string, string>();
+      const dataHandlesByStep = new Map<
+        string,
+        import("../models/model.ts").DataHandle[]
+      >();
+
       for (const level of sortedJobs.levels) {
         const jobStreams = level.map((jobName: string) => {
           const jobRun = existingRun.getJob(jobName);
@@ -2172,7 +2178,6 @@ export class WorkflowExecutionService {
       }
 
       if (options?.signal?.aborted) {
-        if (resumeHeartbeatInterval) clearInterval(resumeHeartbeatInterval);
         if (this.runTracker) {
           this.runTracker.complete(existingRun.id, "cancelled");
         }
@@ -2181,11 +2186,9 @@ export class WorkflowExecutionService {
         );
         await this.saveRun(workflow.id, existingRun);
         yield { kind: "cancelled" as const, run: existingRun };
-        runFileSink.unregister(workflowLogHandle);
         return;
       }
 
-      if (resumeHeartbeatInterval) clearInterval(resumeHeartbeatInterval);
       if (this.runTracker) {
         this.runTracker.complete(existingRun.id, "completed");
       }
@@ -2203,14 +2206,11 @@ export class WorkflowExecutionService {
 
       yield { kind: "completed", run: existingRun };
       await this.saveRun(workflow.id, existingRun);
-      runFileSink.unregister(workflowLogHandle);
     } catch (error) {
-      if (resumeHeartbeatInterval) clearInterval(resumeHeartbeatInterval);
       if (error instanceof WorkflowSuspendedError) {
         if (this.runTracker) {
           this.runTracker.complete(existingRun.id, "suspended");
         }
-        runFileSink.unregister(workflowLogHandle);
         yield {
           kind: "suspended" as const,
           run: existingRun,
@@ -2230,7 +2230,6 @@ export class WorkflowExecutionService {
         );
         await this.saveRun(workflow.id, existingRun);
         yield { kind: "cancelled" as const, run: existingRun };
-        runFileSink.unregister(workflowLogHandle);
         return;
       }
       if (this.runTracker) {
@@ -2239,8 +2238,15 @@ export class WorkflowExecutionService {
       existingRun.complete();
       await this.saveRun(workflow.id, existingRun);
       yield { kind: "completed" as const, run: existingRun };
-      runFileSink.unregister(workflowLogHandle);
       throw error;
+    } finally {
+      // Always stop the heartbeat and release the per-run log sink when the
+      // generator is disposed — including early abandonment via
+      // generator.return() (e.g. a streaming consumer that breaks on socket
+      // close). Cleanup placed after a yield would be skipped on .return();
+      // only finally blocks unwind.
+      if (resumeHeartbeatInterval) clearInterval(resumeHeartbeatInterval);
+      runFileSink.unregister(workflowLogHandle);
     }
   }
 
