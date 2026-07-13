@@ -532,6 +532,30 @@ Deno.test("JsonTelemetryRepository.deleteAllOlderThan removes both flushed and u
   });
 });
 
+Deno.test("JsonTelemetryRepository.findByDateRange uses UTC dates to match filenames", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new JsonTelemetryRepository(dir);
+
+    // Entry saved at 00:30 UTC on May 1st — file is named telemetry-2024-05-01-*.json
+    // In UTC+1 (e.g. Ireland), local time is 01:30 on May 1st. Before the fix,
+    // setHours(0,0,0,0) would produce midnight local = April 30 23:00 UTC,
+    // so toISOString() would yield "2024-04-30" and miss this file.
+    const entry = createTestEntry({
+      id: "utc-edge-uuid",
+      date: new Date("2024-05-01T00:30:00Z"),
+    });
+    await repo.save(entry);
+
+    // Query range that should include May 1st
+    const entries = await repo.findByDateRange(
+      new Date("2024-05-01T00:30:00Z"),
+      new Date("2024-05-01T23:30:00Z"),
+    );
+    assertEquals(entries.length, 1);
+    assertEquals(entries[0].id, "utc-edge-uuid");
+  });
+});
+
 Deno.test("JsonTelemetryRepository round-trips invocationContext (with detected harness)", async () => {
   await withTempDir(async (dir) => {
     const repo = new JsonTelemetryRepository(dir);
