@@ -18,13 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { SEPARATOR } from "@std/path";
 import {
   VAULT_AUDIT_FILENAME_PATTERN,
   vaultAuditFilename,
   vaultAuditFilenameForTimestamp,
   vaultAuditFilePathForTimestamp,
 } from "./vault_audit_path.ts";
+import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 
 Deno.test("vaultAuditFilename: formats date as vault audit filename", () => {
   assertEquals(
@@ -45,9 +45,9 @@ Deno.test("vaultAuditFilePathForTimestamp: returns full path", () => {
     "/repo/.swamp/audit",
     "2026-07-10T15:30:00.000Z",
   );
-  assertEquals(
+  assertPathEquals(
     path,
-    `/repo/.swamp/audit${SEPARATOR}vault-reads-2026-07-10.jsonl`,
+    "/repo/.swamp/audit/vault-reads-2026-07-10.jsonl",
   );
 });
 
