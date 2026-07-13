@@ -73,10 +73,14 @@ export interface DataRenameDeps {
 export function createDataRenameDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
+  injectedDataRepo?: FileSystemUnifiedDataRepository,
 ): DataRenameDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
-  const dataRepo = new FileSystemUnifiedDataRepository(
+  // Reuse an injected shared data repo (e.g. serve's process-scoped
+  // RepositoryContext) so we don't open a new file-based catalog store — and
+  // leak its 3 FDs — on every request.
+  const dataRepo = injectedDataRepo ?? new FileSystemUnifiedDataRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),
     createCatalogStore(repoDir, datastoreResolver),

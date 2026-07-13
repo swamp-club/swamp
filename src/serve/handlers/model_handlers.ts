@@ -512,7 +512,11 @@ export async function handleModelDelete(
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = createModelDeleteDeps(ctx.repoDir, ctx.datastoreResolver);
+    const deps = createModelDeleteDeps(
+      ctx.repoDir,
+      ctx.datastoreResolver,
+      ctx.repoContext.unifiedDataRepo,
+    );
 
     const preview = await modelDeletePreview(
       libCtx,
@@ -648,7 +652,11 @@ export async function handleModelOutputData(
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = createModelOutputDataDeps(ctx.repoDir, ctx.datastoreResolver);
+    const deps = createModelOutputDataDeps(
+      ctx.repoDir,
+      ctx.datastoreResolver,
+      ctx.repoContext.unifiedDataRepo,
+    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -708,7 +716,11 @@ export async function handleModelOutputLogs(
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = createModelOutputLogsDeps(ctx.repoDir, ctx.datastoreResolver);
+    const deps = createModelOutputLogsDeps(
+      ctx.repoDir,
+      ctx.datastoreResolver,
+      ctx.repoContext.unifiedDataRepo,
+    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -1020,10 +1032,16 @@ export async function handleModelValidate(
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = createModelValidateDeps(ctx.repoDir, {
-      labels: payload?.labels,
-      method: payload?.method,
-    });
+    const deps = createModelValidateDeps(
+      ctx.repoDir,
+      {
+        labels: payload?.labels,
+        method: payload?.method,
+      },
+      ctx.datastoreResolver,
+      ctx.repoContext.unifiedDataRepo,
+      ctx.repoContext.catalogStore,
+    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -1075,7 +1093,12 @@ export async function handleModelEvaluate(
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = createModelEvaluateDeps(ctx.repoDir);
+    const deps = createModelEvaluateDeps(
+      ctx.repoDir,
+      ctx.datastoreResolver,
+      ctx.repoContext.unifiedDataRepo,
+      ctx.repoContext.catalogStore,
+    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(

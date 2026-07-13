@@ -33,6 +33,7 @@ import {
   createCatalogStore,
   namespaceFromResolver,
 } from "../../infrastructure/persistence/repository_factory.ts";
+import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
@@ -123,12 +124,19 @@ export function createModelValidateDeps(
   repoDir: string,
   options?: { labels?: string[]; method?: string },
   datastoreResolver?: DatastorePathResolver,
+  injectedDataRepo?: FileSystemUnifiedDataRepository,
+  injectedCatalogStore?: CatalogStore,
 ): ModelValidateDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
   const definitionRepo = new YamlDefinitionRepository(repoDir);
-  const catalogStore = createCatalogStore(repoDir, datastoreResolver);
-  const dataRepo = new FileSystemUnifiedDataRepository(
+  // When a shared catalog store / data repo is injected (e.g. by serve
+  // handlers passing the process-scoped RepositoryContext), reuse it and skip
+  // createCatalogStore so we don't open a new file-based SQLite store — and
+  // leak its 3 FDs — on every request.
+  const catalogStore = injectedCatalogStore ??
+    createCatalogStore(repoDir, datastoreResolver);
+  const dataRepo = injectedDataRepo ?? new FileSystemUnifiedDataRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),
     catalogStore,
