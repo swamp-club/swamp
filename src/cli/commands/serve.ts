@@ -35,7 +35,10 @@ import {
 } from "../../serve/device_auth_handler.ts";
 import { resolveOAuthClientCredentials } from "../../serve/oauth_registration.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
-import { authenticateServerToken } from "../../serve/token_auth.ts";
+import {
+  authenticateServerToken,
+  extractWebSocketToken,
+} from "../../serve/token_auth.ts";
 import { parsePrincipal } from "../../domain/access/principal.ts";
 import { executeWorkflowWithLocks } from "../../serve/deps.ts";
 import { CapabilityService } from "../../serve/capability_service.ts";
@@ -1487,10 +1490,8 @@ export const serveCommand = new Command()
               return new Response("Too Many Requests", { status: 429 });
             }
 
-            const url = new URL(req.url);
-            const tokenParam = url.searchParams.get("token");
-            url.searchParams.delete("token");
-            if (!tokenParam) {
+            const extracted = extractWebSocketToken(req);
+            if (!extracted) {
               logger.warn(
                 "WebSocket auth rejected: no token provided from {ip}",
                 { ip: remoteAddr },
@@ -1499,8 +1500,16 @@ export const serveCommand = new Command()
                 status: 401,
               });
             }
+            logger.debug(
+              "WebSocket token received via {transport} from {ip}",
+              { transport: extracted.transport, ip: remoteAddr },
+            );
+            if (extracted.transport === "query") {
+              const url = new URL(req.url);
+              url.searchParams.delete("token");
+            }
             const result = await authenticateServerToken(
-              tokenParam,
+              extracted.token,
               resolvedRepoDir,
               repoContext,
             );
@@ -1513,9 +1522,15 @@ export const serveCommand = new Command()
             }
             clearRateLimit(remoteAddr);
             const principal = parsePrincipal(result.principalId);
+            const upgradeOpts = extracted.transport === "subprotocol"
+              ? {
+                ...wsUpgradeOpts,
+                protocol: `bearer.${extracted.token}`,
+              }
+              : wsUpgradeOpts;
             const { socket, response } = Deno.upgradeWebSocket(
               req,
-              wsUpgradeOpts,
+              upgradeOpts,
             );
             setConnectionCollectives(socket, result.collectives);
             handleConnection(socket, connectionCtx, principal);
