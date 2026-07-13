@@ -88,7 +88,7 @@ main() {
   echo
 
   # Prompt to connect to SWAMP CLUB when running interactively
-  if [ -t 0 ] && [ -t 1 ]; then
+  if [ -e /dev/tty ] && [ -t 1 ]; then
     echo
     section "Swamp is better with SWAMP CLUB (swamp-club.com)"
     info ""
@@ -106,7 +106,7 @@ main() {
         ;;
       *)
         echo
-        "$dest/$bin" auth login
+        "$dest/$bin" auth login </dev/tty
         ;;
     esac
     echo
