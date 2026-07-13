@@ -131,8 +131,14 @@ import { UpdateCheckCacheFileRepository } from "../infrastructure/update/update_
 import { HttpUpdateChecker } from "../infrastructure/update/http_update_checker.ts";
 import { Platform } from "../domain/update/platform.ts";
 import { renderUpdateNotification } from "../presentation/renderers/update_notification.ts";
-import { renderAuthNudge } from "../presentation/renderers/auth_nudge.ts";
-import { shouldShowAuthNudge } from "../domain/auth/auth_nudge.ts";
+import {
+  renderAuthNudge,
+  renderFirstRunNudge,
+} from "../presentation/renderers/auth_nudge.ts";
+import {
+  isFirstRunNudge,
+  shouldShowAuthNudge,
+} from "../domain/auth/auth_nudge.ts";
 import { AuthNudgeRepository } from "../infrastructure/persistence/auth_nudge_repository.ts";
 import { UpdatePreferencesFileRepository } from "../infrastructure/update/update_preferences_file_repository.ts";
 import { AutoupdateLogFileRepository } from "../infrastructure/update/autoupdate_log_file_repository.ts";
@@ -1533,7 +1539,11 @@ export async function runCli(args: string[]): Promise<void> {
             const nudgeRepo = new AuthNudgeRepository();
             const nudgeState = await nudgeRepo.read();
             if (shouldShowAuthNudge(nudgeState)) {
-              renderAuthNudge();
+              if (isFirstRunNudge(nudgeState)) {
+                renderFirstRunNudge();
+              } else {
+                renderAuthNudge();
+              }
               await nudgeRepo.markShown();
             }
           } catch {

@@ -41,7 +41,12 @@ export class AuthNudgeRepository {
   }
 
   async markShown(): Promise<void> {
-    const state: AuthNudgeState = { lastShown: new Date().toISOString() };
+    const existing = await this.read();
+    const state: AuthNudgeState = {
+      ...existing,
+      firstRunShown: true,
+      lastShown: new Date().toISOString(),
+    };
     try {
       await Deno.mkdir(dirname(this.filePath), { recursive: true });
       await atomicWriteTextFile(

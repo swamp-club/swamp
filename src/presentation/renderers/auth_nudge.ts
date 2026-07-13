@@ -17,8 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { bold, cyan } from "@std/fmt/colors";
-import { AUTH_NUDGE_MESSAGE } from "../../domain/auth/auth_nudge.ts";
+import { bold, cyan, dim } from "@std/fmt/colors";
+import {
+  AUTH_FIRST_RUN_MESSAGE_LINES,
+  AUTH_NUDGE_MESSAGE,
+} from "../../domain/auth/auth_nudge.ts";
 
 export function renderAuthNudge(): void {
   console.error("");
@@ -30,4 +33,24 @@ export function renderAuthNudge(): void {
       ),
     ),
   );
+}
+
+export function renderFirstRunNudge(): void {
+  const maxLen = AUTH_FIRST_RUN_MESSAGE_LINES.reduce(
+    (max, line) => Math.max(max, line.length),
+    0,
+  );
+  const top = dim(`  ┌${"─".repeat(maxLen + 2)}┐`);
+  const bottom = dim(`  └${"─".repeat(maxLen + 2)}┘`);
+
+  console.error("");
+  console.error(top);
+  for (const line of AUTH_FIRST_RUN_MESSAGE_LINES) {
+    const padded = line.padEnd(maxLen);
+    const content = line.includes("swamp auth login")
+      ? padded.replace("swamp auth login", bold("swamp auth login"))
+      : padded;
+    console.error(`  ${dim("│")} ${cyan(content)} ${dim("│")}`);
+  }
+  console.error(bottom);
 }

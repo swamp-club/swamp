@@ -325,6 +325,27 @@ function Main {
 
     Write-Header "Installation of '$BinName' release '$Version' complete"
     Write-Info ""
+
+    # Prompt to connect to SWAMP CLUB when running interactively
+    if ([Environment]::UserInteractive -and [Console]::KeyAvailable -ne $null) {
+        Write-Host ""
+        Write-Header "swamp is powered by SWAMP CLUB (swamp-club.com)"
+        Write-Info ""
+        Write-Info "Connect your account to unlock extensions, sharing,"
+        Write-Info "and higher rate limits."
+        Write-Info ""
+        $answer = Read-Host "  Set up your SWAMP CLUB account now? [Y/n]"
+        if ($answer -match '^[nN]') {
+            Write-Info ""
+            Write-Info "No problem! You can connect later: swamp auth login"
+        } else {
+            Write-Host ""
+            $installedBinary = Join-Path $Destination $BinExe
+            & $installedBinary auth login
+        }
+        Write-Host ""
+    }
+
     Write-Success "Run 'swamp --help' to get started"
     if (-not $AddToPath) {
         $binaryLocation = Join-Path $Destination $BinExe

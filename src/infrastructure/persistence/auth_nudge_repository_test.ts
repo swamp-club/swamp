@@ -34,7 +34,7 @@ Deno.test("AuthNudgeRepository: read returns empty state when file does not exis
   }
 });
 
-Deno.test("AuthNudgeRepository: markShown writes timestamp and read returns it", async () => {
+Deno.test("AuthNudgeRepository: markShown writes timestamp and firstRunShown", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const filePath = join(tmpDir, "auth_nudge.json");
@@ -44,6 +44,7 @@ Deno.test("AuthNudgeRepository: markShown writes timestamp and read returns it",
     const state = await repo.read();
 
     assertEquals(typeof state.lastShown, "string");
+    assertEquals(state.firstRunShown, true);
     const parsed = new Date(state.lastShown!).getTime();
     const now = Date.now();
     assertEquals(now - parsed < 5000, true);

@@ -86,6 +86,30 @@ main() {
   section "Installation of '$bin' release '$version' complete"
   indent "$dest/$bin" --version
   echo
+
+  # Prompt to connect to SWAMP CLUB when running interactively
+  if [ -t 0 ] && [ -t 1 ]; then
+    echo
+    section "swamp is powered by SWAMP CLUB (swamp-club.com)"
+    info ""
+    info "Connect your account to unlock extensions, sharing,"
+    info "and higher rate limits."
+    info ""
+    printf "  Set up your SWAMP CLUB account now? [Y/n] "
+    read -r _answer </dev/tty || _answer=""
+    case "$_answer" in
+      [nN]*)
+        info ""
+        info "No problem! You can connect later: swamp auth login"
+        ;;
+      *)
+        echo
+        "$dest/$bin" auth login
+        ;;
+    esac
+    echo
+  fi
+
   info "Next steps:"
   info ""
   info "  1. Initialize a swamp repository:"
