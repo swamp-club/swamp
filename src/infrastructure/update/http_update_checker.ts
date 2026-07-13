@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { dirname, join } from "@std/path";
 import type { Platform } from "../../domain/update/platform.ts";
 import type { UpdateChecker } from "../../domain/update/update_service.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -54,45 +55,67 @@ async function removeQuarantine(path: string): Promise<void> {
 /**
  * Replace a binary at `targetPath` with the file at `sourcePath`.
  *
- * On Linux, overwriting a running binary fails with ETXTBSY because the kernel
- * prevents writing to an inode with active text mappings. The standard fix is
- * to remove the directory entry first (the running process keeps its fd open),
- * then move the new file into place.
+ * Uses atomic rename to create a new inode at the target path. Running
+ * processes keep their vnode reference to the old inode — no SIGKILL on
+ * macOS (code-signed binaries stay valid), no ETXTBSY on Linux (rename
+ * operates on directory entries, not file data).
  *
  * Strategy:
- * 1. Try `Deno.rename()` — atomic, no ETXTBSY (operates on directory entries).
- * 2. If rename fails with EXDEV (cross-filesystem), fall back to
- *    `Deno.remove()` + `Deno.copyFile()`.
+ * 1. Try `Deno.rename()` — atomic, replaces the target in one syscall.
+ * 2. If rename fails with EXDEV (cross-filesystem), copy to a temp file
+ *    in the target directory (guaranteeing same-filesystem), then rename.
  */
 async function replaceBinary(
   sourcePath: string,
   targetPath: string,
 ): Promise<void> {
+  // Clean up stale temp files from a previous crashed update
+  const targetDir = dirname(targetPath);
   try {
-    // Unlink first to release the inode on Linux
-    try {
-      await Deno.remove(targetPath);
-    } catch (error) {
-      // NotFound is fine — target may not exist yet
-      if (error instanceof Deno.errors.NotFound) {
-        // OK
-      } else if (error instanceof Deno.errors.PermissionDenied) {
-        throw new UserError(
-          `Cannot update ${targetPath}: permission denied. Re-run with: sudo swamp update`,
-        );
-      } else {
-        throw error;
+    for await (const entry of Deno.readDir(targetDir)) {
+      if (entry.name.startsWith(".swamp.tmp.")) {
+        try {
+          await Deno.remove(join(targetDir, entry.name));
+        } catch {
+          // Best-effort cleanup
+        }
       }
     }
+  } catch {
+    // readDir may fail on permission errors — not fatal
+  }
+
+  try {
     await Deno.rename(sourcePath, targetPath);
   } catch (error) {
-    // EXDEV: source and target on different filesystems — rename won't work
+    if (error instanceof Deno.errors.PermissionDenied) {
+      throw new UserError(
+        `Cannot update ${targetPath}: permission denied. Re-run with: sudo swamp update`,
+      );
+    }
+    // EXDEV: source and target on different filesystems — rename won't work.
+    // Copy to a temp file in the target directory, then atomic rename.
     const code = error instanceof Error
       ? (error as Error & { code?: string }).code
       : undefined;
     if (code === "EXDEV") {
-      // Target already removed above, so copyFile won't hit ETXTBSY
-      await Deno.copyFile(sourcePath, targetPath);
+      const tmpPath = join(targetDir, `.swamp.tmp.${crypto.randomUUID()}`);
+      try {
+        await Deno.copyFile(sourcePath, tmpPath);
+        await Deno.rename(tmpPath, targetPath);
+      } catch (innerError) {
+        try {
+          await Deno.remove(tmpPath);
+        } catch {
+          // Best-effort cleanup
+        }
+        if (innerError instanceof Deno.errors.PermissionDenied) {
+          throw new UserError(
+            `Cannot update ${targetPath}: permission denied. Re-run with: sudo swamp update`,
+          );
+        }
+        throw innerError;
+      }
     } else {
       throw error;
     }
@@ -244,7 +267,7 @@ export class HttpUpdateChecker implements UpdateChecker {
         await removeQuarantine(extractedBinary);
       }
 
-      // Replace the current binary (unlink-then-rename to avoid ETXTBSY on Linux)
+      // Replace the current binary (atomic rename to preserve running processes)
       await replaceBinary(extractedBinary, binaryPath);
 
       // chmod is meaningless on Windows (file permissions live in the ACL,
