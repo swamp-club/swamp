@@ -42,6 +42,52 @@ export function splitServerToken(
   return { name: presented.slice(0, dot), secret: presented.slice(dot + 1) };
 }
 
+export type WebSocketTokenTransport = "bearer" | "subprotocol" | "query";
+
+export interface ExtractedWebSocketToken {
+  token: string;
+  transport: WebSocketTokenTransport;
+}
+
+const BEARER_PREFIX_LEN = "Bearer ".length;
+const SUBPROTOCOL_PREFIX = "bearer.";
+
+export function extractWebSocketToken(
+  req: Request,
+): ExtractedWebSocketToken | null {
+  const authHeader = req.headers.get("authorization");
+  if (
+    authHeader !== null &&
+    authHeader.slice(0, BEARER_PREFIX_LEN).toLowerCase() === "bearer "
+  ) {
+    const token = authHeader.slice(BEARER_PREFIX_LEN);
+    if (token.length > 0) {
+      return { token, transport: "bearer" };
+    }
+  }
+
+  const protocols = req.headers.get("sec-websocket-protocol");
+  if (protocols !== null) {
+    for (const entry of protocols.split(",")) {
+      const trimmed = entry.trim();
+      if (trimmed.startsWith(SUBPROTOCOL_PREFIX)) {
+        const token = trimmed.slice(SUBPROTOCOL_PREFIX.length);
+        if (token.length > 0) {
+          return { token, transport: "subprotocol" };
+        }
+      }
+    }
+  }
+
+  const url = new URL(req.url);
+  const tokenParam = url.searchParams.get("token");
+  if (tokenParam !== null && tokenParam.length > 0) {
+    return { token: tokenParam, transport: "query" };
+  }
+
+  return null;
+}
+
 export type ServerTokenAuthResult =
   | { ok: true; principalId: string; collectives: readonly string[] }
   | { ok: false; error: string };

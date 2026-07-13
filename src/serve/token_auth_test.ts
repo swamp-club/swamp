@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { authenticateServerToken, splitServerToken } from "./token_auth.ts";
+import {
+  authenticateServerToken,
+  extractWebSocketToken,
+  splitServerToken,
+} from "./token_auth.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 
 // ── splitServerToken ────────────────────────────────────────────────────
@@ -48,6 +52,129 @@ Deno.test("splitServerToken: handles dots in secret", () => {
 Deno.test("splitServerToken: single-char name and secret", () => {
   const result = splitServerToken("a.b");
   assertEquals(result, { name: "a", secret: "b" });
+});
+
+// ── extractWebSocketToken ──────────────────────────────────────────────
+
+function makeReq(
+  url: string,
+  headers?: Record<string, string>,
+): Request {
+  return new Request(url, { headers });
+}
+
+Deno.test("extractWebSocketToken: extracts from Authorization Bearer header", () => {
+  const req = makeReq("http://localhost:4000/", {
+    "authorization": "Bearer mytoken.secret123",
+  });
+  const result = extractWebSocketToken(req);
+  assertEquals(result, { token: "mytoken.secret123", transport: "bearer" });
+});
+
+Deno.test("extractWebSocketToken: extracts from Sec-WebSocket-Protocol bearer.*", () => {
+  const req = makeReq("http://localhost:4000/", {
+    "sec-websocket-protocol": "bearer.mytoken.secret123",
+  });
+  const result = extractWebSocketToken(req);
+  assertEquals(result, {
+    token: "mytoken.secret123",
+    transport: "subprotocol",
+  });
+});
+
+Deno.test("extractWebSocketToken: Bearer scheme is case-insensitive", () => {
+  const lower = makeReq("http://localhost:4000/", {
+    "authorization": "bearer mytoken.secret123",
+  });
+  assertEquals(extractWebSocketToken(lower), {
+    token: "mytoken.secret123",
+    transport: "bearer",
+  });
+
+  const upper = makeReq("http://localhost:4000/", {
+    "authorization": "BEARER mytoken.secret123",
+  });
+  assertEquals(extractWebSocketToken(upper), {
+    token: "mytoken.secret123",
+    transport: "bearer",
+  });
+});
+
+Deno.test("extractWebSocketToken: extracts from query parameter", () => {
+  const req = makeReq("http://localhost:4000/?token=mytoken.secret123");
+  const result = extractWebSocketToken(req);
+  assertEquals(result, { token: "mytoken.secret123", transport: "query" });
+});
+
+Deno.test("extractWebSocketToken: returns null when no token present", () => {
+  const req = makeReq("http://localhost:4000/");
+  assertEquals(extractWebSocketToken(req), null);
+});
+
+Deno.test("extractWebSocketToken: Bearer takes priority over query param", () => {
+  const req = makeReq("http://localhost:4000/?token=query.token", {
+    "authorization": "Bearer header.token",
+  });
+  const result = extractWebSocketToken(req);
+  assertEquals(result, { token: "header.token", transport: "bearer" });
+});
+
+Deno.test("extractWebSocketToken: Bearer takes priority over subprotocol", () => {
+  const req = makeReq("http://localhost:4000/", {
+    "authorization": "Bearer header.token",
+    "sec-websocket-protocol": "bearer.sub.token",
+  });
+  const result = extractWebSocketToken(req);
+  assertEquals(result, { token: "header.token", transport: "bearer" });
+});
+
+Deno.test("extractWebSocketToken: subprotocol takes priority over query param", () => {
+  const req = makeReq("http://localhost:4000/?token=query.token", {
+    "sec-websocket-protocol": "bearer.sub.token",
+  });
+  const result = extractWebSocketToken(req);
+  assertEquals(result, { token: "sub.token", transport: "subprotocol" });
+});
+
+Deno.test("extractWebSocketToken: ignores malformed Bearer (no token after prefix)", () => {
+  const req = makeReq("http://localhost:4000/", {
+    "authorization": "Bearer ",
+  });
+  assertEquals(extractWebSocketToken(req), null);
+});
+
+Deno.test("extractWebSocketToken: ignores non-Bearer authorization header", () => {
+  const req = makeReq("http://localhost:4000/", {
+    "authorization": "Basic dXNlcjpwYXNz",
+  });
+  assertEquals(extractWebSocketToken(req), null);
+});
+
+Deno.test("extractWebSocketToken: ignores subprotocol without bearer. prefix", () => {
+  const req = makeReq("http://localhost:4000/", {
+    "sec-websocket-protocol": "graphql-ws, other-protocol",
+  });
+  assertEquals(extractWebSocketToken(req), null);
+});
+
+Deno.test("extractWebSocketToken: finds bearer.* among multiple subprotocols", () => {
+  const req = makeReq("http://localhost:4000/", {
+    "sec-websocket-protocol": "graphql-ws, bearer.mytoken.secret, other",
+  });
+  const result = extractWebSocketToken(req);
+  assertEquals(result, { token: "mytoken.secret", transport: "subprotocol" });
+});
+
+Deno.test("extractWebSocketToken: ignores empty bearer. subprotocol", () => {
+  const req = makeReq("http://localhost:4000/", {
+    "sec-websocket-protocol": "bearer.",
+  });
+  assertEquals(extractWebSocketToken(req), null);
+});
+
+Deno.test("extractWebSocketToken: ignores empty query param", () => {
+  const req = makeReq("http://localhost:4000/?token=");
+  assertEquals(extractWebSocketToken(req), null);
 });
 
 // ── authenticateServerToken ─────────────────────────────────────────────
