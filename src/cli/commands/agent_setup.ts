@@ -165,6 +165,23 @@ Some tools need a header like this to auto-load rules:
       def.frontmatter = frontmatter;
     }
 
+    if (def.instructionsMode === "owned") {
+      await Deno.stdout.write(encoder.encode(`
+The instructions file "${def.instructionsFile}" will use "owned" mode by default,
+which means swamp fully controls the file and overwrites it on every \`repo upgrade\`.
+
+If this file may contain content you want to preserve (hand-written rules,
+project-specific instructions), choose "shared" mode instead — swamp will only
+manage a marked section and leave the rest untouched.
+`));
+      const useShared = await promptConfirmation(
+        "Use shared mode (preserve surrounding content)?",
+      );
+      if (useShared) {
+        def.instructionsMode = "shared";
+      }
+    }
+
     const skillsDirChoices = buildSkillsDirChoices(detection, def.skillsDir);
     let chosenSkillsDir: string | undefined;
     if (skillsDirChoices.length > 1) {
@@ -206,9 +223,11 @@ Some tools need a header like this to auto-load rules:
     await Deno.stdout.write(encoder.encode(`
 Custom agent "${name}" configured:
   Skills:        ${def.skillsDir}/
-  Instructions:  ${def.instructionsFile}${
-      def.instructionsMode === "shared" ? " (shared)" : ""
-    }
+  Instructions:  ${def.instructionsFile} (${
+      def.instructionsMode === "owned"
+        ? "owned — fully overwritten on upgrade"
+        : "shared"
+    })
   Frontmatter:   ${def.frontmatter ? "yes" : "none"}
 
 Saved to .swamp-custom-tools.yaml

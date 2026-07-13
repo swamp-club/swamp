@@ -683,12 +683,14 @@ Deno.test("RepoService.init with cursor creates .cursor/skills/ and .cursor/rule
     // Skills are now installed globally, not in repo
     assertEquals(result.skillsCopied.includes("swamp"), true);
 
-    // Check instructions file is .cursor/rules/swamp.mdc with MDC frontmatter
+    // Check instructions file is .cursor/rules/swamp.mdc with MDC frontmatter at byte 0
     const mdcPath = join(tempDir, ".cursor", "rules", "swamp.mdc");
     const content = await Deno.readTextFile(mdcPath);
+    assertEquals(content.startsWith("---\n"), true);
     assertStringIncludes(content, "alwaysApply: true");
     assertStringIncludes(content, "swamp");
     assertStringIncludes(content, "## Skills");
+    assertStringIncludes(content, "<!-- BEGIN swamp managed section");
 
     // Check .cursor/hooks.json was created
     const hooksPath = join(tempDir, ".cursor", "hooks.json");
@@ -1082,7 +1084,7 @@ Deno.test("RepoService.upgrade returns unchanged when section is current", async
   });
 });
 
-Deno.test("RepoService.init cursor instructions have MDC frontmatter", async () => {
+Deno.test("RepoService.init cursor instructions have MDC frontmatter at byte 0 with managed section", async () => {
   await withTempDir(async (tempDir) => {
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
@@ -1092,10 +1094,13 @@ Deno.test("RepoService.init cursor instructions have MDC frontmatter", async () 
     const mdcPath = join(tempDir, ".cursor", "rules", "swamp.mdc");
     const content = await Deno.readTextFile(mdcPath);
 
-    // Check MDC frontmatter
-    assertStringIncludes(content, "---\n");
+    // Frontmatter at byte 0
+    assertEquals(content.startsWith("---\n"), true);
     assertStringIncludes(content, "description: Swamp automation rules");
     assertStringIncludes(content, "alwaysApply: true");
+    // Managed section markers present
+    assertStringIncludes(content, "<!-- BEGIN swamp managed section");
+    assertStringIncludes(content, "<!-- END swamp managed section");
   });
 });
 
@@ -2100,69 +2105,78 @@ Use \`swamp --help\` to see available commands.
   });
 });
 
-Deno.test("RepoService.upgrade cursor files are still fully overwritten (no markers)", async () => {
+Deno.test("RepoService.upgrade cursor uses shared mode with managed section markers", async () => {
   await withTempDir(async (tempDir) => {
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath, { tools: ["cursor"] });
 
-    // Replace cursor instructions with stale content
     const mdcPath = join(tempDir, ".cursor", "rules", "swamp.mdc");
-    await Deno.writeTextFile(mdcPath, "---\nalwaysApply: true\n---\nold");
+
+    // Add user content after the managed section
+    const original = await Deno.readTextFile(mdcPath);
+    await Deno.writeTextFile(
+      mdcPath,
+      original + "\n## My Custom Rules\n\nUse TypeScript strict mode.\n",
+    );
 
     const upgradeService = new RepoService("0.2.0");
     const result = await upgradeService.upgrade(repoPath, {
       tools: ["cursor"],
     });
 
-    assertEquals(result.instructionsUpdated, true);
+    assertEquals(result.instructionsUpdated, false);
 
     const content = await Deno.readTextFile(mdcPath);
-    // Full overwrite — should not have markers
-    assertEquals(
-      content.includes("<!-- BEGIN swamp managed section"),
-      false,
-    );
-    // Should have current template
-    assertStringIncludes(content, "## Skills");
+    // Should have managed section markers
+    assertStringIncludes(content, "<!-- BEGIN swamp managed section");
+    assertStringIncludes(content, "<!-- END swamp managed section");
+    // Frontmatter at byte 0
+    assertEquals(content.startsWith("---\n"), true);
     assertStringIncludes(content, "alwaysApply: true");
+    // User content preserved
+    assertStringIncludes(content, "## My Custom Rules");
+    assertStringIncludes(content, "Use TypeScript strict mode.");
   });
 });
 
-Deno.test("RepoService.upgrade kiro files are still fully overwritten (no markers)", async () => {
+Deno.test("RepoService.upgrade kiro uses shared mode with managed section markers", async () => {
   await withTempDir(async (tempDir) => {
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath, { tools: ["kiro"] });
 
-    // Replace kiro instructions with stale content
     const steeringPath = join(
       tempDir,
       ".kiro",
       "steering",
       "swamp-rules.md",
     );
+
+    // Add user content after the managed section
+    const original = await Deno.readTextFile(steeringPath);
     await Deno.writeTextFile(
       steeringPath,
-      "---\ninclusion: always\n---\nold content",
+      original + "\n## My Custom Rules\n\nUse TypeScript strict mode.\n",
     );
 
     const upgradeService = new RepoService("0.2.0");
     const result = await upgradeService.upgrade(repoPath, { tools: ["kiro"] });
 
-    assertEquals(result.instructionsUpdated, true);
+    assertEquals(result.instructionsUpdated, false);
 
     const content = await Deno.readTextFile(steeringPath);
-    // Full overwrite — should not have markers
-    assertEquals(
-      content.includes("<!-- BEGIN swamp managed section"),
-      false,
-    );
-    // Should have current template
-    assertStringIncludes(content, "## Skills");
+    // Should have managed section markers
+    assertStringIncludes(content, "<!-- BEGIN swamp managed section");
+    assertStringIncludes(content, "<!-- END swamp managed section");
+    // Frontmatter at byte 0
+    assertEquals(content.startsWith("---\n"), true);
     assertStringIncludes(content, "inclusion: always");
+    // User content preserved
+    assertStringIncludes(content, "## My Custom Rules");
+    assertStringIncludes(content, "Use TypeScript strict mode.");
   });
 });
 

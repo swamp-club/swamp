@@ -116,7 +116,7 @@ Deno.test("builtInToolConfig: cursor config", () => {
   assertEquals(config.isBuiltIn, true);
   assertEquals(config.skillsDir, ".cursor/skills");
   assertEquals(config.instructionsFile, ".cursor/rules/swamp.mdc");
-  assertEquals(config.instructionsMode, "owned");
+  assertEquals(config.instructionsMode, "shared");
   assertEquals(config.skillReferenceStyle, "path");
   assertEquals(config.frontmatter !== undefined, true);
 });
@@ -127,7 +127,7 @@ Deno.test("builtInToolConfig: kiro config", () => {
   assertEquals(config.isBuiltIn, true);
   assertEquals(config.skillsDir, ".kiro/skills");
   assertEquals(config.instructionsFile, ".kiro/steering/swamp-rules.md");
-  assertEquals(config.instructionsMode, "owned");
+  assertEquals(config.instructionsMode, "shared");
 });
 
 Deno.test("builtInToolConfig: opencode/codex/copilot share AGENTS.md", () => {

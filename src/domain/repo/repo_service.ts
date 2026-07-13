@@ -843,7 +843,8 @@ export class RepoService {
     // Case 1: No file exists — create with managed section
     if (existingContent === null) {
       await ensureDir(join(filePath, ".."));
-      await Deno.writeTextFile(filePath, newSection + "\n");
+      const prefix = config.frontmatter ?? "";
+      await Deno.writeTextFile(filePath, prefix + newSection + "\n");
       return true;
     }
 
@@ -924,9 +925,19 @@ export class RepoService {
       return newSection + "\n" + separator + content;
     }
 
-    // Find end: "Use `swamp --help` to see available commands.\n"
-    const endMarker = "Use `swamp --help` to see available commands.\n";
-    const endIndex = content.indexOf(endMarker, startMatch.index);
+    const endMarkers = [
+      "scopes to a subtree.\n",
+      "Use `swamp --help` to see available commands.\n",
+    ];
+    let endIndex = -1;
+    let endMarker = "";
+    for (const marker of endMarkers) {
+      endIndex = content.indexOf(marker, startMatch.index);
+      if (endIndex !== -1) {
+        endMarker = marker;
+        break;
+      }
+    }
 
     if (endIndex === -1) {
       // Start matched but end didn't — the user edited the template.
