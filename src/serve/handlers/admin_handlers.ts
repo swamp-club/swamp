@@ -21,29 +21,47 @@
  * Platform-admin request handlers (worker, datastore, extension, doctor, run-tracker, and audit-timeline verbs).
  */
 
+import { isAbsolute, join, relative, resolve } from "@std/path";
 import {
   type ActiveRun,
   STALE_TTL_MS,
 } from "../../domain/models/active_run.ts";
 import {
   auditTimeline,
+  buildAggregateState,
   consumeStream,
   createAuditTimelineDeps,
+  createDatastoreStatusDeps,
   createDoctorSecretsDeps,
   createDoctorVaultsDeps,
   createExtensionInfoDeps,
   createExtensionListDeps,
+  createExtensionRmDeps,
+  createExtensionUpdateDeps,
   createLibSwampContext,
   createWorkerListDeps,
   createWorkerQueueListDeps,
+  datastoreStatus,
   doctorDatastores,
   type DoctorDatastoresDeps,
+  doctorExtensions,
+  type DoctorExtensionsDeps,
+  type DoctorRegistryDeps,
   doctorSecrets,
   doctorVaults,
   doctorWorkflows,
   type DoctorWorkflowsDeps,
   extensionInfo,
+  extensionInstall,
   extensionList,
+  extensionRm,
+  extensionSearch,
+  type ExtensionSearchDeps,
+  extensionUpdate,
+  LockfileRepository,
+  ReconcileFromDiskService,
+  type ReconcileTransition,
+  resolveServerUrl,
   workerList,
   workerQueueList,
 } from "../../libswamp/mod.ts";
@@ -54,6 +72,8 @@ import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_reg
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { resolveDatastoreConfig } from "../../cli/resolve_datastore.ts";
+import { createExtensionInstallDeps } from "../../cli/create_extension_install_deps.ts";
+import { resolveModelsDir } from "../../cli/resolve_models_dir.ts";
 import type {
   AuditTimelinePayload,
   ExtensionInfoPayload,
@@ -68,9 +88,23 @@ import {
   SWAMP_SUBDIRS,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
+import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
+import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
+import { readLocalManifestIdentity } from "../../infrastructure/persistence/local_manifest_reader.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
+import {
+  getExtensionLoadWarnings,
+  resetExtensionLoadWarnings,
+} from "../../infrastructure/logging/extension_load_warnings.ts";
+import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
+import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { modelRegistry } from "../../domain/models/model.ts";
+import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
+import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import type { Principal } from "../../domain/access/principal.ts";
 import {
   authorizeOrReject,
@@ -263,11 +297,11 @@ export async function handleWorkerVerify(
   }
 }
 
-export function handleDatastoreStatus(
+export async function handleDatastoreStatus(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
-  _controller: AbortController,
+  controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
   if (
@@ -276,18 +310,39 @@ export function handleDatastoreStatus(
       name: "*",
       fields: {},
     }, ctx)
-  ) return Promise.resolve();
+  ) return;
 
-  // TODO: datastoreStatus requires a DatastorePathResolver which the
-  // ConnectionContext does not currently expose. Send a minimal status
-  // response until the resolver is wired through.
-  sendError(
-    socket,
-    requestId,
-    "not_implemented",
-    "datastore.status is not yet available over the WebSocket API",
-  );
-  return Promise.resolve();
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = await createDatastoreStatusDeps(ctx.datastoreResolver);
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      datastoreStatus(libCtx, deps),
+      {
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "datastore.status",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "datastore_status_failed", message);
+  }
 }
 
 export async function handleExtensionList(
@@ -339,21 +394,87 @@ export async function handleExtensionList(
   }
 }
 
-// deno-lint-ignore require-await
 export async function handleExtensionSearch(
   socket: WebSocket,
-  _ctx: ConnectionContext,
+  ctx: ConnectionContext,
   requestId: string,
-  _controller: AbortController,
-  _principal: Principal | null,
-  _payload?: ExtensionSearchPayload,
+  controller: AbortController,
+  principal: Principal | null,
+  payload?: ExtensionSearchPayload,
 ): Promise<void> {
-  sendError(
-    socket,
-    requestId,
-    "not_implemented",
-    "extension.search is not yet available over the WebSocket API",
-  );
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "model",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const serverUrl = resolveServerUrl();
+    const client = new ExtensionApiClient(serverUrl);
+    const deps: ExtensionSearchDeps = {
+      searchExtensions: (params) =>
+        client.searchExtensions(
+          params as Parameters<typeof client.searchExtensions>[0],
+        ),
+    };
+
+    const toArray = (
+      v: string | string[] | undefined,
+    ): string[] | undefined =>
+      v == null ? undefined : Array.isArray(v) ? v : [v];
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      extensionSearch(libCtx, deps, {
+        query: payload?.query,
+        collective: payload?.collective,
+        platform: toArray(
+          payload?.platform as string | string[] | undefined,
+        ),
+        label: toArray(payload?.label as string | string[] | undefined),
+        contentType: toArray(
+          payload?.contentType as string | string[] | undefined,
+        ),
+        channel: toArray(
+          payload?.channel as string | string[] | undefined,
+        ),
+        sort: payload?.sort as
+          | "name"
+          | "new"
+          | "relevance"
+          | "updated"
+          | undefined,
+        perPage: payload?.perPage,
+        page: payload?.page,
+      }),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "extension.search",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "extension_search_failed", message);
+  }
 }
 
 export async function handleExtensionInfo(
@@ -422,11 +543,11 @@ export async function handleExtensionInfo(
   }
 }
 
-export function handleExtensionInstall(
+export async function handleExtensionInstall(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
-  _controller: AbortController,
+  controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
   if (
@@ -435,26 +556,52 @@ export function handleExtensionInstall(
       name: "*",
       fields: {},
     }, ctx)
-  ) return Promise.resolve();
+  ) return;
 
-  // TODO: ExtensionInstallDeps requires complex infrastructure wiring
-  // (lockfilePath, createInstallContext, etc.) that is not yet available
-  // in the serve context. Return not_implemented until wired.
-  sendError(
-    socket,
-    requestId,
-    "not_implemented",
-    "extension.install is not yet available over the WebSocket API",
-  );
-  return Promise.resolve();
+  try {
+    const libCtx = createLibSwampContext();
+    const logger = getSwampLogger(["serve", "extension", "install"]);
+    const deps = await createExtensionInstallDeps(ctx.repoDir, logger);
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      extensionInstall(libCtx, deps),
+      {
+        resolving: () => {},
+        installing: () => {},
+        migrating: () => {},
+        "orphans-pruned": () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "extension.install",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "extension_install_failed", message);
+  }
 }
 
-export function handleExtensionRm(
+export async function handleExtensionRm(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
-  _payload: ExtensionRmPayload,
-  _controller: AbortController,
+  payload: ExtensionRmPayload,
+  controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
   if (
@@ -463,24 +610,59 @@ export function handleExtensionRm(
       name: "*",
       fields: {},
     }, ctx)
-  ) return Promise.resolve();
+  ) return;
 
-  // TODO: createExtensionRmDeps requires a lockfilePath resolved from
-  // the repo marker. Wire this through ConnectionContext.
-  sendError(
-    socket,
-    requestId,
-    "not_implemented",
-    "extension.rm is not yet available over the WebSocket API",
-  );
-  return Promise.resolve();
+  let deps: Awaited<ReturnType<typeof createExtensionRmDeps>> | undefined;
+  try {
+    const repoDir = ctx.repoDir;
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(RepoPath.create(repoDir));
+    const modelsDir = resolveModelsDir(marker);
+    const absoluteModelsDir = isAbsolute(modelsDir)
+      ? modelsDir
+      : resolve(repoDir, modelsDir);
+    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+
+    deps = await createExtensionRmDeps(repoDir, lockfilePath);
+    const libCtx = createLibSwampContext();
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      extensionRm(libCtx, deps, { extensionName: payload.extensionName }),
+      {
+        deleting: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "extension.rm",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "extension_rm_failed", message);
+  } finally {
+    deps?.repository.close();
+  }
 }
 
-export function handleExtensionOutdated(
+export async function handleExtensionOutdated(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
-  _controller: AbortController,
+  controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
   if (
@@ -489,18 +671,58 @@ export function handleExtensionOutdated(
       name: "*",
       fields: {},
     }, ctx)
-  ) return Promise.resolve();
+  ) return;
 
-  // TODO: extensionOutdated wraps extensionUpdate with checkOnly=true.
-  // It requires a lockfilePath and identity for the swamp-club API.
-  // Wire these through ConnectionContext.
-  sendError(
-    socket,
-    requestId,
-    "not_implemented",
-    "extension.outdated is not yet available over the WebSocket API",
-  );
-  return Promise.resolve();
+  try {
+    const libCtx = createLibSwampContext();
+    const repoDir = ctx.repoDir;
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(RepoPath.create(repoDir));
+    const modelsDir = resolveModelsDir(marker);
+    const absoluteModelsDir = isAbsolute(modelsDir)
+      ? modelsDir
+      : resolve(repoDir, modelsDir);
+    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+
+    const deps = await createExtensionUpdateDeps({
+      lockfilePath,
+      installExtension: () => {
+        throw new Error("should not be called in checkOnly mode");
+      },
+    });
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      extensionUpdate(libCtx, deps, { checkOnly: true }),
+      {
+        no_extensions: () => {},
+        extension_not_installed: () => {},
+        checking: () => {},
+        updating: () => {},
+        "orphans-pruned": () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "extension.outdated",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "extension_outdated_failed", message);
+  }
 }
 
 export async function handleDoctorVaults(
@@ -742,11 +964,11 @@ export async function handleDoctorWorkflows(
   }
 }
 
-export function handleDoctorExtensions(
+export async function handleDoctorExtensions(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
-  _controller: AbortController,
+  controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
   if (
@@ -755,18 +977,140 @@ export function handleDoctorExtensions(
       name: "*",
       fields: {},
     }, ctx)
-  ) return Promise.resolve();
+  ) return;
 
-  // TODO: DoctorExtensionsDeps requires complex infrastructure wiring
-  // (registries, lockfileRepository, skillsDir, etc.) that is not yet
-  // available in the serve context. Return not_implemented until wired.
-  sendError(
-    socket,
-    requestId,
-    "not_implemented",
-    "doctor.extensions is not yet available over the WebSocket API",
-  );
-  return Promise.resolve();
+  const logger = getSwampLogger(["serve", "doctor", "extensions"]);
+  let sharedCatalog: ExtensionCatalogStore | undefined;
+  try {
+    const repoDir = ctx.repoDir;
+    const repoPath = RepoPath.create(repoDir);
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(repoPath);
+    const modelsDir = resolveModelsDir(marker);
+    const absoluteModelsDir = isAbsolute(modelsDir)
+      ? modelsDir
+      : resolve(repoDir, modelsDir);
+    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+
+    const catalogDbPath = swampPath(repoDir, "_extension_catalog.db");
+    sharedCatalog = new ExtensionCatalogStore(catalogDbPath);
+
+    const localManifestIdentity = readLocalManifestIdentity(repoDir);
+    let reconcileTransitions: readonly ReconcileTransition[] = [];
+    try {
+      const reconcileLockfileRepo = await LockfileRepository.create(
+        lockfilePath,
+      );
+      const rescanRepo = new ExtensionRepository({
+        catalog: sharedCatalog,
+        lockfileRepository: reconcileLockfileRepo,
+        repoRoot: repoDir,
+        localManifestIdentity,
+      });
+      rescanRepo.invalidateAll();
+      const denoRuntime = new EmbeddedDenoRuntime();
+      const reconciler = new ReconcileFromDiskService({
+        denoRuntime,
+        repository: rescanRepo,
+        lockfileRepository: reconcileLockfileRepo,
+        repoDir,
+        localManifestIdentity,
+      });
+      const result = await reconciler.execute();
+      reconcileTransitions = result.transitions;
+    } catch (reconcileError) {
+      logger.debug`Reconciliation failed (best-effort): ${reconcileError}`;
+    }
+
+    const registries: ReadonlyArray<DoctorRegistryDeps> = [
+      {
+        registry: "model",
+        ensureLoaded: () => modelRegistry.ensureLoaded(),
+        resetLoadedFlag: () => modelRegistry.resetLoadedFlag(),
+      },
+      {
+        registry: "vault",
+        ensureLoaded: () => vaultTypeRegistry.ensureLoaded(),
+        resetLoadedFlag: () => vaultTypeRegistry.resetLoadedFlag(),
+      },
+      {
+        registry: "datastore",
+        ensureLoaded: () => datastoreTypeRegistry.ensureLoaded(),
+        resetLoadedFlag: () => datastoreTypeRegistry.resetLoadedFlag(),
+      },
+      {
+        registry: "report",
+        ensureLoaded: () => reportRegistry.ensureLoaded(),
+        resetLoadedFlag: () => reportRegistry.resetLoadedFlag(),
+      },
+    ];
+
+    const tools = marker?.tools?.length ? marker.tools : ["claude"];
+    const absoluteSkillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
+    const repoRelativeSkillsDirs = absoluteSkillsDirs.map((d) =>
+      relative(repoDir, d)
+    );
+
+    const doctorLockfileRepo = await LockfileRepository.create(lockfilePath);
+    const deps: DoctorExtensionsDeps = {
+      registries,
+      lockfileRepository: doctorLockfileRepo,
+      repoDir,
+      skillsDirs: repoRelativeSkillsDirs,
+      abortSignal: controller.signal,
+      buildAggregateState: async () => {
+        const aggLockfileRepo = await LockfileRepository.create(lockfilePath);
+        const localIdentity = readLocalManifestIdentity(repoDir);
+        const repo = new ExtensionRepository({
+          catalog: sharedCatalog!,
+          lockfileRepository: aggLockfileRepo,
+          repoRoot: repoDir,
+          localManifestIdentity: localIdentity,
+        });
+        const extensions = repo.loadAll();
+        return buildAggregateState({ extensions, repoDir });
+      },
+      getRecentTransitions: () => reconcileTransitions,
+      getWarnings: () =>
+        getExtensionLoadWarnings().map((w) => ({
+          sourcePath: w.file,
+          category: "TypeExtractionFailed",
+          message: w.error,
+        })),
+      resetWarnings: resetExtensionLoadWarnings,
+    };
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      doctorExtensions(deps),
+      {
+        "kind-started": () => {},
+        "kind-completed": () => {},
+        completed: (e) => {
+          result = e.report as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "doctor.extensions",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "doctor_extensions_failed", message);
+  } finally {
+    sharedCatalog?.close();
+  }
 }
 
 export function handleRunHistory(

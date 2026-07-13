@@ -381,10 +381,10 @@ export type ExtensionListPayload = Record<string, never>;
 export interface ExtensionSearchPayload {
   query?: string;
   collective?: string;
-  platform?: string;
-  label?: string;
-  contentType?: string;
-  channel?: string;
+  platform?: string | string[];
+  label?: string | string[];
+  contentType?: string | string[];
+  channel?: string | string[];
   sort?: string;
   perPage?: number;
   page?: number;

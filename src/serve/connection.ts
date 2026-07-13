@@ -715,16 +715,18 @@ const ExtensionListRequestSchema = z.object({
   id: z.string().min(1).max(256),
 });
 
+const stringOrStringArray = z.union([z.string(), z.array(z.string())]);
+
 const ExtensionSearchRequestSchema = z.object({
   type: z.literal("extension.search"),
   id: z.string().min(1).max(256),
   payload: z.object({
     query: z.string().optional(),
     collective: z.string().optional(),
-    platform: z.string().optional(),
-    label: z.string().optional(),
-    contentType: z.string().optional(),
-    channel: z.string().optional(),
+    platform: stringOrStringArray.optional(),
+    label: stringOrStringArray.optional(),
+    contentType: stringOrStringArray.optional(),
+    channel: stringOrStringArray.optional(),
     sort: z.string().optional(),
     perPage: z.number().optional(),
     page: z.number().optional(),
