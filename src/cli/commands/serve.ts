@@ -66,6 +66,10 @@ import { RunCancelRegistry } from "../../serve/run_cancel_registry.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
+import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import { removeAttachedExtensionsForType } from "../../domain/extensions/model_kind_adapter.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
 import {
   type PolicyReloadMode,
   PolicySnapshotLoader,
@@ -439,6 +443,114 @@ const daemonStatusCommand = new Command()
     renderDaemonStatus(status, ctx.outputMode, toServiceMode(mode));
   });
 
+async function reloadPulledExtensions(repoDir: string): Promise<number> {
+  const catalogDbPath = swampPath(repoDir, "_extension_catalog.db");
+  const lockfilePath = join(repoDir, "models", "upstream_extensions.json");
+
+  const catalog = new ExtensionCatalogStore(catalogDbPath);
+  try {
+    const lockfile = await LockfileRepository.create(lockfilePath);
+    const entries = lockfile.getAllEntries();
+
+    let reloadedCount = 0;
+    for (const [name, entry] of Object.entries(entries)) {
+      const rows = catalog.findByExtension(name, entry.version);
+      if (rows.length === 0) continue;
+
+      for (const row of rows) {
+        if (!row.type_normalized) continue;
+        const kind = row.kind;
+
+        if (kind === "model") {
+          modelRegistry.invalidateType(row.type_normalized);
+          removeAttachedExtensionsForType(row.type_normalized);
+          modelRegistry.registerLazy({
+            type: ModelType.create(row.type_normalized),
+            bundlePath: row.bundle_path,
+            sourcePath: row.source_path,
+            version: row.version,
+            sourceFingerprint: row.source_fingerprint,
+          });
+          await modelRegistry.ensureTypeLoaded(row.type_normalized);
+        } else if (kind === "vault") {
+          vaultTypeRegistry.invalidateType(row.type_normalized);
+          vaultTypeRegistry.registerLazy({
+            type: row.type_normalized,
+            bundlePath: row.bundle_path,
+            sourcePath: row.source_path,
+            version: row.version,
+          });
+          await vaultTypeRegistry.ensureTypeLoaded(row.type_normalized);
+        } else if (kind === "datastore") {
+          datastoreTypeRegistry.invalidateType(row.type_normalized);
+          datastoreTypeRegistry.registerLazy({
+            type: row.type_normalized,
+            bundlePath: row.bundle_path,
+            sourcePath: row.source_path,
+            version: row.version,
+          });
+          await datastoreTypeRegistry.ensureTypeLoaded(row.type_normalized);
+        } else if (kind === "report") {
+          reportRegistry.invalidateType(row.type_normalized);
+          reportRegistry.registerLazy({
+            type: row.type_normalized,
+            bundlePath: row.bundle_path,
+            sourcePath: row.source_path,
+            version: row.version,
+          });
+          await reportRegistry.ensureTypeLoaded(row.type_normalized);
+        }
+        reloadedCount++;
+      }
+    }
+    return reloadedCount;
+  } finally {
+    catalog.close();
+  }
+}
+
+const reloadCommand = new Command()
+  .name("reload")
+  .description(
+    "Reload pulled extension bundles on a running serve process.\n\n" +
+      "Reads .swamp/serve.pid and sends SIGHUP to trigger hot-reload. " +
+      "Requires the serve process to be running with --hot-reload.",
+  )
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
+  .action(async (options: AnyOptions) => {
+    const repoDir = resolveRepoDir(options.repoDir as string | undefined);
+    const pidPath = swampPath(repoDir, "serve.pid");
+
+    let pidStr: string;
+    try {
+      pidStr = await Deno.readTextFile(pidPath);
+    } catch {
+      throw new UserError(
+        "No PID file found at " + pidPath + ". " +
+          "Is swamp serve running with --hot-reload?",
+      );
+    }
+
+    const pid = parseInt(pidStr.trim(), 10);
+    if (isNaN(pid)) {
+      throw new UserError("Invalid PID in " + pidPath + ": " + pidStr.trim());
+    }
+
+    try {
+      Deno.kill(pid, "SIGHUP");
+    } catch {
+      throw new UserError(
+        "Process " + pid + " not found — stale PID file. " +
+          "Remove " + pidPath + " and restart serve with --hot-reload.",
+      );
+    }
+
+    logger.info`Sent SIGHUP to serve process ${pid}`;
+  });
+
 const daemonCommand = new Command()
   .name("daemon")
   .description("Manage swamp serve as a system daemon (EXPERIMENTAL)")
@@ -547,6 +659,11 @@ export const serveCommand = new Command()
       "(e.g. host.docker.internal,host.minikube.internal). " +
       "Preserves the DNS rebinding defense while allowing Docker/Kubernetes worker connections " +
       "(env: SWAMP_TRUSTED_HOSTS)",
+  )
+  .option(
+    "--hot-reload",
+    "Enable SIGHUP-based hot-reload for pulled extension bundles. " +
+      "Writes a PID file to .swamp/serve.pid; use 'swamp serve reload' to trigger a reload",
   )
   .example(
     "Enable TLS",
@@ -1571,6 +1688,46 @@ export const serveCommand = new Command()
       },
     );
 
+    // Hot-reload: PID file + SIGHUP handler
+    const hotReload = options.hotReload === true;
+    const pidPath = hotReload ? swampPath(resolvedRepoDir, "serve.pid") : null;
+
+    if (hotReload && pidPath) {
+      if (Deno.build.os === "windows") {
+        throw new UserError(
+          "--hot-reload is not supported on Windows (SIGHUP is unavailable). " +
+            "Restart the serve process to pick up extension changes.",
+        );
+      }
+      await Deno.writeTextFile(pidPath, String(Deno.pid));
+      logger.info`Hot-reload enabled, PID file written to ${pidPath}`;
+
+      let reloading = false;
+      Deno.addSignalListener("SIGHUP", () => {
+        if (reloading) {
+          logger.warn("Hot-reload already in progress, ignoring SIGHUP");
+          return;
+        }
+        reloading = true;
+        logger.info("SIGHUP received, reloading pulled extensions...");
+        reloadPulledExtensions(resolvedRepoDir)
+          .then((count) => {
+            logger.info`Hot-reloaded ${count} type(s)`;
+          })
+          .catch((err) => {
+            logger.error(
+              "Hot-reload failed, continuing with old code: {error}",
+              {
+                error: err instanceof Error ? err.message : String(err),
+              },
+            );
+          })
+          .finally(() => {
+            reloading = false;
+          });
+      });
+    }
+
     // Handle SIGINT/SIGTERM for graceful shutdown
     let shuttingDown = false;
     const shutdown = async () => {
@@ -1590,6 +1747,13 @@ export const serveCommand = new Command()
       rejectionGuard.dispose();
       setRemoteStepDispatcher(null);
       ac.abort();
+      if (pidPath) {
+        try {
+          await Deno.remove(pidPath);
+        } catch {
+          // PID file may already be gone
+        }
+      }
       if (isJson) {
         console.log(JSON.stringify({ status: "stopped" }));
       }
@@ -1602,10 +1766,25 @@ export const serveCommand = new Command()
           })
         );
       },
+      includePosixSignals: !hotReload,
     });
+    if (hotReload) {
+      // SIGHUP is handled by the hot-reload handler above, but
+      // SIGTERM still needs to trigger shutdown on POSIX.
+      if (Deno.build.os !== "windows") {
+        Deno.addSignalListener("SIGTERM", () => {
+          shutdown().catch((e) =>
+            logger.error("Shutdown error: {error}", {
+              error: e instanceof Error ? e.message : String(e),
+            })
+          );
+        });
+      }
+    }
 
     await server.finished;
 
     repoContext.catalogStore.close();
   })
+  .command("reload", reloadCommand)
   .command("daemon", daemonCommand);

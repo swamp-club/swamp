@@ -1055,3 +1055,56 @@ Explicit non-goals for v1:
   orchestrator environment snapshot; per-token or per-label env scoping is a
   later refinement.
 
+## Hot-Reload for Pulled Extension Bundles
+
+`swamp serve` loads extension bundles at startup and pins them for the process
+lifetime. The `--hot-reload` flag enables SIGHUP-based hot-reload following the
+nginx pattern.
+
+### User Flow
+
+1. Start serve with `swamp serve --hot-reload`
+2. Push updated extension code, pull it (`swamp extension pull @name --force`)
+3. Run `swamp serve reload` — reads `.swamp/serve.pid`, sends SIGHUP
+4. Serve reloads all pulled extension types. In-flight requests complete on old
+   code; new requests use new code.
+
+### Mechanism
+
+On SIGHUP, `reloadPulledExtensions()` performs a READ-ONLY scan:
+
+1. Opens a fresh `ExtensionCatalogStore` (reads `_extension_catalog.db`)
+2. Reads the lockfile via `LockfileRepository` for extension names/versions
+3. Queries `catalog.findByExtension(name, version)` for type rows
+4. For each type across all four kinds (model, vault, datastore, report):
+   - `invalidateType()` — removes from the registry's loaded and lazy maps
+   - `registerLazy()` — re-adds with updated `source_fingerprint`
+   - `ensureTypeLoaded()` — triggers `loadSingleType()` →
+     `importBundleByPath()` with `import(url?fp=newFingerprint)` for V8 module
+     cache busting
+
+### Catalog Safety Constraint
+
+The reload path never calls `ExtensionCatalogStore.invalidate()`,
+`ExtensionLoader.buildIndex()`, `resetLoadedFlag()`, or `ensureLoaded()`. Only
+the per-type path (`loadSingleType` and its sub-calls) is permitted — these
+perform zero catalog writes.
+
+### Concurrency
+
+During the reload window, a type is momentarily in `lazyTypes` (not yet
+imported). All serve execution paths resolve types through
+`resolveModelType()`/`resolveVaultType()`/`resolveDatastoreType()`, which call
+`ensureTypeLoaded()` before `get()`. Concurrent callers share the same load
+promise via `typeLoadPromises` and wait rather than failing.
+
+### Known Limitations
+
+- **SIGHUP carries no payload**: Cannot target a single extension; all pulled
+  extensions are reloaded. Cost is proportional to pulled extension count.
+- **Windows**: SIGHUP is not available. `--hot-reload` fails with a clear
+  message on Windows.
+- **V8 module cache**: Cache busting uses `?fp=` query parameters with
+  `source_fingerprint`. If extension content changes at the same file path
+  without a fingerprint change (rare), stale modules may be served.
+

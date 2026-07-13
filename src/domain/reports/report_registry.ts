@@ -96,6 +96,21 @@ export class ReportRegistry {
   }
 
   /**
+   * Surgically removes a single report from the registry so it can be
+   * re-registered with updated metadata after a bundle upgrade.
+   */
+  invalidateType(name: string): void {
+    this.reports.delete(name);
+    this.lazyTypes.delete(name);
+    this.typeLoadPromises.delete(name);
+  }
+
+  /** Returns true if a per-type loader has been configured. */
+  hasTypeLoader(): boolean {
+    return this.typeLoader !== null;
+  }
+
+  /**
    * Ensures a specific report type's bundle has been imported.
    * If the type is lazy, invokes the type loader to import just that bundle.
    * Concurrent callers for the same type share the same promise.
