@@ -1504,10 +1504,6 @@ export const serveCommand = new Command()
               "WebSocket token received via {transport} from {ip}",
               { transport: extracted.transport, ip: remoteAddr },
             );
-            if (extracted.transport === "query") {
-              const url = new URL(req.url);
-              url.searchParams.delete("token");
-            }
             const result = await authenticateServerToken(
               extracted.token,
               resolvedRepoDir,

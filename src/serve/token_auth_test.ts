@@ -82,6 +82,24 @@ Deno.test("extractWebSocketToken: extracts from Sec-WebSocket-Protocol bearer.*"
   });
 });
 
+Deno.test("extractWebSocketToken: Bearer scheme is case-insensitive", () => {
+  const lower = makeReq("http://localhost:4000/", {
+    "authorization": "bearer mytoken.secret123",
+  });
+  assertEquals(extractWebSocketToken(lower), {
+    token: "mytoken.secret123",
+    transport: "bearer",
+  });
+
+  const upper = makeReq("http://localhost:4000/", {
+    "authorization": "BEARER mytoken.secret123",
+  });
+  assertEquals(extractWebSocketToken(upper), {
+    token: "mytoken.secret123",
+    transport: "bearer",
+  });
+});
+
 Deno.test("extractWebSocketToken: extracts from query parameter", () => {
   const req = makeReq("http://localhost:4000/?token=mytoken.secret123");
   const result = extractWebSocketToken(req);

@@ -49,15 +49,18 @@ export interface ExtractedWebSocketToken {
   transport: WebSocketTokenTransport;
 }
 
-const BEARER_PREFIX = "Bearer ";
+const BEARER_PREFIX_LEN = "Bearer ".length;
 const SUBPROTOCOL_PREFIX = "bearer.";
 
 export function extractWebSocketToken(
   req: Request,
 ): ExtractedWebSocketToken | null {
   const authHeader = req.headers.get("authorization");
-  if (authHeader !== null && authHeader.startsWith(BEARER_PREFIX)) {
-    const token = authHeader.slice(BEARER_PREFIX.length);
+  if (
+    authHeader !== null &&
+    authHeader.slice(0, BEARER_PREFIX_LEN).toLowerCase() === "bearer "
+  ) {
+    const token = authHeader.slice(BEARER_PREFIX_LEN);
     if (token.length > 0) {
       return { token, transport: "bearer" };
     }
