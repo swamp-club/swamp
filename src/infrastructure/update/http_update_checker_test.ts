@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertNotEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { Platform } from "../../domain/update/platform.ts";
@@ -171,6 +176,100 @@ Deno.test({
           stat.mode! & 0o777,
           0o755,
           `expected mode 0o755; got 0o${(stat.mode! & 0o777).toString(8)}`,
+        );
+      } finally {
+        await server.shutdown();
+      }
+    } finally {
+      await Deno.remove(tempDir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "HttpUpdateChecker.downloadAndInstall: replacement creates a new inode (old inode survives)",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const tempDir = await Deno.makeTempDir({ prefix: "swamp-update-test-" });
+    try {
+      const { body, checksum } = await buildFakeSwampTarball();
+      const binaryPath = join(tempDir, "swamp");
+
+      // Place an initial binary and record its inode
+      await Deno.writeTextFile(binaryPath, "#!/bin/sh\necho original\n");
+      await Deno.chmod(binaryPath, 0o755);
+      const oldStat = await Deno.stat(binaryPath);
+      const oldIno = oldStat.ino;
+
+      const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
+        return new Response(body, {
+          headers: { "content-type": "application/gzip" },
+        });
+      });
+
+      try {
+        const port = server.addr.port;
+        const url = `http://localhost:${port}/swamp.tar.gz`;
+
+        const checker = new HttpUpdateChecker();
+        await checker.downloadAndInstall(url, binaryPath, checksum);
+
+        const newStat = await Deno.stat(binaryPath);
+        assertNotEquals(
+          newStat.ino,
+          oldIno,
+          "replacement must create a new inode so running processes keep the old one",
+        );
+      } finally {
+        await server.shutdown();
+      }
+    } finally {
+      await Deno.remove(tempDir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "HttpUpdateChecker.downloadAndInstall: cleans up stale .swamp.tmp files",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const tempDir = await Deno.makeTempDir({ prefix: "swamp-update-test-" });
+    try {
+      const { body, checksum } = await buildFakeSwampTarball();
+      const binaryPath = join(tempDir, "swamp");
+
+      // Simulate a stale temp file from a previous crashed update
+      const stalePath = join(tempDir, ".swamp.tmp.stale-uuid");
+      await Deno.writeTextFile(stalePath, "stale");
+
+      const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
+        return new Response(body, {
+          headers: { "content-type": "application/gzip" },
+        });
+      });
+
+      try {
+        const port = server.addr.port;
+        const url = `http://localhost:${port}/swamp.tar.gz`;
+
+        const checker = new HttpUpdateChecker();
+        await checker.downloadAndInstall(url, binaryPath, checksum);
+
+        // Stale temp file should be cleaned up
+        let staleExists = true;
+        try {
+          await Deno.stat(stalePath);
+        } catch (error) {
+          if (error instanceof Deno.errors.NotFound) {
+            staleExists = false;
+          }
+        }
+        assertEquals(
+          staleExists,
+          false,
+          "stale .swamp.tmp file should be cleaned up during update",
         );
       } finally {
         await server.shutdown();
