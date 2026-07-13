@@ -21,10 +21,9 @@ export const AUTH_NUDGE_MESSAGE =
   "Tip: Join & participate in the community by logging in to swamp-club.com: swamp auth login";
 
 export const AUTH_FIRST_RUN_MESSAGE_LINES = [
-  "swamp is powered by SWAMP CLUB (swamp-club.com)",
+  "Swamp is powered by SWAMP CLUB (swamp-club.com)",
   "",
   "Connect your account to unlock:",
-  "  - Publishing & installing extensions",
   "  - Higher rate limits",
   "  - Community features",
   "",
