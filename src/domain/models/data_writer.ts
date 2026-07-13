@@ -672,7 +672,11 @@ async function walkAndResolve(
     const match = VAULT_REF_REGEX.exec(obj);
     if (match) {
       const [, vaultName, key] = match;
-      const value = await vaultService.get(vaultName, key);
+      const value = await vaultService.get(
+        vaultName,
+        key,
+        "data-writer:vault-ref-resolve",
+      );
       redactor?.addSecret(value);
       return value;
     }

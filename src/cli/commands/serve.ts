@@ -786,7 +786,7 @@ export const serveCommand = new Command()
         {
           getVaultSecret: async (v, k) => {
             try {
-              return await vaultService.get(v, k);
+              return await vaultService.get(v, k, "serve:oauth-resolve");
             } catch {
               return null;
             }

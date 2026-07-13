@@ -301,7 +301,11 @@ export async function* vaultMigrate(
             total: keys.length,
             key: keys[i],
           };
-          const value = await vaultService.get(input.vaultName, keys[i]);
+          const value = await vaultService.get(
+            input.vaultName,
+            keys[i],
+            "cli:vault-migrate",
+          );
           await targetProvider.put(keys[i], value);
           ctx.logger.debug`Copied secret ${i + 1}/${keys.length}`;
         }

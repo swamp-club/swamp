@@ -336,10 +336,10 @@ When `auditReads` is enabled on a vault:
 3. Audit writes are awaited but wrapped in try/catch — they never block or fail
    a secret read
 
-Currently audited paths: CLI `vault read-secret` and `vault inspect`. Model
-method execution, CEL expression evaluation, serve, and token operations create
-their own `VaultService` instances without audit wiring — these are planned for
-follow-up coverage.
+All `VaultService.fromRepository()` call sites automatically wire the audit
+repository when any vault has `auditReads` enabled. This covers CLI commands
+(`vault read-secret`, `vault inspect`, `vault migrate`), CEL expression
+evaluation, model method execution, serve/WebSocket, and token operations.
 
 ### Audit Entry Fields
 

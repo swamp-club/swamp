@@ -21,7 +21,6 @@ import type { VaultAnnotationData } from "../../domain/vaults/vault_annotation.t
 import type { RefreshHookData } from "../../domain/vaults/refresh_hook.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
-import { JsonlVaultAuditRepository } from "../../infrastructure/persistence/jsonl_vault_audit_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
@@ -79,12 +78,7 @@ export function createVaultInspectDeps(repoDir: string): VaultInspectDeps {
 
   const getVaultService = () => {
     if (!vaultServicePromise) {
-      vaultServicePromise = VaultService.fromRepository(repoDir).then(
-        (svc) => {
-          svc.setAuditRepository(new JsonlVaultAuditRepository(repoDir));
-          return svc;
-        },
-      );
+      vaultServicePromise = VaultService.fromRepository(repoDir);
     }
     return vaultServicePromise;
   };

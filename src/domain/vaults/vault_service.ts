@@ -41,6 +41,7 @@ import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml
 import { createVaultProvider } from "./vault_provider_factory.ts";
 import { createVaultAuditEntry } from "./vault_audit_entry.ts";
 import type { VaultAuditRepository } from "./vault_audit_repository.ts";
+import { JsonlVaultAuditRepository } from "../../infrastructure/persistence/jsonl_vault_audit_repository.ts";
 
 export interface ProcessRunResult {
   success: boolean;
@@ -150,7 +151,19 @@ export class VaultService {
       }
     }
     vaultService.ensureDefaultVaults();
+    if (vaultService.hasAnyAuditEnabled()) {
+      vaultService.setAuditRepository(
+        new JsonlVaultAuditRepository(repoDir),
+      );
+    }
     return vaultService;
+  }
+
+  private hasAnyAuditEnabled(): boolean {
+    for (const enabled of this.auditFlags.values()) {
+      if (enabled) return true;
+    }
+    return false;
   }
 
   /**
