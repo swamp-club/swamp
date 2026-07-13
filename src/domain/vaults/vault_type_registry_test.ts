@@ -305,3 +305,29 @@ Deno.test("VaultTypeRegistry.getAllLazy: returns lazy entries", () => {
   assertEquals(lazy.length, 2);
   assertEquals(lazy.map((e) => e.type).sort(), ["@myorg/a", "@myorg/b"]);
 });
+
+Deno.test("VaultTypeRegistry.invalidateType: removes lazy type", () => {
+  const registry = new VaultTypeRegistry();
+  registry.registerLazy(createLazyVaultEntry("@myorg/secret-store"));
+  assertEquals(registry.has("@myorg/secret-store"), true);
+
+  registry.invalidateType("@myorg/secret-store");
+  assertEquals(registry.has("@myorg/secret-store"), false);
+});
+
+Deno.test("VaultTypeRegistry.invalidateType: removes promoted type", () => {
+  const registry = new VaultTypeRegistry();
+  registry.registerLazy(createLazyVaultEntry("@myorg/secret-store"));
+  registry.promoteFromLazy(createVaultTypeInfo("@myorg/secret-store"));
+  assertEquals(registry.get("@myorg/secret-store") !== undefined, true);
+
+  registry.invalidateType("@myorg/secret-store");
+  assertEquals(registry.get("@myorg/secret-store"), undefined);
+  assertEquals(registry.has("@myorg/secret-store"), false);
+});
+
+Deno.test("VaultTypeRegistry.invalidateType: no-op for unknown type", () => {
+  const registry = new VaultTypeRegistry();
+  registry.invalidateType("@myorg/nonexistent");
+  assertEquals(registry.has("@myorg/nonexistent"), false);
+});

@@ -105,11 +105,6 @@ export class ReportRegistry {
     this.typeLoadPromises.delete(name);
   }
 
-  /** Returns true if a per-type loader has been configured. */
-  hasTypeLoader(): boolean {
-    return this.typeLoader !== null;
-  }
-
   /**
    * Ensures a specific report type's bundle has been imported.
    * If the type is lazy, invokes the type loader to import just that bundle.

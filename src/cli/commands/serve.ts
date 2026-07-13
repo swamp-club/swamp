@@ -67,7 +67,7 @@ import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
-import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import { LockfileRepository } from "../../libswamp/mod.ts";
 import { removeAttachedExtensionsForType } from "../../domain/extensions/model_kind_adapter.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import {
@@ -459,48 +459,62 @@ async function reloadPulledExtensions(repoDir: string): Promise<number> {
 
       for (const row of rows) {
         if (!row.type_normalized) continue;
-        const kind = row.kind;
+        try {
+          const kind = row.kind;
 
-        if (kind === "model") {
-          modelRegistry.invalidateType(row.type_normalized);
-          removeAttachedExtensionsForType(row.type_normalized);
-          modelRegistry.registerLazy({
-            type: ModelType.create(row.type_normalized),
-            bundlePath: row.bundle_path,
-            sourcePath: row.source_path,
-            version: row.version,
-            sourceFingerprint: row.source_fingerprint,
-          });
-          await modelRegistry.ensureTypeLoaded(row.type_normalized);
-        } else if (kind === "vault") {
-          vaultTypeRegistry.invalidateType(row.type_normalized);
-          vaultTypeRegistry.registerLazy({
-            type: row.type_normalized,
-            bundlePath: row.bundle_path,
-            sourcePath: row.source_path,
-            version: row.version,
-          });
-          await vaultTypeRegistry.ensureTypeLoaded(row.type_normalized);
-        } else if (kind === "datastore") {
-          datastoreTypeRegistry.invalidateType(row.type_normalized);
-          datastoreTypeRegistry.registerLazy({
-            type: row.type_normalized,
-            bundlePath: row.bundle_path,
-            sourcePath: row.source_path,
-            version: row.version,
-          });
-          await datastoreTypeRegistry.ensureTypeLoaded(row.type_normalized);
-        } else if (kind === "report") {
-          reportRegistry.invalidateType(row.type_normalized);
-          reportRegistry.registerLazy({
-            type: row.type_normalized,
-            bundlePath: row.bundle_path,
-            sourcePath: row.source_path,
-            version: row.version,
-          });
-          await reportRegistry.ensureTypeLoaded(row.type_normalized);
+          if (kind === "model") {
+            modelRegistry.invalidateType(row.type_normalized);
+            removeAttachedExtensionsForType(row.type_normalized);
+            modelRegistry.registerLazy({
+              type: ModelType.create(row.type_normalized),
+              bundlePath: row.bundle_path,
+              sourcePath: row.source_path,
+              version: row.version,
+              sourceFingerprint: row.source_fingerprint,
+            });
+            await modelRegistry.ensureTypeLoaded(row.type_normalized);
+            reloadedCount++;
+          } else if (kind === "vault") {
+            vaultTypeRegistry.invalidateType(row.type_normalized);
+            vaultTypeRegistry.registerLazy({
+              type: row.type_normalized,
+              bundlePath: row.bundle_path,
+              sourcePath: row.source_path,
+              version: row.version,
+            });
+            await vaultTypeRegistry.ensureTypeLoaded(row.type_normalized);
+            reloadedCount++;
+          } else if (kind === "datastore") {
+            datastoreTypeRegistry.invalidateType(row.type_normalized);
+            datastoreTypeRegistry.registerLazy({
+              type: row.type_normalized,
+              bundlePath: row.bundle_path,
+              sourcePath: row.source_path,
+              version: row.version,
+            });
+            await datastoreTypeRegistry.ensureTypeLoaded(row.type_normalized);
+            reloadedCount++;
+          } else if (kind === "report") {
+            reportRegistry.invalidateType(row.type_normalized);
+            reportRegistry.registerLazy({
+              type: row.type_normalized,
+              bundlePath: row.bundle_path,
+              sourcePath: row.source_path,
+              version: row.version,
+            });
+            await reportRegistry.ensureTypeLoaded(row.type_normalized);
+            reloadedCount++;
+          }
+        } catch (err) {
+          logger.warn(
+            "Failed to reload type {type} from {extension}: {error}",
+            {
+              type: row.type_normalized,
+              extension: name,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          );
         }
-        reloadedCount++;
       }
     }
     return reloadedCount;

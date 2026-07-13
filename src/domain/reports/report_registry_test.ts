@@ -207,3 +207,29 @@ Deno.test("ReportRegistry.ensureTypeLoaded: retries after transient failure", as
   assertEquals(callCount, 2);
   assertEquals(registry.get("@myorg/custom-report")?.scope, "method");
 });
+
+Deno.test("ReportRegistry.invalidateType: removes lazy type", () => {
+  const registry = new ReportRegistry();
+  registry.registerLazy(createLazyReportEntry("@myorg/cost-report"));
+  assertEquals(registry.has("@myorg/cost-report"), true);
+
+  registry.invalidateType("@myorg/cost-report");
+  assertEquals(registry.has("@myorg/cost-report"), false);
+});
+
+Deno.test("ReportRegistry.invalidateType: removes promoted type", () => {
+  const registry = new ReportRegistry();
+  registry.registerLazy(createLazyReportEntry("@myorg/cost-report"));
+  registry.promoteFromLazy("@myorg/cost-report", makeReport("method"));
+  assertEquals(registry.get("@myorg/cost-report") !== undefined, true);
+
+  registry.invalidateType("@myorg/cost-report");
+  assertEquals(registry.get("@myorg/cost-report"), undefined);
+  assertEquals(registry.has("@myorg/cost-report"), false);
+});
+
+Deno.test("ReportRegistry.invalidateType: no-op for unknown type", () => {
+  const registry = new ReportRegistry();
+  registry.invalidateType("@myorg/nonexistent");
+  assertEquals(registry.has("@myorg/nonexistent"), false);
+});
