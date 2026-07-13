@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { renderAuthNudge } from "./auth_nudge.ts";
+import { renderAuthNudge, renderFirstRunNudge } from "./auth_nudge.ts";
 
 Deno.test("renderAuthNudge: outputs nudge message to stderr", () => {
   const lines: string[] = [];
@@ -40,4 +40,32 @@ Deno.test("renderAuthNudge: outputs nudge message to stderr", () => {
   const stripped = lines[1].replace(/\x1b\[[0-9;]*m/g, "");
   assertStringIncludes(stripped, "Join & participate in the community");
   assertStringIncludes(stripped, "swamp auth login");
+});
+
+Deno.test("renderFirstRunNudge: outputs boxed first-run message to stderr", () => {
+  const lines: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => {
+    lines.push(
+      args.map((a) => typeof a === "string" ? a : String(a)).join(" "),
+    );
+  };
+  try {
+    renderFirstRunNudge();
+  } finally {
+    console.error = original;
+  }
+
+  // deno-lint-ignore no-control-regex
+  const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+  const stripped = lines.map(strip);
+
+  assertStringIncludes(stripped.join("\n"), "SWAMP CLUB");
+  assertStringIncludes(stripped.join("\n"), "swamp auth login");
+  assertStringIncludes(stripped.join("\n"), "bug reports and feature requests");
+
+  const topBorder = stripped.find((l) => l.includes("┌"));
+  const bottomBorder = stripped.find((l) => l.includes("└"));
+  assertEquals(topBorder !== undefined, true);
+  assertEquals(bottomBorder !== undefined, true);
 });

@@ -23,7 +23,10 @@ import { CLI_ARGS } from "./test_helpers.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { SHELL_MODEL_TYPE } from "../src/domain/models/command/shell/shell_model.ts";
-import { AUTH_NUDGE_MESSAGE } from "../src/domain/auth/auth_nudge.ts";
+import {
+  AUTH_FIRST_RUN_MESSAGE_LINES,
+  AUTH_NUDGE_MESSAGE,
+} from "../src/domain/auth/auth_nudge.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-auth-nudge-" });
@@ -178,7 +181,7 @@ Deno.test({
       await withTempDir(async (configDir) => {
         await initializeTestRepo(repoDir);
 
-        // First run: nudge should appear in stderr
+        // First run: first-run nudge should appear in stderr
         const first = await runCliCommand(
           ["version", "--no-telemetry"],
           repoDir,
@@ -188,7 +191,7 @@ Deno.test({
         assertEquals(first.code, 0, `version failed: ${first.stderr}`);
         assertStringIncludes(
           first.stderr,
-          "Join & participate in the community",
+          AUTH_FIRST_RUN_MESSAGE_LINES[0],
         );
         assertStringIncludes(first.stderr, "swamp auth login");
 
@@ -201,9 +204,14 @@ Deno.test({
 
         assertEquals(second.code, 0, `version failed: ${second.stderr}`);
         assertEquals(
+          second.stderr.includes(AUTH_FIRST_RUN_MESSAGE_LINES[0]),
+          false,
+          "first-run nudge should not repeat",
+        );
+        assertEquals(
           second.stderr.includes("Join & participate in the community"),
           false,
-          "nudge should be throttled on second run within 24h",
+          "regular nudge should be throttled on second run within 24h",
         );
       });
     });
