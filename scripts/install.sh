@@ -93,6 +93,7 @@ main() {
     section "Swamp is powered by SWAMP CLUB (swamp-club.com)"
     info ""
     info "Connect your account to unlock:"
+    info "  - Share extensions with the community"
     info "  - Higher rate limits"
     info "  - Community features"
     info ""

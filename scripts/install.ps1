@@ -332,6 +332,7 @@ function Main {
         Write-Header "Swamp is powered by SWAMP CLUB (swamp-club.com)"
         Write-Info ""
         Write-Info "Connect your account to unlock:"
+        Write-Info "  - Share extensions with the community"
         Write-Info "  - Higher rate limits"
         Write-Info "  - Community features"
         Write-Info ""

@@ -24,6 +24,7 @@ export const AUTH_FIRST_RUN_MESSAGE_LINES = [
   "Swamp is powered by SWAMP CLUB (swamp-club.com)",
   "",
   "Connect your account to unlock:",
+  "  - Share extensions with the community",
   "  - Higher rate limits",
   "  - Community features",
   "",
