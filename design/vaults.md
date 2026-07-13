@@ -293,7 +293,9 @@ methods are required.
 - **JSON mode**: Outputs directly without prompting (designed for agent/script
   consumption).
 - **Audit**: Every CLI read emits a `VaultSecretRead` domain event through the
-  event bus, recording the vault name, type, and secret key accessed.
+  event bus, recording the vault name, type, and secret key accessed. When
+  `auditReads` is enabled on the vault, a persistent audit trail entry is also
+  written to `.swamp/audit/vault-reads-YYYY-MM-DD.jsonl`.
 
 ### JSON Output
 
@@ -305,6 +307,84 @@ methods are required.
   "value": "sk-test-..."
 }
 ```
+
+## Read Access Audit Trail
+
+Optional per-vault audit trail that records every `VaultService.get()` call to
+append-only JSONL files. Designed for security posture verification in
+autonomous agent fleets — proving "which automation read which secret, when."
+
+### Enabling
+
+Set `auditReads: true` in the vault configuration YAML, or use the
+`--audit-reads` flag at creation time:
+
+```bash
+swamp vault create local_encryption my-vault --audit-reads
+```
+
+Existing vaults can enable audit reads by editing their YAML config with
+`swamp vault edit my-vault` and adding `auditReads: true`.
+
+### How It Works
+
+When `auditReads` is enabled on a vault:
+
+1. `VaultService.get()` writes an audit entry after each successful read
+2. Entries are appended to date-partitioned JSONL files:
+   `.swamp/audit/vault-reads-YYYY-MM-DD.jsonl`
+3. Audit writes are awaited but wrapped in try/catch — they never block or fail
+   a secret read
+4. All read paths are covered: CLI (`vault read-secret`, `vault inspect`), model
+   method execution, and CEL expression evaluation
+
+### Audit Entry Fields
+
+Each entry captures:
+
+- `timestamp` — ISO-8601 when the read occurred
+- `vaultName` — which vault was read
+- `vaultType` — the provider type (e.g. `local_encryption`, `@swamp/aws-sm`)
+- `secretKey` — which secret was accessed
+- `callerContext` — who/what initiated the read (e.g. `cli:vault-read-secret`,
+  `model:mytype/myid:exec`, `unknown`)
+
+Secret values are never recorded.
+
+### Querying the Trail
+
+```bash
+# Recent reads (last 7 days)
+swamp vault audit-trail
+
+# Filter by vault and key
+swamp vault audit-trail --vault my-vault --key API_KEY
+
+# Time range
+swamp vault audit-trail --since 2026-07-01 --until 2026-07-10
+
+# JSON output
+swamp vault audit-trail --vault my-vault --json --limit 50
+```
+
+### Architecture
+
+- **Value object**: `VaultAuditEntry` (`src/domain/vaults/vault_audit_entry.ts`)
+- **Repository interface**: `VaultAuditRepository`
+  (`src/domain/vaults/vault_audit_repository.ts`)
+- **Infrastructure**: `JsonlVaultAuditRepository` — follows the established
+  `JsonlAuditRepository` pattern with date-partitioned JSONL files under
+  `.swamp/audit/`
+- **Interception**: `VaultService` stores `auditReads` flags per vault name.
+  `setAuditRepository()` injects the repository post-construction, avoiding
+  changes to the ~20 `fromRepository()` call sites
+
+### Provider-Native Logs
+
+For provider backends with their own access logs (AWS Secrets
+Manager → CloudTrail, Azure Key Vault → Azure Monitor), swamp's native audit
+trail records the swamp-level access. Surfacing/normalizing provider-native logs
+is a separate feature.
 
 ## Sensitive Field Marking (Implemented)
 

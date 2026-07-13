@@ -22,6 +22,7 @@ import { createVaultRefreshOptions } from "../../infrastructure/vaults/vault_ref
 import { createVaultSecretRead } from "../../domain/events/types.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
+import { JsonlVaultAuditRepository } from "../../infrastructure/persistence/jsonl_vault_audit_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
 
@@ -75,7 +76,10 @@ export function createVaultReadSecretDeps(
         repoDir,
         undefined,
         createVaultRefreshOptions(),
-      );
+      ).then((svc) => {
+        svc.setAuditRepository(new JsonlVaultAuditRepository(repoDir));
+        return svc;
+      });
     }
     return vaultServicePromise;
   };
@@ -88,7 +92,7 @@ export function createVaultReadSecretDeps(
     },
     readSecret: async (vaultName, secretKey) => {
       const svc = await getVaultService();
-      return await svc.get(vaultName, secretKey);
+      return await svc.get(vaultName, secretKey, "cli:vault-read-secret");
     },
     publishSecretRead: async (vaultId, vaultType, vaultName, secretKey) => {
       const event = createVaultSecretRead(

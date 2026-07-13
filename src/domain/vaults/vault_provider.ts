@@ -82,4 +82,6 @@ export interface VaultConfiguration {
   type: string;
   /** Provider-specific configuration */
   config: Record<string, unknown>;
+  /** When true, secret reads are logged to the vault audit trail */
+  auditReads?: boolean;
 }

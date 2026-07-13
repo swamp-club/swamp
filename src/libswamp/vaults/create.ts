@@ -56,6 +56,7 @@ export interface VaultCreateInput {
   name: string;
   config?: Record<string, unknown>;
   repoDir: string;
+  auditReads?: boolean;
 }
 
 /** Dependencies for the vault create operation. */
@@ -208,6 +209,7 @@ export async function* vaultCreate(
         input.name,
         input.vaultType,
         providerConfig,
+        input.auditReads,
       );
       await deps.save(vaultConfig);
 

@@ -71,6 +71,10 @@ export const vaultCreateCommand = new Command()
     "--config <json:string>",
     "Provider configuration as JSON",
   )
+  .option(
+    "--audit-reads",
+    "Enable read access audit trail for this vault",
+  )
   .action(
     async function (
       options: AnyOptions,
@@ -121,6 +125,7 @@ export const vaultCreateCommand = new Command()
           name: vaultName,
           config,
           repoDir,
+          auditReads: options.auditReads,
         }),
         renderer.handlers(),
       );
