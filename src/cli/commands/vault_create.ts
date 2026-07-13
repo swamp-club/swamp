@@ -73,7 +73,7 @@ export const vaultCreateCommand = new Command()
   )
   .option(
     "--audit-reads",
-    "Enable read access audit trail for this vault",
+    "Enable read access audit trail for this vault (can also be set later with vault edit)",
   )
   .action(
     async function (

@@ -41,30 +41,24 @@ export class JsonlVaultAuditRepository implements VaultAuditRepository {
   }
 
   async append(entry: VaultAuditEntry): Promise<void> {
+    await ensureDir(this.baseDir);
+
+    const path = vaultAuditFilePathForTimestamp(
+      this.baseDir,
+      entry.timestamp,
+    );
+    const line = JSON.stringify(vaultAuditEntryToData(entry)) + "\n";
+
+    const file = await Deno.open(path, {
+      write: true,
+      create: true,
+      append: true,
+    });
     try {
-      await ensureDir(this.baseDir);
-
-      const path = vaultAuditFilePathForTimestamp(
-        this.baseDir,
-        entry.timestamp,
-      );
-      const line = JSON.stringify(vaultAuditEntryToData(entry)) + "\n";
-
-      const file = await Deno.open(path, {
-        write: true,
-        create: true,
-        append: true,
-      });
-      try {
-        const encoder = new TextEncoder();
-        await file.write(encoder.encode(line));
-      } finally {
-        file.close();
-      }
-    } catch (error) {
-      if (Deno.env.get("SWAMP_DEBUG")) {
-        console.error("[VaultAudit] Failed to append:", error);
-      }
+      const encoder = new TextEncoder();
+      await file.write(encoder.encode(line));
+    } finally {
+      file.close();
     }
   }
 

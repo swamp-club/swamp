@@ -25,11 +25,13 @@ import type {
 import { JsonlVaultAuditRepository } from "../../infrastructure/persistence/jsonl_vault_audit_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
+import { validationFailed } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
 export interface VaultAuditTrailData {
   entries: VaultAuditEntry[];
-  totalCount: number;
+  returnedCount: number;
+  truncated: boolean;
 }
 
 export type VaultAuditTrailEvent =
@@ -65,6 +67,7 @@ export function createVaultAuditTrailDeps(
 
 const DEFAULT_LOOKBACK_DAYS = 7;
 const DEFAULT_LIMIT = 100;
+const MAX_RANGE_DAYS = 365;
 
 export async function* vaultAuditTrail(
   ctx: LibSwampContext,
@@ -85,20 +88,38 @@ export async function* vaultAuditTrail(
       const until = input.until ?? now;
       const limit = input.limit ?? DEFAULT_LIMIT;
 
+      const rangeDays = Math.ceil(
+        (until.getTime() - since.getTime()) / (24 * 60 * 60 * 1000),
+      );
+      if (rangeDays > MAX_RANGE_DAYS) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            `Date range exceeds ${MAX_RANGE_DAYS} days (${rangeDays} days requested). Narrow the --since/--until range.`,
+          ),
+        };
+        return;
+      }
+
       ctx.logger
         .debug`Querying vault audit trail: vault=${input.vaultName}, key=${input.secretKey}, since=${since.toISOString()}, until=${until.toISOString()}, limit=${limit}`;
 
+      const fetchLimit = limit + 1;
       const entries = await deps.findByTimeRange(since, until, {
         vaultName: input.vaultName,
         secretKey: input.secretKey,
-        limit,
+        limit: fetchLimit,
       });
+
+      const truncated = entries.length > limit;
+      const returnedEntries = truncated ? entries.slice(0, limit) : entries;
 
       yield {
         kind: "completed",
         data: {
-          entries,
-          totalCount: entries.length,
+          entries: returnedEntries,
+          returnedCount: returnedEntries.length,
+          truncated,
         },
       };
     })(),

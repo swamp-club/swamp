@@ -57,9 +57,18 @@ export const vaultAuditTrailCommand = new Command()
   )
   .option("--vault <name:string>", "Filter by vault name")
   .option("--key <key:string>", "Filter by secret key")
-  .option("--since <date:string>", "Start date (ISO-8601 or YYYY-MM-DD)")
-  .option("--until <date:string>", "End date (ISO-8601 or YYYY-MM-DD)")
-  .option("--limit <count:integer>", "Maximum number of entries to return")
+  .option(
+    "--since <date:string>",
+    "Start date, e.g. 2026-07-01 or 2026-07-01T00:00:00Z [default: 7 days ago]",
+  )
+  .option(
+    "--until <date:string>",
+    "End date, e.g. 2026-07-01 or 2026-07-01T00:00:00Z [default: now]",
+  )
+  .option(
+    "--limit <count:integer>",
+    "Maximum number of entries to return [default: 100]",
+  )
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [
       "vault",

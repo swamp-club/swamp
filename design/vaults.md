@@ -335,8 +335,11 @@ When `auditReads` is enabled on a vault:
    `.swamp/audit/vault-reads-YYYY-MM-DD.jsonl`
 3. Audit writes are awaited but wrapped in try/catch — they never block or fail
    a secret read
-4. All read paths are covered: CLI (`vault read-secret`, `vault inspect`), model
-   method execution, and CEL expression evaluation
+
+Currently audited paths: CLI `vault read-secret` and `vault inspect`. Model
+method execution, CEL expression evaluation, serve, and token operations create
+their own `VaultService` instances without audit wiring — these are planned for
+follow-up coverage.
 
 ### Audit Entry Fields
 
