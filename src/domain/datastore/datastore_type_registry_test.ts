@@ -290,3 +290,29 @@ Deno.test("DatastoreTypeRegistry.resetLoadedFlag re-runs the loader on next ensu
   await registry.ensureLoaded();
   assertEquals(loadCount, 2);
 });
+
+Deno.test("DatastoreTypeRegistry.invalidateType: removes lazy type", () => {
+  const registry = new DatastoreTypeRegistry();
+  registry.registerLazy(createLazyDatastoreEntry("@myorg/postgres"));
+  assertEquals(registry.has("@myorg/postgres"), true);
+
+  registry.invalidateType("@myorg/postgres");
+  assertEquals(registry.has("@myorg/postgres"), false);
+});
+
+Deno.test("DatastoreTypeRegistry.invalidateType: removes promoted type", () => {
+  const registry = new DatastoreTypeRegistry();
+  registry.registerLazy(createLazyDatastoreEntry("@myorg/postgres"));
+  registry.promoteFromLazy(createDatastoreTypeInfo("@myorg/postgres"));
+  assertEquals(registry.get("@myorg/postgres") !== undefined, true);
+
+  registry.invalidateType("@myorg/postgres");
+  assertEquals(registry.get("@myorg/postgres"), undefined);
+  assertEquals(registry.has("@myorg/postgres"), false);
+});
+
+Deno.test("DatastoreTypeRegistry.invalidateType: no-op for unknown type", () => {
+  const registry = new DatastoreTypeRegistry();
+  registry.invalidateType("@myorg/nonexistent");
+  assertEquals(registry.has("@myorg/nonexistent"), false);
+});

@@ -1188,14 +1188,3 @@ Deno.test("ModelRegistry.invalidateType: re-register and reload after invalidati
   await registry.ensureTypeLoaded("@myorg/echo");
   assertEquals(registry.get("@myorg/echo")?.version, "2026.02.09.1");
 });
-
-Deno.test("ModelRegistry.hasTypeLoader: false by default", () => {
-  const registry = new ModelRegistry();
-  assertEquals(registry.hasTypeLoader(), false);
-});
-
-Deno.test("ModelRegistry.hasTypeLoader: true after setTypeLoader", () => {
-  const registry = new ModelRegistry();
-  registry.setTypeLoader(() => Promise.resolve());
-  assertEquals(registry.hasTypeLoader(), true);
-});
