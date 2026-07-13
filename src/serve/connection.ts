@@ -54,6 +54,7 @@ import {
   handleModelValidate,
 } from "./handlers/model_handlers.ts";
 import {
+  handleWorkflowApprovals,
   handleWorkflowApprove,
   handleWorkflowGet,
   handleWorkflowHistoryGet,
@@ -327,6 +328,11 @@ const WorkflowSearchRequestSchema = z.object({
   payload: z.object({
     query: z.string().optional(),
   }).optional(),
+});
+
+const WorkflowApprovalsRequestSchema = z.object({
+  type: z.literal("workflow.approvals"),
+  id: z.string().min(1).max(256),
 });
 
 const VaultGetRequestSchema = z.object({
@@ -618,6 +624,8 @@ const WorkflowResumeRequestSchema = z.object({
     workflowIdOrName: z.string(),
     runId: z.string().optional(),
     inputs: z.record(z.string(), z.unknown()).optional(),
+    traceparent: z.string().optional(),
+    tracestate: z.string().optional(),
   }),
 });
 
@@ -833,6 +841,7 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   WorkflowHistorySearchRequestSchema,
   WorkflowRunSearchRequestSchema,
   WorkflowSchemaRequestSchema,
+  WorkflowApprovalsRequestSchema,
   WorkflowApproveRequestSchema,
   WorkflowRejectRequestSchema,
   WorkflowResumeRequestSchema,
@@ -1145,6 +1154,15 @@ export function handleMessage(
         controller,
         principal,
         request.payload,
+      );
+      break;
+    case "workflow.approvals":
+      task = handleWorkflowApprovals(
+        socket,
+        ctx,
+        request.id,
+        controller,
+        principal,
       );
       break;
     case "vault.get":

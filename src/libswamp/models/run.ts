@@ -207,6 +207,10 @@ export interface ModelMethodRunDeps {
   ) => Promise<void>;
   getDefinitionPath?: (type: ModelType, id: string) => string;
   runTracker?: RunTrackerRepository;
+  workflowRepo?:
+    import("../../domain/workflows/repositories.ts").WorkflowRepository;
+  workflowRunRepo?:
+    import("../../domain/workflows/repositories.ts").WorkflowRunRepository;
 }
 
 /**
@@ -665,6 +669,24 @@ export async function* modelMethodRun(
                 commonDeps,
                 repoDir: deps.repoDir,
               });
+          }
+
+          if (
+            "workflowGateService" in executionService &&
+            !executionService.workflowGateService &&
+            deps.workflowRepo &&
+            deps.workflowRunRepo
+          ) {
+            const { createWorkflowGateService } = await import(
+              "./workflow_gate.ts"
+            );
+            (executionService as {
+              workflowGateService?:
+                import("../../domain/models/workflow_gate_service.ts").WorkflowGateService;
+            }).workflowGateService = createWorkflowGateService(
+              deps.workflowRepo,
+              deps.workflowRunRepo,
+            );
           }
 
           // Start heartbeat inside the try so it's always cleaned up on error.

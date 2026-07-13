@@ -130,5 +130,7 @@ export async function createWorkerModelRunDeps(
         `${id}.yaml`,
       );
     },
+    workflowRepo: repoContext.workflowRepo,
+    workflowRunRepo: repoContext.workflowRunRepo,
   };
 }

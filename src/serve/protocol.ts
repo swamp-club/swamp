@@ -325,6 +325,8 @@ export interface WorkflowResumePayload {
   workflowIdOrName: string;
   runId?: string;
   inputs?: Record<string, unknown>;
+  traceparent?: string;
+  tracestate?: string;
 }
 
 // ── Vault operations ─────────────────────────────────────────────────
@@ -508,6 +510,7 @@ export type ServerRequest =
     payload: WorkflowSchemaPayload;
   }
   | { type: "workflow.search"; id: string; payload?: WorkflowSearchPayload }
+  | { type: "workflow.approvals"; id: string }
   | { type: "workflow.approve"; id: string; payload: WorkflowApprovePayload }
   | { type: "workflow.reject"; id: string; payload: WorkflowRejectPayload }
   | { type: "workflow.resume"; id: string; payload: WorkflowResumePayload }
@@ -748,6 +751,10 @@ export interface WorkflowSchemaResponse {
 }
 
 export interface WorkflowSearchResponse {
+  data: Record<string, unknown>;
+}
+
+export interface WorkflowApprovalsResponse {
   data: Record<string, unknown>;
 }
 
@@ -1011,6 +1018,11 @@ export type ServerMessage =
   }
   | { type: "workflow.schema"; id: string; payload: WorkflowSchemaResponse }
   | { type: "workflow.search"; id: string; payload: WorkflowSearchResponse }
+  | {
+    type: "workflow.approvals";
+    id: string;
+    payload: WorkflowApprovalsResponse;
+  }
   | { type: "workflow.approve"; id: string; payload: WorkflowApproveResponse }
   | { type: "workflow.reject"; id: string; payload: WorkflowRejectResponse }
   | { type: "vault.get"; id: string; payload: VaultGetResponse }

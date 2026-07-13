@@ -27,7 +27,10 @@ import type {
   MethodDefinition,
   MethodResult,
   ModelDefinition,
+  WorkflowGateApproveOptions,
+  WorkflowGateRejectOptions,
 } from "./model.ts";
+import type { WorkflowGateService } from "./workflow_gate_service.ts";
 import {
   createFileWriterFactory,
   createResourceDeleter,
@@ -89,6 +92,7 @@ export class InProcessExecutor {
         callerContext: MethodContext,
       ) => ReturnType<NonNullable<MethodContext["runModel"]>>;
     },
+    private readonly workflowGateService?: WorkflowGateService,
   ) {}
 
   async execute(
@@ -184,6 +188,21 @@ export class InProcessExecutor {
       const callerCtx = this.contextWithWriters;
       this.contextWithWriters.runModel = (options) =>
         svc.invoke(options, callerCtx);
+    }
+
+    if (this.workflowGateService) {
+      const gateSvc = this.workflowGateService;
+      const callerInfo = {
+        definitionName: this.definition.name,
+        methodName: this.methodName,
+      };
+      const { signal, logger } = this.context;
+      this.contextWithWriters.approveWorkflowGate = (
+        options: WorkflowGateApproveOptions,
+      ) => gateSvc.approve(options, callerInfo, signal, logger);
+      this.contextWithWriters.rejectWorkflowGate = (
+        options: WorkflowGateRejectOptions,
+      ) => gateSvc.reject(options, callerInfo, signal, logger);
     }
 
     const savedTraceparent = Deno.env.get("TRACEPARENT");

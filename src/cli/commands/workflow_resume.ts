@@ -22,6 +22,8 @@ import {
   createContext,
   type GlobalOptions,
   resolveRepoDir,
+  resolveTraceparent,
+  resolveTracestate,
 } from "../context.ts";
 import {
   acquireModelLocks,
@@ -54,6 +56,7 @@ import {
 } from "../../libswamp/mod.ts";
 import type { WorkflowRunEvent } from "../../libswamp/mod.ts";
 import { createEphemeralStore } from "../../infrastructure/persistence/ephemeral_store.ts";
+import { withGeneratorTraceContext } from "../../infrastructure/tracing/mod.ts";
 import { GIT_SHA } from "./version.ts";
 import {
   deepMerge,
@@ -108,7 +111,15 @@ export const workflowResumeCommand = withRemoteOptions(
     )
     .option("--stdin", "Read override inputs from stdin (piped data)", {
       default: false,
-    }),
+    })
+    .option(
+      "--traceparent <value:string>",
+      "W3C traceparent for per-invocation trace context (env: TRACEPARENT)",
+    )
+    .option(
+      "--tracestate <value:string>",
+      "W3C tracestate for per-invocation trace context (env: TRACESTATE)",
+    ),
 ).action(
   async function (
     options: AnyOptions,
@@ -167,6 +178,12 @@ export const workflowResumeCommand = withRemoteOptions(
             inputs: Object.keys(resumeInputs).length > 0
               ? resumeInputs
               : undefined,
+            traceparent: resolveTraceparent(
+              options.traceparent as string | undefined,
+            ),
+            tracestate: resolveTracestate(
+              options.tracestate as string | undefined,
+            ),
           },
         }) as AsyncIterable<WorkflowRunEvent>,
         renderer.handlers(),
@@ -355,18 +372,31 @@ export const workflowResumeCommand = withRemoteOptions(
       isAuthenticated: isAuthenticated(),
     });
 
+    const traceparent = resolveTraceparent(
+      options.traceparent as string | undefined,
+    );
+    const tracestate = resolveTracestate(
+      options.tracestate as string | undefined,
+    );
+
     const resumeGenerator = async function* (): AsyncGenerator<
       WorkflowRunEvent
     > {
-      for await (
-        const event of service.resume(workflowName, run.id, {
-          signal: AbortSignal.timeout(600_000),
-          swampSha: GIT_SHA,
-          inputs: resumeInputs,
-        })
-      ) {
-        yield mapWorkflowExecutionEvent(event, runRepo);
-      }
+      yield* withGeneratorTraceContext(
+        traceparent,
+        tracestate,
+        (async function* () {
+          for await (
+            const event of service.resume(workflowName, run.id, {
+              signal: AbortSignal.timeout(600_000),
+              swampSha: GIT_SHA,
+              inputs: resumeInputs,
+            })
+          ) {
+            yield mapWorkflowExecutionEvent(event, runRepo);
+          }
+        })(),
+      );
     };
 
     try {

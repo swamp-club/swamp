@@ -63,6 +63,8 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     relativePath: "swamp/references/data/references/troubleshooting.md",
     name: "swamp",
   },
+  // architecture
+  { relativePath: "swamp/references/architecture/guide.md", name: "swamp" },
   // model
   { relativePath: "swamp/references/model/guide.md", name: "swamp" },
   { relativePath: "swamp/references/model/reference.md", name: "swamp" },
@@ -88,6 +90,10 @@ const BUNDLED_SKILLS: SkillInfo[] = [
   },
   {
     relativePath: "swamp/references/model/references/outputs.md",
+    name: "swamp",
+  },
+  {
+    relativePath: "swamp/references/model/references/disposable-instances.md",
     name: "swamp",
   },
   {
@@ -131,6 +137,10 @@ const BUNDLED_SKILLS: SkillInfo[] = [
   { relativePath: "swamp/references/repo/reference.md", name: "swamp" },
   {
     relativePath: "swamp/references/repo/references/ci-integration.md",
+    name: "swamp",
+  },
+  {
+    relativePath: "swamp/references/repo/references/namespaces.md",
     name: "swamp",
   },
   {
@@ -352,6 +362,8 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     relativePath: "swamp/references/troubleshooting/references/tracing.md",
     name: "swamp",
   },
+  // serve
+  { relativePath: "swamp/references/serve/guide.md", name: "swamp" },
   // swamp share guide area
   {
     relativePath: "swamp/references/share/guide.md",

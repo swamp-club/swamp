@@ -287,6 +287,10 @@ export interface StepExecutionContext {
   runTracker?: RunTrackerRepository;
   ephemeralRepo?: UnifiedDataRepository;
   ephemeralCatalog?: CatalogStore;
+  workflowRepo?: WorkflowRepository;
+  workflowRunRepo?: WorkflowRunRepository;
+  workflowGateService?:
+    import("../models/workflow_gate_service.ts").WorkflowGateService;
 }
 
 /**
@@ -540,6 +544,14 @@ export class DefaultStepExecutor implements StepExecutor {
         },
         repoDir: ctx.repoDir,
       });
+    }
+
+    if (
+      executionService instanceof DefaultMethodExecutionService &&
+      !executionService.workflowGateService &&
+      ctx.workflowGateService
+    ) {
+      executionService.workflowGateService = ctx.workflowGateService;
     }
 
     // Resolve every available expression (self.* from the forEach variable,
@@ -1437,6 +1449,9 @@ export class WorkflowExecutionService {
   private readonly workflowReportRunner = new WorkflowReportRunner();
   /** Evaluator for sub-workflow input expressions. Per-instance, not per-call. */
   private readonly expressionEvaluator: ExpressionEvaluationService;
+
+  workflowGateService?:
+    import("../models/workflow_gate_service.ts").WorkflowGateService;
 
   constructor(
     private readonly workflowRepo: WorkflowRepository,
@@ -2610,6 +2625,9 @@ export class WorkflowExecutionService {
           runTracker: this.runTracker,
           ephemeralRepo: this.ephemeralRepo,
           ephemeralCatalog: this.ephemeralCatalog,
+          workflowRepo: this.workflowRepo,
+          workflowRunRepo: this.runRepo,
+          workflowGateService: this.workflowGateService,
         };
         return this.executor.execute(step, ctx);
       });

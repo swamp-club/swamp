@@ -121,5 +121,7 @@ export async function createServerTokenRunDeps(
         `${id}.yaml`,
       );
     },
+    workflowRepo: repoContext.workflowRepo,
+    workflowRunRepo: repoContext.workflowRunRepo,
   };
 }
