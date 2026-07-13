@@ -28,6 +28,11 @@ Deno.test("shouldShowAuthNudge: returns true when firstRunShown is false and no 
   assertEquals(shouldShowAuthNudge({ firstRunShown: false }), true);
 });
 
+Deno.test("shouldShowAuthNudge: returns false for existing user within 24 hours missing firstRunShown", () => {
+  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  assertEquals(shouldShowAuthNudge({ lastShown: oneHourAgo }), false);
+});
+
 Deno.test("shouldShowAuthNudge: returns true when lastShown is over 24 hours ago", () => {
   const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
   assertEquals(
@@ -56,10 +61,15 @@ Deno.test("isFirstRunNudge: returns true when firstRunShown is undefined", () =>
   assertEquals(isFirstRunNudge({}), true);
 });
 
-Deno.test("isFirstRunNudge: returns true when firstRunShown is false", () => {
+Deno.test("isFirstRunNudge: returns true when firstRunShown is false and no lastShown", () => {
   assertEquals(isFirstRunNudge({ firstRunShown: false }), true);
 });
 
 Deno.test("isFirstRunNudge: returns false when firstRunShown is true", () => {
   assertEquals(isFirstRunNudge({ firstRunShown: true }), false);
+});
+
+Deno.test("isFirstRunNudge: returns false for existing user missing firstRunShown field", () => {
+  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  assertEquals(isFirstRunNudge({ lastShown: oneHourAgo }), false);
 });

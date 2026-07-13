@@ -39,11 +39,10 @@ export interface AuthNudgeState {
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 export function isFirstRunNudge(state: AuthNudgeState): boolean {
-  return !state.firstRunShown;
+  return !state.firstRunShown && !state.lastShown;
 }
 
 export function shouldShowAuthNudge(state: AuthNudgeState): boolean {
-  if (!state.firstRunShown) return true;
   if (!state.lastShown) return true;
   const lastShown = new Date(state.lastShown).getTime();
   return Date.now() - lastShown >= ONE_DAY_MS;
