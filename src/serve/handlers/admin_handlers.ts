@@ -612,17 +612,18 @@ export async function handleExtensionRm(
     }, ctx)
   ) return;
 
-  const repoDir = ctx.repoDir;
-  const markerRepo = new RepoMarkerRepository();
-  const marker = await markerRepo.read(RepoPath.create(repoDir));
-  const modelsDir = resolveModelsDir(marker);
-  const absoluteModelsDir = isAbsolute(modelsDir)
-    ? modelsDir
-    : resolve(repoDir, modelsDir);
-  const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
-
-  const deps = await createExtensionRmDeps(repoDir, lockfilePath);
+  let deps: Awaited<ReturnType<typeof createExtensionRmDeps>> | undefined;
   try {
+    const repoDir = ctx.repoDir;
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(RepoPath.create(repoDir));
+    const modelsDir = resolveModelsDir(marker);
+    const absoluteModelsDir = isAbsolute(modelsDir)
+      ? modelsDir
+      : resolve(repoDir, modelsDir);
+    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+
+    deps = await createExtensionRmDeps(repoDir, lockfilePath);
     const libCtx = createLibSwampContext();
 
     let result: Record<string, unknown> | undefined;
@@ -653,7 +654,7 @@ export async function handleExtensionRm(
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "extension_rm_failed", message);
   } finally {
-    deps.repository.close();
+    deps?.repository.close();
   }
 }
 
@@ -700,7 +701,7 @@ export async function handleExtensionOutdated(
         updating: () => {},
         "orphans-pruned": () => {},
         completed: (e) => {
-          result = e as unknown as Record<string, unknown>;
+          result = e.data as unknown as Record<string, unknown>;
         },
         error: (e) => {
           throw new Error(e.error.message);
@@ -978,20 +979,22 @@ export async function handleDoctorExtensions(
     }, ctx)
   ) return;
 
-  const repoDir = ctx.repoDir;
-  const repoPath = RepoPath.create(repoDir);
-  const markerRepo = new RepoMarkerRepository();
-  const marker = await markerRepo.read(repoPath);
-  const modelsDir = resolveModelsDir(marker);
-  const absoluteModelsDir = isAbsolute(modelsDir)
-    ? modelsDir
-    : resolve(repoDir, modelsDir);
-  const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
-
-  const catalogDbPath = swampPath(repoDir, "_extension_catalog.db");
-  const sharedCatalog = new ExtensionCatalogStore(catalogDbPath);
-
+  const logger = getSwampLogger(["serve", "doctor", "extensions"]);
+  let sharedCatalog: ExtensionCatalogStore | undefined;
   try {
+    const repoDir = ctx.repoDir;
+    const repoPath = RepoPath.create(repoDir);
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(repoPath);
+    const modelsDir = resolveModelsDir(marker);
+    const absoluteModelsDir = isAbsolute(modelsDir)
+      ? modelsDir
+      : resolve(repoDir, modelsDir);
+    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+
+    const catalogDbPath = swampPath(repoDir, "_extension_catalog.db");
+    sharedCatalog = new ExtensionCatalogStore(catalogDbPath);
+
     const localManifestIdentity = readLocalManifestIdentity(repoDir);
     let reconcileTransitions: readonly ReconcileTransition[] = [];
     try {
@@ -1015,8 +1018,8 @@ export async function handleDoctorExtensions(
       });
       const result = await reconciler.execute();
       reconcileTransitions = result.transitions;
-    } catch {
-      // Best-effort — matching CLI pattern
+    } catch (reconcileError) {
+      logger.debug`Reconciliation failed (best-effort): ${reconcileError}`;
     }
 
     const registries: ReadonlyArray<DoctorRegistryDeps> = [
@@ -1059,7 +1062,7 @@ export async function handleDoctorExtensions(
         const aggLockfileRepo = await LockfileRepository.create(lockfilePath);
         const localIdentity = readLocalManifestIdentity(repoDir);
         const repo = new ExtensionRepository({
-          catalog: sharedCatalog,
+          catalog: sharedCatalog!,
           lockfileRepository: aggLockfileRepo,
           repoRoot: repoDir,
           localManifestIdentity: localIdentity,
@@ -1106,7 +1109,7 @@ export async function handleDoctorExtensions(
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "doctor_extensions_failed", message);
   } finally {
-    sharedCatalog.close();
+    sharedCatalog?.close();
   }
 }
 
