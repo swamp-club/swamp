@@ -27,6 +27,7 @@ import {
   WorkflowExecutionService,
 } from "./execution_service.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
+import { runFileSink } from "../../infrastructure/logging/logger.ts";
 import { reportRegistry } from "../reports/report_registry.ts";
 import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
@@ -3721,6 +3722,120 @@ Deno.test("resume merges override inputs over the suspended run's inputs", async
       JSON.stringify(persisted!.resumeInputs).includes("tskey-abc123"),
       false,
     );
+  });
+});
+
+// Regression for #1118: the per-run workflow log file is opened by
+// runFileSink.register() and must be released even when a streaming consumer
+// abandons the event generator early (e.g. a WebSocket client that disconnects
+// mid-run, breaking the `for await` loop). The cleanup lives in a `finally`, so
+// generator.return() unwinds it. Asserting on runFileSink.activeCount rather
+// than raw OS file descriptors keeps the test portable across platforms; a
+// before/after delta (not an absolute count) tolerates handles registered by
+// other tests sharing the process-wide singleton.
+Deno.test("run() releases the log file sink when the consumer abandons the stream early", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const baseline = runFileSink.activeCount;
+    let sinkOpenAtStarted = false;
+    for await (const event of service.run(workflow.name)) {
+      if (event.kind === "started") {
+        // register() runs before the "started" event, so the log sink is open.
+        sinkOpenAtStarted = runFileSink.activeCount === baseline + 1;
+        break; // abandon the generator mid-run (mirrors a client disconnect)
+      }
+    }
+
+    assertEquals(sinkOpenAtStarted, true);
+    // The finally must have unregistered the handle despite the early break.
+    assertEquals(runFileSink.activeCount, baseline);
+  });
+});
+
+// Regression for #1118: resume() has the same log-sink lifecycle as run(). Its
+// try/finally must open before the "started" yield so that a consumer which
+// disconnects right after "started" still releases the sink.
+Deno.test("resume() releases the log file sink when the consumer abandons the stream early", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    class NoopExecutor implements StepExecutor {
+      execute(_step: Step, _ctx: StepExecutionContext): Promise<unknown> {
+        return Promise.resolve({ executed: true });
+      }
+    }
+
+    // A manual-approval gate suspends the run so it can be resumed.
+    const workflow = Workflow.create({
+      name: "gated-workflow",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("Approve before continuing"),
+            }),
+            Step.create({
+              name: "after",
+              task: StepTask.model("test-model", "run"),
+              dependsOn: [
+                { step: "gate", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new NoopExecutor(),
+      undefined,
+      catalogStore,
+    );
+
+    const suspended = await service.execute(workflow.name);
+    assertEquals(suspended.status, "suspended");
+
+    // Approve the gate so resume() proceeds past it.
+    const toApprove = await runRepo.findById(workflow.id, suspended.id);
+    const waiting = toApprove!.findWaitingApprovalStep()!;
+    toApprove!.getJob(waiting.jobName)!.getStep(waiting.stepName)!.succeed();
+    await runRepo.save(workflow.id, toApprove!);
+
+    const baseline = runFileSink.activeCount;
+    let sinkOpenAtStarted = false;
+    for await (const event of service.resume(workflow.name, suspended.id)) {
+      if (event.kind === "started") {
+        sinkOpenAtStarted = runFileSink.activeCount === baseline + 1;
+        break; // abandon the generator right after "started"
+      }
+    }
+
+    assertEquals(sinkOpenAtStarted, true);
+    assertEquals(runFileSink.activeCount, baseline);
   });
 });
 
