@@ -34,6 +34,7 @@ import {
   createCatalogStore,
   namespaceFromResolver,
 } from "../../infrastructure/persistence/repository_factory.ts";
+import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError } from "../errors.ts";
@@ -92,12 +93,19 @@ export interface ModelEvaluateDeps {
 export function createModelEvaluateDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
+  injectedDataRepo?: FileSystemUnifiedDataRepository,
+  injectedCatalogStore?: CatalogStore,
 ): ModelEvaluateDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
   const definitionRepo = new YamlDefinitionRepository(repoDir);
-  const catalogStore = createCatalogStore(repoDir, datastoreResolver);
-  const dataRepo = new FileSystemUnifiedDataRepository(
+  // When a shared catalog store / data repo is injected (e.g. by serve
+  // handlers passing the process-scoped RepositoryContext), reuse it and skip
+  // createCatalogStore so we don't open a new file-based SQLite store — and
+  // leak its 3 FDs — on every request.
+  const catalogStore = injectedCatalogStore ??
+    createCatalogStore(repoDir, datastoreResolver);
+  const dataRepo = injectedDataRepo ?? new FileSystemUnifiedDataRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),
     catalogStore,

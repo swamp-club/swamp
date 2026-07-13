@@ -23,6 +23,7 @@ import { ModelType } from "../../domain/models/model_type.ts";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
+  createModelEvaluateDeps,
   isModelEvaluateAllData,
   modelEvaluate,
   type ModelEvaluateAllData,
@@ -30,6 +31,63 @@ import {
   type ModelEvaluateEvent,
   type ModelEvaluateItemData,
 } from "./evaluate.ts";
+import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
+import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import { catalogDbPath } from "../../infrastructure/persistence/repository_factory.ts";
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    await fn(dir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native sqlite handles
+      // yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+async function catalogDbExists(repoDir: string): Promise<boolean> {
+  try {
+    await Deno.lstat(catalogDbPath(repoDir));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+Deno.test(
+  "createModelEvaluateDeps: reuses an injected store and opens no new catalog db",
+  async () => {
+    await withTempDir(async (dir) => {
+      const injected = new FileSystemUnifiedDataRepository(
+        dir,
+        undefined,
+        new CatalogStore(":memory:"),
+      );
+      createModelEvaluateDeps(
+        dir,
+        undefined,
+        injected,
+        new CatalogStore(":memory:"),
+      );
+      assertEquals(await catalogDbExists(dir), false);
+    });
+  },
+);
+
+Deno.test(
+  "createModelEvaluateDeps: opens a file-based catalog db when no store is injected",
+  async () => {
+    await withTempDir(async (dir) => {
+      createModelEvaluateDeps(dir);
+      assertEquals(await catalogDbExists(dir), true);
+    });
+  },
+);
 
 function makeDeps(
   overrides?: Partial<ModelEvaluateDeps>,

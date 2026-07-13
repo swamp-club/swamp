@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
+  createDataDeleteDeps,
   dataBatchDelete,
   type DataBatchDeleteEvent,
   dataBatchDeletePreview,
@@ -29,6 +30,58 @@ import {
   type DataDeleteEvent,
   dataDeletePreview,
 } from "./delete.ts";
+import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
+import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import { catalogDbPath } from "../../infrastructure/persistence/repository_factory.ts";
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    await fn(dir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native sqlite handles
+      // yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+async function catalogDbExists(repoDir: string): Promise<boolean> {
+  try {
+    await Deno.lstat(catalogDbPath(repoDir));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+Deno.test(
+  "createDataDeleteDeps: reuses an injected data repo and opens no new catalog db",
+  async () => {
+    await withTempDir(async (dir) => {
+      const injected = new FileSystemUnifiedDataRepository(
+        dir,
+        undefined,
+        new CatalogStore(":memory:"),
+      );
+      createDataDeleteDeps(dir, undefined, injected);
+      assertEquals(await catalogDbExists(dir), false);
+    });
+  },
+);
+
+Deno.test(
+  "createDataDeleteDeps: opens a file-based catalog db when no repo is injected",
+  async () => {
+    await withTempDir(async (dir) => {
+      createDataDeleteDeps(dir);
+      assertEquals(await catalogDbExists(dir), true);
+    });
+  },
+);
 
 function makeDeps(overrides: Partial<DataDeleteDeps> = {}): DataDeleteDeps {
   return {

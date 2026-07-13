@@ -104,19 +104,24 @@ export interface ModelDeleteDeps {
 export function createModelDeleteDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
+  injectedDataRepo?: FileSystemUnifiedDataRepository,
 ): ModelDeleteDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
   const definitionRepo = new YamlDefinitionRepository(repoDir);
   const workflowRepo = new YamlWorkflowRepository(repoDir);
-  const unifiedDataRepo = new FileSystemUnifiedDataRepository(
-    repoDir,
-    dsPath(SWAMP_SUBDIRS.data),
-    createCatalogStore(repoDir, datastoreResolver),
-    undefined,
-    undefined,
-    namespaceFromResolver(datastoreResolver),
-  );
+  // Reuse an injected shared data repo (e.g. serve's process-scoped
+  // RepositoryContext) so we don't open a new file-based catalog store — and
+  // leak its 3 FDs — on every request.
+  const unifiedDataRepo = injectedDataRepo ??
+    new FileSystemUnifiedDataRepository(
+      repoDir,
+      dsPath(SWAMP_SUBDIRS.data),
+      createCatalogStore(repoDir, datastoreResolver),
+      undefined,
+      undefined,
+      namespaceFromResolver(datastoreResolver),
+    );
   const outputRepo = new YamlOutputRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.outputs),
