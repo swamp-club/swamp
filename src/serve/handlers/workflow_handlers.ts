@@ -77,6 +77,10 @@ import { createEphemeralStore } from "../../infrastructure/persistence/ephemeral
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import {
+  extractTraceContext,
+  runWithParentTrace,
+} from "../../infrastructure/tracing/mod.ts";
+import {
   authorizeOrReject,
   type ConnectionContext,
   sanitizeErrorForClient,
@@ -849,18 +853,31 @@ export async function handleWorkflowResume(
       }
     };
 
-    try {
-      for await (const event of resumeGenerator()) {
-        if (socket.readyState !== WebSocket.OPEN) break;
-        const serialized = serializeEvent(
-          event as { kind: string; [key: string]: unknown },
-        );
-        send(socket, { type: "event", id: requestId, event: serialized });
+    const run_ = async () => {
+      try {
+        for await (const event of resumeGenerator()) {
+          if (socket.readyState !== WebSocket.OPEN) break;
+          const serialized = serializeEvent(
+            event as { kind: string; [key: string]: unknown },
+          );
+          send(socket, { type: "event", id: requestId, event: serialized });
+        }
+      } finally {
+        ephemeral.dispose();
       }
-    } finally {
-      ephemeral.dispose();
+      send(socket, { type: "done", id: requestId });
+    };
+
+    if (payload.traceparent) {
+      const headers: Record<string, string> = {
+        traceparent: payload.traceparent,
+      };
+      if (payload.tracestate) headers.tracestate = payload.tracestate;
+      const traceCtx = extractTraceContext(headers);
+      await runWithParentTrace(traceCtx, run_);
+    } else {
+      await run_();
     }
-    send(socket, { type: "done", id: requestId });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
