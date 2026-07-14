@@ -22,6 +22,7 @@ import {
   bundleNamespace,
   getSwampConfigDir,
   getSwampDataDir,
+  globalTelemetryDir,
   homeDirectory,
   homeDirectoryIsSet,
   SWAMP_DATA_DIR,
@@ -193,6 +194,35 @@ Deno.test("getSwampConfigDir throws when HOME is not set", () => {
       () => getSwampConfigDir(),
       Error,
       "HOME environment variable is not set",
+    );
+  } finally {
+    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
+    else Deno.env.delete("XDG_CONFIG_HOME");
+    if (originalHome) Deno.env.set("HOME", originalHome);
+    else Deno.env.delete("HOME");
+  }
+});
+
+Deno.test("globalTelemetryDir is the telemetry subdir under the config dir", () => {
+  const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
+  try {
+    Deno.env.set("XDG_CONFIG_HOME", "/custom/config");
+    assertPathEquals(globalTelemetryDir(), "/custom/config/swamp/telemetry");
+  } finally {
+    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
+    else Deno.env.delete("XDG_CONFIG_HOME");
+  }
+});
+
+Deno.test("globalTelemetryDir falls back to HOME/.config/swamp/telemetry", () => {
+  const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
+  const originalHome = Deno.env.get("HOME");
+  try {
+    Deno.env.delete("XDG_CONFIG_HOME");
+    Deno.env.set("HOME", "/home/testuser");
+    assertPathEquals(
+      globalTelemetryDir(),
+      "/home/testuser/.config/swamp/telemetry",
     );
   } finally {
     if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);

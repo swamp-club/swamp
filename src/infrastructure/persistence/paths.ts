@@ -280,3 +280,18 @@ export function getSwampConfigDir(): string {
   }
   return join(home, ".config", "swamp");
 }
+
+/**
+ * Returns the single, user-level telemetry spool directory.
+ *
+ * Telemetry is global (keyed to the user identity), not repo-scoped: every CLI
+ * invocation spools here regardless of whether it ran inside a swamp repo. This
+ * is the one spool — there is no repo-local telemetry directory.
+ *
+ * @returns The absolute path to `<config>/telemetry` (XDG-aware via
+ *   {@link getSwampConfigDir})
+ * @throws Error if HOME environment variable is not set
+ */
+export function globalTelemetryDir(): string {
+  return join(getSwampConfigDir(), SWAMP_SUBDIRS.telemetry);
+}

@@ -19,12 +19,7 @@
 
 import { Command } from "@cliffy/command";
 import { groupCommandAction } from "../group_action.ts";
-import {
-  createContext,
-  type GlobalOptions,
-  resolveRepoDir,
-} from "../context.ts";
-import { requireRepoMarker } from "../repo_context.ts";
+import { createContext, type GlobalOptions } from "../context.ts";
 import {
   consumeStream,
   createLibSwampContext,
@@ -39,10 +34,6 @@ export const telemetryStatsCommand = new Command()
   .description("View telemetry usage statistics")
   .example("View usage statistics", "swamp telemetry stats")
   .example("Last 7 days", "swamp telemetry stats --days 7")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
   .option("--days <days:number>", "Number of days to analyze", { default: 2 })
   .action(async function (options) {
     const cliCtx = createContext(options as GlobalOptions, [
@@ -51,12 +42,10 @@ export const telemetryStatsCommand = new Command()
     ]);
     cliCtx.logger.debug`Fetching telemetry stats`;
 
-    const { repoDir } = await requireRepoMarker(
-      resolveRepoDir(options.repoDir),
-    );
-
+    // Telemetry is user-global — stats read the single user-level spool and do
+    // not require (or accept) a repo.
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createTelemetryStatsDeps(repoDir, VERSION);
+    const deps = createTelemetryStatsDeps(VERSION);
     const renderer = createTelemetryStatsRenderer(cliCtx.outputMode);
 
     await consumeStream(

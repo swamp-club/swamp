@@ -160,7 +160,6 @@ Deno.test("RepoService.init creates data directory structure", async () => {
       ".swamp/workflows-evaluated",
       ".swamp/definitions-evaluated",
       ".swamp/secrets",
-      ".swamp/telemetry",
     ];
 
     for (const dir of expectedDirs) {
@@ -168,6 +167,12 @@ Deno.test("RepoService.init creates data directory structure", async () => {
       const stat = await Deno.stat(dirPath);
       assertEquals(stat.isDirectory, true, `${dir} should exist`);
     }
+
+    // Telemetry is user-global — init must NOT scaffold a repo-local spool.
+    await assertRejects(
+      () => Deno.stat(join(tempDir, ".swamp/telemetry")),
+      Deno.errors.NotFound,
+    );
   });
 });
 

@@ -21,6 +21,7 @@ import { join, resolve, SEPARATOR } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { getLogger } from "@logtape/logtape";
 import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
+import { migrateRepoTelemetryToGlobal } from "../../infrastructure/persistence/telemetry_spool_migration.ts";
 import { defaultCommandResolver } from "../../infrastructure/process/resolve_command.ts";
 import type { RepoPath } from "./repo_path.ts";
 import {
@@ -487,6 +488,10 @@ export class RepoService {
 
     // Migrate from symlink-based layout to datastore layout
     await this.migrateFromSymlinks(repoPath);
+
+    // Migrate any unflushed entries from a legacy repo-local telemetry spool
+    // to the user-global spool (telemetry is no longer repo-scoped).
+    await this.migrateRepoLocalTelemetry(repoPath, existingMarker);
 
     if (localSkillCopies.length === 0) {
       delete updatedMarker.lastSkillMigrationWarning;
@@ -2084,13 +2089,33 @@ export const SwampAudit: Plugin = async ({ directory }) => {
       SWAMP_SUBDIRS.workflowsEvaluated,
       SWAMP_SUBDIRS.definitionsEvaluated,
       SWAMP_SUBDIRS.secrets,
-      SWAMP_SUBDIRS.telemetry,
+      // Telemetry is user-global (~/.config/swamp/telemetry), not repo-local —
+      // do not scaffold a repo-local telemetry directory.
       SWAMP_SUBDIRS.audit,
       SWAMP_SUBDIRS.vaultBundles,
     ];
 
     for (const subdir of runtimeSubdirs) {
       await ensureDir(swampPath(repoPath.value, subdir));
+    }
+  }
+
+  /**
+   * Drains a legacy repo-local telemetry spool into the user-global spool
+   * during upgrade. Repos that opted out of telemetry are skipped so their
+   * leftover entries are never sent. The repo-local directory is left orphaned,
+   * never deleted. Best-effort — telemetry migration must never fail an
+   * upgrade.
+   */
+  private async migrateRepoLocalTelemetry(
+    repoPath: RepoPath,
+    marker: RepoMarkerData,
+  ): Promise<void> {
+    if (marker.telemetryDisabled === true) return;
+    try {
+      await migrateRepoTelemetryToGlobal(repoPath.value);
+    } catch {
+      // Best-effort — never break an upgrade over telemetry.
     }
   }
 

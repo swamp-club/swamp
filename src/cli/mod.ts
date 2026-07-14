@@ -20,7 +20,10 @@
 import { Command } from "@cliffy/command";
 import { setColorEnabled } from "@std/fmt/colors";
 import { isAbsolute, join, resolve } from "@std/path";
-import { swampPath } from "../infrastructure/persistence/paths.ts";
+import {
+  globalTelemetryDir,
+  swampPath,
+} from "../infrastructure/persistence/paths.ts";
 import { UserError } from "../domain/errors.ts";
 import { enumeratePulledExtensionDirs } from "../libswamp/mod.ts";
 import { getLogger, parseLogLevel } from "@logtape/logtape";
@@ -121,6 +124,7 @@ import {
 } from "./telemetry_integration.ts";
 import type { CommandInvocationData } from "../domain/telemetry/command_invocation.ts";
 import { UserIdentityRepository } from "../infrastructure/persistence/user_identity_repository.ts";
+import { TelemetryPreferencesFileRepository } from "../infrastructure/persistence/telemetry_preferences_file_repository.ts";
 import { AuthRepository } from "../infrastructure/persistence/auth_repository.ts";
 import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
 import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
@@ -1039,15 +1043,28 @@ import { resolveTrustedCollectives } from "../libswamp/mod.ts";
 interface TelemetryContext {
   service: TelemetryService;
   userId: string | null;
-  repoId: string;
+  /**
+   * Repo-specific identifier, present only when the run happened inside a
+   * swamp repo. Undefined for repo-less runs — the event is then keyed solely
+   * by the user identity (userId).
+   */
+  repoId: string | undefined;
   telemetryEndpoint: string;
   keepFlushed: boolean;
   authToken: string | null;
 }
 
 /**
- * Initialize telemetry service if in a swamp repository.
- * Lazy-migrates repoId if missing from marker file.
+ * Initialize the telemetry service for this invocation.
+ *
+ * Telemetry is global: every run spools to the single user-level directory
+ * ({@link globalTelemetryDir}) whether or not it happened inside a swamp repo.
+ * A repo marker, when present, only *enriches* the event (repoId, configured
+ * tools, datastore, endpoint, keepFlushed) and can opt the repo out; it no
+ * longer gates telemetry or selects the spool. Repo-less runs honor a
+ * persistent user-level opt-out at `<config>/telemetry.yaml`.
+ *
+ * Returns null only when telemetry is disabled for this run.
  */
 async function initTelemetryService(
   repoDir: string,
@@ -1055,22 +1072,38 @@ async function initTelemetryService(
   try {
     const markerRepo = new RepoMarkerRepository();
     const repoPath = RepoPath.create(repoDir);
-
     const marker = await markerRepo.read(repoPath);
-    if (!marker) {
-      return null; // Not in a swamp repo
-    }
 
-    if (isTelemetryDisabledByConfig(marker)) {
-      return null;
-    }
+    // Enrichment fields default to the repo-less state; a marker decorates the
+    // event with repo-specific detail when the run happened inside a repo.
+    let repoId: string | undefined;
+    let configuredAiTools: string[] | undefined;
+    let externalDatastore = false;
+    let markerEndpoint: string | undefined;
+    let keepFlushed = false;
 
-    // Lazy-migrate repoId if missing
-    let repoId = marker.repoId;
-    if (!repoId) {
-      repoId = crypto.randomUUID();
-      marker.repoId = repoId;
-      await markerRepo.write(repoPath, marker);
+    if (marker) {
+      if (isTelemetryDisabledByConfig(marker)) {
+        return null; // Per-repo opt-out via marker telemetryDisabled
+      }
+
+      // Lazy-migrate repoId if missing
+      repoId = marker.repoId;
+      if (!repoId) {
+        repoId = crypto.randomUUID();
+        marker.repoId = repoId;
+        await markerRepo.write(repoPath, marker);
+      }
+      configuredAiTools = marker.tools;
+      externalDatastore = isExternalDatastoreConfigured(marker.datastore);
+      markerEndpoint = marker.telemetryEndpoint;
+      keepFlushed = marker.telemetryKeepFlushed ?? false;
+    } else {
+      // Repo-less: honor the persistent user-level opt-out.
+      const prefs = await new TelemetryPreferencesFileRepository().read();
+      if (prefs.disabled) {
+        return null;
+      }
     }
 
     // Resolve user-level identity (lazy-creates ~/.config/swamp/identity.json)
@@ -1094,11 +1127,15 @@ async function initTelemetryService(
       // Auth file unreadable — continue without auth
     }
 
-    const repository = new JsonTelemetryRepository(repoDir);
+    // Single, user-level spool — never repo-local.
+    const repository = new JsonTelemetryRepository(
+      repoDir,
+      globalTelemetryDir(),
+    );
     const invocationContext = buildInvocationContext(
       projectEnvSnapshot(),
-      marker.tools,
-      isExternalDatastoreConfigured(marker.datastore),
+      configuredAiTools,
+      externalDatastore,
     );
     const service = new TelemetryService(
       repository,
@@ -1106,11 +1143,9 @@ async function initTelemetryService(
       invocationContext,
     );
     const telemetryEndpoint = resolveTelemetryEndpoint(
-      marker.telemetryEndpoint,
+      markerEndpoint,
       authServerUrl,
     );
-
-    const keepFlushed = marker.telemetryKeepFlushed ?? false;
 
     return {
       service,
@@ -1121,7 +1156,7 @@ async function initTelemetryService(
       authToken,
     };
   } catch {
-    // Not in a swamp repo or other error
+    // Best-effort — any failure disables telemetry for this run.
     return null;
   }
 }
@@ -1393,21 +1428,27 @@ export async function runCli(args: string[]): Promise<void> {
         try {
           await telemetryCtx.service.recordSuccess(commandInfo, startTime);
 
-          const sender = new HttpTelemetrySender(
-            telemetryCtx.telemetryEndpoint,
-            USER_AGENT,
-          );
-          const flushed = await telemetryCtx.service.flushTelemetry({
-            sender,
-            distinctId: telemetryCtx.userId ?? telemetryCtx.repoId,
-            repoId: telemetryCtx.repoId,
-            authToken: telemetryCtx.authToken ?? undefined,
-            keepFlushed: telemetryCtx.keepFlushed,
-            signal: AbortSignal.timeout(2000),
-          });
-          if (!flushed) {
-            logger
-              .warn`Telemetry flush failed — entries are queued locally and will retry on the next invocation`;
+          // distinct_id is required by the sender. For repo-less runs it is
+          // the global userId; if neither userId nor repoId resolved, skip the
+          // flush and leave the entry spooled for a future run.
+          const distinctId = telemetryCtx.userId ?? telemetryCtx.repoId;
+          if (distinctId) {
+            const sender = new HttpTelemetrySender(
+              telemetryCtx.telemetryEndpoint,
+              USER_AGENT,
+            );
+            const flushed = await telemetryCtx.service.flushTelemetry({
+              sender,
+              distinctId,
+              repoId: telemetryCtx.repoId,
+              authToken: telemetryCtx.authToken ?? undefined,
+              keepFlushed: telemetryCtx.keepFlushed,
+              signal: AbortSignal.timeout(2000),
+            });
+            if (!flushed) {
+              logger
+                .warn`Telemetry flush failed — entries are queued locally and will retry on the next invocation`;
+            }
           }
 
           // Trigger cleanup asynchronously (fire-and-forget)
@@ -1571,18 +1612,23 @@ export async function runCli(args: string[]): Promise<void> {
     if (telemetryCtx && error instanceof Error) {
       await telemetryCtx.service.recordError(commandInfo, startTime, error);
 
-      const sender = new HttpTelemetrySender(
-        telemetryCtx.telemetryEndpoint,
-        USER_AGENT,
-      );
-      await telemetryCtx.service.flushTelemetry({
-        sender,
-        distinctId: telemetryCtx.userId ?? telemetryCtx.repoId,
-        repoId: telemetryCtx.repoId,
-        authToken: telemetryCtx.authToken ?? undefined,
-        keepFlushed: telemetryCtx.keepFlushed,
-        signal: AbortSignal.timeout(2000),
-      });
+      // distinct_id is required by the sender (see success path). Skip the
+      // flush if neither userId nor repoId resolved.
+      const distinctId = telemetryCtx.userId ?? telemetryCtx.repoId;
+      if (distinctId) {
+        const sender = new HttpTelemetrySender(
+          telemetryCtx.telemetryEndpoint,
+          USER_AGENT,
+        );
+        await telemetryCtx.service.flushTelemetry({
+          sender,
+          distinctId,
+          repoId: telemetryCtx.repoId,
+          authToken: telemetryCtx.authToken ?? undefined,
+          keepFlushed: telemetryCtx.keepFlushed,
+          signal: AbortSignal.timeout(2000),
+        });
+      }
     }
     throw error;
   } finally {

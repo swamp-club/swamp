@@ -22,6 +22,7 @@ import {
   type TelemetryStats,
 } from "../../domain/telemetry/telemetry_service.ts";
 import { JsonTelemetryRepository } from "../../infrastructure/persistence/json_telemetry_repository.ts";
+import { globalTelemetryDir } from "../../infrastructure/persistence/paths.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
@@ -45,10 +46,12 @@ export interface TelemetryStatsInput {
 
 /** Wires real infrastructure into TelemetryStatsDeps. */
 export function createTelemetryStatsDeps(
-  repoDir: string,
   version: string,
 ): TelemetryStatsDeps {
-  const repository = new JsonTelemetryRepository(repoDir);
+  // Telemetry is user-global; the spool location does not depend on any repo.
+  // The repository's repoDir arg only feeds the default baseDir, which we
+  // override with the global spool, so it is unused here.
+  const repository = new JsonTelemetryRepository("", globalTelemetryDir());
   const service = new TelemetryService(repository, version);
   return {
     getStats: (days: number) => service.getStats(days),
