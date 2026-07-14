@@ -36,7 +36,11 @@ import { DataOutputValidationService } from "./data_output_validation_service.ts
 import { DefinitionUpgradeService } from "./definition_upgrade_service.ts";
 import { modelRequiresVault } from "./data_writer.ts";
 import { coerceMethodArgs, getObjectShape } from "./zod_type_coercion.ts";
-import { valueContainsExpression } from "../expressions/expression_parser.ts";
+import {
+  extractExpressions,
+  valueContainsExpression,
+} from "../expressions/expression_parser.ts";
+import { containsVaultExpression } from "../expressions/expression_evaluation_service.ts";
 import type { Data } from "../data/data.ts";
 import type { ExecutionOutput } from "./execution_envelope.ts";
 import { InProcessExecutor } from "./in_process_executor.ts";
@@ -228,8 +232,15 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       get(target, prop, receiver) {
         const value = Reflect.get(target, prop, receiver);
         if (typeof prop === "string" && valueContainsExpression(value)) {
+          const exprs = extractExpressions(value);
+          const hasVault = exprs.some((e) =>
+            containsVaultExpression(e.celExpression)
+          );
+          const hint = hasVault
+            ? " (contains vault.get() — check vault configuration and run with --log-level debug for details)"
+            : "";
           throw new Error(
-            `Unresolved expression in globalArguments.${prop}: ${
+            `Unresolved expression in globalArguments.${prop}${hint}: ${
               JSON.stringify(value)
             }`,
           );
