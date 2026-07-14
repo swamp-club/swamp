@@ -70,6 +70,10 @@ export async function readStdin(): Promise<string | null> {
  * @throws {Error} If the user cancels with Ctrl-C (throws with message "Cancelled.")
  */
 export async function readSecretFromTty(prompt: string): Promise<string> {
+  if (!Deno.stdin.isTerminal()) {
+    throw new Error("Cannot read secret: stdin is not a TTY");
+  }
+
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
 
