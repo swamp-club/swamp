@@ -1099,6 +1099,12 @@ export class ExtensionCatalogStore {
     stmt.run(key, fingerprint);
   }
 
+  updateSourceFingerprint(sourcePath: string, fingerprint: string): void {
+    this.db.prepare(
+      "UPDATE bundle_types SET source_fingerprint = ? WHERE source_path = ?",
+    ).run(fingerprint, sourcePath);
+  }
+
   /**
    * Closes the database connection.
    */

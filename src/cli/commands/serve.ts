@@ -70,8 +70,17 @@ import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
-import { LockfileRepository } from "../../libswamp/mod.ts";
+import {
+  incrementReloadGeneration,
+  LockfileRepository,
+} from "../../libswamp/mod.ts";
 import { removeAttachedExtensionsForType } from "../../domain/extensions/model_kind_adapter.ts";
+import {
+  extensionKindToKindDir,
+} from "../../domain/extensions/source_failure_recorder.ts";
+import { computeSourceFingerprint } from "../../domain/extensions/bundle_freshness.ts";
+import { bundleExtension } from "../../domain/models/bundle.ts";
+import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import {
   type PolicyReloadMode,
@@ -95,7 +104,7 @@ import {
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { GRANT_MODEL_TYPE } from "../../domain/models/access/grant_model.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
-import { isAbsolute, join, resolve } from "@std/path";
+import { dirname, isAbsolute, join, resolve } from "@std/path";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
 import {
   RepoMarkerRepository,
@@ -456,12 +465,57 @@ async function reloadPulledExtensions(
   repoDir: string,
   lockfilePath: string,
 ): Promise<number> {
+  incrementReloadGeneration();
+
   const catalogDbPath = swampPath(repoDir, "_extension_catalog.db");
 
   const catalog = new ExtensionCatalogStore(catalogDbPath);
   try {
     const lockfile = await LockfileRepository.create(lockfilePath);
     const entries = lockfile.getAllEntries();
+
+    // Re-bundle only sources whose fingerprint changed since the catalog
+    // was last written. Unchanged sources keep their existing bundle and
+    // skip the expensive deno-bundle subprocess.
+    const pulledRoot = join(repoDir, ".swamp", "pulled-extensions");
+    const rebundled = new Set<string>();
+    let denoPath: string | undefined;
+    for (const [extName, entry] of Object.entries(entries)) {
+      const allRows = catalog.findByExtension(extName, entry.version);
+      for (const row of allRows) {
+        if (
+          !row.source_path || !row.bundle_path ||
+          rebundled.has(row.source_path)
+        ) continue;
+        try {
+          const kindDir = extensionKindToKindDir(
+            row.kind as Parameters<typeof extensionKindToKindDir>[0],
+          );
+          const baseDir = join(pulledRoot, extName, kindDir);
+          const currentFp = await computeSourceFingerprint(
+            row.source_path,
+            baseDir,
+          );
+          if (currentFp === row.source_fingerprint) continue;
+          if (!denoPath) {
+            denoPath = await new EmbeddedDenoRuntime().ensureDeno();
+          }
+          const js = await bundleExtension(row.source_path, denoPath, {});
+          await Deno.mkdir(dirname(row.bundle_path), { recursive: true });
+          await Deno.writeTextFile(row.bundle_path, js);
+          catalog.updateSourceFingerprint(row.source_path, currentFp);
+          rebundled.add(row.source_path);
+        } catch (err) {
+          logger.warn(
+            "Hot-reload: failed to re-bundle {path}, keeping old bundle: {error}",
+            {
+              path: row.source_path,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          );
+        }
+      }
+    }
 
     let reloadedCount = 0;
     for (const [name, entry] of Object.entries(entries)) {
