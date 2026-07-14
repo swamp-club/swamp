@@ -65,6 +65,18 @@ import {
 } from "./source_failure_recorder.ts";
 import { makeSourceLocation } from "./source_location.ts";
 
+let reloadGeneration = 0;
+
+/**
+ * Increment the reload generation counter so the next dynamic
+ * import() uses a new URL and bypasses the ES module cache.
+ * Call this before re-importing pulled extension bundles during
+ * serve hot-reload.
+ */
+export function incrementReloadGeneration(): void {
+  reloadGeneration++;
+}
+
 /**
  * Extract the extension name from an absolute path within the
  * pulled-extensions directory. Returns undefined for paths outside
@@ -776,9 +788,11 @@ export class ExtensionLoader {
       await Deno.writeTextFile(paths.bundlePath, js);
     }
     const baseUrl = toFileUrl(paths.bundlePath).href;
-    const importUrl = paths.sourceFingerprint
-      ? `${baseUrl}?fp=${paths.sourceFingerprint}`
-      : baseUrl;
+    const params = [
+      paths.sourceFingerprint ? `fp=${paths.sourceFingerprint}` : "",
+      reloadGeneration > 0 ? `gen=${reloadGeneration}` : "",
+    ].filter(Boolean).join("&");
+    const importUrl = params ? `${baseUrl}?${params}` : baseUrl;
     return await import(importUrl);
   }
 
@@ -1218,9 +1232,11 @@ export class ExtensionLoader {
           await Deno.writeTextFile(bundlePath, cachedJs);
         }
         const baseUrl = toFileUrl(bundlePath).href;
-        const importUrl = sourceFingerprint
-          ? `${baseUrl}?fp=${sourceFingerprint}`
-          : baseUrl;
+        const params = [
+          sourceFingerprint ? `fp=${sourceFingerprint}` : "",
+          reloadGeneration > 0 ? `gen=${reloadGeneration}` : "",
+        ].filter(Boolean).join("&");
+        const importUrl = params ? `${baseUrl}?${params}` : baseUrl;
         return await import(importUrl);
       } catch (error) {
         this.logger.debug`File URL import failed for ${relativePath}: ${
