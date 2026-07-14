@@ -95,7 +95,12 @@ import {
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { GRANT_MODEL_TYPE } from "../../domain/models/access/grant_model.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
-import { join } from "@std/path";
+import { isAbsolute, join, resolve } from "@std/path";
+import { resolveModelsDir } from "../resolve_models_dir.ts";
+import {
+  RepoMarkerRepository,
+} from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
   DEFAULT_STALE_TTL_MS,
   RunTrackerStore,
@@ -446,9 +451,11 @@ const daemonStatusCommand = new Command()
     renderDaemonStatus(status, ctx.outputMode, toServiceMode(mode));
   });
 
-async function reloadPulledExtensions(repoDir: string): Promise<number> {
+async function reloadPulledExtensions(
+  repoDir: string,
+  lockfilePath: string,
+): Promise<number> {
   const catalogDbPath = swampPath(repoDir, "_extension_catalog.db");
-  const lockfilePath = join(repoDir, "models", "upstream_extensions.json");
 
   const catalog = new ExtensionCatalogStore(catalogDbPath);
   try {
@@ -806,6 +813,22 @@ export const serveCommand = new Command()
       repoDir,
       outputMode: ctx.outputMode,
     });
+
+    let repoMarker = null;
+    try {
+      const markerRepo = new RepoMarkerRepository();
+      repoMarker = await markerRepo.read(RepoPath.create(resolvedRepoDir));
+    } catch {
+      // Not in a swamp repo or marker unreadable — resolveModelsDir(null) returns the default
+    }
+    const resolvedModelsDir = resolveModelsDir(repoMarker);
+    const extensionLockfilePath = join(
+      isAbsolute(resolvedModelsDir)
+        ? resolvedModelsDir
+        : resolve(resolvedRepoDir, resolvedModelsDir),
+      "upstream_extensions.json",
+    );
+
     // Remote-execution control plane: capability verbs, worker enrollment,
     // and the dispatch/lease registries shared with the HTTP data plane.
     // See design/remote-execution.md.
@@ -1735,7 +1758,7 @@ export const serveCommand = new Command()
         }
         reloading = true;
         logger.info("SIGHUP received, reloading pulled extensions...");
-        reloadPulledExtensions(resolvedRepoDir)
+        reloadPulledExtensions(resolvedRepoDir, extensionLockfilePath)
           .then((count) => {
             logger.info`Hot-reloaded ${count} type(s)`;
           })
