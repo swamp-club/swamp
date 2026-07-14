@@ -1615,6 +1615,9 @@ export class WorkflowExecutionService {
           ...(options?.runtimeTags ?? {}),
         };
         run = WorkflowRun.create(workflow, mergedTags);
+        if (options?.inputs) {
+          run.captureInputs(options.inputs);
+        }
         workflowRun = run;
 
         // workflowRunId is set here for backward compat; the structured

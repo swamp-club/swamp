@@ -34,6 +34,7 @@ export interface WorkflowRunSearchItem {
   completedAt?: string;
   duration?: number;
   tags?: Record<string, string>;
+  inputs?: Record<string, unknown>;
 }
 
 /**
@@ -64,6 +65,7 @@ export interface WorkflowRunSearchDeps {
       completedAt?: Date;
       duration?: number;
       tags: Record<string, string>;
+      inputs: Record<string, unknown>;
     }>
   >;
 }
@@ -77,6 +79,7 @@ export interface WorkflowRunSearchInput {
   status?: string;
   workflow?: string;
   tags?: Record<string, string>;
+  inputs?: Record<string, string>;
   limit?: number;
 }
 
@@ -122,6 +125,9 @@ export async function* workflowRunSearch(
         const tags = run.tags && Object.keys(run.tags).length > 0
           ? { ...run.tags }
           : undefined;
+        const inputs = run.inputs && Object.keys(run.inputs).length > 0
+          ? { ...run.inputs }
+          : undefined;
 
         return {
           runId: run.id,
@@ -132,6 +138,7 @@ export async function* workflowRunSearch(
           completedAt: run.completedAt?.toISOString(),
           duration: startTime && endTime ? endTime - startTime : undefined,
           tags,
+          inputs,
         };
       });
 
@@ -161,6 +168,13 @@ export async function* workflowRunSearch(
         const tagEntries = Object.entries(input.tags);
         results = results.filter((r) =>
           tagEntries.every(([k, v]) => r.tags?.[k] === v)
+        );
+      }
+
+      if (input.inputs) {
+        const inputEntries = Object.entries(input.inputs);
+        results = results.filter((r) =>
+          inputEntries.every(([k, v]) => String(r.inputs?.[k]) === v)
         );
       }
 

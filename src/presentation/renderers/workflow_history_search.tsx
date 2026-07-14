@@ -71,7 +71,11 @@ function filterRuns(
     (r) =>
       r.workflowName.toLowerCase().includes(lowerQuery) ||
       r.runId.toLowerCase().includes(lowerQuery) ||
-      r.status.toLowerCase().includes(lowerQuery),
+      r.status.toLowerCase().includes(lowerQuery) ||
+      (r.inputs &&
+        Object.entries(r.inputs).some(([k, v]) =>
+          `${k}=${String(v)}`.toLowerCase().includes(lowerQuery)
+        )),
   );
 }
 
@@ -135,7 +139,11 @@ class InkWorkflowHistorySearchRenderer
                 " ",
               )
               : "";
-            return `${item.workflowName} ${item.runId} ${item.status} ${tagStr}`
+            const inputStr = item.inputs
+              ? Object.entries(item.inputs).map(([k, v]) => `${k}=${String(v)}`)
+                .join(" ")
+              : "";
+            return `${item.workflowName} ${item.runId} ${item.status} ${tagStr} ${inputStr}`
               .trim();
           },
           renderHistoryResultLine,
@@ -188,6 +196,11 @@ function renderHistoryResultLine(
   const tagStr = item.tags && Object.keys(item.tags).length > 0
     ? Object.entries(item.tags).map(([k, v]) => `${k}=${v}`).join(", ")
     : "";
+  const inputStr = item.inputs && Object.keys(item.inputs).length > 0
+    ? Object.entries(item.inputs).map(([k, v]) => `${k}=${String(v)}`).join(
+      ", ",
+    )
+    : "";
 
   return (
     <Text>
@@ -196,6 +209,7 @@ function renderHistoryResultLine(
       {` ${dateStr}`}
       {durationStr ? ` ${durationStr}` : ""}
       {tagStr ? <Text color="cyan">{` [${tagStr}]`}</Text> : null}
+      {inputStr ? <Text color="magenta">{` {${inputStr}}`}</Text> : null}
     </Text>
   );
 }
@@ -251,6 +265,18 @@ function renderHistoryPreview(
     if (tagStr) {
       lines.push(
         <Text key="tags" dimColor wrap="truncate-end">tags: {tagStr}</Text>,
+      );
+    }
+    const previewInputStr = item.inputs && Object.keys(item.inputs).length > 0
+      ? Object.entries(item.inputs).map(([k, v]) => `${k}=${String(v)}`).join(
+        ", ",
+      )
+      : "";
+    if (previewInputStr) {
+      lines.push(
+        <Text key="inputs" dimColor wrap="truncate-end">
+          inputs: {previewInputStr}
+        </Text>,
       );
     }
     return (
@@ -354,6 +380,14 @@ function renderHistoryScrollback(
     }
     if (tagStr) {
       lines.push(`tags: ${tagStr}`);
+    }
+    const scrollInputStr = item.inputs && Object.keys(item.inputs).length > 0
+      ? Object.entries(item.inputs).map(([k, v]) => `${k}=${String(v)}`).join(
+        ", ",
+      )
+      : "";
+    if (scrollInputStr) {
+      lines.push(`inputs: ${scrollInputStr}`);
     }
 
     return lines.join("\n");

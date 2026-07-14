@@ -684,6 +684,12 @@ Deno.test("WorkflowRun: a fresh run has empty inputs and resumeInputs", () => {
   assertEquals(run.resumeInputs, []);
 });
 
+Deno.test("WorkflowRun.captureInputs: records inputs on the run", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.captureInputs({ workItem: "PLT-1033", region: "us-east-1" });
+  assertEquals(run.inputs, { workItem: "PLT-1033", region: "us-east-1" });
+});
+
 Deno.test("WorkflowRun.suspend captures the effective inputs", () => {
   const run = WorkflowRun.create(createTestWorkflow());
   run.start();
