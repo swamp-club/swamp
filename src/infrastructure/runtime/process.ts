@@ -55,7 +55,7 @@ export function getOpenFileSoftLimit(): number | null {
     return null;
   }
   if (Deno.build.os === "linux") {
-    return getOpenFileSoftLimitLinux();
+    return getOpenFileSoftLimitLinux() ?? getOpenFileSoftLimitPosix();
   }
   return getOpenFileSoftLimitPosix();
 }
