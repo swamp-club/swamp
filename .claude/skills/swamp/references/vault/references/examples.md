@@ -339,7 +339,49 @@ Update each model to use `app-secrets`.
 
 ## Rotation Patterns
 
+### Automatic Refresh (Preferred)
+
+For secrets that can be obtained by running a local command — cloud SSO tokens,
+short-lived API tokens, temporary credentials — use `--refresh-from` to let
+swamp re-run the command automatically when the TTL elapses:
+
+```bash
+# GCP access token, refreshed every 50 minutes
+swamp vault put my-vault GCP_TOKEN \
+  --refresh-from "gcloud auth print-access-token" \
+  --refresh-ttl 50m
+
+# AWS session token, refreshed every 55 minutes
+echo "$INITIAL_TOKEN" | swamp vault put my-vault AWS_SESSION \
+  --refresh-from "aws sts get-session-token --query Credentials.SessionToken --output text" \
+  --refresh-ttl 55m --json
+
+# Short-lived API token from a custom script
+swamp vault put my-vault SERVICE_TOKEN \
+  --refresh-from "./scripts/fetch-service-token.sh" \
+  --refresh-ttl 30m
+```
+
+If the refresh command fails, swamp logs a WARN with the command's stderr and
+falls back to the last-known-good value — no data loss or corruption.
+
+Check refresh status with `vault inspect`:
+
+```bash
+swamp vault inspect my-vault GCP_TOKEN --json
+# → refreshHook.command, refreshHook.ttl, refreshHook.lastRefreshedAt
+```
+
+To remove a refresh hook and make the secret static again:
+
+```bash
+swamp vault put my-vault GCP_TOKEN --clear-refresh
+```
+
 ### Manual Secret Rotation
+
+For secrets that cannot be refreshed by a local command (e.g. API keys that
+require a web console to regenerate), rotate manually:
 
 **Step 1: Generate new secret value**
 
@@ -364,7 +406,8 @@ swamp model evaluate model-2 --json
 
 ### Rotation Workflow
 
-Create a workflow that handles rotation:
+For complex rotation that requires coordination (update secret, then redeploy
+services), create a workflow:
 
 ```yaml
 # workflows/rotate-secrets/workflow.yaml
@@ -403,8 +446,10 @@ jobs:
 
 ### Best Practices for Rotation
 
-1. **Never hardcode secrets** — always use vault expressions
-2. **Test rotation in staging** — verify workflows work with new secrets
-3. **Monitor for failures** — watch for auth errors after rotation
-4. **Keep old secrets temporarily** — allow rollback if issues arise
-5. **Document rotation schedule** — establish regular rotation cadence
+1. **Prefer `--refresh-from`** for expiring credentials — it's simpler and more
+   reliable than manual rotation or custom workflows
+2. **Never hardcode secrets** — always use vault expressions
+3. **Test rotation in staging** — verify workflows work with new secrets
+4. **Monitor for failures** — watch for auth errors after rotation
+5. **Keep old secrets temporarily** — allow rollback if issues arise
+6. **Document rotation schedule** — establish regular rotation cadence

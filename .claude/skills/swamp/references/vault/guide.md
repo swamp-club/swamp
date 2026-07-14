@@ -19,22 +19,24 @@ Correct flow: `swamp vault create <type> <name> --json` → edit config if neede
 
 ## Quick Reference
 
-| Task              | Command                                                 |
-| ----------------- | ------------------------------------------------------- |
-| List vault types  | `swamp vault type search --json`                        |
-| Create a vault    | `swamp vault create <type> <name> --json`               |
-| Search vaults     | `swamp vault search [query] --json`                     |
-| Get vault details | `swamp vault get <name_or_id> --json`                   |
-| Edit vault config | `swamp vault edit <name_or_id>`                         |
-| Store a secret    | `swamp vault put <vault> KEY` (prompts for value)       |
-| Store from stdin  | `echo "$VAL" \| swamp vault put <vault> KEY --json`     |
-| Store inline      | `swamp vault put <vault> KEY=VALUE --json` (insecure)   |
-| Read a secret     | `swamp vault read-secret <vault> <key> --force --json`  |
-| List secret keys  | `swamp vault list-keys <vault> --json`                  |
-| Annotate a secret | `swamp vault annotate <vault> <key> --url <u>`          |
-| Remove a label    | `swamp vault annotate <vault> <key> --remove-label <k>` |
-| Inspect metadata  | `swamp vault inspect <vault> <key> --json`              |
-| Clear annotation  | `swamp vault annotate <vault> <key> --clear`            |
-| Migrate backend   | `swamp vault migrate <vault> --to-type <type>`          |
+| Task              | Command                                                                  |
+| ----------------- | ------------------------------------------------------------------------ |
+| List vault types  | `swamp vault type search --json`                                         |
+| Create a vault    | `swamp vault create <type> <name> --json`                                |
+| Search vaults     | `swamp vault search [query] --json`                                      |
+| Get vault details | `swamp vault get <name_or_id> --json`                                    |
+| Edit vault config | `swamp vault edit <name_or_id>`                                          |
+| Store a secret    | `swamp vault put <vault> KEY` (prompts for value)                        |
+| Store from stdin  | `echo "$VAL" \| swamp vault put <vault> KEY --json`                      |
+| Store inline      | `swamp vault put <vault> KEY=VALUE --json` (insecure)                    |
+| Auto-refresh      | `swamp vault put <vault> KEY --refresh-from "<cmd>" --refresh-ttl <dur>` |
+| Clear refresh     | `swamp vault put <vault> KEY --clear-refresh`                            |
+| Read a secret     | `swamp vault read-secret <vault> <key> --force --json`                   |
+| List secret keys  | `swamp vault list-keys <vault> --json`                                   |
+| Annotate a secret | `swamp vault annotate <vault> <key> --url <u>`                           |
+| Remove a label    | `swamp vault annotate <vault> <key> --remove-label <k>`                  |
+| Inspect metadata  | `swamp vault inspect <vault> <key> --json`                               |
+| Clear annotation  | `swamp vault annotate <vault> <key> --clear`                             |
+| Migrate backend   | `swamp vault migrate <vault> --to-type <type>`                           |
 
 For detailed walkthroughs of each operation, see [reference.md](reference.md).
