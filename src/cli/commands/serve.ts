@@ -483,8 +483,8 @@ async function reloadPulledExtensions(
     const pulledRoot = join(repoDir, ".swamp", "pulled-extensions");
     const rebundled = new Set<string>();
     let denoPath: string | undefined;
-    for (const [extName, _entry] of Object.entries(entries)) {
-      const allRows = catalog.findByExtension(extName, _entry.version);
+    for (const [extName, entry] of Object.entries(entries)) {
+      const allRows = catalog.findByExtension(extName, entry.version);
       for (const row of allRows) {
         if (
           !row.source_path || !row.bundle_path ||
@@ -504,6 +504,7 @@ async function reloadPulledExtensions(
           const js = await bundleExtension(row.source_path, denoPath, {});
           await Deno.mkdir(dirname(row.bundle_path), { recursive: true });
           await Deno.writeTextFile(row.bundle_path, js);
+          catalog.updateSourceFingerprint(row.source_path, currentFp);
           rebundled.add(row.source_path);
         } catch (err) {
           logger.warn(
