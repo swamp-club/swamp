@@ -69,6 +69,10 @@ const BUNDLED_SKILLS: SkillInfo[] = [
   { relativePath: "swamp/references/model/guide.md", name: "swamp" },
   { relativePath: "swamp/references/model/reference.md", name: "swamp" },
   {
+    relativePath: "swamp/references/model/references/concurrency.md",
+    name: "swamp",
+  },
+  {
     relativePath: "swamp/references/model/references/data-chaining.md",
     name: "swamp",
   },
@@ -113,6 +117,10 @@ const BUNDLED_SKILLS: SkillInfo[] = [
   },
   {
     relativePath: "swamp/references/workflow/references/direct-execution.md",
+    name: "swamp",
+  },
+  {
+    relativePath: "swamp/references/workflow/references/execution-semantics.md",
     name: "swamp",
   },
   {

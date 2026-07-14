@@ -263,6 +263,76 @@ attributes:
   api_key: ${{ env.API_KEY }}
 ```
 
+## Workflow Run Context
+
+Inside workflow step inputs, the `run` namespace exposes metadata about the
+current workflow execution. These variables are only available at **step
+execution time** — not in workflow-level fields like `description`.
+
+| Variable           | Type                    | Description                    |
+| ------------------ | ----------------------- | ------------------------------ |
+| `run.id`           | string (UUID)           | Unique ID of this workflow run |
+| `run.workflowId`   | string (UUID)           | Workflow definition ID         |
+| `run.workflowName` | string                  | Workflow name                  |
+| `run.startedAt`    | string (ISO 8601)       | Timestamp when the run started |
+| `run.tags`         | `Record<string,string>` | Merged workflow + runtime tags |
+
+The flat `workflowRunId` variable is also available (equivalent to `run.id`) for
+backward compatibility with `data.query()` predicates.
+
+Use `run.id` to prevent data collisions when the same workflow runs
+concurrently:
+
+```yaml
+steps:
+  - name: process
+    task:
+      type: model_method
+      modelIdOrName: my-processor
+      methodName: run
+      inputs:
+        outputKey: "result-${{ run.id }}"
+```
+
+## Webhook Payload Context
+
+For webhook-triggered runs, the `webhook` namespace exposes the verified request
+payload. It is available **only inside `trigger.inputs`**, where expressions are
+evaluated against the payload at fire time (before input validation) to map
+payload fields onto named inputs.
+
+| Variable          | Type                    | Description                                         |
+| ----------------- | ----------------------- | --------------------------------------------------- |
+| `webhook.body`    | unknown                 | JSON-parsed body; raw string if not JSON            |
+| `webhook.headers` | `Record<string,string>` | Lowercased header names (signature header excluded) |
+| `webhook.route`   | string                  | Matched webhook route (e.g. `/hooks/linear`)        |
+
+```yaml
+trigger:
+  inputs:
+    identifier: "${{ webhook.body.data.issue.identifier }}"
+    eventType: '${{ webhook.headers["x-linear-event"] }}'
+```
+
+Guard optional payload fields with `has()` and a ternary — swamp's CEL has no
+`??` operator:
+
+```yaml
+trigger:
+  inputs:
+    identifier: >-
+      ${{ has(webhook.body.data.issue) ?
+        webhook.body.data.issue.identifier : webhook.body.data.identifier }}
+```
+
+A hard reference to a missing field surfaces an error and the run does not
+start. The rest of the workflow reads extracted values as normal inputs
+(`${{ inputs.identifier }}`).
+
+**Security:** `webhook.headers` values are not redacted. Avoid forwarding
+sensitive headers into model attributes — they would be stored in `.swamp/data/`
+and visible in `swamp data get` output.
+
 ## Data Artifact Tracking
 
 Workflow steps track all Data artifacts produced during execution. Each step run
