@@ -27,6 +27,7 @@ import {
   extractExpressions,
   replaceExpressions,
 } from "./expression_parser.ts";
+import { getLogger } from "@logtape/logtape";
 import type { ExpressionLocation } from "./expression.ts";
 import {
   extractDependencies,
@@ -434,6 +435,7 @@ export class ExpressionEvaluationService {
     definition: Definition,
     redactor?: SecretRedactor,
   ): Promise<RuntimeResolutionResult> {
+    const logger = getLogger(["swamp", "expressions"]);
     const secretBag = new VaultSecretBag();
     const definitionData = definition.toData();
     const expressions = extractExpressions(definitionData);
@@ -442,6 +444,13 @@ export class ExpressionEvaluationService {
     const runtimeExpressions = expressions.filter((expr) =>
       containsRuntimeExpression(expr.celExpression)
     );
+
+    logger.debug(
+      `Runtime expression resolution: ${expressions.length} total expressions, ${runtimeExpressions.length} runtime (vault/env)`,
+    );
+    for (const expr of runtimeExpressions) {
+      logger.debug`Runtime expression at ${expr.path}: ${expr.raw}`;
+    }
 
     if (runtimeExpressions.length === 0) {
       return { definition, secretBag };
@@ -484,15 +493,8 @@ export class ExpressionEvaluationService {
     const secretBag = new VaultSecretBag();
     const evaluatedValues = new Map<string, unknown>();
     for (const expr of runtimeExpressions) {
-      // Skip syntactically-invalid CEL: the ${{ ... }} sequence appears
-      // inside a prose string (e.g. a plan body that documents env.* /
-      // vault.get() syntax). Leaving the raw text in place preserves
-      // prose round-trip; real misconfigurations still throw at evaluate.
-      if (!this.celEvaluator.validate(expr.celExpression).valid) {
-        continue;
-      }
-
-      // Resolve vault references first (if any), then evaluate the full CEL
+      // Resolve vault references first — see resolveRuntimeInExpressions
+      // for rationale (vault names may contain CEL-invalid characters).
       let resolvedCelExpr = expr.celExpression;
       if (containsVaultExpression(expr.celExpression)) {
         resolvedCelExpr = await this.modelResolver.resolveVaultExpressions(
@@ -501,6 +503,18 @@ export class ExpressionEvaluationService {
           secretBag,
         );
       }
+
+      // Skip syntactically-invalid CEL after vault resolution.
+      const validation = this.celEvaluator.validate(resolvedCelExpr);
+      if (!validation.valid) {
+        if (containsVaultExpression(expr.celExpression)) {
+          getLogger(["swamp", "expressions"]).warn(
+            `Skipped vault expression at ${expr.path} because its CEL is syntactically invalid after vault resolution: ${validation.error}. Raw: ${expr.raw}`,
+          );
+        }
+        continue;
+      }
+
       const value = this.celEvaluator.evaluate(resolvedCelExpr, {
         model: {},
         env: buildEnvContext(),
@@ -576,25 +590,45 @@ export class ExpressionEvaluationService {
     redactor?: SecretRedactor,
     secretBag?: VaultSecretBag,
   ): Promise<Definition> {
+    const logger = getLogger(["swamp", "expressions"]);
     const evaluatedValues = new Map<string, unknown>();
     for (const expr of runtimeExpressions) {
-      // Skip syntactically-invalid CEL: the ${{ ... }} sequence appears
-      // inside a prose field (e.g. a method input documenting env.* /
-      // vault.get() syntax). Leaving the raw text in place preserves
-      // prose round-trip; real misconfigurations still throw at evaluate.
-      if (!this.celEvaluator.validate(expr.celExpression).valid) {
-        continue;
-      }
-
-      // Resolve vault references first (if any), then evaluate the CEL expression
+      // Resolve vault references first (if any) — vault.get() arguments
+      // may contain characters that are not valid CEL identifiers (e.g.
+      // hyphens in vault names like "dwh-infra-1password"), so vault
+      // resolution must happen BEFORE CEL validation. resolveVaultExpressions
+      // replaces vault.get(...) calls with sentinel string literals that
+      // are always valid CEL.
       let resolvedCelExpr = expr.celExpression;
       if (containsVaultExpression(expr.celExpression)) {
+        logger.debug`Resolving vault expression at ${expr.path}`;
         resolvedCelExpr = await this.modelResolver.resolveVaultExpressions(
           expr.celExpression,
           redactor,
           secretBag,
         );
+        logger.debug`Resolved vault expression at ${expr.path}`;
       }
+
+      // Skip syntactically-invalid CEL (after vault resolution): the
+      // ${{ ... }} sequence appears inside a prose field (e.g. a method
+      // input documenting env.* / vault.get() syntax). Leaving the raw
+      // text in place preserves prose round-trip; real misconfigurations
+      // still throw at evaluate. Vault resolution runs first because
+      // vault.get() arguments may contain CEL-invalid characters (e.g.
+      // hyphens in "dwh-infra-1password"); resolveVaultExpressions uses
+      // its own regex and replaces matched calls with sentinel string
+      // literals that are always valid CEL.
+      const validation = this.celEvaluator.validate(resolvedCelExpr);
+      if (!validation.valid) {
+        if (containsVaultExpression(expr.celExpression)) {
+          logger.warn(
+            `Skipped vault expression at ${expr.path} because its CEL is syntactically invalid after vault resolution: ${validation.error}. Raw: ${expr.raw}`,
+          );
+        }
+        continue;
+      }
+
       const value = this.celEvaluator.evaluate(resolvedCelExpr, {
         model: {},
         env: buildEnvContext(),

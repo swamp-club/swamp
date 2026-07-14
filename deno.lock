@@ -24,6 +24,7 @@
     "jsr:@std/streams@^1.1.0": "1.1.0",
     "jsr:@std/tar@~0.1.10": "0.1.10",
     "jsr:@std/text@^1.0.17": "1.0.18",
+    "jsr:@std/yaml@*": "1.1.0",
     "jsr:@std/yaml@^1.1.0": "1.1.0",
     "npm:@aws-sdk/client-cloudcontrol@^3.1042.0": "3.1042.0",
     "npm:@marcbachmann/cel-js@7.6.1": "7.6.1",
