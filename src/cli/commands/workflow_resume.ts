@@ -58,6 +58,7 @@ import type { WorkflowRunEvent } from "../../libswamp/mod.ts";
 import { createEphemeralStore } from "../../infrastructure/persistence/ephemeral_store.ts";
 import { withGeneratorTraceContext } from "../../infrastructure/tracing/mod.ts";
 import { GIT_SHA } from "./version.ts";
+import { parseTimeout } from "../duration_parser.ts";
 import {
   deepMerge,
   mergeInputArgs,
@@ -74,6 +75,7 @@ import {
   resumeWorkflowOverServer,
   withRemoteOptions,
 } from "../remote_run.ts";
+import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -112,6 +114,10 @@ export const workflowResumeCommand = withRemoteOptions(
     .option("--stdin", "Read override inputs from stdin (piped data)", {
       default: false,
     })
+    .option(
+      "--timeout <duration:string>",
+      "Cancellation deadline — seconds (e.g. 30, 1800) or duration string (e.g. 30s, 5m, 1h). Cooperative — only honored by methods that check AbortSignal.",
+    )
     .option(
       "--traceparent <value:string>",
       "W3C traceparent for per-invocation trace context (env: TRACEPARENT)",
@@ -163,31 +169,44 @@ export const workflowResumeCommand = withRemoteOptions(
         ? deepMerge(stdinInputs, cliInputs)
         : cliInputs;
 
+      const abort = new AbortController();
+      if (options.timeout) {
+        const timeoutMs = parseTimeout(options.timeout as string);
+        setTimeout(() => abort.abort(), timeoutMs);
+      }
+      const shutdown = registerShutdownHandler({
+        handler: () => abort.abort(),
+      });
+
       const renderer = createWorkflowRunRenderer(cliCtx.outputMode, {
         workflowName: workflowIdOrName,
         isAuthenticated: isAuthenticated(),
       });
-      await consumeStream(
-        resumeWorkflowOverServer({
-          server,
-          token,
-          signal: AbortSignal.timeout(600_000),
-          payload: {
-            workflowIdOrName,
-            runId: options.run as string | undefined,
-            inputs: Object.keys(resumeInputs).length > 0
-              ? resumeInputs
-              : undefined,
-            traceparent: resolveTraceparent(
-              options.traceparent as string | undefined,
-            ),
-            tracestate: resolveTracestate(
-              options.tracestate as string | undefined,
-            ),
-          },
-        }) as AsyncIterable<WorkflowRunEvent>,
-        renderer.handlers(),
-      );
+      try {
+        await consumeStream(
+          resumeWorkflowOverServer({
+            server,
+            token,
+            signal: abort.signal,
+            payload: {
+              workflowIdOrName,
+              runId: options.run as string | undefined,
+              inputs: Object.keys(resumeInputs).length > 0
+                ? resumeInputs
+                : undefined,
+              traceparent: resolveTraceparent(
+                options.traceparent as string | undefined,
+              ),
+              tracestate: resolveTracestate(
+                options.tracestate as string | undefined,
+              ),
+            },
+          }) as AsyncIterable<WorkflowRunEvent>,
+          renderer.handlers(),
+        );
+      } finally {
+        shutdown.dispose();
+      }
       if (renderer.workflowFailed()) {
         Deno.exitCode = 1;
       }
@@ -367,6 +386,15 @@ export const workflowResumeCommand = withRemoteOptions(
       ephemeral.catalog,
     );
 
+    const abort = new AbortController();
+    if (options.timeout) {
+      const timeoutMs = parseTimeout(options.timeout as string);
+      setTimeout(() => abort.abort(), timeoutMs);
+    }
+    const shutdownHandle = registerShutdownHandler({
+      handler: () => abort.abort(),
+    });
+
     const renderer = createWorkflowRunRenderer(cliCtx.outputMode, {
       workflowName,
       isAuthenticated: isAuthenticated(),
@@ -388,7 +416,7 @@ export const workflowResumeCommand = withRemoteOptions(
         (async function* () {
           for await (
             const event of service.resume(workflowName, run.id, {
-              signal: AbortSignal.timeout(600_000),
+              signal: abort.signal,
               swampSha: GIT_SHA,
               inputs: resumeInputs,
             })
@@ -402,6 +430,7 @@ export const workflowResumeCommand = withRemoteOptions(
     try {
       await consumeStream(resumeGenerator(), renderer.handlers());
     } finally {
+      shutdownHandle.dispose();
       ephemeral.dispose();
     }
 
