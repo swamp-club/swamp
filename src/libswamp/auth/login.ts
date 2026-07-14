@@ -131,6 +131,9 @@ async function readLine(prompt: string): Promise<string> {
 
 /** Read a password from stdin without echoing. */
 async function readPassword(prompt: string): Promise<string> {
+  if (!Deno.stdin.isTerminal()) {
+    return "";
+  }
   try {
     return await readSecretFromTty(prompt);
   } catch (err) {
