@@ -669,12 +669,16 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
+   * Records the effective workflow inputs on this run. Called at run
+   * creation so every run persists its inputs, and again at suspend
+   * so resume-time steps can resolve `inputs.*`.
+   */
+  captureInputs(inputs: Record<string, unknown>): void {
+    this._inputs = inputs;
+  }
+
+  /**
    * Marks the workflow run as suspended (waiting for manual approval).
-   *
-   * The effective workflow inputs are captured here so that, on resume, steps
-   * that run after the gate can still resolve `inputs.*`. Inputs are recorded
-   * only at suspend (not at run creation) so runs that never suspend never
-   * write their input values to the persisted run record.
    */
   suspend(inputs?: Record<string, unknown>): void {
     this._status = "suspended";
@@ -684,8 +688,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
-   * The effective workflow inputs persisted when this run last suspended.
-   * Empty for runs that have never suspended.
+   * The effective workflow inputs for this run.
    */
   get inputs(): Readonly<Record<string, unknown>> {
     return this._inputs;

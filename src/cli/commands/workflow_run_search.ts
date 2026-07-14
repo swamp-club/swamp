@@ -141,6 +141,9 @@ export async function workflowRunSearchAction(
     const parsedTags = options.tag
       ? parseTags(options.tag as string[])
       : undefined;
+    const parsedInputs = options.input
+      ? parseTags(options.input as string[])
+      : undefined;
     const response = await requestServerResponse<WorkflowRunSearchResponse>(
       { server, token },
       {
@@ -151,6 +154,7 @@ export async function workflowRunSearchAction(
           status: options.status as string | undefined,
           workflow: options.workflow as string | undefined,
           tags: parsedTags,
+          inputs: parsedInputs,
           limit: options.limit as number | undefined,
         },
       },
@@ -178,9 +182,12 @@ export async function workflowRunSearchAction(
   const workflowRepo = repoContext.workflowRepo;
   const runRepo = repoContext.workflowRunRepo;
 
-  // Parse --tag values into Record<string, string>
+  // Parse --tag and --input values into Record<string, string>
   const parsedTags = options.tag
     ? parseTags(options.tag as string[])
+    : undefined;
+  const parsedInputs = options.input
+    ? parseTags(options.input as string[])
     : undefined;
 
   const deps: WorkflowRunSearchDeps = {
@@ -204,6 +211,7 @@ export async function workflowRunSearchAction(
       status: options.status as string | undefined,
       workflow: options.workflow as string | undefined,
       tags: parsedTags,
+      inputs: parsedInputs,
       limit: options.limit as number | undefined,
     }),
     renderer.handlers(),
@@ -262,6 +270,11 @@ export const workflowRunSearchCommand = withRemoteOptions(
     .option(
       "--tag <tag:string>",
       "Filter by tag (KEY=VALUE), can be repeated",
+      { collect: true },
+    )
+    .option(
+      "--input <input:string>",
+      "Filter by workflow input (KEY=VALUE), can be repeated",
       { collect: true },
     )
     .option("--limit <n:number>", "Max results", { default: 50 }),

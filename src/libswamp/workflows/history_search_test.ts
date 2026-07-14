@@ -48,6 +48,7 @@ function makeDeps(
             startedAt: new Date(now - 1000),
             completedAt: new Date(now),
             tags: {},
+            inputs: {},
           },
         ]);
       }
@@ -61,6 +62,7 @@ function makeDeps(
             startedAt: new Date(now - 3000),
             completedAt: new Date(now - 2000),
             tags: {},
+            inputs: {},
           },
         ]);
       }
@@ -88,6 +90,77 @@ Deno.test("workflowHistorySearch: returns all runs sorted by startedAt desc", as
   // Most recent first
   assertEquals(completed.data.results[0].runId, "run-1");
   assertEquals(completed.data.results[1].runId, "run-2");
+});
+
+Deno.test("workflowHistorySearch: includes inputs in results", async () => {
+  const deps = makeDeps({
+    findAllWorkflows: () => Promise.resolve([{ id: "wf-1", name: "deploy" }]),
+    findAllRunsByWorkflowId: () =>
+      Promise.resolve([
+        {
+          id: "run-with-inputs",
+          workflowId: "wf-1",
+          workflowName: "deploy",
+          status: "succeeded",
+          startedAt: new Date(now - 1000),
+          completedAt: new Date(now),
+          tags: {},
+          inputs: { workItem: "PLT-1033" },
+        },
+      ]),
+  });
+
+  const events = await collect<WorkflowHistorySearchEvent>(
+    workflowHistorySearch(createLibSwampContext(), deps, {}),
+  );
+
+  const completed = events[1] as Extract<
+    WorkflowHistorySearchEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.results[0].inputs, { workItem: "PLT-1033" });
+});
+
+Deno.test("workflowHistorySearch: filters by inputs", async () => {
+  const deps = makeDeps({
+    findAllWorkflows: () => Promise.resolve([{ id: "wf-1", name: "deploy" }]),
+    findAllRunsByWorkflowId: () =>
+      Promise.resolve([
+        {
+          id: "run-match",
+          workflowId: "wf-1",
+          workflowName: "deploy",
+          status: "succeeded",
+          startedAt: new Date(now - 1000),
+          completedAt: new Date(now),
+          tags: {},
+          inputs: { workItem: "PLT-1033" },
+        },
+        {
+          id: "run-no-match",
+          workflowId: "wf-1",
+          workflowName: "deploy",
+          status: "succeeded",
+          startedAt: new Date(now - 2000),
+          completedAt: new Date(now - 1000),
+          tags: {},
+          inputs: { workItem: "PLT-1034" },
+        },
+      ]),
+  });
+
+  const events = await collect<WorkflowHistorySearchEvent>(
+    workflowHistorySearch(createLibSwampContext(), deps, {
+      inputs: { workItem: "PLT-1033" },
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    WorkflowHistorySearchEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.results.length, 1);
+  assertEquals(completed.data.results[0].runId, "run-match");
 });
 
 Deno.test("workflowHistorySearch: returns empty results when no runs exist", async () => {

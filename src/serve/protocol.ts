@@ -290,6 +290,7 @@ export interface WorkflowHistoryLogsPayload {
 
 export interface WorkflowHistorySearchPayload {
   query?: string;
+  inputs?: Record<string, string>;
 }
 
 export interface WorkflowRunSearchPayload {
@@ -298,6 +299,7 @@ export interface WorkflowRunSearchPayload {
   status?: string;
   workflow?: string;
   tags?: Record<string, string>;
+  inputs?: Record<string, string>;
   limit?: number;
 }
 

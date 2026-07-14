@@ -36,6 +36,7 @@ function makeRun(overrides: {
   startedAt?: Date;
   completedAt?: Date;
   tags?: Record<string, string>;
+  inputs?: Record<string, unknown>;
 }) {
   return {
     id: overrides.id,
@@ -45,6 +46,7 @@ function makeRun(overrides: {
     startedAt: overrides.startedAt,
     completedAt: overrides.completedAt,
     tags: overrides.tags ?? {},
+    inputs: overrides.inputs ?? {},
   };
 }
 
@@ -176,4 +178,87 @@ Deno.test("workflowRunSearch: applies limit", async () => {
     { kind: "completed" }
   >;
   assertEquals(completed.data.results.length, 2);
+});
+
+Deno.test("workflowRunSearch: includes inputs in results", async () => {
+  const deps = makeDeps({
+    findAllWorkflows: () => Promise.resolve([{ id: "wf-1", name: "deploy" }]),
+    findAllRunsByWorkflowId: () =>
+      Promise.resolve([
+        makeRun({
+          id: "run-with-inputs",
+          workflowId: "wf-1",
+          workflowName: "deploy",
+          status: "succeeded",
+          startedAt: new Date(now - 1000),
+          inputs: { workItem: "PLT-1033", region: "us-east-1" },
+        }),
+        makeRun({
+          id: "run-no-inputs",
+          workflowId: "wf-1",
+          workflowName: "deploy",
+          status: "succeeded",
+          startedAt: new Date(now - 2000),
+        }),
+      ]),
+  });
+
+  const events = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), deps, {}),
+  );
+
+  const completed = events[1] as Extract<
+    WorkflowRunSearchEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.results[0].inputs, {
+    workItem: "PLT-1033",
+    region: "us-east-1",
+  });
+  assertEquals(completed.data.results[1].inputs, undefined);
+});
+
+Deno.test("workflowRunSearch: filters by inputs", async () => {
+  const deps = makeDeps({
+    findAllWorkflows: () => Promise.resolve([{ id: "wf-1", name: "deploy" }]),
+    findAllRunsByWorkflowId: () =>
+      Promise.resolve([
+        makeRun({
+          id: "run-plt-1033",
+          workflowId: "wf-1",
+          workflowName: "deploy",
+          status: "succeeded",
+          startedAt: new Date(now - 1000),
+          inputs: { workItem: "PLT-1033" },
+        }),
+        makeRun({
+          id: "run-plt-1034",
+          workflowId: "wf-1",
+          workflowName: "deploy",
+          status: "succeeded",
+          startedAt: new Date(now - 2000),
+          inputs: { workItem: "PLT-1034" },
+        }),
+        makeRun({
+          id: "run-no-inputs",
+          workflowId: "wf-1",
+          workflowName: "deploy",
+          status: "succeeded",
+          startedAt: new Date(now - 3000),
+        }),
+      ]),
+  });
+
+  const events = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), deps, {
+      inputs: { workItem: "PLT-1033" },
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    WorkflowRunSearchEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.results.length, 1);
+  assertEquals(completed.data.results[0].runId, "run-plt-1033");
 });

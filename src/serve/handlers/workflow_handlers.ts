@@ -483,7 +483,10 @@ export async function handleWorkflowHistorySearch(
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
-      workflowHistorySearch(libCtx, deps, { query: payload?.query }),
+      workflowHistorySearch(libCtx, deps, {
+        query: payload?.query,
+        inputs: payload?.inputs,
+      }),
       {
         resolving: () => {},
         completed: (e) => {
@@ -550,6 +553,7 @@ export async function handleWorkflowRunSearch(
         status: payload?.status,
         workflow: payload?.workflow,
         tags: payload?.tags,
+        inputs: payload?.inputs,
         limit: payload?.limit,
       }),
       {

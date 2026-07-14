@@ -22,6 +22,7 @@ import {
   consumeStream,
   createLibSwampContext,
   type JobRunView,
+  parseTags,
   type StepRunView,
   workflowHistorySearch,
   type WorkflowHistorySearchData,
@@ -139,13 +140,16 @@ export async function workflowHistorySearchAction(
       server,
       options.token as string | undefined,
     );
+    const parsedInputs = options.input
+      ? parseTags(options.input as string[])
+      : undefined;
     const response = await requestServerResponse<
       WorkflowHistorySearchResponse
     >(
       { server, token },
       {
         type: "workflow.history.search",
-        payload: { query },
+        payload: { query, inputs: parsedInputs },
       },
     );
     const renderer = createWorkflowHistorySearchRenderer(effectiveMode);
@@ -185,8 +189,12 @@ export async function workflowHistorySearchAction(
     effectiveMode,
     fetchPreview,
   );
+  const parsedInputs = options.input
+    ? parseTags(options.input as string[])
+    : undefined;
+
   await consumeStream(
-    workflowHistorySearch(libCtx, deps, { query }),
+    workflowHistorySearch(libCtx, deps, { query, inputs: parsedInputs }),
     renderer.handlers(),
   );
 
@@ -227,5 +235,10 @@ export const workflowHistorySearchCommand = withRemoteOptions(
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option(
+      "--input <input:string>",
+      "Filter by workflow input (KEY=VALUE), can be repeated",
+      { collect: true },
     ),
 ).action(workflowHistorySearchAction);
