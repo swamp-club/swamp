@@ -41,6 +41,81 @@ export function isProcessDead(pid: number): boolean {
   }
 }
 
+const MIN_RECOMMENDED_NOFILE = 8192;
+
+/**
+ * Returns the soft open-file limit for this process, or `null` when the
+ * value cannot be determined (Windows, unexpected format, etc.).
+ *
+ * Linux: parses `/proc/self/limits`.
+ * macOS: runs `sh -c "ulimit -n"`.
+ */
+export function getOpenFileSoftLimit(): number | null {
+  if (Deno.build.os === "windows") {
+    return null;
+  }
+  if (Deno.build.os === "linux") {
+    return getOpenFileSoftLimitLinux();
+  }
+  return getOpenFileSoftLimitPosix();
+}
+
+function getOpenFileSoftLimitLinux(): number | null {
+  try {
+    const text = Deno.readTextFileSync("/proc/self/limits");
+    for (const line of text.split("\n")) {
+      if (line.startsWith("Max open files")) {
+        const parts = line.replace("Max open files", "").trim().split(/\s+/);
+        const soft = parseInt(parts[0], 10);
+        return Number.isFinite(soft) ? soft : null;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function getOpenFileSoftLimitPosix(): number | null {
+  try {
+    const result = new Deno.Command("sh", {
+      args: ["-c", "ulimit -n"],
+      stdout: "piped",
+      stderr: "null",
+    }).outputSync();
+    if (!result.success) return null;
+    const value = parseInt(
+      new TextDecoder().decode(result.stdout).trim(),
+      10,
+    );
+    return Number.isFinite(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Checks the open-file soft limit and returns a warning message if it is
+ * below `MIN_RECOMMENDED_NOFILE`.  Returns `null` when the limit is
+ * acceptable or cannot be determined.
+ */
+export function checkOpenFileLimit(): {
+  softLimit: number;
+  recommended: number;
+  message: string;
+} | null {
+  const limit = getOpenFileSoftLimit();
+  if (limit === null || limit >= MIN_RECOMMENDED_NOFILE) return null;
+  return {
+    softLimit: limit,
+    recommended: MIN_RECOMMENDED_NOFILE,
+    message:
+      `open-file limit is ${limit} — swamp serve may crash under load. ` +
+      `Raise it to at least ${MIN_RECOMMENDED_NOFILE} with ` +
+      `'ulimit -n ${MIN_RECOMMENDED_NOFILE}' or LimitNOFILE=${MIN_RECOMMENDED_NOFILE} in the systemd unit`,
+  };
+}
+
 function isProcessDeadWindows(pid: number): boolean {
   try {
     const result = new Deno.Command("tasklist", {

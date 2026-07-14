@@ -104,6 +104,7 @@ import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import { sweepStaleRecords } from "../../serve/boot_reconciliation.ts";
 import { installUnhandledRejectionGuard } from "../../serve/unhandled_rejection_guard.ts";
+import { checkOpenFileLimit } from "../../infrastructure/runtime/process.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -794,6 +795,11 @@ export const serveCommand = new Command()
       : undefined;
 
     const rejectionGuard = installUnhandledRejectionGuard();
+
+    const fileLimitWarning = checkOpenFileLimit();
+    if (fileLimitWarning) {
+      logger.warn(fileLimitWarning.message);
+    }
 
     ctx.logger.info`Initializing repository at ${repoDir}`;
 
