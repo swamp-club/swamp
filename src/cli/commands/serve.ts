@@ -75,6 +75,9 @@ import {
   LockfileRepository,
 } from "../../libswamp/mod.ts";
 import { removeAttachedExtensionsForType } from "../../domain/extensions/model_kind_adapter.ts";
+import {
+  extensionKindToKindDir,
+} from "../../domain/extensions/source_failure_recorder.ts";
 import { computeSourceFingerprint } from "../../domain/extensions/bundle_freshness.ts";
 import { bundleExtension } from "../../domain/models/bundle.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
@@ -473,13 +476,6 @@ async function reloadPulledExtensions(
     // Re-bundle only sources whose fingerprint changed since the catalog
     // was last written. Unchanged sources keep their existing bundle and
     // skip the expensive deno-bundle subprocess.
-    const kindToDirName: Record<string, string> = {
-      model: "models",
-      extension: "models",
-      vault: "vaults",
-      datastore: "datastores",
-      report: "reports",
-    };
     const pulledRoot = join(repoDir, ".swamp", "pulled-extensions");
     const rebundled = new Set<string>();
     let denoPath: string | undefined;
@@ -491,7 +487,9 @@ async function reloadPulledExtensions(
           rebundled.has(row.source_path)
         ) continue;
         try {
-          const kindDir = kindToDirName[row.kind] ?? "models";
+          const kindDir = extensionKindToKindDir(
+            row.kind as Parameters<typeof extensionKindToKindDir>[0],
+          );
           const baseDir = join(pulledRoot, extName, kindDir);
           const currentFp = await computeSourceFingerprint(
             row.source_path,
