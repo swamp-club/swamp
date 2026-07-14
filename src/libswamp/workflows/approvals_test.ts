@@ -72,12 +72,15 @@ function makeRun(overrides?: {
   status?: string;
   stepStatus?: string;
   startedAt?: Date;
+  inputs?: Record<string, unknown>;
 }): WorkflowRun {
   const stepStatus = overrides?.stepStatus ?? "waiting_approval";
   const startedAt = overrides?.startedAt ?? new Date();
+  const inputs = overrides?.inputs ?? {};
   return {
     id: overrides?.id ?? "run-1",
     status: overrides?.status ?? "suspended",
+    inputs,
     findWaitingApprovalStep: () =>
       stepStatus === "waiting_approval"
         ? { jobName: "main", stepName: "gate" }
@@ -161,6 +164,40 @@ Deno.test("workflowApprovals: returns pending approval for suspended run with wa
     assertEquals(completed.data.approvals[0].runId, "run-abc");
     assertEquals(completed.data.approvals[0].stepName, "gate");
     assertEquals(completed.data.approvals[0].prompt, "Approve deployment");
+  }
+});
+
+Deno.test("workflowApprovals: includes run inputs in pending approval", async () => {
+  const wf = makeWorkflow({ stepType: "manual_approval" });
+  const run = makeRun({
+    id: "run-with-inputs",
+    inputs: { environment: "prod", region: "us-west-2" },
+  });
+  const deps = makeDeps([wf], new Map([[WF_ID as string, [run]]]));
+  const events = await collect<WorkflowApprovalsEvent>(
+    workflowApprovals(ctx, deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind === "completed") {
+    assertEquals(completed.data.approvals.length, 1);
+    assertEquals(completed.data.approvals[0].inputs, {
+      environment: "prod",
+      region: "us-west-2",
+    });
+  }
+});
+
+Deno.test("workflowApprovals: returns empty inputs when run has no inputs", async () => {
+  const wf = makeWorkflow({ stepType: "manual_approval" });
+  const run = makeRun({ id: "run-no-inputs" });
+  const deps = makeDeps([wf], new Map([[WF_ID as string, [run]]]));
+  const events = await collect<WorkflowApprovalsEvent>(
+    workflowApprovals(ctx, deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind === "completed") {
+    assertEquals(completed.data.approvals.length, 1);
+    assertEquals(completed.data.approvals[0].inputs, {});
   }
 });
 

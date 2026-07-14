@@ -92,7 +92,9 @@ type AnyOptions = any;
 
 export const workflowRunCommand = new Command()
   .name("run")
-  .description("Execute a workflow")
+  .description(
+    "Execute a workflow. Blocks until the run completes, suspends (manual approval), fails, or is cancelled. There is no async/detached mode.",
+  )
   .example("Run a workflow", "swamp workflow run deploy-pipeline")
   .example(
     "With inputs",

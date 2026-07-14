@@ -32,6 +32,7 @@ export interface PendingApproval {
   stepName: string;
   suspendedAt: string | undefined;
   prompt: string | undefined;
+  inputs: Readonly<Record<string, unknown>>;
 }
 
 export interface WorkflowApprovalsData {
@@ -98,6 +99,7 @@ export async function* workflowApprovals(
             stepName: waiting.stepName,
             suspendedAt: step?.startedAt?.toISOString(),
             prompt,
+            inputs: run.inputs,
           });
         }
       }
