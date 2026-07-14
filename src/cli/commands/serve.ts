@@ -115,6 +115,7 @@ import {
   RunTrackerStore,
 } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import { sweepStaleRecords } from "../../serve/boot_reconciliation.ts";
 import { installUnhandledRejectionGuard } from "../../serve/unhandled_rejection_guard.ts";
@@ -477,11 +478,17 @@ async function reloadPulledExtensions(
     // Re-bundle only sources whose fingerprint changed since the catalog
     // was last written. Unchanged sources keep their existing bundle and
     // skip the expensive deno-bundle subprocess.
+    // Query by source_path prefix instead of extension_name — the
+    // source_path PK always reflects the pulled-extensions directory
+    // layout, even when extension_name is empty (swamp-club#1149).
     const pulledRoot = join(repoDir, ".swamp", "pulled-extensions");
     const rebundled = new Set<string>();
     let denoPath: string | undefined;
-    for (const [extName, entry] of Object.entries(entries)) {
-      const allRows = catalog.findByExtension(extName, entry.version);
+    for (const [extName] of Object.entries(entries)) {
+      const sourcePrefix = canonicalizePath(
+        join(pulledRoot, extName) + "/",
+      );
+      const allRows = catalog.findBySourcePathPrefix(sourcePrefix);
       for (const row of allRows) {
         if (
           !row.source_path || !row.bundle_path ||
@@ -518,8 +525,11 @@ async function reloadPulledExtensions(
     }
 
     let reloadedCount = 0;
-    for (const [name, entry] of Object.entries(entries)) {
-      const rows = catalog.findByExtension(name, entry.version);
+    for (const [name] of Object.entries(entries)) {
+      const sourcePrefix = canonicalizePath(
+        join(pulledRoot, name) + "/",
+      );
+      const rows = catalog.findBySourcePathPrefix(sourcePrefix);
       if (rows.length === 0) continue;
 
       for (const row of rows) {

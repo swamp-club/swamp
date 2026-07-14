@@ -291,6 +291,75 @@ Deno.test("ExtensionCatalogStore: removeBySourcePrefix removes matching entries"
   store.close();
 });
 
+Deno.test("findBySourcePathPrefix: returns matching rows ordered by source_path", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  store.upsert(makeRow({
+    type_normalized: "@swamp/aws/ec2/vpc",
+    source_path: "/repo/.swamp/pulled-extensions/@swamp/aws/ec2/models/vpc.ts",
+  }));
+  store.upsert(makeRow({
+    type_normalized: "@swamp/aws/ec2/instance",
+    source_path:
+      "/repo/.swamp/pulled-extensions/@swamp/aws/ec2/models/instance.ts",
+  }));
+  store.upsert(makeRow({
+    type_normalized: "@myorg/echo",
+    source_path: "/repo/extensions/models/echo.ts",
+  }));
+
+  const rows = store.findBySourcePathPrefix(
+    "/repo/.swamp/pulled-extensions/@swamp/aws/ec2/",
+  );
+  assertEquals(rows.length, 2);
+  assertEquals(rows[0].type_normalized, "@swamp/aws/ec2/instance");
+  assertEquals(rows[1].type_normalized, "@swamp/aws/ec2/vpc");
+
+  const noMatch = store.findBySourcePathPrefix(
+    "/repo/.swamp/pulled-extensions/@swamp/aws/s3/",
+  );
+  assertEquals(noMatch.length, 0);
+
+  store.close();
+});
+
+Deno.test("findBySourcePathPrefix: works when extension_name is empty", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  store.upsert(makeRow({
+    type_normalized: "@swamp/aws/ec2/instance",
+    source_path:
+      "/repo/.swamp/pulled-extensions/@swamp/aws/ec2/models/instance.ts",
+  }));
+  store.upsert(makeRow({
+    type_normalized: "@swamp/aws/ec2/vpc",
+    source_path: "/repo/.swamp/pulled-extensions/@swamp/aws/ec2/models/vpc.ts",
+  }));
+
+  const byExtension = store.findByExtension(
+    "@swamp/aws/ec2",
+    "2026.01.15.1",
+  );
+  assertEquals(
+    byExtension.length,
+    0,
+    "findByExtension should return 0 when extension_name is empty",
+  );
+
+  const byPrefix = store.findBySourcePathPrefix(
+    "/repo/.swamp/pulled-extensions/@swamp/aws/ec2/",
+  );
+  assertEquals(
+    byPrefix.length,
+    2,
+    "findBySourcePathPrefix should find rows regardless of extension_name",
+  );
+
+  store.close();
+});
+
 Deno.test("ExtensionCatalogStore: same type different kinds are separate entries", () => {
   const dbPath = makeTempDbPath();
   const store = new ExtensionCatalogStore(dbPath);

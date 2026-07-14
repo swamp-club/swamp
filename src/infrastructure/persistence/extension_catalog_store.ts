@@ -821,6 +821,20 @@ export class ExtensionCatalogStore {
   }
 
   /**
+   * Returns rows whose source_path starts with the given prefix.
+   * Used by the hot-reload path to find catalog rows belonging to a
+   * pulled extension regardless of whether extension_name is populated.
+   */
+  findBySourcePathPrefix(sourcePrefix: string): ExtensionTypeRow[] {
+    const stmt = this.db.prepare(
+      "SELECT * FROM bundle_types WHERE source_path LIKE ? ORDER BY source_path",
+    );
+    return (stmt.all(`${sourcePrefix}%`) as Record<string, unknown>[]).map(
+      (r) => this.mapRow(r),
+    );
+  }
+
+  /**
    * Removes all entries for a given source path prefix.
    * Used when an extension is removed — deletes all types that came from
    * source files under that directory.
