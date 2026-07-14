@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { isProcessDead } from "./process.ts";
+import {
+  checkOpenFileLimit,
+  getOpenFileSoftLimit,
+  isProcessDead,
+} from "./process.ts";
 
 Deno.test("isProcessDead: returns false for the current process", () => {
   assertEquals(isProcessDead(Deno.pid), false);
@@ -27,4 +31,19 @@ Deno.test("isProcessDead: returns false for the current process", () => {
 Deno.test("isProcessDead: returns true for a non-existent PID", () => {
   // PID 2147483647 is the max 32-bit signed int — extremely unlikely to be in use
   assertEquals(isProcessDead(2147483647), true);
+});
+
+Deno.test("getOpenFileSoftLimit: returns a positive number or null on POSIX", () => {
+  if (Deno.build.os === "windows") return;
+  const limit = getOpenFileSoftLimit();
+  if (limit === null) return;
+  assertEquals(typeof limit, "number");
+  assertEquals(limit > 0, true);
+});
+
+Deno.test("checkOpenFileLimit: returns null when limit is sufficient", () => {
+  if (Deno.build.os === "windows") return;
+  const limit = getOpenFileSoftLimit();
+  if (limit === null || limit < 8192) return;
+  assertEquals(checkOpenFileLimit(), null);
 });
