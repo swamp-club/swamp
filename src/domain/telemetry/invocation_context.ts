@@ -33,9 +33,9 @@ import type { DetectableAiTool } from "./agent_harness_detection.ts";
  *
  * `configuredAiTools` distinguishes two states with different downstream
  * meanings:
- *  - `undefined` — the entry was recorded outside a swamp repo (forward-
- *    compat reserve; today initTelemetryService bails before recording in
- *    this case).
+ *  - `undefined` — the entry was recorded outside a swamp repo. Telemetry is
+ *    global (user-level), so repo-less runs are recorded; with no marker there
+ *    is no configured tool list to report.
  *  - `[]` — the repo exists with `tools: []` (legacy `tool: none`
  *    normalised), an explicit opt-out of tool integration.
  */

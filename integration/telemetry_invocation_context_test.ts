@@ -49,9 +49,11 @@ async function runCliWithEnv(
 }
 
 async function readPersistedEntries(
-  repoDir: string,
+  configDir: string,
 ): Promise<Record<string, unknown>[]> {
-  const dir = join(repoDir, ".swamp", "telemetry");
+  // Telemetry is user-global: entries spool under <config>/swamp/telemetry,
+  // never under the repo.
+  const dir = join(configDir, "swamp", "telemetry");
   const entries: Record<string, unknown>[] = [];
   for await (const file of Deno.readDir(dir)) {
     if (!file.isFile || !file.name.endsWith(".json")) continue;
@@ -91,12 +93,21 @@ function baseChildEnv(): Record<string, string> {
 
 Deno.test("CLI bootstrap stamps invocationContext on persisted telemetry", async () => {
   await withTempDir(async (dir) => {
+    // Isolate the user-global telemetry spool (and identity/auth) to a temp
+    // config dir so the test never touches the developer's real ~/.config.
+    const configDir = join(dir, "xdg");
+    const childEnvWith = (extra: Record<string, string> = {}) => ({
+      ...baseChildEnv(),
+      XDG_CONFIG_HOME: configDir,
+      ...extra,
+    });
+
     // Initialise a repo enrolled with both claude and cursor. Use --json so
     // we can parse the result if needed.
     const init = await runCliWithEnv(
       ["--json", "repo", "init", "--tool", "claude", "--tool", "cursor"],
       dir,
-      baseChildEnv(),
+      childEnvWith(),
     );
     assertEquals(init.code, 0, `repo init failed: ${init.stderr}`);
 
@@ -116,17 +127,15 @@ Deno.test("CLI bootstrap stamps invocationContext on persisted telemetry", async
     // upgrade on an already-initialised repo is a cheap no-op and goes
     // through the full path. Set the claude harness signal in the child
     // env so detection has something to identify.
-    const childEnv = baseChildEnv();
-    childEnv.CLAUDECODE = "1";
     const run = await runCliWithEnv(
       ["--json", "repo", "upgrade"],
       dir,
-      childEnv,
+      childEnvWith({ CLAUDECODE: "1" }),
     );
     assertEquals(run.code, 0, `repo upgrade failed: ${run.stderr}`);
 
-    // Read what was persisted under .swamp/telemetry/.
-    const persisted = await readPersistedEntries(dir);
+    // Read what was persisted under the user-global telemetry spool.
+    const persisted = await readPersistedEntries(configDir);
     assert(persisted.length > 0, "no telemetry entries were written");
 
     // Find the entry corresponding to the upgrade run.

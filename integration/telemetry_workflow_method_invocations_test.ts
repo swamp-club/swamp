@@ -61,9 +61,11 @@ async function runCli(
 }
 
 async function readPersistedEntries(
-  repoDir: string,
+  configDir: string,
 ): Promise<Record<string, unknown>[]> {
-  const dir = join(repoDir, ".swamp", "telemetry");
+  // Telemetry is user-global: parent and child entries spool under
+  // <config>/swamp/telemetry, never under the repo.
+  const dir = join(configDir, "swamp", "telemetry");
   const entries: Record<string, unknown>[] = [];
   for await (const file of Deno.readDir(dir)) {
     if (!file.isFile || !file.name.endsWith(".json")) continue;
@@ -163,11 +165,20 @@ Deno.test({
   ignore: Deno.build.os === "windows",
   fn: async () => {
     await withTempDir(async (repoDir) => {
+      // Isolate the user-global telemetry spool (and identity/auth) to a temp
+      // config dir so the test never touches the developer's real ~/.config.
+      const configDir = join(repoDir, "xdg");
+      const childEnvWith = (extra: Record<string, string> = {}) => ({
+        ...baseChildEnv(),
+        XDG_CONFIG_HOME: configDir,
+        ...extra,
+      });
+
       // 1. Initialize a single-tool repo
       const init = await runCli(
         ["--json", "repo", "init", "--tool", "claude"],
         repoDir,
-        baseChildEnv(),
+        childEnvWith(),
       );
       assertEquals(init.code, 0, `repo init failed: ${init.stderr}`);
       await pinTelemetryEndpoint(repoDir);
@@ -247,7 +258,7 @@ Deno.test({
       );
 
       // 4. Run the workflow
-      const env = baseChildEnv();
+      const env = childEnvWith();
       const run = await runCli(
         [
           "--json",
@@ -274,7 +285,7 @@ Deno.test({
 
       // 5. Read persisted telemetry
       const persisted = await readPersistedEntries(
-        repoDir,
+        configDir,
       ) as unknown as PersistedEntry[];
 
       // Find the parent entry for `workflow run`. It carries no
