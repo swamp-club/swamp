@@ -281,6 +281,11 @@ export const agentRemoveCommand = new Command()
     const repoDir = resolveRepoDir(undefined);
 
     if (cliCtx.outputMode !== "json") {
+      const tools = await readCustomTools(repoDir);
+      if (!tools.some((t) => t.name === name)) {
+        throw new UserError(`Custom tool "${name}" not found.`);
+      }
+
       const confirmed = await promptConfirmation(
         `Remove custom tool "${name}" from .swamp-custom-tools.yaml?`,
       );
