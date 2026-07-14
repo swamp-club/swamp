@@ -119,6 +119,40 @@ agent context or chat history.
 }
 ```
 
+## Automatic Refresh
+
+Attach a refresh hook to a secret so swamp automatically re-runs a command when
+the TTL elapses, replacing the stored value with the command's stdout. If the
+refresh command fails, swamp logs a WARN with the command's stderr and falls
+back to the last-known-good value — no corruption.
+
+```bash
+# Auto-refresh a GCP access token every 50 minutes
+swamp vault put my-vault GCP_TOKEN \
+  --refresh-from "gcloud auth print-access-token" \
+  --refresh-ttl 50m
+
+# Auto-refresh an AWS session token every 55 minutes
+echo "$INITIAL_TOKEN" | swamp vault put my-vault AWS_SESSION \
+  --refresh-from "aws sts get-session-token --query Credentials.SessionToken --output text" \
+  --refresh-ttl 55m --json
+```
+
+**Flag rules:**
+
+- `--refresh-from` and `--refresh-ttl` are required together — neither works
+  alone
+- `--clear-refresh` removes an existing refresh hook; it cannot be combined with
+  `--refresh-from` or `--refresh-ttl`
+
+```bash
+# Remove the refresh hook (secret becomes static again)
+swamp vault put my-vault GCP_TOKEN --clear-refresh
+```
+
+Use `vault inspect` to check whether a secret has a refresh hook and when it was
+last refreshed (see [Inspect Secret Metadata](#inspect-secret-metadata)).
+
 ## Read a Secret
 
 Retrieve a specific secret value from a vault.
@@ -217,6 +251,27 @@ swamp vault inspect my-vault API_KEY --json
   "refreshHook": null
 }
 ```
+
+When a refresh hook is attached, the `refreshHook` object contains:
+
+```json
+{
+  "supportsRefreshHooks": true,
+  "hasRefreshHook": true,
+  "refreshHook": {
+    "command": "gcloud auth print-access-token",
+    "ttlMs": 3000000,
+    "ttl": "50m",
+    "lastRefreshedAt": "2026-07-14T12:30:00.000Z"
+  }
+}
+```
+
+- `command` — the shell command that produces the refreshed value
+- `ttlMs` — refresh interval in milliseconds
+- `ttl` — human-readable refresh interval
+- `lastRefreshedAt` — ISO timestamp of the last successful refresh (`null` if
+  the hook has never fired)
 
 Inspect degrades gracefully — providers that don't support annotations or
 refresh hooks return `null` for those fields with `supportsAnnotations: false`
