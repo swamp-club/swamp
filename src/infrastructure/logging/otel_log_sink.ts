@@ -52,6 +52,30 @@ function toSeverityNumber(level: LogRecord["level"]): SeverityNumber {
   }
 }
 
+/**
+ * Maps a LogTape level to the OTel `severityText`. Follows the OTel log data
+ * model's short names (notably `WARN`, not LogTape's `warning`) so records
+ * group consistently with other services' logs in the backend.
+ */
+function toSeverityText(level: LogRecord["level"]): string {
+  switch (level) {
+    case "trace":
+      return "TRACE";
+    case "debug":
+      return "DEBUG";
+    case "info":
+      return "INFO";
+    case "warning":
+      return "WARN";
+    case "error":
+      return "ERROR";
+    case "fatal":
+      return "FATAL";
+    default:
+      return "INFO";
+  }
+}
+
 /** Renders a single non-string message part into a readable string. */
 function renderValue(value: unknown): string {
   if (typeof value === "string") return value;
@@ -116,7 +140,7 @@ export function createOtelLogRecordSink(provider: LoggerProvider): Sink {
 
     otelLogger.emit({
       severityNumber: toSeverityNumber(record.level),
-      severityText: record.level.toUpperCase(),
+      severityText: toSeverityText(record.level),
       body: runFileSink.redactActive(renderBody(record.message)),
       timestamp: record.timestamp,
       attributes,
