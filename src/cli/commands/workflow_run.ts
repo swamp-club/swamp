@@ -390,6 +390,7 @@ export const workflowRunCommand = new Command()
         : undefined;
       shutdownHandle = registerShutdownHandler({
         handler: () => abort.abort(),
+        forceExitOnRepeat: true,
       });
       const baseLibCtx = createLibSwampContext({ signal: abort.signal });
       const libCtx = timeoutMs !== undefined
@@ -543,6 +544,7 @@ async function runWorkflowViaServer(
   }
   const shutdown = registerShutdownHandler({
     handler: () => abort.abort(),
+    forceExitOnRepeat: true,
   });
 
   const inputSets: Record<string, unknown>[] = stdinItems
