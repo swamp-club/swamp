@@ -110,7 +110,17 @@ export async function initializeLogging(
   // this returns a LoggerProvider we bridge into LogTape via a sink. The sink
   // exports over the network only — never stdout/stderr — so it is orthogonal
   // to the CLI output mode. Zero cost when logs export is disabled.
-  const otelProvider = await initLogs();
+  //
+  // Guarded: a telemetry init failure (e.g. a dynamic import of the OTel SDK
+  // rejecting) must never take down core logging — "telemetry must never
+  // interfere with the CLI", as elsewhere in this codebase. On failure we simply
+  // proceed without the otel sink.
+  let otelProvider: Awaited<ReturnType<typeof initLogs>>;
+  try {
+    otelProvider = await initLogs();
+  } catch {
+    otelProvider = undefined;
+  }
   const otelSinks: string[] = [];
   if (otelProvider) {
     sinks["otel"] = createOtelLogRecordSink(otelProvider);

@@ -24,9 +24,17 @@ import type {
 } from "@opentelemetry/sdk-logs";
 import { ExportResultCode } from "@opentelemetry/core";
 import type { ExportResult } from "@opentelemetry/core";
+import { parseOtlpHeaders } from "./otel_config.ts";
 
-/** Handle to the provider so we can flush on shutdown. */
-let providerRef: { shutdown(): Promise<void> } | undefined;
+/**
+ * Handle to the provider so we can flush on shutdown and short-circuit a
+ * repeat {@link initLogs} call (returning the live provider rather than leaking
+ * a second one). The concrete SDK provider is both a {@link LoggerProvider} and
+ * carries `shutdown()`.
+ */
+let providerRef:
+  | (LoggerProvider & { shutdown(): Promise<void> })
+  | undefined;
 
 /**
  * Debug-only log exporter that writes each record to **stderr**. Used for
@@ -62,21 +70,6 @@ class StderrLogRecordExporter implements LogRecordExporter {
   }
 }
 
-/** Parses `OTEL_EXPORTER_OTLP_HEADERS` (`key=val,key=val`) into a record. */
-function parseOtlpHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {};
-  const raw = Deno.env.get("OTEL_EXPORTER_OTLP_HEADERS");
-  if (raw) {
-    for (const pair of raw.split(",")) {
-      const eqIdx = pair.indexOf("=");
-      if (eqIdx > 0) {
-        headers[pair.slice(0, eqIdx).trim()] = pair.slice(eqIdx + 1).trim();
-      }
-    }
-  }
-  return headers;
-}
-
 /**
  * Initializes the OpenTelemetry **logs** signal, mirroring
  * {@link initTracing}. Returns the {@link LoggerProvider} so the logging layer
@@ -93,6 +86,14 @@ function parseOtlpHeaders(): Record<string, string> {
  * a {@link BatchLogRecordProcessor}, which suits high-volume `swamp serve`.
  */
 export async function initLogs(): Promise<LoggerProvider | undefined> {
+  // Idempotent: if logs export is already initialized, return the live provider
+  // rather than building (and leaking) a second one. The only production caller
+  // (initializeLogging) is already once-per-process, but initLogs is exported,
+  // so this keeps the contract self-enforcing for any future caller.
+  if (providerRef) {
+    return providerRef;
+  }
+
   const endpoint = Deno.env.get("OTEL_EXPORTER_OTLP_ENDPOINT");
   const exporterKind = Deno.env.get("OTEL_LOGS_EXPORTER") ?? "otlp";
 

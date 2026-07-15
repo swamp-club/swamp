@@ -86,17 +86,9 @@ export async function initTracing(): Promise<Context | undefined> {
     // Fetch-based OTLP/HTTP exporter — uses Deno's native fetch instead of
     // Node.js http/https modules, which fail TLS in compiled binaries.
     const { FetchOtlpExporter } = await import("./fetch_otlp_exporter.ts");
+    const { parseOtlpHeaders } = await import("./otel_config.ts");
 
-    const headers: Record<string, string> = {};
-    const rawHeaders = Deno.env.get("OTEL_EXPORTER_OTLP_HEADERS");
-    if (rawHeaders) {
-      for (const pair of rawHeaders.split(",")) {
-        const eqIdx = pair.indexOf("=");
-        if (eqIdx > 0) {
-          headers[pair.slice(0, eqIdx).trim()] = pair.slice(eqIdx + 1).trim();
-        }
-      }
-    }
+    const headers = parseOtlpHeaders();
 
     const exporter = new FetchOtlpExporter({
       url: `${endpoint!.replace(/\/+$/, "")}/v1/traces`,

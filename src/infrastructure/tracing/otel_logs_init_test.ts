@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertExists } from "@std/assert";
+import { assertEquals, assertExists, assertStrictEquals } from "@std/assert";
 import { initLogs, shutdownLogs } from "./otel_logs_init.ts";
 
 const ENV_KEYS = [
@@ -110,4 +110,18 @@ Deno.test("shutdownLogs: no-op and safe to call when logs were never initialized
     await shutdownLogs();
     await shutdownLogs(); // double shutdown must not throw
   });
+});
+
+Deno.test("initLogs: idempotent — a second call returns the same provider, not a new one", async () => {
+  await withEnv(
+    { OTEL_EXPORTER_OTLP_ENDPOINT: "http://localhost:4318" },
+    async () => {
+      const first = await initLogs();
+      const second = await initLogs();
+      assertExists(first);
+      // Same instance — no second provider was built (and leaked).
+      assertStrictEquals(second, first);
+      await shutdownLogs();
+    },
+  );
 });

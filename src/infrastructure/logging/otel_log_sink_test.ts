@@ -69,13 +69,14 @@ Deno.test("otel_log_sink: maps every LogTape level to the right SeverityNumber",
   const { exporter, provider } = newCapture();
   const sink = createOtelLogRecordSink(provider);
 
-  const cases: Array<[LogRecord["level"], SeverityNumber]> = [
-    ["trace", SeverityNumber.TRACE],
-    ["debug", SeverityNumber.DEBUG],
-    ["info", SeverityNumber.INFO],
-    ["warning", SeverityNumber.WARN],
-    ["error", SeverityNumber.ERROR],
-    ["fatal", SeverityNumber.FATAL],
+  // severityText follows the OTel short names — note "warning" -> "WARN".
+  const cases: Array<[LogRecord["level"], SeverityNumber, string]> = [
+    ["trace", SeverityNumber.TRACE, "TRACE"],
+    ["debug", SeverityNumber.DEBUG, "DEBUG"],
+    ["info", SeverityNumber.INFO, "INFO"],
+    ["warning", SeverityNumber.WARN, "WARN"],
+    ["error", SeverityNumber.ERROR, "ERROR"],
+    ["fatal", SeverityNumber.FATAL, "FATAL"],
   ];
   for (const [level] of cases) {
     sink(makeRecord(level, [`level ${level}`]));
@@ -84,7 +85,7 @@ Deno.test("otel_log_sink: maps every LogTape level to the right SeverityNumber",
   const recs = exporter.getFinishedLogRecords();
   for (let i = 0; i < cases.length; i++) {
     assertEquals(recs[i].severityNumber, cases[i][1]);
-    assertEquals(recs[i].severityText, cases[i][0].toUpperCase());
+    assertEquals(recs[i].severityText, cases[i][2]);
   }
 });
 
