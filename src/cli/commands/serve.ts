@@ -28,13 +28,22 @@ import { UserError } from "../../domain/errors.ts";
 import { parseTimeout } from "../duration_parser.ts";
 import { buildServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
 import { handleConnection } from "../../serve/connection.ts";
-import { setConnectionCollectives } from "../../serve/handlers/shared.ts";
+import {
+  removeConnection,
+  setConnectionCollectives,
+  updateCollectivesForPrincipal,
+} from "../../serve/handlers/shared.ts";
 import {
   createDeviceAuthDeps,
   handleDeviceAuth,
 } from "../../serve/device_auth_handler.ts";
 import { resolveOAuthClientCredentials } from "../../serve/oauth_registration.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
+import {
+  SERVER_TOKEN_MODEL_TYPE,
+  serverTokenModel,
+  ServerTokenSchema,
+} from "../../domain/models/access/server_token_model.ts";
 import {
   authenticateServerToken,
   extractWebSocketToken,
@@ -281,6 +290,12 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   if (options.groupsField) {
     args.push("--groups-field", options.groupsField as string);
   }
+  if (options.groupRefreshInterval) {
+    args.push(
+      "--group-refresh-interval",
+      options.groupRefreshInterval as string,
+    );
+  }
   if (options.trustProxy) {
     args.push("--trust-proxy");
   }
@@ -365,6 +380,11 @@ const daemonEnableCommand = new Command()
   .option(
     "--groups-field <field:string>",
     "Userinfo field name for group/collective memberships (default: collectives)",
+  )
+  .option(
+    "--group-refresh-interval <duration:string>",
+    "How often to re-fetch IdP group memberships for active server tokens. " +
+      "Accepts time units (4h, 30m). Set to 0 to disable. Default: 4h. Requires --auth-mode oauth.",
   )
   .option(
     "--trust-proxy",
@@ -713,6 +733,11 @@ export const serveCommand = new Command()
   .option(
     "--groups-field <field:string>",
     "Userinfo field name for group/collective memberships (default: collectives)",
+  )
+  .option(
+    "--group-refresh-interval <duration:string>",
+    "How often to re-fetch IdP group memberships for active server tokens (env: SWAMP_GROUP_REFRESH_INTERVAL). " +
+      "Accepts time units (4h, 30m). Set to 0 to disable. Default: 4h. Requires --auth-mode oauth.",
   )
   .option(
     "--trust-proxy",
@@ -1436,6 +1461,159 @@ export const serveCommand = new Command()
       });
     }
 
+    // Parse group refresh interval and construct service
+    let collectiveRefreshService:
+      | import("../../serve/collective_refresh_service.ts").CollectiveRefreshService
+      | null = null;
+    const groupRefreshRaw =
+      (options.groupRefreshInterval as string | undefined) ??
+        Deno.env.get("SWAMP_GROUP_REFRESH_INTERVAL") ?? undefined;
+
+    const DEFAULT_GROUP_REFRESH_MS = 4 * 60 * 60 * 1000;
+    let groupRefreshMs = DEFAULT_GROUP_REFRESH_MS;
+    if (groupRefreshRaw !== undefined) {
+      const normalized = groupRefreshRaw.trim().replace(/^0[smhdw].*$/i, "0");
+      groupRefreshMs = normalized === "0"
+        ? 0
+        : parseTimeout(groupRefreshRaw, "--group-refresh-interval");
+    }
+
+    if (
+      groupRefreshMs > 0 && authConfig.mode === "oauth" &&
+      oauthClientSecret
+    ) {
+      const vaultService = await VaultService.fromRepository(resolvedRepoDir);
+      const vaultNames = vaultService.getVaultNames();
+      const vaultName = vaultNames[0];
+
+      const {
+        CollectiveRefreshService,
+      } = await import("../../serve/collective_refresh_service.ts");
+      const {
+        getUserInfo,
+      } = await import("../../serve/oauth_client.ts");
+      const { oauthAccessTokenKey } = await import(
+        "../../serve/device_auth_handler.ts"
+      );
+
+      collectiveRefreshService = new CollectiveRefreshService({
+        intervalMs: groupRefreshMs,
+        oauthProvider: authConfig.oauthProvider,
+        groupsField: authConfig.groupsField,
+        getUserInfo,
+        listActiveTokens: async () => {
+          const records = await repoContext.dataQueryService.query(
+            `modelType == "${SERVER_TOKEN_MODEL_TYPE.normalized}" && name == "token-main"`,
+            { loadAttributes: true },
+          ) as import("../../domain/data/data_record.ts").DataRecord[];
+          const tokens:
+            import("../../serve/collective_refresh_service.ts").ActiveTokenInfo[] =
+              [];
+          for (const record of records) {
+            const parsed = ServerTokenSchema.safeParse(record.attributes);
+            if (!parsed.success || parsed.data.state !== "active") continue;
+            if (Date.parse(parsed.data.expiresAt) <= Date.now()) continue;
+            tokens.push({
+              name: parsed.data.name,
+              principalId: parsed.data.principalId,
+              collectives: parsed.data.collectives,
+              groups: parsed.data.groups,
+            });
+          }
+          return tokens;
+        },
+        getAccessToken: async (tokenName) => {
+          try {
+            return await vaultService.get(
+              vaultName,
+              oauthAccessTokenKey(tokenName),
+              "serve:group-refresh",
+            );
+          } catch {
+            return null;
+          }
+        },
+        updateTokenCollectives: async (tokenName, collectives, groups) => {
+          const { createResourceWriter } = await import(
+            "../../domain/models/data_writer.ts"
+          );
+          const def = await repoContext.definitionRepo.findByName(
+            SERVER_TOKEN_MODEL_TYPE,
+            tokenName,
+          );
+          if (!def) return;
+          const { writeResource } = createResourceWriter(
+            repoContext.unifiedDataRepo,
+            SERVER_TOKEN_MODEL_TYPE,
+            def.id,
+            serverTokenModel.resources!,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            tokenName,
+          );
+          const record = await repoContext.dataQueryService.query(
+            `modelType == "${SERVER_TOKEN_MODEL_TYPE.normalized}" && name == "token-main" && modelName == "${tokenName}"`,
+            { loadAttributes: true },
+          ) as import("../../domain/data/data_record.ts").DataRecord[];
+          if (record.length === 0) return;
+          const parsed = ServerTokenSchema.safeParse(record[0].attributes);
+          if (!parsed.success) return;
+          const updated = { ...parsed.data, collectives, groups };
+          await writeResource(
+            "token",
+            "token-main",
+            updated as unknown as Record<string, unknown>,
+          );
+        },
+        revokeToken: async (tokenName) => {
+          const { createResourceWriter } = await import(
+            "../../domain/models/data_writer.ts"
+          );
+          const def = await repoContext.definitionRepo.findByName(
+            SERVER_TOKEN_MODEL_TYPE,
+            tokenName,
+          );
+          if (!def) return;
+          const { writeResource } = createResourceWriter(
+            repoContext.unifiedDataRepo,
+            SERVER_TOKEN_MODEL_TYPE,
+            def.id,
+            serverTokenModel.resources!,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            tokenName,
+          );
+          const record = await repoContext.dataQueryService.query(
+            `modelType == "${SERVER_TOKEN_MODEL_TYPE.normalized}" && name == "token-main" && modelName == "${tokenName}"`,
+            { loadAttributes: true },
+          ) as import("../../domain/data/data_record.ts").DataRecord[];
+          if (record.length === 0) return;
+          const parsed = ServerTokenSchema.safeParse(record[0].attributes);
+          if (!parsed.success) return;
+          const revoked = {
+            ...parsed.data,
+            state: "revoked" as const,
+            revokedAt: new Date().toISOString(),
+          };
+          await writeResource(
+            "token",
+            "token-main",
+            revoked as unknown as Record<string, unknown>,
+          );
+        },
+        updateConnectionCollectives: updateCollectivesForPrincipal,
+        closeConnectionsForPrincipal: (_principalId) => {
+          // Active connections for this principal will fail on next
+          // authorizeOrReject since the token is revoked
+        },
+      });
+      collectiveRefreshService.start();
+    }
+
     // Parse and initialize webhook endpoints
     let webhookService: WebhookService | null = null;
     if (webhookFlags.length > 0) {
@@ -1611,7 +1789,13 @@ export const serveCommand = new Command()
               req,
               upgradeOpts,
             );
-            setConnectionCollectives(socket, result.collectives);
+            setConnectionCollectives(
+              socket,
+              result.collectives,
+              result.groups,
+              result.principalId,
+            );
+            socket.addEventListener("close", () => removeConnection(socket));
             handleConnection(socket, connectionCtx, principal);
             return response;
           }
@@ -1850,6 +2034,9 @@ export const serveCommand = new Command()
       }
       if (scheduledExecution) {
         await scheduledExecution.stop();
+      }
+      if (collectiveRefreshService) {
+        await collectiveRefreshService.dispose();
       }
       await policySnapshotLoader.dispose();
       rejectionGuard.dispose();

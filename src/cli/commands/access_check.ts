@@ -190,7 +190,11 @@ export const accessCheckCommand = new Command()
       const snapshot = await loader.load();
       const service = new GrantBasedAccessDecisionService(snapshot);
 
-      const accessPrincipal = { principal, collectives };
+      const accessPrincipal = {
+        principal,
+        collectives,
+        groups: [] as string[],
+      };
       const fields = parseFieldFlags(options.field as string[] | undefined);
       const accessResource = {
         kind: resource.kind,

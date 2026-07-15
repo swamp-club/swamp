@@ -54,8 +54,8 @@ function resolveSubjects(
     subjects.push(`group:${groupName}`);
   }
 
-  for (const collective of accessPrincipal.collectives) {
-    subjects.push(`idp-group:${collective}`);
+  for (const group of accessPrincipal.groups) {
+    subjects.push(`idp-group:${group}`);
   }
 
   return subjects;

@@ -82,9 +82,14 @@ export interface DeviceAuthDeps {
     principalId: string,
     principalEmail: string,
     collectives: string[],
+    groups: string[],
     repoDir: string,
     repoContext: RepositoryContext,
   ) => Promise<string>;
+  readonly storeAccessToken: (
+    tokenName: string,
+    accessToken: string,
+  ) => Promise<void>;
   readonly clientSecret: string;
 }
 
@@ -219,9 +224,16 @@ async function handleDeviceToken(
       principalId,
       userInfo.email,
       [...userInfo.collectives],
+      [...userInfo.groups],
       deps.repoDir,
       deps.repoContext,
     );
+
+    const tokenName = token.split(".")[0];
+    await deps.storeAccessToken(tokenName, tokenResponse.accessToken);
+    logger.info("Stored OAuth access token for {name}", {
+      name: tokenName,
+    });
 
     logger.info("OAuth device flow completed for {principal}", {
       principal: principalId,
@@ -233,6 +245,7 @@ async function handleDeviceToken(
         email: userInfo.email,
         name: userInfo.name,
         collectives: userInfo.collectives,
+        groups: userInfo.groups,
       },
     });
   } catch (err) {
@@ -270,6 +283,7 @@ async function mintServerTokenImpl(
   principalId: string,
   principalEmail: string,
   collectives: string[],
+  groups: string[],
   repoDir: string,
   repoContext: RepositoryContext,
 ): Promise<string> {
@@ -305,6 +319,7 @@ async function mintServerTokenImpl(
     principalId,
     principalEmail,
     collectives,
+    groups,
     createdAt: new Date(now).toISOString(),
     expiresAt: new Date(now + DEFAULT_DURATION_MS).toISOString(),
     vaultName,
@@ -336,6 +351,10 @@ async function mintServerTokenImpl(
   return `${tokenName}.${plaintext}`;
 }
 
+export function oauthAccessTokenKey(tokenName: string): string {
+  return `oauth-access-token-${tokenName}`;
+}
+
 export function createDeviceAuthDeps(
   authConfig: ServeAuthConfig & { oauthClientId: string },
   clientSecret: string,
@@ -352,5 +371,15 @@ export function createDeviceAuthDeps(
     getUserInfo: oauthGetUserInfo,
     checkAdmission,
     mintServerToken: mintServerTokenImpl,
+    storeAccessToken: async (tokenName: string, accessToken: string) => {
+      const vaultService = await VaultService.fromRepository(repoDir);
+      const vaultNames = vaultService.getVaultNames();
+      if (vaultNames.length === 0) return;
+      await vaultService.put(
+        vaultNames[0],
+        oauthAccessTokenKey(tokenName),
+        accessToken,
+      );
+    },
   };
 }

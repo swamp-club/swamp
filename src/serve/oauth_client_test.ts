@@ -318,20 +318,21 @@ Deno.test("getUserInfo: returns user info with collectives", async () => {
       sub: "user-1",
       email: "user@example.com",
       name: "Test User",
-      groups: ["org-a", "org-b"],
+      collectives: ["org-a", "org-b"],
     });
   });
   try {
     const result = await getUserInfo(
       `http://localhost:${mock.port}`,
       "my-token",
-      "groups",
+      "collectives",
       AbortSignal.timeout(5000),
     );
     assertEquals(result.sub, "user-1");
     assertEquals(result.email, "user@example.com");
     assertEquals(result.name, "Test User");
     assertEquals(result.collectives, ["org-a", "org-b"]);
+    assertEquals(result.groups, []);
   } finally {
     await mock.shutdown();
   }
@@ -359,7 +360,7 @@ Deno.test("getUserInfo: uses custom groupsField", async () => {
   }
 });
 
-Deno.test("getUserInfo: defaults collectives to empty array when field is missing", async () => {
+Deno.test("getUserInfo: defaults collectives and groups to empty arrays when fields are missing", async () => {
   const mock = startMockServer(() =>
     Response.json({
       sub: "user-3",
@@ -371,10 +372,11 @@ Deno.test("getUserInfo: defaults collectives to empty array when field is missin
     const result = await getUserInfo(
       `http://localhost:${mock.port}`,
       "tok",
-      "groups",
+      "collectives",
       AbortSignal.timeout(5000),
     );
     assertEquals(result.collectives, []);
+    assertEquals(result.groups, []);
   } finally {
     await mock.shutdown();
   }
@@ -397,6 +399,51 @@ Deno.test("getUserInfo: defaults collectives to empty array when field is not an
       AbortSignal.timeout(5000),
     );
     assertEquals(result.collectives, []);
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("getUserInfo: parses groups field separately from collectives", async () => {
+  const mock = startMockServer(() =>
+    Response.json({
+      sub: "user-5",
+      email: "user5@example.com",
+      collectives: ["acme-corp"],
+      groups: ["platform-eng", "developers"],
+    })
+  );
+  try {
+    const result = await getUserInfo(
+      `http://localhost:${mock.port}`,
+      "tok",
+      "collectives",
+      AbortSignal.timeout(5000),
+    );
+    assertEquals(result.collectives, ["acme-corp"]);
+    assertEquals(result.groups, ["platform-eng", "developers"]);
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("getUserInfo: filters non-string values from groups array", async () => {
+  const mock = startMockServer(() =>
+    Response.json({
+      sub: "user-6",
+      email: "user6@example.com",
+      collectives: [],
+      groups: ["valid-group", 42, null, "another-group"],
+    })
+  );
+  try {
+    const result = await getUserInfo(
+      `http://localhost:${mock.port}`,
+      "tok",
+      "collectives",
+      AbortSignal.timeout(5000),
+    );
+    assertEquals(result.groups, ["valid-group", "another-group"]);
   } finally {
     await mock.shutdown();
   }

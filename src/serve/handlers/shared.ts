@@ -126,12 +126,68 @@ export function isAccessModelType(
 }
 
 const connectionCollectives = new WeakMap<WebSocket, readonly string[]>();
+const connectionGroups = new WeakMap<WebSocket, readonly string[]>();
+const connectionPrincipalId = new WeakMap<WebSocket, string>();
+const principalSockets = new Map<string, Set<WebSocket>>();
 
 export function setConnectionCollectives(
   socket: WebSocket,
   collectives: readonly string[],
+  groups: readonly string[],
+  principalId?: string,
 ): void {
   connectionCollectives.set(socket, collectives);
+  connectionGroups.set(socket, groups);
+  if (principalId) {
+    connectionPrincipalId.set(socket, principalId);
+    let sockets = principalSockets.get(principalId);
+    if (!sockets) {
+      sockets = new Set();
+      principalSockets.set(principalId, sockets);
+    }
+    sockets.add(socket);
+  }
+}
+
+export function removeConnection(socket: WebSocket): void {
+  const principalId = connectionPrincipalId.get(socket);
+  if (principalId) {
+    const sockets = principalSockets.get(principalId);
+    if (sockets) {
+      sockets.delete(socket);
+      if (sockets.size === 0) {
+        principalSockets.delete(principalId);
+      }
+    }
+    connectionPrincipalId.delete(socket);
+  }
+}
+
+export function updateCollectivesForPrincipal(
+  principalId: string,
+  collectives: readonly string[],
+  groups: readonly string[],
+): void {
+  const sockets = principalSockets.get(principalId);
+  if (!sockets) return;
+  for (const socket of sockets) {
+    connectionCollectives.set(socket, collectives);
+    connectionGroups.set(socket, groups);
+  }
+}
+
+export function getActivePrincipalIds(): readonly string[] {
+  return [...principalSockets.keys()];
+}
+
+export function getConnectionCollectives(
+  socket: WebSocket,
+): readonly string[] {
+  return connectionCollectives.get(socket) ?? [];
+}
+
+export function getConnectionGroups(socket: WebSocket): readonly string[] {
+  return connectionGroups.get(socket) ?? [];
 }
 
 export function authorizeOrReject(
@@ -165,9 +221,10 @@ export function authorizeOrReject(
   }
 
   const collectives = connectionCollectives.get(socket) ?? [];
+  const groups = connectionGroups.get(socket) ?? [];
   const service = ctx.policySnapshotLoader.decisionService;
   const decision = service.decide(
-    { principal, collectives },
+    { principal, collectives, groups },
     action,
     resource,
   );
@@ -176,7 +233,7 @@ export function authorizeOrReject(
 
   if (!decision) {
     const adminDecision = service.decide(
-      { principal, collectives },
+      { principal, collectives, groups },
       "admin",
       { kind: "access", name: "*", fields: {} },
     );

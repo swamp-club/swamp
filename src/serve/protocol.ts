@@ -79,12 +79,14 @@ export interface AccessCheckPayload {
   action: string;
   resource: string;
   collectives?: string[];
+  groups?: string[];
 }
 
 export interface AccessCanIPayload {
   action?: string;
   resource?: string;
   collectives?: string[];
+  groups?: string[];
 }
 
 export interface DataGetPayload {

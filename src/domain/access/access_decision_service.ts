@@ -25,6 +25,7 @@ import type { Subject } from "./subject.ts";
 export interface AccessPrincipal {
   readonly principal: Principal;
   readonly collectives: readonly string[];
+  readonly groups: readonly string[];
 }
 
 export interface AccessResource {

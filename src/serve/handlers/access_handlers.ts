@@ -61,6 +61,8 @@ import { modelRegistry } from "../../domain/models/model.ts";
 import {
   authorizeOrReject,
   type ConnectionContext,
+  getConnectionCollectives,
+  getConnectionGroups,
   sanitizeErrorForClient,
   send,
   sendError,
@@ -244,11 +246,11 @@ export function handleAccessCheck(
     }
 
     const resource = parseResourceSelector(payload.resource);
-    const collectives = payload.collectives ?? [];
-
+    const collectives = getConnectionCollectives(socket);
+    const groups = getConnectionGroups(socket);
     const service = ctx.policySnapshotLoader.decisionService;
     const decisions = service.explain(
-      { principal, collectives },
+      { principal, collectives, groups },
       actionResult.data,
       { kind: resource.kind, name: resource.pattern, fields: {} },
     );
@@ -260,7 +262,7 @@ export function handleAccessCheck(
         subject: payload.subject,
         action: payload.action,
         resource: payload.resource,
-        collectives,
+        collectives: [...collectives],
         decisions: decisions as unknown as Record<string, unknown>[],
       },
     });
@@ -301,8 +303,9 @@ export function handleAccessCanI(
     }
 
     const snapshot = ctx.policySnapshotLoader.snapshot;
-    const collectives = payload.collectives ?? [];
-    const accessPrincipal = { principal, collectives };
+    const collectives = getConnectionCollectives(socket);
+    const groups = getConnectionGroups(socket);
+    const accessPrincipal = { principal, collectives, groups };
     const principalStr = principalToString(principal);
 
     if (payload.action && payload.resource) {
@@ -346,8 +349,8 @@ export function handleAccessCanI(
       for (const groupName of localGroups) {
         subjects.push(`group:${groupName}`);
       }
-      for (const collective of collectives) {
-        subjects.push(`idp-group:${collective}`);
+      for (const group of groups) {
+        subjects.push(`idp-group:${group}`);
       }
 
       const grants = snapshot.grantsForSubjects(subjects);
