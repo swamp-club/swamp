@@ -176,6 +176,14 @@ export function updateCollectivesForPrincipal(
   }
 }
 
+export function closeConnectionsForPrincipal(principalId: string): void {
+  const sockets = principalSockets.get(principalId);
+  if (!sockets) return;
+  for (const socket of sockets) {
+    socket.close(4003, "Session revoked");
+  }
+}
+
 export function getConnectionCollectives(
   socket: WebSocket,
 ): readonly string[] {

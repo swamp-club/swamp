@@ -86,7 +86,7 @@ export const accessCheckCommand = new Command()
   )
   .option(
     "--collectives <collectives:string>",
-    "Comma-separated collective memberships to simulate",
+    "Comma-separated collective memberships for CEL condition evaluation (principal.collectives); use --groups to simulate idp-group: grant subjects",
   )
   .option(
     "--groups <groups:string>",
@@ -119,16 +119,21 @@ export const accessCheckCommand = new Command()
           "--field is not supported with --server: the server evaluates conditions against its own resource context",
         );
       }
+      if (options.groups) {
+        throw new UserError(
+          "--groups is not supported with --server: the server uses the IdP groups from your authenticated token",
+        );
+      }
+      if (options.collectives) {
+        throw new UserError(
+          "--collectives is not supported with --server: the server uses the collectives from your authenticated token",
+        );
+      }
 
       const ctx = createContext(options as GlobalOptions, [
         "access",
         "check",
       ]);
-      const collectives = options.collectives
-        ? (options.collectives as string).split(",").map((c: string) =>
-          c.trim()
-        ).filter((c: string) => c.length > 0)
-        : [];
 
       const token = await resolveServerToken(
         server,
@@ -143,7 +148,6 @@ export const accessCheckCommand = new Command()
             subject: options.subject as string,
             action: options.action as string,
             resource: options.on as string,
-            collectives,
           },
         },
       );

@@ -263,6 +263,7 @@ export function handleAccessCheck(
         action: payload.action,
         resource: payload.resource,
         collectives: [...collectives],
+        groups: [...groups],
         decisions: decisions as unknown as Record<string, unknown>[],
       },
     });

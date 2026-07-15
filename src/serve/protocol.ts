@@ -611,6 +611,7 @@ export interface AccessCheckResponse {
   action: string;
   resource: string;
   collectives: string[];
+  groups: string[];
   decisions: Record<string, unknown>[];
 }
 

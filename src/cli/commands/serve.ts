@@ -29,6 +29,7 @@ import { parseTimeout } from "../duration_parser.ts";
 import { buildServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
 import { handleConnection } from "../../serve/connection.ts";
 import {
+  closeConnectionsForPrincipal,
   removeConnection,
   setConnectionCollectives,
   updateCollectivesForPrincipal,
@@ -1607,10 +1608,7 @@ export const serveCommand = new Command()
           );
         },
         updateConnectionCollectives: updateCollectivesForPrincipal,
-        closeConnectionsForPrincipal: (_principalId) => {
-          // Active connections for this principal will fail on next
-          // authorizeOrReject since the token is revoked
-        },
+        closeConnectionsForPrincipal,
       });
       collectiveRefreshService.start();
     }
