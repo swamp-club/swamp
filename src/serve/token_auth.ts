@@ -89,7 +89,12 @@ export function extractWebSocketToken(
 }
 
 export type ServerTokenAuthResult =
-  | { ok: true; principalId: string; collectives: readonly string[] }
+  | {
+    ok: true;
+    principalId: string;
+    collectives: readonly string[];
+    groups: readonly string[];
+  }
   | { ok: false; error: string };
 
 /**
@@ -123,6 +128,7 @@ export async function authenticateServerToken(
 
   let principalId: string | undefined;
   let collectives: readonly string[] = [];
+  let groups: readonly string[] = [];
   for await (
     const event of modelMethodRun(libCtx, deps, {
       modelIdOrName: split.name,
@@ -151,6 +157,9 @@ export async function authenticateServerToken(
       if (tokenRecord && Array.isArray(tokenRecord.collectives)) {
         collectives = tokenRecord.collectives as string[];
       }
+      if (tokenRecord && Array.isArray(tokenRecord.groups)) {
+        groups = tokenRecord.groups as string[];
+      }
     }
   }
 
@@ -165,5 +174,5 @@ export async function authenticateServerToken(
     name: split.name,
     principal: principalId,
   });
-  return { ok: true, principalId, collectives };
+  return { ok: true, principalId, collectives, groups };
 }

@@ -68,6 +68,7 @@ function makeMockDeps(
         email: "user@example.com",
         name: "Test User",
         collectives: ["team-a"],
+        groups: [],
       }),
     checkAdmission: (
       _userSub,
@@ -82,9 +83,11 @@ function makeMockDeps(
       _principalId,
       _principalEmail,
       _collectives,
+      _groups,
       _repoDir,
       _repoContext,
     ) => Promise.resolve("oauth-user-1-1234567890.secret-token"),
+    storeAccessToken: (_tokenName, _refreshToken) => Promise.resolve(),
     ...overrides,
   };
 }
@@ -331,12 +334,14 @@ Deno.test("handleDeviceAuth: POST /auth/device/token passes correct args to deps
         sub: "sub-42",
         email: "sub42@example.com",
         collectives: ["team-x"],
+        groups: [],
       });
     },
     mintServerToken: (
       principalId,
       principalEmail,
       collectives,
+      _groups,
       _repoDir,
       _repoContext,
     ) => {
@@ -360,6 +365,106 @@ Deno.test("handleDeviceAuth: POST /auth/device/token passes correct args to deps
   assertEquals(capturedPrincipalId, "user:sub-42");
   assertEquals(capturedPrincipalEmail, "sub42@example.com");
   assertEquals(capturedCollectives, ["team-x"]);
+});
+
+// ── POST /auth/device/token — access token storage ───────────────────
+
+Deno.test("handleDeviceAuth: POST /auth/device/token stores access token in vault", async () => {
+  let storedTokenName = "";
+  let storedAccessToken = "";
+
+  const deps = makeMockDeps({
+    pollForToken: () =>
+      Promise.resolve({
+        accessToken: "access-tok-xyz",
+        tokenType: "Bearer",
+      }),
+    mintServerToken: () => Promise.resolve("oauth-mint-1.secret-value"),
+    storeAccessToken: (tokenName, accessToken) => {
+      storedTokenName = tokenName;
+      storedAccessToken = accessToken;
+      return Promise.resolve();
+    },
+  });
+
+  const result = await handleDeviceAuth(
+    postRequest("/auth/device/token", { deviceCode: "dev-123" }),
+    deps,
+  );
+  assertEquals(result?.status, 200);
+  assertEquals(storedTokenName, "oauth-mint-1");
+  assertEquals(storedAccessToken, "access-tok-xyz");
+});
+
+// ── POST /auth/device/token — groups separation ─────────────────────
+
+Deno.test("handleDeviceAuth: POST /auth/device/token passes collectives and groups separately to mint", async () => {
+  let capturedCollectives: string[] = [];
+  let capturedGroups: string[] = [];
+
+  const deps = makeMockDeps({
+    getUserInfo: (_providerUrl, _accessToken, _groupsField, _signal) =>
+      Promise.resolve({
+        sub: "user-1",
+        email: "user@example.com",
+        name: "Test User",
+        collectives: ["acme-corp"],
+        groups: ["platform-eng", "developers"],
+      }),
+    checkAdmission: () => ({ admitted: true, reason: "admitted" }),
+    mintServerToken: (
+      _principalId,
+      _principalEmail,
+      collectives,
+      groups,
+      _repoDir,
+      _repoContext,
+    ) => {
+      capturedCollectives = collectives;
+      capturedGroups = groups;
+      return Promise.resolve("token.secret");
+    },
+  });
+
+  const result = await handleDeviceAuth(
+    postRequest("/auth/device/token", { deviceCode: "dev-123" }),
+    deps,
+  );
+  assertEquals(result?.status, 200);
+  assertEquals(capturedCollectives, ["acme-corp"]);
+  assertEquals(capturedGroups, ["platform-eng", "developers"]);
+  const body = await result!.json();
+  assertEquals(body.principal.collectives, ["acme-corp"]);
+  assertEquals(body.principal.groups, ["platform-eng", "developers"]);
+});
+
+Deno.test("handleDeviceAuth: POST /auth/device/token admission only checks collectives not groups", async () => {
+  let admissionCollectives: readonly string[] = [];
+
+  const deps = makeMockDeps({
+    getUserInfo: (_providerUrl, _accessToken, _groupsField, _signal) =>
+      Promise.resolve({
+        sub: "user-1",
+        email: "user@example.com",
+        collectives: ["team-a"],
+        groups: ["platform-eng"],
+      }),
+    checkAdmission: (
+      _userSub,
+      collectives,
+      _allowedCollectives,
+      _allowedUsers,
+    ) => {
+      admissionCollectives = collectives;
+      return { admitted: true, reason: "admitted" };
+    },
+  });
+
+  await handleDeviceAuth(
+    postRequest("/auth/device/token", { deviceCode: "dev-123" }),
+    deps,
+  );
+  assertEquals(admissionCollectives, ["team-a"]);
 });
 
 // ── POST /auth/device/token — unexpected error ────────────────────────

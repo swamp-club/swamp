@@ -61,8 +61,9 @@ function makeGroup(name: string, memberIds: string[]): Group {
 function makePrincipal(
   id: string,
   collectives: string[] = [],
+  groups: string[] = [],
 ): AccessPrincipal {
-  return { principal: { kind: "user", id }, collectives };
+  return { principal: { kind: "user", id }, collectives, groups };
 }
 
 function makeResource(
@@ -187,7 +188,7 @@ Deno.test("decide: resolves IdP-asserted group from collectives", () => {
   const service = new GrantBasedAccessDecisionService(snapshot);
 
   const result = service.decide(
-    makePrincipal("adam", ["platform-eng"]),
+    makePrincipal("adam", [], ["platform-eng"]),
     "read",
     makeResource(),
   );
@@ -332,7 +333,7 @@ Deno.test("explain: includes grants matched via group and IdP-group subjects", (
   const service = new GrantBasedAccessDecisionService(snapshot);
 
   const result = service.explain(
-    makePrincipal("adam", ["org1"]),
+    makePrincipal("adam", [], ["org1"]),
     "read",
     makeResource(),
   );

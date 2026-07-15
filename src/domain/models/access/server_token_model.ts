@@ -48,6 +48,9 @@ export const ServerTokenSchema = z.object({
   collectives: z.array(z.string()).default([]).describe(
     "Collective memberships snapshotted at login time (from OAuth userinfo)",
   ),
+  groups: z.array(z.string()).default([]).describe(
+    "IdP group memberships snapshotted at login time (from OAuth userinfo groups field)",
+  ),
   createdAt: z.string().datetime(),
   expiresAt: z.string().datetime(),
   lastUsedAt: z.string().datetime().optional(),
@@ -86,6 +89,7 @@ const MintArgsSchema = z.object({
   principalId: z.string().min(1),
   principalEmail: z.string().min(1),
   collectives: z.array(z.string()).default([]),
+  groups: z.array(z.string()).default([]),
   vaultName: z.string().min(1),
   durationMs: z.number().int().positive().optional(),
 });
@@ -117,6 +121,7 @@ async function mint(
     principalId: args.principalId,
     principalEmail: args.principalEmail,
     collectives: args.collectives,
+    groups: args.groups,
     createdAt: new Date(now).toISOString(),
     expiresAt: new Date(now + durationMs).toISOString(),
     vaultName: args.vaultName,
@@ -207,6 +212,7 @@ async function rotate(
     principalId: existing.principalId,
     principalEmail: existing.principalEmail,
     collectives: existing.collectives,
+    groups: existing.groups,
     createdAt: new Date(now).toISOString(),
     expiresAt: new Date(now + durationMs).toISOString(),
     vaultName: existing.vaultName,
@@ -235,6 +241,35 @@ async function revoke(
     "token",
     TOKEN_DATA_NAME,
     revoked,
+  );
+  return { dataHandles: [handle] };
+}
+
+const UpdateCollectivesArgsSchema = z.object({
+  collectives: z.array(z.string()),
+  groups: z.array(z.string()).default([]),
+});
+
+async function updateCollectives(
+  args: z.infer<typeof UpdateCollectivesArgsSchema>,
+  context: MethodContext,
+): Promise<MethodResult> {
+  const token = await readToken(context);
+  if (token.state !== "active") {
+    return { dataHandles: [] };
+  }
+  if (isExpired(token, Date.now())) {
+    return { dataHandles: [] };
+  }
+  const updated: ServerToken = {
+    ...token,
+    collectives: args.collectives,
+    groups: args.groups,
+  };
+  const handle = await context.writeResource!(
+    "token",
+    TOKEN_DATA_NAME,
+    updated,
   );
   return { dataHandles: [handle] };
 }
@@ -300,6 +335,13 @@ export const serverTokenModel: ModelDefinition = defineModel({
       kind: "action",
       arguments: EmptyArgsSchema,
       execute: expire,
+    },
+    updateCollectives: {
+      description:
+        "Update the collective memberships on an active token (used by the background refresh loop)",
+      kind: "action",
+      arguments: UpdateCollectivesArgsSchema,
+      execute: updateCollectives,
     },
   },
 });

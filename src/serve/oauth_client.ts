@@ -42,6 +42,7 @@ export interface OAuthUserInfo {
   readonly email: string;
   readonly name?: string;
   readonly collectives: string[];
+  readonly groups: string[];
 }
 
 /** Error codes returned by the OAuth token endpoint during device grant polling. */
@@ -171,11 +172,16 @@ export async function getUserInfo(
   const collectives = Array.isArray(rawCollectives)
     ? rawCollectives.filter((c): c is string => typeof c === "string")
     : [];
+  const rawGroups = data.groups;
+  const groups = Array.isArray(rawGroups)
+    ? rawGroups.filter((g): g is string => typeof g === "string")
+    : collectives;
   return {
     sub: data.sub,
     email: data.email,
     name: data.name,
     collectives,
+    groups,
   };
 }
 

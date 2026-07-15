@@ -388,3 +388,59 @@ Deno.test("serverTokenModel: old credentials fail after rotate", async () => {
     "does not match",
   );
 });
+
+// ── updateCollectives ─────────────────────────────────────────────────
+
+Deno.test("serverTokenModel: updateCollectives replaces collectives on active token", async () => {
+  const { context, store } = await mintToken();
+  await serverTokenModel.methods.updateCollectives.execute(
+    { collectives: ["platform-eng", "developers"] },
+    context,
+  );
+  assertEquals(store.get("token-main")!.collectives, [
+    "platform-eng",
+    "developers",
+  ]);
+});
+
+Deno.test("serverTokenModel: updateCollectives preserves all other token fields", async () => {
+  const { context, store } = await mintToken();
+  const before = { ...store.get("token-main")! };
+  await serverTokenModel.methods.updateCollectives.execute(
+    { collectives: ["new-group"] },
+    context,
+  );
+  const after = store.get("token-main")!;
+  assertEquals(after.name, before.name);
+  assertEquals(after.state, before.state);
+  assertEquals(after.principalId, before.principalId);
+  assertEquals(after.principalEmail, before.principalEmail);
+  assertEquals(after.createdAt, before.createdAt);
+  assertEquals(after.expiresAt, before.expiresAt);
+  assertEquals(after.vaultName, before.vaultName);
+  assertEquals(after.secretKey, before.secretKey);
+});
+
+Deno.test("serverTokenModel: updateCollectives is a no-op on revoked token", async () => {
+  const { context, store, versions } = await mintToken();
+  await serverTokenModel.methods.revoke.execute({}, context);
+  const versionAfterRevoke = versions.get("token-main");
+  await serverTokenModel.methods.updateCollectives.execute(
+    { collectives: ["should-not-apply"] },
+    context,
+  );
+  assertEquals(versions.get("token-main"), versionAfterRevoke);
+  assertEquals(store.get("token-main")!.state, "revoked");
+});
+
+Deno.test("serverTokenModel: updateCollectives is a no-op on expired token", async () => {
+  const { context, store, versions } = await mintToken();
+  store.get("token-main")!.expiresAt = new Date(Date.now() - 1_000)
+    .toISOString();
+  const versionBefore = versions.get("token-main");
+  await serverTokenModel.methods.updateCollectives.execute(
+    { collectives: ["should-not-apply"] },
+    context,
+  );
+  assertEquals(versions.get("token-main"), versionBefore);
+});

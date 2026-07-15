@@ -59,7 +59,7 @@ export const accessCheckCommand = new Command()
   )
   .example(
     "With simulated IdP groups",
-    "swamp access check --subject user:adam --action run --on workflow:@acme/deploy --collectives platform-eng,ops",
+    "swamp access check --subject user:adam --action run --on workflow:@acme/deploy --groups platform-eng,ops",
   )
   .example(
     "With resource fields for condition evaluation",
@@ -86,7 +86,11 @@ export const accessCheckCommand = new Command()
   )
   .option(
     "--collectives <collectives:string>",
-    "Comma-separated IdP group memberships to simulate",
+    "Comma-separated collective memberships for CEL condition evaluation (principal.collectives); use --groups to simulate idp-group: grant subjects",
+  )
+  .option(
+    "--groups <groups:string>",
+    "Comma-separated IdP group memberships to simulate for idp-group: grants",
   )
   .option(
     "--field <field:string>",
@@ -115,16 +119,21 @@ export const accessCheckCommand = new Command()
           "--field is not supported with --server: the server evaluates conditions against its own resource context",
         );
       }
+      if (options.groups) {
+        throw new UserError(
+          "--groups is not supported with --server: the server uses the IdP groups from your authenticated token",
+        );
+      }
+      if (options.collectives) {
+        throw new UserError(
+          "--collectives is not supported with --server: the server uses the collectives from your authenticated token",
+        );
+      }
 
       const ctx = createContext(options as GlobalOptions, [
         "access",
         "check",
       ]);
-      const collectives = options.collectives
-        ? (options.collectives as string).split(",").map((c: string) =>
-          c.trim()
-        ).filter((c: string) => c.length > 0)
-        : [];
 
       const token = await resolveServerToken(
         server,
@@ -139,7 +148,6 @@ export const accessCheckCommand = new Command()
             subject: options.subject as string,
             action: options.action as string,
             resource: options.on as string,
-            collectives,
           },
         },
       );
@@ -180,6 +188,11 @@ export const accessCheckCommand = new Command()
         .filter((c: string) => c.length > 0)
       : [];
 
+    const groups = options.groups
+      ? (options.groups as string).split(",").map((g: string) => g.trim())
+        .filter((g: string) => g.length > 0)
+      : [];
+
     const eventBus = new EventBus();
     const loader = new PolicySnapshotLoader(
       repoContext.unifiedDataRepo,
@@ -190,7 +203,11 @@ export const accessCheckCommand = new Command()
       const snapshot = await loader.load();
       const service = new GrantBasedAccessDecisionService(snapshot);
 
-      const accessPrincipal = { principal, collectives };
+      const accessPrincipal = {
+        principal,
+        collectives,
+        groups,
+      };
       const fields = parseFieldFlags(options.field as string[] | undefined);
       const accessResource = {
         kind: resource.kind,
