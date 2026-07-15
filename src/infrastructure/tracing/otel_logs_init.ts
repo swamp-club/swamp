@@ -24,6 +24,9 @@ import type {
 } from "@opentelemetry/sdk-logs";
 import { ExportResultCode } from "@opentelemetry/core";
 import type { ExportResult } from "@opentelemetry/core";
+// Static import is deliberate: otel_config.ts is a tiny leaf with no SDK deps,
+// so it costs nothing eagerly. (otel_init.ts imports it dynamically only because
+// it already batches all its SDK imports inside the function body.)
 import { parseOtlpHeaders } from "./otel_config.ts";
 
 /**
