@@ -17,15 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { getTextFormatter, type LogRecord, type Sink } from "@logtape/logtape";
+import type { LogRecord, Sink } from "@logtape/logtape";
 import { dirname } from "@std/path";
 import type { SecretRedactor } from "../../domain/secrets/mod.ts";
 import { assertSafePath } from "../persistence/safe_path.ts";
+import { textFormatter } from "./log_format.ts";
 
 /**
- * Formats a LogRecord as a plain text line for file output.
+ * Formats a LogRecord as a plain text line for file output, using the same
+ * RFC3339 timestamp and line layout as the console text sink.
  */
-const formatRecord = getTextFormatter();
+const formatRecord = textFormatter();
 
 /**
  * Checks whether `category` starts with `prefix`.

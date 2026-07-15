@@ -119,6 +119,22 @@ Configured in `initializeLogging()`:
 The pretty sink uses `@logtape/pretty` with dimmed timestamps/levels, bold green
 categories, and aligned output.
 
+## Timestamp and Line Format
+
+All log lines carry an RFC3339 (ISO-8601 UTC, `Z`) timestamp, e.g.
+`2026-07-15T10:18:15.912Z` — unambiguous about timezone and with a date, so
+long-running daemon logs stay readable across days. The timestamp format is
+defined once in `src/infrastructure/logging/log_format.ts` (`TIMESTAMP_FORMAT`,
+`textFormatter()`) and shared by every text sink so they cannot drift:
+
+- The console (non-TTY / `--no-color`), stderr-only, and persisted run-file
+  sinks all use `textFormatter()`, whose layout is
+  `<timestamp> [<LEVEL>] <category>: <message>` in **plain text** — no ANSI, so
+  piped or redirected output stays clean.
+- The pretty sink (TTY) keeps its richer aligned, colored layout but uses the
+  same RFC3339 timestamp. Colored output is the pretty sink's job; the console
+  sink is never colored.
+
 ## Color Support
 
 Colors for `writeOutput` content come from `@std/fmt/colors`, **not** LogTape:

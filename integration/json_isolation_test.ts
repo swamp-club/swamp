@@ -77,13 +77,17 @@ Deno.test("--json: error path emits exactly one JSON document on stderr", async 
 });
 
 Deno.test("--json: stdout has no LogTape pretty-formatted log lines", async () => {
-  // `INF` / `WRN` / `ERR` prefixes are the LogTape pretty formatter's
-  // hallmark. They must never appear on stdout under --json.
+  // A leading RFC3339 timestamp followed by a bracketed `[INF]` / `[WRN]`
+  // level is the hallmark of a swamp log line. They must never appear on
+  // stdout under --json.
   await withTempDir(async (dir) => {
     await initializeTestRepo(dir);
     const { stdout } = await runCliCommand(["data", "list", "--json"], dir);
-    // Must not contain LogTape level prefixes.
-    if (/^\d{2}:\d{2}:\d{2}\.\d{3}\s+(INF|WRN|ERR|DBG|FTL)\s/m.test(stdout)) {
+    // Must not contain swamp log-line prefixes.
+    if (
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\s+\[(INF|WRN|ERR|DBG|FTL)\]\s/m
+        .test(stdout)
+    ) {
       throw new Error(
         `stdout contained LogTape pretty log line:\n${stdout}`,
       );
@@ -119,9 +123,10 @@ Deno.test("--json: model method run stdout is parseable JSON", async () => {
     assertEquals(run.code, 0);
     const result = JSON.parse(run.stdout);
     assertEquals(result.status, "succeeded");
-    // Stdout must not contain LogTape pretty-formatted log lines.
+    // Stdout must not contain swamp log lines.
     if (
-      /^\d{2}:\d{2}:\d{2}\.\d{3}\s+(INF|WRN|ERR|DBG|FTL)\s/m.test(run.stdout)
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\s+\[(INF|WRN|ERR|DBG|FTL)\]\s/m
+        .test(run.stdout)
     ) {
       throw new Error(
         `model method run --json leaked log lines on stdout:\n${run.stdout}`,
