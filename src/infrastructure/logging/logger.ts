@@ -21,11 +21,11 @@ import {
   configure,
   getConsoleSink,
   getLogger,
-  getTextFormatter,
   type LogLevel,
   type Sink,
 } from "@logtape/logtape";
 import { getPrettyFormatter } from "@logtape/pretty";
+import { textFormatter, TIMESTAMP_FORMAT } from "./log_format.ts";
 import { runFileSink } from "./run_file_sink.ts";
 
 export { runFileSink } from "./run_file_sink.ts";
@@ -41,7 +41,7 @@ export interface LoggingOptions {
 }
 
 const stderrEncoder = new TextEncoder();
-const stderrFormatter = getTextFormatter();
+const stderrFormatter = textFormatter();
 
 function createStderrSink(): Sink {
   return (record) => {
@@ -62,11 +62,13 @@ export async function initializeLogging(
 
   const logLevel: LogLevel = options.logLevel ?? "info";
 
+  // The console (non-pretty) sink always renders plain text: it is used for
+  // non-interactive contexts (piped, redirected, `--no-color`, non-TTY stdin),
+  // where ANSI escape codes would pollute the output. Colored output is the
+  // pretty sink's job, selected only when stdin is a TTY.
   const consoleSink: Sink = options.stderrOnly
     ? createStderrSink()
-    : options.noColor
-    ? getConsoleSink({ formatter: getTextFormatter() })
-    : getConsoleSink();
+    : getConsoleSink({ formatter: textFormatter() });
 
   const sinks: Record<string, Sink | (Sink & Disposable)> = {
     console: consoleSink,
@@ -82,7 +84,7 @@ export async function initializeLogging(
   if (options.prettyOutput) {
     const useColors = !(options.noColor ?? false);
     const prettyFormat = getPrettyFormatter({
-      timestamp: "time",
+      timestamp: TIMESTAMP_FORMAT,
       timestampStyle: "dim",
       levelStyle: "dim",
       icons: false,

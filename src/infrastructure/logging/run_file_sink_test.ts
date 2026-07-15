@@ -19,6 +19,7 @@
 
 import {
   assertEquals,
+  assertMatch,
   assertNotEquals,
   assertStringIncludes,
 } from "@std/assert";
@@ -76,6 +77,36 @@ Deno.test("RunFileSink writes log records to registered file", async () => {
 
     const content = await Deno.readTextFile(logPath);
     assertStringIncludes(content, "hello world");
+
+    sink.unregister(handle);
+  });
+});
+
+Deno.test("RunFileSink writes lines with an RFC3339 timestamp", async () => {
+  await withTempDir(async (dir) => {
+    const sink = new RunFileSink();
+    const logPath = join(dir, "test.log");
+
+    const handle = await sink.register(
+      ["model", "method", "run", "my-model"],
+      logPath,
+    );
+
+    const sinkFn = sink.sink;
+    sinkFn(
+      makeRecord(
+        ["model", "method", "run", "my-model", "execute"],
+        "hello world",
+      ),
+    );
+
+    const content = await Deno.readTextFile(logPath);
+    // Persisted run-file lines share the console text format: a full
+    // ISO-8601 UTC timestamp with a `Z`, followed by a bracketed level.
+    assertMatch(
+      content,
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z \[INF\] /m,
+    );
 
     sink.unregister(handle);
   });
