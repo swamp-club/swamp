@@ -1481,6 +1481,14 @@ export const serveCommand = new Command()
     }
 
     if (
+      groupRefreshMs > 0 && (authConfig.mode !== "oauth" || !oauthClientSecret)
+    ) {
+      logger.warn(
+        "--group-refresh-interval is set but --auth-mode oauth is not configured; group refresh is disabled",
+      );
+    }
+
+    if (
       groupRefreshMs > 0 && authConfig.mode === "oauth" &&
       oauthClientSecret
     ) {
