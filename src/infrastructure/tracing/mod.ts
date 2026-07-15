@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 export { initTracing, shutdownTracing } from "./otel_init.ts";
+export { initLogs, shutdownLogs } from "./otel_logs_init.ts";
 export {
   getTracer,
   SpanStatusCode,

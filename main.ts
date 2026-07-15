@@ -33,6 +33,7 @@ import { getOutputModeFromArgs } from "./src/cli/context.ts";
 import {
   initTracing,
   runWithParentTrace,
+  shutdownLogs,
   shutdownTracing,
 } from "./src/infrastructure/tracing/mod.ts";
 
@@ -50,6 +51,10 @@ if (import.meta.main) {
     renderError(error, outputMode);
     Deno.exit(exitCodeForError(error));
   } finally {
+    // Drain the OTLP logs signal before spans — shutdownLogs() awaits the
+    // exporter's in-flight sends so the last log records aren't cut by
+    // Deno.exit. Both are no-ops when their signal was never initialized.
+    await shutdownLogs();
     await shutdownTracing();
   }
 

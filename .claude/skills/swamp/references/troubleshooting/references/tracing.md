@@ -36,12 +36,24 @@ Tracing is most useful when:
 
 ## Configuration
 
-| Variable                      | Purpose                                | Default         |
-| ----------------------------- | -------------------------------------- | --------------- |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | Collector URL (tracing off when unset) | _(unset = off)_ |
-| `OTEL_TRACES_EXPORTER`        | `otlp`, `console`, or `none`           | `otlp`          |
-| `OTEL_SERVICE_NAME`           | Service name in traces                 | `swamp`         |
-| `OTEL_EXPORTER_OTLP_HEADERS`  | Auth headers (`key=val,key=val`)       | _(none)_        |
+| Variable                      | Purpose                                  | Default         |
+| ----------------------------- | ---------------------------------------- | --------------- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Collector URL (telemetry off when unset) | _(unset = off)_ |
+| `OTEL_TRACES_EXPORTER`        | `otlp`, `console`, or `none`             | `otlp`          |
+| `OTEL_LOGS_EXPORTER`          | `otlp`, `console` (stderr), or `none`    | `otlp`          |
+| `OTEL_SERVICE_NAME`           | Service name for traces and logs         | `swamp`         |
+| `OTEL_EXPORTER_OTLP_HEADERS`  | Auth headers (`key=val,key=val`)         | _(none)_        |
+| `OTEL_BLRP_USE`               | Batch log exports (`1` to enable)        | _(per-record)_  |
+
+### Logs Signal
+
+With an OTLP endpoint set, swamp also exports its structured log lines as OTel
+log records, each correlated with the active `trace_id`/`span_id` so logs sit
+next to their spans in the backend. Run secrets are redacted before export.
+Disable with `OTEL_LOGS_EXPORTER=none` (traces stay on); batch with
+`OTEL_BLRP_USE=1` for long-running `swamp serve`. If logs aren't arriving, check
+that the endpoint is set, `OTEL_LOGS_EXPORTER` is not `none`, and the collector
+accepts `POST /v1/logs`.
 
 ### Console Exporter (No Collector Needed)
 

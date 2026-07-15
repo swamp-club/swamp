@@ -139,6 +139,28 @@ export class RunFileSink {
   }
 
   /**
+   * Redacts `text` using every currently-active run redactor.
+   *
+   * Each active run registers its own {@link SecretRedactor} under a catch-all
+   * `[]` prefix, so every active run's secrets already apply to every record in
+   * the per-run files; applying their union here gives any other sink (e.g. the
+   * OTLP log sink, which exports records to an external collector) the same
+   * secret scrubbing without duplicating the redaction logic. Returns the input
+   * unchanged when no active redactor holds secrets. Over-redaction across
+   * concurrent runs is negligible in practice — secret values are long, unique
+   * strings.
+   */
+  redactActive(text: string): string {
+    let result = text;
+    for (const writer of this.writers.values()) {
+      if (writer.redactor?.hasSecrets) {
+        result = writer.redactor.redact(result);
+      }
+    }
+    return result;
+  }
+
+  /**
    * The sink function to pass to LogTape configure().
    * Writes to all registered prefixes that match the record's category.
    */
