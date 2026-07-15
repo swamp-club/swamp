@@ -50,6 +50,7 @@ export interface DoctorExtensionsRenderer {
 
 export interface DoctorExtensionsRendererOptions {
   verbose?: boolean;
+  denoPath?: string;
 }
 
 function iconFor(status: DoctorRegistryResult["status"]): string {
@@ -389,6 +390,11 @@ class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
 
 class JsonDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
   overallStatus: DoctorOverallStatus = "pass";
+  readonly #denoPath: string | undefined;
+
+  constructor(options: DoctorExtensionsRendererOptions) {
+    this.#denoPath = options.denoPath;
+  }
 
   handlers(): EventHandlers<DoctorExtensionsEvent> {
     return {
@@ -431,6 +437,9 @@ class JsonDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
           toState: t.toState,
           reason: t.reason,
         }));
+        if (this.#denoPath) {
+          output.denoPath = this.#denoPath;
+        }
         console.log(JSON.stringify(output, null, 2));
       },
       error: (e) => {
@@ -447,7 +456,7 @@ export function createDoctorExtensionsRenderer(
   const opts = options ?? {};
   switch (mode) {
     case "json":
-      return new JsonDoctorExtensionsRenderer();
+      return new JsonDoctorExtensionsRenderer(opts);
     case "log":
       return new LogDoctorExtensionsRenderer(opts);
   }

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertFalse } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type {
   DoctorExtensionsReport,
@@ -350,5 +350,41 @@ Deno.test(
       parsed.recentTransitions[0].reason,
       "source file deleted from disk",
     );
+  },
+);
+
+Deno.test(
+  "doctor_extensions json renderer: denoPath included when provided",
+  async () => {
+    const out = await captureStdout(async () => {
+      const r = createDoctorExtensionsRenderer("json", {
+        denoPath: "/home/user/.swamp/deno/deno",
+      });
+      const handlers = r.handlers();
+      await handlers.completed({
+        kind: "completed",
+        report: buildPassReport(),
+      });
+    });
+
+    const parsed = JSON.parse(out);
+    assertEquals(parsed.denoPath, "/home/user/.swamp/deno/deno");
+  },
+);
+
+Deno.test(
+  "doctor_extensions json renderer: denoPath omitted when not provided",
+  async () => {
+    const out = await captureStdout(async () => {
+      const r = createDoctorExtensionsRenderer("json");
+      const handlers = r.handlers();
+      await handlers.completed({
+        kind: "completed",
+        report: buildPassReport(),
+      });
+    });
+
+    const parsed = JSON.parse(out);
+    assertFalse("denoPath" in parsed);
   },
 );
