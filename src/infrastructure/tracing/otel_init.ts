@@ -68,16 +68,11 @@ export async function initTracing(): Promise<Context | undefined> {
   const contextManager = new AsyncLocalStorageContextManager();
   contextApi.context.setGlobalContextManager(contextManager);
 
-  const serviceName = Deno.env.get("OTEL_SERVICE_NAME") ?? "swamp";
-
-  const resource = Resource.default()
-    .merge(envDetectorSync.detect())
-    .merge(
-      new Resource({
-        [ATTR_SERVICE_NAME]: serviceName,
-        [ATTR_SERVICE_VERSION]: Deno.env.get("SWAMP_VERSION") ?? "dev",
-      }),
-    );
+  const { buildOtelResource } = await import("./otel_resource.ts");
+  const resource = buildOtelResource(Resource, envDetectorSync, {
+    serviceNameAttr: ATTR_SERVICE_NAME,
+    serviceVersionAttr: ATTR_SERVICE_VERSION,
+  });
 
   const provider = new BasicTracerProvider({ resource });
 

@@ -380,3 +380,60 @@ Deno.test("RunFileSink: applies the per-writer secret redactor", async () => {
     sink.unregister(handle);
   });
 });
+
+Deno.test("RunFileSink.redactActive: scrubs secrets from active run redactors", async () => {
+  await withTempDir(async (dir) => {
+    const sink = new RunFileSink();
+
+    const redactor = new SecretRedactor();
+    redactor.addSecret("supersecret");
+    const handle = await sink.register([], join(dir, "run.log"), redactor);
+
+    assertEquals(
+      sink.redactActive("bearer supersecret trailing"),
+      "bearer *** trailing",
+    );
+
+    sink.unregister(handle);
+  });
+});
+
+Deno.test("RunFileSink.redactActive: applies the union of every active redactor", async () => {
+  await withTempDir(async (dir) => {
+    const sink = new RunFileSink();
+
+    const redactorA = new SecretRedactor();
+    redactorA.addSecret("alpha-secret");
+    const redactorB = new SecretRedactor();
+    redactorB.addSecret("beta-secret");
+
+    const handleA = await sink.register([], join(dir, "a.log"), redactorA);
+    const handleB = await sink.register([], join(dir, "b.log"), redactorB);
+
+    assertEquals(
+      sink.redactActive("alpha-secret and beta-secret"),
+      "*** and ***",
+    );
+
+    sink.unregister(handleA);
+    sink.unregister(handleB);
+  });
+});
+
+Deno.test("RunFileSink.redactActive: passes text through unchanged when no redactor is active", async () => {
+  await withTempDir(async (dir) => {
+    const sink = new RunFileSink();
+
+    // No redactor at all.
+    assertEquals(sink.redactActive("nothing to redact"), "nothing to redact");
+
+    // A registered writer with no secrets must not alter text either.
+    const handle = await sink.register(
+      [],
+      join(dir, "run.log"),
+      new SecretRedactor(),
+    );
+    assertEquals(sink.redactActive("still untouched"), "still untouched");
+    sink.unregister(handle);
+  });
+});

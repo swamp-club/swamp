@@ -27,6 +27,8 @@ import {
 import { getPrettyFormatter } from "@logtape/pretty";
 import { textFormatter, TIMESTAMP_FORMAT } from "./log_format.ts";
 import { runFileSink } from "./run_file_sink.ts";
+import { initLogs } from "../tracing/mod.ts";
+import { createOtelLogRecordSink } from "./otel_log_sink.ts";
 
 export { runFileSink } from "./run_file_sink.ts";
 
@@ -103,23 +105,41 @@ export async function initializeLogging(
     sinks["pretty"] = getConsoleSink({ formatter: prettyFormat });
   }
 
+  // Initialize the OTel logs signal. When OTLP logs export is enabled (same
+  // OTEL_EXPORTER_OTLP_* config as traces, opt out via OTEL_LOGS_EXPORTER=none),
+  // this returns a LoggerProvider we bridge into LogTape via a sink. The sink
+  // exports over the network only — never stdout/stderr — so it is orthogonal
+  // to the CLI output mode. Zero cost when logs export is disabled.
+  const otelProvider = await initLogs();
+  const otelSinks: string[] = [];
+  if (otelProvider) {
+    sinks["otel"] = createOtelLogRecordSink(otelProvider);
+    otelSinks.push("otel");
+  }
+
   if (options.jsonMode) {
     // JSON mode: the renderError() function in
     // src/presentation/output/error_output.ts is the single emitter for
     // fatal output (it writes JSON to stderr and skips logger.fatal).
-    // The root logger has no sinks so nothing leaks via the standard
-    // logging pipeline. Audit at swamp-club#235: only error_output.ts
+    // The root logger has no *console* sinks so nothing leaks to stdout via the
+    // standard logging pipeline. Audit at swamp-club#235: only error_output.ts
     // calls logger.fatal in src/, both inside renderError itself.
+    //
+    // OTLP log export is orthogonal to output mode — it writes only to the
+    // network. So when the otel sink is enabled, lower the root threshold to
+    // the configured level and attach only the otel sink: all logs export,
+    // while stdout stays clean. When it is disabled, keep the original
+    // fatal/no-sink behavior byte-for-byte.
     loggers.push({
       category: [],
-      lowestLevel: "fatal",
-      sinks: [],
+      lowestLevel: otelSinks.length > 0 ? logLevel : "fatal",
+      sinks: [...otelSinks],
     });
   } else {
     loggers.push({
       category: [],
       lowestLevel: logLevel,
-      sinks: [options.prettyOutput ? "pretty" : "console"],
+      sinks: [options.prettyOutput ? "pretty" : "console", ...otelSinks],
     });
   }
 
@@ -138,13 +158,17 @@ export async function initializeLogging(
       {
         category: ["model", "method", "run"],
         lowestLevel: logLevel,
-        sinks: ["runFile"],
+        // In JSON mode these loggers override parent sinks, so the otel sink
+        // must be listed here explicitly or per-run logs would never reach it.
+        // In non-JSON mode they inherit the root's otel sink, so adding it here
+        // too would double-export — hence the jsonMode guard.
+        sinks: jsonMode ? ["runFile", ...otelSinks] : ["runFile"],
         parentSinks: jsonMode ? "override" : "inherit",
       },
       {
         category: ["workflow", "run"],
         lowestLevel: logLevel,
-        sinks: ["runFile"],
+        sinks: jsonMode ? ["runFile", ...otelSinks] : ["runFile"],
         parentSinks: jsonMode ? "override" : "inherit",
       },
       {

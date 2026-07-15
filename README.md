@@ -341,6 +341,29 @@ Traces capture the full execution hierarchy — CLI command, workflow, job, step
 model method, and driver execution — with automatic context propagation to
 in-process extensions and Docker containers via `TRACEPARENT`.
 
+### Logs
+
+When an OTLP endpoint is configured, swamp also emits its structured log lines
+as native OpenTelemetry **log records** over OTLP, using the same
+`OTEL_EXPORTER_OTLP_*` configuration as traces. Each record is stamped with the
+active `trace_id`/`span_id`, so logs correlate with the spans they belong to and
+are filterable by trace, service, and severity in the backend — no need to read
+a local log file. This is most useful for long-running `swamp serve` daemons.
+Secrets registered for a run are redacted from log bodies and attributes before
+they leave the process, just as they are in the persisted per-run log files.
+
+Opt out with `OTEL_LOGS_EXPORTER=none` (traces stay on). For high-volume
+`swamp serve`, set `OTEL_BLRP_USE=1` to batch log exports instead of sending one
+request per line.
+
+```bash
+# Export both traces and correlated logs to a collector
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 swamp serve
+
+# Traces only — disable the logs signal
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 OTEL_LOGS_EXPORTER=none swamp serve
+```
+
 ### Local development
 
 Run Jaeger for a local trace UI:
@@ -353,12 +376,14 @@ Then open `http://localhost:16686` and search for the `swamp` service.
 
 ### Configuration
 
-| Variable                      | Purpose                                | Default         |
-| ----------------------------- | -------------------------------------- | --------------- |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | Collector URL (tracing off when unset) | _(unset = off)_ |
-| `OTEL_TRACES_EXPORTER`        | `otlp`, `console`, or `none`           | `otlp`          |
-| `OTEL_SERVICE_NAME`           | Service name in traces                 | `swamp`         |
-| `OTEL_EXPORTER_OTLP_HEADERS`  | Auth headers (`key=val,key=val`)       | _(none)_        |
+| Variable                      | Purpose                                  | Default         |
+| ----------------------------- | ---------------------------------------- | --------------- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Collector URL (telemetry off when unset) | _(unset = off)_ |
+| `OTEL_TRACES_EXPORTER`        | `otlp`, `console`, or `none`             | `otlp`          |
+| `OTEL_LOGS_EXPORTER`          | `otlp`, `console` (stderr), or `none`    | `otlp`          |
+| `OTEL_SERVICE_NAME`           | Service name for traces and logs         | `swamp`         |
+| `OTEL_EXPORTER_OTLP_HEADERS`  | Auth headers (`key=val,key=val`)         | _(none)_        |
+| `OTEL_BLRP_USE`               | Batch log exports (`1` to enable)        | _(per-record)_  |
 
 ## Telemetry
 
