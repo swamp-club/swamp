@@ -175,7 +175,7 @@ export async function getUserInfo(
   const rawGroups = data.groups;
   const groups = Array.isArray(rawGroups)
     ? rawGroups.filter((g): g is string => typeof g === "string")
-    : [];
+    : collectives;
   return {
     sub: data.sub,
     email: data.email,

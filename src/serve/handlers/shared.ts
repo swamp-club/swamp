@@ -176,10 +176,6 @@ export function updateCollectivesForPrincipal(
   }
 }
 
-export function getActivePrincipalIds(): readonly string[] {
-  return [...principalSockets.keys()];
-}
-
 export function getConnectionCollectives(
   socket: WebSocket,
 ): readonly string[] {

@@ -384,7 +384,8 @@ const daemonEnableCommand = new Command()
   .option(
     "--group-refresh-interval <duration:string>",
     "How often to re-fetch IdP group memberships for active server tokens. " +
-      "Accepts time units (4h, 30m). Set to 0 to disable. Default: 4h. Requires --auth-mode oauth.",
+      "Accepts seconds (14400), explicit units (4h, 30m), or 0 to disable. Default: 4h. " +
+      "Requires --auth-mode oauth (env: SWAMP_GROUP_REFRESH_INTERVAL).",
   )
   .option(
     "--trust-proxy",
@@ -737,7 +738,7 @@ export const serveCommand = new Command()
   .option(
     "--group-refresh-interval <duration:string>",
     "How often to re-fetch IdP group memberships for active server tokens (env: SWAMP_GROUP_REFRESH_INTERVAL). " +
-      "Accepts time units (4h, 30m). Set to 0 to disable. Default: 4h. Requires --auth-mode oauth.",
+      "Accepts seconds (14400), explicit units (4h, 30m), or 0 to disable. Default: 4h. Requires --auth-mode oauth.",
   )
   .option(
     "--trust-proxy",

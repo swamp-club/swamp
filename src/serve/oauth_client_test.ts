@@ -332,7 +332,28 @@ Deno.test("getUserInfo: returns user info with collectives", async () => {
     assertEquals(result.email, "user@example.com");
     assertEquals(result.name, "Test User");
     assertEquals(result.collectives, ["org-a", "org-b"]);
-    assertEquals(result.groups, []);
+    assertEquals(result.groups, ["org-a", "org-b"]);
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("getUserInfo: falls back to collectives when groups field absent", async () => {
+  const mock = startMockServer(() =>
+    Response.json({
+      sub: "user-fallback",
+      email: "fallback@example.com",
+      collectives: ["team-a"],
+    })
+  );
+  try {
+    const result = await getUserInfo(
+      `http://localhost:${mock.port}`,
+      "my-token",
+      "collectives",
+      AbortSignal.timeout(5000),
+    );
+    assertEquals(result.groups, ["team-a"]);
   } finally {
     await mock.shutdown();
   }

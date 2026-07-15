@@ -97,7 +97,7 @@ export class CollectiveRefreshService {
   #scheduleNext(): void {
     if (this.#disposed) return;
     this.#timer = setTimeout(() => {
-      this.#tick();
+      void this.#tick();
     }, this.#deps.intervalMs);
   }
 
@@ -141,11 +141,11 @@ export class CollectiveRefreshService {
         signal,
       );
 
-      const collectivesChanged = !arraysEqual(
+      const collectivesChanged = !setsEqual(
         token.collectives,
         userInfo.collectives,
       );
-      const groupsChanged = !arraysEqual(token.groups, userInfo.groups);
+      const groupsChanged = !setsEqual(token.groups, userInfo.groups);
       if (collectivesChanged || groupsChanged) {
         await this.#deps.updateTokenCollectives(
           token.name,
@@ -164,7 +164,7 @@ export class CollectiveRefreshService {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (message.includes("401")) {
+      if (message.startsWith("Userinfo request failed: 401")) {
         logger.warn(
           "Userinfo rejected for {name} — revoking server token (session expired or user deprovisioned)",
           { name: token.name },
@@ -181,10 +181,8 @@ export class CollectiveRefreshService {
   }
 }
 
-function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
+function setsEqual(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
+  const setB = new Set(b);
+  return a.every((item) => setB.has(item));
 }

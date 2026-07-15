@@ -59,7 +59,7 @@ export const accessCheckCommand = new Command()
   )
   .example(
     "With simulated IdP groups",
-    "swamp access check --subject user:adam --action run --on workflow:@acme/deploy --collectives platform-eng,ops",
+    "swamp access check --subject user:adam --action run --on workflow:@acme/deploy --groups platform-eng,ops",
   )
   .example(
     "With resource fields for condition evaluation",
@@ -86,7 +86,11 @@ export const accessCheckCommand = new Command()
   )
   .option(
     "--collectives <collectives:string>",
-    "Comma-separated IdP group memberships to simulate",
+    "Comma-separated collective memberships to simulate",
+  )
+  .option(
+    "--groups <groups:string>",
+    "Comma-separated IdP group memberships to simulate for idp-group: grants",
   )
   .option(
     "--field <field:string>",
@@ -180,6 +184,11 @@ export const accessCheckCommand = new Command()
         .filter((c: string) => c.length > 0)
       : [];
 
+    const groups = options.groups
+      ? (options.groups as string).split(",").map((g: string) => g.trim())
+        .filter((g: string) => g.length > 0)
+      : [];
+
     const eventBus = new EventBus();
     const loader = new PolicySnapshotLoader(
       repoContext.unifiedDataRepo,
@@ -193,7 +202,7 @@ export const accessCheckCommand = new Command()
       const accessPrincipal = {
         principal,
         collectives,
-        groups: [] as string[],
+        groups,
       };
       const fields = parseFieldFlags(options.field as string[] | undefined);
       const accessResource = {
