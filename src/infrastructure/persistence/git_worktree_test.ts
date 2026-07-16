@@ -67,7 +67,11 @@ Deno.test("resolveGitMainWorktreeRoot: returns main checkout from worktree", asy
     });
     await cmd.output();
     cmd = new Deno.Command("git", {
-      args: ["commit", "-m", "init"],
+      args: [
+        "-c", "user.name=test",
+        "-c", "user.email=test@test.com",
+        "commit", "-m", "init",
+      ],
       cwd: tmp,
       stdout: "null",
       stderr: "null",
