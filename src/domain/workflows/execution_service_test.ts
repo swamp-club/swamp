@@ -193,6 +193,17 @@ class InMemoryWorkflowRunRepository implements WorkflowRunRepository {
     this.runs.delete(workflowId);
     return Promise.resolve(count);
   }
+
+  delete(_workflowId: WorkflowId, _runId: WorkflowRunId): Promise<void> {
+    return Promise.resolve();
+  }
+
+  deleteOlderThan(
+    _cutoff: Date,
+    _options?: { dryRun?: boolean },
+  ): Promise<{ deleted: number; bytesReclaimed: number }> {
+    return Promise.resolve({ deleted: 0, bytesReclaimed: 0 });
+  }
 }
 
 function createSimpleWorkflow(): Workflow {
@@ -3220,6 +3231,17 @@ class TrackingRunRepository implements WorkflowRunRepository {
 
   deleteAllByWorkflowId(workflowId: WorkflowId): Promise<number> {
     return this.inner.deleteAllByWorkflowId(workflowId);
+  }
+
+  delete(workflowId: WorkflowId, runId: WorkflowRunId): Promise<void> {
+    return this.inner.delete(workflowId, runId);
+  }
+
+  deleteOlderThan(
+    cutoff: Date,
+    options?: { dryRun?: boolean },
+  ): Promise<{ deleted: number; bytesReclaimed: number }> {
+    return this.inner.deleteOlderThan(cutoff, options);
   }
 }
 

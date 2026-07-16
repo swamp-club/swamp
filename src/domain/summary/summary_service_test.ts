@@ -135,6 +135,7 @@ function createMockOutputRepo(
     findAll: () => Promise.resolve([]),
     save: () => Promise.resolve(),
     delete: () => Promise.resolve(),
+    deleteOlderThan: () => Promise.resolve({ deleted: 0, bytesReclaimed: 0 }),
     nextId: () => "mock-id" as ReturnType<OutputRepository["nextId"]>,
     getPath: () => "",
   };
@@ -158,6 +159,8 @@ function createMockWorkflowRunRepo(
     nextId: () => "mock-id" as ReturnType<WorkflowRunRepository["nextId"]>,
     getPath: () => "",
     deleteAllByWorkflowId: () => Promise.resolve(0),
+    delete: () => Promise.resolve(),
+    deleteOlderThan: () => Promise.resolve({ deleted: 0, bytesReclaimed: 0 }),
   };
 }
 

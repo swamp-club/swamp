@@ -406,4 +406,115 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
     return count;
   }
+
+  async delete(workflowId: WorkflowId, runId: WorkflowRunId): Promise<void> {
+    const yamlPath = this.getPath(workflowId, runId);
+    const logPath = yamlPath.replace(/\.yaml$/, ".log");
+
+    await this.notifyDirty(yamlPath);
+
+    try {
+      await Deno.remove(yamlPath);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+
+    try {
+      await Deno.remove(logPath);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+  }
+
+  async deleteOlderThan(
+    cutoff: Date,
+    options?: { dryRun?: boolean },
+  ): Promise<{ deleted: number; bytesReclaimed: number }> {
+    const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
+    const cutoffMs = cutoff.getTime();
+    let deleted = 0;
+    let bytesReclaimed = 0;
+
+    try {
+      for await (const entry of Deno.readDir(this.baseDir)) {
+        if (!entry.isDirectory) continue;
+        const workflowId = entry.name as WorkflowId;
+        const dir = this.getRunsDir(workflowId);
+
+        try {
+          for await (const fileEntry of Deno.readDir(dir)) {
+            if (
+              !fileEntry.isFile ||
+              !fileEntry.name.startsWith("workflow-run-") ||
+              !fileEntry.name.endsWith(".yaml")
+            ) {
+              continue;
+            }
+            const yamlPath = join(dir, fileEntry.name);
+
+            try {
+              const stat = await Deno.stat(yamlPath);
+              const mtimeMs = stat.mtime?.getTime();
+              if (mtimeMs !== undefined && mtimeMs >= cutoffMs) continue;
+
+              const content = await Deno.readTextFile(yamlPath);
+              const data = parseYaml(content) as WorkflowRunData;
+              if (!TERMINAL_STATUSES.has(data.status)) continue;
+
+              const completedAt = data.completedAt
+                ? new Date(data.completedAt).getTime()
+                : undefined;
+              const startedAt = data.startedAt
+                ? new Date(data.startedAt).getTime()
+                : undefined;
+              const timestamp = completedAt ?? startedAt;
+              if (timestamp === undefined || timestamp >= cutoffMs) continue;
+
+              const logPath = yamlPath.replace(/\.yaml$/, ".log");
+              let fileBytes = stat.size ?? 0;
+              try {
+                const logStat = await Deno.stat(logPath);
+                fileBytes += logStat.size ?? 0;
+              } catch {
+                // log file may not exist
+              }
+
+              if (!options?.dryRun) {
+                await this.notifyDirty(yamlPath);
+                try {
+                  await Deno.remove(yamlPath);
+                } catch (error) {
+                  if (!(error instanceof Deno.errors.NotFound)) throw error;
+                }
+                try {
+                  await Deno.remove(logPath);
+                } catch (error) {
+                  if (!(error instanceof Deno.errors.NotFound)) throw error;
+                }
+              }
+
+              deleted++;
+              bytesReclaimed += fileBytes;
+            } catch (error) {
+              if (error instanceof Deno.errors.NotFound) continue;
+              throw error;
+            }
+          }
+        } catch (error) {
+          if (error instanceof Deno.errors.NotFound) continue;
+          throw error;
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+
+    return { deleted, bytesReclaimed };
+  }
 }

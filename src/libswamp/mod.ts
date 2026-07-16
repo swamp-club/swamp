@@ -1144,6 +1144,18 @@ export {
   type DataPrunePreviewItem,
 } from "./data/prune.ts";
 
+// Run GC operations (workflow-runs + outputs)
+export {
+  createRunGcDeps,
+  runGc,
+  type RunGcData,
+  type RunGcDeps,
+  type RunGcEvent,
+  type RunGcInput,
+  type RunGcPreview,
+  runGcPreview,
+} from "./data/run_gc.ts";
+
 // Model create operations
 export {
   createModelCreateDeps,

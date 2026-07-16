@@ -38,6 +38,7 @@ import {
   writeModelRunsLog,
 } from "../../presentation/output/model_runs_output.ts";
 import { groupCommandAction } from "../group_action.ts";
+import { runGcCommand } from "./run_gc.ts";
 import {
   requestServerResponse,
   resolveServerToken,
@@ -244,4 +245,5 @@ export const runCommand = new Command()
   .description("Track and diagnose in-flight model method and workflow runs")
   .action(groupCommandAction)
   .command("history", runHistoryCommand)
-  .command("doctor", runDoctorCommand);
+  .command("doctor", runDoctorCommand)
+  .command("gc", runGcCommand);
