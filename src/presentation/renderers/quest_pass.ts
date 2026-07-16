@@ -23,17 +23,10 @@ import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import type {
+  GenesisChallenge,
   GenesisPass,
-  GenesisTier,
 } from "../../domain/quest/genesis_pass.ts";
-import {
-  bold,
-  dim,
-  green,
-  magenta,
-  stripAnsiCode,
-  yellow,
-} from "@std/fmt/colors";
+import { bold, dim, green, stripAnsiCode, yellow } from "@std/fmt/colors";
 
 // ─── LOG LAYOUT (Design: "The Legible Ladder", swamp-club seasons/genesis) ───
 // Renders the linear Genesis pass from a `GenesisPass`. The data shape is
@@ -43,6 +36,19 @@ import {
 const WIDTH = 60;
 /** Column where the XP bars begin, so both bars align. */
 const BAR_COL = 30;
+
+/** The one-line "what is this" — the first line and the command's help text. */
+export const QUEST_TAGLINE = "What treasures are there yet to discover?";
+
+/** Banner shown when every deed is done. */
+const GAME_OVER = [
+  " ██████╗  █████╗ ███╗   ███╗███████╗     ██████╗ ██╗   ██╗███████╗██████╗",
+  "██╔════╝ ██╔══██╗████╗ ████║██╔════╝    ██╔═══██╗██║   ██║██╔════╝██╔══██╗",
+  "██║  ███╗███████║██╔████╔██║█████╗      ██║   ██║██║   ██║█████╗  ██████╔╝",
+  "██║   ██║██╔══██║██║╚██╔╝██║██╔══╝      ██║   ██║╚██╗ ██╔╝██╔══╝  ██╔══██╗",
+  "╚██████╔╝██║  ██║██║ ╚═╝ ██║███████╗    ╚██████╔╝ ╚████╔╝ ███████╗██║  ██║",
+  " ╚═════╝ ╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝     ╚═════╝   ╚═══╝  ╚══════╝╚═╝  ╚═╝",
+].join("\n");
 
 /** Warm amber-gold — the Genesis campaign accent. */
 const gold = (s: string): string => yellow(s);
@@ -77,33 +83,116 @@ function bar(fraction: number, width: number): string {
   return gold("█".repeat(filled)) + dim("░".repeat(width - filled));
 }
 
-/** "Tier n — Free  +  Premium (premium)" for a claimed/claimable tier. */
-function rewardLabel(t: GenesisTier, showPremium: boolean): string {
-  const free = `Tier ${t.n} — ${t.free.name}`;
-  if (!showPremium) return free;
-  return `${free}  ${dim("+")}  ${magenta(t.premium.name)} ${dim("(premium)")}`;
+/** Name-column width for a set of meter rows: fits the longest name, +2 gap. */
+function nameCol(rows: { name: string }[]): number {
+  return Math.max(14, ...rows.map((r) => vlen(r.name))) + 2;
 }
 
-function renderPassLog(pass: GenesisPass): void {
+/** The `+50XP` reward tag for a deed, in gold. */
+function xpTag(xp: number): string {
+  return gold(`+${num(xp)}XP`);
+}
+
+/** Width of the `+XP` column for a set of deeds: fits the widest tag, +2 gap. */
+function xpCol(rows: { xp: number }[]): number {
+  return rows.length === 0
+    ? 0
+    : Math.max(...rows.map((r) => vlen(xpTag(r.xp)))) + 2;
+}
+
+/** How many deeds the default (non-`--full`) view surfaces. */
+const NEXT_UP = 4;
+
+/** Progress toward completion, 0..1. Firsts are all-or-nothing. */
+function fraction(c: GenesisChallenge): number {
+  if (c.kind === "counter") return c.progress / (c.target ?? 1);
+  return c.done ? 1 : 0;
+}
+
+/**
+ * One deed row: name, +XP tag, then a track column. Counters show a progress
+ * meter + count; firsts share that same column — a full bar + `✓` when done, an
+ * empty bar + `·` when not — so an all-firsts block reads as intentional rows
+ * rather than a column of orphaned markers floating in whitespace.
+ */
+function deedRow(c: GenesisChallenge, col: number, xpc: number): string {
+  const head = `    ${padEnd(c.name, col)}${padEnd(xpTag(c.xp), xpc)}`;
+  if (c.kind === "counter") {
+    const target = c.target ?? 1;
+    return `${head}${bar(c.progress / target, 10)}  ${
+      padStart(`${c.progress}/${target}`, 6)
+    }`;
+  }
+  return `${head}${bar(c.done ? 1 : 0, 10)}  ${
+    padStart(c.done ? green("✓") : dim("·"), 6)
+  }`;
+}
+
+/**
+ * The deeds block — the XP-earning plays. Default surfaces the handful you're
+ * closest to landing, headed by the reward they climb toward. `--full` lists
+ * every deed on the pass, completed ones included.
+ */
+function renderDeeds(
+  push: (s?: string) => void,
+  pass: GenesisPass,
+  full: boolean,
+): void {
+  if (full) {
+    const counters = pass.challenges.filter((c) => c.kind === "counter");
+    const firsts = pass.challenges.filter((c) => c.kind === "first");
+    const all = [...counters, ...firsts];
+    const col = nameCol(all);
+    const xpc = xpCol(all);
+    push(`${gold("all deeds")}${dim(" — every deed on the pass")}`);
+    for (const c of all) push(deedRow(c, col, xpc));
+    push();
+    return;
+  }
+
+  const incomplete = pass.challenges.filter((c) => !c.done);
+  if (incomplete.length === 0) {
+    push("Congratulations! You've completed your quest.");
+    push();
+    push(gold(GAME_OVER));
+    push();
+    return;
+  }
+  const plays = [...incomplete]
+    .sort((a, b) => fraction(b) - fraction(a))
+    .slice(0, NEXT_UP);
+  const col = nameCol(plays);
+  const xpc = xpCol(plays);
+  push(
+    pass.nextTier
+      ? `Path to ${bold(pass.nextTier.name)}`
+      : `Path to ${bold("GENESIS")}`,
+  );
+  for (const c of plays) push(deedRow(c, col, xpc));
+  push();
+}
+
+/**
+ * The Genesis pass — one layout for everyone. The only thing that differs
+ * between an authenticated pass and the ghost (device-local, unclaimed) read is
+ * the footer: the ghost gets the login conversion line, the authed user gets
+ * the "claim on the web" reminder.
+ */
+function renderPassLog(pass: GenesisPass, full: boolean, ghost: boolean): void {
   const lines: string[] = [];
   const push = (s = "") => lines.push(s);
 
-  // Header — "swamp quest · GENESIS" left, operative right.
+  // First line — the simple "what is this", same as the command's help text.
+  // Suppressed once complete; the GAME OVER banner below carries that state.
   push();
-  push(spread(
-    `${bold("swamp quest")} ${dim("·")} ${bold(gold("GENESIS"))}`,
-    bold(pass.username),
-  ));
-  push();
+  if (!pass.challenges.every((c) => c.done)) {
+    push(QUEST_TAGLINE.replace("treasures", gold("treasures")));
+    push();
+  }
 
-  // Ladder — current tier + reward name, ladder bar, headline XP.
-  const currentReward = pass.currentTier >= 1
-    ? pass.tiers[pass.currentTier - 1].free.name
-    : "—";
+  // Ladder — current tier, ladder bar, headline XP.
   const tierLeft = padEnd(
-    `${
-      bold(`TIER ${pass.currentTier} / ${pass.totalTiers}`)
-    }  ${currentReward}`,
+    bold(`TIER ${pass.currentTier} / ${pass.totalTiers}`),
     BAR_COL,
   );
   push(spread(
@@ -122,134 +211,24 @@ function renderPassLog(pass: GenesisPass): void {
       nextLeft + bar(frac, 10),
       `${num(pass.xpIntoCurrent)} / ${num(pass.xpForNext)}`,
     ));
-  } else {
-    push(gold("the capstone is claimed — GENESIS complete"));
   }
   push();
 
-  // Claimed — the highest tier already banked to lifetime.
-  let claimed: GenesisTier | undefined;
-  for (const t of pass.tiers) {
-    if (t.free.claimState === "claimed") claimed = t;
-  }
-  if (claimed) {
-    const withPrem = claimed.premium.claimState === "claimed";
+  renderDeeds(push, pass, full);
+
+  // Footer — the only authed/ghost divergence.
+  if (ghost) {
+    const bridgeXp = pass.challenges.find((c) => c.bridge)?.xp ?? 200;
     push(
-      `${padEnd(green("✓ CLAIMED"), 12)} ${rewardLabel(claimed, withPrem)}`,
-    );
-    push(
-      `${" ".repeat(13)}${gold("→")} ${
-        dim("banked to lifetime · un-re-earnable")
+      `login to claim your rewards and get ${gold(`+${bridgeXp}XP`)}. ${
+        bold("swamp auth login")
       }`,
     );
-  }
-
-  // Claimable — reached but not yet claimed; the CLI is read-only, claim on web.
-  if (pass.claimableTier !== null) {
-    const t = pass.tiers[pass.claimableTier - 1];
-    if (claimed) push();
+  } else {
     push(
-      `${padEnd(gold("◆ CLAIMABLE"), 12)} ${rewardLabel(t, pass.hasPremium)}`,
+      dim("claim your rewards on https://swamp-club.com"),
     );
-    push(`${" ".repeat(13)}${gold("→")} ${dim("claim on swamp-club.com")}`);
   }
-  push();
-
-  // Deeds left — the in-progress counters that move the bar.
-  const deeds = pass.challenges.filter(
-    (c) => c.kind === "counter" && !c.done && c.progress > 0,
-  );
-  if (deeds.length > 0) {
-    push(`${gold("in progress")}${dim(" — the deeds left")}`);
-    for (const c of deeds) {
-      const target = c.target ?? 1;
-      const meter = `    ${padEnd(c.name, 14)}${bar(c.progress / target, 10)}`;
-      const counts = padStart(`${c.progress}/${target}`, 6);
-      push(`${meter}  ${counts}   ${gold(`+${c.xp}`)}`);
-    }
-    push();
-  }
-
-  // Footer — the loop: read here, claim on the web.
-  push(
-    dim("run `swamp quest` any time · claim your rewards on swamp-club.com"),
-  );
-  push();
-
-  writeOutput(lines.join("\n"));
-}
-/** The ghost variant — unauthenticated, every reward UNCLAIMED, the login ache. */
-function renderGhostLog(pass: GenesisPass): void {
-  const lines: string[] = [];
-  const push = (s = "") => lines.push(s);
-
-  // Header — "(unclaimed)" instead of an operative name.
-  push();
-  push(spread(
-    `${bold("swamp quest")} ${dim("·")} ${bold(gold("GENESIS"))}`,
-    dim("(unclaimed)"),
-  ));
-  push();
-
-  // Ladder — the real accrued XP; it just isn't claimed to an account yet.
-  const tierLeft = padEnd(
-    bold(`TIER ${pass.currentTier} / ${pass.totalTiers}`),
-    BAR_COL,
-  );
-  push(spread(
-    tierLeft + bar(pass.ladderFraction, 10),
-    bold(`${num(pass.passXp)} XP`),
-  ));
-  if (pass.nextTier) {
-    const nextLeft = padEnd(
-      `${dim("next:")} ${pass.nextTier.name} (T${pass.nextTier.n})`,
-      BAR_COL,
-    );
-    const frac = pass.xpForNext > 0 ? pass.xpIntoCurrent / pass.xpForNext : 0;
-    push(spread(
-      nextLeft + bar(frac, 10),
-      `${num(pass.xpIntoCurrent)} / ${num(pass.xpForNext)}`,
-    ));
-  }
-  push();
-
-  // The ache — everything earned, nothing keepable until the account is claimed.
-  const bridgeXp = pass.challenges.find((c) => c.bridge)?.xp ?? 200;
-  push(
-    `${dim("◇")} every reward reads ${bold("UNCLAIMED")} ${
-      dim("— you earned it, you can't keep it yet")
-    }`,
-  );
-  push(
-    `${gold("◆")} log in to claim everything ${gold("→")} ${
-      bold("swamp auth login")
-    }  ${gold(`(+${bridgeXp})`)}`,
-  );
-  push();
-
-  // Deeds recorded — completed firsts as chips, counters with bars.
-  push(dim("deeds recorded"));
-  const firsts = pass.challenges.filter((c) => c.kind === "first" && c.done);
-  for (let i = 0; i < firsts.length; i += 3) {
-    const chips = firsts.slice(i, i + 3)
-      .map((c) => `${c.name} ${green("✓")}`);
-    push(`    ${chips.map((c) => padEnd(c, 20)).join("")}`);
-  }
-  const counters = pass.challenges.filter(
-    (c) => c.kind === "counter" && !c.done && c.progress > 0,
-  );
-  for (const c of counters) {
-    const target = c.target ?? 1;
-    const meter = `    ${padEnd(c.name, 14)}${bar(c.progress / target, 10)}`;
-    push(`${meter}  ${padStart(`${c.progress}/${target}`, 6)}`);
-  }
-  if (firsts.length === 0 && counters.length === 0) {
-    push(`    ${dim("nothing yet — run `swamp model create` to begin")}`);
-  }
-  push();
-
-  // Footer — the conversion line.
-  push(dim("the record is real. claim your badge by logging in."));
   push();
 
   writeOutput(lines.join("\n"));
@@ -257,10 +236,11 @@ function renderGhostLog(pass: GenesisPass): void {
 // ─── END LOG LAYOUT ─────────────────────────────────────────────────────────
 
 class LogQuestPassRenderer implements Renderer<QuestPassEvent> {
+  constructor(private readonly full: boolean) {}
+
   handlers(): EventHandlers<QuestPassEvent> {
     return {
-      completed: (e) =>
-        e.data.ghost ? renderGhostLog(e.data.pass) : renderPassLog(e.data.pass),
+      completed: (e) => renderPassLog(e.data.pass, this.full, e.data.ghost),
       error: (e) => {
         throw new UserError(e.error.message);
       },
@@ -283,11 +263,12 @@ class JsonQuestPassRenderer implements Renderer<QuestPassEvent> {
 
 export function createQuestPassRenderer(
   mode: OutputMode,
+  full = false,
 ): Renderer<QuestPassEvent> {
   switch (mode) {
     case "json":
       return new JsonQuestPassRenderer();
     case "log":
-      return new LogQuestPassRenderer();
+      return new LogQuestPassRenderer(full);
   }
 }

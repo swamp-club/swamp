@@ -25,7 +25,10 @@ import {
   questPass,
   type QuestPassDeps,
 } from "../../libswamp/mod.ts";
-import { createQuestPassRenderer } from "../../presentation/renderers/quest_pass.ts";
+import {
+  createQuestPassRenderer,
+  QUEST_TAGLINE,
+} from "../../presentation/renderers/quest_pass.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
 import { loadIdentity } from "../load_identity.ts";
@@ -37,10 +40,12 @@ type AnyOptions = any;
 
 export const questCommand = new Command()
   .name("quest")
-  .description(
-    "View your Genesis quest pass and track progress toward the next tier",
-  )
+  .description(QUEST_TAGLINE)
   .example("View quest pass", "swamp quest")
+  .option(
+    "--full",
+    "Show every deed — including completed and not-yet-started — not just the ones in progress.",
+  )
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["quest", "pass"]);
 
@@ -83,7 +88,7 @@ export const questCommand = new Command()
     }
 
     const libCtx = createLibSwampContext({ logger: ctx.logger });
-    const renderer = createQuestPassRenderer(ctx.outputMode);
+    const renderer = createQuestPassRenderer(ctx.outputMode, options.full);
 
     await consumeStream(
       questPass(libCtx, deps),
