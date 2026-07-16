@@ -1493,3 +1493,9 @@ export {
   type NamespaceMigrateWarningData,
   type SubdirPreview,
 } from "./datastores/namespace_migrate.ts";
+export {
+  questPass,
+  type QuestPassData,
+  type QuestPassDeps,
+  type QuestPassEvent,
+} from "./quest/pass.ts";

@@ -23,6 +23,7 @@ import {
   mergeIdentityHeaders,
 } from "./client_identity.ts";
 import { parseRetryAfter, rateLimitError } from "./rate_limit.ts";
+import type { GenesisPass } from "../../domain/quest/genesis_pass.ts";
 
 export type { ClientIdentity };
 
@@ -522,6 +523,64 @@ export class SwampClubClient {
     );
 
     return { issues, total: data.total ?? issues.length };
+  }
+
+  /**
+   * Fetch an operative's Genesis quest pass — the linear battle-pass read model
+   * that swamp-club derives from telemetry and serves as the single source of
+   * truth for both the web profile and `swamp quest`.
+   *
+   * This is a public read keyed by username (the CLI resolves its own username
+   * via {@link whoami}). It carries no x-api-key: the endpoint is public and
+   * `canClaim` is only true for the owner's own authenticated session on the
+   * web — the CLI renders read-only.
+   */
+  async fetchGenesisPass(
+    username: string,
+    signal?: AbortSignal,
+  ): Promise<GenesisPass> {
+    const res = await this.fetch(
+      `/api/u/${encodeURIComponent(username)}/genesis`,
+      { method: "GET", headers: {} },
+      signal,
+    );
+
+    if (!res.ok) {
+      const text = await res.text();
+      if (res.status === 404) {
+        throw new UserError(`No quest pass found for ${username}.`);
+      }
+      throw new UserError(
+        `Failed to fetch quest pass (HTTP ${res.status}): ${text}`,
+      );
+    }
+
+    return await res.json();
+  }
+
+  /**
+   * Fetch the UNAUTHENTICATED (ghost) Genesis pass — the progress this device
+   * has accrued in the event stream, keyed by its `Swamp-Distinct-Id` (attached
+   * automatically from the client identity). Every reward reads unclaimed until
+   * the distinct_id is bound to an account via `swamp auth login`.
+   */
+  async fetchGhostGenesisPass(
+    signal?: AbortSignal,
+  ): Promise<GenesisPass> {
+    const res = await this.fetch(
+      "/api/quest/genesis/ghost",
+      { method: "GET", headers: {} },
+      signal,
+    );
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new UserError(
+        `Failed to fetch ghost quest pass (HTTP ${res.status}): ${text}`,
+      );
+    }
+
+    return await res.json();
   }
 
   private async fetch(
