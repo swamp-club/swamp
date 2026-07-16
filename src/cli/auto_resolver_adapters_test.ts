@@ -41,6 +41,7 @@ import "../domain/models/models.ts";
 // enumerate → primary/rest plumbing, not about actual bundling.
 const stubDenoRuntime: DenoRuntime = {
   ensureDeno: () => Promise.resolve("/usr/bin/false"),
+  getDenoEnv: () => Deno.env.toObject(),
 };
 
 const stubCallbacks = {

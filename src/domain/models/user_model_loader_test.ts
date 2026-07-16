@@ -66,6 +66,7 @@ import "./models.ts";
 /** Test DenoRuntime that returns the current deno binary path. */
 const testDenoRuntime: DenoRuntime = {
   ensureDeno: () => Promise.resolve(Deno.execPath()),
+  getDenoEnv: () => Deno.env.toObject(),
 };
 
 function createTestLoader(): ExtensionLoader {

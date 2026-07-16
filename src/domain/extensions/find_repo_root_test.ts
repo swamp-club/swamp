@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { findRepoRoot } from "./find_repo_root.ts";
 import { RepoRootNotFoundError } from "./repo_root_not_found_error.ts";
 import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
@@ -57,6 +57,26 @@ Deno.test("findRepoRoot: starting in the repo root itself returns root", async (
 
 Deno.test("findRepoRoot: throws when no ancestor has .swamp/", async () => {
   await withTempDir(async (root) => {
+    // If an ancestor of the temp dir already contains .swamp/ (e.g.
+    // $HOME/.swamp/ created by parallel tests), findRepoRoot would find
+    // it instead of throwing. Skip in that case — the test can only
+    // assert the "no match" path when the temp dir's ancestors are clean.
+    let ancestorHasSwamp = false;
+    let probe = root;
+    while (true) {
+      const parent = dirname(probe);
+      if (parent === probe) break;
+      try {
+        const info = Deno.statSync(join(parent, ".swamp"));
+        if (info.isDirectory) {
+          ancestorHasSwamp = true;
+          break;
+        }
+      } catch { /* not found */ }
+      probe = parent;
+    }
+    if (ancestorHasSwamp) return;
+
     await Deno.mkdir(join(root, "child"));
     // Walk terminates at the FS root with no match.
     assertThrows(

@@ -37,6 +37,7 @@ import "../../domain/models/models.ts";
 
 const testDenoRuntime: DenoRuntime = {
   ensureDeno: () => Promise.resolve(Deno.execPath()),
+  getDenoEnv: () => Deno.env.toObject(),
 };
 
 /**

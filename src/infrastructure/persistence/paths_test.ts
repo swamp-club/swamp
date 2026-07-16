@@ -160,19 +160,25 @@ Deno.test("toRelativePath and toAbsolutePath - round trip", () => {
 
 Deno.test("getSwampConfigDir uses XDG_CONFIG_HOME when set", () => {
   const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
+  const originalSwampHome = Deno.env.get("SWAMP_HOME");
   try {
+    Deno.env.delete("SWAMP_HOME");
     Deno.env.set("XDG_CONFIG_HOME", "/custom/config");
     assertPathEquals(getSwampConfigDir(), "/custom/config/swamp");
   } finally {
     if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
     else Deno.env.delete("XDG_CONFIG_HOME");
+    if (originalSwampHome) Deno.env.set("SWAMP_HOME", originalSwampHome);
+    else Deno.env.delete("SWAMP_HOME");
   }
 });
 
 Deno.test("getSwampConfigDir falls back to HOME/.config/swamp", () => {
   const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
   const originalHome = Deno.env.get("HOME");
+  const originalSwampHome = Deno.env.get("SWAMP_HOME");
   try {
+    Deno.env.delete("SWAMP_HOME");
     Deno.env.delete("XDG_CONFIG_HOME");
     Deno.env.set("HOME", "/home/testuser");
     assertPathEquals(getSwampConfigDir(), "/home/testuser/.config/swamp");
@@ -181,13 +187,17 @@ Deno.test("getSwampConfigDir falls back to HOME/.config/swamp", () => {
     else Deno.env.delete("XDG_CONFIG_HOME");
     if (originalHome) Deno.env.set("HOME", originalHome);
     else Deno.env.delete("HOME");
+    if (originalSwampHome) Deno.env.set("SWAMP_HOME", originalSwampHome);
+    else Deno.env.delete("SWAMP_HOME");
   }
 });
 
-Deno.test("getSwampConfigDir throws when HOME is not set", () => {
+Deno.test("getSwampConfigDir throws when neither SWAMP_HOME nor HOME is set", () => {
   const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
   const originalHome = Deno.env.get("HOME");
+  const originalSwampHome = Deno.env.get("SWAMP_HOME");
   try {
+    Deno.env.delete("SWAMP_HOME");
     Deno.env.delete("XDG_CONFIG_HOME");
     Deno.env.delete("HOME");
     assertThrows(
@@ -200,6 +210,8 @@ Deno.test("getSwampConfigDir throws when HOME is not set", () => {
     else Deno.env.delete("XDG_CONFIG_HOME");
     if (originalHome) Deno.env.set("HOME", originalHome);
     else Deno.env.delete("HOME");
+    if (originalSwampHome) Deno.env.set("SWAMP_HOME", originalSwampHome);
+    else Deno.env.delete("SWAMP_HOME");
   }
 });
 
@@ -232,36 +244,90 @@ Deno.test("globalTelemetryDir falls back to HOME/.config/swamp/telemetry", () =>
   }
 });
 
-Deno.test("getSwampDataDir uses HOME", () => {
-  const originalHome = Deno.env.get("HOME");
+Deno.test("getSwampDataDir: SWAMP_HOME takes precedence over HOME", () => {
+  const saved = {
+    swampHome: Deno.env.get("SWAMP_HOME"),
+    home: Deno.env.get("HOME"),
+  };
   try {
+    Deno.env.set("SWAMP_HOME", "/opt/swamp");
     Deno.env.set("HOME", "/home/testuser");
-    assertPathEquals(getSwampDataDir(), "/home/testuser/.swamp");
+    assertEquals(getSwampDataDir(), "/opt/swamp");
   } finally {
-    if (originalHome) Deno.env.set("HOME", originalHome);
+    if (saved.swampHome) Deno.env.set("SWAMP_HOME", saved.swampHome);
+    else Deno.env.delete("SWAMP_HOME");
+    if (saved.home) Deno.env.set("HOME", saved.home);
     else Deno.env.delete("HOME");
   }
 });
 
-Deno.test("getSwampDataDir falls back to USERPROFILE", () => {
-  const originalHome = Deno.env.get("HOME");
-  const originalProfile = Deno.env.get("USERPROFILE");
+Deno.test("getSwampDataDir: SWAMP_HOME set, HOME unset succeeds", () => {
+  const saved = {
+    swampHome: Deno.env.get("SWAMP_HOME"),
+    home: Deno.env.get("HOME"),
+    profile: Deno.env.get("USERPROFILE"),
+  };
   try {
+    Deno.env.set("SWAMP_HOME", "/opt/swamp");
     Deno.env.delete("HOME");
-    Deno.env.set("USERPROFILE", "C:\\Users\\testuser");
-    assertPathEquals(getSwampDataDir(), "C:\\Users\\testuser/.swamp");
+    Deno.env.delete("USERPROFILE");
+    assertEquals(getSwampDataDir(), "/opt/swamp");
   } finally {
-    if (originalHome) Deno.env.set("HOME", originalHome);
+    if (saved.swampHome) Deno.env.set("SWAMP_HOME", saved.swampHome);
+    else Deno.env.delete("SWAMP_HOME");
+    if (saved.home) Deno.env.set("HOME", saved.home);
     else Deno.env.delete("HOME");
-    if (originalProfile) Deno.env.set("USERPROFILE", originalProfile);
+    if (saved.profile) Deno.env.set("USERPROFILE", saved.profile);
     else Deno.env.delete("USERPROFILE");
   }
 });
 
-Deno.test("getSwampDataDir throws when neither HOME nor USERPROFILE set", () => {
-  const originalHome = Deno.env.get("HOME");
-  const originalProfile = Deno.env.get("USERPROFILE");
+Deno.test("getSwampDataDir: falls back to HOME/.swamp when SWAMP_HOME unset", () => {
+  const saved = {
+    swampHome: Deno.env.get("SWAMP_HOME"),
+    home: Deno.env.get("HOME"),
+  };
   try {
+    Deno.env.delete("SWAMP_HOME");
+    Deno.env.set("HOME", "/home/testuser");
+    assertPathEquals(getSwampDataDir(), "/home/testuser/.swamp");
+  } finally {
+    if (saved.swampHome) Deno.env.set("SWAMP_HOME", saved.swampHome);
+    else Deno.env.delete("SWAMP_HOME");
+    if (saved.home) Deno.env.set("HOME", saved.home);
+    else Deno.env.delete("HOME");
+  }
+});
+
+Deno.test("getSwampDataDir: falls back to USERPROFILE/.swamp", () => {
+  const saved = {
+    swampHome: Deno.env.get("SWAMP_HOME"),
+    home: Deno.env.get("HOME"),
+    profile: Deno.env.get("USERPROFILE"),
+  };
+  try {
+    Deno.env.delete("SWAMP_HOME");
+    Deno.env.delete("HOME");
+    Deno.env.set("USERPROFILE", "C:\\Users\\testuser");
+    assertPathEquals(getSwampDataDir(), "C:\\Users\\testuser/.swamp");
+  } finally {
+    if (saved.swampHome) Deno.env.set("SWAMP_HOME", saved.swampHome);
+    else Deno.env.delete("SWAMP_HOME");
+    if (saved.home) Deno.env.set("HOME", saved.home);
+    else Deno.env.delete("HOME");
+    if (saved.profile) Deno.env.set("USERPROFILE", saved.profile);
+    else Deno.env.delete("USERPROFILE");
+  }
+});
+
+Deno.test("getSwampDataDir: throws when no env var is set", () => {
+  const saved = {
+    swampHome: Deno.env.get("SWAMP_HOME"),
+    home: Deno.env.get("HOME"),
+    profile: Deno.env.get("USERPROFILE"),
+  };
+  try {
+    Deno.env.delete("SWAMP_HOME");
     Deno.env.delete("HOME");
     Deno.env.delete("USERPROFILE");
     assertThrows(
@@ -270,9 +336,74 @@ Deno.test("getSwampDataDir throws when neither HOME nor USERPROFILE set", () => 
       "Cannot determine home directory",
     );
   } finally {
-    if (originalHome) Deno.env.set("HOME", originalHome);
+    if (saved.swampHome) Deno.env.set("SWAMP_HOME", saved.swampHome);
+    else Deno.env.delete("SWAMP_HOME");
+    if (saved.home) Deno.env.set("HOME", saved.home);
     else Deno.env.delete("HOME");
-    if (originalProfile) Deno.env.set("USERPROFILE", originalProfile);
+    if (saved.profile) Deno.env.set("USERPROFILE", saved.profile);
+    else Deno.env.delete("USERPROFILE");
+  }
+});
+
+Deno.test("getSwampConfigDir: SWAMP_HOME takes precedence over XDG and HOME", () => {
+  const saved = {
+    swampHome: Deno.env.get("SWAMP_HOME"),
+    xdg: Deno.env.get("XDG_CONFIG_HOME"),
+    home: Deno.env.get("HOME"),
+  };
+  try {
+    Deno.env.set("SWAMP_HOME", "/opt/swamp");
+    Deno.env.set("XDG_CONFIG_HOME", "/custom/config");
+    Deno.env.set("HOME", "/home/testuser");
+    assertPathEquals(getSwampConfigDir(), "/opt/swamp/config");
+  } finally {
+    if (saved.swampHome) Deno.env.set("SWAMP_HOME", saved.swampHome);
+    else Deno.env.delete("SWAMP_HOME");
+    if (saved.xdg) Deno.env.set("XDG_CONFIG_HOME", saved.xdg);
+    else Deno.env.delete("XDG_CONFIG_HOME");
+    if (saved.home) Deno.env.set("HOME", saved.home);
+    else Deno.env.delete("HOME");
+  }
+});
+
+Deno.test("getSwampConfigDir: SWAMP_HOME set, HOME unset succeeds", () => {
+  const saved = {
+    swampHome: Deno.env.get("SWAMP_HOME"),
+    xdg: Deno.env.get("XDG_CONFIG_HOME"),
+    home: Deno.env.get("HOME"),
+  };
+  try {
+    Deno.env.set("SWAMP_HOME", "/opt/swamp");
+    Deno.env.delete("XDG_CONFIG_HOME");
+    Deno.env.delete("HOME");
+    assertPathEquals(getSwampConfigDir(), "/opt/swamp/config");
+  } finally {
+    if (saved.swampHome) Deno.env.set("SWAMP_HOME", saved.swampHome);
+    else Deno.env.delete("SWAMP_HOME");
+    if (saved.xdg) Deno.env.set("XDG_CONFIG_HOME", saved.xdg);
+    else Deno.env.delete("XDG_CONFIG_HOME");
+    if (saved.home) Deno.env.set("HOME", saved.home);
+    else Deno.env.delete("HOME");
+  }
+});
+
+Deno.test("homeDirectoryIsSet: true when only SWAMP_HOME is set", () => {
+  const saved = {
+    swampHome: Deno.env.get("SWAMP_HOME"),
+    home: Deno.env.get("HOME"),
+    profile: Deno.env.get("USERPROFILE"),
+  };
+  try {
+    Deno.env.set("SWAMP_HOME", "/opt/swamp");
+    Deno.env.delete("HOME");
+    Deno.env.delete("USERPROFILE");
+    assertEquals(homeDirectoryIsSet(), true);
+  } finally {
+    if (saved.swampHome) Deno.env.set("SWAMP_HOME", saved.swampHome);
+    else Deno.env.delete("SWAMP_HOME");
+    if (saved.home) Deno.env.set("HOME", saved.home);
+    else Deno.env.delete("HOME");
+    if (saved.profile) Deno.env.set("USERPROFILE", saved.profile);
     else Deno.env.delete("USERPROFILE");
   }
 });
@@ -364,19 +495,24 @@ Deno.test("homeDirectoryIsSet: true when only USERPROFILE is set", () => {
   }
 });
 
-Deno.test("homeDirectoryIsSet: false when neither HOME nor USERPROFILE is set", () => {
-  const originalHome = Deno.env.get("HOME");
-  const originalProfile = Deno.env.get("USERPROFILE");
+Deno.test("homeDirectoryIsSet: false when no env var is set", () => {
+  const saved = {
+    swampHome: Deno.env.get("SWAMP_HOME"),
+    home: Deno.env.get("HOME"),
+    profile: Deno.env.get("USERPROFILE"),
+  };
   try {
+    Deno.env.delete("SWAMP_HOME");
     Deno.env.delete("HOME");
     Deno.env.delete("USERPROFILE");
     assertEquals(homeDirectoryIsSet(), false);
   } finally {
-    if (originalHome !== undefined) Deno.env.set("HOME", originalHome);
+    if (saved.swampHome) Deno.env.set("SWAMP_HOME", saved.swampHome);
+    else Deno.env.delete("SWAMP_HOME");
+    if (saved.home) Deno.env.set("HOME", saved.home);
     else Deno.env.delete("HOME");
-    if (originalProfile !== undefined) {
-      Deno.env.set("USERPROFILE", originalProfile);
-    } else Deno.env.delete("USERPROFILE");
+    if (saved.profile) Deno.env.set("USERPROFILE", saved.profile);
+    else Deno.env.delete("USERPROFILE");
   }
 });
 

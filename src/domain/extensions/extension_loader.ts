@@ -809,6 +809,7 @@ export class ExtensionLoader {
     }
     const js = await bundleExtension(paths.sourcePath, denoPath, {
       denoConfigPath,
+      env: this.denoRuntime.getDenoEnv(),
     });
     await Deno.mkdir(dirname(paths.bundlePath), { recursive: true });
     await Deno.writeTextFile(paths.bundlePath, js);
@@ -1153,6 +1154,7 @@ export class ExtensionLoader {
         }
         const js = await bundleExtension(absolutePath, denoPath, {
           denoConfigPath,
+          env: this.denoRuntime.getDenoEnv(),
         });
         const bundleBoundary = this.resolveBundlePath();
         await assertSafePath(bundlePath, bundleBoundary);
@@ -1204,6 +1206,7 @@ export class ExtensionLoader {
     }
     const js = await bundleExtension(absolutePath, denoPath, {
       denoConfigPath,
+      env: this.denoRuntime.getDenoEnv(),
     });
     return { js, fromCache: false };
   }

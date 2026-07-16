@@ -223,32 +223,44 @@ export function homeDirectory(): string {
 }
 
 /**
- * Reports whether a home directory can be resolved from the environment.
+ * Reports whether a swamp data directory can be resolved from the
+ * environment.
  *
- * Mirrors the resolution order of {@link homeDirectory} (HOME then
- * USERPROFILE) but returns a boolean instead of throwing. Useful for
- * callers that want to surface a precise, actionable message *before* a
- * home-dependent path resolution fails deep in the call stack — notably the
- * extension loaders, whose embedded runtime lives under `~/.swamp` and is
- * required to load every extension, including already-pulled repo bundles.
+ * Returns true when any of `SWAMP_HOME`, `HOME`, or `USERPROFILE` is set —
+ * i.e. when {@link getSwampDataDir} would succeed. Callers use this to
+ * surface an actionable message *before* a path resolution fails deep in
+ * the call stack — notably the extension loaders, whose embedded runtime
+ * lives under the swamp data dir and is required to load every extension.
  *
- * @returns true when HOME or USERPROFILE is set, false otherwise
+ * @returns true when getSwampDataDir() would succeed, false otherwise
  */
 export function homeDirectoryIsSet(): boolean {
-  return Boolean(Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE"));
+  return Boolean(
+    Deno.env.get("SWAMP_HOME") ?? Deno.env.get("HOME") ??
+      Deno.env.get("USERPROFILE"),
+  );
 }
 
 /**
- * Returns the user-level swamp data directory (`~/.swamp/`).
+ * Returns the user-level swamp data directory.
+ *
+ * Resolution order:
+ * 1. `SWAMP_HOME` — if set, returned directly (the entire directory is
+ *    relocated; there is no `.swamp` suffix).
+ * 2. `HOME` / `USERPROFILE` — falls back to `~/.swamp/`.
  *
  * This directory stores operational data like installed binaries and
  * downloaded source code. Distinct from the XDG config directory which
  * stores identity and auth configuration.
  *
- * @returns The absolute path to the ~/.swamp directory
- * @throws Error if HOME environment variable is not set
+ * @returns The absolute path to the swamp data directory
+ * @throws Error if neither SWAMP_HOME nor HOME/USERPROFILE is set
  */
 export function getSwampDataDir(): string {
+  const swampHome = Deno.env.get("SWAMP_HOME");
+  if (swampHome) {
+    return swampHome;
+  }
   const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE");
   if (!home) {
     throw new Error(
@@ -261,14 +273,20 @@ export function getSwampDataDir(): string {
 /**
  * Returns the user-level swamp configuration directory.
  *
- * Follows the XDG Base Directory specification:
- * - Uses `$XDG_CONFIG_HOME/swamp/` if `XDG_CONFIG_HOME` is set
- * - Falls back to `~/.config/swamp/`
+ * Resolution order:
+ * 1. `SWAMP_HOME` — if set, returns `$SWAMP_HOME/config`.
+ * 2. `XDG_CONFIG_HOME` — returns `$XDG_CONFIG_HOME/swamp/`.
+ * 3. `HOME` — falls back to `~/.config/swamp/`.
  *
  * @returns The absolute path to the swamp config directory
- * @throws Error if HOME environment variable is not set
+ * @throws Error if neither SWAMP_HOME nor HOME is set
  */
 export function getSwampConfigDir(): string {
+  const swampHome = Deno.env.get("SWAMP_HOME");
+  if (swampHome) {
+    return join(swampHome, "config");
+  }
+
   const xdgConfigHome = Deno.env.get("XDG_CONFIG_HOME");
   if (xdgConfigHome) {
     return join(xdgConfigHome, "swamp");

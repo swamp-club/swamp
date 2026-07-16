@@ -449,7 +449,7 @@ export const modelKindAdapter: KindAdapter = {
         return bundleExtension(
           context.absolutePath,
           denoPath,
-          { selfContained: true },
+          { selfContained: true, env: context.denoRuntime.getDenoEnv() },
         );
       })().catch((error) => {
         bundlePromise = undefined;
@@ -494,7 +494,7 @@ export const modelKindAdapter: KindAdapter = {
         return bundleExtension(
           context.absolutePath,
           denoPath,
-          { selfContained: true },
+          { selfContained: true, env: context.denoRuntime.getDenoEnv() },
         );
       })().catch((error) => {
         bundlePromise = undefined;

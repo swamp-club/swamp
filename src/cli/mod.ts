@@ -292,14 +292,14 @@ export async function configureExtensionLoaders(
       kind: "extensions",
       file: "",
       error:
-        "Extension loading is unavailable: no home directory found (neither " +
-        "HOME nor USERPROFILE is set). swamp loads all extensions — including " +
-        "already-pulled repo extensions — through an embedded runtime under " +
-        "~/.swamp, which requires a home directory. If you run swamp under a " +
-        "service manager such as systemd, set HOME (or USERPROFILE) in the " +
-        "unit environment, e.g. `Environment=HOME=/root`. Until then, pulled " +
-        "and user extensions are unavailable and workflows that reference " +
-        'them fail with "Unknown model type".',
+        "Extension loading is unavailable: no swamp data directory found " +
+        "(none of SWAMP_HOME, HOME, or USERPROFILE is set). swamp loads all " +
+        "extensions — including already-pulled repo extensions — through an " +
+        "embedded runtime under the swamp data directory. If you run swamp " +
+        "under a service manager such as systemd, set SWAMP_HOME to an " +
+        "isolated directory, e.g. `Environment=SWAMP_HOME=/opt/swamp`, or " +
+        "set HOME. Until then, pulled and user extensions are unavailable " +
+        'and workflows that reference them fail with "Unknown model type".',
     });
   }
 

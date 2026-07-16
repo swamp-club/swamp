@@ -434,6 +434,7 @@ function makeStubAdapter(loaded: Set<string>): KindAdapter {
 
 const stubDenoRuntime: DenoRuntime = {
   ensureDeno: () => Promise.resolve("/usr/bin/deno"),
+  getDenoEnv: () => Deno.env.toObject(),
 };
 
 Deno.test("loadSingleType: skips bundle without primary export and removes catalog entry", async () => {

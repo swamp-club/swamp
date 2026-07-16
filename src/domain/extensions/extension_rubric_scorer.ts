@@ -511,7 +511,9 @@ export interface RubricScoreDeps {
 export function createRubricScoreDeps(
   denoPath: string,
   extractTarball: ExtractTarball,
+  denoEnv?: Record<string, string>,
 ): RubricScoreDeps {
+  const baseEnv = denoEnv ?? Deno.env.toObject();
   return {
     runDeno: async (args, cwd) => {
       const cmd = new Deno.Command(denoPath, {
@@ -519,7 +521,7 @@ export function createRubricScoreDeps(
         cwd,
         stdout: "piped",
         stderr: "piped",
-        env: { ...Deno.env.toObject(), NO_COLOR: "1" },
+        env: { ...baseEnv, NO_COLOR: "1" },
       });
       const out = await cmd.output();
       return {
