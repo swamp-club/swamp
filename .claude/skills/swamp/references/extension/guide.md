@@ -87,10 +87,18 @@ scorer runs `deno doc --lint` in a hermetic sandbox that strips the repo's
 `deno.json` and writes its own with no imports map, so bare specifiers resolve
 locally but fail at score time.
 
+Bundled deno lives at `~/.swamp/deno/deno` (not on `PATH`) — invoke it by full
+path for type-checking, testing, and linting extension code. To discover the
+resolved path programmatically, run `swamp doctor extensions --json` and read
+the `denoPath` field.
+
 ## Quick Reference
 
 | Task                | Command/Action                                 |
 | ------------------- | ---------------------------------------------- |
+| Type-check          | `~/.swamp/deno/deno check <file>`              |
+| Run tests           | `~/.swamp/deno/deno test <file>`               |
+| Show deno path      | `swamp doctor extensions --json` → `denoPath`  |
 | Search community    | `swamp extension search <query> --json`        |
 | Verify registration | `swamp model type search --json`               |
 | Verify it loads     | `swamp doctor extensions --json`               |

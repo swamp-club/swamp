@@ -284,9 +284,19 @@ export const doctorExtensionsCommand = withRemoteOptions(
       relative(repoDir, d)
     );
 
+    let denoPath: string | undefined;
+    try {
+      denoPath = await new EmbeddedDenoRuntime().ensureDeno();
+    } catch {
+      // Best-effort — path resolution can fail in dev mode or when
+      // the embedded binary extraction fails. The field is omitted
+      // from JSON output in that case.
+    }
+
     const controller = new AbortController();
     const renderer = createDoctorExtensionsRenderer(cliCtx.outputMode, {
       verbose,
+      denoPath,
     });
 
     const doctorLockfileRepo = await LockfileRepository.create(lockfilePath);
