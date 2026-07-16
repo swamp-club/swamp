@@ -483,6 +483,7 @@ async function reloadPulledExtensions(
     // layout, even when extension_name is empty (swamp-club#1149).
     const pulledRoot = join(repoDir, ".swamp", "pulled-extensions");
     const rebundled = new Set<string>();
+    let denoRuntime: EmbeddedDenoRuntime | undefined;
     let denoPath: string | undefined;
     for (const [extName] of Object.entries(entries)) {
       const sourcePrefix = canonicalizePath(
@@ -504,10 +505,15 @@ async function reloadPulledExtensions(
             baseDir,
           );
           if (currentFp === row.source_fingerprint) continue;
-          if (!denoPath) {
-            denoPath = await new EmbeddedDenoRuntime().ensureDeno();
+          if (!denoRuntime) {
+            denoRuntime = new EmbeddedDenoRuntime();
           }
-          const js = await bundleExtension(row.source_path, denoPath, {});
+          if (!denoPath) {
+            denoPath = await denoRuntime.ensureDeno();
+          }
+          const js = await bundleExtension(row.source_path, denoPath, {
+            env: denoRuntime.getDenoEnv(),
+          });
           await Deno.mkdir(dirname(row.bundle_path), { recursive: true });
           await Deno.writeTextFile(row.bundle_path, js);
           catalog.updateSourceFingerprint(row.source_path, currentFp);

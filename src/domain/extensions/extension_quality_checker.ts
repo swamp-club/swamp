@@ -245,6 +245,7 @@ export async function checkExtensionQuality(
   files: string[],
   denoPath: string,
   denoConfigPath?: string,
+  denoEnv?: Record<string, string>,
 ): Promise<QualityCheckResult> {
   const tsFiles = files.filter((f) => f.endsWith(".ts"));
   if (tsFiles.length === 0) {
@@ -274,13 +275,14 @@ export async function checkExtensionQuality(
   }
 
   // Check formatting
+  const baseEnv = denoEnv ?? Deno.env.toObject();
   const fmtCommand = new Deno.Command(denoPath, {
     args: denoConfigPath
       ? ["fmt", "--check", "--config", denoConfigPath, ...tsFiles]
       : ["fmt", "--check", "--no-config", ...tsFiles],
     stdout: "piped",
     stderr: "piped",
-    env: { ...Deno.env.toObject(), NO_COLOR: "1" },
+    env: { ...baseEnv, NO_COLOR: "1" },
   });
   const fmtOutput = await fmtCommand.output();
   if (!fmtOutput.success) {
@@ -297,7 +299,7 @@ export async function checkExtensionQuality(
       : ["lint", "--no-config", ...tsFiles],
     stdout: "piped",
     stderr: "piped",
-    env: { ...Deno.env.toObject(), NO_COLOR: "1" },
+    env: { ...baseEnv, NO_COLOR: "1" },
   });
   const lintOutput = await lintCommand.output();
   if (!lintOutput.success) {

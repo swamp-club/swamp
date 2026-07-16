@@ -165,6 +165,14 @@ export interface BundleOptions {
    * Mutually exclusive with `denoConfigPath`.
    */
   packageJsonDir?: string;
+
+  /**
+   * Environment variables for the subprocess. When provided, the bundler
+   * passes these as `env` to `Deno.Command`. Use this to set `DENO_DIR`
+   * so the subprocess cache does not land in `$HOME/Library/Caches/deno/`
+   * (which triggers macOS TCC prompts).
+   */
+  env?: Record<string, string>;
 }
 
 /**
@@ -510,6 +518,7 @@ export async function bundleExtension(
       // For package.json projects, set cwd so Deno auto-detects package.json
       // and resolves bare specifiers from node_modules/.
       ...(options?.packageJsonDir ? { cwd: options.packageJsonDir } : {}),
+      ...(options?.env ? { env: options.env } : {}),
     });
 
     const output = await command.output();

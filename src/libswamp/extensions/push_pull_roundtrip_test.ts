@@ -92,6 +92,7 @@ function makePrepareDeps(
       Promise.resolve({ errors: [], warnings: [], passed: true }),
     bundleEntryPoint: () => Promise.resolve("/* bundled */"),
     ensureDenoPath: () => Promise.resolve("/usr/bin/deno"),
+    getDenoEnv: () => Deno.env.toObject(),
     getLatestVersion: () => Promise.resolve(null),
     ...overrides,
   };

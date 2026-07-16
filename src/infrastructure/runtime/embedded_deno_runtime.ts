@@ -25,6 +25,7 @@ import {
   type CommandResolver,
   defaultCommandResolver,
 } from "../process/resolve_command.ts";
+import { getSwampDataDir } from "../persistence/paths.ts";
 
 const logger = getLogger(["swamp", "runtime", "deno"]);
 
@@ -161,6 +162,7 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
         args: ["--version"],
         stdout: "null",
         stderr: "null",
+        env: this.getDenoEnv(),
       }).output();
       return result.success;
     } catch {
@@ -230,16 +232,22 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
   }
 
   /**
-   * Gets the ~/.swamp/deno/ directory path for extracting the runtime.
+   * Gets the swamp deno directory path for extracting the runtime.
    */
   private getSwampDenoDir(): string {
-    const home = Deno.env.get("HOME") ??
-      Deno.env.get("USERPROFILE");
-    if (!home) {
-      throw new Error(
-        "Cannot determine home directory (HOME/USERPROFILE not set)",
-      );
-    }
-    return join(home, ".swamp", "deno");
+    return join(getSwampDataDir(), "deno");
+  }
+
+  /**
+   * Returns a subprocess environment with DENO_DIR scoped to the swamp
+   * data directory. Prevents the embedded deno binary from creating
+   * `$HOME/Library/Caches/deno/` on macOS, which traverses `$HOME` and
+   * triggers TCC permission prompts for protected folders.
+   */
+  getDenoEnv(): Record<string, string> {
+    return {
+      ...Deno.env.toObject(),
+      DENO_DIR: join(getSwampDataDir(), "deno-cache"),
+    };
   }
 }

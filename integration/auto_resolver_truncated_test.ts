@@ -44,6 +44,7 @@ import type { DenoRuntime } from "../src/domain/runtime/deno_runtime.ts";
 
 const stubDenoRuntime: DenoRuntime = {
   ensureDeno: () => Promise.resolve("/usr/bin/false"),
+  getDenoEnv: () => Deno.env.toObject(),
 };
 
 async function snapshotTree(root: string): Promise<Map<string, string>> {

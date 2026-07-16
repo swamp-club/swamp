@@ -18,14 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { join } from "@std/path";
-import { homeDirectory } from "../persistence/paths.ts";
+import { getSwampDataDir } from "../persistence/paths.ts";
 
 /**
  * Get the swamp source directory path.
- * Located at ~/.swamp/source/
+ * Located at `<swampDataDir>/source/`.
  */
 export function getSwampSourceDir(): string {
-  return join(homeDirectory(), ".swamp", "source");
+  return join(getSwampDataDir(), "source");
 }
 
 /**

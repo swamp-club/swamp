@@ -104,7 +104,8 @@ export function createExtensionQualityDeps(
     pushPrepareDeps,
     cache,
     ensureDenoPath: () => denoRuntime.ensureDeno(),
-    makeScoreDeps: (denoPath) => createRubricScoreDeps(denoPath, extractTarGz),
+    makeScoreDeps: (denoPath) =>
+      createRubricScoreDeps(denoPath, extractTarGz, denoRuntime.getDenoEnv()),
   };
 }
 

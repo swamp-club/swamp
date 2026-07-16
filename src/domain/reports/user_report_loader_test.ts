@@ -31,6 +31,7 @@ import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 /** Test DenoRuntime that returns the current deno binary path. */
 const testDenoRuntime: DenoRuntime = {
   ensureDeno: () => Promise.resolve(Deno.execPath()),
+  getDenoEnv: () => Deno.env.toObject(),
 };
 
 /** W1b/(a-2): construct an ExtensionRepository wrapping a test catalog. */

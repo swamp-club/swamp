@@ -27,4 +27,11 @@
 export interface DenoRuntime {
   /** Returns the absolute path to a usable deno binary. */
   ensureDeno(): Promise<string>;
+
+  /**
+   * Returns subprocess environment variables with DENO_DIR scoped to the
+   * swamp data directory, preventing the embedded deno binary from writing
+   * to `$HOME/Library/Caches/deno/` (macOS TCC trigger).
+   */
+  getDenoEnv(): Record<string, string>;
 }

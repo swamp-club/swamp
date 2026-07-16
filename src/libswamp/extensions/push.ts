@@ -262,11 +262,16 @@ export interface ExtensionPushPrepareDeps {
     files: string[],
     denoPath: string,
     denoConfigPath?: string,
+    denoEnv?: Record<string, string>,
   ) => Promise<QualityCheckResult>;
   bundleEntryPoint: (
     entryPoint: string,
     denoPath: string,
-    options?: { denoConfigPath?: string; packageJsonDir?: string },
+    options?: {
+      denoConfigPath?: string;
+      packageJsonDir?: string;
+      env?: Record<string, string>;
+    },
   ) => Promise<string>;
   extractDependencySpecifiers: (
     sourceFiles: string[],
@@ -278,6 +283,7 @@ export interface ExtensionPushPrepareDeps {
     input: ExtensionReviewInput,
   ) => Promise<ReviewRulesResult>;
   ensureDenoPath: () => Promise<string>;
+  getDenoEnv: () => Record<string, string>;
   getLatestVersion: (
     serverUrl: string,
     name: string,
@@ -374,6 +380,7 @@ export function createExtensionPushPrepareDeps(
     checkReviewRules: checkReviewRulesImpl,
     bundleEntryPoint: bundleExtension,
     ensureDenoPath: () => denoRuntime.ensureDeno(),
+    getDenoEnv: () => denoRuntime.getDenoEnv(),
     getLatestVersion: async (serverUrl, name, apiKey) => {
       const client = new ExtensionApiClient(serverUrl, identity);
       const result = await client.getLatestVersion(name, apiKey);
@@ -701,6 +708,7 @@ export async function extensionPushPrepare(
       qualityFiles,
       denoPath,
       input.denoConfigPath,
+      deps.getDenoEnv(),
     );
     if (!qualityResult.passed) {
       throw validationFailed(
@@ -1188,7 +1196,7 @@ async function bundleEntryPoints(
       const js = await deps.bundleEntryPoint(
         entryPoint,
         denoPath,
-        bundleOptions,
+        { ...bundleOptions, env: deps.getDenoEnv() },
       );
       bundles.set(entryName, js);
       ctx.logger.debug`Bundled ${label} ${entryName} (${js.length} bytes)`;

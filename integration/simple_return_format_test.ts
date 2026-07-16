@@ -38,6 +38,7 @@ import { ModelType } from "../src/domain/models/model_type.ts";
 
 const testDenoRuntime: DenoRuntime = {
   ensureDeno: () => Promise.resolve(Deno.execPath()),
+  getDenoEnv: () => Deno.env.toObject(),
 };
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {

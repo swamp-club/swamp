@@ -36,6 +36,9 @@ class StubDenoRuntime implements DenoRuntime {
   ensureDeno(): Promise<string> {
     return Promise.resolve("deno");
   }
+  getDenoEnv(): Record<string, string> {
+    return Deno.env.toObject();
+  }
 }
 
 /** W1b/(a-2): construct an ExtensionRepository wrapping a test catalog. */

@@ -37,6 +37,7 @@ import type { DenoRuntime } from "../src/domain/runtime/deno_runtime.ts";
 
 const stubDenoRuntime: DenoRuntime = {
   ensureDeno: () => Promise.resolve("/usr/bin/false"),
+  getDenoEnv: () => Deno.env.toObject(),
 };
 
 Deno.test("integration: auto-resolver refuses to overwrite an existing pulled extension", async () => {
