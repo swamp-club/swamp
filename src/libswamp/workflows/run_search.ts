@@ -22,6 +22,7 @@ import type { SwampError } from "../errors.ts";
 import { parseDuration } from "../data/search.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import { collectBounded, RUN_FANOUT_CONCURRENCY } from "./run_fanout.ts";
 /**
  * A single workflow run search result item.
  */
@@ -103,13 +104,16 @@ export async function* workflowRunSearch(
 
       const allWorkflows = await deps.findAllWorkflows();
 
-      // Fetch all runs for all workflows in parallel
-      const runsPerWorkflow = await Promise.all(
-        allWorkflows.map((workflow) =>
-          deps.findAllRunsByWorkflowId(workflow.id)
-        ),
+      // Fetch run summaries for all workflows with bounded concurrency. Each
+      // per-workflow read streams one run file at a time; the bound keeps at
+      // most RUN_FANOUT_CONCURRENCY of those in flight so peak memory does not
+      // scale with the number of workflows. Summaries are lightweight, so
+      // holding them all before filtering is cheap (see WorkflowRunSummary).
+      const allRuns = await collectBounded(
+        allWorkflows,
+        RUN_FANOUT_CONCURRENCY,
+        (workflow) => deps.findAllRunsByWorkflowId(workflow.id),
       );
-      const allRuns = runsPerWorkflow.flat();
 
       // Sort by startedAt descending (most recent first)
       allRuns.sort((a, b) => {
