@@ -21,6 +21,12 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
+export interface IssueGetComment {
+  author: string;
+  body: string;
+  createdAt: string;
+}
+
 export interface IssueGetData {
   number: number;
   title: string;
@@ -30,6 +36,7 @@ export interface IssueGetData {
   body: string;
   assignees: string[];
   commentCount: number;
+  comments: IssueGetComment[];
   url: string;
 }
 

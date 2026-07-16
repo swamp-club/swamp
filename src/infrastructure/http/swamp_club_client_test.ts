@@ -605,6 +605,51 @@ Deno.test("fetchIssue: reads commentCount from top-level comments array", async 
   }
 });
 
+Deno.test("fetchIssue: returns comment bodies with author and createdAt", async () => {
+  const mock = startMockServer((_req) =>
+    Response.json({
+      issue: {
+        number: 42,
+        title: "Test issue",
+        type: "bug",
+        status: "open",
+        authorUsername: "alice",
+      },
+      comments: [
+        {
+          id: "c1",
+          authorUsername: "bob",
+          body: "first reply",
+          createdAt: "2026-07-01T10:00:00Z",
+        },
+        {
+          id: "c2",
+          author: "carol",
+          body: "second reply",
+          createdAt: "2026-07-02T12:00:00Z",
+        },
+      ],
+    })
+  );
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const result = await client.fetchIssue(undefined, 42);
+    assertEquals(result.comments.length, 2);
+    assertEquals(result.comments[0], {
+      author: "bob",
+      body: "first reply",
+      createdAt: "2026-07-01T10:00:00Z",
+    });
+    assertEquals(result.comments[1], {
+      author: "carol",
+      body: "second reply",
+      createdAt: "2026-07-02T12:00:00Z",
+    });
+  } finally {
+    await mock.shutdown();
+  }
+});
+
 Deno.test("fetchIssue: commentCount is 0 when no comments array in response", async () => {
   const mock = startMockServer((_req) =>
     Response.json({
@@ -615,6 +660,7 @@ Deno.test("fetchIssue: commentCount is 0 when no comments array in response", as
     const client = new SwampClubClient(`http://localhost:${mock.port}`);
     const result = await client.fetchIssue(undefined, 1);
     assertEquals(result.commentCount, 0);
+    assertEquals(result.comments, []);
   } finally {
     await mock.shutdown();
   }

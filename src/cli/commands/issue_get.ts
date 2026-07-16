@@ -62,7 +62,8 @@ export const issueGetCommand = new Command()
     };
 
     const libCtx = createLibSwampContext({ logger: ctx.logger });
-    const renderer = createIssueGetRenderer(ctx.outputMode);
+    const verbose = ctx.verbosity === "verbose";
+    const renderer = createIssueGetRenderer(ctx.outputMode, verbose);
 
     await consumeStream(
       issueGet(libCtx, deps, { issueNumber }),

@@ -73,6 +73,13 @@ export function getCollectives(
   return whoami.organizations.map((org) => org.slug);
 }
 
+/** A single comment (ripple) on a Lab issue. */
+export interface IssueCommentRecord {
+  author: string;
+  body: string;
+  createdAt: string;
+}
+
 /** Response from fetching a Lab issue by number. */
 export interface FetchIssueResponse {
   number: number;
@@ -83,6 +90,7 @@ export interface FetchIssueResponse {
   body: string;
   assignees: string[];
   commentCount: number;
+  comments: IssueCommentRecord[];
 }
 
 /** Filters for the issue search endpoint. */
@@ -452,6 +460,7 @@ export class SwampClubClient {
 
     const data = await res.json();
     const issue = data.issue;
+    const rawComments: Record<string, unknown>[] = data.comments ?? [];
     return {
       number: issue.number,
       title: issue.title ?? "",
@@ -464,7 +473,13 @@ export class SwampClubClient {
           (a: Record<string, unknown>) => typeof a.username === "string",
         )
         .map((a: Record<string, string>) => a.username),
-      commentCount: (data.comments ?? []).length,
+      commentCount: rawComments.length,
+      comments: rawComments.map((c: Record<string, unknown>) => ({
+        author: (c.authorUsername as string | undefined) ??
+          (c.author as string | undefined) ?? "unknown",
+        body: (c.body as string | undefined) ?? "",
+        createdAt: (c.createdAt as string | undefined) ?? "",
+      })),
     };
   }
 

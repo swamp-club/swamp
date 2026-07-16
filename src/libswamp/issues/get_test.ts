@@ -34,6 +34,23 @@ function makeDeps(overrides: Partial<IssueGetDeps> = {}): IssueGetDeps {
         body: "Something is broken.",
         assignees: ["alice"],
         commentCount: 3,
+        comments: [
+          {
+            author: "alice",
+            body: "I can reproduce this.",
+            createdAt: "2026-07-01T10:00:00Z",
+          },
+          {
+            author: "bob",
+            body: "Working on a fix.",
+            createdAt: "2026-07-02T12:00:00Z",
+          },
+          {
+            author: "alice",
+            body: "Thanks!",
+            createdAt: "2026-07-03T14:00:00Z",
+          },
+        ],
         url: "https://swamp-club.com/lab/42",
       }),
     ...overrides,
@@ -56,6 +73,9 @@ Deno.test("issueGet: yields completed with fetched issue data", async () => {
   assertEquals(completed.data.body, "Something is broken.");
   assertEquals(completed.data.assignees, ["alice"]);
   assertEquals(completed.data.commentCount, 3);
+  assertEquals(completed.data.comments.length, 3);
+  assertEquals(completed.data.comments[0].author, "alice");
+  assertEquals(completed.data.comments[0].body, "I can reproduce this.");
   assertEquals(completed.data.url, "https://swamp-club.com/lab/42");
 });
 
@@ -73,6 +93,7 @@ Deno.test("issueGet: passes issueNumber to fetchIssue dep", async () => {
         body: "A feature.",
         assignees: [],
         commentCount: 0,
+        comments: [],
         url: "https://swamp-club.com/lab/42",
       });
     },
