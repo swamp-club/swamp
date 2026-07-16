@@ -562,7 +562,8 @@ export class SwampClubClient {
    * Fetch the UNAUTHENTICATED (ghost) Genesis pass — the progress this device
    * has accrued in the event stream, keyed by its `Swamp-Distinct-Id` (attached
    * automatically from the client identity). Every reward reads unclaimed until
-   * the distinct_id is bound to an account via `swamp auth login`.
+   * the distinct_id is bound to an account via an authenticated session
+   * (`swamp auth login` or `SWAMP_API_KEY`).
    */
   async fetchGhostGenesisPass(
     signal?: AbortSignal,

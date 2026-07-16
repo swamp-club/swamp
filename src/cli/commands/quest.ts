@@ -56,9 +56,9 @@ export const questCommand = new Command()
 
     const client = new SwampClubClient(serverUrl, identity);
 
-    // Authenticated → your own pass, claimable on the web. Otherwise the ghost
-    // read: the progress this device accrued, keyed by its distinct_id, every
-    // reward unclaimed until `swamp auth login` binds it to an account.
+    // Authenticated → your own pass. Otherwise the ghost read: the progress
+    // this device accrued, keyed by its distinct_id, unclaimed until an
+    // authenticated session (swamp auth login or SWAMP_API_KEY) binds it.
     let deps: QuestPassDeps;
     if (credentials?.apiKey) {
       const apiKey = credentials.apiKey;
@@ -68,7 +68,9 @@ export const questCommand = new Command()
           const who = await client.whoami(apiKey);
           if (!who.authenticated || !who.username) {
             throw new UserError(
-              "Could not resolve your identity. Run `swamp auth login` again.",
+              Deno.env.get("SWAMP_API_KEY")
+                ? "Could not resolve your identity. Your SWAMP_API_KEY may be invalid or expired."
+                : "Could not resolve your identity. Run `swamp auth login` again.",
             );
           }
           return client.fetchGenesisPass(who.username);

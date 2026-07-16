@@ -105,7 +105,10 @@ import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.
 import type { ClientIdentity } from "../infrastructure/http/client_identity.ts";
 import { loadIdentity, USER_AGENT } from "./load_identity.ts";
 import { isAuthenticated, setAuthenticated } from "./auth_context.ts";
-import { DEFAULT_SWAMP_CLUB_URL } from "../domain/auth/auth_credentials.ts";
+import {
+  apiKeyFingerprint,
+  DEFAULT_SWAMP_CLUB_URL,
+} from "../domain/auth/auth_credentials.ts";
 import { setAutoResolver } from "./auto_resolver_context.ts";
 import {
   createAutoResolveInstallerAdapter,
@@ -127,6 +130,10 @@ import type { CommandInvocationData } from "../domain/telemetry/command_invocati
 import { UserIdentityRepository } from "../infrastructure/persistence/user_identity_repository.ts";
 import { TelemetryPreferencesFileRepository } from "../infrastructure/persistence/telemetry_preferences_file_repository.ts";
 import { AuthRepository } from "../infrastructure/persistence/auth_repository.ts";
+import {
+  getCollectives,
+  SwampClubClient,
+} from "../infrastructure/http/swamp_club_client.ts";
 import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
 import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
 import { resolveDatastoreConfig } from "./resolve_datastore.ts";
@@ -1297,6 +1304,33 @@ export async function runCli(args: string[]): Promise<void> {
       extensionsDir,
     );
     loaderSpan.end();
+  }
+
+  // Resolve identity for SWAMP_API_KEY users on first use (or key rotation).
+  // Must run before the authCollectives read so the first invocation gets
+  // cached collectives for extension trust.
+  if (!hookMode && Deno.env.get("SWAMP_API_KEY")) {
+    try {
+      const authRepo = new AuthRepository();
+      const creds = await authRepo.load();
+      if (creds && !creds.username) {
+        const identity = await loadIdentity();
+        const client = new SwampClubClient(creds.serverUrl, identity);
+        const signal = AbortSignal.timeout(10_000);
+        const response = await client.whoami(creds.apiKey, signal);
+        if (response.authenticated && response.username) {
+          const collectives = getCollectives(response) ?? [];
+          await authRepo.saveIdentityCache(
+            creds.serverUrl,
+            response.username,
+            collectives,
+            apiKeyFingerprint(creds.apiKey),
+          );
+        }
+      }
+    } catch {
+      // Best-effort — don't block CLI startup
+    }
   }
 
   // Load cached auth collectives for membership-based trust
