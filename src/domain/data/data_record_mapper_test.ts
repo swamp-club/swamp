@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { fromData, fromRow } from "./data_record_mapper.ts";
+import { fromData, fromResourceHandle, fromRow } from "./data_record_mapper.ts";
+import { VaultService } from "../vaults/vault_service.ts";
+import type { DataHandle } from "../models/model.ts";
+import type { DataId } from "./data_id.ts";
 import type { CatalogRow } from "../../infrastructure/persistence/catalog_store.ts";
 import type { UnifiedDataRepository } from "./repositories.ts";
 import { Data } from "./data.ts";
@@ -376,4 +379,85 @@ Deno.test("fromData: handles null content bytes", async () => {
 
   assertEquals(record!.attributes, {});
   assertEquals(record!.content, "");
+});
+
+// ============================================================================
+// fromResourceHandle — vault reference resolution
+// ============================================================================
+
+Deno.test("fromResourceHandle: resolves vault references in attributes when vaultService is provided", async () => {
+  const vaultService = new VaultService();
+  vaultService.registerVault({ name: "myvault", type: "mock", config: {} });
+  await vaultService.put("myvault", "secret-key", "resolved-secret-value");
+
+  const data = {
+    apiKey: "${{ vault.get('myvault', 'secret-key') }}",
+    label: "test",
+  };
+  const repo = stubRepo(null, encoder.encode(JSON.stringify(data)));
+
+  const handle: DataHandle = {
+    name: "instance-1",
+    specName: "creds",
+    kind: "resource",
+    dataId: "data-id-1" as DataId,
+    version: 1,
+    size: 100,
+    tags: { type: "resource", modelName: "test-model" },
+    metadata: {
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      streaming: false,
+      tags: {},
+      ownerDefinition: { ownerType: "model-method", ownerRef: "ref-1" },
+    },
+  };
+
+  const record = await fromResourceHandle(
+    handle,
+    ModelType.create("test/model"),
+    "model-123",
+    "test-model",
+    repo,
+    vaultService,
+  );
+
+  assertEquals(record.attributes.apiKey, "resolved-secret-value");
+  assertEquals(record.attributes.label, "test");
+});
+
+Deno.test("fromResourceHandle: returns raw vault refs when vaultService is omitted", async () => {
+  const vaultRef = "${{ vault.get('myvault', 'secret-key') }}";
+  const data = { apiKey: vaultRef, label: "test" };
+  const repo = stubRepo(null, encoder.encode(JSON.stringify(data)));
+
+  const handle: DataHandle = {
+    name: "instance-1",
+    specName: "creds",
+    kind: "resource",
+    dataId: "data-id-1" as DataId,
+    version: 1,
+    size: 100,
+    tags: { type: "resource", modelName: "test-model" },
+    metadata: {
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      streaming: false,
+      tags: {},
+      ownerDefinition: { ownerType: "model-method", ownerRef: "ref-1" },
+    },
+  };
+
+  const record = await fromResourceHandle(
+    handle,
+    ModelType.create("test/model"),
+    "model-123",
+    "test-model",
+    repo,
+  );
+
+  assertEquals(record.attributes.apiKey, vaultRef);
+  assertEquals(record.attributes.label, "test");
 });

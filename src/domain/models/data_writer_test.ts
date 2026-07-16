@@ -565,6 +565,8 @@ Deno.test("processSensitiveResourceData: replaces sensitive field with vault ref
     modelType,
     modelId,
     "create",
+    "creds",
+    "main",
   );
 
   assertEquals(data.name, "public-value");
@@ -590,9 +592,11 @@ Deno.test("processSensitiveResourceData: stores actual value in vault", async ()
     modelType,
     modelId,
     "create",
+    "creds",
+    "main",
   );
 
-  const vaultKey = `swamp-test-${modelId}-create-apiKey`;
+  const vaultKey = `swamp-test-${modelId}-create-creds-main-apiKey`;
   const storedValue = await vaultService.get("test-vault", vaultKey);
   assertEquals(storedValue, "sk-live-abc123");
 });
@@ -615,11 +619,13 @@ Deno.test("processSensitiveResourceData: uses single-quoted strings for CEL comp
     modelType,
     modelId,
     "create",
+    "creds",
+    "main",
   );
 
   const ref = data.token as string;
   assertStringIncludes(ref, "vault.get('test-vault'");
-  assertStringIncludes(ref, `'swamp-test-${modelId}-create-token'`);
+  assertStringIncludes(ref, `'swamp-test-${modelId}-create-creds-main-token'`);
 });
 
 Deno.test("processSensitiveResourceData: handles non-string values with JSON.stringify", async () => {
@@ -641,9 +647,11 @@ Deno.test("processSensitiveResourceData: handles non-string values with JSON.str
     modelType,
     modelId,
     "create",
+    "creds",
+    "main",
   );
 
-  const vaultKey = `swamp-test-${modelId}-create-config`;
+  const vaultKey = `swamp-test-${modelId}-create-creds-main-config`;
   const storedValue = await vaultService.get("test-vault", vaultKey);
   assertEquals(storedValue, JSON.stringify(configValue));
 });
@@ -669,6 +677,8 @@ Deno.test("processSensitiveResourceData: throws error when no vault configured",
         modelType,
         modelId,
         "create",
+        "creds",
+        "main",
       ),
     Error,
     "no vault is configured",
@@ -698,13 +708,15 @@ Deno.test("processSensitiveResourceData: sensitiveOutput flag treats all fields 
     modelType,
     modelId,
     "create",
+    "creds",
+    "main",
   );
 
   assertStringIncludes(data.field1 as string, "vault.get");
   assertStringIncludes(data.field2 as string, "vault.get");
 
-  const key1 = `swamp-test-${modelId}-create-field1`;
-  const key2 = `swamp-test-${modelId}-create-field2`;
+  const key1 = `swamp-test-${modelId}-create-creds-main-field1`;
+  const key2 = `swamp-test-${modelId}-create-creds-main-field2`;
   assertEquals(await vaultService.get("test-vault", key1), "value1");
   assertEquals(await vaultService.get("test-vault", key2), "value2");
 });
@@ -741,6 +753,8 @@ Deno.test("processSensitiveResourceData: uses custom vaultName from field metada
     modelType,
     modelId,
     "create",
+    "creds",
+    "main",
   );
 
   assertStringIncludes(data.secret as string, "'special-vault'");
@@ -767,6 +781,8 @@ Deno.test("processSensitiveResourceData: uses custom vaultKey from field metadat
     modelType,
     modelId,
     "create",
+    "creds",
+    "main",
   );
 
   assertStringIncludes(data.apiKey as string, "'my-custom-key'");
@@ -795,6 +811,8 @@ Deno.test("processSensitiveResourceData: skips fields with null/undefined values
     modelType,
     modelId,
     "create",
+    "creds",
+    "main",
   );
 
   assertStringIncludes(data.required as string, "vault.get");
@@ -820,6 +838,8 @@ Deno.test("processSensitiveResourceData: no-op when no sensitive fields", async 
     modelType,
     modelId,
     "create",
+    "creds",
+    "main",
   );
 
   assertEquals(data.name, "test");
@@ -852,6 +872,8 @@ Deno.test("processSensitiveResourceData: spec vaultName overrides default vault"
     modelType,
     modelId,
     "create",
+    "creds",
+    "main",
   );
 
   assertStringIncludes(data.secret as string, "'spec-vault'");
@@ -882,6 +904,8 @@ Deno.test("processSensitiveResourceData: handles nested sensitive fields", async
     modelType,
     modelId,
     "create",
+    "creds",
+    "main",
   );
 
   assertEquals(data.name, "my-service");
@@ -890,7 +914,7 @@ Deno.test("processSensitiveResourceData: handles nested sensitive fields", async
   assertStringIncludes(creds.apiKey as string, "vault.get");
   assertEquals(data["credentials.apiKey"], undefined);
 
-  const vaultKey = `swamp-test-${modelId}-create-credentials.apiKey`;
+  const vaultKey = `swamp-test-${modelId}-create-creds-main-credentials.apiKey`;
   assertEquals(
     await vaultService.get("test-vault", vaultKey),
     "secret-key-123",
@@ -921,25 +945,115 @@ Deno.test("processSensitiveResourceData: snapshots values before mutation", asyn
     modelType,
     modelId,
     "create",
+    "creds",
+    "main",
   );
 
   // Top-level "credentials" should also be a vault ref
   assertStringIncludes(data.credentials as string, "vault.get");
 
   // The nested apiKey's original value should be stored
-  const nestedKey = `swamp-test-${modelId}-create-credentials.apiKey`;
+  const nestedKey =
+    `swamp-test-${modelId}-create-creds-main-credentials.apiKey`;
   assertEquals(
     await vaultService.get("test-vault", nestedKey),
     "original-secret",
   );
 
   // The top-level object stored should contain ORIGINAL values
-  const topKey = `swamp-test-${modelId}-create-credentials`;
+  const topKey = `swamp-test-${modelId}-create-creds-main-credentials`;
   const storedObject = JSON.parse(
     await vaultService.get("test-vault", topKey),
   );
   assertEquals(storedObject.apiKey, "original-secret");
   assertEquals(storedObject.region, "us-east-1");
+});
+
+Deno.test("processSensitiveResourceData: different instance names produce distinct vault keys", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      secret: z.string().meta({ sensitive: true }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+
+  const dataA: Record<string, unknown> = { secret: "AAAA" };
+  const dataB: Record<string, unknown> = { secret: "BBBB" };
+  const vaultService = createTestVaultService();
+
+  await processSensitiveResourceData(
+    dataA,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+    "creds",
+    "instance-a",
+  );
+  await processSensitiveResourceData(
+    dataB,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+    "creds",
+    "instance-b",
+  );
+
+  const keyA = `swamp-test-${modelId}-create-creds-instance-a-secret`;
+  const keyB = `swamp-test-${modelId}-create-creds-instance-b-secret`;
+  assertEquals(await vaultService.get("test-vault", keyA), "AAAA");
+  assertEquals(await vaultService.get("test-vault", keyB), "BBBB");
+});
+
+Deno.test("processSensitiveResourceData: different spec names produce distinct vault keys", async () => {
+  const specA: ResourceOutputSpec = {
+    schema: z.object({
+      apiKey: z.string().meta({ sensitive: true }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+  const specB: ResourceOutputSpec = {
+    schema: z.object({
+      apiKey: z.string().meta({ sensitive: true }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+
+  const dataA: Record<string, unknown> = { apiKey: "key-from-spec-a" };
+  const dataB: Record<string, unknown> = { apiKey: "key-from-spec-b" };
+  const vaultService = createTestVaultService();
+
+  await processSensitiveResourceData(
+    dataA,
+    specA,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+    "specA",
+    "main",
+  );
+  await processSensitiveResourceData(
+    dataB,
+    specB,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+    "specB",
+    "main",
+  );
+
+  const keyA = `swamp-test-${modelId}-create-specA-main-apiKey`;
+  const keyB = `swamp-test-${modelId}-create-specB-main-apiKey`;
+  assertEquals(await vaultService.get("test-vault", keyA), "key-from-spec-a");
+  assertEquals(await vaultService.get("test-vault", keyB), "key-from-spec-b");
 });
 
 // --- sanitizeVaultKey tests ---
@@ -1276,10 +1390,13 @@ Deno.test("processSensitiveResourceData: handles namespaced model types (#447)",
     namespacedType,
     id,
     "create",
+    "keypair",
+    "main",
   );
 
   // Should not throw — key is sanitized
-  const expectedKey = `user-aws-ec2-keypair-${id}-create-KeyMaterial`;
+  const expectedKey =
+    `user-aws-ec2-keypair-${id}-create-keypair-main-KeyMaterial`;
   assertStringIncludes(data.KeyMaterial as string, expectedKey);
 
   const stored = await vaultService.get("test-vault", expectedKey);

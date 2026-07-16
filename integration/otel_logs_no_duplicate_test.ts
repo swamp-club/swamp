@@ -34,6 +34,11 @@ import {
 } from "../src/infrastructure/logging/logger.ts";
 import { shutdownLogs } from "../src/infrastructure/tracing/mod.ts";
 
+// With --parallel, other test files may have already called initializeLogging,
+// setting both the module-level isInitialized guard and LogTape's own
+// configure guard. We must clear both before this test can reconfigure
+// logging with a stubbed fetch.
+
 function countBodies(
   captured: { url: string; body: string }[],
   needle: string,
@@ -72,8 +77,15 @@ Deno.test("OTel logs (log mode): each record is exported exactly once, never dup
   }) as any;
 
   try {
+    // Clear any prior OTel logs provider so initLogs() creates a fresh one
+    // that picks up our stubbed fetch.
+    await shutdownLogs();
+
     // Log (non-JSON) mode — the path where run loggers inherit root sinks.
-    await initializeLogging({});
+    // _reset clears the once-per-process guard and passes reset:true to
+    // LogTape's configure(), so this works even when another test file
+    // already called initializeLogging in the same --parallel run.
+    await initializeLogging({ _reset: true });
 
     // A run-category logger: its records reach the root (which holds the otel
     // sink) by inheritance. If the otel sink were also on this logger, the

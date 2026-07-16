@@ -336,6 +336,8 @@ export async function processSensitiveResourceData(
   modelType: ModelType,
   modelId: string,
   methodName: string,
+  specName: string,
+  instanceName: string,
   callbacks?: DataWriterCallbacks,
 ): Promise<void> {
   const sensitiveFields = extractSensitiveFields(spec.schema);
@@ -383,7 +385,7 @@ export async function processSensitiveResourceData(
     const targetVault = field.vaultName ?? spec.vaultName ?? vaultNames[0];
     const vaultKey = field.vaultKey ??
       sanitizeVaultKey(
-        `${modelType.normalized}/${modelId}/${methodName}/${field.path}`,
+        `${modelType.normalized}/${modelId}/${methodName}/${specName}/${instanceName}/${field.path}`,
       );
 
     const stringValue = typeof originalValue === "string"
@@ -592,6 +594,8 @@ export function createResourceWriter(
         modelType,
         modelId,
         methodName,
+        specName,
+        name,
         { onEvent },
       );
     }
