@@ -45,6 +45,13 @@ export interface ShutdownHandlerOptions {
    * Has no effect on Windows where only `SIGINT` is registered regardless.
    */
   includePosixSignals?: boolean;
+  /**
+   * When true, the first signal invokes the handler normally; a second
+   * signal force-exits the process with code 130. Prevents stuck
+   * processes when the handler fires an AbortSignal that the in-flight
+   * work ignores.
+   */
+  forceExitOnRepeat?: boolean;
 }
 
 /** Disposer returned by {@link registerShutdownHandler}. */
@@ -75,34 +82,46 @@ const POSIX_ONLY_SIGNALS: readonly Deno.Signal[] = ["SIGTERM", "SIGHUP"];
 export function registerShutdownHandler(
   options: ShutdownHandlerOptions,
 ): ShutdownHandlerHandle {
-  const { handler, includePosixSignals = true } = options;
+  const { handler, includePosixSignals = true, forceExitOnRepeat = false } =
+    options;
 
   const registered: Deno.Signal[] = [];
 
-  // SIGINT is always safe — both POSIX and Windows support it.
-  Deno.addSignalListener("SIGINT", handler);
+  let fired = false;
+  const wrappedHandler = forceExitOnRepeat
+    ? () => {
+      if (fired) {
+        Deno.exit(130);
+      }
+      fired = true;
+      handler();
+    }
+    : handler;
+
+  Deno.addSignalListener("SIGINT", wrappedHandler);
   registered.push("SIGINT");
 
   if (includePosixSignals && Deno.build.os !== "windows") {
     for (const signal of POSIX_ONLY_SIGNALS) {
-      Deno.addSignalListener(signal, handler);
+      Deno.addSignalListener(signal, wrappedHandler);
       registered.push(signal);
     }
   }
 
   let disposed = false;
-  return {
-    dispose: () => {
-      if (disposed) return;
-      disposed = true;
-      for (const signal of registered) {
-        try {
-          Deno.removeSignalListener(signal, handler);
-        } catch {
-          // Listener may have already been removed (e.g. if Deno's
-          // signal infrastructure tore it down). Best-effort cleanup.
-        }
+
+  function removeAll(): void {
+    if (disposed) return;
+    disposed = true;
+    for (const signal of registered) {
+      try {
+        Deno.removeSignalListener(signal, wrappedHandler);
+      } catch {
+        // Listener may have already been removed (e.g. if Deno's
+        // signal infrastructure tore it down). Best-effort cleanup.
       }
-    },
-  };
+    }
+  }
+
+  return { dispose: removeAll };
 }

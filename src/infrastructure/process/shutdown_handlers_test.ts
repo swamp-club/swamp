@@ -155,3 +155,86 @@ Deno.test("registerShutdownHandler: SIGINT-only mode registers without throwing"
   });
   handle.dispose();
 });
+
+Deno.test({
+  name:
+    "registerShutdownHandler: forceExitOnRepeat removes listeners after first signal so second falls through (POSIX)",
+  ignore: Deno.build.os === "windows",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const moduleUrl = new URL("./shutdown_handlers.ts", import.meta.url).href;
+    const program = `
+      import { registerShutdownHandler } from "${moduleUrl}";
+
+      let handlerCalls = 0;
+      registerShutdownHandler({
+        handler: () => {
+          handlerCalls++;
+          console.log(JSON.stringify({ handlerCalls }));
+        },
+        forceExitOnRepeat: true,
+        includePosixSignals: false,
+      });
+
+      // First SIGINT: handler fires normally.
+      setTimeout(() => Deno.kill(Deno.pid, "SIGINT"), 50);
+
+      // Second SIGINT after 150ms: forceExitOnRepeat calls
+      // Deno.exit(130) immediately.
+      setTimeout(() => Deno.kill(Deno.pid, "SIGINT"), 150);
+
+      // Block forever — exit happens via Deno.exit(130) in the handler.
+      await new Promise(() => {});
+    `;
+
+    const cmd = new Deno.Command(Deno.execPath(), {
+      args: ["run", "-A", "-"],
+      stdin: "piped",
+      stdout: "piped",
+      stderr: "piped",
+    });
+    const child = cmd.spawn();
+    const writer = child.stdin.getWriter();
+    try {
+      await writer.write(new TextEncoder().encode(program));
+    } finally {
+      await writer.close();
+    }
+
+    const status = await Promise.race([
+      child.status,
+      new Promise<never>((_, reject) => {
+        setTimeout(
+          () => reject(new Error("child did not exit within 5s")),
+          5_000,
+        );
+      }),
+    ]);
+
+    const stdout = new TextDecoder().decode(
+      await new Response(child.stdout).arrayBuffer(),
+    );
+    await child.stderr.cancel();
+
+    // Second SIGINT triggers Deno.exit(130) inside the handler —
+    // proves the escalation fires on repeat.
+    assertEquals(
+      status.code,
+      130,
+      `expected child to exit 130 (default SIGINT); got ${status.code}; stdout=${stdout}`,
+    );
+
+    const lines = stdout.split("\n").filter((l) => l.trim().length > 0);
+    assertEquals(
+      lines.length,
+      1,
+      `handler should fire exactly once: ${stdout}`,
+    );
+    assertEquals(
+      lines[0],
+      '{"handlerCalls":1}',
+      `unexpected handler output: ${stdout}`,
+    );
+  },
+});

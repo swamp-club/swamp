@@ -387,6 +387,7 @@ Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — 
         const exitSuppress = suppressSyncExitOnSignal();
         const shutdownHandle = registerShutdownHandler({
           handler: () => abort.abort(),
+          forceExitOnRepeat: true,
         });
         const baseLibCtx = createLibSwampContext({ signal: abort.signal });
         const libCtx = timeoutMs !== undefined
@@ -570,6 +571,7 @@ async function runMethodViaServer(
   }
   const shutdown = registerShutdownHandler({
     handler: () => abort.abort(),
+    forceExitOnRepeat: true,
   });
 
   const inputSets: Record<string, unknown>[] = stdinItems
