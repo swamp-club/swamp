@@ -262,6 +262,8 @@ export async function fromResourceHandle(
   modelId: string,
   fallbackModelName: string,
   dataRepo: UnifiedDataRepository,
+  vaultService?: VaultService,
+  redactor?: SecretRedactor,
 ): Promise<DataRecord> {
   let attributes: Record<string, unknown> = {};
   if (handle.metadata.contentType === "application/json") {
@@ -278,6 +280,13 @@ export async function fromResourceHandle(
       }
     } catch {
       // Not valid JSON, skip attributes
+    }
+  }
+  if (vaultService && Object.keys(attributes).length > 0) {
+    try {
+      await resolveVaultRefsInData(attributes, vaultService, redactor);
+    } catch {
+      // Vault unavailable or specific keys failed — leave unresolved
     }
   }
 

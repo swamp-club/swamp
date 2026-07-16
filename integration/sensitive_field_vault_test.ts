@@ -67,6 +67,8 @@ Deno.test("Integration: sensitive output fields stored in vault with references 
     modelType,
     modelId,
     methodName,
+    "keypair",
+    "main",
   );
 
   // Non-sensitive fields unchanged
@@ -80,7 +82,8 @@ Deno.test("Integration: sensitive output fields stored in vault with references 
   assertStringIncludes(keyMaterialRef, "${{ vault.get('test-vault'");
 
   // Verify the actual secret was stored in the vault
-  const vaultKey = `test-sensitive-output-${modelId}-${methodName}-keyMaterial`;
+  const vaultKey =
+    `test-sensitive-output-${modelId}-${methodName}-keypair-main-keyMaterial`;
   const storedSecret = await vaultService.get("test-vault", vaultKey);
   assertEquals(
     storedSecret,
@@ -129,6 +132,8 @@ Deno.test("Integration: sensitiveOutput flag vaults all fields", async () => {
     modelType,
     modelId,
     methodName,
+    "secrets",
+    "main",
   );
 
   // Both fields should be vault references
@@ -136,8 +141,10 @@ Deno.test("Integration: sensitiveOutput flag vaults all fields", async () => {
   assertStringIncludes(data.field2 as string, "vault.get");
 
   // Verify values stored in vault
-  const key1 = `test-all-sensitive-${modelId}-${methodName}-field1`;
-  const key2 = `test-all-sensitive-${modelId}-${methodName}-field2`;
+  const key1 =
+    `test-all-sensitive-${modelId}-${methodName}-secrets-main-field1`;
+  const key2 =
+    `test-all-sensitive-${modelId}-${methodName}-secrets-main-field2`;
   assertEquals(
     await vaultService.get("test-vault", key1),
     "secret-value-1",
@@ -180,6 +187,8 @@ Deno.test("Integration: custom vaultKey from schema metadata", async () => {
     modelType,
     modelId,
     methodName,
+    "apikeys",
+    "main",
   );
 
   // Verify vault reference uses custom key with quoted strings

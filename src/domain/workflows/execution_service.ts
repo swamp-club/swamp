@@ -891,6 +891,7 @@ export class DefaultStepExecutor implements StepExecutor {
           outputRepo,
           unifiedDataRepo,
           definitionRepo,
+          vaultService,
           modelType,
           modelDef,
           originalDefinition,
@@ -1151,6 +1152,7 @@ export class DefaultStepExecutor implements StepExecutor {
     outputRepo: OutputRepository;
     unifiedDataRepo: UnifiedDataRepository;
     definitionRepo: DefinitionRepository;
+    vaultService: VaultService;
     modelType: ModelType;
     modelDef: ModelDefinition;
     originalDefinition: Definition;
@@ -1173,6 +1175,7 @@ export class DefaultStepExecutor implements StepExecutor {
       outputRepo,
       unifiedDataRepo,
       definitionRepo,
+      vaultService,
       modelType,
       modelDef,
       originalDefinition,
@@ -1220,6 +1223,8 @@ export class DefaultStepExecutor implements StepExecutor {
             evaluatedDefinition.id,
             evaluatedDefinition.name,
             unifiedDataRepo,
+            vaultService,
+            ctx.secretRedactor,
           );
         } else if (handle.kind === "file") {
           const fileRecord = await fromFileHandle(
