@@ -54,7 +54,7 @@ async function writeSourcesYaml(repo: string, body: string) {
 
 Deno.test("sourceList: returns empty when no config", async () => {
   await withRepo(async (repo) => {
-    const deps = createSourceListDeps(repo);
+    const deps = await createSourceListDeps(repo);
     const data = completedData(await collect(sourceList(ctx, deps)));
     assertEquals(data.sources, []);
   });
@@ -65,7 +65,7 @@ Deno.test("sourceList: concrete valid source shows valid + resolvedKinds", async
     const src = join(repo, "s");
     await Deno.mkdir(join(src, "extensions", "models"), { recursive: true });
     await writeSourcesYaml(repo, `sources:\n  - path: ${src}\n`);
-    const deps = createSourceListDeps(repo);
+    const deps = await createSourceListDeps(repo);
     const data = completedData(await collect(sourceList(ctx, deps)));
     assertEquals(data.sources.length, 1);
     assertEquals(data.sources[0].status, "valid");
@@ -78,7 +78,7 @@ Deno.test("sourceList: concrete path that exists but resolves to zero kinds → 
     const src = join(repo, "empty");
     await Deno.mkdir(src, { recursive: true });
     await writeSourcesYaml(repo, `sources:\n  - path: ${src}\n`);
-    const deps = createSourceListDeps(repo);
+    const deps = await createSourceListDeps(repo);
     const data = completedData(await collect(sourceList(ctx, deps)));
     assertEquals(data.sources[0].status, "no_extensions");
     assertEquals(data.sources[0].resolvedKinds, undefined);
@@ -91,7 +91,7 @@ Deno.test("sourceList: missing path → path_not_found", async () => {
       repo,
       `sources:\n  - path: ${repo}/does-not-exist\n`,
     );
-    const deps = createSourceListDeps(repo);
+    const deps = await createSourceListDeps(repo);
     const data = completedData(await collect(sourceList(ctx, deps)));
     assertEquals(data.sources[0].status, "path_not_found");
   });
@@ -103,7 +103,7 @@ Deno.test("sourceList: glob that matches nothing → path_not_found", async () =
       repo,
       `sources:\n  - path: ${repo}/no-match/*\n`,
     );
-    const deps = createSourceListDeps(repo);
+    const deps = await createSourceListDeps(repo);
     const data = completedData(await collect(sourceList(ctx, deps)));
     assertEquals(data.sources[0].status, "path_not_found");
   });
@@ -117,7 +117,7 @@ Deno.test("sourceList: glob expanding to dirs with no kinds → no_extensions", 
       repo,
       `sources:\n  - path: ${repo}/parent/*\n`,
     );
-    const deps = createSourceListDeps(repo);
+    const deps = await createSourceListDeps(repo);
     const data = completedData(await collect(sourceList(ctx, deps)));
     assertEquals(data.sources[0].status, "no_extensions");
   });
@@ -135,7 +135,7 @@ Deno.test("sourceList: glob with mixed expansions (1 valid of 3) → valid + res
       repo,
       `sources:\n  - path: ${parent}/*\n`,
     );
-    const deps = createSourceListDeps(repo);
+    const deps = await createSourceListDeps(repo);
     const data = completedData(await collect(sourceList(ctx, deps)));
     assertEquals(data.sources[0].status, "valid");
     assertEquals(data.sources[0].resolvedKinds, ["vaults"]);
@@ -151,7 +151,7 @@ Deno.test("sourceList: non-standard layout (content pre-scan) shows resolvedKind
       'export const model = { type: "@r/m" };',
     );
     await writeSourcesYaml(repo, `sources:\n  - path: ${src}\n`);
-    const deps = createSourceListDeps(repo);
+    const deps = await createSourceListDeps(repo);
     const data = completedData(await collect(sourceList(ctx, deps)));
     assertEquals(data.sources[0].status, "valid");
     assertEquals(data.sources[0].resolvedKinds, ["models"]);
@@ -166,7 +166,7 @@ Deno.test("sourceList: resolvedKinds is sorted by EXTENSION_KINDS declaration or
       await Deno.mkdir(join(src, "extensions", k), { recursive: true });
     }
     await writeSourcesYaml(repo, `sources:\n  - path: ${src}\n`);
-    const deps = createSourceListDeps(repo);
+    const deps = await createSourceListDeps(repo);
     const data = completedData(await collect(sourceList(ctx, deps)));
     assertEquals(data.sources[0].resolvedKinds, [
       "models",
@@ -185,7 +185,7 @@ Deno.test("sourceList: preserves existing fields (path, only, expandedPaths, sta
       repo,
       `sources:\n  - path: ${src}\n    only: [models]\n`,
     );
-    const deps = createSourceListDeps(repo);
+    const deps = await createSourceListDeps(repo);
     const data = completedData(await collect(sourceList(ctx, deps)));
     const entry = data.sources[0];
     assertEquals(entry.path, src);

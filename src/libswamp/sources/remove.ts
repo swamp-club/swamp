@@ -27,6 +27,7 @@ import {
   removeSwampSources,
   writeSwampSources,
 } from "../../infrastructure/persistence/swamp_sources_repository.ts";
+import { resolveGitMainWorktreeRoot } from "../../infrastructure/persistence/git_worktree.ts";
 import { existsSync } from "@std/fs/exists";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
@@ -44,11 +45,12 @@ export interface SourceRemoveDeps {
 }
 
 /** Wires real infrastructure into SourceRemoveDeps. */
-export function createSourceRemoveDeps(
+export async function createSourceRemoveDeps(
   repoDir: string,
   skillsDirs?: string[],
-): SourceRemoveDeps {
+): Promise<SourceRemoveDeps> {
   const dirs = skillsDirs?.length ? skillsDirs : [];
+  const sourceBaseDir = await resolveGitMainWorktreeRoot(repoDir);
   return {
     readSources: () => readSwampSources(repoDir),
     writeSources: (config) => writeSwampSources(repoDir, config),
@@ -67,6 +69,7 @@ export function createSourceRemoveDeps(
       const expanded = await expandSourcePaths(
         { sources: [{ path }] },
         repoDir,
+        sourceBaseDir,
       );
       return expanded.map((s) => s.path);
     },

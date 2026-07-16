@@ -110,6 +110,48 @@ Deno.test("expandSourcePaths: expands non-glob path as-is", async () => {
   }
 });
 
+Deno.test("expandSourcePaths: resolves relative paths against sourceBaseDir when provided", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
+  try {
+    const mainRoot = join(tmpDir, "main-checkout");
+    const worktreeRoot = join(
+      tmpDir,
+      "main-checkout",
+      ".claude",
+      "worktrees",
+      "test",
+    );
+    const siblingDir = join(tmpDir, "sibling-repo");
+    await Deno.mkdir(siblingDir, { recursive: true });
+    await Deno.mkdir(worktreeRoot, { recursive: true });
+    await Deno.mkdir(mainRoot, { recursive: true });
+
+    const result = await expandSourcePaths(
+      { sources: [{ path: "../sibling-repo" }] },
+      worktreeRoot,
+      mainRoot,
+    );
+    assertEquals(result.length, 1);
+    assertPathEquals(result[0].path, siblingDir);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("expandSourcePaths: falls back to repoDir when sourceBaseDir not provided", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
+  try {
+    const result = await expandSourcePaths(
+      { sources: [{ path: "../sibling" }] },
+      tmpDir,
+    );
+    assertEquals(result.length, 1);
+    assertPathEquals(result[0].path, join(tmpDir, "..", "sibling"));
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 Deno.test("expandSourcePaths: expands glob to matching directories", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
   try {
@@ -157,7 +199,7 @@ Deno.test("resolveSourceExtensionDirs: finds extensions/models/ in source", asyn
       recursive: true,
     });
 
-    const result = await resolveSourceExtensionDirs([
+    const { resolved: result } = await resolveSourceExtensionDirs([
       { path: sourceDir },
     ]);
     assertEquals(result.length, 1);
@@ -182,7 +224,7 @@ Deno.test("resolveSourceExtensionDirs: respects only filter", async () => {
       recursive: true,
     });
 
-    const result = await resolveSourceExtensionDirs([
+    const { resolved: result } = await resolveSourceExtensionDirs([
       { path: sourceDir, only: ["vaults"] },
     ]);
     assertEquals(result[0].modelsDir, undefined);
@@ -196,12 +238,55 @@ Deno.test("resolveSourceExtensionDirs: respects only filter", async () => {
 });
 
 Deno.test("resolveSourceExtensionDirs: handles missing source path gracefully", async () => {
-  const result = await resolveSourceExtensionDirs([
+  const { resolved: result } = await resolveSourceExtensionDirs([
     { path: "/nonexistent/path" },
   ]);
   assertEquals(result.length, 1);
   assertPathEquals(result[0].sourcePath, "/nonexistent/path");
   assertEquals(result[0].modelsDir, undefined);
+});
+
+Deno.test("resolveSourceExtensionDirs: returns warning for missing source path", async () => {
+  const { warnings } = await resolveSourceExtensionDirs([
+    { path: "/nonexistent/path/for/warning/test" },
+  ]);
+  assertEquals(warnings.length, 1);
+  assertPathEquals(
+    warnings[0].sourcePath,
+    "/nonexistent/path/for/warning/test",
+  );
+  assertEquals(warnings[0].reason, "not_found");
+});
+
+Deno.test("resolveSourceExtensionDirs: returns warning for non-directory source path", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
+  try {
+    const filePath = join(tmpDir, "not-a-dir");
+    await Deno.writeTextFile(filePath, "");
+    const { warnings } = await resolveSourceExtensionDirs([
+      { path: filePath },
+    ]);
+    assertEquals(warnings.length, 1);
+    assertEquals(warnings[0].reason, "not_a_directory");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("resolveSourceExtensionDirs: no warnings for valid source", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
+  try {
+    const sourceDir = join(tmpDir, "valid-ext");
+    await Deno.mkdir(join(sourceDir, "extensions", "models"), {
+      recursive: true,
+    });
+    const { warnings } = await resolveSourceExtensionDirs([
+      { path: sourceDir },
+    ]);
+    assertEquals(warnings.length, 0);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
 });
 
 Deno.test("resolveSourceExtensionDirs: reads source .swamp.yaml for custom dirs", async () => {
@@ -214,7 +299,7 @@ Deno.test("resolveSourceExtensionDirs: reads source .swamp.yaml for custom dirs"
       'swampVersion: "1.0.0"\ninitializedAt: "2026-01-01"\nmodelsDir: custom-models\n',
     );
 
-    const result = await resolveSourceExtensionDirs([
+    const { resolved: result } = await resolveSourceExtensionDirs([
       { path: sourceDir },
     ]);
     assertEquals(
@@ -299,7 +384,9 @@ Deno.test("resolveSourceExtensionDirs snapshot: all six kinds present", async ()
     ) {
       await Deno.mkdir(join(src, "extensions", kind), { recursive: true });
     }
-    const result = await resolveSourceExtensionDirs([{ path: src }]);
+    const { resolved: result } = await resolveSourceExtensionDirs([{
+      path: src,
+    }]);
     assertEquals(snapshotResolved(result, tmp), [
       {
         sourcePath: "/all",
@@ -321,7 +408,9 @@ Deno.test("resolveSourceExtensionDirs snapshot: models-only root", async () => {
   try {
     const src = join(tmp, "models-only");
     await Deno.mkdir(join(src, "extensions", "models"), { recursive: true });
-    const result = await resolveSourceExtensionDirs([{ path: src }]);
+    const { resolved: result } = await resolveSourceExtensionDirs([{
+      path: src,
+    }]);
     assertEquals(snapshotResolved(result, tmp), [
       {
         sourcePath: "/models-only",
@@ -338,7 +427,9 @@ Deno.test("resolveSourceExtensionDirs snapshot: workflows-only root", async () =
   try {
     const src = join(tmp, "wf");
     await Deno.mkdir(join(src, "extensions", "workflows"), { recursive: true });
-    const result = await resolveSourceExtensionDirs([{ path: src }]);
+    const { resolved: result } = await resolveSourceExtensionDirs([{
+      path: src,
+    }]);
     assertEquals(snapshotResolved(result, tmp), [
       {
         sourcePath: "/wf",
@@ -359,7 +450,9 @@ Deno.test("resolveSourceExtensionDirs snapshot: marker overrides modelsDir", asy
       join(src, ".swamp.yaml"),
       'swampVersion: "1.0.0"\ninitializedAt: "2026-01-01"\nmodelsDir: custom/models\n',
     );
-    const result = await resolveSourceExtensionDirs([{ path: src }]);
+    const { resolved: result } = await resolveSourceExtensionDirs([{
+      path: src,
+    }]);
     assertEquals(snapshotResolved(result, tmp), [
       {
         sourcePath: "/overridden",
@@ -372,7 +465,7 @@ Deno.test("resolveSourceExtensionDirs snapshot: marker overrides modelsDir", asy
 });
 
 Deno.test("resolveSourceExtensionDirs snapshot: non-existent path yields empty", async () => {
-  const result = await resolveSourceExtensionDirs([
+  const { resolved: result } = await resolveSourceExtensionDirs([
     { path: "/definitely/does/not/exist/v139" },
   ]);
   assertEquals(result.length, 1);
@@ -391,7 +484,7 @@ Deno.test("resolveSourceExtensionDirs snapshot: only filter narrows kinds", asyn
     const src = join(tmp, "filtered");
     await Deno.mkdir(join(src, "extensions", "models"), { recursive: true });
     await Deno.mkdir(join(src, "extensions", "vaults"), { recursive: true });
-    const result = await resolveSourceExtensionDirs([
+    const { resolved: result } = await resolveSourceExtensionDirs([
       { path: src, only: ["vaults"] },
     ]);
     assertEquals(snapshotResolved(result, tmp), [
@@ -419,7 +512,9 @@ Deno.test("resolveSourceExtensionDirs snapshot: non-standard layout via content 
       join(src, "m.ts"),
       'export const model = { type: "@r/m" };',
     );
-    const result = await resolveSourceExtensionDirs([{ path: src }]);
+    const { resolved: result } = await resolveSourceExtensionDirs([{
+      path: src,
+    }]);
     assertEquals(result.length, 1);
     assertEquals(result[0].sourcePath, src);
     // Post-fix: pre-scan detects the model export and sets modelsDir to
@@ -448,7 +543,9 @@ Deno.test("resolveSourceExtensionDirs: large YAML file is skipped during pre-sca
       join(src, "big-fixture.yaml"),
       `${padding}\njobs:\n  one:\n    steps: []\n`,
     );
-    const result = await resolveSourceExtensionDirs([{ path: src }]);
+    const { resolved: result } = await resolveSourceExtensionDirs([{
+      path: src,
+    }]);
     // Because the large YAML was skipped, the source contributes no
     // kinds — no workflow detected.
     assertEquals(result[0].workflowsDir, undefined);
@@ -473,7 +570,9 @@ Deno.test("resolveSourceExtensionDirs: detects export beyond 64 KiB in large .ts
         `Test file must exceed 64 KiB to exercise the fix (got ${stat.size})`,
       );
     }
-    const result = await resolveSourceExtensionDirs([{ path: src }]);
+    const { resolved: result } = await resolveSourceExtensionDirs([{
+      path: src,
+    }]);
     assertEquals(result.length, 1);
     assertPathEquals(result[0].reportsDir!, src);
   } finally {
@@ -531,7 +630,7 @@ Deno.test("parity: resolveExtensionKindsForSource matches resolveSourceExtension
       await Deno.mkdir(join(src, "extensions", kind), { recursive: true });
     }
     const fromDirs = kindsFromResolved(
-      (await resolveSourceExtensionDirs([{ path: src }]))[0],
+      (await resolveSourceExtensionDirs([{ path: src }])).resolved[0],
     );
     const fromHelper = await resolveExtensionKindsForSource(
       { path: src },
@@ -557,7 +656,7 @@ Deno.test("parity: non-standard (content pre-scan) layout", async () => {
       'export const vault = { type: "@r/v" };',
     );
     const fromDirs = kindsFromResolved(
-      (await resolveSourceExtensionDirs([{ path: src }]))[0],
+      (await resolveSourceExtensionDirs([{ path: src }])).resolved[0],
     );
     const fromHelper = await resolveExtensionKindsForSource(
       { path: src },
@@ -579,7 +678,7 @@ Deno.test("parity: marker-override layout", async () => {
       'swampVersion: "1.0.0"\ninitializedAt: "2026-01-01"\nmodelsDir: custom/models\n',
     );
     const fromDirs = kindsFromResolved(
-      (await resolveSourceExtensionDirs([{ path: src }]))[0],
+      (await resolveSourceExtensionDirs([{ path: src }])).resolved[0],
     );
     const fromHelper = await resolveExtensionKindsForSource(
       { path: src },
@@ -598,7 +697,8 @@ Deno.test("parity: --only filter respected identically", async () => {
     await Deno.mkdir(join(src, "extensions", "models"), { recursive: true });
     await Deno.mkdir(join(src, "extensions", "vaults"), { recursive: true });
     const fromDirs = kindsFromResolved(
-      (await resolveSourceExtensionDirs([{ path: src, only: ["vaults"] }]))[0],
+      (await resolveSourceExtensionDirs([{ path: src, only: ["vaults"] }]))
+        .resolved[0],
     );
     const fromHelper = await resolveExtensionKindsForSource(
       { path: src, only: ["vaults"] },
@@ -614,7 +714,7 @@ Deno.test("parity: non-existent path returns empty from both", async () => {
   const fromDirs = kindsFromResolved(
     (await resolveSourceExtensionDirs([
       { path: "/definitely/not/there/v139/parity" },
-    ]))[0],
+    ])).resolved[0],
   );
   const fromHelper = await resolveExtensionKindsForSource(
     { path: "/definitely/not/there/v139/parity" },
@@ -673,7 +773,9 @@ Deno.test("resolveSourceExtensionDirs: standard layout wins over loose root file
       join(src, "loose.ts"),
       'export const model = { type: "@r/loose" };',
     );
-    const result = await resolveSourceExtensionDirs([{ path: src }]);
+    const { resolved: result } = await resolveSourceExtensionDirs([{
+      path: src,
+    }]);
     assertEquals(result.length, 1);
     assertEquals(result[0].modelsDir, join(src, "extensions", "models"));
     // Loose root file NOT surfaced — standard layout precedence.

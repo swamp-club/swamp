@@ -162,10 +162,12 @@ import {
   readSwampSources,
   resolveSourceExtensionDirs,
 } from "../infrastructure/persistence/swamp_sources_repository.ts";
+import { resolveGitMainWorktreeRoot } from "../infrastructure/persistence/git_worktree.ts";
 import type {
   ExtensionKind,
   ResolvedSourceDirs,
 } from "../domain/repo/swamp_sources.ts";
+import { isGlobPattern } from "../domain/repo/swamp_sources.ts";
 import { discoverManifestCrossKindDirs } from "../domain/extensions/manifest_cross_kind_discovery.ts";
 
 // Import models barrel to trigger self-registration
@@ -1258,12 +1260,37 @@ export async function runCli(args: string[]): Promise<void> {
 
   // Read extension sources (additional extension directories from
   // .swamp-sources.yaml). Resolved once and shared across all loaders.
+  // Relative paths resolve against the git main working tree root so
+  // worktrees see the same sibling sources as the main checkout.
   let resolvedSources: ResolvedSourceDirs[] = [];
   if (!hookMode) {
     const sourcesConfig = await readSwampSources(repoDir);
     if (sourcesConfig) {
-      const expanded = await expandSourcePaths(sourcesConfig, repoDir);
-      resolvedSources = await resolveSourceExtensionDirs(expanded);
+      const sourceBaseDir = await resolveGitMainWorktreeRoot(repoDir);
+      const expanded = await expandSourcePaths(
+        sourcesConfig,
+        repoDir,
+        sourceBaseDir,
+      );
+      const { resolved, warnings } = await resolveSourceExtensionDirs(
+        expanded,
+      );
+      resolvedSources = resolved;
+
+      const missingConcrete = warnings.filter(
+        (w) => !isGlobPattern(w.sourcePath),
+      );
+      const isSourceManagementCommand = commandInfo.command === "extension" &&
+        commandInfo.subcommand === "source";
+      if (missingConcrete.length > 0 && !isSourceManagementCommand) {
+        const paths = missingConcrete.map((w) => `  - ${w.sourcePath}`);
+        throw new UserError(
+          `Declared extension source(s) in .swamp-sources.yaml cannot be resolved:\n${
+            paths.join("\n")
+          }\n\n` +
+            "Remove stale entries with 'swamp extension source rm <path>' or fix the path.",
+        );
+      }
     }
   }
 

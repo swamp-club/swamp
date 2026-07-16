@@ -33,6 +33,7 @@ import {
   resolveExtensionKindsForSource,
   writeSwampSources,
 } from "../../infrastructure/persistence/swamp_sources_repository.ts";
+import { resolveGitMainWorktreeRoot } from "../../infrastructure/persistence/git_worktree.ts";
 import {
   copySourceSkills,
   removeSourceSkills,
@@ -59,18 +60,21 @@ export interface SourceAddDeps {
 }
 
 /** Wires real infrastructure into SourceAddDeps. */
-export function createSourceAddDeps(
+export async function createSourceAddDeps(
   repoDir: string,
   tools?: string[],
   skillsDirs?: string[],
-): SourceAddDeps {
+): Promise<SourceAddDeps> {
   const resolvedTools = tools?.length ? tools : ["claude"];
   const dirs = skillsDirs?.length ? skillsDirs : [];
+  const sourceBaseDir = await resolveGitMainWorktreeRoot(repoDir);
   return {
     readSources: () => readSwampSources(repoDir),
     writeSources: (config) => writeSwampSources(repoDir, config),
-    resolveKinds: (source) => resolveExtensionKindsForSource(source, repoDir),
-    expandSource: (source) => expandSourcePaths({ sources: [source] }, repoDir),
+    resolveKinds: (source) =>
+      resolveExtensionKindsForSource(source, sourceBaseDir),
+    expandSource: (source) =>
+      expandSourcePaths({ sources: [source] }, repoDir, sourceBaseDir),
     resolveSkills: (sourcePath) =>
       resolveSourceSkills(sourcePath, resolvedTools),
     copySkills: async (skills) => {
