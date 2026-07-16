@@ -1025,14 +1025,23 @@ export function isLocalhostUrl(url: string): boolean {
 
 /**
  * Resolves the telemetry endpoint.
- * Priority: .swamp.yaml telemetryEndpoint > localhost auto-detect from auth serverUrl > default
+ * Priority: SWAMP_TELEMETRY_ENDPOINT env > .swamp.yaml telemetryEndpoint >
+ * localhost auto-detect from auth serverUrl > default
+ *
+ * The env override is an operator escape hatch that applies to every repo in the
+ * process regardless of marker. It exists for hosts whose auth serverUrl is a
+ * non-localhost name the auto-detect can't recognize — e.g. a container on a
+ * compose network reaching the server as `app:5173` — so all invocations route
+ * to a local telemetry service without pinning each repo's `.swamp.yaml`.
  *
  * @internal Exported for testing
  */
 export function resolveTelemetryEndpoint(
   markerEndpoint: string | undefined,
   authServerUrl: string | null,
+  envEndpoint?: string | undefined,
 ): string {
+  if (envEndpoint) return envEndpoint;
   if (markerEndpoint) return markerEndpoint;
   if (authServerUrl && isLocalhostUrl(authServerUrl)) {
     return LOCALHOST_TELEMETRY_ENDPOINT;
@@ -1147,6 +1156,7 @@ async function initTelemetryService(
     const telemetryEndpoint = resolveTelemetryEndpoint(
       markerEndpoint,
       authServerUrl,
+      Deno.env.get("SWAMP_TELEMETRY_ENDPOINT"),
     );
 
     return {

@@ -471,6 +471,29 @@ Deno.test("resolveTelemetryEndpoint returns default when auth serverUrl is null"
   assertEquals(result, "https://telemetry.swamp-club.com");
 });
 
+Deno.test("resolveTelemetryEndpoint env override wins over marker and auto-detect", () => {
+  const result = resolveTelemetryEndpoint(
+    "https://marker.endpoint",
+    "http://localhost:3000",
+    "http://telemetry:8080",
+  );
+  assertEquals(result, "http://telemetry:8080");
+});
+
+Deno.test("resolveTelemetryEndpoint routes a remote-server (container) run when env is set", () => {
+  const result = resolveTelemetryEndpoint(
+    undefined,
+    "http://app:5173",
+    "http://telemetry:8080",
+  );
+  assertEquals(result, "http://telemetry:8080");
+});
+
+Deno.test("resolveTelemetryEndpoint ignores an empty env override", () => {
+  const result = resolveTelemetryEndpoint("https://marker.endpoint", null, "");
+  assertEquals(result, "https://marker.endpoint");
+});
+
 // --- isUpdateCheckDisabledByEnv tests ---
 
 Deno.test("isUpdateCheckDisabledByEnv returns false when env var is not set", () => {
