@@ -128,7 +128,7 @@ export async function createWorkflowRunDeps(
         }
         const autoDefRepo = new YamlDefinitionRepository(
           dir,
-          undefined,
+          repoContext.eventBus,
           repoContext.autoDefinitionsDir,
           false,
         );
@@ -253,7 +253,7 @@ export async function createModelMethodRunDeps(
       ? async (type, definition) => {
         const autoDefRepo = new YamlDefinitionRepository(
           repoDir,
-          undefined,
+          repoContext.eventBus,
           repoContext.autoDefinitionsDir,
           false,
         );

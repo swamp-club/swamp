@@ -96,7 +96,6 @@ import {
   type PolicyReloadMode,
   PolicySnapshotLoader,
 } from "../../domain/access/policy_snapshot_loader.ts";
-import { EventBus } from "../../domain/events/event_bus.ts";
 import {
   createAdminGrantStore,
   materializeAdmins,
@@ -1013,8 +1012,6 @@ export const serveCommand = new Command()
       );
     }
 
-    const serveEventBus = new EventBus();
-
     const modelsDir = join(resolvedRepoDir, "models");
     const autoDefDir = repoContext.autoDefinitionsDir;
     const grantTypeDir = GRANT_MODEL_TYPE.toDirectoryPath();
@@ -1338,7 +1335,7 @@ export const serveCommand = new Command()
 
     const policySnapshotLoader = new PolicySnapshotLoader(
       repoContext.unifiedDataRepo,
-      serveEventBus,
+      repoContext.eventBus,
       grantReloadMode as PolicyReloadMode,
     );
     await policySnapshotLoader.load();

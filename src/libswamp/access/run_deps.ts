@@ -108,7 +108,7 @@ export async function createServerTokenRunDeps(
     createAndSaveDefinition: async (type, definition) => {
       const autoDefRepo = new YamlDefinitionRepository(
         repoDir,
-        undefined,
+        repoContext.eventBus,
         repoContext.autoDefinitionsDir,
         false,
       );
