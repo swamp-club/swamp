@@ -90,6 +90,83 @@ swamp access group add-member <group> <principal>
 swamp access group remove-member <group> <principal>
 ```
 
+## IdP Group-Based Access Control
+
+IdP groups are group memberships from your identity provider (e.g. Okta) that
+flow through swamp-club's SSO integration. They let you write grants against
+your existing org structure — no manual group management needed.
+
+### How groups flow
+
+1. User runs `swamp auth server-login` and completes the OAuth device flow
+2. swamp-club authenticates the user via SSO and captures their IdP group
+   memberships
+3. `swamp serve` calls the swamp-club userinfo endpoint and reads the `groups`
+   field from the response
+4. Groups are stored on the server token and attached to every WebSocket
+   connection for that user
+5. Grants with `idp-group:<group>` subjects match against these stored groups
+
+### Collectives vs groups
+
+Swamp serve distinguishes two types of IdP membership:
+
+| Concept         | Purpose                                  | Flag                    |
+| --------------- | ---------------------------------------- | ----------------------- |
+| **Collectives** | Admission gate — who can connect         | `--allowed-collectives` |
+| **Groups**      | Grant matching via `idp-group:` subjects | _(no flag — always on)_ |
+
+Collectives come from the userinfo field specified by `--groups-field` (default:
+`collectives`). Groups come from the `groups` field in the userinfo response. If
+your IdP doesn't populate a separate `groups` field, groups fall back to the
+collectives list — so collectives serve both admission and grant matching.
+
+### Background refresh
+
+The server periodically re-fetches userinfo for all active tokens to keep group
+memberships current. Users don't need to re-login when their groups change.
+
+```bash
+swamp serve --auth-mode oauth \
+  --group-refresh-interval 2h \
+  --allowed-collectives platform-eng
+```
+
+| Flag / env var                 | Default | Description                 |
+| ------------------------------ | ------- | --------------------------- |
+| `--group-refresh-interval`     | `4h`    | How often to refresh groups |
+| `SWAMP_GROUP_REFRESH_INTERVAL` | `4h`    | Env var equivalent          |
+
+Set to `0` to disable refresh. Refresh only runs in `--auth-mode oauth` with a
+client secret configured.
+
+### What happens on group removal
+
+When a user is removed from an IdP group, the next refresh cycle detects the
+change and updates the server token. Grants matching that group stop applying —
+no re-login needed. The change takes effect within the refresh interval (default
+4 hours).
+
+### What happens on deprovisioning
+
+When a user is fully deprovisioned from the IdP (account disabled or deleted),
+the userinfo endpoint returns a 401. The server:
+
+1. **Revokes the server token** — no new connections can authenticate with it
+2. **Closes all active WebSocket connections** for that user (close code `4003`,
+   reason `"Session revoked"`)
+
+This happens on the next refresh cycle. Transient errors (network timeouts,
+server errors) do not trigger revocation — existing groups are preserved until
+the next successful refresh.
+
+### SSO setup
+
+SSO is configured in your swamp-club organization settings. The IdP group
+attribute must be mapped so that group memberships appear in the userinfo
+response. See your IdP's documentation for attribute mapping (e.g. Okta group
+attribute statements).
+
 ## Access Checking
 
 ```bash
