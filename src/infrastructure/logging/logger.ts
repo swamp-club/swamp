@@ -40,6 +40,8 @@ export interface LoggingOptions {
   noColor?: boolean;
   /** Write all log output to stderr only (for dispatch runners where stdout carries RPC frames). */
   stderrOnly?: boolean;
+  /** Test-only: clear the once-per-process guard so logging can be reconfigured. */
+  _reset?: boolean;
 }
 
 const stderrEncoder = new TextEncoder();
@@ -57,7 +59,9 @@ let isInitialized = false;
 export async function initializeLogging(
   options: LoggingOptions,
 ): Promise<void> {
-  // LogTape can only be configured once per process
+  if (options._reset) {
+    isInitialized = false;
+  }
   if (isInitialized) {
     return;
   }
@@ -188,6 +192,7 @@ export async function initializeLogging(
         parentSinks: jsonMode ? "override" : "inherit",
       },
     ],
+    ...(options._reset ? { reset: true } : {}),
   });
 
   isInitialized = true;
