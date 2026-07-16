@@ -22,7 +22,12 @@ import { Environment } from "cel-js";
 import { registerArithmeticOverloads } from "../../infrastructure/cel/cel_evaluator.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { EventBus } from "../events/event_bus.ts";
-import type { ModelCreated, ModelUpdated } from "../events/types.ts";
+import type {
+  DefinitionCreated,
+  DefinitionUpdated,
+  ModelCreated,
+  ModelUpdated,
+} from "../events/types.ts";
 import {
   type Grant,
   GRANT_MODEL_TYPE,
@@ -124,6 +129,22 @@ export class PolicySnapshotLoader {
 
       this.#unsubscribers.push(
         eventBus.subscribe<ModelUpdated>("ModelUpdated", (event) => {
+          if (this.#isAccessModel(event.modelType)) {
+            this.#scheduleRebuild();
+          }
+        }),
+      );
+
+      this.#unsubscribers.push(
+        eventBus.subscribe<DefinitionCreated>("DefinitionCreated", (event) => {
+          if (this.#isAccessModel(event.modelType)) {
+            this.#scheduleRebuild();
+          }
+        }),
+      );
+
+      this.#unsubscribers.push(
+        eventBus.subscribe<DefinitionUpdated>("DefinitionUpdated", (event) => {
           if (this.#isAccessModel(event.modelType)) {
             this.#scheduleRebuild();
           }

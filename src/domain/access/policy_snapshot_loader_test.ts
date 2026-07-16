@@ -22,7 +22,12 @@ import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { Data } from "../data/data.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import { EventBus } from "../events/event_bus.ts";
-import { createModelCreated, createModelUpdated } from "../events/types.ts";
+import {
+  createDefinitionCreated,
+  createDefinitionUpdated,
+  createModelCreated,
+  createModelUpdated,
+} from "../events/types.ts";
 import type { Grant } from "../models/access/grant_model.ts";
 import { GRANT_MODEL_TYPE } from "../models/access/grant_model.ts";
 import type { Group } from "../models/access/group_model.ts";
@@ -396,6 +401,131 @@ Deno.test("PolicySnapshotLoader: auto mode subscribes to EventBus", async () => 
 
   await delay(700);
   assertEquals(loader.snapshot.grantsForSubjects(["user:adam"]).length, 1);
+
+  await loader.dispose();
+});
+
+Deno.test("PolicySnapshotLoader: rebuilds snapshot on DefinitionCreated for grant model", async () => {
+  let callCount = 0;
+  const grant = makeGrant();
+
+  const dataRepo = {
+    findAllForType(type: ModelType) {
+      if (type.normalized === GRANT_MODEL_TYPE.normalized) {
+        callCount++;
+        if (callCount > 1) {
+          return Promise.resolve([{
+            data: makeData("grant-main"),
+            modelType: type,
+            modelId: "g1",
+          }]);
+        }
+        return Promise.resolve([]);
+      }
+      return Promise.resolve([]);
+    },
+    getContent(
+      type: ModelType,
+      _modelId: string,
+      _dataName: string,
+    ) {
+      if (type.normalized === GRANT_MODEL_TYPE.normalized && callCount > 1) {
+        return Promise.resolve(
+          new TextEncoder().encode(JSON.stringify(grant)),
+        );
+      }
+      return Promise.resolve(null);
+    },
+  } as unknown as UnifiedDataRepository;
+
+  const eventBus = new EventBus();
+  const loader = new PolicySnapshotLoader(dataRepo, eventBus);
+
+  await loader.load();
+  assertEquals(loader.snapshot.grantsForSubjects(["user:adam"]).length, 0);
+
+  await eventBus.publish(
+    createDefinitionCreated("swamp/grant", "def-123", "my-grant"),
+  );
+
+  await delay(700);
+  assertEquals(loader.snapshot.grantsForSubjects(["user:adam"]).length, 1);
+
+  await loader.dispose();
+});
+
+Deno.test("PolicySnapshotLoader: rebuilds snapshot on DefinitionUpdated for group model", async () => {
+  let callCount = 0;
+  const group = makeGroup("devs", ["adam"]);
+
+  const dataRepo = {
+    findAllForType(type: ModelType) {
+      if (type.normalized === GROUP_MODEL_TYPE.normalized) {
+        callCount++;
+        if (callCount > 1) {
+          return Promise.resolve([{
+            data: makeData("group-main"),
+            modelType: type,
+            modelId: "grp1",
+          }]);
+        }
+        return Promise.resolve([]);
+      }
+      return Promise.resolve([]);
+    },
+    getContent(
+      type: ModelType,
+      _modelId: string,
+      _dataName: string,
+    ) {
+      if (type.normalized === GROUP_MODEL_TYPE.normalized && callCount > 1) {
+        return Promise.resolve(
+          new TextEncoder().encode(JSON.stringify(group)),
+        );
+      }
+      return Promise.resolve(null);
+    },
+  } as unknown as UnifiedDataRepository;
+
+  const eventBus = new EventBus();
+  const loader = new PolicySnapshotLoader(dataRepo, eventBus);
+
+  await loader.load();
+  assertEquals(loader.snapshot.groupsForPrincipal("user:adam").length, 0);
+
+  await eventBus.publish(
+    createDefinitionUpdated("swamp/group", "def-456", "devs"),
+  );
+
+  await delay(700);
+  assertEquals([...loader.snapshot.groupsForPrincipal("user:adam")], ["devs"]);
+
+  await loader.dispose();
+});
+
+Deno.test("PolicySnapshotLoader: ignores DefinitionCreated for non-access models", async () => {
+  let findAllCallCount = 0;
+  const dataRepo = {
+    findAllForType() {
+      findAllCallCount++;
+      return Promise.resolve([]);
+    },
+    getContent() {
+      return Promise.resolve(null);
+    },
+  } as unknown as UnifiedDataRepository;
+
+  const eventBus = new EventBus();
+  const loader = new PolicySnapshotLoader(dataRepo, eventBus);
+
+  await loader.load();
+  const initialCount = findAllCallCount;
+
+  await eventBus.publish(
+    createDefinitionCreated("swamp/echo", "def-789", "my-echo"),
+  );
+
+  assertEquals(findAllCallCount, initialCount);
 
   await loader.dispose();
 });

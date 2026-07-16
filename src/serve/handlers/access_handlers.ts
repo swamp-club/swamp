@@ -444,7 +444,7 @@ export async function handleAccessReload(
     const autoDefDir = join(ctx.repoDir, ".swamp", "auto-definitions");
     const autoDefRepo = new YamlDefinitionRepository(
       ctx.repoDir,
-      undefined,
+      ctx.repoContext.eventBus,
       autoDefDir,
       false,
     );
