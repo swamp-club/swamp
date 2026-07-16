@@ -92,18 +92,24 @@ export async function removeSwampSources(repoDir: string): Promise<void> {
  * a flat list of concrete (non-glob) sources.
  *
  * Each expanded path inherits the `only` filter from its parent source entry.
+ *
+ * @param sourceBaseDir - Base directory for resolving relative paths.
+ *   Defaults to `repoDir`. In a worktree, pass the git main working tree
+ *   root so relative paths resolve the same as from the main checkout.
  */
 export async function expandSourcePaths(
   sources: SwampSourcesConfig,
   repoDir: string,
+  sourceBaseDir?: string,
 ): Promise<SwampSource[]> {
   const expanded: SwampSource[] = [];
+  const baseDir = sourceBaseDir ?? repoDir;
 
   for (const source of sources.sources) {
     const expandedPath = expandEnvVars(source.path);
     const absolutePath = isAbsolute(expandedPath)
       ? expandedPath
-      : resolve(repoDir, expandedPath);
+      : resolve(baseDir, expandedPath);
 
     if (isGlobPattern(absolutePath)) {
       for await (const entry of expandGlob(absolutePath, { globstar: true })) {
@@ -325,10 +331,21 @@ async function contentPreScan(
  * layout always wins over pre-scan when both are present (prevents
  * double-loading in transitional repos).
  */
+export interface SourceResolutionResult {
+  resolved: ResolvedSourceDirs[];
+  warnings: SourceResolutionWarning[];
+}
+
+export interface SourceResolutionWarning {
+  sourcePath: string;
+  reason: "not_found" | "not_a_directory";
+}
+
 export async function resolveSourceExtensionDirs(
   expandedSources: SwampSource[],
-): Promise<ResolvedSourceDirs[]> {
+): Promise<SourceResolutionResult> {
   const results: ResolvedSourceDirs[] = [];
+  const warnings: SourceResolutionWarning[] = [];
 
   for (const source of expandedSources) {
     const sourceDir = source.path;
@@ -340,11 +357,13 @@ export async function resolveSourceExtensionDirs(
       const stat = await Deno.stat(sourceDir);
       if (!stat.isDirectory) {
         logger.warn`Source path is not a directory: ${sourceDir}`;
+        warnings.push({ sourcePath: sourceDir, reason: "not_a_directory" });
         results.push(resolved);
         continue;
       }
     } catch {
       logger.warn`Source path does not exist: ${sourceDir}`;
+      warnings.push({ sourcePath: sourceDir, reason: "not_found" });
       results.push(resolved);
       continue;
     }
@@ -372,7 +391,7 @@ export async function resolveSourceExtensionDirs(
     results.push(resolved);
   }
 
-  return results;
+  return { resolved: results, warnings };
 }
 
 /**

@@ -292,7 +292,7 @@ Deno.test("sourceAdd e2e: standard-layout repo with extensions/models/", async (
       join(src, "extensions", "models", "m.ts"),
       'export const model = { type: "@r/m" };',
     );
-    const deps = createSourceAddDeps(repo);
+    const deps = await createSourceAddDeps(repo);
     const events = await collectEvents(sourceAdd(ctx, deps, src));
     assertEquals(findCompleted(events)?.kind, "completed");
   });
@@ -306,7 +306,7 @@ Deno.test("sourceAdd e2e: non-standard layout — loose model.ts at root", async
       join(src, "m.ts"),
       'export const model = { type: "@r/m" };',
     );
-    const deps = createSourceAddDeps(repo);
+    const deps = await createSourceAddDeps(repo);
     const events = await collectEvents(sourceAdd(ctx, deps, src));
     assertEquals(findCompleted(events)?.kind, "completed");
   });
@@ -322,7 +322,7 @@ Deno.test("sourceAdd e2e: reporter's case — extensions/models/ as source path"
       join(src, "m.ts"),
       'export const model = { type: "@r/m" };',
     );
-    const deps = createSourceAddDeps(repo);
+    const deps = await createSourceAddDeps(repo);
     const events = await collectEvents(sourceAdd(ctx, deps, src));
     assertEquals(
       findCompleted(events)?.kind,
@@ -336,7 +336,7 @@ Deno.test("sourceAdd e2e: empty directory is rejected", async () => {
   await withTempRepo(async (repo) => {
     const src = join(repo, "empty");
     await Deno.mkdir(src, { recursive: true });
-    const deps = createSourceAddDeps(repo);
+    const deps = await createSourceAddDeps(repo);
     const events = await collectEvents(sourceAdd(ctx, deps, src));
     const error = findError(events);
     assertEquals(error?.kind, "error");
@@ -347,7 +347,7 @@ Deno.test("sourceAdd e2e: --only mismatch against models-only source is rejected
   await withTempRepo(async (repo) => {
     const src = join(repo, "m-only");
     await Deno.mkdir(join(src, "extensions", "models"), { recursive: true });
-    const deps = createSourceAddDeps(repo);
+    const deps = await createSourceAddDeps(repo);
     const events = await collectEvents(
       sourceAdd(ctx, deps, src, ["vaults"]),
     );
@@ -371,7 +371,7 @@ Deno.test("sourceAdd e2e: mixed layout — standard wins, loose files ignored", 
       join(src, "loose.ts"),
       'export const model = { type: "@r/loose" };',
     );
-    const deps = createSourceAddDeps(repo);
+    const deps = await createSourceAddDeps(repo);
     const events = await collectEvents(sourceAdd(ctx, deps, src));
     // Should succeed — standard layout has content; loose file ignored.
     assertEquals(findCompleted(events)?.kind, "completed");

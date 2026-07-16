@@ -63,7 +63,7 @@ export const extensionSourceRmCommand = new Command()
     const marker = await markerRepo.read(RepoPath.create(repoDir));
     const tools = marker?.tools?.length ? marker.tools : ["claude"];
     const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
-    const deps = createSourceRemoveDeps(repoDir, skillsDirs);
+    const deps = await createSourceRemoveDeps(repoDir, skillsDirs);
 
     const renderer = createSourceModifyRenderer(cliCtx.outputMode);
     await consumeStream(

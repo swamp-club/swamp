@@ -30,6 +30,7 @@ import {
   readSwampSources,
   resolveExtensionKindsForSource,
 } from "../../infrastructure/persistence/swamp_sources_repository.ts";
+import { resolveGitMainWorktreeRoot } from "../../infrastructure/persistence/git_worktree.ts";
 import { expandEnvVars } from "../../infrastructure/persistence/env_path.ts";
 import { isAbsolute, resolve } from "@std/path";
 
@@ -37,16 +38,23 @@ import { isAbsolute, resolve } from "@std/path";
 export interface SourceListDeps {
   readSources: () => Promise<SwampSourcesConfig | null>;
   repoDir: string;
+  /** Base directory for resolving relative source paths. */
+  sourceBaseDir: string;
   /** Returns the kinds a source contributes. Injectable for unit tests. */
   resolveKinds: (source: SwampSource) => Promise<ExtensionKind[]>;
 }
 
 /** Wires real infrastructure into SourceListDeps. */
-export function createSourceListDeps(repoDir: string): SourceListDeps {
+export async function createSourceListDeps(
+  repoDir: string,
+): Promise<SourceListDeps> {
+  const sourceBaseDir = await resolveGitMainWorktreeRoot(repoDir);
   return {
     readSources: () => readSwampSources(repoDir),
     repoDir,
-    resolveKinds: (source) => resolveExtensionKindsForSource(source, repoDir),
+    sourceBaseDir,
+    resolveKinds: (source) =>
+      resolveExtensionKindsForSource(source, sourceBaseDir),
   };
 }
 
@@ -81,6 +89,7 @@ export async function* sourceList(
         const expanded = await expandSourcePaths(
           { sources: [source] },
           deps.repoDir,
+          deps.sourceBaseDir,
         );
         entry.expandedPaths = expanded.map((s) => s.path);
         if (expanded.length === 0) {
@@ -98,7 +107,7 @@ export async function* sourceList(
         const expandedPath = expandEnvVars(source.path);
         const absolutePath = isAbsolute(expandedPath)
           ? expandedPath
-          : resolve(deps.repoDir, expandedPath);
+          : resolve(deps.sourceBaseDir, expandedPath);
         entry.expandedPaths = [absolutePath];
 
         let exists = false;

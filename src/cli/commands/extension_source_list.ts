@@ -50,7 +50,7 @@ export const extensionSourceListCommand = new Command()
     ]);
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createSourceListDeps(resolveRepoDir(options.repoDir));
+    const deps = await createSourceListDeps(resolveRepoDir(options.repoDir));
 
     const renderer = createSourceListRenderer(cliCtx.outputMode);
     await consumeStream(sourceList(ctx, deps), renderer.handlers());

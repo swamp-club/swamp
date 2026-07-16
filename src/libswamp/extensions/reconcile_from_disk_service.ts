@@ -70,6 +70,7 @@ import {
   readSwampSources,
   resolveSourceExtensionDirs,
 } from "../../infrastructure/persistence/swamp_sources_repository.ts";
+import { resolveGitMainWorktreeRoot } from "../../infrastructure/persistence/git_worktree.ts";
 
 const logger = getLogger(["swamp", "extensions", "reconcile"]);
 
@@ -365,8 +366,13 @@ export class ReconcileFromDiskService {
     // Source-mounted extensions from .swamp-sources.yaml
     const config = await readSwampSources(this.repoDir);
     if (config) {
-      const expanded = await expandSourcePaths(config, this.repoDir);
-      const resolved = await resolveSourceExtensionDirs(expanded);
+      const sourceBaseDir = await resolveGitMainWorktreeRoot(this.repoDir);
+      const expanded = await expandSourcePaths(
+        config,
+        this.repoDir,
+        sourceBaseDir,
+      );
+      const { resolved } = await resolveSourceExtensionDirs(expanded);
       for (const sourceDirs of resolved) {
         for (const kindDir of KIND_DIRS) {
           const dirs = collectDirsForKind([sourceDirs], kindDir);

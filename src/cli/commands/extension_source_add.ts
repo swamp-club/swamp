@@ -84,7 +84,7 @@ export const extensionSourceAddCommand = new Command()
     const marker = await markerRepo.read(RepoPath.create(repoDir));
     const tools = marker?.tools?.length ? marker.tools : ["claude"];
     const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
-    const deps = createSourceAddDeps(repoDir, tools, skillsDirs);
+    const deps = await createSourceAddDeps(repoDir, tools, skillsDirs);
 
     let only: ExtensionKind[] | undefined;
     if (options.only) {
