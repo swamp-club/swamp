@@ -39,6 +39,10 @@ import {
   WorkflowRun,
   type WorkflowRunData,
 } from "../../domain/workflows/workflow_run.ts";
+import {
+  parseWorkflowRunSummary,
+  type WorkflowRunSummary,
+} from "../../domain/workflows/workflow_run_summary.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
 import {
   createWorkflowRunCompleted,
@@ -153,6 +157,71 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
     // Sort by startedAt descending (most recent first)
     return runs.sort((a, b) => {
+      const aTime = a.startedAt?.getTime() ?? 0;
+      const bTime = b.startedAt?.getTime() ?? 0;
+      return bTime - aTime;
+    });
+  }
+
+  /**
+   * Lists lightweight {@link WorkflowRunSummary} projections for a workflow's
+   * runs, for listing/search paths that only display summary fields.
+   *
+   * Unlike {@link findAllByWorkflowId}, this never reconstructs the full
+   * WorkflowRun aggregate: each file is read and parsed one at a time, projected
+   * to a small summary via `parseWorkflowRunSummary`, and the parsed YAML tree
+   * (including the unbounded inline step `output` blobs) is released before the
+   * next file. Peak memory is therefore O(one file) + O(N small summaries)
+   * rather than O(total on-disk run size), which is what OOMs the full read on
+   * workflows with a large accumulated run history.
+   *
+   * This is a projection method on the concrete repository, deliberately NOT on
+   * the `WorkflowRunRepository` port: only the run/history search command paths
+   * (which reference the concrete class) need it, so keeping it here avoids
+   * forcing every implementer and test double to grow.
+   */
+  async findAllSummariesByWorkflowId(
+    workflowId: WorkflowId,
+  ): Promise<WorkflowRunSummary[]> {
+    const dir = this.getRunsDir(workflowId);
+    const summaries: WorkflowRunSummary[] = [];
+
+    try {
+      for await (const entry of Deno.readDir(dir)) {
+        if (
+          !entry.isFile || !entry.name.startsWith("workflow-run-") ||
+          !entry.name.endsWith(".yaml")
+        ) {
+          continue;
+        }
+        const path = join(dir, entry.name);
+
+        // Per-file try/catch closes the TOCTOU window: a concurrent delete
+        // (deleteAllByWorkflowId, GC) can remove the file between readDir and
+        // readTextFile. NotFound on a single file means "skip it" — never
+        // "abandon the rest of the workflow." Mirrors findAllByWorkflowId.
+        try {
+          const content = await Deno.readTextFile(path);
+          // parseWorkflowRunSummary keeps only the displayed fields; the heavy
+          // jobs/output subtree in `parseYaml`'s result is dropped and GC'd.
+          summaries.push(parseWorkflowRunSummary(parseYaml(content)));
+        } catch (error) {
+          if (error instanceof Deno.errors.NotFound) continue;
+          throw error;
+        }
+      }
+    } catch (error) {
+      // Outer catch handles "directory itself doesn't exist" (no runs yet
+      // for this workflow). Per-file NotFound is handled above.
+      if (error instanceof Deno.errors.NotFound) {
+        return [];
+      }
+      throw error;
+    }
+
+    // Sort by startedAt descending (most recent first) — identical ordering to
+    // findAllByWorkflowId so listing order is unchanged.
+    return summaries.sort((a, b) => {
       const aTime = a.startedAt?.getTime() ?? 0;
       const bTime = b.startedAt?.getTime() ?? 0;
       return bTime - aTime;

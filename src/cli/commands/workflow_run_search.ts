@@ -192,8 +192,11 @@ export async function workflowRunSearchAction(
 
   const deps: WorkflowRunSearchDeps = {
     findAllWorkflows: () => workflowRepo.findAll(),
+    // Use the lightweight summary projection, not the full-aggregate read:
+    // search only displays summary fields, and hydrating every run (with its
+    // inline step outputs) OOMs on workflows with a large run history (#1173).
     findAllRunsByWorkflowId: (id) =>
-      runRepo.findAllByWorkflowId(createWorkflowId(id)),
+      runRepo.findAllSummariesByWorkflowId(createWorkflowId(id)),
   };
 
   const fetchPreview = effectiveMode === "log"

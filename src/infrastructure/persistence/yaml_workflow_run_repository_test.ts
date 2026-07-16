@@ -17,14 +17,21 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertNotEquals } from "@std/assert";
+import { assert, assertEquals, assertNotEquals } from "@std/assert";
+import { ensureDir } from "@std/fs";
+import { dirname } from "@std/path";
+import { stringify as stringifyYaml } from "@std/yaml";
 import { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
-import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+  type WorkflowId,
+} from "../../domain/workflows/workflow_id.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const tempDir = await Deno.makeTempDir();
@@ -576,6 +583,192 @@ Deno.test(
 
       assertEquals(found.length, 1);
       assertEquals(found[0].id, keep.id);
+    });
+  },
+);
+
+// Writes a raw run YAML directly (bypassing save/toData) so tests can exercise
+// records the summary read must tolerate — e.g. huge inline outputs or a
+// malformed jobs subtree that full-aggregate validation would reject.
+async function writeRawRun(
+  repo: YamlWorkflowRunRepository,
+  workflowId: WorkflowId,
+  runId: string,
+  data: Record<string, unknown>,
+): Promise<void> {
+  const path = repo.getPath(workflowId, createWorkflowRunId(runId));
+  await ensureDir(dirname(path));
+  await Deno.writeTextFile(path, stringifyYaml(data));
+}
+
+const WF_ID = "550e8400-e29b-41d4-a716-446655440000";
+
+Deno.test(
+  "findAllSummariesByWorkflowId: returns projections sorted startedAt desc",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlWorkflowRunRepository(dir);
+      const workflowId = createWorkflowId(WF_ID);
+
+      await writeRawRun(
+        repo,
+        workflowId,
+        "11111111-1111-1111-1111-111111111111",
+        {
+          id: "11111111-1111-1111-1111-111111111111",
+          workflowId: WF_ID,
+          workflowName: "deploy",
+          status: "succeeded",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          completedAt: "2026-01-01T00:01:00.000Z",
+          jobs: [],
+          tags: { env: "prod" },
+          inputs: { region: "us-east-1" },
+        },
+      );
+      await writeRawRun(
+        repo,
+        workflowId,
+        "22222222-2222-2222-2222-222222222222",
+        {
+          id: "22222222-2222-2222-2222-222222222222",
+          workflowId: WF_ID,
+          workflowName: "deploy",
+          status: "failed",
+          startedAt: "2026-01-02T00:00:00.000Z",
+          jobs: [],
+          tags: {},
+        },
+      );
+
+      const summaries = await repo.findAllSummariesByWorkflowId(workflowId);
+
+      assertEquals(summaries.length, 2);
+      // Most recent first.
+      assertEquals(summaries[0].id, "22222222-2222-2222-2222-222222222222");
+      assertEquals(summaries[1].id, "11111111-1111-1111-1111-111111111111");
+      assertEquals(summaries[1].tags, { env: "prod" });
+      assertEquals(summaries[1].inputs, { region: "us-east-1" });
+      assertEquals(
+        summaries[1].startedAt?.toISOString(),
+        "2026-01-01T00:00:00.000Z",
+      );
+    });
+  },
+);
+
+Deno.test(
+  "findAllSummariesByWorkflowId: returns empty for a workflow with no runs",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlWorkflowRunRepository(dir);
+      const summaries = await repo.findAllSummariesByWorkflowId(
+        createWorkflowId(WF_ID),
+      );
+      assertEquals(summaries, []);
+    });
+  },
+);
+
+Deno.test(
+  "findAllSummariesByWorkflowId: does not retain heavy inline step outputs",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlWorkflowRunRepository(dir);
+      const workflowId = createWorkflowId(WF_ID);
+
+      await writeRawRun(
+        repo,
+        workflowId,
+        "33333333-3333-3333-3333-333333333333",
+        {
+          id: "33333333-3333-3333-3333-333333333333",
+          workflowId: WF_ID,
+          workflowName: "deploy",
+          status: "succeeded",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          jobs: [
+            {
+              jobName: "job1",
+              status: "succeeded",
+              steps: [
+                {
+                  stepName: "step1",
+                  status: "succeeded",
+                  output: "x".repeat(100000),
+                },
+              ],
+            },
+          ],
+          tags: {},
+        },
+      );
+
+      const summaries = await repo.findAllSummariesByWorkflowId(workflowId);
+
+      assertEquals(summaries.length, 1);
+      assert(!("jobs" in summaries[0]), "summary must not carry jobs");
+      assert(!("output" in summaries[0]), "summary must not carry output");
+      assertEquals(summaries[0].status, "succeeded");
+    });
+  },
+);
+
+Deno.test(
+  "findAllSummariesByWorkflowId: tolerates a malformed jobs subtree (no aggregate rebuild)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlWorkflowRunRepository(dir);
+      const workflowId = createWorkflowId(WF_ID);
+
+      // jobs is not an array and the step status is invalid — WorkflowRunSchema
+      // (used by findAllByWorkflowId via fromData) would reject this, but the
+      // summary read only looks at the displayed fields.
+      await writeRawRun(
+        repo,
+        workflowId,
+        "44444444-4444-4444-4444-444444444444",
+        {
+          id: "44444444-4444-4444-4444-444444444444",
+          workflowId: WF_ID,
+          workflowName: "deploy",
+          status: "running",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          jobs: "totally-not-an-array",
+          tags: {},
+        },
+      );
+
+      const summaries = await repo.findAllSummariesByWorkflowId(workflowId);
+
+      assertEquals(summaries.length, 1);
+      assertEquals(summaries[0].id, "44444444-4444-4444-4444-444444444444");
+      assertEquals(summaries[0].status, "running");
+    });
+  },
+);
+
+Deno.test(
+  "findAllSummariesByWorkflowId: file deleted mid-iteration is skipped, not fatal",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlWorkflowRunRepository(dir);
+      const workflow = createTestWorkflow();
+
+      const keep = WorkflowRun.create(workflow);
+      keep.start();
+      await repo.save(workflow.id, keep);
+
+      const doomed = WorkflowRun.create(workflow);
+      doomed.start();
+      await repo.save(workflow.id, doomed);
+
+      await Deno.remove(repo.getPath(workflow.id, doomed.id));
+
+      const summaries = await repo.findAllSummariesByWorkflowId(workflow.id);
+
+      assertEquals(summaries.length, 1);
+      assertEquals(summaries[0].id, keep.id);
     });
   },
 );
