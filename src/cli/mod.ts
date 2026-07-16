@@ -167,7 +167,6 @@ import type {
   ExtensionKind,
   ResolvedSourceDirs,
 } from "../domain/repo/swamp_sources.ts";
-import { isGlobPattern } from "../domain/repo/swamp_sources.ts";
 import { discoverManifestCrossKindDirs } from "../domain/extensions/manifest_cross_kind_discovery.ts";
 
 // Import models barrel to trigger self-registration
@@ -1272,25 +1271,10 @@ export async function runCli(args: string[]): Promise<void> {
         repoDir,
         sourceBaseDir,
       );
-      const { resolved, warnings } = await resolveSourceExtensionDirs(
+      const { resolved } = await resolveSourceExtensionDirs(
         expanded,
       );
       resolvedSources = resolved;
-
-      const missingConcrete = warnings.filter(
-        (w) => !isGlobPattern(w.sourcePath),
-      );
-      const isSourceManagementCommand = commandInfo.command === "extension" &&
-        commandInfo.subcommand === "source";
-      if (missingConcrete.length > 0 && !isSourceManagementCommand) {
-        const paths = missingConcrete.map((w) => `  - ${w.sourcePath}`);
-        throw new UserError(
-          `Declared extension source(s) in .swamp-sources.yaml cannot be resolved:\n${
-            paths.join("\n")
-          }\n\n` +
-            "Remove stale entries with 'swamp extension source rm <path>' or fix the path.",
-        );
-      }
     }
   }
 
