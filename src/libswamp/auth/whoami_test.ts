@@ -233,13 +233,9 @@ Deno.test("whoami does not persist credentials when saveCredentials is a no-op",
   assertEquals(saveCalled, false);
 });
 
-Deno.test("createAuthDeps: saveCredentials is a no-op when SWAMP_API_KEY is set", async () => {
+Deno.test("createAuthDeps: saveCredentials caches identity when SWAMP_API_KEY is set", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
-    // Inject overrides instead of mutating Deno.env — `deno test --parallel`
-    // runs whoami_test and logout_test in different files concurrently and
-    // both touch SWAMP_API_KEY / XDG_CONFIG_HOME. Going through the deps
-    // options keeps this test hermetic.
     const deps = createAuthDeps({
       repo: {
         configDir: `${tmpDir}/swamp`,
@@ -247,17 +243,19 @@ Deno.test("createAuthDeps: saveCredentials is a no-op when SWAMP_API_KEY is set"
       },
     });
 
-    // saveCredentials should be a no-op — no file should be written
-    await deps.saveCredentials(testCredentials);
-    const files = [];
-    try {
-      for await (const entry of Deno.readDir(`${tmpDir}/swamp`)) {
-        files.push(entry.name);
-      }
-    } catch {
-      // Directory doesn't exist — expected, since save was a no-op
-    }
-    assertEquals(files.includes("auth.json"), false);
+    await deps.saveCredentials({
+      ...testCredentials,
+      collectives: ["myorg"],
+    });
+
+    const raw = await Deno.readTextFile(`${tmpDir}/swamp/auth.json`);
+    const saved = JSON.parse(raw) as AuthCredentials;
+    assertEquals(saved.username, "adam");
+    assertEquals(saved.collectives, ["myorg"]);
+    assertEquals(saved.apiKeyFingerprint, "swamp_test_e");
+    // apiKey/apiKeyId should be empty — not the env var key
+    assertEquals(saved.apiKey, "");
+    assertEquals(saved.apiKeyId, "");
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

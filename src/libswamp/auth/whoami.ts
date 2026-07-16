@@ -17,7 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
+import {
+  apiKeyFingerprint,
+  type AuthCredentials,
+} from "../../domain/auth/auth_credentials.ts";
 import type { WhoamiResponse } from "../../infrastructure/http/swamp_club_client.ts";
 import {
   getCollectives,
@@ -78,16 +81,22 @@ export interface CreateAuthDepsOptions {
 /** Wires real infrastructure into AuthDeps. */
 export function createAuthDeps(options: CreateAuthDepsOptions = {}): AuthDeps {
   const repo = new AuthRepository(options.repo);
-  // When SWAMP_API_KEY is set, skip writing credentials to disk — env-var
-  // auth is ephemeral and shouldn't create/update auth.json. Checked
-  // lazily through the same getApiKey hook the repo uses, so test
-  // overrides flow through here too.
   const getApiKey = options.repo?.getApiKey ??
     (() => Deno.env.get("SWAMP_API_KEY"));
   return {
     loadCredentials: () => repo.load(),
-    saveCredentials: (credentials) =>
-      getApiKey() ? Promise.resolve() : repo.save(credentials),
+    saveCredentials: (credentials) => {
+      const envKey = getApiKey();
+      if (envKey) {
+        return repo.saveIdentityCache(
+          credentials.serverUrl,
+          credentials.username,
+          credentials.collectives ?? [],
+          apiKeyFingerprint(envKey),
+        );
+      }
+      return repo.save(credentials);
+    },
     fetchWhoami: (serverUrl, apiKey, signal) => {
       const client = new SwampClubClient(serverUrl, options.identity);
       return client.whoami(apiKey, signal);

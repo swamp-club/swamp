@@ -24,6 +24,11 @@ export const DEFAULT_SWAMP_CLUB_URL = "https://swamp-club.com";
  * old domain can be transparently migrated on load. */
 export const LEGACY_SWAMP_CLUB_URL = "https://swamp.club";
 
+/** First 12 characters of an API key, used for stale-cache detection. */
+export function apiKeyFingerprint(apiKey: string): string {
+  return apiKey.slice(0, 12);
+}
+
 /** Stored authentication credentials for swamp-club API access. */
 export interface AuthCredentials {
   /** The swamp-club server URL (e.g., "https://swamp-club.com") */
@@ -36,4 +41,7 @@ export interface AuthCredentials {
   username: string;
   /** Cached collective memberships (slugs) from the last login/whoami */
   collectives?: string[];
+  /** Prefix of the API key that was active when identity was cached.
+   *  Used to detect key rotation for SWAMP_API_KEY users. */
+  apiKeyFingerprint?: string;
 }

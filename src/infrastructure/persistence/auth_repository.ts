@@ -21,6 +21,7 @@ import { join } from "@std/path";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { getSwampConfigDir } from "./paths.ts";
 import {
+  apiKeyFingerprint,
   type AuthCredentials,
   DEFAULT_SWAMP_CLUB_URL,
   LEGACY_SWAMP_CLUB_URL,
@@ -79,20 +80,38 @@ export class AuthRepository {
    * Read auth credentials. Checks SWAMP_API_KEY env var first,
    * then falls back to auth.json file. Returns null if neither exists.
    *
-   * Note: SWAMP_API_KEY is also checked in two other places that need
-   * different behavior for env-var auth:
-   * - src/libswamp/auth/whoami.ts createAuthDeps() — skips saveCredentials
-   * - src/cli/commands/auth_login.ts / auth_logout.ts — bail early with
-   *   a UserError since login/logout don't apply to env-var auth
+   * When SWAMP_API_KEY is set, cached identity (username, collectives)
+   * is merged from auth.json if the server URL and key fingerprint match.
+   * This gives API-key users the same identity resolution as login users.
    */
   async load(): Promise<AuthCredentials | null> {
     const envApiKey = this.getApiKey();
     if (envApiKey) {
+      const serverUrl = this.getServerUrl() ?? DEFAULT_SWAMP_CLUB_URL;
+      const fingerprint = apiKeyFingerprint(envApiKey);
+
+      let username = "";
+      let collectives: string[] | undefined;
+      try {
+        const content = await Deno.readTextFile(this.getAuthPath());
+        const cached = JSON.parse(content) as AuthCredentials;
+        if (
+          cached.apiKeyFingerprint === fingerprint &&
+          (cached.serverUrl === serverUrl || !cached.serverUrl)
+        ) {
+          username = cached.username ?? "";
+          collectives = cached.collectives;
+        }
+      } catch {
+        // No cached identity — will be populated on first whoami
+      }
+
       return {
-        serverUrl: this.getServerUrl() ?? DEFAULT_SWAMP_CLUB_URL,
+        serverUrl,
         apiKey: envApiKey,
         apiKeyId: "",
-        username: "",
+        username,
+        collectives,
       };
     }
 
@@ -124,6 +143,35 @@ export class AuthRepository {
       JSON.stringify(credentials, null, 2) + "\n",
       { mode: 0o600 },
     );
+  }
+
+  /**
+   * Cache identity fields (username, collectives, fingerprint) without
+   * overwriting an existing apiKey/apiKeyId from a login session.
+   */
+  async saveIdentityCache(
+    serverUrl: string,
+    username: string,
+    collectives: string[],
+    fingerprint: string,
+  ): Promise<void> {
+    let existing: AuthCredentials | undefined;
+    try {
+      const content = await Deno.readTextFile(this.getAuthPath());
+      existing = JSON.parse(content) as AuthCredentials;
+    } catch {
+      // No existing file
+    }
+
+    const merged: AuthCredentials = {
+      serverUrl,
+      apiKey: existing?.apiKey ?? "",
+      apiKeyId: existing?.apiKeyId ?? "",
+      username,
+      collectives,
+      apiKeyFingerprint: fingerprint,
+    };
+    await this.save(merged);
   }
 
   /** Delete stored auth credentials. */
