@@ -1147,6 +1147,8 @@ export {
 // Run GC operations (workflow-runs + outputs)
 export {
   createRunGcDeps,
+  DEFAULT_OUTPUT_RETENTION_DAYS,
+  DEFAULT_WORKFLOW_RUN_RETENTION_DAYS,
   runGc,
   type RunGcData,
   type RunGcDeps,

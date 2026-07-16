@@ -121,11 +121,6 @@ export interface WorkflowRunRepository {
   deleteAllByWorkflowId(workflowId: WorkflowId): Promise<number>;
 
   /**
-   * Deletes a single workflow run and its associated log file.
-   */
-  delete(workflowId: WorkflowId, runId: WorkflowRunId): Promise<void>;
-
-  /**
    * Deletes all terminal runs (succeeded/failed/cancelled) older than the
    * cutoff. Running and suspended runs are never deleted regardless of age.
    * Returns the number of runs deleted.

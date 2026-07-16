@@ -23,6 +23,8 @@ import {
   DefaultRunLifecycleService,
   type RunGcResult,
 } from "../../domain/data/run_lifecycle_service.ts";
+
+export { DEFAULT_OUTPUT_RETENTION_DAYS, DEFAULT_WORKFLOW_RUN_RETENTION_DAYS };
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";

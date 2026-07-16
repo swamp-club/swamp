@@ -372,6 +372,7 @@ export class YamlOutputRepository implements OutputRepository {
     cutoff: Date,
     options?: { dryRun?: boolean },
   ): Promise<{ deleted: number; bytesReclaimed: number }> {
+    const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
     const cutoffMs = cutoff.getTime();
     let deleted = 0;
     let bytesReclaimed = 0;
@@ -385,10 +386,14 @@ export class YamlOutputRepository implements OutputRepository {
 
         const content = await Deno.readTextFile(yamlPath);
         const data = parseYaml(content) as ModelOutputData;
+        if (!TERMINAL_STATUSES.has(data.status)) continue;
         const startedAt = data.startedAt
           ? new Date(data.startedAt).getTime()
           : undefined;
-        if (startedAt === undefined || startedAt >= cutoffMs) continue;
+        if (
+          startedAt === undefined || Number.isNaN(startedAt) ||
+          startedAt >= cutoffMs
+        ) continue;
 
         const logPath = yamlPath.replace(/\.yaml$/, ".log");
         let fileBytes = stat.size ?? 0;

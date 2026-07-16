@@ -159,7 +159,6 @@ function createMockWorkflowRunRepo(
     nextId: () => "mock-id" as ReturnType<WorkflowRunRepository["nextId"]>,
     getPath: () => "",
     deleteAllByWorkflowId: () => Promise.resolve(0),
-    delete: () => Promise.resolve(),
     deleteOlderThan: () => Promise.resolve({ deleted: 0, bytesReclaimed: 0 }),
   };
 }

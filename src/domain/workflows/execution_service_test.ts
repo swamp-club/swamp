@@ -194,10 +194,6 @@ class InMemoryWorkflowRunRepository implements WorkflowRunRepository {
     return Promise.resolve(count);
   }
 
-  delete(_workflowId: WorkflowId, _runId: WorkflowRunId): Promise<void> {
-    return Promise.resolve();
-  }
-
   deleteOlderThan(
     _cutoff: Date,
     _options?: { dryRun?: boolean },
@@ -3231,10 +3227,6 @@ class TrackingRunRepository implements WorkflowRunRepository {
 
   deleteAllByWorkflowId(workflowId: WorkflowId): Promise<number> {
     return this.inner.deleteAllByWorkflowId(workflowId);
-  }
-
-  delete(workflowId: WorkflowId, runId: WorkflowRunId): Promise<void> {
-    return this.inner.delete(workflowId, runId);
   }
 
   deleteOlderThan(

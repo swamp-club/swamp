@@ -22,6 +22,7 @@ import {
   consumeStream,
   createLibSwampContext,
   createRunGcDeps,
+  DEFAULT_WORKFLOW_RUN_RETENTION_DAYS,
   parseDuration,
   runGc,
   runGcPreview,
@@ -41,7 +42,6 @@ import {
   requireInitializedRepoReadOnly,
 } from "../repo_context.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
-import { DEFAULT_WORKFLOW_RUN_RETENTION_DAYS } from "../../domain/data/run_lifecycle_service.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -49,13 +49,13 @@ type AnyOptions = any;
 export const runGcCommand = new Command()
   .name("gc")
   .description(
-    "Garbage-collect old workflow runs and model method outputs",
+    "Garbage-collect old workflow runs and model method outputs. Running and suspended runs are never deleted regardless of age.",
   )
   .example("Preview what would be collected", "swamp run gc --dry-run")
   .example("Run GC with default 30-day retention", "swamp run gc --force")
   .example("Delete runs older than 7 days", "swamp run gc --older-than 7d")
   .example(
-    "Non-interactive JSON output",
+    "Run non-interactively in JSON mode (no prompt, structured output)",
     "swamp run gc --json --older-than 14d",
   )
   .option(
@@ -66,7 +66,7 @@ export const runGcCommand = new Command()
   .option("-f, --force", "Skip confirmation prompt")
   .option(
     "--older-than <duration:string>",
-    `Retention period (e.g. 7d, 2w, 1mo). Default: ${DEFAULT_WORKFLOW_RUN_RETENTION_DAYS}d`,
+    `Retention period. Units: m=minutes, h=hours, d=days, w=weeks, mo=months, y=years (e.g. 7d, 2w, 1mo). Default: ${DEFAULT_WORKFLOW_RUN_RETENTION_DAYS}d`,
   )
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, ["run", "gc"]);

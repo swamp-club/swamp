@@ -21,6 +21,7 @@ import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { atomicWriteTextFile } from "./atomic_write.ts";
+import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import {
@@ -407,29 +408,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     return count;
   }
 
-  async delete(workflowId: WorkflowId, runId: WorkflowRunId): Promise<void> {
-    const yamlPath = this.getPath(workflowId, runId);
-    const logPath = yamlPath.replace(/\.yaml$/, ".log");
-
-    await this.notifyDirty(yamlPath);
-
-    try {
-      await Deno.remove(yamlPath);
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
-        throw error;
-      }
-    }
-
-    try {
-      await Deno.remove(logPath);
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
-        throw error;
-      }
-    }
-  }
-
   async deleteOlderThan(
     cutoff: Date,
     options?: { dryRun?: boolean },
@@ -472,7 +450,10 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
                 ? new Date(data.startedAt).getTime()
                 : undefined;
               const timestamp = completedAt ?? startedAt;
-              if (timestamp === undefined || timestamp >= cutoffMs) continue;
+              if (
+                timestamp === undefined || Number.isNaN(timestamp) ||
+                timestamp >= cutoffMs
+              ) continue;
 
               const logPath = yamlPath.replace(/\.yaml$/, ".log");
               let fileBytes = stat.size ?? 0;
@@ -495,6 +476,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
                 } catch (error) {
                   if (!(error instanceof Deno.errors.NotFound)) throw error;
                 }
+                await cleanupEmptyParentDirs(yamlPath, this.baseDir);
               }
 
               deleted++;
