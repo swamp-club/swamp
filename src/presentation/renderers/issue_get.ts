@@ -26,7 +26,14 @@ import { bold, cyan, dim } from "@std/fmt/colors";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 
 class LogIssueGetRenderer implements Renderer<IssueGetEvent> {
+  #verbose: boolean;
+
+  constructor(verbose: boolean) {
+    this.#verbose = verbose;
+  }
+
   handlers(): EventHandlers<IssueGetEvent> {
+    const verbose = this.#verbose;
     return {
       completed: (e) => {
         const d = e.data;
@@ -43,6 +50,18 @@ class LogIssueGetRenderer implements Renderer<IssueGetEvent> {
         if (d.body.length > 0) {
           writeOutput("");
           writeOutput(renderMarkdownToTerminal(d.body));
+        }
+        if (verbose && d.comments.length > 0) {
+          writeOutput("");
+          writeOutput(bold("── Ripples ─────────────────────────────"));
+          for (const c of d.comments) {
+            const ts = c.createdAt ? dim(` ${c.createdAt}`) : "";
+            writeOutput(`${bold(c.author)}${ts}`);
+            if (c.body.length > 0) {
+              writeOutput(renderMarkdownToTerminal(c.body));
+            }
+            writeOutput("");
+          }
         }
         writeOutput("");
         writeOutput(dim(`View at: ${d.url}`));
@@ -69,11 +88,12 @@ class JsonIssueGetRenderer implements Renderer<IssueGetEvent> {
 
 export function createIssueGetRenderer(
   mode: OutputMode,
+  verbose = false,
 ): Renderer<IssueGetEvent> {
   switch (mode) {
     case "json":
       return new JsonIssueGetRenderer();
     case "log":
-      return new LogIssueGetRenderer();
+      return new LogIssueGetRenderer(verbose);
   }
 }

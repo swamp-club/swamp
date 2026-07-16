@@ -1329,6 +1329,7 @@ export {
 } from "./issues/comment.ts";
 export {
   issueGet,
+  type IssueGetComment,
   type IssueGetData,
   type IssueGetDeps,
   type IssueGetEvent,
