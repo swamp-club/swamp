@@ -223,19 +223,22 @@ export function homeDirectory(): string {
 }
 
 /**
- * Reports whether a home directory can be resolved from the environment.
+ * Reports whether a swamp data directory can be resolved from the
+ * environment.
  *
- * Mirrors the resolution order of {@link homeDirectory} (HOME then
- * USERPROFILE) but returns a boolean instead of throwing. Useful for
- * callers that want to surface a precise, actionable message *before* a
- * home-dependent path resolution fails deep in the call stack — notably the
- * extension loaders, whose embedded runtime lives under `~/.swamp` and is
- * required to load every extension, including already-pulled repo bundles.
+ * Returns true when any of `SWAMP_HOME`, `HOME`, or `USERPROFILE` is set —
+ * i.e. when {@link getSwampDataDir} would succeed. Callers use this to
+ * surface an actionable message *before* a path resolution fails deep in
+ * the call stack — notably the extension loaders, whose embedded runtime
+ * lives under the swamp data dir and is required to load every extension.
  *
- * @returns true when HOME or USERPROFILE is set, false otherwise
+ * @returns true when getSwampDataDir() would succeed, false otherwise
  */
 export function homeDirectoryIsSet(): boolean {
-  return Boolean(Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE"));
+  return Boolean(
+    Deno.env.get("SWAMP_HOME") ?? Deno.env.get("HOME") ??
+      Deno.env.get("USERPROFILE"),
+  );
 }
 
 /**
