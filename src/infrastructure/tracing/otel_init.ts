@@ -23,15 +23,28 @@ import type { Context } from "@opentelemetry/api";
 let providerRef: { shutdown(): Promise<void> } | undefined;
 
 /**
+ * Test-only configuration that bypasses `Deno.env` for OTel tracing setup.
+ * Production callers omit this — `initTracing` reads env vars by default.
+ */
+export interface InitTracingConfig {
+  endpoint?: string;
+  exporterKind?: string;
+}
+
+/**
  * Initializes OpenTelemetry tracing if `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
  *
  * All SDK packages are dynamically imported so they impose zero cost when
  * tracing is disabled. `@opentelemetry/api` is statically imported because it
  * returns no-op implementations by default.
  */
-export async function initTracing(): Promise<Context | undefined> {
-  const endpoint = Deno.env.get("OTEL_EXPORTER_OTLP_ENDPOINT");
-  const exporterKind = Deno.env.get("OTEL_TRACES_EXPORTER") ?? "otlp";
+export async function initTracing(
+  config?: InitTracingConfig,
+): Promise<Context | undefined> {
+  const endpoint = config?.endpoint ??
+    Deno.env.get("OTEL_EXPORTER_OTLP_ENDPOINT");
+  const exporterKind = config?.exporterKind ??
+    Deno.env.get("OTEL_TRACES_EXPORTER") ?? "otlp";
 
   if (!endpoint && exporterKind !== "console") {
     // No endpoint configured and not console mode — tracing stays disabled.

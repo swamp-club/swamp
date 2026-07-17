@@ -27,7 +27,7 @@ import {
 import { getPrettyFormatter } from "@logtape/pretty";
 import { textFormatter, TIMESTAMP_FORMAT } from "./log_format.ts";
 import { runFileSink } from "./run_file_sink.ts";
-import { initLogs } from "../tracing/mod.ts";
+import { initLogs, type InitLogsConfig } from "../tracing/mod.ts";
 import { createOtelLogRecordSink } from "./otel_log_sink.ts";
 
 export { runFileSink } from "./run_file_sink.ts";
@@ -42,6 +42,8 @@ export interface LoggingOptions {
   stderrOnly?: boolean;
   /** Test-only: clear the once-per-process guard so logging can be reconfigured. */
   _reset?: boolean;
+  /** Test-only: bypass Deno.env for OTel logs config to avoid env var races under --parallel. */
+  _logsConfig?: InitLogsConfig;
 }
 
 const stderrEncoder = new TextEncoder();
@@ -121,7 +123,7 @@ export async function initializeLogging(
   // proceed without the otel sink.
   let otelProvider: Awaited<ReturnType<typeof initLogs>>;
   try {
-    otelProvider = await initLogs();
+    otelProvider = await initLogs(options._logsConfig);
   } catch {
     otelProvider = undefined;
   }

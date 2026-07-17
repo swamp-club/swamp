@@ -34,13 +34,9 @@ import {
 import { shutdownLogs } from "../src/infrastructure/tracing/mod.ts";
 
 Deno.test("OTel logs (batch mode): a record logged right before shutdown is still flushed", async () => {
-  const savedEndpoint = Deno.env.get("OTEL_EXPORTER_OTLP_ENDPOINT");
-  const savedBatch = Deno.env.get("OTEL_BLRP_USE");
   const savedFetch = globalThis.fetch;
   const bodies: string[] = [];
 
-  Deno.env.set("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test");
-  Deno.env.set("OTEL_BLRP_USE", "1");
   // deno-lint-ignore no-explicit-any
   globalThis.fetch = ((input: any, init: any): Promise<Response> => {
     const url = typeof input === "string" ? input : String(input);
@@ -52,7 +48,14 @@ Deno.test("OTel logs (batch mode): a record logged right before shutdown is stil
   }) as any;
 
   try {
-    await initializeLogging({});
+    await shutdownLogs();
+    await initializeLogging({
+      _reset: true,
+      _logsConfig: {
+        endpoint: "http://collector.test",
+        useBatch: true,
+      },
+    });
 
     getSwampLogger(["model", "method", "run", "m", "execute"])
       .info`batched-line-xyz789`;
@@ -67,10 +70,5 @@ Deno.test("OTel logs (batch mode): a record logged right before shutdown is stil
     );
   } finally {
     globalThis.fetch = savedFetch;
-    if (savedEndpoint === undefined) {
-      Deno.env.delete("OTEL_EXPORTER_OTLP_ENDPOINT");
-    } else Deno.env.set("OTEL_EXPORTER_OTLP_ENDPOINT", savedEndpoint);
-    if (savedBatch === undefined) Deno.env.delete("OTEL_BLRP_USE");
-    else Deno.env.set("OTEL_BLRP_USE", savedBatch);
   }
 });

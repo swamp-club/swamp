@@ -66,11 +66,9 @@ function collectLogRecords(
 }
 
 Deno.test("OTel logs: initializeLogging exports correlated, redacted records to /v1/logs", async () => {
-  const savedEndpoint = Deno.env.get("OTEL_EXPORTER_OTLP_ENDPOINT");
   const savedFetch = globalThis.fetch;
   const captured: { url: string; body: string }[] = [];
 
-  Deno.env.set("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test");
   // deno-lint-ignore no-explicit-any
   globalThis.fetch = ((input: any, init: any): Promise<Response> => {
     const url = typeof input === "string" ? input : String(input);
@@ -95,10 +93,19 @@ Deno.test("OTel logs: initializeLogging exports correlated, redacted records to 
   );
 
   try {
+    // Clear any stale provider from a prior test so initLogs() creates a fresh
+    // one that picks up our stubbed fetch.
+    await shutdownLogs();
+
     // initTracing registers the context manager so logs can correlate; --json
     // keeps stdout clean while logs still export (orthogonal to output mode).
-    await initTracing();
-    await initializeLogging({ jsonMode: true });
+    // Pass endpoint via config to avoid racing on Deno.env with parallel tests.
+    await initTracing({ endpoint: "http://collector.test" });
+    await initializeLogging({
+      jsonMode: true,
+      _reset: true,
+      _logsConfig: { endpoint: "http://collector.test" },
+    });
 
     const log = getSwampLogger([
       "model",
@@ -159,10 +166,5 @@ Deno.test("OTel logs: initializeLogging exports correlated, redacted records to 
     runFileSink.unregister(logHandle);
     await Deno.remove(tmpDir, { recursive: true });
     globalThis.fetch = savedFetch;
-    if (savedEndpoint === undefined) {
-      Deno.env.delete("OTEL_EXPORTER_OTLP_ENDPOINT");
-    } else {
-      Deno.env.set("OTEL_EXPORTER_OTLP_ENDPOINT", savedEndpoint);
-    }
   }
 });

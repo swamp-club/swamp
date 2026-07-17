@@ -20,9 +20,29 @@
 import { useEffect, useState } from "react";
 import { useStdout } from "ink";
 
-interface TerminalSize {
+export interface TerminalSize {
   width: number;
   height: number;
+}
+
+/**
+ * Reads current terminal dimensions. Prefers Deno.consoleSize() (TIOCGWINSZ
+ * ioctl) which reliably reports the actual pane size in tmux, multiplexers,
+ * and non-standard emulators. Falls back to Ink's stdout properties, then
+ * to safe defaults.
+ */
+export function getTerminalDimensions(
+  stdout: NodeJS.WriteStream | undefined,
+): TerminalSize {
+  try {
+    const { columns, rows } = Deno.consoleSize();
+    return { width: columns, height: rows };
+  } catch {
+    return {
+      width: stdout?.columns ?? 80,
+      height: stdout?.rows ?? 24,
+    };
+  }
 }
 
 /**
@@ -32,20 +52,16 @@ interface TerminalSize {
 export function useTerminalSize(): TerminalSize {
   const { stdout } = useStdout();
 
-  const getSize = (): TerminalSize => ({
-    width: stdout?.columns ?? 80,
-    height: stdout?.rows ?? 24,
-  });
-
-  const [size, setSize] = useState<TerminalSize>(getSize);
+  const [size, setSize] = useState<TerminalSize>(() =>
+    getTerminalDimensions(stdout)
+  );
 
   useEffect(() => {
     if (!stdout) return;
 
     const updateSize = () => {
-      const newSize = getSize();
+      const newSize = getTerminalDimensions(stdout);
       setSize((prev) => {
-        // Only update if dimensions actually changed
         if (prev.width !== newSize.width || prev.height !== newSize.height) {
           return newSize;
         }
@@ -53,10 +69,7 @@ export function useTerminalSize(): TerminalSize {
       });
     };
 
-    // Listen to resize events
     stdout.on("resize", updateSize);
-
-    // Poll as fallback (every 500ms)
     const interval = setInterval(updateSize, 500);
 
     return () => {
