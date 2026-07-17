@@ -214,13 +214,14 @@ function renderWorkflowPreview(
     );
   }
 
-  // Show YAML with syntax highlighting
   const rendered = renderMarkdownToTerminal(
     `**${detail.name}**\n\n\`\`\`yaml\n${detail.yaml}\n\`\`\``,
+    { maxWidth: innerWidth },
   );
+  const lines = rendered.split("\n");
   return (
     <Box flexDirection="column" marginLeft={1} width={innerWidth}>
-      <Text wrap="truncate-end">{rendered}</Text>
+      {lines.map((line, i) => <Text key={i} wrap="truncate-end">{line}</Text>)}
     </Box>
   );
 }

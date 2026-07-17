@@ -249,14 +249,15 @@ function renderReportPreview(
     );
   }
 
-  // Combine header + rendered markdown into a single string to avoid
-  // Ink layout overlap with multiple ANSI-formatted <Text> blocks.
   const header =
     `${detail.reportName}\nscope: ${detail.reportScope} | model: ${detail.modelName} | v${detail.version}\n`;
-  const rendered = renderMarkdownToTerminal(detail.markdown);
+  const rendered = renderMarkdownToTerminal(detail.markdown, {
+    maxWidth: innerWidth,
+  });
+  const lines = (header + rendered).split("\n");
   return (
     <Box flexDirection="column" marginLeft={1} width={innerWidth}>
-      <Text wrap="truncate-end">{header + rendered}</Text>
+      {lines.map((line, i) => <Text key={i} wrap="truncate-end">{line}</Text>)}
     </Box>
   );
 }

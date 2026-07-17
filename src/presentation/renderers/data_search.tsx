@@ -200,20 +200,28 @@ function buildMetadataMarkdown(item: DataSearchItem): string {
 function renderContentString(
   content: string,
   contentType: string,
+  maxWidth?: number,
 ): string {
+  const widthOpts = maxWidth ? { maxWidth } : undefined;
+
   if (contentType === "text/markdown") {
-    // Content IS markdown — render it directly
-    return renderMarkdownToTerminal(content);
+    return renderMarkdownToTerminal(content, widthOpts);
   }
 
   if (contentType === "application/json") {
-    return renderMarkdownToTerminal("```json\n" + content + "\n```");
+    return renderMarkdownToTerminal(
+      "```json\n" + content + "\n```",
+      widthOpts,
+    );
   }
 
   if (
     contentType === "application/yaml" || contentType === "application/x-yaml"
   ) {
-    return renderMarkdownToTerminal("```yaml\n" + content + "\n```");
+    return renderMarkdownToTerminal(
+      "```yaml\n" + content + "\n```",
+      widthOpts,
+    );
   }
 
   // Plain text or unknown — show as-is
@@ -240,21 +248,24 @@ function renderDataPreview(
   _height: number,
 ): React.ReactElement {
   const innerWidth = Math.max(10, width - 1);
-  // Combine metadata + content into a single string to avoid Ink layout
-  // issues with multiple <Text> blocks containing ANSI-formatted content.
   const parts: string[] = [
-    renderMarkdownToTerminal(buildMetadataMarkdown(item)),
+    renderMarkdownToTerminal(buildMetadataMarkdown(item), {
+      maxWidth: innerWidth,
+    }),
   ];
 
   if (detail && detail.content) {
-    parts.push(renderContentString(detail.content, item.contentType));
+    parts.push(
+      renderContentString(detail.content, item.contentType, innerWidth),
+    );
   } else if (detail && !detail.content) {
     parts.push(`(binary data at ${detail.contentPath})`);
   }
 
+  const lines = parts.join("\n").split("\n");
   return (
     <Box flexDirection="column" marginLeft={1} width={innerWidth}>
-      <Text wrap="truncate-end">{parts.join("\n")}</Text>
+      {lines.map((line, i) => <Text key={i} wrap="truncate-end">{line}</Text>)}
     </Box>
   );
 }
