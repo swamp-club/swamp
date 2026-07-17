@@ -35,8 +35,12 @@ import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_servic
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-import type { GarbageCollectionResult } from "../../domain/data/repositories.ts";
+import type {
+  GarbageCollectionResult,
+  UnifiedDataRepository,
+} from "../../domain/data/repositories.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
+import type { DataLifecycleService } from "../../domain/data/data_lifecycle_service.ts";
 import { getLogger } from "@logtape/logtape";
 
 /** Preview item for a single expired data entry. */
@@ -193,6 +197,17 @@ export async function* dataGc(
   );
 }
 
+/** Result of auto-GC including both version and lifetime expiration. */
+export interface AutoGcResult extends GarbageCollectionResult {
+  dataEntriesExpired: number;
+}
+
+/** Dependencies for model-scoped lifetime expiration during auto-GC. */
+export interface AutoGcLifecycleDeps {
+  dataRepo: Pick<UnifiedDataRepository, "findAllForModel" | "delete">;
+  lifecycleService: Pick<DataLifecycleService, "isExpired">;
+}
+
 /**
  * Runs garbage collection for a single model. Catches all errors — auto-GC
  * failure must never fail the method run. User-visible output is owned by the
@@ -208,13 +223,37 @@ export async function autoGc(
   },
   type: ModelType,
   modelId: string,
-): Promise<GarbageCollectionResult | null> {
+  lifecycleDeps?: AutoGcLifecycleDeps,
+): Promise<AutoGcResult | null> {
   const logger = getLogger(["swamp", "auto-gc"]);
   try {
     const result = await dataRepo.collectGarbage(type, modelId);
+
+    let dataEntriesExpired = 0;
+    if (lifecycleDeps) {
+      const allData = await lifecycleDeps.dataRepo.findAllForModel(
+        type,
+        modelId,
+      );
+      for (const data of allData) {
+        if (data.isDeleted) continue;
+        try {
+          if (await lifecycleDeps.lifecycleService.isExpired(data)) {
+            await lifecycleDeps.dataRepo.delete(type, modelId, data.name);
+            dataEntriesExpired++;
+          }
+        } catch (err) {
+          logger
+            .warn`Auto-GC lifetime check failed for ${type.normalized}/${modelId}/${data.name}: ${
+            err instanceof Error ? err.message : String(err)
+          }`;
+        }
+      }
+    }
+
     logger
-      .debug`Auto-GC for ${type.normalized}/${modelId}: ${result.versionsRemoved} version(s) removed, ${result.bytesReclaimed} bytes reclaimed`;
-    return result;
+      .debug`Auto-GC for ${type.normalized}/${modelId}: ${result.versionsRemoved} version(s) removed, ${dataEntriesExpired} expired entry/entries deleted, ${result.bytesReclaimed} bytes reclaimed`;
+    return { ...result, dataEntriesExpired };
   } catch (error) {
     logger
       .warn`Auto-GC failed for ${type.normalized}/${modelId}: ${

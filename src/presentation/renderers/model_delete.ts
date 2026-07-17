@@ -29,6 +29,12 @@ class LogModelDeleteRenderer implements Renderer<ModelDeleteEvent> {
     return {
       deleting: () => {},
       completed: (e) => {
+        if (e.data.expiredDataAutoCollected > 0) {
+          logger.info(
+            "Auto-collected {count} expired data artifact(s)",
+            { count: e.data.expiredDataAutoCollected },
+          );
+        }
         logger.info("Deleted model: {name} ({type})", {
           name: e.data.name,
           type: e.data.type,
@@ -57,6 +63,7 @@ class JsonModelDeleteRenderer implements Renderer<ModelDeleteEvent> {
           outputsDeleted: e.data.outputsDeleted,
           evaluatedInputDeleted: e.data.evaluatedInputDeleted,
           dataDeleted: e.data.dataDeleted,
+          expiredDataAutoCollected: e.data.expiredDataAutoCollected,
         };
         console.log(JSON.stringify(output, null, 2));
       },

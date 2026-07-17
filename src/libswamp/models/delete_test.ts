@@ -30,6 +30,7 @@ import {
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { catalogDbPath } from "../../infrastructure/persistence/repository_factory.ts";
+import type { Data } from "../../domain/data/data.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
@@ -80,6 +81,15 @@ Deno.test(
   },
 );
 
+function mockData(name: string, opts?: { lifetime?: string }): Data {
+  return {
+    name,
+    lifetime: opts?.lifetime ?? "infinite",
+    createdAt: new Date("2026-06-01T00:00:00Z"),
+    isDeleted: false,
+  } as unknown as Data;
+}
+
 const testDefinition = {
   id: "550e8400-e29b-41d4-a716-446655440000",
   name: "my-model",
@@ -107,7 +117,7 @@ function makeDeps(overrides: Partial<ModelDeleteDeps> = {}): ModelDeleteDeps {
 Deno.test("modelDeletePreview: returns preview data", async () => {
   const deps = makeDeps({
     findDataArtifacts: () =>
-      Promise.resolve([{ name: "data1" }, { name: "data2" }]),
+      Promise.resolve([mockData("data1"), mockData("data2")]),
     findOutputs: () => Promise.resolve([{ id: "o1", methodName: "validate" }]),
   });
 
@@ -202,7 +212,7 @@ Deno.test("modelDelete: yields error when model referenced by workflows", async 
 
 Deno.test("modelDelete: yields error when data exists without force", async () => {
   const deps = makeDeps({
-    findDataArtifacts: () => Promise.resolve([{ name: "data1" }]),
+    findDataArtifacts: () => Promise.resolve([mockData("data1")]),
   });
 
   const events = await collect<ModelDeleteEvent>(
@@ -223,7 +233,7 @@ Deno.test("modelDelete: yields error when data exists without force", async () =
 Deno.test("modelDelete: force deletes data artifacts", async () => {
   let dataDeletedCount = 0;
   const deps = makeDeps({
-    findDataArtifacts: () => Promise.resolve([{ name: "d1" }, { name: "d2" }]),
+    findDataArtifacts: () => Promise.resolve([mockData("d1"), mockData("d2")]),
     deleteData: () => {
       dataDeletedCount++;
       return Promise.resolve();
@@ -243,4 +253,80 @@ Deno.test("modelDelete: force deletes data artifacts", async () => {
   >;
   assertEquals(completed.data.dataDeleted, true);
   assertEquals(dataDeletedCount, 2);
+});
+
+Deno.test("modelDelete: auto-collects expired data without requiring force", async () => {
+  const deletedNames: string[] = [];
+  const deps = makeDeps({
+    findDataArtifacts: () =>
+      Promise.resolve([
+        mockData("expired-cache", { lifetime: "15m" }),
+        mockData("another-expired", { lifetime: "1h" }),
+      ]),
+    isExpired: () => Promise.resolve(true),
+    deleteData: (_type, _id, name) => {
+      deletedNames.push(name);
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<ModelDeleteEvent>(
+    modelDelete(createLibSwampContext(), deps, {
+      modelIdOrName: "my-model",
+      force: false,
+    }),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    ModelDeleteEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.expiredDataAutoCollected, 2);
+  assertEquals(completed.data.dataDeleted, false);
+  assertEquals(deletedNames, ["expired-cache", "another-expired"]);
+});
+
+Deno.test("modelDelete: blocks on live data even when some are expired", async () => {
+  const deps = makeDeps({
+    findDataArtifacts: () =>
+      Promise.resolve([
+        mockData("expired-cache", { lifetime: "15m" }),
+        mockData("live-data", { lifetime: "infinite" }),
+      ]),
+    isExpired: (data) => Promise.resolve(data.lifetime !== "infinite"),
+  });
+
+  const events = await collect<ModelDeleteEvent>(
+    modelDelete(createLibSwampContext(), deps, {
+      modelIdOrName: "my-model",
+      force: false,
+    }),
+  );
+
+  const last = events[events.length - 1] as Extract<
+    ModelDeleteEvent,
+    { kind: "error" }
+  >;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "validation_failed");
+});
+
+Deno.test("modelDeletePreview: excludes expired data from artifact count", async () => {
+  const deps = makeDeps({
+    findDataArtifacts: () =>
+      Promise.resolve([
+        mockData("expired-cache", { lifetime: "15m" }),
+        mockData("live-data", { lifetime: "infinite" }),
+      ]),
+    isExpired: (data) => Promise.resolve(data.lifetime !== "infinite"),
+  });
+
+  const preview = await modelDeletePreview(
+    createLibSwampContext(),
+    deps,
+    { modelIdOrName: "my-model", force: false },
+  );
+
+  assertEquals(preview.dataArtifactCount, 1);
 });

@@ -22,6 +22,7 @@ import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   autoGc,
+  type AutoGcLifecycleDeps,
   dataGc,
   type DataGcDeps,
   type DataGcEvent,
@@ -29,6 +30,7 @@ import {
 } from "./gc.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { GarbageCollectionResult } from "../../domain/data/repositories.ts";
+import type { Data } from "../../domain/data/data.ts";
 
 function makeDeps(overrides: Partial<DataGcDeps> = {}): DataGcDeps {
   return {
@@ -226,14 +228,22 @@ Deno.test("autoGc: returns result when versions are removed", async () => {
   const repo = makeFakeDataRepo({ versionsRemoved: 10, bytesReclaimed: 4096 });
   const result = await autoGc(repo, ModelType.create("test/type"), "model-1");
 
-  assertEquals(result, { versionsRemoved: 10, bytesReclaimed: 4096 });
+  assertEquals(result, {
+    versionsRemoved: 10,
+    bytesReclaimed: 4096,
+    dataEntriesExpired: 0,
+  });
 });
 
 Deno.test("autoGc: returns result with zero versions when nothing to clean", async () => {
   const repo = makeFakeDataRepo({ versionsRemoved: 0, bytesReclaimed: 0 });
   const result = await autoGc(repo, ModelType.create("test/type"), "model-1");
 
-  assertEquals(result, { versionsRemoved: 0, bytesReclaimed: 0 });
+  assertEquals(result, {
+    versionsRemoved: 0,
+    bytesReclaimed: 0,
+    dataEntriesExpired: 0,
+  });
 });
 
 Deno.test("autoGc: catches errors and returns null", async () => {
@@ -244,4 +254,94 @@ Deno.test("autoGc: catches errors and returns null", async () => {
   const result = await autoGc(repo, ModelType.create("test/type"), "model-1");
 
   assertEquals(result, null);
+});
+
+Deno.test("autoGc: deletes expired data when lifecycle deps provided", async () => {
+  const repo = makeFakeDataRepo({ versionsRemoved: 0, bytesReclaimed: 0 });
+  const deletedNames: string[] = [];
+  const lifecycleDeps: AutoGcLifecycleDeps = {
+    dataRepo: {
+      findAllForModel: () =>
+        Promise.resolve([
+          { name: "expired-cache", isDeleted: false, lifetime: "15m" },
+          { name: "live-data", isDeleted: false, lifetime: "infinite" },
+        ] as unknown as Data[]),
+      delete: (_type, _modelId, name) => {
+        deletedNames.push(name);
+        return Promise.resolve();
+      },
+    },
+    lifecycleService: {
+      isExpired: (data) =>
+        Promise.resolve(
+          (data as unknown as { lifetime: string }).lifetime !== "infinite",
+        ),
+    },
+  };
+
+  const result = await autoGc(
+    repo,
+    ModelType.create("test/type"),
+    "model-1",
+    lifecycleDeps,
+  );
+
+  assertEquals(result?.dataEntriesExpired, 1);
+  assertEquals(deletedNames, ["expired-cache"]);
+});
+
+Deno.test("autoGc: skips deleted data entries", async () => {
+  const repo = makeFakeDataRepo({ versionsRemoved: 0, bytesReclaimed: 0 });
+  const deletedNames: string[] = [];
+  const lifecycleDeps: AutoGcLifecycleDeps = {
+    dataRepo: {
+      findAllForModel: () =>
+        Promise.resolve([
+          { name: "deleted-entry", isDeleted: true, lifetime: "15m" },
+        ] as unknown as Data[]),
+      delete: (_type, _modelId, name) => {
+        deletedNames.push(name);
+        return Promise.resolve();
+      },
+    },
+    lifecycleService: {
+      isExpired: () => Promise.resolve(true),
+    },
+  };
+
+  const result = await autoGc(
+    repo,
+    ModelType.create("test/type"),
+    "model-1",
+    lifecycleDeps,
+  );
+
+  assertEquals(result?.dataEntriesExpired, 0);
+  assertEquals(deletedNames, []);
+});
+
+Deno.test("autoGc: catches per-entry errors without failing the whole run", async () => {
+  const repo = makeFakeDataRepo({ versionsRemoved: 2, bytesReclaimed: 512 });
+  const lifecycleDeps: AutoGcLifecycleDeps = {
+    dataRepo: {
+      findAllForModel: () =>
+        Promise.resolve([
+          { name: "trouble", isDeleted: false },
+        ] as unknown as Data[]),
+      delete: () => Promise.resolve(),
+    },
+    lifecycleService: {
+      isExpired: () => Promise.reject(new Error("network timeout")),
+    },
+  };
+
+  const result = await autoGc(
+    repo,
+    ModelType.create("test/type"),
+    "model-1",
+    lifecycleDeps,
+  );
+
+  assertEquals(result?.versionsRemoved, 2);
+  assertEquals(result?.dataEntriesExpired, 0);
 });

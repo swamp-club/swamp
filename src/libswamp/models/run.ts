@@ -79,7 +79,8 @@ import {
   withGeneratorTraceContext,
 } from "../../infrastructure/tracing/mod.ts";
 import { resolveOrCreateDefinition } from "./direct_execution.ts";
-import { autoGc } from "../data/gc.ts";
+import { autoGc, type AutoGcLifecycleDeps } from "../data/gc.ts";
+import { DefaultDataLifecycleService } from "../../domain/data/data_lifecycle_service.ts";
 import { ActiveRun } from "../../domain/models/active_run.ts";
 import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
 import { hostname } from "node:os";
@@ -159,6 +160,7 @@ export type ModelMethodRunEvent =
     kind: "auto_gc_completed";
     versionsDeleted: number;
     bytesReclaimed: number;
+    dataEntriesExpired: number;
   }
   | { kind: "error"; error: SwampError };
 
@@ -1139,16 +1141,32 @@ export async function* modelMethodRun(
           yield { kind: "completed", run: view };
 
           if (input.autoGc) {
+            let lifecycleDeps: AutoGcLifecycleDeps | undefined;
+            if (deps.workflowRunRepo) {
+              const lifecycleService = new DefaultDataLifecycleService(
+                deps.dataRepo,
+                deps.workflowRunRepo,
+              );
+              lifecycleDeps = {
+                dataRepo: deps.dataRepo,
+                lifecycleService,
+              };
+            }
             const gcResult = await autoGc(
               deps.dataRepo,
               modelType,
               definition.id,
+              lifecycleDeps,
             );
-            if (gcResult && gcResult.versionsRemoved > 0) {
+            if (
+              gcResult &&
+              (gcResult.versionsRemoved > 0 || gcResult.dataEntriesExpired > 0)
+            ) {
               yield {
                 kind: "auto_gc_completed" as const,
                 versionsDeleted: gcResult.versionsRemoved,
                 bytesReclaimed: gcResult.bytesReclaimed,
+                dataEntriesExpired: gcResult.dataEntriesExpired,
               };
             }
           }

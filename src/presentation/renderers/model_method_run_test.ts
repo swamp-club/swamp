@@ -450,6 +450,7 @@ Deno.test("JsonModelMethodRunRenderer - auto_gc_completed does not write to stdo
         kind: "auto_gc_completed",
         versionsDeleted: 3,
         bytesReclaimed: 4096,
+        dataEntriesExpired: 0,
       },
     ];
     await consumeStream(toStream(events), renderer.handlers());
