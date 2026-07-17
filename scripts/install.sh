@@ -50,6 +50,9 @@ main() {
   program="install.sh"
   bin="swamp"
 
+  INSTALL_DEST=""
+  INSTALL_BIN=""
+
   setup_cleanups
   setup_traps trap_exit
 
@@ -61,6 +64,8 @@ main() {
   platform="$PLATFORM"
   version="$VERSION"
   unset DEST OS_TYPE CPU_TYPE PLATFORM VERSION
+
+  check_dynamic_linker "$os_type" "$cpu_type"
 
   section "Downloading and installing '$bin' release '$version' on '$platform'"
 
@@ -79,6 +84,9 @@ main() {
 
   section "Extracting '$asset'"
   extract_archive "$tmpdir/$asset" "$tmpdir" "$bin"
+
+  INSTALL_DEST="$dest"
+  INSTALL_BIN="$bin"
 
   section "Installing '$bin'"
   install_bin "$tmpdir/$bin" "$dest/$bin" "$bin"
@@ -309,6 +317,26 @@ install_bin() {
   fi
 }
 
+check_dynamic_linker() {
+  local os_type cpu_type linker
+  os_type="$1"
+  cpu_type="$2"
+
+  if [ "$os_type" != "linux" ]; then
+    return 0
+  fi
+
+  case "$cpu_type" in
+    x86_64) linker="/lib64/ld-linux-x86-64.so.2" ;;
+    aarch64) linker="/lib/ld-linux-aarch64.so.1" ;;
+    *) return 0 ;;
+  esac
+
+  if [ ! -f "$linker" ]; then
+    die "The glibc dynamic linker was not found at '$linker'. Swamp requires a glibc-based Linux system. Your system may use a non-standard library layout (e.g. musl libc or an immutable filesystem). No files have been modified."
+  fi
+}
+
 symlink_to_system_path() {
   local dest bin
   dest="$1"
@@ -336,6 +364,13 @@ trap_exit() {
     {
       echo
       warn "$msg" >&2
+      if [ -n "${INSTALL_DEST:-}" ] && [ -n "${INSTALL_BIN:-}" ]; then
+        warn "" >&2
+        warn "To clean up, you can remove the installed files:" >&2
+        warn "    rm -f $INSTALL_DEST/$INSTALL_BIN" >&2
+        warn "    sudo rm -f /usr/local/bin/$INSTALL_BIN" >&2
+      fi
+      warn "" >&2
       warn "If you need help, please join us on our discord!"
       warn ""
       warn "    https://discord.gg/swamp-club"
