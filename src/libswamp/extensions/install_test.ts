@@ -596,6 +596,7 @@ function makeInstallWithPruned(
       dependencies: [],
       dependencyResults: [],
       pruned: prunedPaths,
+      shadowedTypes: [],
     };
   };
 }

@@ -24,6 +24,7 @@ import type {
   ExtensionCatalogStore,
   ExtensionKind,
   ExtensionTypeRow,
+  OriginConflict,
 } from "./extension_catalog_store.ts";
 import { DuplicateTypeError } from "./duplicate_type_error.ts";
 import type { LocalManifestIdentity } from "./local_manifest_reader.ts";
@@ -120,6 +121,7 @@ export class ExtensionRepository {
    * concurrent loadByName calls before the UPDATE lands).
    */
   private readonly fallbackLoggedSourcePaths: Set<string>;
+  private _lastOriginConflicts: OriginConflict[] = [];
 
   constructor(args: {
     catalog: ExtensionCatalogStore;
@@ -132,6 +134,10 @@ export class ExtensionRepository {
     this.repoRoot = canonicalizePath(args.repoRoot);
     this.localManifestIdentity = args.localManifestIdentity ?? null;
     this.fallbackLoggedSourcePaths = new Set();
+  }
+
+  get lastOriginConflicts(): readonly OriginConflict[] {
+    return this._lastOriginConflicts;
   }
 
   /**
@@ -237,7 +243,9 @@ export class ExtensionRepository {
         logger
           .info`Pruned ${pruned.length} catalog row(s) with unreachable source path(s)`;
       }
-      this.catalog.resolveOriginConflicts(this.repoRoot);
+      this._lastOriginConflicts = this.catalog.resolveOriginConflicts(
+        this.repoRoot,
+      );
       this.assertIRepo1();
     });
   }

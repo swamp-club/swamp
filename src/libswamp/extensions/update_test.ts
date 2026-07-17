@@ -236,12 +236,13 @@ Deno.test("extensionUpdate: registry fetch failure records not_found", async () 
   }
 });
 
-import type { InstallResult } from "./pull.ts";
+import type { InstallResult, ShadowedTypeInfo } from "./pull.ts";
 
 function buildInstallResult(
   name: string,
   version: string,
   pruned: string[],
+  shadowedTypes: ShadowedTypeInfo[] = [],
 ): InstallResult {
   return {
     name,
@@ -261,8 +262,98 @@ function buildInstallResult(
     dependencies: [],
     dependencyResults: [],
     pruned,
+    shadowedTypes,
   };
 }
+
+Deno.test(
+  "extensionUpdate: emits shadowed-by-local event when installExtension returns shadowedTypes",
+  async () => {
+    const deps = makeDeps({
+      upstream: { "@ns/a": "2026.01.01.1" },
+      getExtension: () => Promise.resolve({ latestVersion: "2026.03.01.1" }),
+      installExtension: (name, version) =>
+        Promise.resolve(
+          buildInstallResult(name, version, [], [
+            {
+              type: "@ns/a",
+              kind: "model",
+              localSourcePath: "/repo/extensions/models/a.ts",
+            },
+          ]),
+        ),
+    });
+    const input: ExtensionUpdateInput = { checkOnly: false };
+
+    const events = await collect<ExtensionUpdateEvent>(
+      extensionUpdate(makeCtx(), deps, input),
+    );
+
+    const shadowed = events.find((e) => e.kind === "shadowed-by-local");
+    if (shadowed?.kind !== "shadowed-by-local") {
+      throw new Error(
+        `expected shadowed-by-local event, got: ${
+          events.map((e) => e.kind).join(", ")
+        }`,
+      );
+    }
+    assertEquals(shadowed.name, "@ns/a");
+    assertEquals(shadowed.types.length, 1);
+    assertEquals(shadowed.types[0].type, "@ns/a");
+    assertEquals(shadowed.types[0].kind, "model");
+    assertEquals(
+      shadowed.types[0].localSourcePath,
+      "/repo/extensions/models/a.ts",
+    );
+  },
+);
+
+Deno.test(
+  "extensionUpdate: no shadowed-by-local event when shadowedTypes is empty",
+  async () => {
+    const deps = makeDeps({
+      upstream: { "@ns/a": "2026.01.01.1" },
+      getExtension: () => Promise.resolve({ latestVersion: "2026.03.01.1" }),
+      installExtension: (name, version) =>
+        Promise.resolve(buildInstallResult(name, version, [])),
+    });
+    const input: ExtensionUpdateInput = { checkOnly: false };
+
+    const events = await collect<ExtensionUpdateEvent>(
+      extensionUpdate(makeCtx(), deps, input),
+    );
+
+    assertEquals(
+      events.find((e) => e.kind === "shadowed-by-local"),
+      undefined,
+    );
+  },
+);
+
+Deno.test(
+  "extensionUpdate: no shadowed-by-local event when shadowedTypes is undefined",
+  async () => {
+    const deps = makeDeps({
+      upstream: { "@ns/a": "2026.01.01.1" },
+      getExtension: () => Promise.resolve({ latestVersion: "2026.03.01.1" }),
+      installExtension: (name, version) => {
+        const r = buildInstallResult(name, version, []);
+        r.shadowedTypes = undefined;
+        return Promise.resolve(r);
+      },
+    });
+    const input: ExtensionUpdateInput = { checkOnly: false };
+
+    const events = await collect<ExtensionUpdateEvent>(
+      extensionUpdate(makeCtx(), deps, input),
+    );
+
+    assertEquals(
+      events.find((e) => e.kind === "shadowed-by-local"),
+      undefined,
+    );
+  },
+);
 
 Deno.test(
   "extensionUpdate: emits orphans-pruned event when installExtension returns pruned paths",

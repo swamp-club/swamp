@@ -112,6 +112,7 @@ function makeStubInstallResult(
     dependencies: [],
     dependencyResults: [],
     pruned: [],
+    shadowedTypes: [],
   };
 }
 
