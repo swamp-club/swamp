@@ -119,10 +119,10 @@ export class SwampClubClient {
     username: string,
     password: string,
   ): Promise<SignInResponse> {
-    const res = await this.fetch("/api/auth/sign-in/email", {
+    const res = await this.fetch("/api/auth/sign-in/credential", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: username, password }),
+      body: JSON.stringify({ credential: username, password }),
     });
 
     if (!res.ok) {
