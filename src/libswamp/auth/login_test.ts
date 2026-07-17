@@ -37,7 +37,7 @@ function makeDeps(overrides: Partial<AuthLoginDeps> = {}): AuthLoginDeps {
     }),
     signIn: (_serverUrl: string, _username: string, _password: string) =>
       Promise.resolve({ token: "session-token-abc", username: "testuser" }),
-    readCredentials: () =>
+    readCredentials: (_prefilled) =>
       Promise.resolve({ username: "testuser", password: "testpass" }),
     createApiKey: (
       _serverUrl: string,
@@ -167,7 +167,7 @@ Deno.test("authLogin: successful stdin flow with provided credentials", async ()
 Deno.test("authLogin: stdin flow reads credentials when not provided", async () => {
   let readCalled = false;
   const deps = makeDeps({
-    readCredentials: () => {
+    readCredentials: (_prefilled) => {
       readCalled = true;
       return Promise.resolve({ username: "interactive", password: "secret" });
     },
@@ -195,7 +195,8 @@ Deno.test("authLogin: stdin flow reads credentials when not provided", async () 
 
 Deno.test("authLogin: stdin flow missing credentials yields validation error", async () => {
   const deps = makeDeps({
-    readCredentials: () => Promise.resolve({ username: "", password: "" }),
+    readCredentials: (_prefilled) =>
+      Promise.resolve({ username: "", password: "" }),
   });
   const input = makeInput({ useBrowserFlow: false });
 
@@ -214,6 +215,87 @@ Deno.test("authLogin: stdin flow missing credentials yields validation error", a
     errorEvent.error.message,
     "Username and password are required.",
   );
+});
+
+Deno.test("authLogin: stdin flow with --username skips username prompt", async () => {
+  let prefilledArg: { username?: string; password?: string } | undefined;
+  const deps = makeDeps({
+    readCredentials: (prefilled) => {
+      prefilledArg = prefilled;
+      return Promise.resolve({
+        username: prefilled?.username ?? "prompted",
+        password: "prompted-pass",
+      });
+    },
+  });
+  const input = makeInput({
+    useBrowserFlow: false,
+    username: "alice",
+  });
+
+  const events = await collect<AuthLoginEvent>(
+    authLogin(createLibSwampContext(), deps, input),
+  );
+
+  assertEquals(prefilledArg?.username, "alice");
+  assertEquals(prefilledArg?.password, undefined);
+
+  const kinds = events.map((e) => e.kind);
+  assertEquals(kinds, ["securing_session", "completed"]);
+});
+
+Deno.test("authLogin: stdin flow with --password skips password prompt", async () => {
+  let prefilledArg: { username?: string; password?: string } | undefined;
+  const deps = makeDeps({
+    readCredentials: (prefilled) => {
+      prefilledArg = prefilled;
+      return Promise.resolve({
+        username: "prompted-user",
+        password: prefilled?.password ?? "prompted",
+      });
+    },
+  });
+  const input = makeInput({
+    useBrowserFlow: false,
+    password: "secret",
+  });
+
+  const events = await collect<AuthLoginEvent>(
+    authLogin(createLibSwampContext(), deps, input),
+  );
+
+  assertEquals(prefilledArg?.username, undefined);
+  assertEquals(prefilledArg?.password, "secret");
+
+  const kinds = events.map((e) => e.kind);
+  assertEquals(kinds, ["securing_session", "completed"]);
+});
+
+Deno.test("authLogin: stdin flow with both --username and --password skips all prompts", async () => {
+  let readCalled = false;
+  const deps = makeDeps({
+    readCredentials: (_prefilled) => {
+      readCalled = true;
+      return Promise.resolve({
+        username: "should-not-be-called",
+        password: "x",
+      });
+    },
+  });
+  const input = makeInput({
+    useBrowserFlow: false,
+    username: "alice",
+    password: "secret",
+  });
+
+  const events = await collect<AuthLoginEvent>(
+    authLogin(createLibSwampContext(), deps, input),
+  );
+
+  assertEquals(readCalled, false);
+
+  const kinds = events.map((e) => e.kind);
+  assertEquals(kinds, ["securing_session", "completed"]);
 });
 
 Deno.test("authLogin: callback server is shut down after browser flow", async () => {

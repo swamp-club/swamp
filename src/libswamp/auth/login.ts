@@ -82,8 +82,11 @@ export interface AuthLoginDeps {
     username: string,
     password: string,
   ) => Promise<{ token: string; username: string }>;
-  /** Read credentials from user (for interactive stdin flow). */
-  readCredentials: () => Promise<{ username: string; password: string }>;
+  /** Read credentials from user (for interactive stdin flow). Skips prompts for prefilled fields. */
+  readCredentials: (prefilled?: {
+    username?: string;
+    password?: string;
+  }) => Promise<{ username: string; password: string }>;
   /** Create API key for CLI use. */
   createApiKey: (
     serverUrl: string,
@@ -129,10 +132,10 @@ async function readLine(prompt: string): Promise<string> {
   return decoder.decode(buf.subarray(0, n)).trim();
 }
 
-/** Read a password from stdin without echoing. */
+/** Read a password from stdin without echoing. Falls back to readLine for piped stdin. */
 async function readPassword(prompt: string): Promise<string> {
   if (!Deno.stdin.isTerminal()) {
-    return "";
+    return await readLine(prompt);
   }
   try {
     return await readSecretFromTty(prompt);
@@ -176,9 +179,11 @@ export function createAuthLoginDeps(
       const result = await client.signIn(username, password);
       return { token: result.token, username: result.user.username };
     },
-    readCredentials: async () => {
-      const username = await readLine("Username or email: ");
-      const password = await readPassword("Password: ");
+    readCredentials: async (prefilled) => {
+      const username = prefilled?.username ??
+        await readLine("Username or email: ");
+      const password = prefilled?.password ??
+        await readPassword("Password: ");
       return { username, password };
     },
     createApiKey: async (
@@ -252,9 +257,9 @@ export async function* authLogin(
         let username = input.username;
         let password = input.password;
         if (!username || !password) {
-          const creds = await deps.readCredentials();
-          username = username ?? creds.username;
-          password = password ?? creds.password;
+          const creds = await deps.readCredentials({ username, password });
+          username = creds.username;
+          password = creds.password;
         }
 
         if (!username || !password) {
