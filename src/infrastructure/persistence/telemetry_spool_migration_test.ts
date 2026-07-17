@@ -20,7 +20,10 @@
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
-import { migrateRepoTelemetryToGlobal } from "./telemetry_spool_migration.ts";
+import {
+  migrateHomeRepoTelemetry,
+  migrateRepoTelemetryToGlobal,
+} from "./telemetry_spool_migration.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 
 async function withTempDir(
@@ -102,5 +105,140 @@ Deno.test("migrateRepoTelemetryToGlobal: ignores non-telemetry files", async () 
     const count = await migrateRepoTelemetryToGlobal(repoDir, destDir);
     assertEquals(count, 1);
     assert(await fileExists(join(spool, "README.txt")));
+  });
+});
+
+Deno.test("migrateRepoTelemetryToGlobal: concurrent migrations drain each entry exactly once", async () => {
+  await withTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    const destDir = join(dir, "global");
+    const spool = swampPath(repoDir, SWAMP_SUBDIRS.telemetry);
+    await ensureDir(spool);
+
+    const names: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      const name = `telemetry-2026-07-13-${crypto.randomUUID()}.json`;
+      names.push(name);
+      await Deno.writeTextFile(join(spool, name), `{"id":"${i}"}`);
+    }
+
+    // Both migrations list the same files; the rename loser hits NotFound
+    // (same filesystem, so the copy fallback also sees NotFound) and must
+    // skip the file instead of aborting the loop.
+    const [a, b] = await Promise.all([
+      migrateRepoTelemetryToGlobal(repoDir, destDir),
+      migrateRepoTelemetryToGlobal(repoDir, destDir),
+    ]);
+
+    assertEquals(a + b, names.length);
+    for (const name of names) {
+      assert(await fileExists(join(destDir, name)));
+      assertEquals(await fileExists(join(spool, name)), false);
+    }
+  });
+});
+
+async function seedHomeRepo(
+  homeDir: string,
+  options: { marker?: string; entries?: number } = {},
+): Promise<string[]> {
+  if (options.marker !== undefined) {
+    await Deno.writeTextFile(join(homeDir, ".swamp.yaml"), options.marker);
+  }
+  const spool = swampPath(homeDir, SWAMP_SUBDIRS.telemetry);
+  await ensureDir(spool);
+  const names: string[] = [];
+  for (let i = 0; i < (options.entries ?? 1); i++) {
+    const name = `telemetry-2026-07-10-${crypto.randomUUID()}.json`;
+    names.push(name);
+    await Deno.writeTextFile(join(spool, name), `{"id":"${i}"}`);
+  }
+  return names;
+}
+
+Deno.test("migrateHomeRepoTelemetry: drains the home repo spool when telemetry is enabled", async () => {
+  await withTempDir(async (dir) => {
+    const homeDir = join(dir, "home");
+    const destDir = join(dir, "global");
+    await ensureDir(homeDir);
+    const [name] = await seedHomeRepo(homeDir, {
+      marker: "swampVersion: 2026.07.01.0\n",
+    });
+
+    const count = await migrateHomeRepoTelemetry(homeDir, destDir);
+    assertEquals(count, 1);
+    assert(await fileExists(join(destDir, name)));
+    assertEquals(
+      await fileExists(join(swampPath(homeDir, SWAMP_SUBDIRS.telemetry), name)),
+      false,
+    );
+  });
+});
+
+Deno.test("migrateHomeRepoTelemetry: returns 0 when home is not a swamp repo", async () => {
+  await withTempDir(async (dir) => {
+    const homeDir = join(dir, "home");
+    const destDir = join(dir, "global");
+    await ensureDir(homeDir);
+    const [name] = await seedHomeRepo(homeDir); // spool exists, no marker
+
+    const count = await migrateHomeRepoTelemetry(homeDir, destDir);
+    assertEquals(count, 0);
+    // Consent unknown — the entry stays put.
+    assert(
+      await fileExists(join(swampPath(homeDir, SWAMP_SUBDIRS.telemetry), name)),
+    );
+    assertEquals(await fileExists(join(destDir, name)), false);
+  });
+});
+
+Deno.test("migrateHomeRepoTelemetry: returns 0 when the home repo opted out of telemetry", async () => {
+  await withTempDir(async (dir) => {
+    const homeDir = join(dir, "home");
+    const destDir = join(dir, "global");
+    await ensureDir(homeDir);
+    const [name] = await seedHomeRepo(homeDir, {
+      marker: "swampVersion: 2026.07.01.0\ntelemetryDisabled: true\n",
+    });
+
+    const count = await migrateHomeRepoTelemetry(homeDir, destDir);
+    assertEquals(count, 0);
+    // Opted-out entries must never enter the global spool.
+    assert(
+      await fileExists(join(swampPath(homeDir, SWAMP_SUBDIRS.telemetry), name)),
+    );
+    assertEquals(await fileExists(join(destDir, name)), false);
+  });
+});
+
+Deno.test("migrateHomeRepoTelemetry: returns 0 when the home repo has no spool", async () => {
+  await withTempDir(async (dir) => {
+    const homeDir = join(dir, "home");
+    const destDir = join(dir, "global");
+    await ensureDir(homeDir);
+    await Deno.writeTextFile(
+      join(homeDir, ".swamp.yaml"),
+      "swampVersion: 2026.07.01.0\n",
+    );
+
+    const count = await migrateHomeRepoTelemetry(homeDir, destDir);
+    assertEquals(count, 0);
+  });
+});
+
+Deno.test("migrateHomeRepoTelemetry: returns 0 when the home marker is unreadable", async () => {
+  await withTempDir(async (dir) => {
+    const homeDir = join(dir, "home");
+    const destDir = join(dir, "global");
+    await ensureDir(homeDir);
+    const [name] = await seedHomeRepo(homeDir, {
+      marker: "swampVersion: [unclosed\n",
+    });
+
+    const count = await migrateHomeRepoTelemetry(homeDir, destDir);
+    assertEquals(count, 0);
+    assert(
+      await fileExists(join(swampPath(homeDir, SWAMP_SUBDIRS.telemetry), name)),
+    );
   });
 });

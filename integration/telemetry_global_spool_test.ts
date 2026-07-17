@@ -222,6 +222,95 @@ Deno.test("repo upgrade does NOT migrate telemetry for a disabled repo", async (
   });
 });
 
+Deno.test("home-as-repo legacy telemetry is auto-migrated on any invocation", async () => {
+  await withTempDir(async (configDir) => {
+    await withTempDir(async (homeDir) => {
+      await withTempDir(async (workDir) => {
+        // Initialize the fake home directory itself as a swamp repo.
+        const init = await runCliWithEnv(
+          ["--json", "repo", "init", "--tool", "claude"],
+          homeDir,
+          baseChildEnv(configDir),
+        );
+        assertEquals(init.code, 0, `repo init failed: ${init.stderr}`);
+
+        const legacyName = await seedRepoLocalEntry(homeDir);
+
+        // Run an ordinary command from a non-repo cwd, with HOME pointing at
+        // the home repo (USERPROFILE covers the Windows fallback).
+        const env = baseChildEnv(configDir);
+        env.HOME = homeDir;
+        env.USERPROFILE = homeDir;
+        const run = await runCliWithEnv(
+          ["--json", "telemetry", "stats"],
+          workDir,
+          env,
+        );
+        assertEquals(run.code, 0, `telemetry stats failed: ${run.stderr}`);
+
+        // The stranded entry was drained into the user-global spool...
+        assertEquals(
+          await Deno.stat(join(configDir, "swamp", "telemetry", legacyName))
+            .then(() => true),
+          true,
+        );
+        // ...and removed from the home repo's legacy spool.
+        await assertRejects(
+          () => Deno.stat(join(homeDir, ".swamp", "telemetry", legacyName)),
+          Deno.errors.NotFound,
+        );
+      });
+    });
+  });
+});
+
+Deno.test("home-as-repo legacy telemetry is NOT migrated when the home repo opted out", async () => {
+  await withTempDir(async (configDir) => {
+    await withTempDir(async (homeDir) => {
+      await withTempDir(async (workDir) => {
+        const init = await runCliWithEnv(
+          ["--json", "repo", "init", "--tool", "claude"],
+          homeDir,
+          baseChildEnv(configDir),
+        );
+        assertEquals(init.code, 0, `repo init failed: ${init.stderr}`);
+
+        // Opt the home repo out of telemetry.
+        const markerPath = join(homeDir, ".swamp.yaml");
+        const marker = await Deno.readTextFile(markerPath);
+        await Deno.writeTextFile(
+          markerPath,
+          marker + "\ntelemetryDisabled: true\n",
+        );
+
+        const legacyName = await seedRepoLocalEntry(homeDir);
+
+        const env = baseChildEnv(configDir);
+        env.HOME = homeDir;
+        env.USERPROFILE = homeDir;
+        const run = await runCliWithEnv(
+          ["--json", "telemetry", "stats"],
+          workDir,
+          env,
+        );
+        assertEquals(run.code, 0, `telemetry stats failed: ${run.stderr}`);
+
+        // The opted-out home repo's entry stays orphaned in its spool...
+        assertEquals(
+          await Deno.stat(join(homeDir, ".swamp", "telemetry", legacyName))
+            .then(() => true),
+          true,
+        );
+        // ...and is never moved into the global spool (where it would be sent).
+        await assertRejects(
+          () => Deno.stat(join(configDir, "swamp", "telemetry", legacyName)),
+          Deno.errors.NotFound,
+        );
+      });
+    });
+  });
+});
+
 Deno.test("in-repo telemetry spools to the user-global directory, not the repo", async () => {
   await withTempDir(async (configDir) => {
     await withTempDir(async (repoDir) => {
