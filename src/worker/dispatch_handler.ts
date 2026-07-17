@@ -31,7 +31,10 @@
  * Capacity 1 is byte-for-byte identical to the prior serial behavior.
  */
 
-import { overlayEnvironment } from "../domain/remote/environment_snapshot.ts";
+import {
+  overlayEnvironment,
+  stripWorkerCredentials,
+} from "../domain/remote/environment_snapshot.ts";
 import {
   DispatchParamsSchema,
   type DispatchResult,
@@ -179,6 +182,7 @@ async function handleDispatch(
     }
     spawnEnv = overlayEnvironment(spawnEnv, traceSnapshot);
   }
+  spawnEnv = stripWorkerCredentials(spawnEnv);
 
   const rawParams2 = rawParams as Record<string, unknown>;
   const dispatchCredential = rawParams2.dispatchCredential as

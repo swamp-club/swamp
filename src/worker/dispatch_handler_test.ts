@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { overlayEnvironment } from "../domain/remote/environment_snapshot.ts";
+import {
+  overlayEnvironment,
+  stripWorkerCredentials,
+} from "../domain/remote/environment_snapshot.ts";
 import { RpcChannel, type RpcError } from "../domain/remote/rpc_channel.ts";
 import {
   REMOTE_PROTOCOL_VERSION,
@@ -115,6 +118,27 @@ Deno.test("registerDispatchHandler: draining rejects with worker_draining", asyn
     drainError = error as RpcError;
   }
   assertEquals(drainError?.code, "worker_draining");
+});
+
+Deno.test("dispatch spawn env: worker credentials are stripped after overlay", () => {
+  const base: Record<string, string> = {
+    SWAMP_WORKER_TOKEN: "tok.secret",
+    SWAMP_SERVER_TOKEN: "srv.secret",
+    SWAMP_ORCHESTRATOR_URL: "wss://orch:4000",
+    SWAMP_SERVE_EXTRA_HEADERS: "Tunnel-Token: abc123",
+    SWAMP_WORKER_LABELS: "gpu=true",
+    DEPLOY_ENV: "dev",
+  };
+  const snapshot = { DEPLOY_ENV: "prod", API_KEY: "key123" };
+  const spawnEnv = stripWorkerCredentials(overlayEnvironment(base, snapshot));
+
+  assertEquals(spawnEnv["SWAMP_WORKER_TOKEN"], undefined);
+  assertEquals(spawnEnv["SWAMP_SERVER_TOKEN"], undefined);
+  assertEquals(spawnEnv["SWAMP_ORCHESTRATOR_URL"], undefined);
+  assertEquals(spawnEnv["SWAMP_SERVE_EXTRA_HEADERS"], "Tunnel-Token: abc123");
+  assertEquals(spawnEnv["SWAMP_WORKER_LABELS"], "gpu=true");
+  assertEquals(spawnEnv["DEPLOY_ENV"], "prod");
+  assertEquals(spawnEnv["API_KEY"], "key123");
 });
 
 Deno.test("registerDispatchHandler: drain() resolves immediately when idle", async () => {

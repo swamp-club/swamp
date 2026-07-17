@@ -618,7 +618,11 @@ Each dispatch spawns a **dispatch runner** — a child process of the same swamp
 binary (`swamp worker exec-dispatch`, a hidden subcommand). The environment
 snapshot is applied as the child's spawn environment via `overlayEnvironment`
 (no global mutation of `Deno.env`). W3C trace context headers are overlaid on
-top of the snapshot at spawn time.
+top of the snapshot at spawn time. Worker control-plane credentials
+(`SWAMP_WORKER_TOKEN`, `SWAMP_SERVER_TOKEN`, `SWAMP_ORCHESTRATOR_URL`) are
+stripped from the spawn environment before the child is started — the runner
+receives its data-plane credential via `RunnerBootstrapParams` over stdio and
+has no need for worker enrollment or server authentication tokens.
 
 The supervisor (worker process) communicates with the runner over
 length-prefixed stdio frames (`StdioTransport`), using the same `RpcChannel`

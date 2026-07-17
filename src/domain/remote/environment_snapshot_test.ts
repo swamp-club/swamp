@@ -22,6 +22,7 @@ import {
   captureEnvironmentSnapshot,
   isDeniedEnvVar,
   overlayEnvironment,
+  stripWorkerCredentials,
 } from "./environment_snapshot.ts";
 
 Deno.test("isDeniedEnvVar: denies process-identity variables", () => {
@@ -100,5 +101,35 @@ Deno.test("overlayEnvironment: worker base survives for denylisted names even fr
     HOME: "/home/worker",
     PATH: "/worker/bin",
     EXTRA: "1",
+  });
+});
+
+Deno.test("stripWorkerCredentials: removes worker control-plane credentials", () => {
+  const env = {
+    SWAMP_WORKER_TOKEN: "tok.secret",
+    SWAMP_SERVER_TOKEN: "srv.secret",
+    SWAMP_ORCHESTRATOR_URL: "wss://orch:4000",
+    DEPLOY_ENV: "prod",
+    AWS_ACCESS_KEY_ID: "AKIA123",
+  };
+  assertEquals(stripWorkerCredentials(env), {
+    DEPLOY_ENV: "prod",
+    AWS_ACCESS_KEY_ID: "AKIA123",
+  });
+});
+
+Deno.test("stripWorkerCredentials: preserves SWAMP_SERVE_EXTRA_HEADERS and worker config vars", () => {
+  const env = {
+    SWAMP_WORKER_TOKEN: "tok.secret",
+    SWAMP_SERVE_EXTRA_HEADERS: "Tunnel-Token: abc123",
+    SWAMP_WORKER_LABELS: "gpu=true",
+    SWAMP_WORKER_CACHE_DIR: "/var/cache/swamp",
+    HOME: "/home/worker",
+  };
+  assertEquals(stripWorkerCredentials(env), {
+    SWAMP_SERVE_EXTRA_HEADERS: "Tunnel-Token: abc123",
+    SWAMP_WORKER_LABELS: "gpu=true",
+    SWAMP_WORKER_CACHE_DIR: "/var/cache/swamp",
+    HOME: "/home/worker",
   });
 });
