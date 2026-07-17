@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// deno-lint-ignore verbatim-module-syntax
 import React from "react";
 import { Box } from "ink";
 
@@ -43,10 +42,12 @@ export interface PreviewPaneProps<T, D> {
 
 /**
  * Preview content area that shows detail about the currently highlighted item.
- * Height-constrained with overflow hidden to prevent layout overflow.
  *
- * The rendering is delegated to the `renderPreview` callback, which is
- * domain-specific. The PreviewPane handles layout constraints.
+ * Windows the rendered children to the visible viewport — only the slice
+ * [scrollOffset, scrollOffset + height) is rendered. This mirrors how
+ * ResultsList receives pre-sliced visibleItems. Ink's overflow="hidden"
+ * only affects Yoga layout math, not terminal output, so rendering excess
+ * children would overwrite content below the preview pane.
  */
 export function PreviewPane<T, D>(
   props: PreviewPaneProps<T, D>,
@@ -58,10 +59,14 @@ export function PreviewPane<T, D>(
     return <Box width={width} height={height} />;
   }
 
-  // Render content taller than the viewport so scrolling has room.
-  // The outer Box clips via overflow="hidden", the inner Box shifts up
-  // via negative marginTop.
-  const renderHeight = height + scrollOffset;
+  const content = renderPreview(item, detail, width, height + scrollOffset);
+
+  const contentProps = content.props as { children?: React.ReactNode };
+  const allChildren = React.Children.toArray(contentProps.children);
+  const visibleChildren = allChildren.slice(
+    scrollOffset,
+    scrollOffset + height,
+  );
 
   return (
     <Box
@@ -70,9 +75,7 @@ export function PreviewPane<T, D>(
       flexDirection="column"
       overflow="hidden"
     >
-      <Box flexDirection="column" marginTop={-scrollOffset}>
-        {renderPreview(item, detail, width, renderHeight)}
-      </Box>
+      {React.cloneElement(content, undefined, ...visibleChildren)}
     </Box>
   );
 }

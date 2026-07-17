@@ -249,15 +249,23 @@ function renderReportPreview(
     );
   }
 
-  const header =
-    `${detail.reportName}\nscope: ${detail.reportScope} | model: ${detail.modelName} | v${detail.version}\n`;
-  const rendered = renderMarkdownToTerminal(detail.markdown, {
-    maxWidth: innerWidth,
-  });
-  const lines = (header + rendered).split("\n");
+  const lines: React.ReactElement[] = [
+    <Text key="name" bold wrap="truncate-end">{detail.reportName}</Text>,
+    <Text key="meta" dimColor wrap="truncate-end">
+      scope: {detail.reportScope} | model: {detail.modelName} | v
+      {detail.version}
+    </Text>,
+    <Text key="spacer" />,
+  ];
+  const bodyLines = detail.markdown.split("\n");
+  for (let i = 0; i < bodyLines.length; i++) {
+    lines.push(
+      <Text key={`b-${i}`} wrap="truncate-end">{bodyLines[i]}</Text>,
+    );
+  }
   return (
     <Box flexDirection="column" marginLeft={1} width={innerWidth}>
-      {lines.map((line, i) => <Text key={i} wrap="truncate-end">{line}</Text>)}
+      {lines}
     </Box>
   );
 }

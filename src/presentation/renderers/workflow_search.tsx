@@ -214,14 +214,19 @@ function renderWorkflowPreview(
     );
   }
 
-  const rendered = renderMarkdownToTerminal(
-    `**${detail.name}**\n\n\`\`\`yaml\n${detail.yaml}\n\`\`\``,
-    { maxWidth: innerWidth },
-  );
-  const lines = rendered.split("\n");
+  const lines: React.ReactElement[] = [
+    <Text key="name" bold wrap="truncate-end">{detail.name}</Text>,
+    <Text key="spacer" />,
+  ];
+  const yamlLines = detail.yaml.split("\n");
+  for (let i = 0; i < yamlLines.length; i++) {
+    lines.push(
+      <Text key={`y-${i}`} wrap="truncate-end">{yamlLines[i]}</Text>,
+    );
+  }
   return (
     <Box flexDirection="column" marginLeft={1} width={innerWidth}>
-      {lines.map((line, i) => <Text key={i} wrap="truncate-end">{line}</Text>)}
+      {lines}
     </Box>
   );
 }
