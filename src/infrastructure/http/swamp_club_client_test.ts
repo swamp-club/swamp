@@ -40,9 +40,11 @@ function startMockServer(
   };
 }
 
-Deno.test("SwampClubClient - signIn returns token and user on success", async () => {
-  const mock = startMockServer((_req) =>
-    Response.json({
+Deno.test("SwampClubClient - signIn routes username to /api/auth/sign-in/username", async () => {
+  const mock = startMockServer((req) => {
+    const url = new URL(req.url);
+    assertEquals(url.pathname, "/api/auth/sign-in/username");
+    return Response.json({
       token: "session-token-abc",
       user: {
         id: "u1",
@@ -50,13 +52,92 @@ Deno.test("SwampClubClient - signIn returns token and user on success", async ()
         name: "Test User",
         username: "testuser",
       },
-    })
-  );
+    });
+  });
   try {
     const client = new SwampClubClient(`http://localhost:${mock.port}`);
     const result = await client.signIn("testuser", "password123");
     assertEquals(result.token, "session-token-abc");
     assertEquals(result.user.username, "testuser");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - signIn routes email to /api/auth/sign-in/email", async () => {
+  const mock = startMockServer(async (req) => {
+    const url = new URL(req.url);
+    assertEquals(url.pathname, "/api/auth/sign-in/email");
+    const body = await req.json();
+    assertEquals(body.email, "user@example.com");
+    assertEquals(body.username, undefined);
+    return Response.json({
+      token: "session-token-def",
+      user: {
+        id: "u2",
+        email: "user@example.com",
+        name: "Email User",
+        username: "emailuser",
+      },
+    });
+  });
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const result = await client.signIn("user@example.com", "password456");
+    assertEquals(result.token, "session-token-def");
+    assertEquals(result.user.username, "emailuser");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - signIn routes plus-tagged email to /api/auth/sign-in/email", async () => {
+  const mock = startMockServer(async (req) => {
+    const url = new URL(req.url);
+    assertEquals(url.pathname, "/api/auth/sign-in/email");
+    const body = await req.json();
+    assertEquals(body.email, "user+tag@example.com");
+    assertEquals(body.username, undefined);
+    return Response.json({
+      token: "session-token-plus",
+      user: {
+        id: "u3",
+        email: "user+tag@example.com",
+        name: "Plus User",
+        username: "plususer",
+      },
+    });
+  });
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const result = await client.signIn("user+tag@example.com", "pass");
+    assertEquals(result.token, "session-token-plus");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - signIn routes hyphenated email to /api/auth/sign-in/email", async () => {
+  const mock = startMockServer(async (req) => {
+    const url = new URL(req.url);
+    assertEquals(url.pathname, "/api/auth/sign-in/email");
+    const body = await req.json();
+    assertEquals(body.email, "first-last@example.com");
+    assertEquals(body.username, undefined);
+    return Response.json({
+      token: "session-token-hyphen",
+      user: {
+        id: "u4",
+        email: "first-last@example.com",
+        name: "Hyphen User",
+        username: "hyphenuser",
+      },
+    });
+  });
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const result = await client.signIn("first-last@example.com", "pass");
+    assertEquals(result.token, "session-token-hyphen");
   } finally {
     await mock.shutdown();
   }

@@ -124,13 +124,21 @@ export class SwampClubClient {
    * Returns session token and user info.
    */
   async signIn(
-    username: string,
+    credential: string,
     password: string,
   ): Promise<SignInResponse> {
-    const res = await this.fetch("/api/auth/sign-in/username", {
+    const isEmail = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(credential);
+    const endpoint = isEmail
+      ? "/api/auth/sign-in/email"
+      : "/api/auth/sign-in/username";
+    const body = isEmail
+      ? { email: credential, password }
+      : { username: credential, password };
+
+    const res = await this.fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify(body),
     });
 
     if (!res.ok) {
