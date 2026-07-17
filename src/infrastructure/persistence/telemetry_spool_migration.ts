@@ -19,7 +19,14 @@
 
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
-import { globalTelemetryDir, SWAMP_SUBDIRS, swampPath } from "./paths.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
+import {
+  globalTelemetryDir,
+  homeDirectory,
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "./paths.ts";
+import { RepoMarkerRepository } from "./repo_marker_repository.ts";
 
 /**
  * Migrates UNFLUSHED telemetry entries from a legacy repo-local spool
@@ -73,12 +80,66 @@ export async function migrateRepoTelemetryToGlobal(
       await Deno.rename(src, dest);
     } catch {
       // Cross-filesystem move (repo and home on different mounts): rename
-      // throws EXDEV, so fall back to copy-then-remove.
-      await Deno.copyFile(src, dest);
-      await Deno.remove(src);
+      // throws EXDEV, so fall back to copy-then-remove. A NotFound from
+      // either step means a concurrent invocation already migrated the
+      // file — skip it and keep draining the rest.
+      try {
+        await Deno.copyFile(src, dest);
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) continue;
+        throw error;
+      }
+      try {
+        await Deno.remove(src);
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      }
     }
     migrated++;
   }
 
   return migrated;
+}
+
+/**
+ * Drains the legacy telemetry spool of a home-as-repo into the user-global
+ * spool on CLI startup.
+ *
+ * "Home-as-repo" means the user's home directory is itself an initialized
+ * swamp repo (`~/.swamp.yaml` exists), making `~/.swamp/` simultaneously the
+ * user-level data dir and that repo's repo-local `.swamp/` dir. Entries
+ * recorded there by pre-global-telemetry binaries are otherwise only drained
+ * by `swamp repo upgrade` run from `~` — which home-as-repo users rarely do
+ * (swamp-club#1214). Repos other than home are still drained by the upgrade
+ * path.
+ *
+ * Skips silently (returns 0) when home cannot be resolved, home is not a
+ * swamp repo or its marker is unreadable (opt-out consent unknown — entries
+ * must stay put), or the marker has `telemetryDisabled: true` (an opted-out
+ * repo's entries must never enter the global spool, or they would be sent
+ * despite the opt-out). Never throws — a migration failure must never
+ * disable telemetry or break the CLI.
+ *
+ * @param homeDir - The home directory to treat as the repo root; defaults to
+ *   {@link homeDirectory}. Injectable for tests.
+ * @param destDir - The destination spool; defaults to the user-global spool.
+ *   Injectable for tests.
+ * @returns The number of entries migrated (0 when skipped or on failure).
+ */
+export async function migrateHomeRepoTelemetry(
+  homeDir?: string,
+  destDir?: string,
+): Promise<number> {
+  try {
+    const home = homeDir ?? homeDirectory();
+    const marker = await new RepoMarkerRepository().read(RepoPath.create(home));
+    if (marker === null) return 0; // home is not a swamp repo
+    if (marker.telemetryDisabled === true) return 0;
+    return await migrateRepoTelemetryToGlobal(
+      home,
+      destDir ?? globalTelemetryDir(),
+    );
+  } catch {
+    return 0;
+  }
 }

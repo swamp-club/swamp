@@ -24,6 +24,7 @@ import {
   globalTelemetryDir,
   swampPath,
 } from "../infrastructure/persistence/paths.ts";
+import { migrateHomeRepoTelemetry } from "../infrastructure/persistence/telemetry_spool_migration.ts";
 import { UserError } from "../domain/errors.ts";
 import { enumeratePulledExtensionDirs } from "../libswamp/mod.ts";
 import { getLogger, parseLogLevel } from "@logtape/logtape";
@@ -1144,6 +1145,16 @@ async function initTelemetryService(
       }
     } catch {
       // Auth file unreadable — continue without auth
+    }
+
+    // Drain any telemetry stranded in a home-as-repo legacy spool
+    // (~/.swamp/telemetry) so it flushes with this run (swamp-club#1214).
+    // Best-effort on top of the never-throw contract: migration must not
+    // trip the outer catch and disable telemetry for the run.
+    try {
+      await migrateHomeRepoTelemetry();
+    } catch {
+      // Never let migration affect telemetry for this invocation.
     }
 
     // Single, user-level spool — never repo-local.
