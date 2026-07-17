@@ -201,13 +201,25 @@ class LogModelMethodRunRenderer implements ModelMethodRunRenderer {
           });
       },
       auto_gc_completed: (e) => {
-        getRunLogger(this.modelName, this.methodName).info(
-          "Auto-GC: removed {versionsDeleted} version(s), reclaimed {bytesReclaimed} bytes",
-          {
-            versionsDeleted: e.versionsDeleted,
-            bytesReclaimed: e.bytesReclaimed,
-          },
-        );
+        const logger = getRunLogger(this.modelName, this.methodName);
+        if (e.dataEntriesExpired > 0) {
+          logger.info(
+            "Auto-GC: expired {dataEntriesExpired} data entry/entries, removed {versionsDeleted} version(s), reclaimed {bytesReclaimed} bytes",
+            {
+              dataEntriesExpired: e.dataEntriesExpired,
+              versionsDeleted: e.versionsDeleted,
+              bytesReclaimed: e.bytesReclaimed,
+            },
+          );
+        } else {
+          logger.info(
+            "Auto-GC: removed {versionsDeleted} version(s), reclaimed {bytesReclaimed} bytes",
+            {
+              versionsDeleted: e.versionsDeleted,
+              bytesReclaimed: e.bytesReclaimed,
+            },
+          );
+        }
       },
       error: (e) => {
         throw new UserError(e.error.message, e.error.code);

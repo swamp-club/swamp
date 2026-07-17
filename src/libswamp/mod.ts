@@ -1120,6 +1120,8 @@ export {
 
 // Data GC operations
 export {
+  type AutoGcLifecycleDeps,
+  type AutoGcResult,
   createDataGcDeps,
   dataGc,
   type DataGcData,

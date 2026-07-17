@@ -19,6 +19,7 @@
 
 import type { Definition } from "../../domain/definitions/definition.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
+import type { Data } from "../../domain/data/data.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
@@ -32,10 +33,14 @@ import {
   namespaceFromResolver,
 } from "../../infrastructure/persistence/repository_factory.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
+import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import { createModelOutputId } from "../../domain/models/model_output.ts";
+import { DefaultDataLifecycleService } from "../../domain/data/data_lifecycle_service.ts";
+import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
+import { getLogger } from "@logtape/logtape";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Preview data returned before confirmation. */
@@ -59,6 +64,7 @@ export interface ModelDeleteData {
   outputsDeleted: number;
   evaluatedInputDeleted: boolean;
   dataDeleted: boolean;
+  expiredDataAutoCollected: number;
 }
 
 export type ModelDeleteEvent =
@@ -81,7 +87,7 @@ export interface ModelDeleteDeps {
   findDataArtifacts: (
     type: ModelType,
     id: DefinitionId,
-  ) => Promise<{ name: string }[]>;
+  ) => Promise<Data[]>;
   findOutputs: (
     type: ModelType,
     id: DefinitionId,
@@ -98,6 +104,7 @@ export interface ModelDeleteDeps {
     name: string,
   ) => Promise<void>;
   deleteDefinition: (type: ModelType, id: DefinitionId) => Promise<void>;
+  isExpired?: (data: Data) => Promise<boolean>;
 }
 
 /** Wires real infrastructure into ModelDeleteDeps. */
@@ -105,6 +112,7 @@ export function createModelDeleteDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
   injectedDataRepo?: FileSystemUnifiedDataRepository,
+  markDirty?: MarkDirtyHook,
 ): ModelDeleteDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -118,13 +126,22 @@ export function createModelDeleteDeps(
       repoDir,
       dsPath(SWAMP_SUBDIRS.data),
       createCatalogStore(repoDir, datastoreResolver),
-      undefined,
+      markDirty,
       undefined,
       namespaceFromResolver(datastoreResolver),
     );
   const outputRepo = new YamlOutputRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.outputs),
+  );
+  const workflowRunRepo = new YamlWorkflowRunRepository(
+    repoDir,
+    undefined,
+    dsPath(SWAMP_SUBDIRS.workflowRuns),
+  );
+  const lifecycleService = new DefaultDataLifecycleService(
+    unifiedDataRepo,
+    workflowRunRepo,
   );
   return {
     lookupDefinition: (idOrName) =>
@@ -138,6 +155,7 @@ export function createModelDeleteDeps(
     deleteData: (type, defId, name) =>
       unifiedDataRepo.delete(type, defId, name),
     deleteDefinition: (type, id) => definitionRepo.delete(type, id),
+    isExpired: (data) => lifecycleService.isExpired(data),
   };
 }
 
@@ -172,6 +190,34 @@ function findWorkflowsReferencingModel(
   return names;
 }
 
+/**
+ * Partitions data artifacts into live and expired, using the isExpired
+ * predicate when available. Expired artifacts don't block model deletion.
+ */
+async function partitionExpired(
+  dataArtifacts: Data[],
+  isExpired?: (data: Data) => Promise<boolean>,
+): Promise<{ live: Data[]; expired: Data[] }> {
+  if (!isExpired) return { live: dataArtifacts, expired: [] };
+  const logger = getLogger(["swamp", "model", "delete"]);
+  const live: Data[] = [];
+  const expired: Data[] = [];
+  for (const data of dataArtifacts) {
+    try {
+      if (await isExpired(data)) {
+        expired.push(data);
+      } else {
+        live.push(data);
+      }
+    } catch {
+      logger
+        .warn`Failed to check expiration for ${data.name}, treating as live`;
+      live.push(data);
+    }
+  }
+  return { live, expired };
+}
+
 /** Gathers preview info for the model delete operation. */
 export async function modelDeletePreview(
   ctx: LibSwampContext,
@@ -196,6 +242,7 @@ export async function modelDeletePreview(
     modelType,
     definition.id,
   );
+  const { live } = await partitionExpired(dataArtifacts, deps.isExpired);
   const outputs = await deps.findOutputs(modelType, definition.id);
 
   return {
@@ -204,7 +251,7 @@ export async function modelDeletePreview(
     type: modelType.normalized,
     definitionPath: deps.getDefinitionPath(modelType, definition.id),
     referencingWorkflows,
-    dataArtifactCount: dataArtifacts.length,
+    dataArtifactCount: live.length,
     outputCount: outputs.length,
   };
 }
@@ -248,16 +295,20 @@ export async function* modelDelete(
         return;
       }
 
-      // Check data artifacts
+      // Check data artifacts — expired data is auto-collected, not a blocker
       const dataArtifacts = await deps.findDataArtifacts(
         modelType,
         definition.id,
       );
-      if (dataArtifacts.length > 0 && !input.force) {
+      const { live, expired } = await partitionExpired(
+        dataArtifacts,
+        deps.isExpired,
+      );
+      if (live.length > 0 && !input.force) {
         yield {
           kind: "error",
           error: validationFailed(
-            `Model '${definition.name}' has ${dataArtifacts.length} associated data artifact(s). ` +
+            `Model '${definition.name}' has ${live.length} associated data artifact(s). ` +
               `Delete the data first, or use --force to delete all.`,
           ),
         };
@@ -275,9 +326,17 @@ export async function* modelDelete(
         outputsDeleted++;
       }
 
-      // Delete data artifacts
+      // Auto-collect expired data artifacts
+      let expiredDataAutoCollected = 0;
+      for (const data of expired) {
+        ctx.logger.debug`Auto-collecting expired data: ${data.name}`;
+        await deps.deleteData(modelType, definition.id, data.name);
+        expiredDataAutoCollected++;
+      }
+
+      // Delete remaining data artifacts (force mode)
       let dataDeleted = false;
-      for (const data of dataArtifacts) {
+      for (const data of live) {
         ctx.logger.debug`Deleting data artifact: ${data.name}`;
         await deps.deleteData(modelType, definition.id, data.name);
         dataDeleted = true;
@@ -298,6 +357,7 @@ export async function* modelDelete(
           outputsDeleted,
           evaluatedInputDeleted: false,
           dataDeleted,
+          expiredDataAutoCollected,
         },
       };
     })(),
