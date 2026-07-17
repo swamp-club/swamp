@@ -88,6 +88,18 @@ export type ExtensionKind =
   | "report";
 
 /**
+ * Reported when {@link ExtensionCatalogStore.resolveOriginConflicts}
+ * clears a pulled entry's `type_normalized` because a local source
+ * already claims that `(kind, type)` pair.
+ */
+export interface OriginConflict {
+  readonly type: string;
+  readonly kind: ExtensionKind;
+  readonly pulledSourcePath: string;
+  readonly localSourcePath: string;
+}
+
+/**
  * A single row in the bundle_types table.
  */
 export interface ExtensionTypeRow {
@@ -1271,7 +1283,7 @@ export class ExtensionCatalogStore {
    *
    * Idempotent: running twice produces the same result.
    */
-  resolveOriginConflicts(repoRoot: string): void {
+  resolveOriginConflicts(repoRoot: string): OriginConflict[] {
     const canonical = canonicalizePath(repoRoot);
     const pulledPrefix = canonical.endsWith("/")
       ? `${canonical}.swamp/pulled-extensions/`
@@ -1286,8 +1298,9 @@ export class ExtensionCatalogStore {
         break;
       }
     }
-    if (!hasPulled) return;
+    if (!hasPulled) return [];
 
+    const conflicts: OriginConflict[] = [];
     const occupants = new Map<
       string,
       { sourcePath: string; isPulled: boolean }
@@ -1306,15 +1319,29 @@ export class ExtensionCatalogStore {
 
       if (prior) {
         if (prior.isPulled && !isPulled) {
+          conflicts.push({
+            type: row.type_normalized,
+            kind: row.kind,
+            pulledSourcePath: prior.sourcePath,
+            localSourcePath: row.source_path,
+          });
           this.clearTypeNormalized(prior.sourcePath);
           occupants.set(key, { sourcePath: row.source_path, isPulled });
         } else if (!prior.isPulled && isPulled) {
+          conflicts.push({
+            type: row.type_normalized,
+            kind: row.kind,
+            pulledSourcePath: row.source_path,
+            localSourcePath: prior.sourcePath,
+          });
           this.clearTypeNormalized(row.source_path);
         }
       } else {
         occupants.set(key, { sourcePath: row.source_path, isPulled });
       }
     }
+
+    return conflicts;
   }
 
   private clearTypeNormalized(sourcePath: string): void {

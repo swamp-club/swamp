@@ -2181,11 +2181,12 @@ Deno.test("resolveOriginConflicts: no-op when no pulled rows exist", () => {
     }),
   );
 
-  store.resolveOriginConflicts(repoRoot);
+  const conflicts = store.resolveOriginConflicts(repoRoot);
 
   const rows = store.findAll();
   assertEquals(rows.length, 1);
   assertEquals(rows[0].type_normalized, "@ns/a");
+  assertEquals(conflicts.length, 0);
   store.close();
 });
 
@@ -2212,12 +2213,17 @@ Deno.test("resolveOriginConflicts: clears pulled type when local claims same typ
     kind: "model",
   }));
 
-  store.resolveOriginConflicts(repoRoot);
+  const conflicts = store.resolveOriginConflicts(repoRoot);
 
   const local = store.findBySourcePath(localPath);
   const pulled = store.findBySourcePath(pulledPath);
   assertEquals(local?.type_normalized, "@ns/foo");
   assertEquals(pulled?.type_normalized, "");
+  assertEquals(conflicts.length, 1);
+  assertEquals(conflicts[0].type, "@ns/foo");
+  assertEquals(conflicts[0].kind, "model");
+  assertEquals(conflicts[0].pulledSourcePath, pulledPath);
+  assertEquals(conflicts[0].localSourcePath, localPath);
   store.close();
 });
 
@@ -2339,13 +2345,15 @@ Deno.test("resolveOriginConflicts: idempotent", () => {
     kind: "model",
   }));
 
-  store.resolveOriginConflicts(repoRoot);
-  store.resolveOriginConflicts(repoRoot);
+  const first = store.resolveOriginConflicts(repoRoot);
+  const second = store.resolveOriginConflicts(repoRoot);
 
   const local = store.findBySourcePath(localPath);
   const pulled = store.findBySourcePath(pulledPath);
   assertEquals(local?.type_normalized, "@ns/foo");
   assertEquals(pulled?.type_normalized, "");
+  assertEquals(first.length, 1);
+  assertEquals(second.length, 0);
   store.close();
 });
 

@@ -906,6 +906,7 @@ export {
   isVersionConstraint,
   parseExtensionRef,
   resolveServerUrl,
+  type ShadowedTypeInfo,
   validateExtensionName,
 } from "./extensions/pull.ts";
 export {

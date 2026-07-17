@@ -81,6 +81,12 @@ export interface ExtensionRegistryInfo {
   supersededBy?: string | null;
 }
 
+export interface ShadowedTypeInfo {
+  readonly type: string;
+  readonly kind: string;
+  readonly localSourcePath: string;
+}
+
 /** Result of installing a single extension (no rendering). */
 export interface InstallResult {
   name: string;
@@ -109,6 +115,14 @@ export interface InstallResult {
    * included.
    */
   pruned: string[];
+  /**
+   * Types whose pulled catalog entry was cleared by
+   * {@link resolveOriginConflicts} because a local source claims the
+   * same `(kind, type_normalized)` pair. Populated by
+   * {@link InstallExtensionService} after the catalog save. Absent or
+   * empty when no local source shadows the pulled extension's types.
+   */
+  shadowedTypes?: ShadowedTypeInfo[];
 }
 
 /**
@@ -1227,6 +1241,7 @@ export async function installExtension(
       dependencies: manifest.dependencies,
       dependencyResults,
       pruned,
+      shadowedTypes: [],
     };
   } finally {
     try {

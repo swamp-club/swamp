@@ -58,6 +58,22 @@ class LogExtensionUpdateRenderer implements Renderer<ExtensionUpdateEvent> {
           logger.info("  {path}", { path: p });
         }
       },
+      "shadowed-by-local": (e) => {
+        logger.warn(
+          "{name} was updated but {count} type(s) are shadowed by local sources and will not take effect:",
+          { name: e.name, count: e.types.length },
+        );
+        for (const t of e.types) {
+          logger.warn("  {kind} type {type} — local source: {path}", {
+            kind: t.kind,
+            type: t.type,
+            path: t.localSourcePath,
+          });
+        }
+        logger.warn(
+          "Update your local source or remove it to use the pulled version.",
+        );
+      },
       completed: (e) => {
         if (e.mode === "check") {
           renderCheckLog(e.data, logger);
@@ -104,6 +120,19 @@ class JsonExtensionUpdateRenderer implements Renderer<ExtensionUpdateEvent> {
               from: e.from,
               to: e.to,
               paths: e.paths,
+            },
+            null,
+            2,
+          ),
+        );
+      },
+      "shadowed-by-local": (e) => {
+        console.log(
+          JSON.stringify(
+            {
+              status: "shadowed_by_local",
+              name: e.name,
+              types: e.types,
             },
             null,
             2,

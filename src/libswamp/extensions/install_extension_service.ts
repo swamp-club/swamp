@@ -179,6 +179,15 @@ export class InstallExtensionService {
         }
       }
       this.repository.saveAll([...tombstones, ...newExtensions]);
+
+      const conflicts = this.repository.lastOriginConflicts;
+      if (conflicts.length > 0) {
+        result.shadowedTypes = conflicts.map((c) => ({
+          type: c.type,
+          kind: c.kind,
+          localSourcePath: c.localSourcePath,
+        }));
+      }
     } catch (error) {
       if (error instanceof DuplicateTypeError) {
         await this.rollbackOnCollision(result, priorEntry, ctx);

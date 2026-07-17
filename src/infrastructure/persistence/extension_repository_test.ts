@@ -1092,3 +1092,120 @@ Deno.test("saveAll: upsertWithIdentity canonicalizes source_path preventing ghos
     assertEquals(rows[0].extension_name, "@local/test");
   });
 });
+
+// ===== lastOriginConflicts: pulled shadowed by local =====
+Deno.test(
+  "ExtensionRepository: saveAll populates lastOriginConflicts when pulled type is shadowed by local source",
+  () => {
+    withRepository((repo, catalog, repoRoot) => {
+      const localPath = canonicalizePath(
+        join(repoRoot, "extensions/models/my_model.ts"),
+      );
+      catalog.upsert({
+        source_path: localPath,
+        type_normalized: "@ns/my-model",
+        kind: "model",
+        bundle_path: join(repoRoot, ".swamp/bundles/models/local/my_model.js"),
+        version: "2026.01.01.1",
+        description: "",
+        extends_type: "",
+        source_mtime: "",
+        source_fingerprint: "fp-local",
+      });
+
+      const pulled = pulledExtension({
+        repoRoot,
+        name: "@ns/my-ext",
+        version: "2026.03.01.1",
+        sources: [{ relPath: "models/my_model.ts", type: "@ns/my-model" }],
+      });
+
+      assertEquals(repo.lastOriginConflicts.length, 0);
+
+      repo.saveAll([pulled]);
+
+      const conflicts = repo.lastOriginConflicts;
+      assertEquals(conflicts.length, 1);
+      assertEquals(conflicts[0].type, "@ns/my-model");
+      assertEquals(conflicts[0].kind, "model");
+      assertEquals(conflicts[0].localSourcePath, localPath);
+      assertStringIncludes(conflicts[0].pulledSourcePath, "pulled-extensions");
+
+      const localRow = catalog.findBySourcePath(localPath);
+      assertEquals(localRow?.type_normalized, "@ns/my-model");
+
+      const pulledRow = catalog.findBySourcePath(
+        canonicalizePath(
+          join(
+            repoRoot,
+            ".swamp/pulled-extensions/@ns/my-ext/models/my_model.ts",
+          ),
+        ),
+      );
+      assertEquals(pulledRow?.type_normalized, "");
+    });
+  },
+);
+
+Deno.test(
+  "ExtensionRepository: saveAll returns empty lastOriginConflicts when no local source shadows",
+  () => {
+    withRepository((repo, _cat, repoRoot) => {
+      const pulled = pulledExtension({
+        repoRoot,
+        name: "@ns/only-pulled",
+        version: "1.0.0",
+        sources: [{ relPath: "models/foo.ts", type: "@ns/only-pulled" }],
+      });
+
+      repo.saveAll([pulled]);
+
+      assertEquals(repo.lastOriginConflicts.length, 0);
+    });
+  },
+);
+
+Deno.test(
+  "ExtensionRepository: saveAll with tombstone + new version populates lastOriginConflicts for shadowed new version",
+  () => {
+    withRepository((repo, catalog, repoRoot) => {
+      const localPath = canonicalizePath(
+        join(repoRoot, "extensions/models/model.ts"),
+      );
+      catalog.upsert({
+        source_path: localPath,
+        type_normalized: "@ns/ext-type",
+        kind: "model",
+        bundle_path: join(repoRoot, ".swamp/bundles/models/local/model.js"),
+        version: "2026.01.01.1",
+        description: "",
+        extends_type: "",
+        source_mtime: "",
+        source_fingerprint: "fp-local",
+      });
+
+      const v1 = pulledExtension({
+        repoRoot,
+        name: "@ns/ext",
+        version: "2026.01.01.1",
+        sources: [{ relPath: "models/model.ts", type: "@ns/ext-type" }],
+      });
+      repo.saveAll([v1]);
+
+      const v2 = pulledExtension({
+        repoRoot,
+        name: "@ns/ext",
+        version: "2026.03.01.1",
+        sources: [{ relPath: "models/model.ts", type: "@ns/ext-type" }],
+      });
+      repo.saveAll([tombstoneAll(v1), v2]);
+
+      const conflicts = repo.lastOriginConflicts;
+      assertEquals(conflicts.length, 1);
+      assertEquals(conflicts[0].type, "@ns/ext-type");
+      assertEquals(conflicts[0].localSourcePath, localPath);
+    }, {
+      lockedVersions: fixedLockedVersions({ "@ns/ext": "2026.03.01.1" }),
+    });
+  },
+);

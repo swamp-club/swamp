@@ -29,7 +29,7 @@ import { LockfileRepository } from "../../infrastructure/persistence/lockfile_re
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
-import type { InstallResult } from "./pull.ts";
+import type { InstallResult, ShadowedTypeInfo } from "./pull.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
@@ -49,6 +49,11 @@ export type ExtensionUpdateEvent =
     from: string;
     to: string;
     paths: string[];
+  }
+  | {
+    kind: "shadowed-by-local";
+    name: string;
+    types: ShadowedTypeInfo[];
   }
   | { kind: "completed"; data: ExtensionUpdateResult; mode: "check" | "update" }
   | { kind: "error"; error: SwampError };
@@ -255,6 +260,13 @@ export async function* extensionUpdate(
                 from: s.installedVersion,
                 to: s.latestVersion,
                 paths: result.pruned,
+              };
+            }
+            if (result?.shadowedTypes && result.shadowedTypes.length > 0) {
+              yield {
+                kind: "shadowed-by-local",
+                name: s.name,
+                types: result.shadowedTypes,
               };
             }
             finalStatuses.push({

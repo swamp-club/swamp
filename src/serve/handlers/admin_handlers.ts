@@ -700,6 +700,7 @@ export async function handleExtensionOutdated(
         checking: () => {},
         updating: () => {},
         "orphans-pruned": () => {},
+        "shadowed-by-local": () => {},
         completed: (e) => {
           result = e.data as unknown as Record<string, unknown>;
         },
