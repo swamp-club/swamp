@@ -320,6 +320,10 @@ symlink_to_system_path() {
   local prompt="[sudo required to link $bin under $system_path]"
   prompt="$prompt Password for %u: "
 
+  if [ ! -d "$system_path" ]; then
+    die "Directory '$system_path' does not exist. Create it with 'sudo mkdir -p $system_path' or re-run the installer with '-d <path>' to choose a different destination."
+  fi
+
   info "Symlinking '$dest' to $system_path/$bin"
   sudo -p "$prompt" ln -snf "$dest" "$system_path/$bin"
 }
