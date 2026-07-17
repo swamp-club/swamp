@@ -178,7 +178,7 @@ Deno.test("Data Versioning: retrieve specific versions", async () => {
   });
 });
 
-Deno.test("Data Versioning: latest symlink points to newest version", async () => {
+Deno.test("Data Versioning: latest marker points to newest version", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const repo = new FileSystemUnifiedDataRepository(

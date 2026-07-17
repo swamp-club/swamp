@@ -25,7 +25,7 @@ silently.
 Run in fixed order so output is stable:
 
 1. **`binary-on-path`** — the AI tool's own binary (`claude`, `cursor`,
-   `kiro-cli`, `opencode`) is resolvable on PATH.
+   `kiro-cli`, `opencode`, `copilot`) is resolvable on PATH.
 2. **`swamp-binary-on-path`** — swamp is on PATH (all four tools invoke
    `swamp audit record --from-hook` from their hook configs). For Kiro
    only, also verifies the absolute swamp path baked into
@@ -49,7 +49,7 @@ Run in fixed order so output is stable:
 ```
 src/domain/audit/doctor/
 ├── check.ts                       — PreflightCheck interface, CheckResult, SpawnFn, NoToolConfiguredError
-├── doctor_service.ts              — auditDoctor() streaming service; DEFAULT_CHECK_ORDER
+├── doctor_service.ts              — auditDoctor() streaming service; defaultCheckOrder()
 ├── synthetic_payloads.ts          — per-tool fixture payloads; imports DIAGNOSTIC_COMMAND_PREFIX
 └── checks/
     ├── resolve_binary.ts          — ResolveBinary port + POSIX `which` implementation
@@ -57,7 +57,7 @@ src/domain/audit/doctor/
     ├── swamp_binary_on_path.ts    — includes Kiro baked-path sub-check
     ├── agent_config_loadable.ts   — tool-dispatched parser
     ├── default_agent_set.ts       — Kiro-only
-    └── recording_smoke_test.ts    — uses ctx.spawnSwamp + reads today's JSONL
+    └── recording_smoke.ts         — uses ctx.spawnSwamp + reads today's JSONL
 ```
 
 The service emits four event kinds: `check-started`, `check-completed`,

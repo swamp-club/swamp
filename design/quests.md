@@ -56,6 +56,9 @@ Model 'risk-assessment' created successfully.
   Row 1 BINGO! +100 bonus points
 ```
 
+> **Planned.** These event types are defined in the design but not yet present
+> in the codebase.
+
 ## Quest Event Types
 
 These map to existing CLI commands. Each fires after successful completion:
@@ -149,6 +152,9 @@ Season 1: Swamp Genesis (ends Aug 31, 2026)
 
 JSON mode outputs the structured progress object.
 
+> **Not yet implemented.** The current CLI only provides `swamp quest` (linear
+> pass view).
+
 ### `swamp quest board`
 
 Shows the full bingo card with per-objective progress.
@@ -183,6 +189,8 @@ For incomplete count-based objectives, show current/target below the title.
 ### `swamp quest history`
 
 Shows past seasons and their final status.
+
+> **Not yet implemented.** Quest event emission is planned but not wired up.
 
 ## Quest Event Emission Pattern
 
@@ -222,6 +230,7 @@ The backend needs:
 4. **Event processing** — receive quest events, match against current season's
    objectives, update progress, detect line/board completion
 5. **API endpoints**:
+   > **Not yet implemented.**
    - `POST /api/v1/quest/events` — receive + process quest event
    - `GET /api/v1/quest/progress` — current season summary
    - `GET /api/v1/quest/board?season=<slug>` — full board with progress

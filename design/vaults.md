@@ -604,6 +604,9 @@ vaults:
 
 ## Vault Model
 
+> **Planned -- not yet implemented.** The `swamp/lets-get-sensitive` vault model
+> described below is a design target. It is not yet present in the codebase.
+
 A dedicated `swamp/lets-get-sensitive` model provides direct vault operations in
 workflows:
 

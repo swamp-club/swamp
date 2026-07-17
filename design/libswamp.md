@@ -2,10 +2,11 @@
 
 ## Problem
 
-Swamp's domain logic is currently invoked directly by CLI command handlers. While
-the existing separation between domain, infrastructure, and presentation layers
-is clean, the CLI is the only entry point — there is no reusable library layer
-that other interfaces (web UI, networked API, embedded usage) can call into.
+Swamp's domain logic is currently invoked directly by CLI command handlers.
+While the existing separation between domain, infrastructure, and presentation
+layers is clean, the CLI is the only entry point — there is no reusable library
+layer that other interfaces (web UI, networked API, embedded usage) can call
+into.
 
 Adding a new presentation layer today requires either duplicating the
 orchestration logic in each command handler, or importing and calling CLI
@@ -63,10 +64,11 @@ caller pulls events at its own pace and renders them however it chooses.
 
 ### Why uniform AsyncIterable (not Promise for simple operations)
 
-Every operation uses `AsyncIterable`, even operations that today produce a single
-result. This eliminates a decision point for adapter authors ("is this a stream
-or a promise?") and allows any operation to grow intermediate events (validation
-warnings, progress, deprecation notices) without breaking the API contract.
+Every operation uses `AsyncIterable`, even operations that today produce a
+single result. This eliminates a decision point for adapter authors ("is this a
+stream or a promise?") and allows any operation to grow intermediate events
+(validation warnings, progress, deprecation notices) without breaking the API
+contract.
 
 ## Core Types
 
@@ -94,7 +96,9 @@ interface LibSwampContext {
   withSignal(signal: AbortSignal): LibSwampContext;
 }
 
-function createLibSwampContext(options?: { signal?: AbortSignal; logger?: Logger }): LibSwampContext {
+function createLibSwampContext(
+  options?: { signal?: AbortSignal; logger?: Logger },
+): LibSwampContext {
   const signal = options?.signal ?? new AbortController().signal;
   const logger = options?.logger ?? getSwampLogger(["libswamp"]);
   return {
@@ -127,8 +131,8 @@ function createLibSwampContext(options?: { signal?: AbortSignal; logger?: Logger
 - **Always present.** Because `ctx` is required, generators never need
   `if (options?.signal)` guards. The signal is always there — it's simply
   never-aborted if the caller doesn't need cancellation.
-- **Familiar pattern.** Mirrors Go's `context.Context`, which is
-  well-understood for exactly this problem space.
+- **Familiar pattern.** Mirrors Go's `context.Context`, which is well-understood
+  for exactly this problem space.
 
 #### Cancellation semantics
 
@@ -167,23 +171,115 @@ interface WhoamiIdentity {
 ```
 
 ```typescript
-// libswamp/workflows/run.ts
+// libswamp/workflows/run.ts — 24 variants
 type WorkflowRunEvent =
   | { kind: "validating_inputs" }
   | { kind: "evaluating_workflow" }
-  | { kind: "started"; runId: string; workflowName: string }
+  | {
+    kind: "started";
+    runId: string;
+    workflowName: string;
+    jobs: WorkflowRunJobInfo[];
+  }
   | { kind: "job_started"; jobId: string }
   | { kind: "job_completed"; jobId: string; status: string }
   | { kind: "job_skipped"; jobId: string }
   | { kind: "step_started"; jobId: string; stepId: string }
-  | { kind: "step_completed"; jobId: string; stepId: string }
+  | { kind: "step_completed"; jobId: string; stepId: string; executor?: string }
   | { kind: "step_skipped"; jobId: string; stepId: string }
-  | { kind: "step_failed"; jobId: string; stepId: string; error: string; allowedFailure?: boolean }
-  | { kind: "model_resolved"; jobId: string; stepId: string; modelName: string; modelType: string; methodName: string }
-  | { kind: "method_executing"; jobId: string; stepId: string; modelName: string; methodName: string }
-  | { kind: "method_output"; jobId: string; stepId: string; modelName: string; methodName: string; stream: "stdout" | "stderr"; line: string }
-  | { kind: "method_event"; jobId: string; stepId: string; modelName: string; methodName: string; event: MethodExecutionEvent }
+  | {
+    kind: "approval_requested";
+    runId: string;
+    jobId: string;
+    stepId: string;
+    prompt: string;
+    timeout?: number;
+  }
+  | {
+    kind: "step_failed";
+    jobId: string;
+    stepId: string;
+    error: string;
+    allowedFailure?: boolean;
+    modelName?: string;
+    methodName?: string;
+  }
+  | {
+    kind: "model_resolved";
+    jobId: string;
+    stepId: string;
+    modelName: string;
+    modelType: string;
+    modelId: string;
+    methodName: string;
+  }
+  | {
+    kind: "env_var_warning";
+    jobId: string;
+    stepId: string;
+    modelName: string;
+    envVars: EnvVarUsageDetail[];
+    message: string;
+  }
+  | {
+    kind: "method_executing";
+    jobId: string;
+    stepId: string;
+    modelName: string;
+    methodName: string;
+  }
+  | {
+    kind: "method_output";
+    jobId: string;
+    stepId: string;
+    modelName: string;
+    methodName: string;
+    stream: "stdout" | "stderr";
+    line: string;
+  }
+  | { kind: "step_queued"; jobId: string; stepId: string; requirement: string }
+  | {
+    kind: "method_event";
+    jobId: string;
+    stepId: string;
+    modelName: string;
+    methodName: string;
+    event: MethodExecutionEvent;
+  }
+  | {
+    kind: "report_started";
+    reportName: string;
+    scope: string;
+    jobId?: string;
+    stepId?: string;
+  }
+  | {
+    kind: "report_completed";
+    reportName: string;
+    scope: string;
+    markdown: string;
+    json: Record<string, unknown>;
+    jobId?: string;
+    stepId?: string;
+  }
+  | {
+    kind: "report_failed";
+    reportName: string;
+    scope: string;
+    error: string;
+    jobId?: string;
+    stepId?: string;
+  }
   | { kind: "completed"; run: WorkflowRunView }
+  | { kind: "cancelled"; run: WorkflowRunView; reason?: string }
+  | {
+    kind: "suspended";
+    run: WorkflowRunView;
+    jobId: string;
+    stepId: string;
+    prompt: string;
+    timeout?: number;
+  }
   | { kind: "error"; error: SwampError };
 ```
 
@@ -215,9 +311,9 @@ type HasTerminals<E extends StreamEvent> =
 
 ## Exhaustiveness-Checked Event Handlers
 
-The key mechanism for compile-time safety. Instead of `switch` statements
-(which silently ignore unhandled cases), callers pass a handler object where
-every event kind is a required key.
+The key mechanism for compile-time safety. Instead of `switch` statements (which
+silently ignore unhandled cases), callers pass a handler object where every
+event kind is a required key.
 
 ### EventHandlers type
 
@@ -247,12 +343,12 @@ The primary consumption function:
 
 ```typescript
 async function consumeStream<E extends StreamEvent>(
-  stream: AsyncIterable<E>,
+  stream: AsyncIterable<HasTerminals<E>>,
   handlers: EventHandlers<E>,
 ): Promise<void> {
   for await (const event of stream) {
     const handler = handlers[event.kind as E["kind"]];
-    await handler(event as Parameters<typeof handler>[0]);
+    await handler(event as any);
   }
 }
 ```
@@ -265,10 +361,12 @@ ignoring progress), it must be explicit:
 ```typescript
 // Option 1: no-op handler — visible in code review
 await consumeStream(stream, {
-  loading_credentials: () => {},        // intentional no-op
-  contacting_server: () => {},          // intentional no-op
+  loading_credentials: () => {}, // intentional no-op
+  contacting_server: () => {}, // intentional no-op
   completed: (e) => console.log(JSON.stringify(e.identity, null, 2)),
-  error: (e) => { throw e.error; },
+  error: (e) => {
+    throw e.error;
+  },
 });
 
 // Option 2: withDefaults helper for bulk opt-out
@@ -278,10 +376,15 @@ function withDefaults<E extends StreamEvent>(
 ): EventHandlers<E>;
 
 // Usage: only handle what you need, rest are explicitly defaulted
-await consumeStream(stream, withDefaults<AuthWhoamiEvent>({
-  completed: (e) => console.log(JSON.stringify(e.identity, null, 2)),
-  error: (e) => { throw e.error; },
-}));
+await consumeStream(
+  stream,
+  withDefaults<AuthWhoamiEvent>({
+    completed: (e) => console.log(JSON.stringify(e.identity, null, 2)),
+    error: (e) => {
+      throw e.error;
+    },
+  }),
+);
 ```
 
 `withDefaults` fills missing handlers with no-ops (or a provided fallback). The
@@ -346,34 +449,26 @@ workflow generator ── merge() ◄─────┤                 │─�
 
 ### The merge utility
 
-`merge()` combines multiple `AsyncIterable` streams into one, yielding events
-in arrival order:
+`merge()` combines multiple `AsyncIterable` streams into one, yielding events in
+arrival order:
 
 ```typescript
-// libswamp/stream/merge.ts
-async function* merge<E extends StreamEvent>(
-  streams: AsyncIterable<E>[],
-): AsyncIterable<E> {
+// infrastructure/stream/merge.ts (re-exported from libswamp/stream/merge.ts)
+async function* merge<T>(
+  streams: AsyncIterable<T>[],
+  signal?: AbortSignal,
+): AsyncGenerator<T> {
   if (streams.length === 0) return;
   if (streams.length === 1) {
     yield* streams[0];
     return;
   }
 
-  const queue = new AsyncQueue<E>();
-  let active = streams.length;
+  const queue = new AsyncQueue<T>();
+  let remaining = streams.length;
 
-  for (const stream of streams) {
-    (async () => {
-      try {
-        for await (const event of stream) {
-          queue.push(event);
-        }
-      } finally {
-        if (--active === 0) queue.close();
-      }
-    })();
-  }
+  // ... each stream pushes to queue, last one closes it
+  // signal support allows early abort
 
   for await (const event of queue) {
     yield event;
@@ -381,37 +476,58 @@ async function* merge<E extends StreamEvent>(
 }
 ```
 
-`AsyncQueue` is an internal async-iterable queue that supports `push()`,
-`close()`, and `for await` consumption. It bridges the gap between multiple
-concurrent push-based producers and a single pull-based consumer.
+`AsyncQueue` is an internal async-iterable queue in
+`infrastructure/stream/async_queue.ts` that supports `push()`, `close()`,
+`abort()`, and `for await` consumption. It bridges the gap between multiple
+concurrent push-based producers and a single pull-based consumer. It uses
+`IteratorResult<T>` signaling internally to distinguish values from
+end-of-stream.
 
 ```typescript
-// libswamp/stream/async_queue.ts
+// infrastructure/stream/async_queue.ts
 class AsyncQueue<T> implements AsyncIterable<T> {
   private buffer: T[] = [];
-  private resolve: ((done: boolean) => void) | null = null;
   private closed = false;
+  private waiting: ((value: IteratorResult<T>) => void) | null = null;
 
   push(item: T): void {
-    this.buffer.push(item);
-    this.resolve?.(false);
-    this.resolve = null;
+    if (this.closed) throw new Error("Cannot push to a closed AsyncQueue");
+    if (this.waiting) {
+      const resolve = this.waiting;
+      this.waiting = null;
+      resolve({ value: item, done: false });
+    } else {
+      this.buffer.push(item);
+    }
   }
 
   close(): void {
+    if (this.closed) return;
     this.closed = true;
-    this.resolve?.(true);
-    this.resolve = null;
+    if (this.waiting) {
+      const resolve = this.waiting;
+      this.waiting = null;
+      resolve({ value: undefined as unknown as T, done: true });
+    }
+  }
+
+  abort(_reason?: unknown): void {
+    this.close();
   }
 
   async *[Symbol.asyncIterator](): AsyncIterator<T> {
     while (true) {
-      while (this.buffer.length > 0) {
+      if (this.buffer.length > 0) {
         yield this.buffer.shift()!;
+      } else if (this.closed) {
+        return;
+      } else {
+        const result = await new Promise<IteratorResult<T>>((resolve) => {
+          this.waiting = resolve;
+        });
+        if (result.done) return;
+        yield result.value;
       }
-      if (this.closed) return;
-      const done = await new Promise<boolean>((r) => { this.resolve = r; });
-      if (done && this.buffer.length === 0) return;
     }
   }
 }
@@ -445,8 +561,8 @@ A workflow with two parallel jobs (`build` and `test`) produces events like:
 ```
 
 Events from `build` and `test` interleave in arrival order. The exact ordering
-between jobs is non-deterministic — two runs may produce different interleavings.
-Within a single job, events are always in causal order.
+between jobs is non-deterministic — two runs may produce different
+interleavings. Within a single job, events are always in causal order.
 
 ### Consuming interleaved events
 
@@ -465,9 +581,12 @@ await consumeStream(workflowRun(ctx, deps, input), {
   step_started: (e) => console.log(`  [${e.jobId}] ${e.stepId} started`),
   step_completed: (e) => console.log(`  [${e.jobId}] ${e.stepId} completed`),
   step_skipped: (e) => console.log(`  [${e.jobId}] ${e.stepId} skipped`),
-  step_failed: (e) => console.log(`  [${e.jobId}] ${e.stepId} FAILED: ${e.error}`),
+  step_failed: (e) =>
+    console.log(`  [${e.jobId}] ${e.stepId} FAILED: ${e.error}`),
   completed: (e) => console.log(`Done: ${e.run.status}`),
-  error: (e) => { throw new UserError(e.error.message); },
+  error: (e) => {
+    throw new UserError(e.error.message);
+  },
 });
 ```
 
@@ -520,11 +639,18 @@ infrastructure:
 
 ```typescript
 // Auth operation signatures
-async function* whoami(ctx: LibSwampContext, deps: AuthDeps): AsyncIterable<AuthWhoamiEvent>;
+async function* whoami(
+  ctx: LibSwampContext,
+  deps: AuthDeps,
+): AsyncIterable<AuthWhoamiEvent>;
 function createAuthDeps(options?: { serverUrlOverride?: string }): AuthDeps;
 
 // Workflow operation signatures
-async function* workflowRun(ctx: LibSwampContext, deps: WorkflowRunDeps, input: WorkflowRunInput): AsyncGenerator<WorkflowRunEvent>;
+async function* workflowRun(
+  ctx: LibSwampContext,
+  deps: WorkflowRunDeps,
+  input: WorkflowRunInput,
+): AsyncGenerator<WorkflowRunEvent>;
 ```
 
 ### Why standalone functions, not a facade object
@@ -575,14 +701,26 @@ type AuthWhoamiEvent =
 
 interface AuthDeps {
   loadCredentials: () => Promise<AuthCredentials | null>;
-  fetchWhoami: (serverUrl: string, apiKey: string, signal: AbortSignal) => Promise<WhoamiResponse>;
+  saveCredentials: (credentials: AuthCredentials) => Promise<void>;
+  fetchWhoami: (
+    serverUrl: string,
+    apiKey: string,
+    signal: AbortSignal,
+  ) => Promise<WhoamiResponse>;
   serverUrlOverride?: string;
 }
 
-function createAuthDeps(options?: { serverUrlOverride?: string }): AuthDeps {
-  const repo = new AuthRepository();
+interface CreateAuthDepsOptions {
+  serverUrlOverride?: string;
+  repo?: AuthRepositoryOptions;
+  identity?: ClientIdentity;
+}
+
+function createAuthDeps(options: CreateAuthDepsOptions = {}): AuthDeps {
+  const repo = new AuthRepository(options.repo);
   return {
     loadCredentials: () => repo.load(),
+    saveCredentials: (credentials) => repo.save(credentials),
     fetchWhoami: (serverUrl, apiKey, signal) => {
       const client = new SwampClubClient(serverUrl);
       return client.whoami(apiKey, signal);
@@ -591,7 +729,10 @@ function createAuthDeps(options?: { serverUrlOverride?: string }): AuthDeps {
   };
 }
 
-async function* whoami(ctx: LibSwampContext, deps: AuthDeps): AsyncIterable<AuthWhoamiEvent> {
+async function* whoami(
+  ctx: LibSwampContext,
+  deps: AuthDeps,
+): AsyncIterable<AuthWhoamiEvent> {
   yield { kind: "loading_credentials" };
 
   const credentials = await deps.loadCredentials();
@@ -604,7 +745,11 @@ async function* whoami(ctx: LibSwampContext, deps: AuthDeps): AsyncIterable<Auth
   yield { kind: "contacting_server", serverUrl };
 
   try {
-    const response = await deps.fetchWhoami(serverUrl, credentials.apiKey, ctx.signal);
+    const response = await deps.fetchWhoami(
+      serverUrl,
+      credentials.apiKey,
+      ctx.signal,
+    );
 
     if (!response.authenticated) {
       yield { kind: "error", error: invalidApiKey() };
@@ -638,8 +783,11 @@ async function* whoami(ctx: LibSwampContext, deps: AuthDeps): AsyncIterable<Auth
 ```typescript
 // src/cli/commands/auth_whoami.ts
 import {
-  type AuthWhoamiEvent, consumeStream, createAuthDeps,
-  createLibSwampContext, whoami,
+  type AuthWhoamiEvent,
+  consumeStream,
+  createAuthDeps,
+  createLibSwampContext,
+  whoami,
 } from "../../libswamp/mod.ts";
 
 export const authWhoamiCommand = new Command()
@@ -661,17 +809,25 @@ export const authWhoamiCommand = new Command()
       },
       completed: (e) => {
         if (cliCtx.outputMode === "json") {
-          console.log(JSON.stringify({
-            authenticated: true,
-            serverUrl: e.identity.serverUrl,
-            id: e.identity.id,
-            username: e.identity.username,
-            email: e.identity.email,
-            name: e.identity.name,
-            ...(e.identity.collectives ? { collectives: e.identity.collectives } : {}),
-          }, null, 2));
+          console.log(JSON.stringify(
+            {
+              authenticated: true,
+              serverUrl: e.identity.serverUrl,
+              id: e.identity.id,
+              username: e.identity.username,
+              email: e.identity.email,
+              name: e.identity.name,
+              ...(e.identity.collectives
+                ? { collectives: e.identity.collectives }
+                : {}),
+            },
+            null,
+            2,
+          ));
         } else {
-          console.log(`${e.identity.username} (${e.identity.email}) on ${e.identity.serverUrl}`);
+          console.log(
+            `${e.identity.username} (${e.identity.email}) on ${e.identity.serverUrl}`,
+          );
           if (e.identity.collectives && e.identity.collectives.length > 0) {
             console.log(`Collectives: ${e.identity.collectives.join(", ")}`);
           }
@@ -743,7 +899,10 @@ Deno.test("whoami yields cancelled error when signal is already aborted", async 
   };
 
   const events = await collect<AuthWhoamiEvent>(whoami(ctx, deps));
-  const last = events[events.length - 1] as Extract<AuthWhoamiEvent, { kind: "error" }>;
+  const last = events[events.length - 1] as Extract<
+    AuthWhoamiEvent,
+    { kind: "error" }
+  >;
   assertEquals(last.kind, "error");
   assertEquals(last.error.code, "cancelled");
 });
@@ -761,18 +920,18 @@ than thrown exceptions:
 
 ```typescript
 interface SwampError {
-  readonly code: string;        // machine-readable (e.g., "not_authenticated", "cancelled")
-  readonly message: string;     // human-readable
-  readonly cause?: Error;       // original exception for stack traces
-  readonly details?: unknown;   // optional structured data for debugging
+  readonly code: string; // machine-readable (e.g., "not_authenticated", "cancelled")
+  readonly message: string; // human-readable
+  readonly cause?: Error; // original exception for stack traces
+  readonly details?: unknown; // optional structured data for debugging
 }
 ```
 
 Errors that originate within the generator (domain logic) are **yielded** as
 `{ kind: "error", error: SwampError }` events. This keeps the stream protocol
-uniform — consumers never need `try/catch` around `for await` to handle
-expected errors. Cancellation is also an error event with
-`code: "cancelled"`, not a special case.
+uniform — consumers never need `try/catch` around `for await` to handle expected
+errors. Cancellation is also an error event with `code: "cancelled"`, not a
+special case.
 
 Unexpected errors (bugs, infrastructure failures) may still throw and should be
 caught at the adapter boundary.
@@ -781,40 +940,40 @@ caught at the adapter boundary.
 
 Codes used across libswamp generators and the CLI error boundary:
 
-| Code                       | Origin             | Meaning                                              |
-| -------------------------- | ------------------ | ---------------------------------------------------- |
-| `not_authenticated`        | `libswamp/errors`  | No valid auth credentials                            |
-| `invalid_api_key`          | `libswamp/errors`  | Stored API key is no longer valid                    |
-| `cancelled`                | `libswamp/errors`  | Operation cancelled (e.g. Ctrl+C, AbortSignal)       |
-| `not_found`                | `libswamp/errors`  | Generic entity not found                             |
-| `already_exists`           | `libswamp/errors`  | Entity already exists                                |
-| `validation_failed`        | `libswamp/errors`  | Input or configuration validation failed             |
-| `lock_timeout`             | `distributed_lock` | Lock held by another process; timed out waiting      |
-| `model_not_found`          | `models/run`       | No model matches the given name                      |
-| `unknown_model_type`       | `models/run`       | Type prefix does not match any installed type         |
-| `unknown_method`           | `models/run`       | Model does not define the requested method            |
-| `no_evaluated_definition`  | `models/run`       | No evaluated definition exists                       |
-| `method_execution_failed`  | `models/run`       | Execution driver returned an error                   |
-| `missing_deps`             | `models/run`       | Required extension dependencies not installed         |
-| `workflow_not_found`       | `workflows/run`    | No workflow matches the given name                   |
-| `workflow_execution_failed`| `workflows/run`    | Workflow step execution failed                       |
-| `input_validation_failed`  | `workflows/run`    | Workflow input validation failed                     |
+| Code                        | Origin             | Meaning                                         |
+| --------------------------- | ------------------ | ----------------------------------------------- |
+| `not_authenticated`         | `libswamp/errors`  | No valid auth credentials                       |
+| `invalid_api_key`           | `libswamp/errors`  | Stored API key is no longer valid               |
+| `cancelled`                 | `libswamp/errors`  | Operation cancelled (e.g. Ctrl+C, AbortSignal)  |
+| `not_found`                 | `libswamp/errors`  | Generic entity not found                        |
+| `already_exists`            | `libswamp/errors`  | Entity already exists                           |
+| `validation_failed`         | `libswamp/errors`  | Input or configuration validation failed        |
+| `lock_timeout`              | `distributed_lock` | Lock held by another process; timed out waiting |
+| `model_not_found`           | `models/run`       | No model matches the given name                 |
+| `unknown_model_type`        | `models/run`       | Type prefix does not match any installed type   |
+| `unknown_method`            | `models/run`       | Model does not define the requested method      |
+| `no_evaluated_definition`   | `models/run`       | No evaluated definition exists                  |
+| `method_execution_failed`   | `models/run`       | Execution driver returned an error              |
+| `missing_deps`              | `models/run`       | Required extension dependencies not installed   |
+| `workflow_not_found`        | `workflows/run`    | No workflow matches the given name              |
+| `workflow_execution_failed` | `workflows/run`    | Workflow step execution failed                  |
+| `input_validation_failed`   | `workflows/run`    | Workflow input validation failed                |
 
 This table is not exhaustive — generators may define additional codes for
 domain-specific errors. The `code` field is always a `snake_case` string.
 
 ### CLI exit codes
 
-| Exit code | Meaning                                                    |
-| --------- | ---------------------------------------------------------- |
-| `0`       | Success                                                    |
-| `1`       | General error (default for all unrecognized error codes)   |
-| `2`       | Unknown command                                            |
+| Exit code | Meaning                                                                                  |
+| --------- | ---------------------------------------------------------------------------------------- |
+| `0`       | Success                                                                                  |
+| `1`       | General error (default for all unrecognized error codes)                                 |
+| `2`       | Unknown command                                                                          |
 | `75`      | Lock contention / temporary failure (`lock_timeout`) — callers should retry with backoff |
 
-Callers that only need pass/fail should check `$? -ne 0`. Callers that
-want to handle specific failure modes (e.g. retry on lock contention)
-should match the numeric exit code.
+Callers that only need pass/fail should check `$? -ne 0`. Callers that want to
+handle specific failure modes (e.g. retry on lock contention) should match the
+numeric exit code.
 
 ### Error handling by adapters
 

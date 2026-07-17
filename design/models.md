@@ -348,7 +348,9 @@ override this value — it is enforced for audit integrity.
 Pre-flight checks are optional guards that run automatically before any
 _mutating_ method invocation. Mutating methods are those that change real
 resource state: `create`, `update`, `delete`, and `action`. Read-only methods
-(`sync`, `get`, etc.) do not trigger checks.
+(`get`, `read`, `describe`, `show`, `list`, `search`, `find`) do not trigger
+checks. Method names not in the recognized list (e.g. `sync`) default to
+mutating — set `kind: "read"` explicitly to suppress checks for those.
 
 Checks give models a way to enforce invariants — policy constraints, dependency
 readiness, quota availability — before execution begins, avoiding
@@ -553,10 +555,11 @@ The raw data will be written to the datastore at
 The metadata will be written to the datastore at
 `data/{normalized-type}/{model-id}/{data-name}/{version}/metadata.yaml`.
 
-There will be a symlink to the latest version at
-`data/{normalized-type}/{model-id}/{data-name}/latest/`.
+The latest version is tracked by a plain text marker file at
+`data/{normalized-type}/{model-id}/{data-name}/latest` containing the version
+number (e.g. `2`).
 
-See [./datastores.md] for how the datastore path is resolved.
+See [datastores.md](./datastores.md) for how the datastore path is resolved.
 
 ## Data Output API
 
@@ -636,5 +639,6 @@ The ModelRepository emits domain events when model data changes:
 - `ModelUpdated` - Emitted when a model definition or data is modified
 - `ModelDeleted` - Emitted when a model is deleted
 
-The RepoIndexService subscribes to these events (currently a noop
-implementation). See [./repo.md] for details on domain events.
+A `NoopRepoIndexService` is instantiated but not wired to the event bus —
+no handler currently receives these events. See [repo.md](./repo.md) for
+details on domain events.

@@ -41,14 +41,17 @@ built-in tool:
 
 ```typescript
 const GLOBAL_SKILL_DIRS: Record<string, string> = {
-  claude: "~/.claude/skills",
-  cursor: "~/.agents/skills",
-  opencode: "~/.agents/skills",
-  codex: "~/.agents/skills",
-  copilot: "~/.agents/skills",
-  kiro: "~/.kiro/skills",
+  claude: ".claude/skills",
+  cursor: ".agents/skills",
+  opencode: ".agents/skills",
+  codex: ".agents/skills",
+  copilot: ".agents/skills",
+  kiro: ".kiro/skills",
 };
 ```
+
+These are relative paths resolved against the user's home directory at
+runtime.
 
 After deduplication, swamp writes to at most three directories:
 
@@ -64,8 +67,7 @@ an optional `globalSkillsDir` field:
 ```typescript
 interface CustomToolDefinition {
   name: string;
-  skillsDir: string;            // project-local path (kept for instructions)
-  globalSkillsDir?: string;     // global path, defaults to "~/.agents/skills"
+  skillsDir: string;
   instructionsFile: string;
   instructionsMode: "shared" | "owned";
   frontmatter?: string;

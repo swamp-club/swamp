@@ -10,8 +10,8 @@ from command handlers, ensuring that:
    checking results) — no formatting, logging, or serialization.
 2. Each output mode has its own renderer class that translates libswamp event
    streams into user-facing output.
-3. Adding a new output mode is a matter of adding a new renderer implementation —
-   no changes to libswamp or command handlers.
+3. Adding a new output mode is a matter of adding a new renderer implementation
+   — no changes to libswamp or command handlers.
 4. libswamp logs at debug/trace only; renderers own all info/warn/error output.
 
 Previously, presentation logic lived inline in command handlers via
@@ -82,12 +82,16 @@ Each operation has a factory that selects the right renderer based on mode:
 // presentation/renderers/workflow_run.ts
 export function createWorkflowRunRenderer(
   mode: OutputMode,
-  opts: WorkflowRunRenderOpts,
+  opts: WorkflowRunRenderOpts, // includes isAuthenticated?: boolean
 ): WorkflowRunRenderer {
   switch (mode) {
     case "json":
       return new JsonWorkflowRunRenderer();
     case "log":
+      // When stdout is a TTY, use the Ink-based TUI renderer
+      if (!opts.forceLog && isStdoutTty()) {
+        return new InkWorkflowRunRenderer(opts);
+      }
       return new LogWorkflowRunRenderer(opts);
   }
 }
@@ -100,42 +104,39 @@ pick a renderer, consume the stream, check the result.
 
 ## JSON Mode Output Contract
 
-When a command runs with `--json`, swamp guarantees the following invariants
-to JSON consumers (`jq`, AI agents, CI scripts):
+When a command runs with `--json`, swamp guarantees the following invariants to
+JSON consumers (`jq`, AI agents, CI scripts):
 
-1. **stdout contains exactly one valid JSON document** for the command's
-   primary output, OR a stream of newline-delimited JSON (NDJSON) documents
-   for streaming commands. No trailing whitespace, no log lines, no
-   prompts.
-2. **stderr is reserved for log records** at the configured log level. It
-   may be empty, may contain LogTape pretty-formatted lines, but never
-   doubles as a structured-output channel.
+1. **stdout contains exactly one valid JSON document** for the command's primary
+   output, OR a stream of newline-delimited JSON (NDJSON) documents for
+   streaming commands. No trailing whitespace, no log lines, no prompts.
+2. **stderr is reserved for log records** at the configured log level. It may be
+   empty, may contain LogTape pretty-formatted lines, but never doubles as a
+   structured-output channel.
 3. **Errors emit a structured JSON object on stdout** with the shape
-   `{ error: string, stack?: string, code?: string }` and a non-zero
-   process exit. The `code` field is OPTIONAL — consumers MUST tolerate
-   its presence or absence. When present, it carries a machine-readable
-   identifier (e.g. `"cancelled"`, `"timeout"`, `"not_found"`,
-   `"validation_failed"`) suitable for programmatic dispatch.
-4. **Commands MUST NOT prompt interactively in JSON mode.** Any
-   confirmation gate must be bypassed when the output mode is `json`.
-   Use `Deno.stdin.isTerminal()` to detect non-interactive contexts in
-   addition to `outputMode`.
+   `{ error: string, stack?: string, code?: string }` and a non-zero process
+   exit. The `code` field is OPTIONAL — consumers MUST tolerate its presence or
+   absence. When present, it carries a machine-readable identifier (e.g.
+   `"cancelled"`, `"timeout"`, `"not_found"`, `"validation_failed"`) suitable
+   for programmatic dispatch.
+4. **Commands MUST NOT prompt interactively in JSON mode.** Any confirmation
+   gate must be bypassed when the output mode is `json`. Use
+   `Deno.stdin.isTerminal()` to detect non-interactive contexts in addition to
+   `outputMode`.
 
-Renderer implementations for new commands MUST preserve these
-guarantees. The regression test suite at `integration/json_isolation_test.ts`
-exercises the contract across representative commands and is the
-authoritative gate.
+Renderer implementations for new commands MUST preserve these guarantees. The
+regression test suite at `integration/json_isolation_test.ts` exercises the
+contract across representative commands and is the authoritative gate.
 
 This contract is enforced at the logging layer by
 `initializeLogging({ jsonMode: true })` in
 `src/infrastructure/logging/logger.ts`, which configures the
 `["model","method","run"]`, `["workflow","run"]`, and `["logtape","meta"]`
-category loggers with `parentSinks: "override"` so they cannot inherit
-the root logger's sinks. The single emitter for fatal output in JSON
-mode is `renderError` in
-`src/presentation/output/error_output.ts` — it writes to stdout and
-skips `logger.fatal`, so log-mode sinks cannot produce a duplicate
-entry.
+category loggers with `parentSinks: "override"` so they cannot inherit the root
+logger's sinks. The single emitter for fatal output in JSON mode is
+`renderError` in `src/presentation/output/error_output.ts` — it writes to stderr
+(`console.error`) and skips `logger.fatal`, so log-mode sinks cannot produce a
+duplicate entry.
 
 ## Logging Boundaries
 
@@ -162,15 +163,15 @@ the renderer decides whether and how to present it:
 
 ```typescript
 // Log-mode renderer
-step_failed: (e) => {
+step_failed: ((e) => {
   getWorkflowRunLogger(this.workflowName, e.jobId, e.stepId).error(
     "Step failed: {error}",
     { error: e.error },
   );
-}
+});
 
 // JSON-mode renderer
-step_failed: () => {}  // no-op — the completed event has the full summary
+step_failed: (() => {}); // no-op — the completed event has the full summary
 ```
 
 This separation ensures that log levels are a presentation concern, not a domain
@@ -183,8 +184,8 @@ During `workflow run`, step execution output (model discovery, method execution,
 process stdout/stderr) flows through the event stream via `model_resolved`,
 `method_executing`, and `method_output` events. The domain layer
 (`DefaultStepExecutor`) pushes these events through a callback on
-`StepExecutionContext`, and `runStep()` uses `withEventBridge()` to yield
-them into the parent event stream.
+`StepExecutionContext`, and `runStep()` uses `withEventBridge()` to yield them
+into the parent event stream.
 
 `withEventBridge()` (in `infrastructure/stream/event_bridge.ts`) is a reusable
 utility that bridges Promise-returning code into an AsyncGenerator. It creates
@@ -199,24 +200,44 @@ layers emit topology-agnostic `MethodExecutionEvent` values via an `onEvent`
 callback on `MethodContext`.
 
 ```typescript
-// domain/models/method_events.ts
+// domain/models/method_events.ts — 6 variants
 type MethodExecutionEvent =
-  | { type: "vault_secret_stored"; fieldPath: string; vaultName: string; vaultKey: string }
-  | { type: "schema_validation_warning"; specName: string; instanceName: string; error: string };
+  | { type: "output"; line: string; stream: "stdout" | "stderr" }
+  | {
+    type: "vault_secret_stored";
+    fieldPath: string;
+    vaultName: string;
+    vaultKey: string;
+  }
+  | {
+    type: "schema_validation_warning";
+    specName: string;
+    instanceName: string;
+    error: string;
+  }
+  | { type: "vault_single_quote_warning"; message: string }
+  | { type: "step_queued"; requirement: string }
+  | {
+    type: "nested_model_invocation";
+    targetModelType: string;
+    targetMethod: string;
+    callerModelType: string;
+    callerMethod: string;
+  };
 ```
 
-The workflow execution layer wraps these into `method_event` workflow events
-by adding the topology context (jobId, stepId, modelName, methodName). The
-callback chain is:
+The workflow execution layer wraps these into `method_event` workflow events by
+adding the topology context (jobId, stepId, modelName, methodName). The callback
+chain is:
 
 ```
 StepExecutionContext.emitEvent → MethodContext.onEvent → DataWriter/VaultStorage
 ```
 
 The `LogWorkflowRunRenderer` uses `getRunLogger(modelName, methodName)` to
-present these events — preserving the existing `model·method·run·<name>·<method>`
-log category. The `JsonWorkflowRunRenderer` ignores them (no-ops), keeping
-stdout clean for machine consumption.
+present these events — preserving the existing
+`model·method·run·<name>·<method>` log category. The `JsonWorkflowRunRenderer`
+ignores them (no-ops), keeping stdout clean for machine consumption.
 
 Internal phase transitions (expression evaluation, definition caching, data
 persistence) are logged at `debug` level for log file capture only — they are
@@ -328,22 +349,115 @@ A long-running operation with streaming progress from parallel jobs and steps.
 ### libswamp event type (existing)
 
 ```typescript
+// 24 variants — see libswamp.md for full details
 type WorkflowRunEvent =
   | { kind: "validating_inputs" }
   | { kind: "evaluating_workflow" }
-  | { kind: "started"; runId: string; workflowName: string }
+  | {
+    kind: "started";
+    runId: string;
+    workflowName: string;
+    jobs: WorkflowRunJobInfo[];
+  }
   | { kind: "job_started"; jobId: string }
   | { kind: "job_completed"; jobId: string; status: string }
   | { kind: "job_skipped"; jobId: string }
   | { kind: "step_started"; jobId: string; stepId: string }
-  | { kind: "step_completed"; jobId: string; stepId: string }
+  | { kind: "step_completed"; jobId: string; stepId: string; executor?: string }
   | { kind: "step_skipped"; jobId: string; stepId: string }
-  | { kind: "step_failed"; jobId: string; stepId: string; error: string; allowedFailure?: boolean }
-  | { kind: "model_resolved"; jobId: string; stepId: string; modelName: string; modelType: string; methodName: string }
-  | { kind: "method_executing"; jobId: string; stepId: string; modelName: string; methodName: string }
-  | { kind: "method_output"; jobId: string; stepId: string; modelName: string; methodName: string; stream: "stdout" | "stderr"; line: string }
-  | { kind: "method_event"; jobId: string; stepId: string; modelName: string; methodName: string; event: MethodExecutionEvent }
+  | {
+    kind: "approval_requested";
+    runId: string;
+    jobId: string;
+    stepId: string;
+    prompt: string;
+    timeout?: number;
+  }
+  | {
+    kind: "step_failed";
+    jobId: string;
+    stepId: string;
+    error: string;
+    allowedFailure?: boolean;
+    modelName?: string;
+    methodName?: string;
+  }
+  | {
+    kind: "model_resolved";
+    jobId: string;
+    stepId: string;
+    modelName: string;
+    modelType: string;
+    modelId: string;
+    methodName: string;
+  }
+  | {
+    kind: "env_var_warning";
+    jobId: string;
+    stepId: string;
+    modelName: string;
+    envVars: EnvVarUsageDetail[];
+    message: string;
+  }
+  | {
+    kind: "method_executing";
+    jobId: string;
+    stepId: string;
+    modelName: string;
+    methodName: string;
+  }
+  | {
+    kind: "method_output";
+    jobId: string;
+    stepId: string;
+    modelName: string;
+    methodName: string;
+    stream: "stdout" | "stderr";
+    line: string;
+  }
+  | { kind: "step_queued"; jobId: string; stepId: string; requirement: string }
+  | {
+    kind: "method_event";
+    jobId: string;
+    stepId: string;
+    modelName: string;
+    methodName: string;
+    event: MethodExecutionEvent;
+  }
+  | {
+    kind: "report_started";
+    reportName: string;
+    scope: string;
+    jobId?: string;
+    stepId?: string;
+  }
+  | {
+    kind: "report_completed";
+    reportName: string;
+    scope: string;
+    markdown: string;
+    json: Record<string, unknown>;
+    jobId?: string;
+    stepId?: string;
+  }
+  | {
+    kind: "report_failed";
+    reportName: string;
+    scope: string;
+    error: string;
+    jobId?: string;
+    stepId?: string;
+  }
   | { kind: "completed"; run: WorkflowRunView }
+  | { kind: "cancelled"; run: WorkflowRunView; reason?: string }
+  | {
+    kind: "suspended";
+    run: WorkflowRunView;
+    jobId: string;
+    stepId: string;
+    prompt: string;
+    timeout?: number;
+  }
   | { kind: "error"; error: SwampError };
 ```
 
@@ -423,12 +537,16 @@ class LogWorkflowRunRenderer implements WorkflowRunRenderer {
         const logger = getRunLogger(e.modelName, e.methodName);
         switch (e.event.type) {
           case "vault_secret_stored":
-            logger.info("Stored sensitive field '{fieldPath}' in vault '{vaultName}'",
-              { fieldPath: e.event.fieldPath, vaultName: e.event.vaultName });
+            logger.info(
+              "Stored sensitive field '{fieldPath}' in vault '{vaultName}'",
+              { fieldPath: e.event.fieldPath, vaultName: e.event.vaultName },
+            );
             break;
           case "schema_validation_warning":
-            logger.warn("Resource '{specName}' data does not match schema: {error}",
-              { specName: e.event.specName, error: e.event.error });
+            logger.warn(
+              "Resource '{specName}' data does not match schema: {error}",
+              { specName: e.event.specName, error: e.event.error },
+            );
             break;
         }
       },
@@ -579,8 +697,13 @@ src/presentation/
   renderer.ts                          # Renderer<E> interface
   renderers/
     auth_whoami.ts                     # factory + Log/Json renderers
-    workflow_run.ts                    # factory + Log/Json renderers
-    ...
+    workflow_run.ts                    # factory + Log/Json/Ink renderers
+    data_get.ts
+    data_list.ts
+    extension_push.ts
+    extension_version.ts
+    repo_init.ts
+    ...                                # 180+ files total (including tests)
 ```
 
 Each file in `renderers/` contains the factory function, mode-specific renderer
@@ -588,13 +711,10 @@ classes, and any shared rendering helpers for that operation.
 
 ## Migration Status
 
-Two commands have been migrated to the renderer pattern:
-
-- **`auth whoami`** — `presentation/renderers/auth_whoami.ts`
-- **`workflow run`** — `presentation/renderers/workflow_run.ts`
-
-Remaining commands still use the existing `presentation/output/` files. To
-migrate a command:
+The renderer pattern has been widely adopted across the codebase. The
+`src/presentation/renderers/` directory now contains 180+ files covering the
+majority of CLI commands. Some remaining commands still use the existing
+`presentation/output/` files. To migrate a command:
 
 1. Create a new file in `presentation/renderers/` with Log and Json renderer
    classes implementing `Renderer<E>`.
@@ -642,9 +762,9 @@ do not need to truncate manually.
 ### Log-mode renderers (non-interactive)
 
 Use `getTerminalColumns()` from `presentation/output/terminal_size.ts` to query
-the terminal width synchronously. Apply width constraints only to `writeOutput()`
-calls (which have no prefix). `logger.info()` calls are left unconstrained —
-LogTape's formatter handles its own line formatting.
+the terminal width synchronously. Apply width constraints only to
+`writeOutput()` calls (which have no prefix). `logger.info()` calls are left
+unconstrained — LogTape's formatter handles its own line formatting.
 
 Guidelines:
 
