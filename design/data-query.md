@@ -98,10 +98,15 @@ interface DataRecord {
   id: string;
   name: string;
   version: number;
+  isLatest: boolean;
   createdAt: string;
+  // Provenance namespace (giga-swamp Phase 2). Identifies which repo produced
+  // this data within a shared datastore. Empty string ('') in solo mode.
+  namespace: string;
   attributes: Record<string, unknown>;
   tags: Record<string, string>;
   modelName: string;
+  modelId: string;
   modelType: string;
   specName: string;
   dataType: string;
@@ -112,8 +117,8 @@ interface DataRecord {
   size: number;
   content: string;
 
-  // Provenance fields — promoted from tags/ownerDefinition.
-  // Empty string when data was not produced inside a workflow.
+  // Provenance fields — promoted from tags/ownerDefinition to first-class.
+  // Empty string when the data was not produced inside a workflow.
   ownerRef: string;
   workflowRunId: string;
   workflowName: string;
@@ -123,9 +128,11 @@ interface DataRecord {
 }
 ```
 
-All `DataRecord` fields are populated by a unified `DataRecordMapper`
-(`fromRow()` for catalog-backed queries, `fromData()` for version lookups).
-This is backward-compatible: existing code that reads `record.name` or
+All `DataRecord` fields are populated by standalone exported mapper functions
+in `data_record_mapper.ts`: `fromRow()` for catalog-backed queries,
+`fromData()` for version lookups, `fromResourceHandle()` for workflow step
+resource outputs, and `fromFileHandle()` for file-kind outputs. This is
+backward-compatible: existing code that reads `record.name` or
 `record.attributes` continues to work; the provenance fields are additive.
 
 For JSON resources (`contentType == "application/json"`), `attributes` contains
@@ -145,7 +152,8 @@ filterable fields:
 | --- | --- | --- |
 | `id` | string | Data artifact UUID |
 | `name` | string | Data artifact name |
-| `version` | int | Latest version number |
+| `version` | int | Version number |
+| `isLatest` | bool | Whether this is the latest version of the artifact |
 | `createdAt` | string | ISO-8601 timestamp |
 | `attributes` | map | Parsed JSON content (lazy-loaded, resources only) |
 | `tags` | map | All tags as key-value pairs |
@@ -223,26 +231,31 @@ identifiers are known query record fields. Unknown fields produce an error:
 
 ```
 Error: Unknown field "model" in query predicate.
-Available: id, name, version, createdAt, attributes, tags, modelName,
-  modelType, specName, dataType, contentType, lifetime, ownerType, streaming, size
+Available: id, name, version, isLatest, createdAt, attributes, tags, modelName,
+  modelType, specName, dataType, contentType, lifetime, ownerType, streaming,
+  size, content, ownerRef, workflowRunId, workflowName, jobName, stepName,
+  source, ns
 ```
 
 ## Catalog
 
 Query performance is backed by a SQLite metadata catalog at
 `.swamp/data/_catalog.db`, using `node:sqlite` (built into the Deno runtime).
-The catalog stores one row per artifact (latest version only) containing all
-metadata fields from the query record except `attributes`.
+The catalog stores one row per artifact version, with an `is_latest` column
+distinguishing the current version. It contains all metadata fields from the
+query record except `attributes`.
 
 ### Schema
 
 ```sql
 CREATE TABLE catalog (
+  namespace       TEXT NOT NULL DEFAULT '',
   type_normalized TEXT NOT NULL,
   model_id        TEXT NOT NULL,
   data_name       TEXT NOT NULL,
   id              TEXT NOT NULL,
   version         INTEGER NOT NULL,
+  is_latest       INTEGER NOT NULL DEFAULT 1,
   model_name      TEXT NOT NULL,
   spec_name       TEXT NOT NULL DEFAULT '',
   data_type       TEXT NOT NULL DEFAULT '',
@@ -259,15 +272,18 @@ CREATE TABLE catalog (
   job_name        TEXT NOT NULL DEFAULT '',
   step_name       TEXT NOT NULL DEFAULT '',
   source          TEXT NOT NULL DEFAULT '',
-  PRIMARY KEY (type_normalized, model_id, data_name)
+  PRIMARY KEY (namespace, type_normalized, model_id, data_name, version)
 );
 
-CREATE INDEX idx_model_name      ON catalog(model_name);
-CREATE INDEX idx_spec_name       ON catalog(spec_name);
-CREATE INDEX idx_data_type       ON catalog(data_type);
-CREATE INDEX idx_created_at      ON catalog(created_at);
-CREATE INDEX idx_workflow_run_id ON catalog(workflow_run_id);
-CREATE INDEX idx_step_name       ON catalog(step_name);
+CREATE INDEX idx_catalog_model_name      ON catalog(model_name);
+CREATE INDEX idx_catalog_spec_name       ON catalog(spec_name);
+CREATE INDEX idx_catalog_data_type       ON catalog(data_type);
+CREATE INDEX idx_catalog_created_at      ON catalog(created_at);
+CREATE INDEX idx_catalog_workflow_run_id ON catalog(workflow_run_id);
+CREATE INDEX idx_catalog_step_name       ON catalog(step_name);
+CREATE INDEX idx_namespace               ON catalog(namespace);
+CREATE INDEX idx_catalog_is_latest       ON catalog(namespace, type_normalized, model_id, data_name, is_latest);
+CREATE INDEX idx_catalog_latest_lookup   ON catalog(model_name, data_name, is_latest, namespace);
 
 CREATE TABLE catalog_meta (
   key   TEXT PRIMARY KEY,
@@ -296,8 +312,9 @@ Every mutation in `UnifiedDataRepository` updates the catalog inline:
 | `removeLatestMarker()` | Remove row |
 | `collectGarbage()` | Update version or remove row |
 
-The `CatalogStore` is a required constructor parameter on
-`UnifiedDataRepository`. Every repository instance maintains write-through
+`UnifiedDataRepository` is an interface (in `repositories.ts`). The concrete
+`FileSystemUnifiedDataRepository` takes `CatalogStore` as a required
+constructor parameter. Every repository instance maintains write-through
 catalog consistency. Use `createCatalogStore()` from `repository_factory.ts`
 to construct one from a repo directory.
 
@@ -335,19 +352,10 @@ On cold start (new machine, empty cache), the initial pull downloads all files.
 The catalog doesn't exist yet, so the first query triggers a backfill from the
 freshly-pulled cache.
 
-The `DatastoreSyncService` interface returns the diff:
-
-```typescript
-interface SyncDiff {
-  changed: string[];
-  deleted: string[];
-}
-
-interface DatastoreSyncService {
-  pullChanged(): Promise<SyncDiff>;
-  pushChanged(): Promise<void>;
-}
-```
+The `DatastoreSyncService.pullChanged()` method returns
+`Promise<number | void>` — it reports the count of changed files (or void) but
+does not return a structured diff. Catalog updates after a pull are driven by
+the sync implementation internally.
 
 ## Query Execution
 
@@ -359,7 +367,7 @@ and CEL handles all filtering semantics.
 1. Parse predicate into AST
 2. Validate field references
 3. Detect whether predicate references `attributes`
-4. SELECT metadata columns from catalog (via stmt.iterate())
+4. SELECT metadata columns from catalog (via paged LIMIT/OFFSET queries using stmt.all())
 5. For each row:
    a. Project row into query record
    b. If predicate references `attributes`:
@@ -370,9 +378,9 @@ and CEL handles all filtering semantics.
 6. Return results
 ```
 
-Iteration uses `stmt.iterate()` so that only one row is in memory at a time.
-Content is loaded per-row only when needed. The query stops as soon as the
-limit is reached.
+Iteration uses paged `stmt.all()` with `LIMIT/OFFSET` so that rows are fetched
+in bounded batches. Content is loaded per-row only when needed. The query stops
+as soon as the limit is reached.
 
 When the predicate does not reference `attributes`, the SELECT omits content
 loading entirely. This is detected by walking the AST for the `attributes`

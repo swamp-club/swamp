@@ -67,7 +67,6 @@ jobs:
           - step: first-env
             condition:
               type: succeeded
-              ref: first-env
         weight: 0
 ```
 
@@ -111,7 +110,6 @@ jobs:
           - step: first-env
             condition:
               type: succeeded
-              ref: first-env
         weight: 0
 ```
 

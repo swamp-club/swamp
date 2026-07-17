@@ -223,7 +223,7 @@ is used with zero overhead.
 Workflows are specified in YAML files, that are validated with Zod, in the
 top-level `workflows/` directory of the repository, as
 `workflows/workflow-{uuid}.yaml`. Workflow run output is stored in the datastore
-at `workflow-runs/{workflow-uuid}/{run-uuid}.yaml` (default path:
+at `workflow-runs/{workflow-uuid}/workflow-run-{run-uuid}.yaml` (default path:
 `.swamp/workflow-runs/`).
 
 ## Validation
@@ -528,7 +528,7 @@ data/scanner/{id}/
     latest → 1
 ```
 
-Each environment gets its own versioning and `latest` symlink, preventing
+Each environment gets its own versioning and `latest` marker, preventing
 cross-environment data interleaving.
 
 ### Accessing Varied Data
@@ -571,8 +571,8 @@ not vary between identical inputs. (If the inputs are identical, the run order
 should be deterministic.)
 
 The output of the run will be written to a workflow run log, kept in the
-datastore at `workflow-runs/{workflow-uuid}/{run-uuid}.yaml` (default path:
-`.swamp/workflow-runs/`).
+datastore at `workflow-runs/{workflow-uuid}/workflow-run-{run-uuid}.yaml`
+(default path: `.swamp/workflow-runs/`).
 
 ### Run Statuses
 
@@ -602,7 +602,7 @@ across all execution paths (scheduled, WebSocket ad-hoc, webhook). The cancel
 API checks both the registry and the `ScheduledExecutionService` running map.
 
 The same mechanism applies to model method runs via
-`swamp model cancel <model> [--run <id>]`.
+`swamp model cancel <model> [--all] [--reason <reason>]`.
 
 ## Domain Events
 
@@ -638,7 +638,7 @@ workflowContext:
   jobName: build
   stepName: validate-config
   modelType: command/shell
-  driver: local
+  executor: loopback
 ```
 
 Children use the same `cli_invocation` event shape as a direct
@@ -646,7 +646,7 @@ Children use the same `cli_invocation` event shape as a direct
 redactions: `command="model"`, `subcommand="method"`,
 `args=["run", "<REDACTED>", <methodName>]`. Analytics that aggregate by
 command/method roll up direct invocations and workflow-internal
-invocations uniformly; per-driver and per-model-type queries read
+invocations uniformly; per-executor and per-model-type queries read
 `workflowContext` directly without joining through the parent.
 
 ### Failure Semantics
@@ -682,8 +682,8 @@ invocations uniformly; per-driver and per-model-type queries read
   completion" message.
 
 The bridge lives in `src/libswamp/workflows/telemetry_bridge.ts`. The
-domain `step_failed` event carries optional `modelName`, `methodName`, and
-`driver` fields populated only at the model-method failure site (other
-yield sites — nesting depth, cycle detection, nested-workflow failure —
-leave them undefined so the bridge can distinguish structural failures
-from method failures).
+domain `step_failed` event carries optional `modelName` and `methodName`
+fields populated only at the model-method failure site (other yield
+sites — nesting depth, cycle detection, nested-workflow failure — leave
+them undefined so the bridge can distinguish structural failures from
+method failures).

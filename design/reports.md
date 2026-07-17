@@ -70,10 +70,12 @@ scope. See `src/domain/reports/report_context.ts`.
 | `logger`               | `Logger`                   | LogTape logger for report output         |
 | `dataRepository`       | `UnifiedDataRepository`    | Read/query persisted data                |
 | `definitionRepository` | `DefinitionRepository`     | Read model definitions                   |
+| `swampSha?`            | `string`                   | Git commit sha of the swamp repo at execution time |
 
 ### MethodReportContext / ModelReportContext
 
-Both method and model scope contexts carry the same fields:
+Both method and model scope contexts carry the same core fields. Method-scope
+contexts additionally carry `extensionFile`.
 
 | Field             | Type                         | Description                                  |
 | ----------------- | ---------------------------- | -------------------------------------------- |
@@ -85,7 +87,10 @@ Both method and model scope contexts carry the same fields:
 | `methodArgs`      | `Record<string, unknown>`    | Per-method arguments                         |
 | `methodName`      | `string`                     | Which method was invoked                     |
 | `executionStatus` | `"succeeded"` / `"failed"`   | Method outcome                               |
+| `errorMessage?`   | `string`                     | Error message when execution failed          |
 | `dataHandles`     | `DataHandle[]`               | Data artifacts produced by the method        |
+| `outputSpecs?`    | `OutputSpecInfo[]`           | Output spec schemas from the model type definition |
+| `extensionFile`   | `(relPath: string) => string`| Resolve extension asset path (method-scope only) |
 
 ### WorkflowReportContext
 
@@ -149,7 +154,8 @@ content-fingerprint invalidation (sha-256 over the entry point plus every
 local `.ts` dep) — mtime-based freshness was unreliable under atomic-rename
 saves, mtime-preserving sync tools, and sub-millisecond edits (issue #125).
 
-See `src/domain/reports/user_report_loader.ts`.
+See `src/domain/extensions/extension_loader.ts` (with
+`src/domain/extensions/report_kind_adapter.ts`).
 
 ## Report Registry
 
@@ -355,8 +361,9 @@ final view.
 
 ## Error Handling
 
-Report `execute()` throws are **advisory** — they do not fail the workflow or
-change the exit code. A broken report must not mask a successful workflow run.
+Report `execute()` throws **flip the run status to "failed"** and change the
+exit code. A report failure counts as a run failure — the final
+`ModelMethodRunView.status` is set to `"failed"` when `reportFailures > 0`.
 
 When `execute()` throws, swamp generates a fallback error artifact using the
 built-in `buildReportErrorResult` function
@@ -504,7 +511,7 @@ Reports support two output modes, consistent with the rest of the CLI:
 - **JSON mode** — emits a single JSON object with the full `ModelReportView`
   containing all report results (name, scope, success, markdown, json, error).
 
-See `src/presentation/renderers/model_report.ts`.
+See `src/presentation/renderers/model_method_run.ts`.
 
 ## Reports Directory Resolution
 

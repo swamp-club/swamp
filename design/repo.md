@@ -55,7 +55,7 @@ cli.
 
 When the CLI binary is upgraded but `swamp repo upgrade` is not run, the
 repo retains old skill directories that have been consolidated in the new
-version. The `SUPERSEDED_SKILLS` constant in `repo_service.ts` lists these
+version. The `SUPERSEDED_SKILLS` constant in `superseded_skills.ts` lists these
 directory names.
 
 On every CLI startup (for repo-scoped commands), the CLI checks all enrolled
@@ -85,7 +85,7 @@ Source-of-truth files live in top-level directories tracked in git:
 Runtime data (versioned model data, workflow runs, method outputs, secrets) is
 stored through a datastore abstraction. The default datastore uses the `.swamp/`
 directory, but it can be configured to use an external filesystem path or S3.
-See [./datastores.md] for details.
+See [datastores.md](./datastores.md) for details.
 
 ## Configuration
 
@@ -98,7 +98,7 @@ attributes to control the behaviour of the swamp operations.
   sent to and retrieved from when evaluating and running workflow steps.
   Multitple vaults can be specified for a each swamp repository.
 - `trustedCollectives`: List of collectives whose extensions auto-resolve on
-  first use. Default: `["swamp", "si"]`. Set to `[]` to disable. Manageable via
+  first use. Default: `["swamp"]`. Set to `[]` to disable. Manageable via
   `swamp extension trust list/add/rm`.
 - `trustMemberCollectives`: Whether to auto-trust collectives the user belongs
   to (cached from `auth login`/`auth whoami`). Default: `true`. Set to `false`
@@ -111,6 +111,24 @@ attributes to control the behaviour of the swamp operations.
   duration-based retention). Errors are logged but never fail the method run.
   The sync push includes GC deletions so the current push benefits immediately.
   `swamp data gc` remains available for repo-wide manual GC.
+
+### Run Garbage Collection
+
+`swamp run gc` garbage-collects old workflow-run records
+(`.swamp/workflow-runs/`) and model method outputs (`.swamp/outputs/`). These
+two runtime artifact stores are not covered by `data gc`, which handles
+`.swamp/data/` (versioned data with lifetime/version policies).
+
+- **Default retention**: 30 days (`DEFAULT_WORKFLOW_RUN_RETENTION_DAYS` and
+  `DEFAULT_OUTPUT_RETENTION_DAYS` in
+  `src/domain/data/run_lifecycle_service.ts`)
+- **Terminal runs only**: Only runs in a terminal state (succeeded, failed,
+  cancelled) are deleted. Running and suspended workflow runs are never deleted
+  regardless of age.
+- **Flags**: `--dry-run`, `--force`, `--older-than <duration>` (reuses
+  `parseDuration` -- units: m, h, d, w, mo, y)
+- **Manual-only**: There is no automated or post-run GC for these stores yet.
+  `swamp run gc` is currently the only way to clean them up.
 
 ## RepoIndexService
 
@@ -130,6 +148,12 @@ Aggregate repositories emit domain events when data changes:
 - `ModelUpdated` - A model definition or data was modified
 - `ModelDeleted` - A model was deleted
 
+**Definition Events:**
+
+- `DefinitionCreated` - A new definition was created
+- `DefinitionUpdated` - A definition was modified
+- `DefinitionDeleted` - A definition was deleted
+
 **Workflow Events:**
 
 - `WorkflowCreated` - A new workflow definition was created
@@ -141,6 +165,16 @@ Aggregate repositories emit domain events when data changes:
 - `WorkflowRunStarted` - A workflow run began execution
 - `WorkflowRunCompleted` - A workflow run completed successfully
 - `WorkflowRunFailed` - A workflow run failed
+
+**Vault Events:**
+
+- `VaultCreated` - A new vault was created
+- `VaultUpdated` - A vault configuration was modified
+- `VaultDeleted` - A vault was deleted
+- `VaultSecretUpdated` - A secret was stored or updated in a vault
+- `VaultSecretDeleted` - A secret was deleted from a vault
+- `VaultSecretRead` - A secret was read from a vault
+- `VaultSecretAnnotated` - A secret's annotation was updated
 
 ### Event Handling
 
@@ -174,7 +208,10 @@ These are real files (not symlinks) tracked in git.
 ```
 .swamp/data/{normalized-type}/{model-id}/{data-name}/{version}/
 .swamp/outputs/{normalized-type}/{method}/{definition-id}-{timestamp}.yaml
-.swamp/workflow-runs/{workflow-id}/{run-id}.yaml
+.swamp/workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
 ```
 
-See [./datastores.md] for how the datastore path is resolved.
+The `workflow-runs/` and `outputs/` directories are covered by `swamp run gc`
+(see [Run Garbage Collection](#run-garbage-collection) above).
+
+See [datastores.md](./datastores.md) for how the datastore path is resolved.

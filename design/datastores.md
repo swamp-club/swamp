@@ -64,8 +64,8 @@ ship with.
 The `DatastoreTypeRegistry` is a Map-backed singleton
 (`datastoreTypeRegistry`). The built-in type (filesystem) is registered at
 startup. Extension types (e.g., `@swamp/s3-datastore`) are loaded from
-`extensions/datastores/` via `UserDatastoreLoader` or auto-resolved from the
-registry on first use. Types must follow the `@collective/name` or
+`extensions/datastores/` via `ExtensionLoader` with `datastoreKindAdapter` or
+auto-resolved from the registry on first use. Types must follow the `@collective/name` or
 `collective/name` pattern (e.g., `@myorg/redis-store`). Duplicate type
 registrations are rejected with an error.
 
@@ -85,12 +85,13 @@ See `src/domain/datastore/datastore_provider.ts` for the full interface.
 
 ### Loading & Bundling
 
-`UserDatastoreLoader` discovers `.ts` files recursively in the datastores
-directory (excluding `_test.ts` files), bundles each via Deno with zod
-externalized, and validates the export against `UserDatastoreSchema` — a Zod
-schema requiring `type`, `name`, `description`, an optional `configSchema`, and
-a `createProvider` factory function. Files without a `datastore` export are
-silently skipped. Bundles are cached in `.swamp/datastore-bundles/` with
+`ExtensionLoader` (with `datastoreKindAdapter`) discovers `.ts` files
+recursively in the datastores directory (excluding `_test.ts` files), bundles
+each via Deno with zod externalized, and validates the export against
+`UserDatastoreSchema` — a Zod schema requiring `type`, `name`, `description`,
+an optional `configSchema`, and a `createProvider` factory function. Files
+without a `datastore` export are silently skipped. Bundles are cached in
+`.swamp/datastore-bundles/` with
 content-fingerprint invalidation (sha-256 over the entry point plus every
 local `.ts` dep) to avoid redundant compilation — mtime-based freshness was
 unreliable under atomic-rename saves, mtime-preserving sync tools, and
@@ -122,7 +123,8 @@ defined by the extension.
 |------|---------|
 | `src/domain/datastore/datastore_provider.ts` | `DatastoreProvider` interface |
 | `src/domain/datastore/datastore_type_registry.ts` | Type registry singleton |
-| `src/domain/datastore/user_datastore_loader.ts` | Loader, validator, bundler |
+| `src/domain/extensions/extension_loader.ts` | Generic extension loader (used with kind adapters) |
+| `src/domain/extensions/datastore_kind_adapter.ts` | Datastore-specific kind adapter for ExtensionLoader |
 | `src/domain/datastore/datastore_sync_service.ts` | `DatastoreSyncService` interface |
 
 ## Configuration
@@ -402,7 +404,7 @@ deduplicated models. When `twoPhaseSync` is `true`, the push is split into
 
 **Catalog rebuild invariant.** `synced = true` is set after `pullChanged()`
 succeeds on both the scoped and full paths. This boolean is returned in
-`{ flush, synced }` and checked at 8 call sites across the codebase to trigger
+`{ flush, synced }` and checked at 19 call sites across the codebase to trigger
 `catalogStore.invalidate()`. It must never be skipped or moved.
 
 ### Namespace-Scoped Sync
@@ -994,8 +996,8 @@ rewrites even when the file size doesn't change.
 
 All pull and push operations download/upload files concurrently in batches of
 10. This reduces wall-clock time for syncs with many files by overlapping S3
-round trips. The concurrency limit (`MAX_CONCURRENCY = 10`) prevents
-overwhelming the network or hitting S3 request rate limits.
+round trips. The concurrency limit prevents overwhelming the network or hitting
+S3 request rate limits.
 
 ### Offline Behavior
 
@@ -1039,7 +1041,8 @@ Lock metadata (`LockInfo`) is stored as JSON:
   "hostname": "hostname",
   "pid": 12345,
   "acquiredAt": "2026-03-10T12:00:00.000Z",
-  "ttlMs": 30000
+  "ttlMs": 30000,
+  "nonce": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 }
 ```
 
@@ -1346,4 +1349,13 @@ and exclude patterns.
 | `src/cli/commands/datastore_setup.ts` | `swamp datastore setup` (filesystem + extension) |
 | `src/cli/commands/datastore_sync.ts` | `swamp datastore sync` (manual) |
 | `src/cli/commands/datastore_lock.ts` | `swamp datastore lock` (status + release) |
-| `src/presentation/output/datastore_output.ts` | Datastore command rendering (log + json) |
+| `src/presentation/renderers/datastore_status.ts` | `swamp datastore status` rendering |
+| `src/presentation/renderers/datastore_sync.ts` | `swamp datastore sync` rendering |
+| `src/presentation/renderers/datastore_lock.ts` | `swamp datastore lock` rendering |
+| `src/presentation/renderers/datastore_setup.ts` | `swamp datastore setup` rendering |
+| `src/presentation/renderers/datastore_compact.ts` | `swamp datastore compact` rendering |
+| `src/presentation/renderers/datastore_migrate_index.ts` | `swamp datastore migrate-index` rendering |
+| `src/presentation/renderers/datastore_namespace_set.ts` | `swamp datastore namespace set` rendering |
+| `src/presentation/renderers/datastore_namespace_unset.ts` | `swamp datastore namespace unset` rendering |
+| `src/presentation/renderers/datastore_namespace_migrate.ts` | `swamp datastore namespace migrate` rendering |
+| `src/presentation/renderers/datastore_namespace_list.ts` | `swamp datastore namespace list` rendering |

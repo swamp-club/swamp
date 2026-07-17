@@ -1,7 +1,7 @@
 # Audit subdomain
 
 Records and reports the bash/tool-use commands the user's AI coding agent
-(Claude Code, Cursor, Kiro, OpenCode) invokes while working in a
+(Claude Code, Cursor, Kiro, OpenCode, Copilot) invokes while working in a
 swamp-initialized repository. Acts as an append-only activity log —
 useful for reviewing what an agent has been doing and for correlating
 agent actions with swamp workflow runs.
@@ -40,7 +40,7 @@ agent actions with swamp workflow runs.
 
 ## Repo layout of audit config
 
-The four supported tools wire their audit hook into tool-specific config
+The five supported tools wire their audit hook into tool-specific config
 files that `swamp init --tool <tool>` generates. Locations summarized:
 
 | Tool     | Hook config                              | Default-agent config    |
@@ -49,11 +49,13 @@ files that `swamp init --tool <tool>` generates. Locations summarized:
 | Cursor   | `.cursor/hooks.json`                     | n/a                     |
 | Kiro     | `.kiro/hooks/swamp-audit.kiro.hook` + `.kiro/agents/swamp.json` | `.kiro/settings/cli.json` |
 | OpenCode | `.opencode/plugins/swamp-audit.ts`       | n/a                     |
+| Copilot  | `.github/hooks/`                         | n/a                     |
 
 See `src/domain/repo/repo_service.ts` for the exact generators
 (`updateClaudeSettings`, `updateCursorHooks`, `updateKiroHooks`,
 `updateKiroAgentConfig`, `ensureKiroCliDefaultAgent`,
-`updateOpenCodePlugin`).
+`updateOpenCodePlugin`, `updateCopilotHooks`,
+`createCopilotHooksIfNotExists`).
 
 ## Reserved session / command prefixes
 

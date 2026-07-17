@@ -8,7 +8,7 @@ can then validate are correct. Each model has a Type, which specifies metadata,
 attributes, methods, and inputs (variables/parameters as JsonSchema). Model
 definitions contain attributes and can be configured using inputs (variables).
 Methods take the definition and produce data (with data tags like "resource",
-"log", or "file"). Model definitions are stored as YAML files in the top-level
+"file", "log", "data", or "output"). Model definitions are stored as YAML files in the top-level
 `models/` directory, while runtime data is stored in the datastore (default
 `.swamp/`). Definitions support a CEL expression language for dynamic
 configuration.
@@ -19,7 +19,8 @@ Workflows can also define inputs (workflow inputs) for parameterization.
 
 Swamp allows for organizing model definitions and data into applications and
 environments, which can be used to compare data and definitions to detect
-configuration drift.
+configuration drift. (Aspirational/planned -- applications, environments, and
+drift detection are not yet implemented.)
 
 All this is stored in a 'swamp repo', which is a git repository.
 

@@ -77,7 +77,7 @@ function looksLikeModelId(name: string): boolean {
  *   2/
  *     raw
  *     metadata.yaml
- *   latest/            # Symlink -> 2/
+ *   latest             # Text file containing current version (e.g. "2")
  */
 export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   private readonly baseDir: string;
@@ -249,7 +249,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
    * Walks .swamp/data/{type-segments...}/{model-id}/{data-name}/ structure.
    *
    * When a directory contains a subdirectory with numeric version directories
-   * (or a "latest" symlink), we've reached a data-name level. The path segments
+   * (or a "latest" marker file), we've reached a data-name level. The path segments
    * before the model-id form the model type.
    */
   private async collectAllData(
@@ -370,7 +370,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
   /**
    * Checks if a directory looks like a model-id directory by examining
-   * if its children contain version subdirectories or a "latest" symlink.
+   * if its children contain version subdirectories or a "latest" marker file.
    */
   private async isModelIdDirectory(dir: string): Promise<boolean> {
     try {
@@ -622,7 +622,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     await assertSafePath(contentPath, boundary);
     await atomicWriteFile(contentPath, content);
 
-    // Update latest symlink
+    // Update latest marker
     await this.updateLatestMarker(type, modelId, data.name, newVersion);
 
     this.catalogUpsert(type, modelId, dataToSave);
@@ -796,7 +796,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         version,
       );
 
-      // Update latest symlink if needed
+      // Update latest marker if needed
       const versions = await this.listVersions(type, modelId, dataName);
       if (versions.length > 0) {
         const newLatest = Math.max(...versions);
@@ -832,7 +832,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Removes the latest symlink for expired data (soft delete).
+   * Removes the latest marker for expired data (soft delete).
    * Version directories remain on disk but data becomes inaccessible.
    */
   async removeLatestMarker(
@@ -843,15 +843,15 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const dataNameDir = this.getDataNameDir(type, modelId, dataName);
     await this.notifyDirty(dataNameDir);
 
-    const latestSymlink = join(dataNameDir, "latest");
+    const latestMarker = join(dataNameDir, "latest");
 
     try {
-      await Deno.remove(latestSymlink);
+      await Deno.remove(latestMarker);
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) {
         throw error;
       }
-      // Symlink already missing is OK
+      // Marker already missing is OK
     }
 
     this.catalogRemove(type, modelId, dataName);
@@ -1108,7 +1108,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const metadataContent = stringifyYaml(cleanData as Record<string, unknown>);
     await atomicWriteTextFile(metadataPath, metadataContent);
 
-    // Update latest symlink
+    // Update latest marker
     await this.updateLatestMarker(type, modelId, data.name, version);
 
     this.catalogUpsert(type, modelId, dataToSave);

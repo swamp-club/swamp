@@ -60,7 +60,7 @@ Three properties drove the design:
 | **Capability**       | A side-effecting function a running method reaches through its context, proxied back to the orchestrator. A finite, closed set. |
 | **Step lease**       | The orchestrator's record that a given step is in flight on a given worker. A built-in model.                               |
 | **Environment snapshot** | The orchestrator's full process environment, shipped with each dispatch and held in worker memory only for the step's duration. |
-| **Spool file**       | The worker-local file backing `getFilePath()` on a remote executor; uploaded to the orchestrator as one streamed `PUT` on `finalize()`. |
+| **Spool file**       | The worker-local file backing `getFilePath()` on a remote executor; uploaded to the orchestrator as one streamed `POST` on `finalize()`. |
 | **Fleet probe**      | A built-in model (`swamp/fleet-probe`) whose single `verify` method exercises every seam between worker and orchestrator: dispatch metadata (`probeMarker`), capability RPC (`queryData`), and the HTTP data plane (`writeResource`/`readResource`). Used by `swamp worker verify` and `--verify-on-enroll`. |
 | **Probe marker**     | A dispatch-level string (`probeMarker` on `DispatchParams`) that the worker merges into the method's args. Confirms dispatch-level metadata arrives intact. Travels via `DispatchParams`, not the environment snapshot (which denylists `SWAMP_*` variables). |
 | **Verify-on-enroll** | Opt-in orchestrator flag (`--verify-on-enroll`) that dispatches the fleet probe to each enrolling worker before it becomes schedulable. Workers that fail enter `unverified` status and are excluded from scheduling. |
@@ -176,14 +176,15 @@ The full set of client protocol frame types:
 | Model validate | `model.validate`, `model.evaluate`                                                                             | read    |
 | Workflow       | `workflow.get`, `workflow.search`, `workflow.run`, `workflow.resume`, `workflow.schema`                         | read/run |
 | Workflow history | `workflow.history.get`, `workflow.history.logs`, `workflow.history.search`, `workflow.run.search`             | read    |
-| Workflow approval | `workflow.approve`, `workflow.reject`                                                                       | run     |
+| Workflow approval | `workflow.approvals`, `workflow.approve`, `workflow.reject`                                                  | run     |
 | Vault          | `vault.get`, `vault.put`, `vault.delete`, `vault.describe`, `vault.inspect`, `vault.list-keys`, `vault.search`, `vault.annotate` | read/write |
 | Access         | `access.grant.list`, `access.group.list`, `access.check`, `access.can-i`, `access.reload`                     | admin   |
 | Audit/summary  | `audit.timeline`, `summarise`                                                                                  | read    |
 | Reports        | `report.get`, `report.search`, `report.describe`, `report.type.search`                                        | read    |
 | Extensions     | `extension.list`, `extension.search`, `extension.info`, `extension.install`, `extension.rm`, `extension.outdated` | read/admin |
-| Doctor         | `doctor.vaults`, `doctor.secrets`, `doctor.workflows`, `doctor.extensions`                                     | admin   |
-| Server admin   | `worker.list`, `datastore.status`                                                                              | admin   |
+| Doctor         | `doctor.vaults`, `doctor.datastores`, `doctor.secrets`, `doctor.workflows`, `doctor.extensions`                 | admin   |
+| Server admin   | `worker.list`, `worker.queue.list`, `worker.verify`, `datastore.status`                                        | admin   |
+| Run            | `run.history`, `run.doctor`                                                                                    | admin   |
 | Control        | `cancel`                                                                                                       | —       |
 
 The CLI consumes this protocol via `--server <url>` on each command:
@@ -362,7 +363,9 @@ system. Each token is:
   member without a freshly minted token.
 
 The token is a built-in **enrollment-token** model whose instances are swamp data,
-with states `unused → enrolled → expired`; the `unused → enrolled` transition
+with states `unused → enrolled → expired` (plus `revoked` reachable from any
+non-terminal state via `swamp worker token revoke`); the `unused → enrolled`
+transition
 appends a binding (`machineId` + `enrolledAt`) to the token's `bindings` list,
 and concurrent enrollment attempts are serialized by the orchestrator. The datastore itself provides no compare-and-swap — concurrent saves to
 one data item simply land as successive versions — so atomicity comes from the
@@ -407,7 +410,14 @@ model method's output:
   workers share one definition-name namespace; the pool-addressable `name`
   inside the data stays bare.);
 - an **enrollment-token** model — the token lifecycle aggregate above;
-- a **step-lease** model — which step is in flight on which worker.
+- a **step-lease** model — which step is in flight on which worker;
+- a **pending-dispatch** model (`swamp/pending-dispatch`) — queued demand
+  records for steps awaiting a matching worker, with states
+  `waiting → dispatched | timed_out | cancelled | orphaned`;
+- a **fleet-probe** model (`swamp/fleet-probe`) — a lightweight model whose
+  single `verify` method exercises every seam between worker and orchestrator
+  (dispatch metadata, capability RPC, and data plane); used by
+  `swamp worker verify` and `--verify-on-enroll`.
 
 These ship with swamp and are registered at startup like its other built-ins.
 This is not incidental — it is *why* the rest of the design composes:
@@ -663,13 +673,13 @@ runners to finish (`activeRunners === 0`).
 A worker resolves no extensions of its own. The dispatch references the extension
 bundle by fingerprint; on a cache miss the worker fetches it from the
 orchestrator's HTTP/2 data plane (`GET /bundle/{fingerprint}`) and loads it
-**in-process** in its own swamp runtime. The bundle is the same `bundleSource`
-swamp already builds (see
+**in-process** in its own swamp runtime. The bundle is the same
+`bundleSourceFactory` swamp already builds (see
 [execution-drivers.md](./execution-drivers.md#self-contained-bundling)); the
 worker needs nothing pre-installed.
 
-The fingerprint comes from the existing content-fingerprint cache
-(`.swamp/driver-bundles/`, sha-256 over the bundle), and a worker caches what it
+The fingerprint is computed inline as `sha256Hex(js)` over the bundled source at
+dispatch time (see `DispatchService.#ensureBundle`), and a worker caches what it
 has already fetched — so a bundle is shipped at most once per worker per version.
 This mirrors the versioned-handle data cache — code and data both cache by
 content/version identity and travel over the same h2 data plane.
@@ -709,14 +719,14 @@ current code.
 
 `context.writeResource` / `createFileWriter` call `repo.save()`
 (`src/domain/models/data_writer.ts`, `unified_data_repository.ts`), which writes
-the version directory, metadata, content, `latest` symlink, and catalog entry
+the version directory, metadata, content, `latest` marker, and catalog entry
 *before the `await` resolves*. There is no buffer-and-commit-at-end model — and
 the system depends on this: `method_execution_service.ts` deliberately collects
 handles for data written **before a throw**, so a write-then-throw method (e.g.
 a code-review `verdict=FAIL`, the issue-lifecycle model) leaves its data visible.
 
 Consequences for the proxy model: a `persistResource` / `persistFile` is an
-HTTP/2 `PUT` that completes only once `repo.save()` has persisted at the
+HTTP/2 `POST` that completes only once `repo.save()` has persisted at the
 orchestrator. There is **no staging layer to build**. A worker that writes 3 of 5
 outputs then dies leaves 3 durable writes — exactly what a local process crash
 does today.
@@ -730,7 +740,7 @@ Two `DataWriter` modes need an explicit remote shape:
 - **`getFilePath` (direct file I/O)** hands the method a real path, typically so
   a subprocess can write output straight to it. There is no orchestrator path on
   a worker, so remotely the path is a **worker-local spool file**; `finalize()`
-  uploads it as one streamed `PUT`. For this one mode, durability moves from
+  uploads it as one streamed `POST`. For this one mode, durability moves from
   write-time to finalize-time — a worker that dies mid-spool leaves *no* write
   rather than a partial file, the safer of the two divergences. Local behavior
   is unchanged.
@@ -747,7 +757,7 @@ This sets the **worker cache rule** precisely:
 
 - **Cacheable:** artifact bytes keyed by `(dataId, version)`. Once fetched, that
   version never changes — safe to cache for the life of the worker, and a strong
-  `ETag` on `GET /data/{dataId}/{version}` lets the runtime honor it for free.
+  `ETag` on `GET /data/{type}/{modelId}/{dataName}/{version}` lets the runtime honor it for free.
 - **Always live:** `latest` resolution and `queryData` results. `latest`
   resolution is a small control-plane RPC that yields a concrete version, which
   the worker then fetches (and caches) over h2.
@@ -772,7 +782,7 @@ server-push is needed.
   `resolveModel`, `log`). This is the symmetric two-registry protocol above.
 - **Data plane — HTTP/2** (worker-initiated request/response, streamed): the
   byte-heavy operations only — read artifact content
-  (`GET /data/{dataId}/{version}`), write artifact content (`PUT /data/...` →
+  (`GET /data/{type}/{modelId}/{dataName}/{version}`), write artifact content (`POST /data/resource` →
   `repo.save()`), and bundle fetch on a cache miss (`GET /bundle/{fingerprint}`).
   HTTP/2 supplies multiplexing and per-stream flow control natively, so the
   chunking, credit accounting, and priority queues we would otherwise hand-roll
@@ -793,7 +803,7 @@ HTTP/1.1-based on both the server-upgrade and outbound-client sides and does not
 implement RFC 8441 today, so v1 runs two worker-initiated connections that can
 share one port via ALPN. Collapsing them to a single connection is a clean future
 optimization if Deno gains RFC 8441 support. Versioned-immutable data is a natural
-fit for h2: `GET /data/{dataId}/{version}` is an immutable, strongly-`ETag`'d
+fit for h2: `GET /data/{type}/{modelId}/{dataName}/{version}` is an immutable, strongly-`ETag`'d
 resource, freely cacheable by the worker and any intermediary.
 
 ### Authenticating the data plane
@@ -815,7 +825,7 @@ single-host semantics and needs almost no new code:
   Schema validation is deliberately *warn-only* in the writer today — it emits a
   `schema_validation_warning` event rather than rejecting — so spec-name
   enforcement, not schema enforcement, is the write-scoping guarantee. Because
-  the orchestrator persists a worker's `PUT` through that same writer, a worker
+  the orchestrator persists a worker's `POST` through that same writer, a worker
   can only write to specs its model declares — no new authorization layer
   required.
 - **Reads are unrestricted** — the status quo for `getData` / `queryData` on a
@@ -971,7 +981,7 @@ provisioning credentials and extensions onto workers:
 | -------------------------------- | --------------------------------------------------------------------------------------- |
 | Control protocol + multiplexing  | **Reuse** `src/serve/protocol.ts`, `connection.ts`, `serializer.ts`                     |
 | Serializable execution envelope  | **Reuse** `ExecutionRequest` / `ExecutionResult` (serialize `followUpActions`; the envelope never carried driver fields) |
-| Extension bundle + fingerprint   | **Reuse** `bundleSource` + `.swamp/driver-bundles/` cache; fetched over h2 on miss; report bundles + co-located assets ship the same way |
+| Extension bundle + fingerprint   | **Reuse** `bundleSourceFactory` + inline `sha256Hex` fingerprint; fetched over h2 on miss; report bundles + co-located assets ship the same way |
 | Checks and reports pipeline      | **Reuse** — run on the executor unchanged, over the proxied context                      |
 | Pure injectable operations       | **Reuse** libswamp `*Deps` + `MethodContext` injection seam                             |
 | Worker/token/lease persistence   | **Reuse** the datastore + catalog — built-in models, not a private registry             |
@@ -1075,7 +1085,7 @@ On SIGHUP, `reloadPulledExtensions()` performs a READ-ONLY scan:
 
 1. Opens a fresh `ExtensionCatalogStore` (reads `_extension_catalog.db`)
 2. Reads the lockfile via `LockfileRepository` for extension names/versions
-3. Queries `catalog.findByExtension(name, version)` for type rows
+3. Queries `catalog.findBySourcePathPrefix(sourcePrefix)` for type rows
 4. For each type across all four kinds (model, vault, datastore, report):
    - `invalidateType()` — removes from the registry's loaded and lazy maps
    - `registerLazy()` — re-adds with updated `source_fingerprint`
@@ -1087,8 +1097,10 @@ On SIGHUP, `reloadPulledExtensions()` performs a READ-ONLY scan:
 
 The reload path never calls `ExtensionCatalogStore.invalidate()`,
 `ExtensionLoader.buildIndex()`, `resetLoadedFlag()`, or `ensureLoaded()`. Only
-the per-type path (`loadSingleType` and its sub-calls) is permitted — these
-perform zero catalog writes.
+the per-type path (`loadSingleType` and its sub-calls) is permitted. The one
+catalog write is `catalog.updateSourceFingerprint()`, called after a successful
+re-bundle to record the new fingerprint so subsequent reloads skip unchanged
+sources.
 
 ### Concurrency
 

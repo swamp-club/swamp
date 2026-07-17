@@ -234,7 +234,7 @@ attributes:
 ### data.listVersions(modelName, dataName)
 
 Returns an array of available version numbers for a data artifact, sorted in
-descending order (newest first):
+ascending order (oldest first):
 
 ```yaml
 attributes:

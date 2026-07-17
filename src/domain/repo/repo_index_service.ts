@@ -153,13 +153,13 @@ export interface RepoIndexService {
 
   /**
    * Handles a WorkflowRunStarted event.
-   * Creates the run directory and updates the latest symlink.
+   * Creates the run directory and updates the latest marker.
    */
   handleWorkflowRunStarted(event: WorkflowRunStarted): Promise<void>;
 
   /**
    * Handles a WorkflowRunCompleted event.
-   * Updates step output symlinks.
+   * Updates step output markers.
    */
   handleWorkflowRunCompleted(event: WorkflowRunCompleted): Promise<void>;
 

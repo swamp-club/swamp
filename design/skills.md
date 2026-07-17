@@ -153,7 +153,7 @@ Promptfoo tests whether an LLM correctly routes user queries to the right skill.
 It reads all `trigger_evals.json` files, presents each query to the model as a
 tool-selection task, and asserts that the correct skill was (or was not) called.
 
-**Run against the default model (sonnet):**
+**Run against the default model (opus):**
 
 ```bash
 export ANTHROPIC_API_KEY=<your-key>
@@ -164,10 +164,10 @@ deno run eval-skill-triggers
 
 ```bash
 export ANTHROPIC_API_KEY=<your-key>
-deno run eval-skill-triggers --model opus
+deno run eval-skill-triggers --model sonnet
 
 export OPENAI_API_KEY=<your-key>
-deno run eval-skill-triggers --model gpt-4.1
+deno run eval-skill-triggers --model gpt-5.4
 
 export GOOGLE_API_KEY=<your-key>
 deno run eval-skill-triggers --model gemini-2.5-pro
@@ -203,7 +203,7 @@ Two jobs run in parallel on every PR that touches skill files:
 Fails the PR if any skill scores below 90%.
 
 **skill-trigger-eval** — runs `deno run eval-skill-triggers` (promptfoo) with
-the default sonnet model. Fails the PR if the pass rate drops below 90%.
+the default opus model. Fails the PR if the pass rate drops below 90%.
 
 Both jobs write detailed results to the GitHub Actions step summary for easy
 review.
@@ -211,14 +211,16 @@ review.
 ### Weekly Multi-Model Regression
 
 A scheduled workflow (`multi-model-eval.yml`) runs every Saturday at 08:00 UTC.
-It tests trigger routing against four models in parallel:
+It tests trigger routing against six models in parallel:
 
 | Model          | Provider  | Concurrency | API Key Env        |
 | -------------- | --------- | ----------- | ------------------ |
-| sonnet         | Anthropic | 20          | `ANTHROPIC_API_KEY` |
 | opus           | Anthropic | 20          | `ANTHROPIC_API_KEY` |
-| gpt-4.1        | OpenAI    | 5           | `OPENAI_API_KEY`   |
+| sonnet         | Anthropic | 20          | `ANTHROPIC_API_KEY` |
+| gpt-5.4        | OpenAI    | 1           | `OPENAI_API_KEY`   |
 | gemini-2.5-pro | Google    | 20          | `GOOGLE_API_KEY`   |
+| gemini-3.1-pro | Google    | 20          | `GOOGLE_API_KEY`   |
+| fable          | Anthropic | 20          | `ANTHROPIC_API_KEY` |
 
 This catches model-specific regressions that the single-model PR check would
 miss. It can also be triggered manually via `workflow_dispatch` with a model

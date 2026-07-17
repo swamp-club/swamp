@@ -237,7 +237,7 @@ export interface UnifiedDataRepository {
   ): Promise<void>;
 
   /**
-   * Removes the latest symlink for expired data (soft delete).
+   * Removes the latest marker for expired data (soft delete).
    * Version directories remain on disk but data becomes inaccessible.
    *
    * @param type - The model type
