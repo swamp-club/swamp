@@ -313,6 +313,7 @@ Deno.test(
           extensionsToReinstall: [],
           localSkillCopies: [],
           changedFiles: [],
+          untrustedCollectives: [],
           tool: null,
         },
       },
@@ -351,6 +352,7 @@ Deno.test(
           extensionsToReinstall: [],
           localSkillCopies: [],
           changedFiles: [],
+          untrustedCollectives: [],
           tool: null,
         },
       },
@@ -389,6 +391,7 @@ Deno.test(
             },
           ],
           changedFiles: [],
+          untrustedCollectives: [],
           tool: null,
         },
       },
@@ -403,5 +406,120 @@ Deno.test(
       output,
       "/home/user/.claude/skills/swamp-getting-started",
     );
+  },
+);
+
+Deno.test(
+  "LogRepoUpgradeRenderer: warns about untrusted collectives",
+  () => {
+    const output = captureUpgradeLogOutput([
+      { kind: "upgrading" },
+      {
+        kind: "completed",
+        data: {
+          path: "/tmp/x",
+          previousVersion: "0.1.0",
+          newVersion: "0.1.1",
+          upgradedAt: "2026-04-24T00:00:00Z",
+          skillsUpdated: [],
+          instructionsUpdated: false,
+          settingsUpdated: false,
+          gitignoreAction: "unchanged",
+          previousTools: ["claude"],
+          tools: ["claude"],
+          addedTools: [],
+          removedTools: [],
+          extensionsToReinstall: [],
+          localSkillCopies: [],
+          changedFiles: [],
+          untrustedCollectives: ["acme", "dougschaefer"],
+          tool: null,
+        },
+      },
+    ]);
+
+    assertStringIncludes(
+      output,
+      "Extensions from untrusted collectives: acme, dougschaefer",
+    );
+    assertStringIncludes(
+      output,
+      "swamp extension trust add acme",
+    );
+    assertStringIncludes(
+      output,
+      "swamp extension trust add dougschaefer",
+    );
+    assertStringIncludes(
+      output,
+      "swamp extension trust auto-trust on",
+    );
+  },
+);
+
+Deno.test(
+  "LogRepoUpgradeRenderer: no untrusted warning when list is empty",
+  () => {
+    const output = captureUpgradeLogOutput([
+      { kind: "upgrading" },
+      {
+        kind: "completed",
+        data: {
+          path: "/tmp/x",
+          previousVersion: "0.1.0",
+          newVersion: "0.1.1",
+          upgradedAt: "2026-04-24T00:00:00Z",
+          skillsUpdated: [],
+          instructionsUpdated: false,
+          settingsUpdated: false,
+          gitignoreAction: "unchanged",
+          previousTools: ["claude"],
+          tools: ["claude"],
+          addedTools: [],
+          removedTools: [],
+          extensionsToReinstall: [],
+          localSkillCopies: [],
+          changedFiles: [],
+          untrustedCollectives: [],
+          tool: null,
+        },
+      },
+    ]);
+
+    assertEquals(output.includes("untrusted collectives"), false);
+  },
+);
+
+Deno.test(
+  "JsonRepoUpgradeRenderer: includes untrustedCollectives in JSON output",
+  () => {
+    const output = captureStdout([
+      { kind: "upgrading" },
+      {
+        kind: "completed",
+        data: {
+          path: "/tmp/x",
+          previousVersion: "0.1.0",
+          newVersion: "0.1.1",
+          upgradedAt: "2026-04-24T00:00:00Z",
+          skillsUpdated: [],
+          instructionsUpdated: false,
+          settingsUpdated: false,
+          gitignoreAction: "unchanged",
+          previousTools: [],
+          tools: [],
+          addedTools: [],
+          removedTools: [],
+          extensionsToReinstall: [],
+          localSkillCopies: [],
+          changedFiles: [],
+          untrustedCollectives: ["acme"],
+          tool: null,
+        },
+      },
+    ]);
+
+    const parsed = JSON.parse(output);
+    assertEquals(parsed.untrustedCollectives, ["acme"]);
   },
 );

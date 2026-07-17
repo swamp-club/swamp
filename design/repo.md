@@ -101,8 +101,9 @@ attributes to control the behaviour of the swamp operations.
   first use. Default: `["swamp"]`. Set to `[]` to disable. Manageable via
   `swamp extension trust list/add/rm`.
 - `trustMemberCollectives`: Whether to auto-trust collectives the user belongs
-  to (cached from `auth login`/`auth whoami`). Default: `true`. Set to `false`
-  to only trust the explicit `trustedCollectives` list. Toggleable via
+  to (cached from `auth login`/`auth whoami`). Default: `false`. Set to `true`
+  to trust all membership collectives in addition to the explicit
+  `trustedCollectives` list. Toggleable via
   `swamp extension trust auto-trust <on|off>`.
 - `autoGc`: Enable automatic garbage collection after model method runs.
   Default: `false`. When `true`, `collectGarbage` runs for the model that just

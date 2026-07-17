@@ -271,6 +271,25 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
           }
         }
 
+        if (data.untrustedCollectives.length > 0) {
+          logger.warn(
+            `Extensions from untrusted collectives: ${
+              data.untrustedCollectives.join(", ")
+            }`,
+          );
+          logger.warn(
+            "  These extensions will not auto-resolve until their collectives are trusted.",
+          );
+          for (const collective of data.untrustedCollectives) {
+            logger.warn(
+              `  To trust: swamp extension trust add ${collective}`,
+            );
+          }
+          logger.warn(
+            "  Or trust all membership collectives: swamp extension trust auto-trust on",
+          );
+        }
+
         logger.info("  Skills updated: " + data.skillsUpdated.join(", "));
         logger.info(
           "  Instructions: " +
