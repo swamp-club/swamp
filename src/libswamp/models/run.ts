@@ -964,7 +964,7 @@ export async function* modelMethodRun(
             deps.eventBus &&
             execResult.dataHandles && execResult.dataHandles.length > 0
           ) {
-            deps.eventBus.publish(
+            await deps.eventBus.publish(
               createModelUpdated(
                 modelType.normalized,
                 definition.id,
