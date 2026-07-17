@@ -96,6 +96,40 @@ function baseChildEnv(configDir: string): Record<string, string> {
   return env;
 }
 
+let cachedDenoDir: string | null = null;
+
+/**
+ * The parent process's resolved deno cache directory. Children whose
+ * HOME/USERPROFILE is redirected must pin DENO_DIR to it — otherwise deno
+ * re-derives the cache under the fake home and re-downloads every module.
+ */
+async function realDenoDir(): Promise<string> {
+  if (cachedDenoDir === null) {
+    const { stdout } = await new Deno.Command(Deno.execPath(), {
+      args: ["info", "--json"],
+      stdout: "piped",
+      stderr: "null",
+    }).output();
+    const info = JSON.parse(new TextDecoder().decode(stdout)) as {
+      denoDir: string;
+    };
+    cachedDenoDir = info.denoDir;
+  }
+  return cachedDenoDir;
+}
+
+/** Child env with home redirected to a fake home dir (Windows included). */
+async function homeRedirectedEnv(
+  configDir: string,
+  homeDir: string,
+): Promise<Record<string, string>> {
+  const env = baseChildEnv(configDir);
+  env.HOME = homeDir;
+  env.USERPROFILE = homeDir;
+  env.DENO_DIR = await realDenoDir();
+  return env;
+}
+
 Deno.test("repo-less telemetry spools to the user-global directory", async () => {
   await withTempDir(async (configDir) => {
     await withTempDir(async (workDir) => {
@@ -238,13 +272,10 @@ Deno.test("home-as-repo legacy telemetry is auto-migrated on any invocation", as
 
         // Run an ordinary command from a non-repo cwd, with HOME pointing at
         // the home repo (USERPROFILE covers the Windows fallback).
-        const env = baseChildEnv(configDir);
-        env.HOME = homeDir;
-        env.USERPROFILE = homeDir;
         const run = await runCliWithEnv(
           ["--json", "telemetry", "stats"],
           workDir,
-          env,
+          await homeRedirectedEnv(configDir, homeDir),
         );
         assertEquals(run.code, 0, `telemetry stats failed: ${run.stderr}`);
 
@@ -285,13 +316,10 @@ Deno.test("home-as-repo legacy telemetry is NOT migrated when the home repo opte
 
         const legacyName = await seedRepoLocalEntry(homeDir);
 
-        const env = baseChildEnv(configDir);
-        env.HOME = homeDir;
-        env.USERPROFILE = homeDir;
         const run = await runCliWithEnv(
           ["--json", "telemetry", "stats"],
           workDir,
-          env,
+          await homeRedirectedEnv(configDir, homeDir),
         );
         assertEquals(run.code, 0, `telemetry stats failed: ${run.stderr}`);
 

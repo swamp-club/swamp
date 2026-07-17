@@ -122,15 +122,20 @@ Deno.test("migrateRepoTelemetryToGlobal: concurrent migrations drain each entry 
       await Deno.writeTextFile(join(spool, name), `{"id":"${i}"}`);
     }
 
-    // Both migrations list the same files; the rename loser hits NotFound
-    // (same filesystem, so the copy fallback also sees NotFound) and must
-    // skip the file instead of aborting the loop.
+    // Both migrations list the same files; the rename loser must skip the
+    // file instead of aborting the loop. The returned counts are
+    // informational and can overlap (some Windows filesystems report
+    // success for the losing rename), so assert the real invariants:
+    // no error, and every file drained to the destination exactly once.
     const [a, b] = await Promise.all([
       migrateRepoTelemetryToGlobal(repoDir, destDir),
       migrateRepoTelemetryToGlobal(repoDir, destDir),
     ]);
 
-    assertEquals(a + b, names.length);
+    assert(
+      a + b >= names.length,
+      `combined count ${a + b} lost entries (expected >= ${names.length})`,
+    );
     for (const name of names) {
       assert(await fileExists(join(destDir, name)));
       assertEquals(await fileExists(join(spool, name)), false);
