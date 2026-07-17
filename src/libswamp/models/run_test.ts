@@ -39,6 +39,10 @@ import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type { DataQueryService } from "../../domain/data/data_query_service.ts";
 import { SecretRedactor } from "../../domain/secrets/secret_redactor.ts";
+import { EventBus } from "../../domain/events/event_bus.ts";
+import type { ModelUpdated } from "../../domain/events/types.ts";
+import type { DataHandle } from "../../domain/models/model.ts";
+import { generateDataId } from "../../domain/data/data_id.ts";
 
 await initializeLogging({});
 
@@ -753,4 +757,69 @@ Deno.test("modelMethodRun: does not yield auto_gc_completed when autoGc is false
 
   const gcEvent = events.find((e) => e.kind === "auto_gc_completed");
   assertEquals(gcEvent, undefined);
+});
+
+// --- EventBus ModelUpdated emission tests ---
+
+Deno.test("modelMethodRun: publishes ModelUpdated when method writes data and eventBus is provided", async () => {
+  const definition = createTestDefinition("test-model", "run");
+  const dataHandle = {
+    dataId: generateDataId(),
+    name: "grant-main",
+    specName: "grant",
+    kind: "resource" as const,
+    version: 1,
+    size: 42,
+    tags: {},
+    metadata: { contentType: "application/json" },
+  } as DataHandle;
+  const modelDef = createTestModelDef("run");
+
+  const eventBus = new EventBus();
+  const published: ModelUpdated[] = [];
+  eventBus.subscribe<ModelUpdated>("ModelUpdated", (event) => {
+    published.push(event);
+  });
+
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(definition, modelDef),
+    createExecutionService: () =>
+      ({
+        executeWorkflow: () => Promise.resolve({ dataHandles: [dataHandle] }),
+        // deno-lint-ignore no-explicit-any
+      }) as any,
+    eventBus,
+  };
+
+  const ctx = createLibSwampContext();
+  await collect(
+    modelMethodRun(ctx, deps, createTestInput("test-model", "run")),
+  );
+
+  assertEquals(published.length, 1);
+  assertEquals(published[0].modelType, "test/model");
+  assertEquals(published[0].modelName, "test-model");
+});
+
+Deno.test("modelMethodRun: does not publish ModelUpdated when method writes no data", async () => {
+  const definition = createTestDefinition("test-model", "run");
+  const modelDef = createTestModelDef("run");
+
+  const eventBus = new EventBus();
+  const published: ModelUpdated[] = [];
+  eventBus.subscribe<ModelUpdated>("ModelUpdated", (event) => {
+    published.push(event);
+  });
+
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(definition, modelDef),
+    eventBus,
+  };
+
+  const ctx = createLibSwampContext();
+  await collect(
+    modelMethodRun(ctx, deps, createTestInput("test-model", "run")),
+  );
+
+  assertEquals(published.length, 0);
 });

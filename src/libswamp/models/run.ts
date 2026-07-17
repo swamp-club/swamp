@@ -21,6 +21,8 @@ import { cancelled, type SwampError, validationFailed } from "../errors.ts";
 import { inputValidationFailed } from "../workflows/run.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { MethodExecutionEvent } from "../../domain/models/method_events.ts";
+import type { EventBus } from "../../domain/events/event_bus.ts";
+import { createModelUpdated } from "../../domain/events/types.ts";
 import {
   executeReports,
   type ReportExecutionResult,
@@ -207,6 +209,7 @@ export interface ModelMethodRunDeps {
   ) => Promise<void>;
   getDefinitionPath?: (type: ModelType, id: string) => string;
   runTracker?: RunTrackerRepository;
+  eventBus?: EventBus;
   workflowRepo?:
     import("../../domain/workflows/repositories.ts").WorkflowRepository;
   workflowRunRepo?:
@@ -955,6 +958,19 @@ export async function* modelMethodRun(
           await deps.outputRepo.save(modelType, input.methodName, output);
           if (deps.runTracker) {
             deps.runTracker.complete(output.id, "completed");
+          }
+
+          if (
+            deps.eventBus &&
+            execResult.dataHandles && execResult.dataHandles.length > 0
+          ) {
+            deps.eventBus.publish(
+              createModelUpdated(
+                modelType.normalized,
+                definition.id,
+                definition.name,
+              ),
+            );
           }
 
           // --- Post-run reports ---

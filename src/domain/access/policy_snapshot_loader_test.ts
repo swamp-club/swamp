@@ -530,6 +530,54 @@ Deno.test("PolicySnapshotLoader: ignores DefinitionCreated for non-access models
   await loader.dispose();
 });
 
+Deno.test("PolicySnapshotLoader: rebuilds snapshot on ModelUpdated for grant revoke", async () => {
+  let callCount = 0;
+  const activeGrant = makeGrant({ state: "active" });
+  const revokedGrant = makeGrant({ ...activeGrant, state: "revoked" });
+
+  const dataRepo = {
+    findAllForType(type: ModelType) {
+      if (type.normalized === GRANT_MODEL_TYPE.normalized) {
+        callCount++;
+        return Promise.resolve([{
+          data: makeData("grant-main"),
+          modelType: type,
+          modelId: "g1",
+        }]);
+      }
+      return Promise.resolve([]);
+    },
+    getContent(
+      type: ModelType,
+      _modelId: string,
+      _dataName: string,
+    ) {
+      if (type.normalized === GRANT_MODEL_TYPE.normalized) {
+        const grant = callCount <= 1 ? activeGrant : revokedGrant;
+        return Promise.resolve(
+          new TextEncoder().encode(JSON.stringify(grant)),
+        );
+      }
+      return Promise.resolve(null);
+    },
+  } as unknown as UnifiedDataRepository;
+
+  const eventBus = new EventBus();
+  const loader = new PolicySnapshotLoader(dataRepo, eventBus);
+
+  await loader.load();
+  assertEquals(loader.snapshot.grantsForSubjects(["user:adam"]).length, 1);
+
+  await eventBus.publish(
+    createModelUpdated("swamp/grant", "g1", "my-grant"),
+  );
+
+  await delay(700);
+  assertEquals(loader.snapshot.grantsForSubjects(["user:adam"]).length, 0);
+
+  await loader.dispose();
+});
+
 Deno.test("PolicySnapshotLoader.loadWithCounts: returns counts", async () => {
   const grant = makeGrant();
   const group = makeGroup("devs", ["adam"]);
