@@ -32,13 +32,9 @@ import {
 import { shutdownLogs } from "../src/infrastructure/tracing/mod.ts";
 
 Deno.test("OTel logs: OTEL_LOGS_EXPORTER=none exports no log records even with an endpoint", async () => {
-  const savedEndpoint = Deno.env.get("OTEL_EXPORTER_OTLP_ENDPOINT");
-  const savedExporter = Deno.env.get("OTEL_LOGS_EXPORTER");
   const savedFetch = globalThis.fetch;
   const logPosts: string[] = [];
 
-  Deno.env.set("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test");
-  Deno.env.set("OTEL_LOGS_EXPORTER", "none");
   // deno-lint-ignore no-explicit-any
   globalThis.fetch = ((input: any): Promise<Response> => {
     const url = typeof input === "string" ? input : String(input);
@@ -48,7 +44,14 @@ Deno.test("OTel logs: OTEL_LOGS_EXPORTER=none exports no log records even with a
   }) as any;
 
   try {
-    await initializeLogging({});
+    await shutdownLogs();
+    await initializeLogging({
+      _reset: true,
+      _logsConfig: {
+        endpoint: "http://collector.test",
+        exporterKind: "none",
+      },
+    });
 
     getSwampLogger(["model", "method", "run", "m", "execute"])
       .info`this line must not be exported`;
@@ -58,10 +61,5 @@ Deno.test("OTel logs: OTEL_LOGS_EXPORTER=none exports no log records even with a
     assertEquals(logPosts.length, 0);
   } finally {
     globalThis.fetch = savedFetch;
-    if (savedEndpoint === undefined) {
-      Deno.env.delete("OTEL_EXPORTER_OTLP_ENDPOINT");
-    } else Deno.env.set("OTEL_EXPORTER_OTLP_ENDPOINT", savedEndpoint);
-    if (savedExporter === undefined) Deno.env.delete("OTEL_LOGS_EXPORTER");
-    else Deno.env.set("OTEL_LOGS_EXPORTER", savedExporter);
   }
 });

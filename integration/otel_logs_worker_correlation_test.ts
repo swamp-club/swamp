@@ -89,15 +89,14 @@ Deno.test("worker env: OTEL_* is inherited and TRACEPARENT is overlaid into the 
 });
 
 Deno.test("worker correlation: child logs carry the propagated parent trace id", async () => {
-  const saved: Record<string, string | undefined> = {
-    OTEL_EXPORTER_OTLP_ENDPOINT: Deno.env.get("OTEL_EXPORTER_OTLP_ENDPOINT"),
-    TRACEPARENT: Deno.env.get("TRACEPARENT"),
-  };
+  const savedTraceparent = Deno.env.get("TRACEPARENT");
   const savedFetch = globalThis.fetch;
   const captured: { url: string; body: string }[] = [];
 
-  // Apply the env the child would have booted with.
-  Deno.env.set("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test");
+  // TRACEPARENT must be in Deno.env because initTracing() reads it from the
+  // process environment (it's how W3C trace propagation works across processes).
+  // The OTel logs endpoint is passed via _logsConfig to avoid racing with other
+  // parallel test files that manipulate OTEL_EXPORTER_OTLP_ENDPOINT.
   Deno.env.set("TRACEPARENT", `00-${PARENT_TRACE}-${PARENT_SPAN}-01`);
   // deno-lint-ignore no-explicit-any
   globalThis.fetch = ((input: any, init: any): Promise<Response> => {
@@ -112,10 +111,17 @@ Deno.test("worker correlation: child logs carry the propagated parent trace id",
   }) as any;
 
   try {
+    await shutdownLogs();
+
     // This mirrors main.ts: initTracing() extracts TRACEPARENT and returns the
     // parent context; runWithParentTrace activates it for the run.
-    const parentCtx = await initTracing();
-    await initializeLogging({ jsonMode: true });
+    // Endpoint passed via config to avoid Deno.env races with parallel tests.
+    const parentCtx = await initTracing({ endpoint: "http://collector.test" });
+    await initializeLogging({
+      jsonMode: true,
+      _reset: true,
+      _logsConfig: { endpoint: "http://collector.test" },
+    });
 
     await runWithParentTrace(parentCtx, async () => {
       await withSpan("swamp.model.method.run", {}, (span) => {
@@ -150,9 +156,7 @@ Deno.test("worker correlation: child logs carry the propagated parent trace id",
     assertEquals(found.traceId, PARENT_TRACE);
   } finally {
     globalThis.fetch = savedFetch;
-    for (const [key, value] of Object.entries(saved)) {
-      if (value === undefined) Deno.env.delete(key);
-      else Deno.env.set(key, value);
-    }
+    if (savedTraceparent === undefined) Deno.env.delete("TRACEPARENT");
+    else Deno.env.set("TRACEPARENT", savedTraceparent);
   }
 });

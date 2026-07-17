@@ -59,11 +59,9 @@ function countBodies(
 }
 
 Deno.test("OTel logs (log mode): each record is exported exactly once, never duplicated", async () => {
-  const savedEndpoint = Deno.env.get("OTEL_EXPORTER_OTLP_ENDPOINT");
   const savedFetch = globalThis.fetch;
   const captured: { url: string; body: string }[] = [];
 
-  Deno.env.set("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test");
   // deno-lint-ignore no-explicit-any
   globalThis.fetch = ((input: any, init: any): Promise<Response> => {
     if (init?.body) {
@@ -85,7 +83,11 @@ Deno.test("OTel logs (log mode): each record is exported exactly once, never dup
     // _reset clears the once-per-process guard and passes reset:true to
     // LogTape's configure(), so this works even when another test file
     // already called initializeLogging in the same --parallel run.
-    await initializeLogging({ _reset: true });
+    // _logsConfig bypasses Deno.env to avoid races with other parallel tests.
+    await initializeLogging({
+      _reset: true,
+      _logsConfig: { endpoint: "http://collector.test" },
+    });
 
     // A run-category logger: its records reach the root (which holds the otel
     // sink) by inheritance. If the otel sink were also on this logger, the
@@ -101,10 +103,5 @@ Deno.test("OTel logs (log mode): each record is exported exactly once, never dup
     assertEquals(countBodies(captured, "unique-root-line-def456"), 1);
   } finally {
     globalThis.fetch = savedFetch;
-    if (savedEndpoint === undefined) {
-      Deno.env.delete("OTEL_EXPORTER_OTLP_ENDPOINT");
-    } else {
-      Deno.env.set("OTEL_EXPORTER_OTLP_ENDPOINT", savedEndpoint);
-    }
   }
 });

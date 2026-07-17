@@ -17,8 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-export { initTracing, shutdownTracing } from "./otel_init.ts";
-export { initLogs, shutdownLogs } from "./otel_logs_init.ts";
+export {
+  initTracing,
+  type InitTracingConfig,
+  shutdownTracing,
+} from "./otel_init.ts";
+export {
+  initLogs,
+  type InitLogsConfig,
+  shutdownLogs,
+} from "./otel_logs_init.ts";
 export {
   getTracer,
   SpanStatusCode,

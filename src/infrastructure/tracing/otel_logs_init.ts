@@ -74,6 +74,18 @@ class StderrLogRecordExporter implements LogRecordExporter {
 }
 
 /**
+ * Test-only configuration that bypasses `Deno.env` for OTel logs setup.
+ * Production callers omit this — `initLogs` reads env vars by default.
+ * Tests pass config directly to avoid races on the process-wide `Deno.env`
+ * when `deno test --parallel` runs multiple OTel test files concurrently.
+ */
+export interface InitLogsConfig {
+  endpoint?: string;
+  exporterKind?: string;
+  useBatch?: boolean;
+}
+
+/**
  * Initializes the OpenTelemetry **logs** signal, mirroring
  * {@link initTracing}. Returns the {@link LoggerProvider} so the logging layer
  * can build a LogTape sink from it (the bridge sink lives in the logging module
@@ -88,7 +100,9 @@ class StderrLogRecordExporter implements LogRecordExporter {
  * (per-record flush, predictable for short CLI runs); set `OTEL_BLRP_USE=1` for
  * a {@link BatchLogRecordProcessor}, which suits high-volume `swamp serve`.
  */
-export async function initLogs(): Promise<LoggerProvider | undefined> {
+export async function initLogs(
+  config?: InitLogsConfig,
+): Promise<LoggerProvider | undefined> {
   // Idempotent: if logs export is already initialized, return the live provider
   // rather than building (and leaking) a second one. The only production caller
   // (initializeLogging) is already once-per-process, but initLogs is exported,
@@ -97,8 +111,10 @@ export async function initLogs(): Promise<LoggerProvider | undefined> {
     return providerRef;
   }
 
-  const endpoint = Deno.env.get("OTEL_EXPORTER_OTLP_ENDPOINT");
-  const exporterKind = Deno.env.get("OTEL_LOGS_EXPORTER") ?? "otlp";
+  const endpoint = config?.endpoint ??
+    Deno.env.get("OTEL_EXPORTER_OTLP_ENDPOINT");
+  const exporterKind = config?.exporterKind ??
+    Deno.env.get("OTEL_LOGS_EXPORTER") ?? "otlp";
 
   if (exporterKind === "none") {
     // Explicit opt-out — traces may still be on, but logs stay off.
@@ -143,7 +159,8 @@ export async function initLogs(): Promise<LoggerProvider | undefined> {
 
   // Short-lived CLI invocations flush per-record; long-running `swamp serve`
   // can opt into batching via OTEL_BLRP_USE=1 (mirrors OTEL_BSP_USE for spans).
-  const useBatch = Deno.env.get("OTEL_BLRP_USE") === "1";
+  const useBatch = config?.useBatch ??
+    Deno.env.get("OTEL_BLRP_USE") === "1";
   const processor = useBatch
     ? new BatchLogRecordProcessor(exporter)
     : new SimpleLogRecordProcessor(exporter);
