@@ -32,6 +32,14 @@
 /** An immutable name→value capture of environment variables. */
 export type EnvironmentSnapshot = Readonly<Record<string, string>>;
 
+// Worker control-plane credentials that must never reach a dispatch runner.
+// Canonical sources: collectWorkerEnv (worker_daemon.ts), worker_connect.ts.
+const WORKER_CREDENTIAL_VARS: ReadonlySet<string> = new Set([
+  "SWAMP_WORKER_TOKEN",
+  "SWAMP_SERVER_TOKEN",
+  "SWAMP_ORCHESTRATOR_URL",
+]);
+
 const DENYLIST_EXACT: ReadonlySet<string> = new Set([
   "HOME",
   "USER",
@@ -81,6 +89,22 @@ export function captureEnvironmentSnapshot(
     }
   }
   return snapshot;
+}
+
+/**
+ * Strip worker control-plane credentials from an environment record so they
+ * are not inherited by dispatch runner child processes.
+ */
+export function stripWorkerCredentials(
+  env: Record<string, string>,
+): Record<string, string> {
+  const cleaned: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (!WORKER_CREDENTIAL_VARS.has(name)) {
+      cleaned[name] = value;
+    }
+  }
+  return cleaned;
 }
 
 /**
