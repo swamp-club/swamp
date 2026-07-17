@@ -215,6 +215,8 @@ export interface RepoUpgradeData {
   localSkillCopies: { skillsDir: string; names: string[] }[];
   /** Repo-relative paths of files modified during this upgrade. */
   changedFiles: string[];
+  /** Collectives referenced in the lockfile that are not trusted (swamp-club#1217). */
+  untrustedCollectives: string[];
   /** @deprecated Read `tools` instead. `null` when not single-tool. */
   tool: string | null;
 }
@@ -363,6 +365,7 @@ export async function* repoUpgrade(
         extensionsToReinstall: result.extensionsToReinstall,
         localSkillCopies: result.localSkillCopies,
         changedFiles: result.changedFiles,
+        untrustedCollectives: result.untrustedCollectives,
         tool: legacyToolField(result.tools),
       };
 

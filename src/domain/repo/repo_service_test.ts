@@ -2789,3 +2789,99 @@ Deno.test("removeLocalBundledSkills: no-op when directory already gone", async (
     }]);
   });
 });
+
+Deno.test("RepoService.upgrade: returns untrusted collectives from lockfile", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath);
+
+    // Write a lockfile with extensions from an untrusted collective
+    const modelsDir = join(tempDir, "models");
+    await ensureDir(modelsDir);
+    await Deno.writeTextFile(
+      join(modelsDir, "upstream_extensions.json"),
+      JSON.stringify({
+        "@acme/widgets": { version: "1.0.0", pulledAt: "2026-01-01" },
+        "@swamp/echo": { version: "2.0.0", pulledAt: "2026-01-01" },
+      }),
+    );
+
+    const newService = new RepoService("0.2.0");
+    const result = await newService.upgrade(repoPath);
+
+    assertEquals(result.untrustedCollectives, ["acme"]);
+  });
+});
+
+Deno.test("RepoService.upgrade: returns empty when all collectives are trusted", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath);
+
+    // Write the marker with an extra trusted collective
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(repoPath);
+    marker!.trustedCollectives = ["swamp", "acme"];
+    await markerRepo.write(repoPath, marker!);
+
+    // Write a lockfile with extensions only from trusted collectives
+    const modelsDir = join(tempDir, "models");
+    await ensureDir(modelsDir);
+    await Deno.writeTextFile(
+      join(modelsDir, "upstream_extensions.json"),
+      JSON.stringify({
+        "@acme/widgets": { version: "1.0.0", pulledAt: "2026-01-01" },
+        "@swamp/echo": { version: "2.0.0", pulledAt: "2026-01-01" },
+      }),
+    );
+
+    const newService = new RepoService("0.2.0");
+    const result = await newService.upgrade(repoPath);
+
+    assertEquals(result.untrustedCollectives, []);
+  });
+});
+
+Deno.test("RepoService.upgrade: skips untrusted warning when trustMemberCollectives is on", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath);
+
+    // Enable trustMemberCollectives
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(repoPath);
+    marker!.trustMemberCollectives = true;
+    await markerRepo.write(repoPath, marker!);
+
+    // Write a lockfile with extensions from a collective not in trustedCollectives
+    const modelsDir = join(tempDir, "models");
+    await ensureDir(modelsDir);
+    await Deno.writeTextFile(
+      join(modelsDir, "upstream_extensions.json"),
+      JSON.stringify({
+        "@acme/widgets": { version: "1.0.0", pulledAt: "2026-01-01" },
+      }),
+    );
+
+    const newService = new RepoService("0.2.0");
+    const result = await newService.upgrade(repoPath);
+
+    assertEquals(result.untrustedCollectives, []);
+  });
+});
+
+Deno.test("RepoService.upgrade: returns empty when no lockfile exists", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath);
+
+    const newService = new RepoService("0.2.0");
+    const result = await newService.upgrade(repoPath);
+
+    assertEquals(result.untrustedCollectives, []);
+  });
+});

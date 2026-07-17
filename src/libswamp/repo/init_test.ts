@@ -72,6 +72,7 @@ function makeUpgradeDeps(
         extensionsToReinstall: [],
         localSkillCopies: [],
         changedFiles: [".swamp.yaml", "CLAUDE.md"],
+        untrustedCollectives: [],
       }),
     ...overrides,
   };

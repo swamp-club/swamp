@@ -48,6 +48,7 @@ import { ToolResolver } from "./tool_resolver.ts";
 import { readCustomTools } from "../../infrastructure/persistence/custom_tools_repository.ts";
 import { BuiltInToolSkillDirsRepository } from "../../infrastructure/persistence/builtin_tool_skill_dirs_repository.ts";
 import { CustomToolSkillDirsRepository } from "../../infrastructure/persistence/custom_tool_skill_dirs_repository.ts";
+import { readUpstreamExtensions } from "../../infrastructure/persistence/upstream_extensions.ts";
 
 const logger = getLogger(["swamp", "repo", "service"]);
 
@@ -216,6 +217,8 @@ export interface RepoUpgradeResult {
   localSkillCopies: LocalSkillCopy[];
   /** Repo-relative paths of files modified during this upgrade. */
   changedFiles: string[];
+  /** Collectives referenced in the lockfile that are not trusted (swamp-club#1217). */
+  untrustedCollectives: string[];
 }
 
 /**
@@ -511,6 +514,11 @@ export class RepoService {
       );
     }
 
+    const untrustedCollectives = await this.detectUntrustedCollectives(
+      repoPath,
+      updatedMarker,
+    );
+
     return {
       path: repoPath.value,
       previousVersion,
@@ -527,6 +535,7 @@ export class RepoService {
       extensionsToReinstall,
       localSkillCopies,
       changedFiles,
+      untrustedCollectives,
     };
   }
 
@@ -760,6 +769,55 @@ export class RepoService {
     }
     result.sort();
     return result;
+  }
+
+  /**
+   * Reads the lockfile and returns collectives that are referenced but not
+   * trusted (swamp-club#1217). Failures are swallowed — a missing or
+   * corrupt lockfile simply yields an empty list.
+   */
+  private async detectUntrustedCollectives(
+    repoPath: RepoPath,
+    marker: RepoMarkerData,
+  ): Promise<string[]> {
+    const modelsDir = marker.modelsDir ?? "models";
+    const lockfilePath = join(
+      repoPath.value,
+      modelsDir,
+      "upstream_extensions.json",
+    );
+    let entries: Record<string, unknown>;
+    try {
+      entries = await readUpstreamExtensions(lockfilePath);
+    } catch {
+      return [];
+    }
+
+    // When trustMemberCollectives is on, all the user's membership
+    // collectives are trusted at runtime. We don't have auth context
+    // during upgrade to know which those are, so skip the warning
+    // entirely to avoid false positives.
+    if (marker.trustMemberCollectives === true) return [];
+
+    const lockfileCollectives = new Set<string>();
+    for (const name of Object.keys(entries)) {
+      if (name.startsWith("@")) {
+        const slash = name.indexOf("/", 1);
+        if (slash !== -1) {
+          lockfileCollectives.add(name.slice(1, slash));
+        }
+      }
+    }
+
+    if (lockfileCollectives.size === 0) return [];
+
+    const trusted = new Set(
+      marker.trustedCollectives ?? ["swamp"],
+    );
+
+    return [...lockfileCollectives]
+      .filter((c) => !trusted.has(c))
+      .sort();
   }
 
   /**

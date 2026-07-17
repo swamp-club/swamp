@@ -108,7 +108,7 @@ export function renderAutoResolveNotFound(
     );
   } else {
     logger
-      .error`Auto-resolution failed for type ${type}: no matching extension found in registry.`;
+      .error`Auto-resolution failed for type ${type}: no extension publishes this type. Verify the type name is correct.`;
     logger.error`Install manually with: swamp extension pull <extension-name>`;
   }
 }
