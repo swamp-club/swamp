@@ -18,13 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
-  assert,
   assertEquals,
   assertNotEquals,
   assertStringIncludes,
 } from "@std/assert";
-import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
+import { TarStream } from "@std/tar/tar-stream";
 import { Platform } from "../../domain/update/platform.ts";
 import { HttpUpdateChecker } from "./http_update_checker.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
@@ -94,43 +93,51 @@ Deno.test("version extraction handles various CalVer formats", async () => {
  * Creates a tarball containing a fake `swamp` binary and returns its bytes
  * (as an ArrayBuffer suitable for `new Response`) plus the SHA-256 checksum
  * the HttpUpdateChecker will need to verify.
+ *
+ * Built entirely in-process with TarStream + CompressionStream — no external
+ * `tar` binary required, which eliminates flaky spawn failures on CI.
  */
 async function buildFakeSwampTarball(): Promise<{
   body: ArrayBuffer;
   checksum: string;
 }> {
-  const stagingDir = await Deno.makeTempDir({
-    prefix: "swamp-update-staging-",
-  });
-  try {
-    const archiveRoot = join(stagingDir, "archive");
-    await ensureDir(archiveRoot);
-    // Fake swamp binary — content doesn't matter, only the file presence
-    // and its post-extraction permissions/xattrs do.
-    await Deno.writeTextFile(
-      join(archiveRoot, "swamp"),
-      "#!/bin/sh\necho fake swamp\n",
+  const payload = new TextEncoder().encode("#!/bin/sh\necho fake swamp\n");
+  const chunks: Uint8Array[] = [];
+  await ReadableStream.from([
+    {
+      type: "file" as const,
+      path: "swamp",
+      size: payload.length,
+      readable: new ReadableStream({
+        start(controller) {
+          controller.enqueue(payload);
+          controller.close();
+        },
+      }),
+    },
+  ])
+    .pipeThrough(new TarStream())
+    .pipeThrough(new CompressionStream("gzip"))
+    .pipeTo(
+      new WritableStream({
+        write(chunk) {
+          chunks.push(new Uint8Array(chunk));
+        },
+      }),
     );
-    await Deno.chmod(join(archiveRoot, "swamp"), 0o644);
 
-    const tarballPath = join(stagingDir, "swamp.tar.gz");
-    const tar = new Deno.Command("tar", {
-      args: ["-czf", tarballPath, "-C", archiveRoot, "swamp"],
-      stdout: "piped",
-      stderr: "piped",
-    });
-    const tarResult = await tar.output();
-    assert(tarResult.success, "tar creation should succeed");
-    const bytes = await Deno.readFile(tarballPath);
-    const checksum = await computeChecksum(bytes);
-    // Copy into a fresh ArrayBuffer so `new Response()` accepts it without
-    // TS BodyInit complaints from Uint8Array<ArrayBufferLike> vs ArrayBuffer.
-    const body = new ArrayBuffer(bytes.length);
-    new Uint8Array(body).set(bytes);
-    return { body, checksum };
-  } finally {
-    await Deno.remove(stagingDir, { recursive: true });
+  let totalLen = 0;
+  for (const c of chunks) totalLen += c.length;
+  const bytes = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const c of chunks) {
+    bytes.set(c, offset);
+    offset += c.length;
   }
+
+  const checksum = await computeChecksum(bytes);
+  const body = bytes.buffer as ArrayBuffer;
+  return { body, checksum };
 }
 
 Deno.test({
