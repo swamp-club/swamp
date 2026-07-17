@@ -18,10 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
-import {
-  SWAMP_SUBDIRS,
-  swampPath,
-} from "../../infrastructure/persistence/paths.ts";
+import { join } from "@std/path";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -76,12 +73,7 @@ export function createVaultEditDeps(repoDir: string): VaultEditDeps {
     findById: (type, id) => repo.findById(type, id),
     findAll: () => repo.findAll(),
     getVaultPath: (config) =>
-      swampPath(
-        repoDir,
-        SWAMP_SUBDIRS.vault,
-        config.type,
-        `${config.id}.yaml`,
-      ),
+      join(repoDir, "vaults", config.type, `${config.id}.yaml`),
     fileExists: async (path) => {
       try {
         await Deno.stat(path);

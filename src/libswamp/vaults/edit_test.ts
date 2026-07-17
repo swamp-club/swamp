@@ -59,7 +59,7 @@ Deno.test("vaultEdit: yields error when vault not found", async () => {
 Deno.test("vaultEdit: opens editor when vault found by name", async () => {
   const deps = makeDeps({
     findByName: () => Promise.resolve(testVaultConfig),
-    getVaultPath: () => "/repo/.swamp/vault/env/vault-1.yaml",
+    getVaultPath: () => "/repo/vaults/env/vault-1.yaml",
     openEditor: () => Promise.resolve({ editor: "Neovim" }),
   });
 
@@ -74,7 +74,7 @@ Deno.test("vaultEdit: opens editor when vault found by name", async () => {
     {
       kind: "completed",
       data: {
-        path: "/repo/.swamp/vault/env/vault-1.yaml",
+        path: "/repo/vaults/env/vault-1.yaml",
         editor: "Neovim",
         status: "opened",
         name: "my-vault",
@@ -88,7 +88,7 @@ Deno.test("vaultEdit: finds vault by ID when name lookup fails", async () => {
   const deps = makeDeps({
     findByName: () => Promise.resolve(null),
     findAll: () => Promise.resolve([testVaultConfig]),
-    getVaultPath: () => "/repo/.swamp/vault/env/vault-1.yaml",
+    getVaultPath: () => "/repo/vaults/env/vault-1.yaml",
     openEditor: () => Promise.resolve({ editor: "VS Code" }),
   });
 
@@ -114,7 +114,7 @@ Deno.test("vaultEdit: finds vault by ID with type hint", async () => {
       }
       return Promise.resolve(null);
     },
-    getVaultPath: () => "/repo/.swamp/vault/env/vault-1.yaml",
+    getVaultPath: () => "/repo/vaults/env/vault-1.yaml",
     openEditor: () => Promise.resolve({ editor: "VS Code" }),
   });
 
@@ -152,7 +152,7 @@ Deno.test("vaultEdit: yields error when vault type mismatch", async () => {
 Deno.test("vaultEdit: yields error when vault file not found", async () => {
   const deps = makeDeps({
     findByName: () => Promise.resolve(testVaultConfig),
-    getVaultPath: () => "/repo/.swamp/vault/env/vault-1.yaml",
+    getVaultPath: () => "/repo/vaults/env/vault-1.yaml",
     fileExists: () => Promise.resolve(false),
   });
 
