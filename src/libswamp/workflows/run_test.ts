@@ -134,6 +134,12 @@ class InMemoryWorkflowRunRepository implements WorkflowRunRepository {
     this.runs.delete(wfId);
     return Promise.resolve(runs.length);
   }
+  deleteOlderThan(
+    _cutoff: Date,
+    _options?: { dryRun?: boolean },
+  ): Promise<{ deleted: number; bytesReclaimed: number }> {
+    return Promise.resolve({ deleted: 0, bytesReclaimed: 0 });
+  }
 }
 
 /**

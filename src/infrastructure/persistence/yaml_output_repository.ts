@@ -368,6 +368,85 @@ export class YamlOutputRepository implements OutputRepository {
     return join(this.getMethodDir(type, method), filename);
   }
 
+  async deleteOlderThan(
+    cutoff: Date,
+    options?: { dryRun?: boolean },
+  ): Promise<{ deleted: number; bytesReclaimed: number }> {
+    const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
+    const cutoffMs = cutoff.getTime();
+    let deleted = 0;
+    let bytesReclaimed = 0;
+
+    const yamlFiles = await this.collectYamlFiles(this.baseDir);
+    for (const yamlPath of yamlFiles) {
+      try {
+        const stat = await Deno.stat(yamlPath);
+        const mtimeMs = stat.mtime?.getTime();
+        if (mtimeMs !== undefined && mtimeMs >= cutoffMs) continue;
+
+        const content = await Deno.readTextFile(yamlPath);
+        const data = parseYaml(content) as ModelOutputData;
+        if (!TERMINAL_STATUSES.has(data.status)) continue;
+        const startedAt = data.startedAt
+          ? new Date(data.startedAt).getTime()
+          : undefined;
+        if (
+          startedAt === undefined || Number.isNaN(startedAt) ||
+          startedAt >= cutoffMs
+        ) continue;
+
+        const logPath = yamlPath.replace(/\.yaml$/, ".log");
+        let fileBytes = stat.size ?? 0;
+        try {
+          const logStat = await Deno.stat(logPath);
+          fileBytes += logStat.size ?? 0;
+        } catch {
+          // log file may not exist
+        }
+
+        if (!options?.dryRun) {
+          await this.notifyDirty(yamlPath);
+          try {
+            await Deno.remove(yamlPath);
+          } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) throw error;
+          }
+          try {
+            await Deno.remove(logPath);
+          } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) throw error;
+          }
+          await cleanupEmptyParentDirs(yamlPath, this.baseDir);
+        }
+
+        deleted++;
+        bytesReclaimed += fileBytes;
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) continue;
+        throw error;
+      }
+    }
+
+    return { deleted, bytesReclaimed };
+  }
+
+  private async collectYamlFiles(dir: string): Promise<string[]> {
+    const files: string[] = [];
+    try {
+      for await (const entry of Deno.readDir(dir)) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory) {
+          files.push(...await this.collectYamlFiles(path));
+        } else if (entry.isFile && entry.name.endsWith(".yaml")) {
+          files.push(path);
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+    return files;
+  }
+
   private getOutputsDir(): string {
     return this.baseDir;
   }

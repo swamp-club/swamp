@@ -119,4 +119,14 @@ export interface WorkflowRunRepository {
    * Deletes all runs for a workflow.
    */
   deleteAllByWorkflowId(workflowId: WorkflowId): Promise<number>;
+
+  /**
+   * Deletes all terminal runs (succeeded/failed/cancelled) older than the
+   * cutoff. Running and suspended runs are never deleted regardless of age.
+   * Returns the number of runs deleted.
+   */
+  deleteOlderThan(
+    cutoff: Date,
+    options?: { dryRun?: boolean },
+  ): Promise<{ deleted: number; bytesReclaimed: number }>;
 }

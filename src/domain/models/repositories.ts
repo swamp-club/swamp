@@ -128,4 +128,13 @@ export interface OutputRepository {
    * @returns The file path
    */
   getPath(type: ModelType, method: string, output: ModelOutput): string;
+
+  /**
+   * Deletes all outputs older than the cutoff.
+   * Returns the number of outputs deleted and bytes reclaimed.
+   */
+  deleteOlderThan(
+    cutoff: Date,
+    options?: { dryRun?: boolean },
+  ): Promise<{ deleted: number; bytesReclaimed: number }>;
 }
