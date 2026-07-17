@@ -214,13 +214,19 @@ function renderWorkflowPreview(
     );
   }
 
-  // Show YAML with syntax highlighting
-  const rendered = renderMarkdownToTerminal(
-    `**${detail.name}**\n\n\`\`\`yaml\n${detail.yaml}\n\`\`\``,
-  );
+  const lines: React.ReactElement[] = [
+    <Text key="name" bold wrap="truncate-end">{detail.name}</Text>,
+    <Text key="spacer" />,
+  ];
+  const yamlLines = detail.yaml.split("\n");
+  for (let i = 0; i < yamlLines.length; i++) {
+    lines.push(
+      <Text key={`y-${i}`} wrap="truncate-end">{yamlLines[i]}</Text>,
+    );
+  }
   return (
     <Box flexDirection="column" marginLeft={1} width={innerWidth}>
-      <Text wrap="truncate-end">{rendered}</Text>
+      {lines}
     </Box>
   );
 }

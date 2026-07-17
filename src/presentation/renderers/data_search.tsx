@@ -162,8 +162,7 @@ export function createDataSearchRenderer(
 // ---------------------------------------------------------------------------
 
 /**
- * Builds the metadata section as markdown (rendered separately from content
- * to avoid markdown-in-markdown nesting issues).
+ * Builds the metadata section as markdown for scrollback (plain-text output).
  */
 function buildMetadataMarkdown(item: DataSearchItem): string {
   const tagEntries = Object.entries(item.tags);
@@ -194,30 +193,72 @@ function buildMetadataMarkdown(item: DataSearchItem): string {
 }
 
 /**
- * Renders content based on its type. Markdown content is rendered as markdown.
- * JSON/YAML get syntax-highlighted code blocks. Other text is shown plain.
+ * Builds metadata as React elements for the preview pane. Uses Ink's own
+ * <Text> styling instead of ANSI from renderMarkdownToTerminal — Ink can
+ * measure its own elements correctly for truncation.
  */
-function renderContentString(
-  content: string,
-  contentType: string,
-): string {
-  if (contentType === "text/markdown") {
-    // Content IS markdown — render it directly
-    return renderMarkdownToTerminal(content);
+function buildMetadataElements(item: DataSearchItem): React.ReactElement[] {
+  const tagEntries = Object.entries(item.tags);
+  const elements: React.ReactElement[] = [
+    <Text key="name" bold wrap="truncate-end">
+      {item.name} <Text dimColor>v{item.version}</Text>
+    </Text>,
+    <Text key="spacer" />,
+    <Text key="model" dimColor wrap="truncate-end">
+      Model: {item.modelName} ({item.modelType})
+    </Text>,
+    <Text key="ct" dimColor wrap="truncate-end">
+      Content Type: {item.contentType}
+    </Text>,
+    <Text key="size" dimColor wrap="truncate-end">
+      Size: {formatSize(item.size)}
+    </Text>,
+    <Text key="lifetime" dimColor wrap="truncate-end">
+      Lifetime: {item.lifetime}
+    </Text>,
+    <Text key="type" dimColor wrap="truncate-end">Type: {item.type}</Text>,
+    <Text key="owner" dimColor wrap="truncate-end">
+      Owner: {item.ownerType} {item.ownerRef}
+    </Text>,
+  ];
+
+  if (item.workflowTag) {
+    elements.push(
+      <Text key="wf" dimColor wrap="truncate-end">
+        Workflow: {item.workflowTag}
+      </Text>,
+    );
+  }
+  if (item.jobTag) {
+    elements.push(
+      <Text key="job" dimColor wrap="truncate-end">
+        Job: {item.jobTag}
+      </Text>,
+    );
+  }
+  if (item.stepTag) {
+    elements.push(
+      <Text key="step" dimColor wrap="truncate-end">
+        Step: {item.stepTag}
+      </Text>,
+    );
   }
 
-  if (contentType === "application/json") {
-    return renderMarkdownToTerminal("```json\n" + content + "\n```");
+  if (tagEntries.length > 0) {
+    elements.push(
+      <Text key="tags" dimColor wrap="truncate-end">
+        Tags: {tagEntries.map(([k, v]) => `${k}=${v}`).join(", ")}
+      </Text>,
+    );
   }
 
-  if (
-    contentType === "application/yaml" || contentType === "application/x-yaml"
-  ) {
-    return renderMarkdownToTerminal("```yaml\n" + content + "\n```");
-  }
+  elements.push(
+    <Text key="created" dimColor wrap="truncate-end">
+      Created: {formatRelativeTime(item.createdAt)}
+    </Text>,
+  );
 
-  // Plain text or unknown — show as-is
-  return content;
+  return elements;
 }
 
 function renderDataResultLine(item: DataSearchItem): React.ReactElement {
@@ -240,21 +281,27 @@ function renderDataPreview(
   _height: number,
 ): React.ReactElement {
   const innerWidth = Math.max(10, width - 1);
-  // Combine metadata + content into a single string to avoid Ink layout
-  // issues with multiple <Text> blocks containing ANSI-formatted content.
-  const parts: string[] = [
-    renderMarkdownToTerminal(buildMetadataMarkdown(item)),
-  ];
+  const elements = buildMetadataElements(item);
 
   if (detail && detail.content) {
-    parts.push(renderContentString(detail.content, item.contentType));
+    elements.push(<Text key="content-spacer" />);
+    const contentLines = detail.content.split("\n");
+    for (let i = 0; i < contentLines.length; i++) {
+      elements.push(
+        <Text key={`c-${i}`} wrap="truncate-end">{contentLines[i]}</Text>,
+      );
+    }
   } else if (detail && !detail.content) {
-    parts.push(`(binary data at ${detail.contentPath})`);
+    elements.push(
+      <Text key="binary" dimColor wrap="truncate-end">
+        (binary data at {detail.contentPath})
+      </Text>,
+    );
   }
 
   return (
     <Box flexDirection="column" marginLeft={1} width={innerWidth}>
-      <Text wrap="truncate-end">{parts.join("\n")}</Text>
+      {elements}
     </Box>
   );
 }
@@ -266,8 +313,7 @@ function renderDataScrollback(
   const metadata = renderMarkdownToTerminal(buildMetadataMarkdown(item));
 
   if (detail?.content) {
-    const content = renderContentString(detail.content, item.contentType);
-    return metadata + "\n" + content;
+    return metadata + "\n" + detail.content;
   }
 
   return metadata;

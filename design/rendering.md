@@ -756,8 +756,20 @@ Use the `useTerminalSize()` hook from
 `presentation/output/hooks/useTerminalSize.ts`. Constrain content containers
 with `overflow="hidden"` and explicit `width` props so Ink clips content rather
 than wrapping it. The shared `ResultsList` and `PreviewPane` components handle
-this automatically — individual `renderResultLine` and `renderPreview` callbacks
-do not need to truncate manually.
+height clipping via `overflow="hidden"`, but **preview callbacks that render
+markdown content** must also:
+
+- Pass `{ maxWidth: width }` to `renderMarkdownToTerminal()` so lines are
+  constrained to the pane width.
+- Split the rendered multi-line string into per-line
+  `<Text wrap="truncate-end">` elements. Ink's `wrap="truncate-end"` is
+  per-element, not per-line — a single `<Text>` containing multi-line ANSI
+  content will not clip each line individually, causing lines to overlap when
+  content overflows the pane.
+
+Callbacks that build structured output from individual `<Text>` elements (not
+markdown) do not need this — `wrap="truncate-end"` on each element is
+sufficient.
 
 ### Log-mode renderers (non-interactive)
 
