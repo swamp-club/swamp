@@ -17,6 +17,24 @@ the editor. Only the issue author (or admins) can edit. Authors can change the
 type to `security` to restrict visibility, but cannot change it back from
 `security` — only admins can de-escalate.
 
+## Ownership Classification
+
+Before filing any report (bug, feature, or security), classify where the issue
+lives:
+
+1. **Swamp's own CLI/binary behavior** — file against swamp itself with no
+   `--extension` flag.
+2. **A third-party published extension you don't control** — file with
+   `--extension <name>` to route it to that extension's publisher.
+3. **An extension you (or the human you're working with) are actively developing
+   in this repo's own source tree** — this is not a ticket. Fix the code
+   yourself, or ask the human how they want it handled. Do not file an issue.
+
+This step is mandatory. Do not skip it — even if you just filed a legitimate
+swamp bug, re-classify before every subsequent report. The failure mode this
+prevents is pattern-matching from one correct filing to subsequent incorrect
+ones without re-checking the premise.
+
 With `--extension <name>`, reports are routed to the extension's publisher
 instead — either as a tagged swamp.club Lab issue (for `@swamp/*` extensions) or
 to the publisher's declared repository (for third-party extensions).

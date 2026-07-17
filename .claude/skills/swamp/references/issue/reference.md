@@ -71,12 +71,33 @@ A state machine. Each state gates the next — do not advance until the current
 state's **Verify** passes. If Verify fails, run **On Failure** and re-verify.
 
 ```
-gather_details → sanitize → version_check → submit → verify
+classify_ownership → gather_details → sanitize → version_check → submit → verify
 ```
+
+### State 0: classify_ownership
+
+**Gate:** None (first state).
+
+**Action:** Determine where the bug lives before doing anything else. Examine
+the error, the stack trace, and the source code involved. Classify into one of
+three categories:
+
+1. **Swamp itself** (CLI, binary, core libraries) — proceed to gather_details
+   with no `--extension` flag.
+2. **A third-party published extension** — proceed to gather_details with
+   `--extension <name>`.
+3. **An extension the developer is actively building in this repo** — stop. This
+   is not a ticket. Fix the code directly, or ask the human how they want it
+   handled.
+
+**Verify:** You have a clear, justified answer to "whose code is this bug in?"
+If the answer is category 3, the workflow ends here — do not advance.
+
+**On Failure:** If uncertain, ask the human before proceeding.
 
 ### State 1: gather_details
 
-**Gate:** None (first state).
+**Gate:** State 0 passed with category 1 or 2.
 
 **Action:** Gather bug details from the user — reproduction steps, affected
 component, environment. For extension-scoped reports, confirm the extension is
@@ -149,14 +170,19 @@ refusal guidance).
 
 Feature requests and security reports use a linear flow (no version check):
 
-1. Gather details from the user.
-2. Sanitize the drafted title and body — scan for secrets, identifiers, and
+1. **Classify ownership** — determine where the request or vulnerability lives
+   (swamp itself, a third-party extension, or your own in-progress extension).
+   If it's your own extension, this is not a ticket — handle it directly. See
+   the classify_ownership state in the Bug Report Workflow above for the full
+   decision tree.
+2. Gather details from the user.
+3. Sanitize the drafted title and body — scan for secrets, identifiers, and
    paths per [references/sanitization.md](references/sanitization.md). Present
    any findings to the user for confirmation before proceeding.
-3. For extension-scoped reports, confirm the extension is pulled locally.
-4. Verify syntax with `swamp help issue`.
-5. Run the appropriate command.
-6. Verify with the returned issue number / URL.
+4. For extension-scoped reports, confirm the extension is pulled locally.
+5. Verify syntax with `swamp help issue`.
+6. Run the appropriate command.
+7. Verify with the returned issue number / URL.
 
 ## Error Recovery
 
