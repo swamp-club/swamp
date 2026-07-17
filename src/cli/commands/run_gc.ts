@@ -103,7 +103,7 @@ export const runGcCommand = new Command()
       if (
         preview.workflowRunsToDelete === 0 && preview.outputsToDelete === 0
       ) {
-        console.log("Nothing to clean up.");
+        cliCtx.logger.info("Nothing to clean up.");
         return;
       }
 
