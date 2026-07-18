@@ -134,6 +134,10 @@ export const issueBugCommand = new Command()
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR) — only used with --extension",
   )
+  .option(
+    "--no-redact",
+    "Skip automatic redaction of sensitive content (use when the content is deliberately sanitized)",
+  )
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["issue", "bug"]);
     ctx.logger.debug`Submitting bug report`;
@@ -225,6 +229,7 @@ export const issueBugCommand = new Command()
         type: "bug",
         title,
         body,
+        noRedact: options.redact === false,
       });
       return;
     }
@@ -233,6 +238,7 @@ export const issueBugCommand = new Command()
       type: "bug",
       title,
       body,
+      noRedact: options.redact === false,
       swampLabTarget: extensionTarget?.kind === "swamp-lab"
         ? extensionTarget
         : undefined,

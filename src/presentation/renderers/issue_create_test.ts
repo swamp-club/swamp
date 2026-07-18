@@ -23,8 +23,11 @@ import {
   createIssueCreateRenderer,
   renderExtensionRefusal,
   renderExtensionRepositoryHandoff,
+  renderRedactionNotice,
+  renderRedactionSkipped,
 } from "./issue_create.ts";
 import type { RepositoryDispatchResult } from "../../cli/commands/extension_report_dispatcher.ts";
+import { redactIssueTitleAndBody } from "../../domain/issues/content_redactor.ts";
 
 /** Captures console.log calls during `fn` and returns the concatenated output. */
 async function captureConsoleLog(
@@ -235,4 +238,82 @@ Deno.test("renderExtensionRepositoryHandoff (json): refused result delegates to 
   const parsed = JSON.parse(out);
   assertEquals(parsed.status, "refused");
   assertEquals(parsed.reason, "pvr-disabled");
+});
+
+// ---- renderRedactionNotice / renderRedactionSkipped ----
+
+/** Captures console.error calls during `fn` and returns the concatenated output. */
+function captureConsoleError(fn: () => void): string {
+  const original = console.error;
+  const lines: string[] = [];
+  console.error = (...args: unknown[]) => {
+    lines.push(args.map((a) => String(a)).join(" "));
+  };
+  try {
+    fn();
+  } finally {
+    console.error = original;
+  }
+  return lines.join("\n");
+}
+
+Deno.test("renderRedactionNotice (json): emits structured changes on stderr", () => {
+  const redacted = redactIssueTitleAndBody(
+    "Clean title",
+    "line one\nDATABASE_PASSWORD=hunter2\nline three",
+  );
+  const out = captureConsoleError(() => {
+    renderRedactionNotice(redacted.summary, [
+      { label: "title", result: redacted.title },
+      { label: "body", result: redacted.body },
+    ], "json");
+  });
+  const parsed = JSON.parse(out);
+  assertEquals(parsed.redaction.total, 1);
+  assertEquals(parsed.redaction.changes.length, 1);
+  assertEquals(parsed.redaction.changes[0].field, "body");
+  assertEquals(parsed.redaction.changes[0].lineNumber, 2);
+  assertEquals(
+    parsed.redaction.changes[0].original,
+    "DATABASE_PASSWORD=hunter2",
+  );
+  assertEquals(
+    parsed.redaction.changes[0].redacted,
+    "DATABASE_PASSWORD=[REDACTED-SECRET-1]",
+  );
+  assertStringIncludes(parsed.redaction.message, "1 secret");
+});
+
+Deno.test("renderRedactionNotice (json): silent when nothing was redacted", () => {
+  const redacted = redactIssueTitleAndBody("Clean title", "Clean body");
+  const out = captureConsoleError(() => {
+    renderRedactionNotice(redacted.summary, [
+      { label: "title", result: redacted.title },
+      { label: "body", result: redacted.body },
+    ], "json");
+  });
+  assertEquals(out, "");
+});
+
+Deno.test("renderRedactionNotice (log): runs without error", () => {
+  const redacted = redactIssueTitleAndBody(
+    "Error contacting 10.0.3.47",
+    "DATABASE_PASSWORD=hunter2",
+  );
+  renderRedactionNotice(redacted.summary, [
+    { label: "title", result: redacted.title },
+    { label: "body", result: redacted.body },
+  ], "log");
+});
+
+Deno.test("renderRedactionSkipped (json): emits skipped marker on stderr", () => {
+  const out = captureConsoleError(() => {
+    renderRedactionSkipped("json");
+  });
+  const parsed = JSON.parse(out);
+  assertEquals(parsed.redaction.skipped, true);
+});
+
+Deno.test("renderRedactionSkipped (log): runs without error", () => {
+  renderRedactionSkipped("log");
 });

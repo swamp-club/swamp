@@ -45,10 +45,23 @@ export interface RedactionSummary {
   readonly categories: ReadonlyMap<string, number>;
 }
 
+/**
+ * A single line-level change produced by redaction, so the reporter can
+ * see exactly what was altered before the content leaves their machine.
+ * When a redaction consumes newlines, one change spans the affected block
+ * and `original`/`redacted` hold the joined multi-line text.
+ */
+export interface RedactionLineChange {
+  readonly lineNumber: number;
+  readonly original: string;
+  readonly redacted: string;
+}
+
 /** Result of redacting issue content. */
 export interface RedactionResult {
   readonly text: string;
   readonly summary: RedactionSummary;
+  readonly changes: readonly RedactionLineChange[];
 }
 
 const PUBLIC_HOST_ALLOWLIST = new Set([
@@ -94,8 +107,10 @@ const GITHUB_TOKEN_RE = /\b(?:ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9_]{36,}\b/g;
 
 // Generic API keys / bearer tokens: long base64-ish strings with a prefix.
 // Use lookahead instead of \b after =* since = is non-word and \b fails
-// between two non-word characters (e.g. "==" followed by space).
-const BEARER_RE = /\bBearer\s+[A-Za-z0-9_\-.~+/]+=*(?=\s|$)/g;
+// between two non-word characters (e.g. "==" followed by space). The
+// separator is spaces/tabs only — \s would let the match cross a newline
+// and consume the first token of the following line.
+const BEARER_RE = /\bBearer[ \t]+([A-Za-z0-9_\-.~+/]+=*)(?=\s|$)/g;
 const PREFIXED_KEY_RE =
   /\b(?:sk|pk|rk|ak|key|token|secret)[-_][a-zA-Z0-9_\-]{20,}\b/gi;
 
@@ -106,13 +121,26 @@ const LONG_HEX_RE = /\b[0-9a-fA-F]{40,}\b/g;
 // Same =* lookahead fix as BEARER_RE.
 const LONG_BASE64_RE = /\b[A-Za-z0-9+/]{32,}={0,2}(?=\s|$)/g;
 
-// env-var style secrets: VAR_NAME=value where name contains sensitive keywords
+// env-var style secrets: VAR_NAME=value where name contains sensitive
+// keywords. The value is either an explicitly quoted span (matched as a
+// unit so the interior can be redacted with the delimiters preserved) or
+// an unquoted run that stops before a closing quote/backtick — a bare \S+
+// would consume the delimiter and break surrounding shell/YAML syntax.
 const ENV_SECRET_RE =
-  /\b([A-Z_]*(?:PASSWORD|SECRET|TOKEN|API_KEY|APIKEY|PRIVATE_KEY|ACCESS_KEY|AUTH)[A-Z_]*)=(\S+)/gi;
+  /\b([A-Z_]*(?:PASSWORD|SECRET|TOKEN|API_KEY|APIKEY|PRIVATE_KEY|ACCESS_KEY|AUTH)[A-Z_]*)=("[^"\n]*"|'[^'\n]*'|`[^`\n]*`|[^\s"'`]+)/gi;
 
-// Connection strings with credentials
+// Values that contain no secret material and must survive redaction:
+// already-masked values (all asterisks) and shell variable references —
+// exactly the "before" side of masking-bug evidence.
+const NON_SECRET_VALUE_RE = /^(?:\*+|\$\{[^}]*\})$/;
+
+// Connection strings with credentials. RFC 3986 forbids whitespace and "/"
+// in the userinfo component, so the user and password groups exclude them —
+// otherwise the password group can swallow everything (across lines) up to
+// an unrelated later "@", e.g. a ws://host:port URL followed by an
+// @scope/package mention.
 const CONNECTION_STRING_RE =
-  /(\w+:\/\/)([^:/?#]+):([^@]+)@([^/:?#]+)(:\d+)?(\/[^\s?#]*)?(\?[^\s#]*)?(#\S*)?/g;
+  /(\w+:\/\/)([^:/?#@\s]+):([^@/\s]+)@([^/:?#\s]+)(:\d+)?(\/[^\s?#]*)?(\?[^\s#]*)?(#\S*)?/g;
 
 // IPv4
 const IPV4_RE = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
@@ -197,34 +225,48 @@ function applyRedactions(
     },
   );
 
-  // 2. Env-var style secrets
-  result = result.replace(ENV_SECRET_RE, (_match, name: string) => {
-    count("secret");
-    return `${name}=[REDACTED-SECRET]`;
-  });
+  // 2. Env-var style secrets. Quoted values are redacted inside their
+  //    delimiters; masked (***) and ${VAR} values pass through untouched.
+  //    Distinct values get distinct indexed placeholders so before/after
+  //    evidence (e.g. a masked-vs-unmasked comparison table) keeps its
+  //    contrast instead of collapsing to identical rows.
+  result = result.replace(
+    ENV_SECRET_RE,
+    (match, name: string, value: string) => {
+      const first = value[0];
+      const quote = first === '"' || first === "'" || first === "`"
+        ? first
+        : "";
+      const inner = quote ? value.slice(1, -1) : value;
+      if (inner.length === 0 || NON_SECRET_VALUE_RE.test(inner)) return match;
+      count("secret");
+      const placeholder = placeholders.get("REDACTED-SECRET", inner);
+      return `${name}=${quote}${placeholder}${quote}`;
+    },
+  );
 
   // 3. AWS keys
-  result = result.replace(AWS_KEY_RE, () => {
+  result = result.replace(AWS_KEY_RE, (match) => {
     count("secret");
-    return "[REDACTED-SECRET]";
+    return placeholders.get("REDACTED-SECRET", match);
   });
 
   // 4. GitHub tokens
-  result = result.replace(GITHUB_TOKEN_RE, () => {
+  result = result.replace(GITHUB_TOKEN_RE, (match) => {
     count("secret");
-    return "[REDACTED-SECRET]";
+    return placeholders.get("REDACTED-SECRET", match);
   });
 
   // 5. Bearer tokens
-  result = result.replace(BEARER_RE, () => {
+  result = result.replace(BEARER_RE, (_match, token: string) => {
     count("secret");
-    return "Bearer [REDACTED-SECRET]";
+    return `Bearer ${placeholders.get("REDACTED-SECRET", token)}`;
   });
 
   // 6. Prefixed API keys (sk_live_..., token-..., etc.)
-  result = result.replace(PREFIXED_KEY_RE, () => {
+  result = result.replace(PREFIXED_KEY_RE, (match) => {
     count("secret");
-    return "[REDACTED-SECRET]";
+    return placeholders.get("REDACTED-SECRET", match);
   });
 
   // 7. Email addresses
@@ -299,21 +341,63 @@ function applyRedactions(
   });
 
   // 16. Long hex strings (likely tokens/hashes — after all specific patterns)
-  result = result.replace(LONG_HEX_RE, () => {
+  result = result.replace(LONG_HEX_RE, (match) => {
     count("secret");
-    return "[REDACTED-SECRET]";
+    return placeholders.get("REDACTED-SECRET", match);
   });
 
   // 17. Long base64 strings
   result = result.replace(LONG_BASE64_RE, (match) => {
     if (/[a-z]/.test(match) && /[A-Z]/.test(match)) {
       count("secret");
-      return "[REDACTED-SECRET]";
+      return placeholders.get("REDACTED-SECRET", match);
     }
     return match;
   });
 
   return result;
+}
+
+function diffLines(
+  original: string,
+  redacted: string,
+): RedactionLineChange[] {
+  if (original === redacted) return [];
+  const before = original.split("\n");
+  const after = redacted.split("\n");
+  if (before.length === after.length) {
+    const changes: RedactionLineChange[] = [];
+    for (let i = 0; i < before.length; i++) {
+      if (before[i] !== after[i]) {
+        changes.push({
+          lineNumber: i + 1,
+          original: before[i],
+          redacted: after[i],
+        });
+      }
+    }
+    return changes;
+  }
+  // Line counts differ (a redaction consumed newlines): align matching
+  // head/tail lines and report the middle as a single block change.
+  let head = 0;
+  while (
+    head < before.length && head < after.length && before[head] === after[head]
+  ) {
+    head++;
+  }
+  let tail = 0;
+  while (
+    tail < before.length - head && tail < after.length - head &&
+    before[before.length - 1 - tail] === after[after.length - 1 - tail]
+  ) {
+    tail++;
+  }
+  return [{
+    lineNumber: head + 1,
+    original: before.slice(head, before.length - tail).join("\n"),
+    redacted: after.slice(head, after.length - tail).join("\n"),
+  }];
 }
 
 function buildSummary(counts: Map<string, number>): RedactionSummary {
@@ -335,7 +419,11 @@ export function redactIssueContent(text: string): RedactionResult {
   const placeholders = new PlaceholderMap();
   const counts = new Map<string, number>();
   const redacted = applyRedactions(text, placeholders, counts);
-  return { text: redacted, summary: buildSummary(counts) };
+  return {
+    text: redacted,
+    summary: buildSummary(counts),
+    changes: diffLines(text, redacted),
+  };
 }
 
 /**
@@ -368,8 +456,16 @@ export function redactIssueTitleAndBody(
   }
 
   return {
-    title: { text: titleText, summary: buildSummary(titleCounts) },
-    body: { text: bodyText, summary: buildSummary(bodyCounts) },
+    title: {
+      text: titleText,
+      summary: buildSummary(titleCounts),
+      changes: diffLines(title, titleText),
+    },
+    body: {
+      text: bodyText,
+      summary: buildSummary(bodyCounts),
+      changes: diffLines(body, bodyText),
+    },
     summary: buildSummary(counts),
   };
 }
@@ -388,4 +484,29 @@ export function formatRedactionSummary(summary: RedactionSummary): string {
     parts.push(`${count} ${pluralize(category, count)}`);
   }
   return `Redacted ${parts.join(", ")} from issue content.`;
+}
+
+const MAX_DETAIL_LENGTH = 160;
+
+function inlineTruncate(text: string): string {
+  const flat = text.replaceAll("\n", "\\n");
+  if (flat.length <= MAX_DETAIL_LENGTH) return flat;
+  return flat.slice(0, MAX_DETAIL_LENGTH - 1) + "…";
+}
+
+/**
+ * Formats per-line redaction changes into human-readable detail lines
+ * ("line N: <original> -> <redacted>"), so the reporter can verify their
+ * evidence survived redaction. `label` prefixes the location (e.g. "title").
+ */
+export function formatRedactionDetails(
+  changes: readonly RedactionLineChange[],
+  label?: string,
+): string[] {
+  const prefix = label ? `${label} line` : "line";
+  return changes.map((change) =>
+    `${prefix} ${change.lineNumber}: ${inlineTruncate(change.original)} -> ${
+      inlineTruncate(change.redacted)
+    }`
+  );
 }

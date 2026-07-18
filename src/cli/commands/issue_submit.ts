@@ -40,6 +40,8 @@ import {
   createIssueCreateRenderer,
   renderExtensionRefusal,
   renderExtensionRepositoryHandoff,
+  renderRedactionNotice,
+  renderRedactionSkipped,
 } from "../../presentation/renderers/issue_create.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
@@ -47,10 +49,7 @@ import { loadIdentity } from "../load_identity.ts";
 import { openBrowser } from "../../infrastructure/process/browser.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
-import {
-  formatRedactionSummary,
-  redactIssueTitleAndBody,
-} from "../../domain/issues/content_redactor.ts";
+import { redactIssueTitleAndBody } from "../../domain/issues/content_redactor.ts";
 import {
   dispatchRepositoryReport,
   type ExtensionTarget,
@@ -104,6 +103,11 @@ export interface SubmitIssueInput {
   type: "bug" | "feature" | "security";
   title: string;
   body: string;
+  /**
+   * Skip automatic redaction (--no-redact). For reporters who have
+   * deliberately sanitized their content and need it submitted as written.
+   */
+  noRedact?: boolean;
   /**
    * Pre-resolved `@swamp/*` target (from {@link resolveExtensionOrRefuse}).
    * Only passed on the `@swamp/*` extension path — third-party targets
@@ -188,16 +192,26 @@ export async function resolveExtensionOrRefuse(
 export async function dispatchExtensionRepositoryReport(
   ctx: CommandContext,
   target: Extract<UsableExtensionTarget, { kind: "repository" }>,
-  input: { type: "bug" | "feature" | "security"; title: string; body: string },
+  input: {
+    type: "bug" | "feature" | "security";
+    title: string;
+    body: string;
+    noRedact?: boolean;
+  },
 ): Promise<void> {
   // Redact sensitive content before dispatching to a third-party repo.
-  const redacted = redactIssueTitleAndBody(input.title, input.body);
-  if (redacted.summary.totalRedactions > 0) {
-    const msg = formatRedactionSummary(redacted.summary);
-    ctx.logger.info`${msg}`;
-    if (ctx.outputMode === "json") {
-      console.error(msg);
-    }
+  let title = input.title;
+  let body = input.body;
+  if (input.noRedact) {
+    renderRedactionSkipped(ctx.outputMode);
+  } else {
+    const redacted = redactIssueTitleAndBody(input.title, input.body);
+    renderRedactionNotice(redacted.summary, [
+      { label: "title", result: redacted.title },
+      { label: "body", result: redacted.body },
+    ], ctx.outputMode);
+    title = redacted.title.text;
+    body = redacted.body.text;
   }
 
   const reporterContext = collectReporterContext({
@@ -209,8 +223,8 @@ export async function dispatchExtensionRepositoryReport(
     target,
     {
       type: input.type,
-      title: redacted.title.text,
-      body: redacted.body.text,
+      title,
+      body,
       reporterContext,
       outputMode: ctx.outputMode,
     },
@@ -239,21 +253,22 @@ export async function submitIssue(
   const libCtx = createLibSwampContext({ logger: ctx.logger });
   const renderer = createIssueCreateRenderer(ctx.outputMode);
 
-  // Redact sensitive content before any submission path.
-  const redacted = redactIssueTitleAndBody(input.title, input.body);
-  if (redacted.summary.totalRedactions > 0) {
-    const msg = formatRedactionSummary(redacted.summary);
-    libCtx.logger.info`${msg}`;
-    if (ctx.outputMode === "json") {
-      console.error(msg);
-    }
-  }
-  input = { ...input, title: redacted.title.text, body: redacted.body.text };
-
   if (destination.method === "abort") {
     libCtx.logger
       .info`Run "swamp auth login" first, then retry this command.`;
     return;
+  }
+
+  // Redact sensitive content before any submission path.
+  if (input.noRedact) {
+    renderRedactionSkipped(ctx.outputMode);
+  } else {
+    const redacted = redactIssueTitleAndBody(input.title, input.body);
+    renderRedactionNotice(redacted.summary, [
+      { label: "title", result: redacted.title },
+      { label: "body", result: redacted.body },
+    ], ctx.outputMode);
+    input = { ...input, title: redacted.title.text, body: redacted.body.text };
   }
 
   if (destination.method === "email") {

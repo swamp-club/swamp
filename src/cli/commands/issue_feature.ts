@@ -133,6 +133,10 @@ export const issueFeatureCommand = new Command()
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR) — only used with --extension",
   )
+  .option(
+    "--no-redact",
+    "Skip automatic redaction of sensitive content (use when the content is deliberately sanitized)",
+  )
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["issue", "feature"]);
     ctx.logger.debug`Submitting feature request`;
@@ -219,6 +223,7 @@ export const issueFeatureCommand = new Command()
         type: "feature",
         title,
         body,
+        noRedact: options.redact === false,
       });
       return;
     }
@@ -227,6 +232,7 @@ export const issueFeatureCommand = new Command()
       type: "feature",
       title,
       body,
+      noRedact: options.redact === false,
       swampLabTarget: extensionTarget?.kind === "swamp-lab"
         ? extensionTarget
         : undefined,

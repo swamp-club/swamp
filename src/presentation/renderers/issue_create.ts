@@ -30,6 +30,12 @@ import type {
   RefusalReason,
   RepositoryDispatchResult,
 } from "../../cli/commands/extension_report_dispatcher.ts";
+import {
+  formatRedactionDetails,
+  formatRedactionSummary,
+  type RedactionResult,
+  type RedactionSummary,
+} from "../../domain/issues/content_redactor.ts";
 
 class LogIssueCreateRenderer implements Renderer<IssueCreateEvent> {
   handlers(): EventHandlers<IssueCreateEvent> {
@@ -137,6 +143,70 @@ export function renderIssueCancelled(
       logger.info(`${action} cancelled`);
     }
   }
+}
+
+// ---- Redaction notice rendering ----
+
+/**
+ * Pre-submission redaction notice: one labelled field (title/body for
+ * submissions and edits, unlabelled for ripples) with its redaction result.
+ */
+export interface RedactionNoticeField {
+  label?: "title" | "body";
+  result: RedactionResult;
+}
+
+/**
+ * Renders what redaction changed before content leaves the machine, so the
+ * reporter can tell a harmless redaction from a destroyed finding. Log mode
+ * prints the summary plus one "line N: <original> -> <redacted>" entry per
+ * change; json mode emits the structured detail on stderr (stdout carries
+ * the command's primary JSON). No-op when nothing was redacted.
+ */
+export function renderRedactionNotice(
+  summary: RedactionSummary,
+  fields: RedactionNoticeField[],
+  mode: OutputMode,
+): void {
+  if (summary.totalRedactions === 0) return;
+  const message = formatRedactionSummary(summary);
+  if (mode === "json") {
+    const changes = fields.flatMap((field) =>
+      field.result.changes.map((change) => ({
+        ...(field.label ? { field: field.label } : {}),
+        ...change,
+      }))
+    );
+    console.error(JSON.stringify({
+      redaction: { message, total: summary.totalRedactions, changes },
+    }));
+    return;
+  }
+  const logger = getSwampLogger(["issue", "redact"]);
+  // Tagged-template form: detail lines carry user content that must not be
+  // parsed for {placeholder} syntax.
+  logger.info`${message}`;
+  for (const field of fields) {
+    for (
+      const line of formatRedactionDetails(field.result.changes, field.label)
+    ) {
+      logger.info`${line}`;
+    }
+  }
+}
+
+/**
+ * Renders the notice that redaction was deliberately skipped via
+ * --no-redact, so the choice is visible and auditable in both modes.
+ */
+export function renderRedactionSkipped(mode: OutputMode): void {
+  if (mode === "json") {
+    console.error(JSON.stringify({ redaction: { skipped: true } }));
+    return;
+  }
+  getSwampLogger(["issue", "redact"]).info(
+    "Redaction skipped (--no-redact); content submitted as written.",
+  );
 }
 
 // ---- Ripple (comment) rendering ----

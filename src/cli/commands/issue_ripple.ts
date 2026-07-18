@@ -29,13 +29,12 @@ import {
 import {
   createIssueCommentRenderer,
   renderIssueCancelled,
+  renderRedactionNotice,
+  renderRedactionSkipped,
 } from "../../presentation/renderers/issue_create.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
-import {
-  formatRedactionSummary,
-  redactIssueContent,
-} from "../../domain/issues/content_redactor.ts";
+import { redactIssueContent } from "../../domain/issues/content_redactor.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
 import { loadIdentity } from "../load_identity.ts";
@@ -88,6 +87,10 @@ export const issueRippleCommand = new Command()
   .option("--reopen", "Reopen the issue after posting the ripple", {
     conflicts: ["close"],
   })
+  .option(
+    "--no-redact",
+    "Skip automatic redaction of sensitive content (use when the content is deliberately sanitized)",
+  )
   .action(async function (options: AnyOptions, issueNumber: number) {
     const ctx = createContext(options as GlobalOptions, ["issue", "ripple"]);
 
@@ -143,15 +146,17 @@ export const issueRippleCommand = new Command()
     }
 
     // Redact sensitive content before submission.
-    const redacted = redactIssueContent(body);
-    if (redacted.summary.totalRedactions > 0) {
-      const msg = formatRedactionSummary(redacted.summary);
-      ctx.logger.info`${msg}`;
-      if (ctx.outputMode === "json") {
-        console.error(msg);
-      }
+    if (options.redact === false) {
+      renderRedactionSkipped(ctx.outputMode);
+    } else {
+      const redacted = redactIssueContent(body);
+      renderRedactionNotice(
+        redacted.summary,
+        [{ result: redacted }],
+        ctx.outputMode,
+      );
+      body = redacted.text;
     }
-    body = redacted.text;
 
     const statusTransition: IssueStatusTransition | undefined = options.close
       ? "closed"
