@@ -25,6 +25,7 @@ import {
 } from "./trigger_condition.ts";
 import { Step, type StepData, StepSchema } from "./step.ts";
 import { rejectRemovedDriverFields } from "../removed_driver_fields.ts";
+import { rejectUnknownKeys } from "./unknown_keys.ts";
 
 /**
  * Schema for job dependency with condition.
@@ -71,11 +72,16 @@ const JobObjectSchema = z.object({
 
 /**
  * Zod schema for Job entity. Rejects the removed `driver`/`driverConfig`
- * fields with an actionable error (see design/remote-execution.md).
+ * fields with an actionable error (see design/remote-execution.md), and
+ * rejects unknown keys — Zod's silent stripping would otherwise discard
+ * misplaced placement blocks like a job-level `labels:` (swamp-club#1240).
  */
 export const JobSchema = z.preprocess(
   rejectRemovedDriverFields,
-  JobObjectSchema,
+  z.preprocess(
+    rejectUnknownKeys("job", Object.keys(JobObjectSchema.shape)),
+    JobObjectSchema,
+  ),
 );
 
 /**

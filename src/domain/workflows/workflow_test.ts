@@ -535,6 +535,66 @@ Deno.test("WorkflowSchema rejects removed driverConfig field with actionable err
   );
 });
 
+// Unknown-key rejection tests (swamp-club#1240)
+
+Deno.test("WorkflowSchema rejects workflow-level labels with step-property message", () => {
+  const error = assertThrows(
+    () =>
+      Workflow.fromData({
+        id: "550e8400-e29b-41d4-a716-446655440000",
+        name: "test-workflow",
+        labels: { env: "prod" },
+        jobs: [createTestJob("job1").toData()],
+      } as unknown as WorkflowInput),
+    Error,
+  );
+  assertStringIncludes(error.message, "'labels' is a step property");
+  assertStringIncludes(error.message, "workflow 'test-workflow'");
+});
+
+Deno.test("WorkflowSchema rejects unknown top-level key with did-you-mean suggestion", () => {
+  const error = assertThrows(
+    () =>
+      Workflow.fromData({
+        id: "550e8400-e29b-41d4-a716-446655440000",
+        name: "test-workflow",
+        verion: 1,
+        jobs: [createTestJob("job1").toData()],
+      } as unknown as WorkflowInput),
+    Error,
+  );
+  assertStringIncludes(error.message, "Unknown key 'verion'");
+  assertStringIncludes(error.message, "Did you mean 'version'?");
+});
+
+Deno.test("Workflow YAML with job-level labels fails to parse naming the key", () => {
+  // swamp-club#1240 variant A verbatim: previously passed validation and
+  // silently ran locally, discarding the placement intent.
+  const yaml = `
+id: 550e8400-e29b-41d4-a716-446655440000
+name: variant-a-job-labels
+jobs:
+  - name: placed
+    labels:
+      fb28: probe
+    steps:
+      - name: echo
+        task:
+          type: model_method
+          modelIdOrName: fb28-probe
+          methodName: execute
+          inputs:
+            run: echo "hello"
+`;
+  const data = parseYaml(yaml);
+  const error = assertThrows(
+    () => Workflow.fromData(data as WorkflowInput),
+    Error,
+  );
+  assertStringIncludes(error.message, "'labels' is a step property");
+  assertStringIncludes(error.message, "job 'placed'");
+});
+
 // Reports field tests
 
 Deno.test("Workflow.create creates workflow with reports", () => {

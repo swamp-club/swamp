@@ -57,6 +57,11 @@ all-busy queues the step, and no eligible worker fails the step fast. `forEach`
 is the fan-out construct — expand a step over a list and the instances spread
 across matching workers (each worker runs one dispatch at a time).
 
+Placement fields are step properties only. Placing them on a job or at the
+workflow top level fails schema validation with an error naming the misplaced
+key and showing the step-level form — as does any other unknown key (with a
+did-you-mean suggestion).
+
 ## Running workflows through the orchestrator
 
 `swamp serve` is the orchestrator, so placed workflows must run through it. From

@@ -28,6 +28,7 @@ import {
   consumeStream,
   createLibSwampContext,
   createWorkflowValidateDeps,
+  workflowsDirFor,
   workflowValidate,
 } from "../../libswamp/mod.ts";
 import { createWorkflowValidateRenderer } from "../../presentation/renderers/workflow_validate.ts";
@@ -51,7 +52,7 @@ export const workflowValidateCommand = new Command()
       "workflow",
       "validate",
     ]);
-    const { repoContext } = await requireInitializedRepoReadOnly({
+    const { repoContext, repoDir } = await requireInitializedRepoReadOnly({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
@@ -66,6 +67,7 @@ export const workflowValidateCommand = new Command()
     const deps = createWorkflowValidateDeps(
       repoContext.workflowRepo,
       repoContext.definitionRepo,
+      workflowsDirFor(repoDir),
     );
 
     const renderer = createWorkflowValidateRenderer(cliCtx.outputMode);

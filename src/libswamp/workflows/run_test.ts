@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   extractStepArtifacts,
   inputValidationFailed,
@@ -240,6 +240,52 @@ Deno.test("workflowRun yields error for missing workflow", async () => {
   assertEquals(last.kind, "error");
   if (last.kind === "error") {
     assertEquals(last.error.code, "workflow_not_found");
+  }
+});
+
+Deno.test("workflowRun surfaces the parse error for a schema-rejected workflow file", async () => {
+  // swamp-club#1240: a workflow file carrying an unknown key fails schema
+  // parsing, so the repository lookup misses — run must report the parse
+  // error inline instead of a misleading "not found".
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    await Deno.mkdir(join(repoDir, "workflows"));
+    await Deno.writeTextFile(
+      join(
+        repoDir,
+        "workflows",
+        "workflow-74ae52ba-5f3f-4937-a4fd-c1de950572e7.yaml",
+      ),
+      `
+id: 74ae52ba-5f3f-4937-a4fd-c1de950572e7
+name: variant-a-job-labels
+jobs:
+  - name: placed
+    labels:
+      fb28: probe
+    steps:
+      - name: echo
+        task:
+          type: model_method
+          modelIdOrName: fb28-probe
+          methodName: execute
+`,
+    );
+
+    const deps = { ...createTestDeps(null, []), repoDir };
+    const ctx = createLibSwampContext();
+    const events = await collect(workflowRun(ctx, deps, {
+      workflowIdOrName: "variant-a-job-labels",
+    }));
+
+    const last = events[events.length - 1];
+    assertEquals(last.kind, "error");
+    if (last.kind === "error") {
+      assertEquals(last.error.code, "workflow_load_failed");
+      assertStringIncludes(last.error.message, "'labels' is a step property");
+    }
+  } finally {
+    await Deno.remove(repoDir, { recursive: true }).catch(() => {});
   }
 });
 

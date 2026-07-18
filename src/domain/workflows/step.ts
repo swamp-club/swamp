@@ -27,6 +27,7 @@ import { StepTask, StepTaskSchema } from "./step_task.ts";
 import { DataOutputOverrideSchema } from "../models/data_output_override.ts";
 import type { DataOutputOverride } from "../models/data_output_override.ts";
 import { rejectRemovedDriverFields } from "../removed_driver_fields.ts";
+import { rejectUnknownKeys } from "./unknown_keys.ts";
 
 /**
  * Schema for step dependency with condition.
@@ -96,11 +97,17 @@ const StepObjectSchema = z.object({
 
 /**
  * Zod schema for Step entity. Rejects the removed `driver`/`driverConfig`
- * fields with an actionable error (see design/remote-execution.md).
+ * fields with an actionable error (see design/remote-execution.md), and
+ * rejects unknown keys — Zod's silent stripping would otherwise discard a
+ * typo'd placement key (e.g. `lables:`) and run the step locally
+ * (swamp-club#1240).
  */
 export const StepSchema = z.preprocess(
   rejectRemovedDriverFields,
-  StepObjectSchema,
+  z.preprocess(
+    rejectUnknownKeys("step", Object.keys(StepObjectSchema.shape)),
+    StepObjectSchema,
+  ),
 );
 
 /**

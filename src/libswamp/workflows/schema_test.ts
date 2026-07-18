@@ -66,3 +66,40 @@ Deno.test("workflowSchema exposes trigger.inputs in the workflow schema", async 
     "workflow schema trigger should expose an 'inputs' property",
   );
 });
+
+Deno.test("workflowSchema exposes object properties through the preprocess layers", async () => {
+  // The workflow/job/step schemas are wrapped in two z.preprocess layers
+  // (removed driver fields + unknown-key rejection, swamp-club#1240); the
+  // emitted JSON schema must still surface the object properties.
+  const ctx = createLibSwampContext();
+  const events = await collect<WorkflowSchemaEvent>(workflowSchema(ctx));
+  const completed = events[0] as Extract<
+    WorkflowSchemaEvent,
+    { kind: "completed" }
+  >;
+
+  const asRecord = (value: unknown): Record<string, unknown> => {
+    assert(
+      typeof value === "object" && value !== null,
+      "expected an object node in the generated schema",
+    );
+    return value as Record<string, unknown>;
+  };
+
+  const jobProperties = asRecord(asRecord(completed.data.job).properties);
+  for (const key of ["name", "steps", "dependsOn", "weight"]) {
+    assert(key in jobProperties, `job schema should expose '${key}'`);
+  }
+
+  const stepProperties = asRecord(asRecord(completed.data.step).properties);
+  for (const key of ["name", "task", "labels", "target", "platform"]) {
+    assert(key in stepProperties, `step schema should expose '${key}'`);
+  }
+
+  const workflowProperties = asRecord(
+    asRecord(completed.data.workflow).properties,
+  );
+  for (const key of ["id", "name", "jobs", "version"]) {
+    assert(key in workflowProperties, `workflow schema should expose '${key}'`);
+  }
+});

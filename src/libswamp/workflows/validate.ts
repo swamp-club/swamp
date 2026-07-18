@@ -36,6 +36,7 @@ import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.t
 import { zodToJsonSchema } from "../types/schema_helpers.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import { type BrokenWorkflow, listBrokenWorkflows } from "./broken_workflow.ts";
 /** UUID v4 regex pattern for detecting if an argument is a UUID. */
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -89,6 +90,13 @@ export interface WorkflowValidateDeps {
   findWorkflowByName: (name: string) => Promise<Workflow | null>;
   findAllWorkflows: () => Promise<Workflow[]>;
   validate: (workflow: Workflow) => Promise<WorkflowValidationResult[]>;
+  /**
+   * Raw-scans workflow files that fail schema parsing (and are therefore
+   * invisible to the repository lookups above), so validate can report
+   * the parse error instead of "Workflow not found". Optional for
+   * backwards compatibility with callers that lack a workflows directory.
+   */
+  listBrokenWorkflows?: () => Promise<BrokenWorkflow[]>;
 }
 
 /**
@@ -197,6 +205,7 @@ async function resolveByType(
 export function createWorkflowValidateDeps(
   workflowRepo: WorkflowRepository,
   definitionRepo?: YamlDefinitionRepository,
+  workflowsDir?: string,
 ): WorkflowValidateDeps {
   const methodResolver = definitionRepo
     ? createModelMethodResolver(definitionRepo)
@@ -210,6 +219,26 @@ export function createWorkflowValidateDeps(
     findWorkflowByName: (name) => workflowRepo.findByName(name),
     findAllWorkflows: () => workflowRepo.findAll(),
     validate: (workflow) => validationService.validate(workflow),
+    ...(workflowsDir
+      ? { listBrokenWorkflows: () => listBrokenWorkflows(workflowsDir) }
+      : {}),
+  };
+}
+
+/** Converts a broken workflow file into a failed validation result. */
+function toBrokenValidateData(broken: BrokenWorkflow): WorkflowValidateData {
+  return {
+    workflowId: broken.id ?? "",
+    workflowName: broken.name ?? broken.file,
+    validations: [
+      {
+        name: "Schema validation",
+        passed: false,
+        error: `${broken.error} (file: ${broken.file})`,
+      },
+    ],
+    totalWarnings: 0,
+    passed: false,
   };
 }
 
@@ -238,7 +267,14 @@ async function* validateAll(
 ): AsyncIterable<WorkflowValidateEvent> {
   const allWorkflows = await deps.findAllWorkflows();
 
-  if (allWorkflows.length === 0) {
+  // Files the repository skipped because they fail schema parsing must
+  // count as failures — otherwise a broken file makes validate-all report
+  // all-green while the workflow silently no longer loads.
+  const brokenWorkflows = deps.listBrokenWorkflows
+    ? await deps.listBrokenWorkflows()
+    : [];
+
+  if (allWorkflows.length === 0 && brokenWorkflows.length === 0) {
     yield {
       kind: "error",
       error: validationFailed("No workflows found"),
@@ -247,6 +283,9 @@ async function* validateAll(
   }
 
   const results: WorkflowValidateData[] = [];
+  for (const broken of brokenWorkflows) {
+    results.push(toBrokenValidateData(broken));
+  }
   for (const workflow of allWorkflows) {
     const validationResults = await deps.validate(workflow);
     const validations = toValidationItemData(validationResults);
@@ -292,6 +331,18 @@ async function* validateSingle(
   }
 
   if (!workflow) {
+    // The file may exist but fail schema parsing, making it invisible to
+    // the repository. Surface the parse error as a failed schema check
+    // instead of a misleading "not found".
+    if (deps.listBrokenWorkflows) {
+      const broken = (await deps.listBrokenWorkflows()).find(
+        (b) => b.name === workflowIdOrName || b.id === workflowIdOrName,
+      );
+      if (broken) {
+        yield { kind: "completed", data: toBrokenValidateData(broken) };
+        return;
+      }
+    }
     yield {
       kind: "error",
       error: notFound("Workflow", workflowIdOrName),

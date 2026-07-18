@@ -375,6 +375,45 @@ Deno.test("StepSchema throws clear error for string dependsOn entries", () => {
   );
 });
 
+// Unknown-key rejection tests (swamp-club#1240)
+
+Deno.test("StepSchema rejects typo'd placement key with did-you-mean suggestion", () => {
+  // 'lables' would previously be stripped silently, discarding the
+  // placement intent and running the step locally.
+  const error = assertThrows(
+    () =>
+      StepSchema.parse({
+        name: "echo",
+        lables: { fb28: "probe" },
+        task: {
+          type: "model_method",
+          modelIdOrName: "fb28-probe",
+          methodName: "execute",
+        },
+      }),
+    Error,
+  );
+  assertStringIncludes(error.message, "Unknown key 'lables' on step 'echo'");
+  assertStringIncludes(error.message, "Did you mean 'labels'?");
+});
+
+Deno.test("StepSchema accepts all placement keys at step level", () => {
+  const data = StepSchema.parse({
+    name: "placed",
+    task: {
+      type: "model_method",
+      modelIdOrName: "my-model",
+      methodName: "run",
+    },
+    target: "worker-1",
+    labels: { env: "prod" },
+    platform: "linux/amd64",
+    queueTimeout: 30,
+  });
+  assertEquals(data.labels, { env: "prod" });
+  assertEquals(data.target, "worker-1");
+});
+
 Deno.test("Step placement: undefined when no placement fields are set", () => {
   const step = Step.fromData({
     name: "local",

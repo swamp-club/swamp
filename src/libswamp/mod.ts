@@ -587,6 +587,14 @@ export {
   type WorkflowSchemaEvent,
 } from "./workflows/schema.ts";
 
+// Broken workflow file scanning
+export {
+  type BrokenWorkflow,
+  findBrokenWorkflow,
+  listBrokenWorkflows,
+  workflowsDirFor,
+} from "./workflows/broken_workflow.ts";
+
 // Workflow validate operations
 export {
   createWorkflowValidateDeps,

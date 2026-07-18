@@ -255,6 +255,33 @@ model **instance** which does not exist locally (`model_not_found`) produces a
 it could also be a typo. The warning surfaces the reference without failing
 validation.
 
+### Unknown Keys Are Rejected
+
+The workflow, job, and step schemas reject unknown keys at parse time with an
+actionable error (swamp-club#1240). Zod's default unknown-key stripping is
+disabled by a `rejectUnknownKeys` preprocess hook (chained after the
+removed-driver-fields guard, which keeps its specific migration message):
+
+- A step-level placement property (`labels`, `target`, `platform`,
+  `queueTimeout`) found on a job or workflow names the misplaced key and shows
+  the step-level form. Silent stripping here failed open: the placement intent
+  was discarded and the work ran on the orchestrator.
+- Any other unknown key gets a did-you-mean suggestion (Levenshtein) plus the
+  list of valid keys for that entity.
+
+Because a schema-rejected file is invisible to the repository loader (it is
+skipped with a warning), `workflow validate` and `workflow run` re-scan the raw
+files on a lookup miss and surface the parse error inline — a broken file fails
+validation naming the offending key, and can never make `validate` (or
+validate-all) report green.
+
+**Schema evolution consequence**: persisted evaluated-workflow snapshots and
+suspended approval runs are re-parsed on resume through these same schemas.
+Removing a schema field is therefore a breaking change for data persisted
+before the removal — it now requires an explicit migration or tolerance
+decision (the removed `driver`/`driverConfig` fields chose a hard, actionable
+failure), never a silent strip.
+
 ## Workflow Definition
 
 Workflows are specified in `workflows/workflow-{uuid}.yaml`. They have a unique
