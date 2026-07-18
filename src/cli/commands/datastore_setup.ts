@@ -48,6 +48,7 @@ import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.t
 import { RENAMED_DATASTORE_TYPES } from "../resolve_datastore.ts";
 import { UserError } from "../../domain/errors.ts";
 import { parseTimeoutFlag } from "./datastore_sync.ts";
+import { requireAuthenticated, requireScope } from "../auth_context.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { dim, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
@@ -185,6 +186,12 @@ const datastoreSetupExtensionCommand = new Command()
       "Preferred escape hatch for large first-time setups.",
   )
   .action(async function (options: AnyOptions, type: string) {
+    requireAuthenticated(
+      "External datastores are a team feature",
+      "datastore:*",
+    );
+    requireScope("datastore:*");
+
     const cliCtx = createContext(options as GlobalOptions, [
       "datastore",
       "setup",
@@ -506,6 +513,11 @@ export const datastoreSetupCommand = new Command()
         renderer.handlers(),
       );
     } else if (extensionType) {
+      requireAuthenticated(
+        "External datastores are a team feature",
+        "datastore:*",
+      );
+      requireScope("datastore:*");
       await datastoreTypeRegistry.ensureLoaded();
       try {
         await resolveDatastoreType(extensionType, getAutoResolver());

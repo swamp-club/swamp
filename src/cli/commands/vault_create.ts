@@ -32,6 +32,7 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { requireAuthenticated, requireScope } from "../auth_context.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -81,6 +82,11 @@ export const vaultCreateCommand = new Command()
       vaultType: string,
       vaultNameArg?: string,
     ) {
+      if (vaultType !== "local_encryption") {
+        requireAuthenticated("Non-local vaults are a team feature", "vault:*");
+        requireScope("vault:*");
+      }
+
       const cliCtx = createContext(options as GlobalOptions, [
         "vault",
         "create",

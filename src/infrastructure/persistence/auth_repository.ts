@@ -92,6 +92,7 @@ export class AuthRepository {
 
       let username = "";
       let collectives: string[] | undefined;
+      let scopes: string[] | undefined;
       try {
         const content = await Deno.readTextFile(this.getAuthPath());
         const cached = JSON.parse(content) as AuthCredentials;
@@ -101,6 +102,7 @@ export class AuthRepository {
         ) {
           username = cached.username ?? "";
           collectives = cached.collectives;
+          scopes = cached.scopes;
         }
       } catch {
         // No cached identity — will be populated on first whoami
@@ -112,6 +114,7 @@ export class AuthRepository {
         apiKeyId: "",
         username,
         collectives,
+        ...(scopes ? { scopes } : {}),
       };
     }
 
@@ -154,6 +157,7 @@ export class AuthRepository {
     username: string,
     collectives: string[],
     fingerprint: string,
+    scopes?: string[],
   ): Promise<void> {
     let existing: AuthCredentials | undefined;
     try {
@@ -169,6 +173,7 @@ export class AuthRepository {
       apiKeyId: existing?.apiKeyId ?? "",
       username,
       collectives,
+      ...(scopes ? { scopes } : {}),
       apiKeyFingerprint: fingerprint,
     };
     await this.save(merged);
