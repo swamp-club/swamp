@@ -19,6 +19,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  formatRedactionDetails,
   formatRedactionSummary,
   redactIssueContent,
   redactIssueTitleAndBody,
@@ -43,7 +44,7 @@ Deno.test("redactIssueContent: redacts AWS access key IDs", () => {
   const result = redactIssueContent(
     "The key AKIAIOSFODNN7EXAMPLE was exposed",
   );
-  assertEquals(result.text, "The key [REDACTED-SECRET] was exposed");
+  assertEquals(result.text, "The key [REDACTED-SECRET-1] was exposed");
   assertEquals(result.summary.categories.get("secret"), 1);
 });
 
@@ -53,7 +54,7 @@ Deno.test("redactIssueContent: redacts GitHub tokens", () => {
   );
   assertEquals(
     result.text,
-    "Token [REDACTED-SECRET] was in the log",
+    "Token [REDACTED-SECRET-1] was in the log",
   );
 });
 
@@ -61,28 +62,87 @@ Deno.test("redactIssueContent: redacts Bearer tokens", () => {
   const result = redactIssueContent(
     "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.test",
   );
-  assertStringIncludes(result.text, "Bearer [REDACTED-SECRET]");
+  assertStringIncludes(result.text, "Bearer [REDACTED-SECRET-1]");
 });
 
 Deno.test("redactIssueContent: redacts padded Bearer tokens", () => {
   const result = redactIssueContent(
     "Bearer dG9rZW5WYWx1ZTEyMzQ1Njc4OTAxMjM0NTY3ODkw== next",
   );
-  assertEquals(result.text, "Bearer [REDACTED-SECRET] next");
+  assertEquals(result.text, "Bearer [REDACTED-SECRET-1] next");
+});
+
+Deno.test("redactIssueContent: Bearer at end of line leaves the next line alone", () => {
+  const result = redactIssueContent(
+    "The header was Bearer\nRestart the daemon",
+  );
+  assertEquals(result.text, "The header was Bearer\nRestart the daemon");
 });
 
 Deno.test("redactIssueContent: redacts prefixed API keys", () => {
   const result = redactIssueContent(
     "API key sk_test_00000000000000000000",
   );
-  assertEquals(result.text, "API key [REDACTED-SECRET]");
+  assertEquals(result.text, "API key [REDACTED-SECRET-1]");
 });
 
 Deno.test("redactIssueContent: redacts env-var style secrets", () => {
   const result = redactIssueContent(
     "DATABASE_PASSWORD=hunter2 was in .env",
   );
-  assertEquals(result.text, "DATABASE_PASSWORD=[REDACTED-SECRET] was in .env");
+  assertEquals(
+    result.text,
+    "DATABASE_PASSWORD=[REDACTED-SECRET-1] was in .env",
+  );
+});
+
+Deno.test("redactIssueContent: env-var values keep their closing quote", () => {
+  const result = redactIssueContent(
+    'run: echo "MY_TOKEN=hunter2" in the shell',
+  );
+  assertEquals(
+    result.text,
+    'run: echo "MY_TOKEN=[REDACTED-SECRET-1]" in the shell',
+  );
+});
+
+Deno.test("redactIssueContent: quote-initial env-var values are redacted inside their delimiters", () => {
+  const result = redactIssueContent('MY_TOKEN="real secret value"');
+  assertEquals(result.text, 'MY_TOKEN="[REDACTED-SECRET-1]"');
+});
+
+Deno.test("redactIssueContent: masked env-var values pass through untouched", () => {
+  const result = redactIssueContent("| case A | MY_TOKEN=*** |");
+  assertEquals(result.text, "| case A | MY_TOKEN=*** |");
+  assertEquals(result.summary.totalRedactions, 0);
+});
+
+Deno.test("redactIssueContent: variable-reference env-var values pass through untouched", () => {
+  const input = 'run: echo "MY_TOKEN=${FROM_VAULT}"';
+  const result = redactIssueContent(input);
+  assertEquals(result.text, input);
+  assertEquals(result.summary.totalRedactions, 0);
+});
+
+Deno.test("redactIssueContent: masked-vs-unmasked evidence table keeps its contrast", () => {
+  const input = [
+    "| case A | MY_TOKEN=*** |",
+    "| case B | MY_TOKEN=the-actual-value |",
+  ].join("\n");
+  const result = redactIssueContent(input);
+  const [rowA, rowB] = result.text.split("\n");
+  assertEquals(rowA, "| case A | MY_TOKEN=*** |");
+  assertEquals(rowB, "| case B | MY_TOKEN=[REDACTED-SECRET-1] |");
+});
+
+Deno.test("redactIssueContent: distinct env-var values get distinct placeholders, same value the same one", () => {
+  const result = redactIssueContent(
+    "MY_TOKEN=first-value OTHER_SECRET=second-value AGAIN_TOKEN=first-value",
+  );
+  assertEquals(
+    result.text,
+    "MY_TOKEN=[REDACTED-SECRET-1] OTHER_SECRET=[REDACTED-SECRET-2] AGAIN_TOKEN=[REDACTED-SECRET-1]",
+  );
 });
 
 Deno.test("redactIssueContent: redacts SSN patterns", () => {
@@ -261,7 +321,21 @@ Deno.test("redactIssueContent: handles multiple categories in one text", () => {
 Deno.test("redactIssueContent: long hex strings are redacted", () => {
   const hex = "a".repeat(40);
   const result = redactIssueContent(`Token was ${hex} in header`);
-  assertEquals(result.text, "Token was [REDACTED-SECRET] in header");
+  assertEquals(result.text, "Token was [REDACTED-SECRET-1] in header");
+});
+
+Deno.test("redactIssueContent: scheme URL without credentials does not swallow following lines", () => {
+  const input = [
+    "Steps:",
+    "1. Point the client at ws://gateway:9000/socket",
+    "2. Observe the reconnect loop",
+    "3. Expected: single connection",
+    "",
+    "Uses the @swamp/issue-lifecycle package.",
+  ].join("\n");
+  const result = redactIssueContent(input);
+  assertEquals(result.text, input);
+  assertEquals(result.summary.totalRedactions, 0);
 });
 
 Deno.test("redactIssueContent: IPv6 addresses are redacted", () => {
@@ -300,6 +374,72 @@ Deno.test("redactIssueTitleAndBody: returns combined summary", () => {
     (result.summary.categories.get("IP address") ?? 0) >= 2,
     true,
   );
+});
+
+// --- line-level changes ---
+
+Deno.test("redactIssueContent: reports per-line changes with line numbers", () => {
+  const input = [
+    "First line is fine",
+    "DATABASE_PASSWORD=hunter2 leaked here",
+    "Third line is fine",
+    "Contact admin@corp.com about it",
+  ].join("\n");
+  const result = redactIssueContent(input);
+  assertEquals(result.changes.length, 2);
+  assertEquals(result.changes[0].lineNumber, 2);
+  assertEquals(
+    result.changes[0].original,
+    "DATABASE_PASSWORD=hunter2 leaked here",
+  );
+  assertEquals(
+    result.changes[0].redacted,
+    "DATABASE_PASSWORD=[REDACTED-SECRET-1] leaked here",
+  );
+  assertEquals(result.changes[1].lineNumber, 4);
+});
+
+Deno.test("redactIssueContent: reports no changes when nothing was redacted", () => {
+  const result = redactIssueContent("Nothing sensitive here");
+  assertEquals(result.changes.length, 0);
+});
+
+Deno.test("redactIssueTitleAndBody: reports changes per field", () => {
+  const result = redactIssueTitleAndBody(
+    "Error contacting 10.0.3.47",
+    "All good in the body",
+  );
+  assertEquals(result.title.changes.length, 1);
+  assertEquals(result.title.changes[0].lineNumber, 1);
+  assertEquals(result.body.changes.length, 0);
+});
+
+// --- formatRedactionDetails ---
+
+Deno.test("formatRedactionDetails: formats line number and before/after", () => {
+  const lines = formatRedactionDetails([
+    { lineNumber: 3, original: "TOKEN=abc", redacted: "TOKEN=[X-1]" },
+  ]);
+  assertEquals(lines, ["line 3: TOKEN=abc -> TOKEN=[X-1]"]);
+});
+
+Deno.test("formatRedactionDetails: prefixes the label when given", () => {
+  const lines = formatRedactionDetails(
+    [{ lineNumber: 1, original: "a", redacted: "b" }],
+    "title",
+  );
+  assertEquals(lines, ["title line 1: a -> b"]);
+});
+
+Deno.test("formatRedactionDetails: escapes newlines and truncates long content", () => {
+  const long = "x".repeat(500);
+  const lines = formatRedactionDetails([
+    { lineNumber: 2, original: `one\ntwo\n${long}`, redacted: "gone" },
+  ]);
+  assertStringIncludes(lines[0], "one\\ntwo\\n");
+  assertEquals(lines[0].includes("\n"), false);
+  assertStringIncludes(lines[0], "…");
+  assertStringIncludes(lines[0], "-> gone");
 });
 
 // --- formatRedactionSummary ---

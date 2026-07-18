@@ -27,14 +27,13 @@ import {
 } from "../../libswamp/mod.ts";
 import {
   renderIssueCancelled,
+  renderRedactionNotice,
+  renderRedactionSkipped,
 } from "../../presentation/renderers/issue_create.ts";
 import { createIssueEditRenderer } from "../../presentation/renderers/issue_edit.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
-import {
-  formatRedactionSummary,
-  redactIssueTitleAndBody,
-} from "../../domain/issues/content_redactor.ts";
+import { redactIssueTitleAndBody } from "../../domain/issues/content_redactor.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
 import { loadIdentity } from "../load_identity.ts";
@@ -126,6 +125,10 @@ export const issueEditCommand = new Command()
   .option(
     "--type <type:string>",
     "Change issue type (bug, feature, or security); escalating to security restricts visibility and cannot be reversed by non-admins",
+  )
+  .option(
+    "--no-redact",
+    "Skip automatic redaction of sensitive content (use when the content is deliberately sanitized)",
   )
   .action(async function (options: AnyOptions, issueNumber: number) {
     const ctx = createContext(options as GlobalOptions, ["issue", "edit"]);
@@ -234,16 +237,17 @@ export const issueEditCommand = new Command()
     }
 
     // Redact sensitive content before submission.
-    const redacted = redactIssueTitleAndBody(title, body);
-    if (redacted.summary.totalRedactions > 0) {
-      const msg = formatRedactionSummary(redacted.summary);
-      ctx.logger.info`${msg}`;
-      if (ctx.outputMode === "json") {
-        console.error(msg);
-      }
+    if (options.redact === false) {
+      renderRedactionSkipped(ctx.outputMode);
+    } else {
+      const redacted = redactIssueTitleAndBody(title, body);
+      renderRedactionNotice(redacted.summary, [
+        { label: "title", result: redacted.title },
+        { label: "body", result: redacted.body },
+      ], ctx.outputMode);
+      title = redacted.title.text;
+      body = redacted.body.text;
     }
-    title = redacted.title.text;
-    body = redacted.body.text;
 
     const libCtx = createLibSwampContext({ logger: ctx.logger });
     const renderer = createIssueEditRenderer(ctx.outputMode);
