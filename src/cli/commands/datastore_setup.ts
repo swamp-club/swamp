@@ -47,6 +47,7 @@ import { resolveDatastoreType } from "../../domain/extensions/extension_auto_res
 import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
 import { RENAMED_DATASTORE_TYPES } from "../resolve_datastore.ts";
 import { UserError } from "../../domain/errors.ts";
+import { parseTimeoutFlag } from "./datastore_sync.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { dim, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
@@ -169,6 +170,12 @@ const datastoreSetupExtensionCommand = new Command()
     "--hydration-strategy <strategy:string>",
     'Content download strategy: "full" (default, download everything) or "lazy" (metadata only, download content on demand)',
   )
+  .option(
+    "--timeout <seconds:integer>",
+    "Override the sync timeout for the initial push and hydration pull (seconds, " +
+      "max 21600). Wins over SWAMP_DATASTORE_SYNC_TIMEOUT_MS. " +
+      "Preferred escape hatch for large first-time setups.",
+  )
   .action(async function (options: AnyOptions, type: string) {
     const cliCtx = createContext(options as GlobalOptions, [
       "datastore",
@@ -233,6 +240,10 @@ const datastoreSetupExtensionCommand = new Command()
       );
     }
 
+    const syncTimeoutMsOverride = options.timeout != null
+      ? parseTimeoutFlag(options.timeout)
+      : undefined;
+
     const namespace = typeof configNamespace === "string"
       ? configNamespace
       : marker?.datastore?.namespace;
@@ -246,6 +257,7 @@ const datastoreSetupExtensionCommand = new Command()
         skipMigration: !!options.skipMigration,
         hydrationStrategy,
         namespace,
+        syncTimeoutMsOverride,
       }),
       renderer.handlers(),
     );

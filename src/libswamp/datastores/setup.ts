@@ -38,6 +38,7 @@ import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/fi
 import { getSwampDataDir } from "../../infrastructure/persistence/paths.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { summarizeSyncError } from "../../infrastructure/persistence/sync_error_diagnostic.ts";
+import { SyncTimeoutError } from "../../domain/datastore/datastore_sync_service.ts";
 import { writeNamespaceManifest } from "../../infrastructure/persistence/namespace_manifest.ts";
 import { runBoundedSync } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 import type { LibSwampContext } from "../context.ts";
@@ -245,6 +246,7 @@ export interface DatastoreSetupExtensionInput {
   skipMigration: boolean;
   hydrationStrategy?: "full" | "lazy";
   namespace?: string;
+  syncTimeoutMsOverride?: number;
 }
 
 /** Sets up an extension-provided datastore. */
@@ -326,15 +328,22 @@ export async function* datastoreSetupExtension(
       const errors: string[] = [];
       let filesCopied = 0;
       let filesPulled = 0;
+      let onlyTimeouts = true;
 
       // Setup runs outside the flush coordinator, so it does not pick up
-      // per-config syncTimeoutMs. Env override applies if set, else fall
-      // back to the default.
-      const envValue = Deno.env.get(SYNC_TIMEOUT_ENV_VAR);
-      const parsedTimeout = envValue ? Number.parseInt(envValue, 10) : NaN;
-      const timeoutMs = Number.isFinite(parsedTimeout) && parsedTimeout > 0
-        ? parsedTimeout
-        : DEFAULT_SYNC_TIMEOUT_MS;
+      // per-config syncTimeoutMs. Resolution: CLI --timeout > env var > default.
+      const timeoutMs = (() => {
+        if (
+          input.syncTimeoutMsOverride != null && input.syncTimeoutMsOverride > 0
+        ) {
+          return input.syncTimeoutMsOverride;
+        }
+        const envValue = Deno.env.get(SYNC_TIMEOUT_ENV_VAR);
+        const parsedTimeout = envValue ? Number.parseInt(envValue, 10) : NaN;
+        return Number.isFinite(parsedTimeout) && parsedTimeout > 0
+          ? parsedTimeout
+          : DEFAULT_SYNC_TIMEOUT_MS;
+      })();
 
       const cachePath = provider.resolveCachePath?.(input.repoDir) ??
         join(getSwampDataDir(), "repos", input.repoId ?? "unknown");
@@ -381,6 +390,7 @@ export async function* datastoreSetupExtension(
           config,
         );
         errors.push(...result.errors);
+        if (result.errors.length > 0) onlyTimeouts = false;
         filesCopied = result.filesCopied;
         migrationResult = result;
 
@@ -400,6 +410,7 @@ export async function* datastoreSetupExtension(
             );
             ctx.logger.debug`Push complete`;
           } catch (error) {
+            if (!(error instanceof SyncTimeoutError)) onlyTimeouts = false;
             const { summary } = summarizeSyncError(
               "push",
               input.type,
@@ -443,6 +454,7 @@ export async function* datastoreSetupExtension(
           filesPulled = typeof pulled === "number" ? pulled : 0;
           ctx.logger.debug`Hydration complete: ${filesPulled} file(s) pulled`;
         } catch (error) {
+          if (!(error instanceof SyncTimeoutError)) onlyTimeouts = false;
           const { summary } = summarizeSyncError(
             "pull",
             input.type,
@@ -467,10 +479,12 @@ export async function* datastoreSetupExtension(
         );
       }
 
-      // Update .swamp.yaml only after migration and hydration succeed
-      // (or are skipped). This avoids leaving the config pointing at an
-      // extension datastore when data movement failed.
-      if (errors.length === 0) {
+      // Update .swamp.yaml when data movement succeeded OR when only
+      // timeouts occurred. A timeout means the datastore is correctly
+      // configured but the data transfer was slow — the user can resume
+      // with `swamp datastore sync --push --timeout <big>`. Hard failures
+      // (auth, network, config) still block the type commit.
+      if (errors.length === 0 || onlyTimeouts) {
         await deps.updateRepoConfig(input.repoDir, {
           type: input.type,
           config: input.config,
@@ -483,7 +497,7 @@ export async function* datastoreSetupExtension(
 
       // Register namespace manifest after config is persisted.
       // provider.registerNamespace handles conflict detection internally.
-      if (errors.length === 0 && ns && input.repoId) {
+      if ((errors.length === 0 || onlyTimeouts) && ns && input.repoId) {
         const datastorePath = provider.resolveDatastorePath(input.repoDir);
         if (provider.registerNamespace) {
           try {

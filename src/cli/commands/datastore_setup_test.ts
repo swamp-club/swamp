@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 // Initialize logging for tests
@@ -64,4 +64,17 @@ Deno.test("datastoreSetupCommand has parent action for interactive mode", async 
   const commands = datastoreSetupCommand.getCommands();
   const names = commands.map((c) => c.getName()).sort();
   assertEquals(names, ["extension", "filesystem", "s3"]);
+});
+
+Deno.test("datastoreSetupExtensionCommand has --timeout option", async () => {
+  const { datastoreSetupCommand } = await import("./datastore_setup.ts");
+  const extCmd = datastoreSetupCommand.getCommand("extension");
+  assertEquals(extCmd !== undefined, true);
+  const opt = extCmd?.getOption("timeout");
+  assertEquals(opt !== undefined, true, "--timeout option should exist");
+  assertStringIncludes(
+    opt?.description ?? "",
+    "sync timeout",
+    "--timeout description should mention sync timeout",
+  );
 });
