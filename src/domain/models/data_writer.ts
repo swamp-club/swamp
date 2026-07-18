@@ -62,7 +62,9 @@ export class DefaultDataWriter implements DataWriter {
   private readonly options: ResolvedDataWriterOptions;
   private readonly callbacks: DataWriterCallbacks;
 
-  private allocated: { version: number; contentPath: string } | null = null;
+  private allocated:
+    | { version: number; contentPath: string; priorVersions: number[] }
+    | null = null;
   private data: Data | null = null;
   private lineBuffer: string[] | null = null;
   private finalized = false;
@@ -226,6 +228,7 @@ export class DefaultDataWriter implements DataWriter {
       this.modelId,
       this.data,
       this.allocated.version,
+      this.allocated.priorVersions,
     );
 
     this.finalized = true;

@@ -263,7 +263,7 @@ export interface UnifiedDataRepository {
     type: ModelType,
     modelId: string,
     data: Data,
-  ): Promise<{ version: number; contentPath: string }>;
+  ): Promise<{ version: number; contentPath: string; priorVersions: number[] }>;
 
   /**
    * Finalizes a previously allocated version by writing metadata and updating symlinks.
@@ -273,6 +273,7 @@ export interface UnifiedDataRepository {
    * @param modelId - The model input ID
    * @param data - The data entity
    * @param version - The version number to finalize
+   * @param priorVersions - Versions that existed before allocation (for write-time GC)
    * @returns Size and checksum of the content
    */
   finalizeVersion(
@@ -280,6 +281,7 @@ export interface UnifiedDataRepository {
     modelId: string,
     data: Data,
     version: number,
+    priorVersions?: number[],
   ): Promise<{ size: number; checksum: string }>;
 
   /**

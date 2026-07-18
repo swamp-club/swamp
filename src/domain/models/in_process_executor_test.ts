@@ -62,7 +62,11 @@ function createMockDataRepo(): UnifiedDataRepository {
     collectGarbage: () =>
       Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 }),
     allocateVersion: () =>
-      Promise.resolve({ version: 1, contentPath: "/tmp/mock" }),
+      Promise.resolve({
+        version: 1,
+        contentPath: "/tmp/mock",
+        priorVersions: [],
+      }),
     finalizeVersion: () =>
       Promise.resolve({ size: 0, checksum: "mock-checksum" }),
     getLatestVersionSync: () => null,

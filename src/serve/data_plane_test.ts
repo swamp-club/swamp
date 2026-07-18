@@ -113,7 +113,7 @@ function createInMemoryRepo(tempDir: string): {
       const path = join(tempDir, `${crypto.randomUUID()}.part`);
       await Deno.writeFile(path, new Uint8Array());
       pending.set(`${key}@${version}`, { key, path });
-      return { version, contentPath: path };
+      return { version, contentPath: path, priorVersions: [] };
     },
     finalizeVersion: async (
       type: unknown,

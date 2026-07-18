@@ -584,11 +584,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     }
 
     // Atomically allocate a new version directory
-    const { version: newVersion } = await this.atomicAllocateVersionDir(
-      type,
-      modelId,
-      data.name,
-    );
+    const { version: newVersion, priorVersions } = await this
+      .atomicAllocateVersionDir(
+        type,
+        modelId,
+        data.name,
+      );
 
     // Create the data with updated version and size
     const dataToSave = data.withNewVersion({
@@ -626,6 +627,18 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     await this.updateLatestMarker(type, modelId, data.name, newVersion);
 
     this.catalogUpsert(type, modelId, dataToSave);
+
+    // Enforce numeric garbageCollection cap at write time
+    const gc = data.garbageCollection;
+    if (typeof gc === "number") {
+      await this.pruneExcessVersions(
+        type,
+        modelId,
+        data.name,
+        priorVersions,
+        gc,
+      );
+    }
 
     return { version: newVersion };
   }
@@ -1026,7 +1039,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     type: ModelType,
     modelId: string,
     data: Data,
-  ): Promise<{ version: number; contentPath: string }> {
+  ): Promise<
+    { version: number; contentPath: string; priorVersions: number[] }
+  > {
     // Reject reserved data names that collide with internal markers
     if (isReservedDataName(data.name)) {
       throw new Error(
@@ -1051,11 +1066,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     }
 
     // Atomically allocate a new version directory
-    const { version: newVersion } = await this.atomicAllocateVersionDir(
-      type,
-      modelId,
-      data.name,
-    );
+    const { version: newVersion, priorVersions } = await this
+      .atomicAllocateVersionDir(
+        type,
+        modelId,
+        data.name,
+      );
 
     const contentPath = this.getContentPath(
       type,
@@ -1064,7 +1080,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       newVersion,
     );
 
-    return { version: newVersion, contentPath };
+    return { version: newVersion, contentPath, priorVersions };
   }
 
   async finalizeVersion(
@@ -1072,6 +1088,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     modelId: string,
     data: Data,
     version: number,
+    priorVersions?: number[],
   ): Promise<{ size: number; checksum: string }> {
     // Version is known here (allocateVersion has already run); pass the
     // version directory as the per-call signal.
@@ -1112,6 +1129,18 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     await this.updateLatestMarker(type, modelId, data.name, version);
 
     this.catalogUpsert(type, modelId, dataToSave);
+
+    // Enforce numeric garbageCollection cap at write time
+    const gc = data.garbageCollection;
+    if (typeof gc === "number" && priorVersions) {
+      await this.pruneExcessVersions(
+        type,
+        modelId,
+        data.name,
+        priorVersions,
+        gc,
+      );
+    }
 
     return { size, checksum };
   }
@@ -1629,7 +1658,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     type: ModelType,
     modelId: string,
     dataName: string,
-  ): Promise<{ version: number; versionDir: string }> {
+  ): Promise<{ version: number; versionDir: string; priorVersions: number[] }> {
     const dataNameDir = this.getDataNameDir(type, modelId, dataName);
     await assertSafePath(dataNameDir, this.baseDir);
     await Deno.mkdir(dataNameDir, { recursive: true });
@@ -1642,7 +1671,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       const versionDir = this.getPath(type, modelId, dataName, nextVersion);
       try {
         await Deno.mkdir(versionDir);
-        return { version: nextVersion, versionDir };
+        return { version: nextVersion, versionDir, priorVersions: versions };
       } catch (error) {
         if (error instanceof Deno.errors.AlreadyExists) {
           nextVersion++;
@@ -1655,6 +1684,40 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     throw new Error(
       `Failed to allocate version for "${dataName}" after ${maxRetries} retries`,
     );
+  }
+
+  /**
+   * Prunes oldest versions beyond a numeric cap. Best-effort: NotFound on
+   * already-removed directories is swallowed (idempotent under concurrency).
+   */
+  private async pruneExcessVersions(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    priorVersions: number[],
+    cap: number,
+  ): Promise<void> {
+    if (priorVersions.length < cap) return;
+    const sorted = [...priorVersions].sort((a, b) => a - b);
+    const toRemove = sorted.slice(0, sorted.length - cap + 1);
+    for (const version of toRemove) {
+      const versionDir = this.getPath(type, modelId, dataName, version);
+      await this.notifyDirty(versionDir);
+      try {
+        await Deno.remove(versionDir, { recursive: true });
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      }
+    }
+    if (toRemove.length > 0) {
+      this.catalogStore.bulkRemoveVersions(
+        this.namespace,
+        type.normalized,
+        modelId,
+        dataName,
+        toRemove,
+      );
+    }
   }
 
   private assertPathContained(

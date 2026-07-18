@@ -169,6 +169,27 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     return (current ?? 0) + 1;
   }
 
+  private pruneExcessVersions(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    priorVersions: number[],
+    cap: number,
+  ): void {
+    if (priorVersions.length < cap) return;
+    const sorted = [...priorVersions].sort((a, b) => a - b);
+    const toRemove = sorted.slice(0, sorted.length - cap + 1);
+    for (const version of toRemove) {
+      const key = dataKey(type.normalized, modelId, dataName, version);
+      const existing = this.contentMap.get(key);
+      if (existing) {
+        this.totalBytes -= existing.length;
+      }
+      this.dataMap.delete(key);
+      this.contentMap.delete(key);
+    }
+  }
+
   private async computeChecksum(content: Uint8Array): Promise<string> {
     const buffer = new ArrayBuffer(content.length);
     new Uint8Array(buffer).set(content);
@@ -206,6 +227,7 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
       }
     }
 
+    const priorVersions = this.listVersionsSync(type, modelId, data.name);
     const newVersion = this.nextVersion(type, modelId, data.name);
     this.ensureBudget(content.length);
 
@@ -225,6 +247,11 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     );
 
     this.catalogUpsert(type, modelId, dataToSave);
+
+    const gc = data.garbageCollection;
+    if (typeof gc === "number") {
+      this.pruneExcessVersions(type, modelId, data.name, priorVersions, gc);
+    }
 
     return { version: newVersion };
   }
@@ -270,7 +297,9 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     type: ModelType,
     modelId: string,
     data: Data,
-  ): Promise<{ version: number; contentPath: string }> {
+  ): Promise<
+    { version: number; contentPath: string; priorVersions: number[] }
+  > {
     this.ensureNotDisposed();
 
     if (isReservedDataName(data.name)) {
@@ -290,6 +319,7 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
       }
     }
 
+    const priorVersions = this.listVersionsSync(type, modelId, data.name);
     const newVersion = this.nextVersion(type, modelId, data.name);
     const contentPath = await Deno.makeTempFile({
       prefix: "swamp-ephemeral-",
@@ -302,7 +332,7 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
       version: newVersion,
     });
 
-    return { version: newVersion, contentPath };
+    return { version: newVersion, contentPath, priorVersions };
   }
 
   async finalizeVersion(
@@ -310,6 +340,7 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     modelId: string,
     data: Data,
     version: number,
+    priorVersions?: number[],
   ): Promise<{ size: number; checksum: string }> {
     this.ensureNotDisposed();
 
@@ -356,6 +387,11 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     );
 
     this.catalogUpsert(type, modelId, dataToSave);
+
+    const gc = data.garbageCollection;
+    if (typeof gc === "number" && priorVersions) {
+      this.pruneExcessVersions(type, modelId, data.name, priorVersions, gc);
+    }
 
     return { size, checksum };
   }

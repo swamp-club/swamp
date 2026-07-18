@@ -416,7 +416,7 @@ Deno.test("catalog integration: indexes data for search", async () => {
   assertEquals(rowCount, 1);
 });
 
-Deno.test("collectGarbage: removes excess versions", async () => {
+Deno.test("collectGarbage: no-op when write-time pruning already enforced cap", async () => {
   const { repo } = createRepo();
   const data = createTestData({ garbageCollection: 2 });
 
@@ -424,9 +424,9 @@ Deno.test("collectGarbage: removes excess versions", async () => {
     await repo.save(TEST_TYPE, TEST_MODEL_ID, data, TEST_CONTENT);
   }
 
+  // Write-time pruning keeps versions at cap — collectGarbage has nothing to do
   const result = await repo.collectGarbage(TEST_TYPE, TEST_MODEL_ID);
-
-  assertEquals(result.versionsRemoved, 3);
+  assertEquals(result.versionsRemoved, 0);
 
   const versions = await repo.listVersions(
     TEST_TYPE,
@@ -436,7 +436,7 @@ Deno.test("collectGarbage: removes excess versions", async () => {
   assertEquals(versions, [4, 5]);
 });
 
-Deno.test("collectGarbage: dryRun does not remove versions", async () => {
+Deno.test("collectGarbage: dryRun reports zero when write-time pruning active", async () => {
   const { repo } = createRepo();
   const data = createTestData({ garbageCollection: 2 });
 
@@ -448,14 +448,15 @@ Deno.test("collectGarbage: dryRun does not remove versions", async () => {
     dryRun: true,
   });
 
-  assertEquals(result.versionsRemoved, 3);
+  // Write-time pruning already enforced — nothing left for GC
+  assertEquals(result.versionsRemoved, 0);
 
   const versions = await repo.listVersions(
     TEST_TYPE,
     TEST_MODEL_ID,
     "test-data",
   );
-  assertEquals(versions, [1, 2, 3, 4, 5]);
+  assertEquals(versions, [4, 5]);
 });
 
 // --- Budget enforcement ---
