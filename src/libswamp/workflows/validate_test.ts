@@ -172,3 +172,95 @@ Deno.test("workflowValidate yields error when not found", async () => {
 
   assertEquals(events[1].kind, "error");
 });
+
+// Broken-file surfacing (swamp-club#1240): a workflow file that fails
+// schema parsing is invisible to the repository, so validate must report
+// the parse error rather than "not found" or an all-green aggregate.
+
+const BROKEN = {
+  file: "/repo/workflows/workflow-74ae52ba.yaml",
+  name: "variant-a-job-labels",
+  id: "74ae52ba-5f3f-4937-a4fd-c1de950572e7",
+  error: "'labels' is a step property, not a job property",
+};
+
+Deno.test("workflowValidate single: schema-rejected file fails Schema validation instead of not-found", async () => {
+  const deps = makeDeps({
+    findWorkflowByName: () => Promise.resolve(null),
+    listBrokenWorkflows: () => Promise.resolve([BROKEN]),
+  });
+  const events = await collect<WorkflowValidateEvent>(
+    workflowValidate(createLibSwampContext(), deps, {
+      workflowIdOrName: "variant-a-job-labels",
+    }),
+  );
+
+  assertEquals(events[1].kind, "completed");
+  const completed = events[1] as Extract<
+    WorkflowValidateEvent,
+    { kind: "completed" }
+  >;
+  const data = completed.data as WorkflowValidateData;
+  assertEquals(data.passed, false);
+  assertEquals(data.workflowName, "variant-a-job-labels");
+  assertEquals(data.validations[0].name, "Schema validation");
+  assertEquals(data.validations[0].passed, false);
+  assertEquals(
+    data.validations[0].error?.includes("'labels' is a step property"),
+    true,
+  );
+});
+
+Deno.test("workflowValidate single: still not-found when no broken file matches", async () => {
+  const deps = makeDeps({
+    findWorkflowByName: () => Promise.resolve(null),
+    listBrokenWorkflows: () => Promise.resolve([BROKEN]),
+  });
+  const events = await collect<WorkflowValidateEvent>(
+    workflowValidate(createLibSwampContext(), deps, {
+      workflowIdOrName: "some-other-workflow",
+    }),
+  );
+
+  assertEquals(events[1].kind, "error");
+});
+
+Deno.test("workflowValidate all: broken files count as failures", async () => {
+  const deps = makeDeps({
+    listBrokenWorkflows: () => Promise.resolve([BROKEN]),
+  });
+  const events = await collect<WorkflowValidateEvent>(
+    workflowValidate(createLibSwampContext(), deps, {}),
+  );
+
+  const completed = events[1] as Extract<
+    WorkflowValidateEvent,
+    { kind: "completed" }
+  >;
+  if (!isWorkflowValidateAllData(completed.data)) {
+    throw new Error("expected aggregate data");
+  }
+  assertEquals(completed.data.passed, false);
+  assertEquals(completed.data.totalFailed, 1);
+  assertEquals(completed.data.totalPassed, 1);
+});
+
+Deno.test("workflowValidate all: broken files alone still yield results, not no-workflows error", async () => {
+  const deps = makeDeps({
+    findAllWorkflows: () => Promise.resolve([]),
+    listBrokenWorkflows: () => Promise.resolve([BROKEN]),
+  });
+  const events = await collect<WorkflowValidateEvent>(
+    workflowValidate(createLibSwampContext(), deps, {}),
+  );
+
+  const completed = events[1] as Extract<
+    WorkflowValidateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  if (!isWorkflowValidateAllData(completed.data)) {
+    throw new Error("expected aggregate data");
+  }
+  assertEquals(completed.data.totalFailed, 1);
+});

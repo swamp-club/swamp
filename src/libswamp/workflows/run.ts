@@ -57,6 +57,7 @@ import {
   withGeneratorTraceContext,
 } from "../../infrastructure/tracing/mod.ts";
 import { WorkflowTelemetryBridge } from "./telemetry_bridge.ts";
+import { findBrokenWorkflow, workflowsDirFor } from "./broken_workflow.ts";
 
 /**
  * Events emitted by the libswamp workflow run generator.
@@ -498,9 +499,18 @@ export async function* workflowRun(
           input.workflowIdOrName,
         );
         if (!workflow) {
+          // A file carrying the requested name/id may exist but fail
+          // schema parsing, making it invisible to the repository lookup.
+          // Surface the parse error instead of a misleading "not found".
+          const broken = await findBrokenWorkflow(
+            workflowsDirFor(deps.repoDir),
+            input.workflowIdOrName,
+          );
           yield {
             kind: "error",
-            error: workflowNotFound(input.workflowIdOrName),
+            error: broken
+              ? workflowLoadFailed(input.workflowIdOrName, broken)
+              : workflowNotFound(input.workflowIdOrName),
           };
           return;
         }
@@ -675,6 +685,21 @@ export function workflowNotFound(idOrName: string): SwampError {
     message: `Workflow not found: ${idOrName}.\n` +
       `Create it with 'swamp workflow create ${idOrName}', ` +
       `or run 'swamp doctor workflows --json' to check for broken workflow files`,
+  };
+}
+
+/**
+ * Creates a SwampError for a workflow whose file exists but fails schema
+ * parsing (e.g. an unknown key, swamp-club#1240).
+ */
+export function workflowLoadFailed(
+  idOrName: string,
+  broken: { file: string; error: string },
+): SwampError {
+  return {
+    code: "workflow_load_failed",
+    message: `Workflow '${idOrName}' exists but failed to load: ` +
+      `${broken.error}\n(file: ${broken.file})`,
   };
 }
 

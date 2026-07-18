@@ -25,6 +25,7 @@ import {
   InputsSchemaSchema,
 } from "../definitions/definition.ts";
 import { rejectRemovedDriverFields } from "../removed_driver_fields.ts";
+import { rejectUnknownKeys } from "./unknown_keys.ts";
 import { deepMerge } from "../inputs/input_merge.ts";
 import {
   type ReportSelection,
@@ -77,11 +78,16 @@ const WorkflowObjectSchema = z.object({
 /**
  * Zod schema for Workflow aggregate root. Rejects the removed
  * `driver`/`driverConfig` fields with an actionable error (see
- * design/remote-execution.md).
+ * design/remote-execution.md), and rejects unknown keys — Zod's silent
+ * stripping would otherwise discard misplaced or typo'd top-level keys
+ * (swamp-club#1240).
  */
 export const WorkflowSchema = z.preprocess(
   rejectRemovedDriverFields,
-  WorkflowObjectSchema,
+  z.preprocess(
+    rejectUnknownKeys("workflow", Object.keys(WorkflowObjectSchema.shape)),
+    WorkflowObjectSchema,
+  ),
 );
 
 /**

@@ -238,6 +238,54 @@ Deno.test("Job.fromData and toData roundtrip correctly", () => {
   assertEquals(restored.weight, original.weight);
 });
 
+// Unknown-key rejection tests (swamp-club#1240)
+
+Deno.test("JobSchema rejects job-level labels with step-property message", () => {
+  // Exact shape from swamp-club#1240 variant A: the labels block sits on
+  // the job, which previously passed and was silently dropped.
+  const error = assertThrows(
+    () =>
+      JobSchema.parse({
+        name: "placed",
+        labels: { fb28: "probe" },
+        steps: [{
+          name: "echo",
+          task: {
+            type: "model_method",
+            modelIdOrName: "fb28-probe",
+            methodName: "execute",
+            inputs: { run: 'echo "hello"' },
+          },
+        }],
+      }),
+    Error,
+  );
+  assertStringIncludes(error.message, "'labels' is a step property");
+  assertStringIncludes(error.message, "job 'placed'");
+  assertStringIncludes(error.message, "Move it onto the step");
+});
+
+Deno.test("JobSchema rejects unknown key with did-you-mean suggestion", () => {
+  const error = assertThrows(
+    () =>
+      JobSchema.parse({
+        name: "build",
+        descripton: "typo",
+        steps: [{
+          name: "step1",
+          task: {
+            type: "model_method",
+            modelIdOrName: "my-model",
+            methodName: "run",
+          },
+        }],
+      }),
+    Error,
+  );
+  assertStringIncludes(error.message, "Unknown key 'descripton'");
+  assertStringIncludes(error.message, "Did you mean 'description'?");
+});
+
 Deno.test("JobSchema throws clear error for string dependsOn entries", () => {
   assertThrows(
     () => {
