@@ -374,13 +374,10 @@ export class DefaultModelValidationService implements ModelValidationService {
         continue;
       }
 
-      // Filter by method: if --method given, only run matching checks.
-      // If no --method given, skip checks that have an explicit appliesTo
-      // (they only make sense in the context of a specific method).
-      if (check.appliesTo) {
-        if (!checkContext.method) {
-          continue;
-        }
+      // Filter by method: if --method given, only run checks that apply to
+      // that method. If no --method given, run all checks so that `model
+      // validate` surfaces the same errors that method execution would.
+      if (check.appliesTo && checkContext.method) {
         if (!check.appliesTo.includes(checkContext.method)) {
           continue;
         }
