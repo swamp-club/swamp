@@ -60,7 +60,11 @@ function createMockRepo(): UnifiedDataRepository {
     collectGarbage: () =>
       Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 }),
     allocateVersion: () =>
-      Promise.resolve({ version: 1, contentPath: "/tmp/mock" }),
+      Promise.resolve({
+        version: 1,
+        contentPath: "/tmp/mock",
+        priorVersions: [],
+      }),
     finalizeVersion: () =>
       Promise.resolve({ size: 0, checksum: "mock-checksum" }),
     getLatestVersionSync: () => null,
@@ -1561,7 +1565,11 @@ Deno.test("createFileWriterFactory: getHandles returns one handle per writeStrea
     const repo = {
       ...createMockRepo(),
       allocateVersion: () =>
-        Promise.resolve({ version: 1, contentPath: tmpFile }),
+        Promise.resolve({
+          version: 1,
+          contentPath: tmpFile,
+          priorVersions: [],
+        }),
     };
     const { createFileWriter, getHandles } = createFileWriterFactory(
       repo,

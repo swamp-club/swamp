@@ -600,9 +600,10 @@ Deno.test("Integration: collectGarbage removes old versions by count", async () 
     await repo.save(type, modelId, data, new TextEncoder().encode("v3"));
     await repo.save(type, modelId, data, new TextEncoder().encode("v4"));
 
+    // Write-time pruning already enforced — collectGarbage has nothing to do
     const result = await repo.collectGarbage(type, modelId);
 
-    assertEquals(result.versionsRemoved, 2);
+    assertEquals(result.versionsRemoved, 0);
     const versions = await repo.listVersions(type, modelId, "gc-test");
     assertEquals(versions, [3, 4]);
   });

@@ -67,7 +67,9 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     type: ModelType,
     modelId: string,
     data: Data,
-  ): Promise<{ version: number; contentPath: string }> {
+  ): Promise<
+    { version: number; contentPath: string; priorVersions: number[] }
+  > {
     return this.routeWrite(data).allocateVersion(type, modelId, data);
   }
 
@@ -76,12 +78,14 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     modelId: string,
     data: Data,
     version: number,
+    priorVersions?: number[],
   ): Promise<{ size: number; checksum: string }> {
     return this.routeWrite(data).finalizeVersion(
       type,
       modelId,
       data,
       version,
+      priorVersions,
     );
   }
 
