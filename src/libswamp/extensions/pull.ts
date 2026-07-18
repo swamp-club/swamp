@@ -106,6 +106,13 @@ export interface InstallResult {
   dependencies: string[];
   dependencyResults: InstallResult[];
   /**
+   * Foreign types this extension grafts methods onto via
+   * `export const extension`. Each entry names the target type and
+   * the methods added to it. Empty when the extension defines only
+   * its own types or when source files are unavailable.
+   */
+  extendsTypes: Array<{ type: string; methods: string[] }>;
+  /**
    * Repo-relative paths that were declared in the prior version's
    * lockfile entry but absent from the current version's
    * `extractedFiles`, and which were actually removed from disk by
@@ -1223,6 +1230,8 @@ export async function installExtension(
       }
     }
 
+    const extendsTypes = await scanForExtensionGrafts(absoluteModelsDir);
+
     return {
       name: ref.name,
       version,
@@ -1240,6 +1249,7 @@ export async function installExtension(
       skillFiles,
       dependencies: manifest.dependencies,
       dependencyResults,
+      extendsTypes,
       pruned,
       shadowedTypes: [],
     };
@@ -1346,6 +1356,44 @@ export async function* extensionPull(
       }
     })(),
   );
+}
+
+async function scanForExtensionGrafts(
+  modelsDir: string,
+): Promise<Array<{ type: string; methods: string[] }>> {
+  const results: Array<{ type: string; methods: string[] }> = [];
+  try {
+    for await (const entry of Deno.readDir(modelsDir)) {
+      if (!entry.isFile || !entry.name.endsWith(".ts")) continue;
+      try {
+        const content = await Deno.readTextFile(join(modelsDir, entry.name));
+        const extMatch = content.match(
+          /export\s+const\s+extension\s*=\s*\{/,
+        );
+        if (!extMatch) continue;
+
+        const typeMatch = content.match(
+          /export\s+const\s+extension\s*=\s*\{[\s\S]*?type:\s*["']([^"']+)["']/,
+        );
+        if (!typeMatch) continue;
+
+        const methodNames: string[] = [];
+        const methodPattern =
+          /(\w+)\s*:\s*\{[^}]*?description:\s*(?:"[^"]*?"|'[^']*?'|`[^`]*?`)/g;
+        let match;
+        while ((match = methodPattern.exec(content)) !== null) {
+          methodNames.push(match[1]);
+        }
+
+        results.push({ type: typeMatch[1], methods: methodNames });
+      } catch {
+        // Non-fatal: skip unreadable files
+      }
+    }
+  } catch {
+    // modelsDir may not exist (e.g., extension has no models)
+  }
+  return results;
 }
 
 /**

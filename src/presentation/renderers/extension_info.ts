@@ -21,6 +21,7 @@ import type {
   EventHandlers,
   ExtensionContentMetadata,
   ExtensionInfoEvent,
+  ExtractedExtension,
   ExtractedModel,
 } from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
@@ -47,6 +48,18 @@ function renderContentMetadata(
       logger.info`  ${name} — methods: ${methods || "none"}`;
       if (verbose) {
         renderModelDetail(logger, model);
+      }
+    }
+  }
+
+  if (meta.extensions && meta.extensions.length > 0) {
+    logger.info``;
+    logger.info`Extends (${meta.extensions.length}):`;
+    for (const ext of meta.extensions) {
+      const methods = ext.methods.map((m) => m.name).join(", ");
+      logger.info`  ${ext.extendsType} — methods: ${methods || "none"}`;
+      if (verbose) {
+        renderExtensionDetail(logger, ext);
       }
     }
   }
@@ -105,6 +118,21 @@ function renderModelDetail(
   model: ExtractedModel,
 ): void {
   for (const method of model.methods) {
+    const args = method.arguments
+      .map((a) => `${a.name}${a.required ? "" : "?"}:${a.type}`)
+      .join(", ");
+    logger.info`    ${method.name}(${args})`;
+    if (method.description) {
+      logger.info`      ${method.description}`;
+    }
+  }
+}
+
+function renderExtensionDetail(
+  logger: ReturnType<typeof getSwampLogger>,
+  ext: ExtractedExtension,
+): void {
+  for (const method of ext.methods) {
     const args = method.arguments
       .map((a) => `${a.name}${a.required ? "" : "?"}:${a.type}`)
       .join(", ");

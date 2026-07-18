@@ -24,6 +24,7 @@ import type {
   ExtractedArgument,
   ExtractedDatastore,
   ExtractedDriver,
+  ExtractedExtension,
   ExtractedFile,
   ExtractedMethod,
   ExtractedModel,
@@ -58,6 +59,7 @@ export async function extractContentMetadata(
   reportsDir = "",
 ): Promise<ExtensionContentMetadata> {
   const models: ExtractedModel[] = [];
+  const extensions: ExtractedExtension[] = [];
   const workflows: ExtractedWorkflow[] = [];
   const vaults: ExtractedVault[] = [];
   const drivers: ExtractedDriver[] = [];
@@ -70,6 +72,11 @@ export async function extractContentMetadata(
       const model = extractModelFromSource(content, filePath, modelsDir);
       if (model) {
         models.push(model);
+      } else {
+        const ext = extractExtensionFromSource(content, filePath, modelsDir);
+        if (ext) {
+          extensions.push(ext);
+        }
       }
     } catch {
       // Non-fatal: skip files that can't be read or parsed
@@ -142,6 +149,7 @@ export async function extractContentMetadata(
 
   return {
     models,
+    extensions,
     workflows,
     vaults,
     drivers,
@@ -180,6 +188,98 @@ function extractModelFromSource(
     resources,
     files,
   };
+}
+
+/**
+ * Extracts extension metadata from a TypeScript source file that uses
+ * `export const extension = { type: "...", methods: [...] }`.
+ * Returns null if the file doesn't contain a recognizable extension definition.
+ */
+function extractExtensionFromSource(
+  content: string,
+  filePath: string,
+  modelsDir: string,
+): ExtractedExtension | null {
+  const extensionMatch = content.match(
+    /export\s+const\s+extension\s*=\s*\{/,
+  );
+  if (!extensionMatch || extensionMatch.index === undefined) return null;
+
+  const bodyStart = extensionMatch.index + extensionMatch[0].length;
+  const body = extractBalancedBraces(content, bodyStart);
+  if (!body) return null;
+
+  const typeMatch = body.match(/type:\s*["']([^"']+)["']/);
+  if (!typeMatch) return null;
+
+  const methods = extractExtensionMethods(body, content);
+  const resources = extractResources(body);
+
+  return {
+    fileName: relative(modelsDir, filePath),
+    extendsType: typeMatch[1],
+    methods,
+    resources,
+  };
+}
+
+/**
+ * Extracts methods from an extension's `methods` array.
+ * Extension methods use an array-of-records pattern: `methods: [{ name: { ... } }]`.
+ */
+function extractExtensionMethods(
+  extensionBody: string,
+  fullContent: string,
+): ExtractedMethod[] {
+  const methods: ExtractedMethod[] = [];
+
+  const methodsBlockMatch = extensionBody.match(/methods:\s*\[/);
+  if (!methodsBlockMatch || methodsBlockMatch.index === undefined) {
+    return methods;
+  }
+
+  const arrayStart = methodsBlockMatch.index + methodsBlockMatch[0].length;
+  const arrayBody = extractBalancedBrackets(extensionBody, arrayStart);
+  if (!arrayBody) return methods;
+
+  const methodPattern =
+    /(\w+)\s*:\s*\{[^}]*?description:\s*(?:"([^"]*?)"|'([^']*?)'|`([^`]*?)`)/gs;
+  let match;
+  while ((match = methodPattern.exec(arrayBody)) !== null) {
+    const name = match[1];
+    const description = match[2] ?? match[3] ?? match[4] ?? "";
+
+    const methodEntry = extractMethodEntry(arrayBody, name);
+    const args = methodEntry
+      ? extractMethodArguments(methodEntry, fullContent)
+      : [];
+
+    methods.push({ name, description, arguments: args });
+  }
+
+  return methods;
+}
+
+/**
+ * Extracts the content between balanced square brackets, starting after an
+ * opening bracket. Returns the content between the brackets (excluding the
+ * outer brackets themselves).
+ */
+function extractBalancedBrackets(
+  text: string,
+  startAfterBracket: number,
+): string | null {
+  let depth = 1;
+  let i = startAfterBracket;
+
+  while (i < text.length && depth > 0) {
+    if (text[i] === "[") depth++;
+    else if (text[i] === "]") depth--;
+    i++;
+  }
+
+  if (depth !== 0) return null;
+  return text.slice(startAfterBracket, i - 1);
 }
 
 /**

@@ -107,6 +107,7 @@ function makePrepareDeps(
     extractContentMetadata: () =>
       Promise.resolve({
         models: [],
+        extensions: [],
         workflows: [],
         vaults: [],
         drivers: [],

@@ -26,6 +26,7 @@ function makeMetadata(
 ): ExtensionContentMetadata {
   return {
     models: [],
+    extensions: [],
     workflows: [],
     vaults: [],
     drivers: [],

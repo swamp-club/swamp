@@ -294,6 +294,7 @@ export class ExtensionApiClient {
       channel: detail.channel,
       contentMetadata: {
         models: detail.models ?? [],
+        extensions: detail.extensions ?? [],
         workflows: detail.workflows ?? [],
         vaults: detail.vaults ?? [],
         drivers: detail.drivers ?? [],

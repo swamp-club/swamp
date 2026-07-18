@@ -92,6 +92,15 @@ function renderInstallResultLog(result: InstallResult): void {
       .info`  This extension invokes models from the above extensions via context.runModel()`;
   }
 
+  if (result.extendsTypes && result.extendsTypes.length > 0) {
+    logger
+      .warn`This extension adds methods to types it does not define:`;
+    for (const ext of result.extendsTypes) {
+      const methods = ext.methods.join(", ");
+      logger.warn`  ${ext.type}: ${methods}`;
+    }
+  }
+
   logger.info`Pulled ${result.name}@${result.version}`;
   logger.info`Extracted ${result.extractedFiles.length} files:`;
   for (const f of result.extractedFiles) {
@@ -175,6 +184,10 @@ function renderInstallResultJson(result: InstallResult): void {
     console.log(
       JSON.stringify({ dependencies: result.dependencies }, null, 2),
     );
+  }
+
+  if (result.extendsTypes && result.extendsTypes.length > 0) {
+    console.log(JSON.stringify({ extendsTypes: result.extendsTypes }, null, 2));
   }
 
   if (result.hasSkills) {

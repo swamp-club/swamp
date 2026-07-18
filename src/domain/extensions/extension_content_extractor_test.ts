@@ -27,6 +27,7 @@ Deno.test("extractContentMetadata returns empty for no inputs", async () => {
   const result = await extractContentMetadata([], "/tmp/models", []);
   assertEquals(result, {
     models: [],
+    extensions: [],
     workflows: [],
     vaults: [],
     drivers: [],
@@ -1541,6 +1542,190 @@ Deno.test("extractContentMetadata: ignores type: inside string literal before mo
     const result = await extractContentMetadata([modelFile], modelsDir, []);
     assertEquals(result.models.length, 1);
     assertEquals(result.models[0].type, "@keeb/mms/organizer");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extractContentMetadata: extracts extension with inline methods array", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const modelsDir = join(tmpDir, "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+
+    const extFile = join(modelsDir, "grafana_ext.ts");
+    await Deno.writeTextFile(
+      extFile,
+      [
+        'import { z } from "npm:zod@4";',
+        "export const extension = {",
+        '  type: "@keeb/grafana/instance",',
+        "  methods: [",
+        "    {",
+        "      queryLogs: {",
+        '        description: "Query Grafana Loki logs",',
+        "        arguments: z.object({",
+        '          query: z.string().describe("LogQL query"),',
+        "        }),",
+        "        execute: async () => ({ dataHandles: [] }),",
+        "      },",
+        "    },",
+        "  ],",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata([extFile], modelsDir, []);
+    assertEquals(result.models.length, 0);
+    assertEquals(result.extensions.length, 1);
+    assertEquals(result.extensions[0].extendsType, "@keeb/grafana/instance");
+    assertEquals(result.extensions[0].fileName, "grafana_ext.ts");
+    assertEquals(result.extensions[0].methods.length, 1);
+    assertEquals(result.extensions[0].methods[0].name, "queryLogs");
+    assertEquals(
+      result.extensions[0].methods[0].description,
+      "Query Grafana Loki logs",
+    );
+    assertEquals(result.extensions[0].methods[0].arguments.length, 1);
+    assertEquals(result.extensions[0].methods[0].arguments[0].name, "query");
+    assertEquals(result.extensions[0].methods[0].arguments[0].type, "string");
+    assertEquals(result.extensions[0].methods[0].arguments[0].required, true);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extractContentMetadata: extracts extension with multiple methods", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const modelsDir = join(tmpDir, "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+
+    const extFile = join(modelsDir, "multi_ext.ts");
+    await Deno.writeTextFile(
+      extFile,
+      [
+        'import { z } from "npm:zod@4";',
+        "export const extension = {",
+        '  type: "@other/service",',
+        "  methods: [",
+        "    {",
+        "      methodA: {",
+        '        description: "First method",',
+        "        arguments: z.object({}),",
+        "        execute: async () => ({ dataHandles: [] }),",
+        "      },",
+        "    },",
+        "    {",
+        "      methodB: {",
+        '        description: "Second method",',
+        "        arguments: z.object({}),",
+        "        execute: async () => ({ dataHandles: [] }),",
+        "      },",
+        "    },",
+        "  ],",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata([extFile], modelsDir, []);
+    assertEquals(result.extensions.length, 1);
+    assertEquals(result.extensions[0].extendsType, "@other/service");
+    assertEquals(result.extensions[0].methods.length, 2);
+    assertEquals(result.extensions[0].methods[0].name, "methodA");
+    assertEquals(result.extensions[0].methods[1].name, "methodB");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extractContentMetadata: skips extension without type", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const modelsDir = join(tmpDir, "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+
+    const extFile = join(modelsDir, "bad_ext.ts");
+    await Deno.writeTextFile(
+      extFile,
+      [
+        'import { z } from "npm:zod@4";',
+        "export const extension = {",
+        "  methods: [",
+        "    {",
+        "      run: {",
+        '        description: "Run",',
+        "        arguments: z.object({}),",
+        "        execute: async () => ({ dataHandles: [] }),",
+        "      },",
+        "    },",
+        "  ],",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata([extFile], modelsDir, []);
+    assertEquals(result.extensions.length, 0);
+    assertEquals(result.models.length, 0);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extractContentMetadata: extracts both models and extensions from same file list", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const modelsDir = join(tmpDir, "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+
+    const modelFile = join(modelsDir, "instance.ts");
+    await Deno.writeTextFile(
+      modelFile,
+      [
+        "export const model = {",
+        '  type: "@test/instance",',
+        '  version: "2026.03.01.1",',
+        "  methods: {",
+        "    run: {",
+        '      description: "Run",',
+        "      arguments: z.object({}),",
+        "      execute: async () => ({ dataHandles: [] }),",
+        "    },",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    const extFile = join(modelsDir, "ext.ts");
+    await Deno.writeTextFile(
+      extFile,
+      [
+        'import { z } from "npm:zod@4";',
+        "export const extension = {",
+        '  type: "@test/instance",',
+        "  methods: [",
+        "    {",
+        "      extra: {",
+        '        description: "Extra method",',
+        "        arguments: z.object({}),",
+        "        execute: async () => ({ dataHandles: [] }),",
+        "      },",
+        "    },",
+        "  ],",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata(
+      [modelFile, extFile],
+      modelsDir,
+      [],
+    );
+    assertEquals(result.models.length, 1);
+    assertEquals(result.models[0].type, "@test/instance");
+    assertEquals(result.extensions.length, 1);
+    assertEquals(result.extensions[0].extendsType, "@test/instance");
+    assertEquals(result.extensions[0].methods[0].name, "extra");
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
