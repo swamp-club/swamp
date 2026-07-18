@@ -391,6 +391,17 @@ Swamp collects anonymous usage telemetry to help us understand which commands
 are used, how long they take, and what errors occur. All user-identifiable
 values are redacted before transmission — nothing sensitive is ever sent.
 
+Telemetry is **user-global** — events are spooled to a single directory
+regardless of which repository (if any) you are working in:
+
+```
+~/.config/swamp/telemetry/
+```
+
+The path is XDG-aware: if `$XDG_CONFIG_HOME` is set, the spool lives at
+`$XDG_CONFIG_HOME/swamp/telemetry/` instead. Setting `$SWAMP_HOME` overrides
+both (`$SWAMP_HOME/config/telemetry/`).
+
 Here is a complete example of a telemetry event:
 
 ```json
@@ -425,6 +436,16 @@ queries) are replaced with `<REDACTED>`. Only categorical values defined by
 swamp itself (like model types) are recorded. Option values are never recorded —
 only the option keys.
 
+### Viewing Telemetry Stats
+
+`swamp telemetry stats` reads the user-global spool and summarizes recent
+activity. It does not require a repository context:
+
+```bash
+swamp telemetry stats           # last 2 days (default)
+swamp telemetry stats --days 7  # last 7 days
+```
+
 ### Disabling Telemetry
 
 Per-invocation:
@@ -446,8 +467,28 @@ Permanently for a repository — add to `.swamp.yaml`:
 telemetryDisabled: true
 ```
 
+Permanently for all repo-less runs — create `~/.config/swamp/telemetry.yaml`:
+
+```yaml
+disabled: true
+```
+
+This suppresses telemetry when running swamp outside any repository (e.g.
+`swamp telemetry stats`, `swamp auth login`). Inside a repository the
+`.swamp.yaml` `telemetryDisabled` field takes precedence.
+
 Priority order (highest to lowest): `--no-telemetry` flag → `SWAMP_NO_TELEMETRY`
-env var → `.swamp.yaml` `telemetryDisabled: true`.
+env var → `.swamp.yaml` `telemetryDisabled: true` (per-repo) →
+`~/.config/swamp/telemetry.yaml` `disabled: true` (user-global, repo-less runs).
+
+### Migrating from Repo-Local Telemetry
+
+Older versions of swamp stored telemetry in `.swamp/telemetry/` inside each
+repository. Running `swamp repo upgrade` automatically migrates unflushed
+entries from the legacy repo-local spool to the user-global spool. Repositories
+that have telemetry disabled (`telemetryDisabled: true` in `.swamp.yaml`) are
+skipped. The old `.swamp/telemetry/` directory is left in place but is no longer
+used.
 
 ## License
 
