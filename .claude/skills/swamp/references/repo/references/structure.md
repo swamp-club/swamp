@@ -58,9 +58,6 @@ my-swamp-repo/
 │   │       └── {vault-name}/
 │   │           ├── .key         # Encryption key (NEVER commit)
 │   │           └── {secret-key} # Encrypted secret data
-│   │
-│   └── telemetry/               # Local telemetry data
-│       └── events.jsonl
 │
 ├── models/                      # Model definitions by type
 │   └── {normalized-type}/
@@ -231,16 +228,20 @@ These files contain sensitive data and are included in `.gitignore`:
 | ------------------------ | ------------------------------- |
 | `.swamp/secrets/keyfile` | Encryption key for local vaults |
 | `.swamp/secrets/**`      | Encrypted secret data           |
-| `.swamp/telemetry/`      | Local telemetry events          |
 | `.claude/`               | Claude Code local config        |
 
 ### Recommended .gitignore
 
-Auto-generated on `swamp repo init`:
+Auto-generated on `swamp repo init` as a managed section:
 
 ```gitignore
-# Swamp managed defaults
-.swamp/telemetry/
-.swamp/secrets/keyfile
-.claude/
+# BEGIN swamp managed section - DO NOT EDIT
+
+# Runtime data (not needed in version control)
+.swamp/
+
+# Local extension sources (developer-specific, not shared)
+.swamp-sources.yaml
+
+# END swamp managed section
 ```
