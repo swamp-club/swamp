@@ -393,6 +393,99 @@ Deno.test("createFileWriterFactory: populates ownerDefinition.jobName and stepNa
   assertEquals(handle.metadata.ownerDefinition.workflowName, "my-wf");
 });
 
+Deno.test("createResourceWriter: rejects undefined instance name", async () => {
+  const repo = createMockRepo();
+  const { writeResource } = createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    testResources,
+  );
+
+  await assertRejects(
+    () =>
+      writeResource(
+        "item",
+        undefined as unknown as string,
+        { value: "hello" },
+      ),
+    Error,
+    "instance name must be a non-empty string",
+  );
+});
+
+Deno.test("createResourceWriter: rejects null instance name", async () => {
+  const repo = createMockRepo();
+  const { writeResource } = createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    testResources,
+  );
+
+  await assertRejects(
+    () => writeResource("item", null as unknown as string, { value: "hello" }),
+    Error,
+    "instance name must be a non-empty string",
+  );
+});
+
+Deno.test("createResourceWriter: rejects numeric instance name", async () => {
+  const repo = createMockRepo();
+  const { writeResource } = createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    testResources,
+  );
+
+  await assertRejects(
+    () => writeResource("item", 42 as unknown as string, { value: "hello" }),
+    Error,
+    "instance name must be a non-empty string",
+  );
+});
+
+Deno.test("createFileWriterFactory: rejects undefined instance name", () => {
+  const repo = createMockRepo();
+  const { createFileWriter } = createFileWriterFactory(
+    repo,
+    modelType,
+    modelId,
+    testFiles,
+  );
+
+  try {
+    createFileWriter("log", undefined as unknown as string);
+    throw new Error("Expected validation error");
+  } catch (e) {
+    assertStringIncludes(
+      (e as Error).message,
+      "instance name must be a non-empty string",
+    );
+  }
+});
+
+Deno.test("createFileWriterFactory: rejects null instance name", () => {
+  const repo = createMockRepo();
+  const { createFileWriter } = createFileWriterFactory(
+    repo,
+    modelType,
+    modelId,
+    testFiles,
+  );
+
+  try {
+    createFileWriter("log", null as unknown as string);
+    throw new Error("Expected validation error");
+  } catch (e) {
+    assertStringIncludes(
+      (e as Error).message,
+      "instance name must be a non-empty string",
+    );
+  }
+});
+
 Deno.test("createResourceWriter: rejects reserved data name 'latest'", async () => {
   const repo = createMockRepo();
   const { writeResource } = createResourceWriter(

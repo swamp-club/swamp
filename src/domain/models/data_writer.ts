@@ -505,11 +505,11 @@ export function createResourceWriter(
       });
     }
 
-    // Validate name is non-empty
-    if (name.trim() === "") {
+    // Validate name is a non-empty string
+    if (typeof name !== "string" || name.trim() === "") {
       throw new Error(
-        `Resource name must be a non-empty string for spec '${specName}' ` +
-          `in model '${modelType.normalized}'`,
+        `writeResource: instance name must be a non-empty string for spec '${specName}' ` +
+          `in model '${modelType.normalized}', got ${typeof name}`,
       );
     }
 
@@ -842,11 +842,11 @@ export function createFileWriterFactory(
       );
     }
 
-    // Validate name is non-empty
-    if (name.trim() === "") {
+    // Validate name is a non-empty string
+    if (typeof name !== "string" || name.trim() === "") {
       throw new Error(
-        `File name must be a non-empty string for spec '${specName}' ` +
-          `in model '${modelType.normalized}'`,
+        `createFileWriter: instance name must be a non-empty string for spec '${specName}' ` +
+          `in model '${modelType.normalized}', got ${typeof name}`,
       );
     }
 
