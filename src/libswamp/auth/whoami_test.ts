@@ -261,6 +261,93 @@ Deno.test("createAuthDeps: saveCredentials caches identity when SWAMP_API_KEY is
   }
 });
 
+Deno.test("whoami: collective token response includes collectiveToken, collectiveSlug, and scopes", async () => {
+  const ctx = createLibSwampContext();
+  const collectiveWhoami: WhoamiResponse = {
+    authenticated: true,
+    collectiveToken: true,
+    collectiveId: "org-1",
+    collectiveSlug: "myorg",
+    scopes: ["extensions:push", "extensions:yank"],
+    organizations: [
+      { slug: "myorg", name: "My Org", role: "token", personal: false },
+    ],
+  };
+  const deps = makeDeps({
+    credentials: testCredentials,
+    whoamiResponse: collectiveWhoami,
+  });
+
+  const events = await collect<AuthWhoamiEvent>(whoami(ctx, deps));
+
+  const completed = events[events.length - 1] as Extract<
+    AuthWhoamiEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.identity.collectiveToken, true);
+  assertEquals(completed.identity.collectiveSlug, "myorg");
+  assertEquals(completed.identity.scopes, [
+    "extensions:push",
+    "extensions:yank",
+  ]);
+  assertEquals(completed.identity.collectives, ["myorg"]);
+  assertEquals(completed.identity.username, "");
+});
+
+Deno.test("whoami: collective token skips saveCredentials", async () => {
+  const ctx = createLibSwampContext();
+  let saveCalled = false;
+  const collectiveWhoami: WhoamiResponse = {
+    authenticated: true,
+    collectiveToken: true,
+    collectiveId: "org-1",
+    collectiveSlug: "myorg",
+    scopes: ["extensions:push"],
+    organizations: [
+      { slug: "myorg", name: "My Org", role: "token", personal: false },
+    ],
+  };
+  const deps: AuthDeps = {
+    loadCredentials: () => Promise.resolve(testCredentials),
+    saveCredentials: () => {
+      saveCalled = true;
+      return Promise.resolve();
+    },
+    fetchWhoami: () => Promise.resolve(collectiveWhoami),
+    serverUrlOverride: undefined,
+  };
+
+  const events = await collect<AuthWhoamiEvent>(whoami(ctx, deps));
+
+  assertEquals(
+    (events[events.length - 1] as Extract<
+      AuthWhoamiEvent,
+      { kind: "completed" }
+    >).kind,
+    "completed",
+  );
+  assertEquals(saveCalled, false);
+});
+
+Deno.test("whoami: personal key response still saves credentials", async () => {
+  const ctx = createLibSwampContext();
+  let saveCalled = false;
+  const deps: AuthDeps = {
+    loadCredentials: () => Promise.resolve(testCredentials),
+    saveCredentials: () => {
+      saveCalled = true;
+      return Promise.resolve();
+    },
+    fetchWhoami: () => Promise.resolve(testWhoamiResponse),
+    serverUrlOverride: undefined,
+  };
+
+  await collect<AuthWhoamiEvent>(whoami(ctx, deps));
+
+  assertEquals(saveCalled, true);
+});
+
 Deno.test("createAuthDeps: saveCredentials writes file when SWAMP_API_KEY is not set", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {

@@ -203,6 +203,28 @@ Deno.test("extensionPushPrepare: invalid collective throws SwampError", async ()
   assertEquals(error.code, "validation_failed");
 });
 
+Deno.test("extensionPushPrepare: collective token allows matching collective namespace", async () => {
+  const deps = makePrepareDeps({
+    fetchCollectives: () => Promise.resolve(["testuser"]),
+  });
+  const input = makePrepareInput({ dryRun: false });
+
+  const result = await extensionPushPrepare(ctx, deps, input);
+  assertEquals(result.manifest.name, "@testuser/test-ext");
+});
+
+Deno.test("extensionPushPrepare: collective token rejects mismatched namespace", async () => {
+  const deps = makePrepareDeps({
+    fetchCollectives: () => Promise.resolve(["other-org"]),
+  });
+  const input = makePrepareInput({ dryRun: false });
+
+  const error = await assertRejects(
+    () => extensionPushPrepare(ctx, deps, input),
+  ) as SwampError;
+  assertEquals(error.code, "validation_failed");
+});
+
 Deno.test("extensionPushPrepare: additionalFiles with disallowed extension suggests binaries", async () => {
   const deps = makePrepareDeps();
   const input = makePrepareInput({

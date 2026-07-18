@@ -779,6 +779,16 @@ export class ExtensionApiClient {
     }
 
     if (res.status === 403) {
+      const scopeMatch = serverMessage.match(
+        /requires the (.+?) scope/,
+      );
+      if (scopeMatch) {
+        throw new UserError(
+          `Token lacks required scope '${
+            scopeMatch[1]
+          }'. Create a new token with this scope in your collective settings.`,
+        );
+      }
       throw new UserError(serverMessage);
     }
 

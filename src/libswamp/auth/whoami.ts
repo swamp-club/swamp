@@ -46,6 +46,9 @@ export interface WhoamiIdentity {
   email: string;
   name: string;
   collectives?: string[];
+  collectiveToken?: boolean;
+  collectiveSlug?: string;
+  scopes?: string[];
 }
 
 export type AuthWhoamiEvent =
@@ -135,21 +138,31 @@ export async function* whoami(
 
     const collectives = getCollectives(response);
 
-    // Refresh cached collectives in auth.json so they stay current
-    await deps.saveCredentials({
-      ...credentials,
-      collectives: collectives ?? [],
-    });
+    if (!response.collectiveToken) {
+      // Refresh cached collectives in auth.json so they stay current.
+      // Collective tokens are env-var-based — nothing to cache.
+      await deps.saveCredentials({
+        ...credentials,
+        collectives: collectives ?? [],
+      });
+    }
 
     yield {
       kind: "completed",
       identity: {
         serverUrl,
-        id: response.id!,
-        username: response.username!,
-        email: response.email!,
-        name: response.name!,
+        id: response.id ?? "",
+        username: response.username ?? "",
+        email: response.email ?? "",
+        name: response.name ?? "",
         ...(collectives ? { collectives } : {}),
+        ...(response.collectiveToken
+          ? {
+            collectiveToken: true,
+            collectiveSlug: response.collectiveSlug,
+            scopes: response.scopes,
+          }
+          : {}),
       },
     };
   } catch (error: unknown) {
