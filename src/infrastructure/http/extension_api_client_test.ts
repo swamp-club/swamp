@@ -905,6 +905,49 @@ Deno.test("ExtensionApiClient.downloadArchive does NOT send identity headers to 
   }
 });
 
+Deno.test("ExtensionApiClient.checkResponse surfaces scope-specific 403 message", async () => {
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
+    return new Response(
+      JSON.stringify({
+        message: "This token requires the extensions:push scope",
+      }),
+      {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      },
+    );
+  });
+  const addr = server.addr;
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const error = await assertRejects(
+    () => client.getLatestVersion("@test/ext", "fake-key"),
+    UserError,
+  );
+  assertStringIncludes(error.message, "extensions:push");
+  assertStringIncludes(error.message, "collective settings");
+  await server.shutdown();
+});
+
+Deno.test("ExtensionApiClient.checkResponse passes through non-scope 403 message", async () => {
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
+    return new Response(
+      JSON.stringify({ message: "Forbidden: insufficient permissions" }),
+      {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      },
+    );
+  });
+  const addr = server.addr;
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const error = await assertRejects(
+    () => client.getLatestVersion("@test/ext", "fake-key"),
+    UserError,
+  );
+  assertStringIncludes(error.message, "insufficient permissions");
+  await server.shutdown();
+});
+
 Deno.test("ExtensionApiClient.checkResponse includes URL in error message", async () => {
   const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
     return new Response(JSON.stringify({ error: "Invalid path" }), {

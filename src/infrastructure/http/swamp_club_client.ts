@@ -60,6 +60,10 @@ export interface WhoamiResponse {
   email?: string;
   name?: string;
   organizations?: WhoamiOrganization[];
+  collectiveToken?: boolean;
+  collectiveId?: string;
+  collectiveSlug?: string;
+  scopes?: string[];
 }
 
 /**

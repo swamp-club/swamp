@@ -18,11 +18,17 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { type AuthWhoamiEvent, consumeStream } from "../../libswamp/mod.ts";
+import {
+  type AuthWhoamiEvent,
+  consumeStream,
+  type WhoamiIdentity,
+} from "../../libswamp/mod.ts";
 import { createAuthWhoamiRenderer } from "./auth_whoami.ts";
 import { UserError } from "../../domain/errors.ts";
 
-function makeIdentity(opts?: { collectives?: string[] }) {
+function makeIdentity(
+  opts?: { collectives?: string[] },
+): WhoamiIdentity {
   return {
     serverUrl: "https://club.example.com",
     id: "user-1",
@@ -30,6 +36,24 @@ function makeIdentity(opts?: { collectives?: string[] }) {
     email: "alice@example.com",
     name: "Alice",
     ...(opts?.collectives ? { collectives: opts.collectives } : {}),
+  };
+}
+
+function makeCollectiveTokenIdentity(
+  opts?: { scopes?: string[]; collectives?: string[] },
+): WhoamiIdentity {
+  return {
+    serverUrl: "https://club.example.com",
+    id: "",
+    username: "",
+    email: "",
+    name: "",
+    collectiveToken: true,
+    collectiveSlug: "myorg",
+    scopes: opts?.scopes ?? ["extensions:push"],
+    ...(opts?.collectives
+      ? { collectives: opts.collectives }
+      : { collectives: ["myorg"] }),
   };
 }
 
@@ -158,6 +182,52 @@ Deno.test("JsonAuthWhoamiRenderer - error event throws UserError", () => {
     UserError,
     "Not authenticated",
   );
+});
+
+Deno.test("LogAuthWhoamiRenderer - collective token displays slug and scopes", async () => {
+  const renderer = createAuthWhoamiRenderer("log");
+  const events: AuthWhoamiEvent[] = [
+    { kind: "loading_credentials" },
+    {
+      kind: "completed",
+      identity: makeCollectiveTokenIdentity({
+        scopes: ["extensions:push", "extensions:yank"],
+      }),
+    },
+  ];
+  await consumeStream(toStream(events), renderer.handlers());
+});
+
+Deno.test("JsonAuthWhoamiRenderer - collective token serializes correct JSON", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createAuthWhoamiRenderer("json");
+    const events: AuthWhoamiEvent[] = [
+      { kind: "loading_credentials" },
+      {
+        kind: "completed",
+        identity: makeCollectiveTokenIdentity({
+          scopes: ["extensions:push"],
+        }),
+      },
+    ];
+    await consumeStream(toStream(events), renderer.handlers());
+    assertEquals(logs.length, 1);
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.authenticated, true);
+    assertEquals(parsed.collectiveToken, true);
+    assertEquals(parsed.collectiveSlug, "myorg");
+    assertEquals(parsed.scopes, ["extensions:push"]);
+    assertEquals(parsed.collectives, ["myorg"]);
+    assertEquals(parsed.username, undefined);
+    assertEquals(parsed.email, undefined);
+    assertEquals(parsed.id, undefined);
+  } finally {
+    console.log = originalLog;
+  }
 });
 
 Deno.test("createAuthWhoamiRenderer - factory returns correct type per mode", () => {

@@ -29,9 +29,18 @@ class LogAuthWhoamiRenderer implements Renderer<AuthWhoamiEvent> {
       loading_credentials: () => {},
       contacting_server: () => {},
       completed: (e) => {
-        writeOutput(
-          `${e.identity.username} (${e.identity.email}) on ${e.identity.serverUrl}`,
-        );
+        if (e.identity.collectiveToken) {
+          writeOutput(
+            `Collective token: ${e.identity.collectiveSlug} on ${e.identity.serverUrl}`,
+          );
+          if (e.identity.scopes && e.identity.scopes.length > 0) {
+            writeOutput(`Scopes: ${e.identity.scopes.join(", ")}`);
+          }
+        } else {
+          writeOutput(
+            `${e.identity.username} (${e.identity.email}) on ${e.identity.serverUrl}`,
+          );
+        }
         if (e.identity.collectives && e.identity.collectives.length > 0) {
           writeOutput(`Collectives: ${e.identity.collectives.join(", ")}`);
         }
@@ -53,10 +62,18 @@ class JsonAuthWhoamiRenderer implements Renderer<AuthWhoamiEvent> {
           {
             authenticated: true,
             serverUrl: e.identity.serverUrl,
-            id: e.identity.id,
-            username: e.identity.username,
-            email: e.identity.email,
-            name: e.identity.name,
+            ...(e.identity.collectiveToken
+              ? {
+                collectiveToken: true,
+                collectiveSlug: e.identity.collectiveSlug,
+                scopes: e.identity.scopes,
+              }
+              : {
+                id: e.identity.id,
+                username: e.identity.username,
+                email: e.identity.email,
+                name: e.identity.name,
+              }),
             ...(e.identity.collectives
               ? { collectives: e.identity.collectives }
               : {}),
