@@ -390,6 +390,7 @@ export async function* datastoreSetupExtension(
           config,
         );
         errors.push(...result.errors);
+        if (result.errors.length > 0) onlyTimeouts = false;
         filesCopied = result.filesCopied;
         migrationResult = result;
 

@@ -1150,6 +1150,45 @@ Deno.test("datastoreSetupExtension: hard push failure still blocks type commit",
   );
 });
 
+Deno.test("datastoreSetupExtension: migration errors block type commit even when push succeeds", async () => {
+  ensureTestExtensionType("test-ext-migrate-err");
+  let configUpdated = false;
+  const deps = makeDeps({
+    migrateData: () =>
+      Promise.resolve({
+        filesCopied: 3,
+        bytesCopied: 512,
+        directoriesMigrated: ["data"],
+        errors: ["failed to copy data/foo.bin: ENOSPC"],
+      }),
+    updateRepoConfig: () => {
+      configUpdated = true;
+      return Promise.resolve();
+    },
+  });
+  const input = makeExtensionInput({
+    type: "test-ext-migrate-err",
+    skipMigration: false,
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    DatastoreSetupEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.errors.length, 1);
+  assertStringIncludes(completed.data.errors[0], "ENOSPC");
+  assertEquals(
+    configUpdated,
+    false,
+    "migration errors must prevent .swamp.yaml writeback",
+  );
+});
+
 Deno.test("datastoreSetupExtension: syncTimeoutMsOverride is honored", async () => {
   ensureTestExtensionType("test-ext-timeout-override");
   const deps = makeDeps();
