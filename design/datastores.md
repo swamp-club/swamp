@@ -179,20 +179,32 @@ enforced in the coordinator, so a stuck or slow extension cannot hang the CLI
 indefinitely. The effective timeout is resolved from the first source that
 yields a positive value:
 
-1. `swamp datastore sync --timeout <seconds>` — per-invocation override, capped
-   at 21,600 seconds (6 hours). Preferred escape hatch for one-off large syncs.
+1. `--timeout <seconds>` CLI flag — per-invocation override, capped at 21,600
+   seconds (6 hours). Available on `swamp datastore sync` and
+   `swamp datastore setup extension`. Preferred escape hatch for one-off large
+   syncs or initial setup of large repos.
 2. `CustomDatastoreConfig.syncTimeoutMs` — per-datastore config in
    `.swamp.yaml`. Applies to both explicit `swamp datastore sync` calls and
-   the implicit syncs triggered by write commands.
+   the implicit syncs triggered by write commands. Not used by
+   `datastore setup extension` (setup runs outside the flush coordinator).
 3. `SWAMP_DATASTORE_SYNC_TIMEOUT_MS` — environment variable, uncapped. Useful
-   for shell-session-scoped overrides during long-haul migrations.
+   for shell-session-scoped overrides during long-haul migrations. Applies to
+   both sync and setup extension.
 4. `DEFAULT_SYNC_TIMEOUT_MS` — 5 minutes.
 
 The deadline fires a `SyncTimeoutError` regardless of whether the extension
-honored the `AbortSignal` passed to `pushChanged(options)` / `pullChanged(options)`.
-Timeouts propagate as a non-zero CLI exit so the user sees that data did not
-make it to the remote; other push errors still warn-downgrade (preserves
-historical behavior where a transient S3 blip does not kill a run).
+honored the `AbortSignal` passed to `pushChanged(options)` /
+`pullChanged(options)`. Timeouts propagate as a non-zero CLI exit so the user
+sees that data did not make it to the remote; other push errors still
+warn-downgrade (preserves historical behavior where a transient S3 blip does not
+kill a run).
+
+**Setup timeout behavior.** During `datastore setup extension`, a push or pull
+timeout is treated as recoverable: the datastore type is still committed to
+`.swamp.yaml` so the user can resume with `swamp datastore sync --push
+--timeout <big>`. Hard failures (auth errors, network errors, config errors)
+still block the type commit. This avoids the scenario where a slow first push
+leaves the repo un-migrated despite valid credentials and config.
 
 The `SyncTimeoutError` message lists every available remedy inline
 (`--timeout`, the env var, updating the datastore extension, releasing a stuck
@@ -203,7 +215,8 @@ version that would rot across releases.
 See `src/domain/datastore/datastore_config.ts` (`DEFAULT_SYNC_TIMEOUT_MS`,
 `SYNC_TIMEOUT_ENV_VAR`, `resolveSyncTimeoutMs`),
 `src/domain/datastore/datastore_sync_service.ts` (`SyncTimeoutError`),
-`src/cli/commands/datastore_sync.ts` (`--timeout` flag), and
+`src/cli/commands/datastore_sync.ts` (`--timeout` flag),
+`src/cli/commands/datastore_setup.ts` (`--timeout` flag on setup extension), and
 `src/infrastructure/persistence/datastore_sync_coordinator.ts`
 (`runBoundedSync`).
 

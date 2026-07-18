@@ -32,7 +32,10 @@ import {
 } from "./setup.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
-import type { DatastoreSyncOptions } from "../../domain/datastore/datastore_sync_service.ts";
+import {
+  type DatastoreSyncOptions,
+  SyncTimeoutError,
+} from "../../domain/datastore/datastore_sync_service.ts";
 import { readNamespaceManifest } from "../../infrastructure/persistence/namespace_manifest.ts";
 
 function makeDeps(
@@ -1068,6 +1071,104 @@ Deno.test("datastoreSetupExtension: rejects invalid namespace slug", async () =>
 // ============================================================================
 // Namespace manifest cache materialization tests (swamp-club#834)
 // ============================================================================
+
+Deno.test("datastoreSetupExtension: push timeout commits type (decoupled from push success)", async () => {
+  ensureTestExtensionType("test-ext-push-timeout", {
+    pushResult: () =>
+      Promise.reject(new SyncTimeoutError("test", "push", 1000)),
+  });
+  let configUpdated = false;
+  let cleanupCalled = false;
+  const deps = makeDeps({
+    updateRepoConfig: () => {
+      configUpdated = true;
+      return Promise.resolve();
+    },
+    cleanupSourceDirs: () => {
+      cleanupCalled = true;
+      return Promise.resolve();
+    },
+  });
+  const input = makeExtensionInput({
+    type: "test-ext-push-timeout",
+    skipMigration: false,
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    DatastoreSetupEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.errors.length, 1);
+  assertStringIncludes(completed.data.errors[0], "timed out");
+  assertEquals(
+    configUpdated,
+    true,
+    "push timeout must still commit the datastore type",
+  );
+  assertEquals(
+    cleanupCalled,
+    false,
+    "push timeout must keep migrated .swamp/ dirs intact for retry",
+  );
+});
+
+Deno.test("datastoreSetupExtension: hard push failure still blocks type commit", async () => {
+  ensureTestExtensionType("test-ext-push-hard-fail", {
+    pushResult: () => Promise.reject(new Error("AccessDenied")),
+  });
+  let configUpdated = false;
+  const deps = makeDeps({
+    updateRepoConfig: () => {
+      configUpdated = true;
+      return Promise.resolve();
+    },
+  });
+  const input = makeExtensionInput({
+    type: "test-ext-push-hard-fail",
+    skipMigration: false,
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    DatastoreSetupEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.errors.length, 1);
+  assertEquals(
+    configUpdated,
+    false,
+    "hard push failure must prevent .swamp.yaml writeback",
+  );
+});
+
+Deno.test("datastoreSetupExtension: syncTimeoutMsOverride is honored", async () => {
+  ensureTestExtensionType("test-ext-timeout-override");
+  const deps = makeDeps();
+  const input = makeExtensionInput({
+    type: "test-ext-timeout-override",
+    syncTimeoutMsOverride: 60_000,
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    DatastoreSetupEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.errors.length, 0);
+});
 
 Deno.test("datastoreSetupExtension: materializes namespace manifest in local cache", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp-setup-834-" });

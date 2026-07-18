@@ -431,10 +431,9 @@ export class SyncTimeoutError extends UserError {
       `  • Set SWAMP_DATASTORE_SYNC_TIMEOUT_MS for the duration of your ` +
       `shell session — applies to every command that triggers sync, ` +
       `including the implicit pull/push around write commands.\n` +
-      `  • If the timeout fired on an explicit 'swamp datastore sync', ` +
-      `rerun with --timeout <seconds> (e.g. --timeout 1800 for large ` +
-      `one-off syncs). The flag is not available on other commands; use ` +
-      `the env var above for those.\n` +
+      `  • Rerun with --timeout <seconds> (e.g. --timeout 1800 for large ` +
+      `one-off syncs). Available on 'swamp datastore sync' and ` +
+      `'swamp datastore setup extension'.\n` +
       `  • If you are on @swamp/s3-datastore or @swamp/gcs-datastore at ` +
       `scale, update to the latest extension — the fingerprint fast path ` +
       `short-circuits zero-diff syncs.\n` +
