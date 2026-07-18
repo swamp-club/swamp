@@ -1479,14 +1479,13 @@ Deno.test("validateModel check selection on model without checks", async () => {
   assertStringIncludes(selResult?.error ?? "", "nonexistent");
 });
 
-Deno.test("validateModel skips checks with appliesTo when no method specified", async () => {
+Deno.test("validateModel runs checks with appliesTo even when no method specified", async () => {
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: { message: "hello" },
   });
 
-  // always-fail has appliesTo: ["create"], so without --method it should be skipped
   const { results } = await service.validateModel(
     definition,
     testModelWithChecks,
@@ -1495,7 +1494,31 @@ Deno.test("validateModel skips checks with appliesTo when no method specified", 
   );
 
   const checkResults = results.filter((r) => r.name.startsWith("Check:"));
-  // always-pass has no appliesTo → runs; always-fail has appliesTo → skipped
+  // Both checks run: always-pass succeeds, always-fail (with appliesTo) also runs
+  assertEquals(checkResults.length, 2);
+  const passResult = checkResults.find((r) => r.name === "Check: always-pass");
+  const failResult = checkResults.find((r) => r.name === "Check: always-fail");
+  assertEquals(passResult?.passed, true);
+  assertEquals(failResult?.passed, false);
+});
+
+Deno.test("validateModel skips checks with appliesTo when --method specifies a different method", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+  });
+
+  // always-fail has appliesTo: ["create"], so --method delete should skip it
+  const { results } = await service.validateModel(
+    definition,
+    testModelWithChecks,
+    undefined,
+    createCheckContext({ method: "delete" }),
+  );
+
+  const checkResults = results.filter((r) => r.name.startsWith("Check:"));
+  // always-pass has no appliesTo → runs; always-fail has appliesTo: ["create"] → skipped for "delete"
   assertEquals(checkResults.length, 1);
   assertEquals(checkResults[0].name, "Check: always-pass");
   assertEquals(checkResults[0].passed, true);

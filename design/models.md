@@ -489,12 +489,14 @@ checks:
 
 ### model validate Integration
 
-`swamp model validate` runs checks as part of the validation pipeline. It honors
-definition-level `skip` lists in addition to CLI flags. Two flags control check
-execution:
+`swamp model validate` runs checks as part of the validation pipeline. It runs
+all checks regardless of `appliesTo` — ensuring validate surfaces the same
+errors that method execution would. It honors definition-level `skip` lists in
+addition to CLI flags. Two flags narrow check execution:
 
 - `--label <label>` — only run checks matching this label
-- `--method <method>` — simulate validation for a specific method context
+- `--method <method>` — only run checks that apply to this method (skips checks
+  whose `appliesTo` excludes the given method)
 
 ## Data
 
