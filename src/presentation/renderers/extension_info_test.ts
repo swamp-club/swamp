@@ -115,12 +115,38 @@ const sampleContentMetadata: ExtensionContentMetadata = {
       files: [],
     },
   ],
+  extensions: [],
   workflows: [],
   vaults: [],
   drivers: [],
   datastores: [],
   reports: [],
   skills: [],
+};
+
+const sampleContentMetadataWithExtensions: ExtensionContentMetadata = {
+  ...sampleContentMetadata,
+  extensions: [
+    {
+      fileName: "grafana_ext.ts",
+      extendsType: "@keeb/grafana/instance",
+      methods: [
+        {
+          name: "queryLogs",
+          description: "Query Grafana Loki logs",
+          arguments: [
+            {
+              name: "query",
+              type: "string",
+              description: "LogQL query",
+              required: true,
+            },
+          ],
+        },
+      ],
+      resources: [],
+    },
+  ],
 };
 
 async function* toStream(
@@ -206,6 +232,67 @@ Deno.test("JsonExtensionInfoRenderer: null contentMetadata in JSON output", asyn
     assertEquals(logs.length, 1);
     const parsed = JSON.parse(logs[0]);
     assertEquals(parsed.contentMetadata, null);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("LogExtensionInfoRenderer: renders extensions (type grafts) without error", async () => {
+  const renderer = createExtensionInfoRenderer("log");
+  const events: ExtensionInfoEvent[] = [
+    { kind: "resolving" },
+    {
+      kind: "completed",
+      data: makeInfoData({
+        contentMetadata: sampleContentMetadataWithExtensions,
+      }),
+    },
+  ];
+  await consumeStream(toStream(events), renderer.handlers());
+});
+
+Deno.test("LogExtensionInfoRenderer: verbose renders extension detail without error", async () => {
+  const renderer = createExtensionInfoRenderer("log", true);
+  const events: ExtensionInfoEvent[] = [
+    { kind: "resolving" },
+    {
+      kind: "completed",
+      data: makeInfoData({
+        contentMetadata: sampleContentMetadataWithExtensions,
+      }),
+    },
+  ];
+  await consumeStream(toStream(events), renderer.handlers());
+});
+
+Deno.test("JsonExtensionInfoRenderer: includes extensions in JSON output", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createExtensionInfoRenderer("json");
+    const events: ExtensionInfoEvent[] = [
+      { kind: "resolving" },
+      {
+        kind: "completed",
+        data: makeInfoData({
+          contentMetadata: sampleContentMetadataWithExtensions,
+        }),
+      },
+    ];
+    await consumeStream(toStream(events), renderer.handlers());
+    assertEquals(logs.length, 1);
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.contentMetadata.extensions.length, 1);
+    assertEquals(
+      parsed.contentMetadata.extensions[0].extendsType,
+      "@keeb/grafana/instance",
+    );
+    assertEquals(
+      parsed.contentMetadata.extensions[0].methods[0].name,
+      "queryLogs",
+    );
   } finally {
     console.log = originalLog;
   }

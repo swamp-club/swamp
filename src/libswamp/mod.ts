@@ -847,6 +847,7 @@ export type {
   ExtractedArgument,
   ExtractedDatastore,
   ExtractedDriver,
+  ExtractedExtension,
   ExtractedMethod,
   ExtractedModel,
   ExtractedReport,

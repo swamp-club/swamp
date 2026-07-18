@@ -97,10 +97,12 @@ the next CalVer version for an extension.
 beta) when they exist. No flag needed — info always shows all channels.
 
 The info command also displays content metadata for the latest version: model
-types with their methods, workflows, vaults, datastores, drivers, reports, and
-skills. By default, models show the type name and method names. With
-`--verbose`, each method's arguments and descriptions are also displayed. JSON
-output (`--json`) includes the full `contentMetadata` object with all detail.
+types with their methods, extensions (foreign-type grafts with their methods),
+workflows, vaults, datastores, drivers, reports, and skills. By default, models
+show the type name and method names; extensions show the target type and grafted
+method names. With `--verbose`, each method's arguments and descriptions are
+also displayed. JSON output (`--json`) includes the full `contentMetadata`
+object with all detail.
 
 ### Promotion
 

@@ -121,6 +121,14 @@ export interface ExtractedReport {
   labels: string[];
 }
 
+/** Metadata extracted from an extension file that grafts methods onto a foreign type. */
+export interface ExtractedExtension {
+  fileName: string;
+  extendsType: string;
+  methods: ExtractedMethod[];
+  resources: ExtractedResource[];
+}
+
 /** Metadata extracted from a skill directory. */
 export interface ExtractedSkill {
   dirName: string;
@@ -133,6 +141,7 @@ export interface ExtractedSkill {
 /** Content metadata extracted from all models, workflows, vaults, drivers, datastores, reports, and skills in an extension. */
 export interface ExtensionContentMetadata {
   models: ExtractedModel[];
+  extensions: ExtractedExtension[];
   workflows: ExtractedWorkflow[];
   vaults: ExtractedVault[];
   drivers: ExtractedDriver[];

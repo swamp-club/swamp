@@ -595,6 +595,7 @@ function makeInstallWithPruned(
       skillFiles: [],
       dependencies: [],
       dependencyResults: [],
+      extendsTypes: [],
       pruned: prunedPaths,
       shadowedTypes: [],
     };

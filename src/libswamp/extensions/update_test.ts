@@ -261,6 +261,7 @@ function buildInstallResult(
     skillFiles: [],
     dependencies: [],
     dependencyResults: [],
+    extendsTypes: [],
     pruned,
     shadowedTypes,
   };

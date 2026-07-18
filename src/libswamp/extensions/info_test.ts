@@ -87,6 +87,7 @@ function makeVersionDetail(
           files: [],
         },
       ],
+      extensions: [],
       workflows: [],
       vaults: [],
       drivers: [],

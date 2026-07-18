@@ -126,6 +126,7 @@ function makeStubInstallResult(
     skillFiles: [],
     dependencies: [],
     dependencyResults: [],
+    extendsTypes: [],
     pruned: [],
     shadowedTypes: [],
   };
