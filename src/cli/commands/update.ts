@@ -79,6 +79,12 @@ async function dirExists(path: string): Promise<boolean> {
 async function syncGlobalSkills(
   logger: ReturnType<typeof getSwampLogger>,
 ): Promise<void> {
+  if (isRunningAsRoot()) {
+    logger
+      .warn`Skipping global skill sync: running as root. Run ${"swamp update"} without sudo or ${"swamp repo upgrade"} in a repository to sync skills.`;
+    return;
+  }
+
   let home: string | null = null;
   try {
     home = homeDirectory();
