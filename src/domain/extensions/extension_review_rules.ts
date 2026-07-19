@@ -543,6 +543,19 @@ export interface ReviewReportContext {
 }
 
 const REVIEW_REPORT_RULE = "adversarial-review-report";
+/**
+ * Distinct ruleId for the "review is present and complete, but a dimension
+ * honestly recorded an `issue` verdict" finding. Keeping it separate from
+ * {@link REVIEW_REPORT_RULE} — which covers a review that is owed, stale, or
+ * incomplete (missing file, name/version mismatch, missing/pending verdicts,
+ * parse error) — lets a downstream CI gate keying on
+ * `reviewRuleWarnings[].ruleId === "adversarial-review-report"` pass a
+ * completed, hash-matching review regardless of its dimension verdicts, while
+ * the honest `issue` note still surfaces under this id. Without the split the
+ * two states are indistinguishable and an honest `issue` verdict reads as a
+ * missing review, pressuring reviewers to launder findings into `pass`.
+ */
+const REVIEW_ISSUE_VERDICT_RULE = "adversarial-review-dimension-issue";
 const REVIEW_REPORT_DIMENSION = "Adversarial review";
 
 /**
@@ -643,7 +656,10 @@ export function evaluateReviewReport(
   for (const entry of ctx.report.dimensions) {
     if (entry.verdict === "issue") {
       findings.push({
-        ruleId: REVIEW_REPORT_RULE,
+        // Distinct ruleId so a gate on REVIEW_REPORT_RULE treats a completed
+        // review as clean regardless of verdict; `file` still points at the
+        // review (where the note lives), not a remediation target.
+        ruleId: REVIEW_ISSUE_VERDICT_RULE,
         dimension: REVIEW_REPORT_DIMENSION,
         severity: "medium",
         file: ctx.reportPath,

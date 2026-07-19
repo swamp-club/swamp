@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join, SEPARATOR } from "@std/path";
 import {
   applicableDimensions,
@@ -633,6 +633,10 @@ Deno.test("evaluateReviewReport: pending verdicts warn, issue warns, all-pass is
   const passFindings = evaluateReviewReport(reportCtx(passReport, dims));
   assertEquals(passFindings.length, 1);
   assertEquals(passFindings[0].severity, "medium");
+  // The issue-verdict finding carries its own ruleId, distinct from the
+  // review-owed/stale ruleId, so a CI gate can tell the two states apart.
+  assertEquals(passFindings[0].ruleId, "adversarial-review-dimension-issue");
+  assert(passFindings[0].ruleId !== "adversarial-review-report");
 
   // Fully clean report → no findings.
   const cleanReport: ExtensionReviewReport = {
@@ -642,6 +646,31 @@ Deno.test("evaluateReviewReport: pending verdicts warn, issue warns, all-pass is
     dimensions: dims.map((d) => ({ id: d.id, verdict: "pass" as const })),
   };
   assertEquals(evaluateReviewReport(reportCtx(cleanReport, dims)).length, 0);
+});
+
+Deno.test("evaluateReviewReport: a completed review with an issue verdict is distinguishable from a missing/stale review", () => {
+  const dims = applicableDimensions(["vault"]);
+  // Present, name/version-matching, fully-verdicted review whose only "problem"
+  // is one honest `issue` verdict.
+  const report: ExtensionReviewReport = {
+    extension: "@a/b",
+    version: "1",
+    reviewedAt: "now",
+    dimensions: dims.map((d, i) => ({
+      id: d.id,
+      verdict: i === 0 ? ("issue" as const) : ("pass" as const),
+      note: i === 0 ? "delete swallows 404" : undefined,
+    })),
+  };
+  const findings = evaluateReviewReport(reportCtx(report, dims));
+
+  // Gate-distinguishability: a gate keying on the review-owed ruleId sees this
+  // completed review as clean — no `adversarial-review-report` finding.
+  assert(findings.every((f) => f.ruleId !== "adversarial-review-report"));
+  // The honest note still surfaces, under the distinct ruleId, with the note.
+  assertEquals(findings.length, 1);
+  assertEquals(findings[0].ruleId, "adversarial-review-dimension-issue");
+  assertStringIncludes(findings[0].message, "delete swallows 404");
 });
 
 Deno.test("checkReviewRules: validates report when a report request is supplied", async () => {
