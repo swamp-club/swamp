@@ -100,7 +100,7 @@ export interface ExtensionInfo {
   labels: string[];
   contentTypes: string[];
   contentNames: string[];
-  latestVersion: string;
+  latestVersion: string | null;
   author: ExtensionAuthor | null;
   createdAt: string;
   updatedAt: string;
@@ -144,7 +144,7 @@ export interface ExtensionSearchEntry {
   platforms: string[];
   labels: string[];
   contentTypes?: string[];
-  latestVersion: string;
+  latestVersion: string | null;
   createdAt: string;
   updatedAt: string;
   deprecatedAt?: string | null;

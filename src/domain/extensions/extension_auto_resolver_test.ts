@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type AutoResolveOutputPort,
   ExtensionAutoResolver,
@@ -65,6 +65,9 @@ function createMockOutput(): AutoResolveOutputPort & { calls: string[] } {
     collectiveNotTrusted(collective: string, type: string) {
       calls.push(`collectiveNotTrusted:${collective}:${type}`);
     },
+    noStableVersion(extension: string) {
+      calls.push(`noStableVersion:${extension}`);
+    },
   };
 }
 
@@ -72,7 +75,7 @@ function createMockOutput(): AutoResolveOutputPort & { calls: string[] } {
 function createMockLookup(
   extensions: Record<
     string,
-    { description: string; latestVersion: string }
+    { description: string; latestVersion: string | null }
   > = {},
   searchResults: string[] = [],
 ): ExtensionLookupPort {
@@ -706,4 +709,26 @@ Deno.test("ExtensionAutoResolver - installing message reports the pinned version
   // "installing" must show the pinned version (from the lockfile), not latest.
   assertEquals(output.calls[1], "installing:@swamp/aws@2026.01.01.1");
   assertEquals(output.calls[2], "installed:@swamp/aws@2026.01.01.1:3");
+});
+
+Deno.test("installAndLoad: emits noStableVersion when latestVersion is null", async () => {
+  const output = createMockOutput();
+  const installer = createMockInstaller();
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["shrug"],
+    extensionLookup: createMockLookup(
+      { "@shrug/mercury": { description: "Mercury", latestVersion: null } },
+      ["@shrug/mercury"],
+    ),
+    extensionInstaller: installer,
+    output,
+  });
+
+  const result = await resolver.resolve("@shrug/mercury/bank/txn");
+  assertEquals(result, false);
+  assertStringIncludes(
+    output.calls.join(","),
+    "noStableVersion:@shrug/mercury",
+  );
+  assertEquals(installer.installCalls.length, 0);
 });

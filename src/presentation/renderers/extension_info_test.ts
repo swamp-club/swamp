@@ -311,6 +311,38 @@ Deno.test("LogExtensionInfoRenderer: not_found throws UserError", () => {
   );
 });
 
+Deno.test("LogExtensionInfoRenderer: null latestVersion shows prerelease channel", async () => {
+  const renderer = createExtensionInfoRenderer("log");
+  const events: ExtensionInfoEvent[] = [
+    { kind: "resolving" },
+    {
+      kind: "completed",
+      data: makeInfoData({
+        latestVersion: null,
+        latestRc: "2026.07.19.1",
+        latestBeta: "2026.07.18.3",
+      }),
+    },
+  ];
+  await consumeStream(toStream(events), renderer.handlers());
+});
+
+Deno.test("LogExtensionInfoRenderer: null latestVersion with only beta", async () => {
+  const renderer = createExtensionInfoRenderer("log");
+  const events: ExtensionInfoEvent[] = [
+    { kind: "resolving" },
+    {
+      kind: "completed",
+      data: makeInfoData({
+        latestVersion: null,
+        latestRc: null,
+        latestBeta: "2026.07.18.3",
+      }),
+    },
+  ];
+  await consumeStream(toStream(events), renderer.handlers());
+});
+
 Deno.test("LogExtensionInfoRenderer: error event throws UserError", () => {
   const renderer = createExtensionInfoRenderer("log");
   const handlers = renderer.handlers();

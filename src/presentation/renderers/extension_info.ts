@@ -158,7 +158,11 @@ class LogExtensionInfoRenderer implements Renderer<ExtensionInfoEvent> {
       completed: (e) => {
         const d = e.data;
 
-        logger.info`${d.name} (${d.latestVersion})`;
+        const versionLabel = d.latestVersion ??
+          (d.latestRc ? `rc: ${d.latestRc}` : null) ??
+          (d.latestBeta ? `beta: ${d.latestBeta}` : null) ??
+          "prerelease only";
+        logger.info`${d.name} (${versionLabel})`;
         logger.info`${d.description}`;
         logger.info``;
 

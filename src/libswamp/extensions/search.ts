@@ -28,7 +28,7 @@ export interface ExtensionSearchItem {
   repository: string | null;
   repositoryVerified: boolean | null;
   repositoryVerifiedUrl: string | null;
-  latestVersion: string;
+  latestVersion: string | null;
   platforms: string[];
   labels: string[];
   contentTypes: string[];
@@ -85,7 +85,7 @@ export interface ExtensionSearchDeps {
       repository?: string | null;
       repositoryVerified?: boolean | null;
       repositoryVerifiedUrl?: string | null;
-      latestVersion: string;
+      latestVersion: string | null;
       platforms: string[];
       labels: string[];
       contentTypes?: string[];

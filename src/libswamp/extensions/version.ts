@@ -90,8 +90,6 @@ export function createExtensionVersionDeps(
     getPublishedVersions: async (name: string) => {
       const info = await client.getExtension(name);
       if (!info) return null;
-      // latestVersion is typed `string` but the registry returns null for
-      // prerelease-only extensions, so read it null-safely at the boundary.
       return {
         stable: info.latestVersion ?? null,
         beta: info.latestBeta ?? null,

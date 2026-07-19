@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { assertStringIncludes } from "@std/assert/string-includes";
 import { join } from "@std/path";
 import {
@@ -26,7 +26,9 @@ import {
   type ExtensionPullDeps,
   type ExtensionPullEvent,
   type ExtensionRef,
+  type ExtensionRegistryInfo,
   type InstallContext,
+  installExtension,
   type InstallResult,
   isVersionConstraint,
   parseExtensionRef,
@@ -454,5 +456,85 @@ Deno.test(
     const ref = parseExtensionRef("@swamp/factory@^2026.06.16.1");
     assertEquals(ref.name, "@swamp/factory");
     assertEquals(ref.version, "^2026.06.16.1");
+  },
+);
+
+Deno.test(
+  "installExtension: actionable error when latestVersion is null but rc exists",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({
+      prefix: "swamp_pull_nostable_test_",
+    });
+    try {
+      const extInfo: ExtensionRegistryInfo = {
+        name: "@shrug/mercury",
+        description: "Mercury",
+        latestVersion: null,
+        latestRc: "2026.07.19.1",
+        latestBeta: "2026.07.18.3",
+      };
+      const ctx: InstallContext = {
+        getExtension: () => Promise.resolve(extInfo),
+        downloadArchive: () => Promise.reject(new Error("should not download")),
+        getChecksum: () => Promise.resolve(null),
+        lockfileRepository: await LockfileRepository.create(
+          join(tmpDir, "upstream_extensions.json"),
+        ),
+        skillsDirs: [join(tmpDir, "skills")],
+        repoDir: tmpDir,
+        alreadyPulled: new Set(),
+        depth: 0,
+        force: false,
+      };
+      const ref: ExtensionRef = { name: "@shrug/mercury", version: null };
+      const error = await assertRejects(
+        () => installExtension(ref, ctx),
+        UserError,
+      );
+      assertStringIncludes(error.message, "has no stable version");
+      assertStringIncludes(error.message, "--channel rc");
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    }
+  },
+);
+
+Deno.test(
+  "installExtension: actionable error mentions only beta when rc is absent",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({
+      prefix: "swamp_pull_nostable2_test_",
+    });
+    try {
+      const extInfo: ExtensionRegistryInfo = {
+        name: "@shrug/mercury",
+        description: "Mercury",
+        latestVersion: null,
+        latestRc: null,
+        latestBeta: "2026.07.18.3",
+      };
+      const ctx: InstallContext = {
+        getExtension: () => Promise.resolve(extInfo),
+        downloadArchive: () => Promise.reject(new Error("should not download")),
+        getChecksum: () => Promise.resolve(null),
+        lockfileRepository: await LockfileRepository.create(
+          join(tmpDir, "upstream_extensions.json"),
+        ),
+        skillsDirs: [join(tmpDir, "skills")],
+        repoDir: tmpDir,
+        alreadyPulled: new Set(),
+        depth: 0,
+        force: false,
+      };
+      const ref: ExtensionRef = { name: "@shrug/mercury", version: null };
+      const error = await assertRejects(
+        () => installExtension(ref, ctx),
+        UserError,
+      );
+      assertStringIncludes(error.message, "has no stable version");
+      assertStringIncludes(error.message, "--channel beta");
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    }
   },
 );
