@@ -40,6 +40,14 @@ class LogExtensionVersionRenderer implements Renderer<ExtensionVersionEvent> {
         } else {
           logger.info("Current published: (none — not yet published)");
         }
+        const beta = e.data.channels?.beta;
+        if (beta) {
+          logger.info("Latest beta: {version}", { version: beta.latest });
+        }
+        const rc = e.data.channels?.rc;
+        if (rc) {
+          logger.info("Latest rc: {version}", { version: rc.latest });
+        }
         logger.info("Next version (today): {version}", {
           version: e.data.nextVersion,
         });
