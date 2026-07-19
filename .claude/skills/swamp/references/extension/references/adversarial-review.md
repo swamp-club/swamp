@@ -37,8 +37,13 @@ Workflow:
    they survive across runners).
 3. Write the skeleton to the printed path, setting each dimension's `verdict`:
    - `pass` — the dimension is satisfied.
-   - `issue` — a problem was found; add a `note`. (Surfaces as a push warning,
-     does not block.)
+   - `issue` — a problem was found; add a `note`. (Surfaces as a push warning
+     under the distinct ruleId `adversarial-review-dimension-issue` — separate
+     from the `adversarial-review-report` ruleId used when a review is
+     missing/stale/incomplete — so a CI gate keying on
+     `reviewRuleWarnings[].ruleId == "adversarial-review-report"` passes a
+     completed review regardless of verdict while still surfacing the note. Does
+     not block.)
    - `na` — the dimension does not apply (e.g. `api-contracts` for an extension
      making no HTTP calls).
    - Leave none as `pending` — a `pending` or missing verdict surfaces as a push
