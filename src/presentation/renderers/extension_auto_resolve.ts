@@ -260,6 +260,6 @@ export function renderAutoResolveNoStableVersion(
     logger
       .warn`Extension ${extension} has no stable version and cannot be auto-resolved.`;
     logger
-      .warn`Install manually with: swamp extension pull ${extension} --channel rc`;
+      .warn`Install manually with: swamp extension pull ${extension} --channel <rc|beta>`;
   }
 }

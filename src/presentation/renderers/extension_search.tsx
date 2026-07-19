@@ -142,7 +142,9 @@ function renderExtensionResultLine(
   return (
     <Text>
       {`${item.name} `}
-      <Text dimColor>{`v${item.latestVersion}`}</Text>
+      <Text dimColor>
+        {item.latestVersion ? `v${item.latestVersion}` : "prerelease"}
+      </Text>
       {deprecated && <Text color="yellow">[deprecated]</Text>}
       {truncatedDesc && <Text dimColor>{` ${EM_DASH} ${truncatedDesc}`}</Text>}
       {labelsStr && <Text color="blue">{labelsStr}</Text>}
@@ -160,7 +162,9 @@ function renderExtensionPreview(
   const lines: React.ReactElement[] = [
     <Text key="name" wrap="truncate-end">
       <Text color="cyan" bold>{item.name}</Text>{" "}
-      <Text dimColor>v{item.latestVersion}</Text>
+      <Text dimColor>
+        {item.latestVersion ? `v${item.latestVersion}` : "prerelease"}
+      </Text>
     </Text>,
   ];
 
@@ -254,7 +258,9 @@ function renderExtensionScrollback(
   _detail: ExtensionSearchItem | undefined,
 ): string {
   const lines: string[] = [
-    `${item.name} v${item.latestVersion}`,
+    `${item.name} ${
+      item.latestVersion ? `v${item.latestVersion}` : "prerelease"
+    }`,
   ];
 
   if (item.description) {
