@@ -115,6 +115,18 @@ export const datastoreNamespaceSetCommand = new Command()
           const slugs = await resolvedProvider.listNamespaces(
             (datastoreConfig as CustomDatastoreConfig).datastorePath,
           );
+          const cachePath =
+            (datastoreConfig as CustomDatastoreConfig).cachePath;
+          if (cachePath) {
+            const manifests = await listNamespaceManifests(cachePath);
+            const bySlug = new Map(
+              manifests.map((m) => [m.namespace, m.repoId]),
+            );
+            return slugs.map((ns) => ({
+              namespace: ns,
+              repoId: bySlug.get(ns) ?? "",
+            }));
+          }
           return slugs.map((ns) => ({ namespace: ns, repoId: "" }));
         }
         const manifests = await listNamespaceManifests(dsBasePath);

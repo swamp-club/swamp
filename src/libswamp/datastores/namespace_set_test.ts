@@ -119,6 +119,17 @@ Deno.test("datastoreNamespaceSet: re-registration with same repoId succeeds", as
   assertEquals(last.kind, "completed");
 });
 
+Deno.test("datastoreNamespaceSet: re-registration with empty repoId succeeds", async () => {
+  const deps = makeDeps({
+    listNamespaces: () => Promise.resolve([{ namespace: "infra", repoId: "" }]),
+  });
+  const events = await collect<NamespaceSetEvent>(
+    datastoreNamespaceSet(createLibSwampContext(), deps, { slug: "infra" }),
+  );
+  const last = events[events.length - 1];
+  assertEquals(last.kind, "completed");
+});
+
 Deno.test("datastoreNamespaceSet: registration skipped when unsupported", async () => {
   let registerCalled = false;
   const deps = makeDeps({
