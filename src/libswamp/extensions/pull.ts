@@ -73,7 +73,7 @@ export interface ExtensionSafetyWarning {
 export interface ExtensionRegistryInfo {
   name: string;
   description: string;
-  latestVersion: string;
+  latestVersion: string | null;
   latestRc?: string | null;
   latestBeta?: string | null;
   deprecatedAt?: string | null;
@@ -724,6 +724,16 @@ export async function installExtension(
 
   const version = ref.version ?? extInfo.latestVersion;
   if (!version) {
+    const channels: string[] = [];
+    if (extInfo.latestRc) channels.push("rc");
+    if (extInfo.latestBeta) channels.push("beta");
+    if (channels.length > 0) {
+      throw new UserError(
+        `Extension ${ref.name} has no stable version. Use --channel ${
+          channels[0]
+        } to pull the latest ${channels[0]}.`,
+      );
+    }
     throw new UserError(
       `Extension ${ref.name} has no published versions.`,
     );

@@ -76,7 +76,9 @@ unchanged.
 
 ### Pull
 
-`swamp extension pull @name` resolves the latest stable version.
+`swamp extension pull @name` resolves the latest stable version. If no stable
+version exists (prerelease-only extension), pull errors with an actionable
+message suggesting the available `--channel` flag.
 `swamp extension pull @name --channel rc` resolves the latest rc version.
 `swamp extension pull @name --channel beta` resolves the latest beta version.
 Explicit version pinning (`@name@2026.06.10.1`) ignores channel since versions

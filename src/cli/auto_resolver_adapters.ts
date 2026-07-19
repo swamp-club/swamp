@@ -51,6 +51,7 @@ import {
   renderAutoResolveInstalled,
   renderAutoResolveInstalling,
   renderAutoResolveNetworkError,
+  renderAutoResolveNoStableVersion,
   renderAutoResolveNotFound,
   renderAutoResolveSearching,
   renderAutoResolveTruncated,
@@ -383,6 +384,9 @@ export function createAutoResolveOutputAdapter(
     },
     collectiveNotTrusted(collective: string, type: string) {
       renderAutoResolveCollectiveNotTrusted(collective, type, mode);
+    },
+    noStableVersion(extension: string) {
+      renderAutoResolveNoStableVersion(extension, mode);
     },
   };
 }

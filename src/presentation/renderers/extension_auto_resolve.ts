@@ -238,3 +238,28 @@ export function renderAutoResolveNetworkError(
     logger.error`Install manually with: swamp extension pull <extension-name>`;
   }
 }
+
+/**
+ * Renders an error message when auto-resolution finds an extension that
+ * has no stable version (only prerelease channels).
+ */
+export function renderAutoResolveNoStableVersion(
+  extension: string,
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(
+      JSON.stringify({
+        event: "auto_resolve",
+        status: "failed",
+        extension,
+        reason: "no_stable_version",
+      }),
+    );
+  } else {
+    logger
+      .warn`Extension ${extension} has no stable version and cannot be auto-resolved.`;
+    logger
+      .warn`Install manually with: swamp extension pull ${extension} --channel <rc|beta>`;
+  }
+}

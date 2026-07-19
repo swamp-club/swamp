@@ -43,7 +43,7 @@ export interface ExtensionInfoData {
   labels: string[];
   contentTypes: string[];
   contentNames: string[];
-  latestVersion: string;
+  latestVersion: string | null;
   latestRc: string | null;
   latestBeta: string | null;
   author: ExtensionAuthor | null;

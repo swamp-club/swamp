@@ -31,7 +31,7 @@ const logger = getLogger(["swamp", "extensions", "auto-resolver"]);
 export interface ExtensionLookupInfo {
   name: string;
   description: string;
-  latestVersion: string;
+  latestVersion: string | null;
 }
 
 /**
@@ -150,6 +150,7 @@ export interface AutoResolveOutputPort {
    * caller fail with an opaque "unknown type" error.
    */
   collectiveNotTrusted(collective: string, type: string): void;
+  noStableVersion(extension: string): void;
 }
 
 /**
@@ -391,7 +392,10 @@ export class ExtensionAutoResolver {
     if (!extInfo) return false;
 
     const version = extInfo.latestVersion;
-    if (!version) return false;
+    if (!version) {
+      output.noStableVersion(extensionName);
+      return false;
+    }
 
     // Inspect the on-disk state before deciding to install. Issue #121
     // introduced the "never overwrite on-disk extensions without --force"
