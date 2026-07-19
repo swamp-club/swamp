@@ -101,7 +101,7 @@ export async function* datastoreNamespaceSet(
       if (deps.supportsRegistration) {
         const existing = await deps.listNamespaces();
         const conflict = existing.find((r) => r.namespace === slug);
-        if (conflict && conflict.repoId !== repoId) {
+        if (conflict && conflict.repoId !== "" && conflict.repoId !== repoId) {
           yield {
             kind: "error",
             error: validationFailed(
