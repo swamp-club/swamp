@@ -30,9 +30,18 @@ function makeDeps(
   overrides?: Partial<ExtensionVersionDeps>,
 ): ExtensionVersionDeps {
   return {
-    getLatestVersion: () => Promise.resolve(null),
+    getPublishedVersions: () => Promise.resolve(null),
     ...overrides,
   };
+}
+
+function completedData(events: ExtensionVersionEvent[]) {
+  const completed = events[1] as Extract<
+    ExtensionVersionEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  return completed.data;
 }
 
 function todayPrefix(): string {
@@ -43,7 +52,7 @@ function todayPrefix(): string {
   return `${yyyy}.${mm}.${dd}`;
 }
 
-Deno.test("extensionVersion: never-published extension returns null published and today.1", async () => {
+Deno.test("extensionVersion: never-published extension returns null published, no channels, and today.1", async () => {
   const deps = makeDeps();
   const events = await collect<ExtensionVersionEvent>(
     extensionVersion(createLibSwampContext(), deps, {
@@ -54,23 +63,21 @@ Deno.test("extensionVersion: never-published extension returns null published an
   assertEquals(events.length, 2);
   assertEquals(events[0], { kind: "resolving" });
 
-  const completed = events[1] as Extract<
-    ExtensionVersionEvent,
-    { kind: "completed" }
-  >;
-  assertEquals(completed.kind, "completed");
-  assertEquals(completed.data.extensionName, "@myorg/new-ext");
-  assertEquals(completed.data.currentPublished, null);
-  assertEquals(completed.data.publishedAt, null);
-  assertEquals(completed.data.nextVersion, `${todayPrefix()}.1`);
+  const data = completedData(events);
+  assertEquals(data.extensionName, "@myorg/new-ext");
+  assertEquals(data.currentPublished, null);
+  assertEquals(data.publishedAt, null);
+  assertEquals(data.nextVersion, `${todayPrefix()}.1`);
+  assertEquals(data.channels, undefined);
 });
 
-Deno.test("extensionVersion: same-day bump increments micro", async () => {
+Deno.test("extensionVersion: same-day bump increments micro, no channels for stable-only", async () => {
   const deps = makeDeps({
-    getLatestVersion: () =>
+    getPublishedVersions: () =>
       Promise.resolve({
-        version: `${todayPrefix()}.3`,
-        publishedAt: "2026-03-30T10:00:00Z",
+        stable: `${todayPrefix()}.3`,
+        beta: null,
+        rc: null,
       }),
   });
   const events = await collect<ExtensionVersionEvent>(
@@ -79,21 +86,16 @@ Deno.test("extensionVersion: same-day bump increments micro", async () => {
     }),
   );
 
-  const completed = events[1] as Extract<
-    ExtensionVersionEvent,
-    { kind: "completed" }
-  >;
-  assertEquals(completed.data.currentPublished, `${todayPrefix()}.3`);
-  assertEquals(completed.data.nextVersion, `${todayPrefix()}.4`);
+  const data = completedData(events);
+  assertEquals(data.currentPublished, `${todayPrefix()}.3`);
+  assertEquals(data.nextVersion, `${todayPrefix()}.4`);
+  assertEquals(data.channels, undefined);
 });
 
 Deno.test("extensionVersion: different-day bump resets micro to 1", async () => {
   const deps = makeDeps({
-    getLatestVersion: () =>
-      Promise.resolve({
-        version: "2020.01.01.5",
-        publishedAt: "2020-01-01T10:00:00Z",
-      }),
+    getPublishedVersions: () =>
+      Promise.resolve({ stable: "2020.01.01.5", beta: null, rc: null }),
   });
   const events = await collect<ExtensionVersionEvent>(
     extensionVersion(createLibSwampContext(), deps, {
@@ -101,18 +103,75 @@ Deno.test("extensionVersion: different-day bump resets micro to 1", async () => 
     }),
   );
 
-  const completed = events[1] as Extract<
-    ExtensionVersionEvent,
-    { kind: "completed" }
-  >;
-  assertEquals(completed.data.currentPublished, "2020.01.01.5");
-  assertEquals(completed.data.publishedAt, "2020-01-01T10:00:00Z");
-  assertEquals(completed.data.nextVersion, `${todayPrefix()}.1`);
+  const data = completedData(events);
+  assertEquals(data.currentPublished, "2020.01.01.5");
+  assertEquals(data.publishedAt, null);
+  assertEquals(data.nextVersion, `${todayPrefix()}.1`);
+  assertEquals(data.channels, undefined);
+});
+
+Deno.test("extensionVersion: prerelease-only extension computes next from today without throwing", async () => {
+  const deps = makeDeps({
+    getPublishedVersions: () =>
+      Promise.resolve({ stable: null, beta: "2020.01.01.3", rc: null }),
+  });
+  const events = await collect<ExtensionVersionEvent>(
+    extensionVersion(createLibSwampContext(), deps, {
+      extensionName: "@shrug/mercury",
+    }),
+  );
+
+  const data = completedData(events);
+  assertEquals(data.currentPublished, null);
+  assertEquals(data.nextVersion, `${todayPrefix()}.1`);
+  assertEquals(data.channels, { beta: { latest: "2020.01.01.3" } });
+});
+
+Deno.test("extensionVersion: bumps past a prerelease published today to avoid collision", async () => {
+  const deps = makeDeps({
+    getPublishedVersions: () =>
+      Promise.resolve({ stable: null, beta: `${todayPrefix()}.3`, rc: null }),
+  });
+  const events = await collect<ExtensionVersionEvent>(
+    extensionVersion(createLibSwampContext(), deps, {
+      extensionName: "@shrug/mercury",
+    }),
+  );
+
+  const data = completedData(events);
+  assertEquals(data.currentPublished, null);
+  assertEquals(data.nextVersion, `${todayPrefix()}.4`);
+  assertEquals(data.channels, { beta: { latest: `${todayPrefix()}.3` } });
+});
+
+Deno.test("extensionVersion: baseline is the highest version across all channels", async () => {
+  // stable is older; rc is the newest published version.
+  const deps = makeDeps({
+    getPublishedVersions: () =>
+      Promise.resolve({
+        stable: "2020.01.01.1",
+        beta: "2020.02.01.1",
+        rc: `${todayPrefix()}.9`,
+      }),
+  });
+  const events = await collect<ExtensionVersionEvent>(
+    extensionVersion(createLibSwampContext(), deps, {
+      extensionName: "@shrug/mercury",
+    }),
+  );
+
+  const data = completedData(events);
+  assertEquals(data.currentPublished, "2020.01.01.1");
+  assertEquals(data.nextVersion, `${todayPrefix()}.10`);
+  assertEquals(data.channels, {
+    beta: { latest: "2020.02.01.1" },
+    rc: { latest: `${todayPrefix()}.9` },
+  });
 });
 
 Deno.test("extensionVersion: registry error yields error event", async () => {
   const deps = makeDeps({
-    getLatestVersion: () => Promise.reject(new Error("Network error")),
+    getPublishedVersions: () => Promise.reject(new Error("Network error")),
   });
   const events = await collect<ExtensionVersionEvent>(
     extensionVersion(createLibSwampContext(), deps, {

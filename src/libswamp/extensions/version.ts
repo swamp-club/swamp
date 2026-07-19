@@ -25,12 +25,31 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
+/** Latest published version on a single prerelease channel. */
+export interface ChannelVersionInfo {
+  latest: string;
+}
+
+/**
+ * Per-channel latest prerelease versions. A channel key is present only when
+ * that channel has a published version — never with a null latest.
+ */
+export type PrereleaseChannels = Partial<
+  Record<"beta" | "rc", ChannelVersionInfo>
+>;
+
 /** Data payload for the completed event. */
 export interface ExtensionVersionData {
   extensionName: string;
   currentPublished: string | null;
   publishedAt: string | null;
   nextVersion: string;
+  /**
+   * Latest prerelease versions per channel. Present only when at least one
+   * prerelease exists, and carries only the channels that have a published
+   * latest. Omitted entirely for never-published and stable-only extensions.
+   */
+  channels?: PrereleaseChannels;
 }
 
 export type ExtensionVersionEvent =
@@ -43,15 +62,22 @@ export interface ExtensionVersionInput {
   extensionName: string;
 }
 
-/** Version info resolved from the public extension metadata endpoint. */
-export interface LatestVersionInfo {
-  version: string;
-  publishedAt: string | null;
+/**
+ * Latest published version on each channel, as reported by the registry.
+ * Any field is null when that channel has no published version. Extension
+ * versions are globally unique per extension across channels (a version
+ * document carries one channel and promotion just updates it).
+ */
+export interface PublishedVersions {
+  stable: string | null;
+  beta: string | null;
+  rc: string | null;
 }
 
 /** Dependencies for the extension version operation. */
 export interface ExtensionVersionDeps {
-  getLatestVersion: (name: string) => Promise<LatestVersionInfo | null>;
+  /** Resolves per-channel latest versions, or null when the extension does not exist. */
+  getPublishedVersions: (name: string) => Promise<PublishedVersions | null>;
 }
 
 /** Wires real infrastructure into ExtensionVersionDeps. No authentication required. */
@@ -61,10 +87,16 @@ export function createExtensionVersionDeps(
   const serverUrl = resolveServerUrl();
   const client = new ExtensionApiClient(serverUrl, identity);
   return {
-    getLatestVersion: async (name: string) => {
+    getPublishedVersions: async (name: string) => {
       const info = await client.getExtension(name);
       if (!info) return null;
-      return { version: info.latestVersion, publishedAt: null };
+      // latestVersion is typed `string` but the registry returns null for
+      // prerelease-only extensions, so read it null-safely at the boundary.
+      return {
+        stable: info.latestVersion ?? null,
+        beta: info.latestBeta ?? null,
+        rc: info.latestRc ?? null,
+      };
     },
   };
 }
@@ -82,20 +114,38 @@ export async function* extensionVersion(
       yield { kind: "resolving" };
 
       try {
-        const latest = await deps.getLatestVersion(input.extensionName);
+        const published = await deps.getPublishedVersions(input.extensionName);
 
-        const previousCalVer = latest
-          ? CalVer.create(latest.version)
+        // The next publishable version must exceed the max across all channels,
+        // since versions are globally unique per extension. Filter to valid
+        // CalVers and pick the highest as the bump baseline.
+        const baseline = published
+          ? [published.stable, published.beta, published.rc]
+            .filter((v): v is string => v !== null && CalVer.isValid(v))
+            .map((v) => CalVer.create(v))
+            .reduce(
+              (max: CalVer | undefined, v) =>
+                max === undefined || CalVer.compare(v, max) > 0 ? v : max,
+              undefined,
+            )
           : undefined;
-        const nextVersion = CalVer.bump(previousCalVer);
+        const nextVersion = CalVer.bump(baseline);
+
+        // Surface latest prerelease versions per channel, omitting channels
+        // with no published latest. Undefined when no prerelease exists.
+        const channels: PrereleaseChannels = {};
+        if (published?.beta) channels.beta = { latest: published.beta };
+        if (published?.rc) channels.rc = { latest: published.rc };
+        const hasPrerelease = Object.keys(channels).length > 0;
 
         yield {
           kind: "completed",
           data: {
             extensionName: input.extensionName,
-            currentPublished: latest?.version ?? null,
-            publishedAt: latest?.publishedAt ?? null,
+            currentPublished: published?.stable ?? null,
+            publishedAt: null,
             nextVersion: nextVersion.value,
+            ...(hasPrerelease ? { channels } : {}),
           },
         };
       } catch (error) {
