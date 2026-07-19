@@ -25,8 +25,25 @@
  * free-text input.
  */
 
+import { UserError } from "../domain/errors.ts";
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+
+function assertInteractiveStdin(): void {
+  try {
+    if (!Deno.stdin.isTerminal()) {
+      throw new UserError(
+        "stdin is not a terminal — use the confirmation-skip flag (e.g. --force or --yes) to run non-interactively",
+      );
+    }
+  } catch (error) {
+    if (error instanceof UserError) throw error;
+    throw new UserError(
+      "stdin is not a terminal — use the confirmation-skip flag (e.g. --force or --yes) to run non-interactively",
+    );
+  }
+}
 
 /**
  * Prompt for a single line of text input.
@@ -46,6 +63,7 @@ export async function promptLine(message: string): Promise<string> {
  * (case-insensitive), `false` otherwise (including EOF).
  */
 export async function promptConfirmation(message: string): Promise<boolean> {
+  assertInteractiveStdin();
   const response = await promptLine(`${message} [y/N] `);
   if (response === "") return false;
   return response.toLowerCase() === "y" ||
@@ -61,6 +79,7 @@ export async function promptChoice(
   message: string,
   choices: string[],
 ): Promise<string> {
+  assertInteractiveStdin();
   while (true) {
     await Deno.stdout.write(encoder.encode(`${message}\n`));
     for (let i = 0; i < choices.length; i++) {
