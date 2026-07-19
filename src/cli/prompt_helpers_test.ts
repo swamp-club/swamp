@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
+import { UserError } from "../domain/errors.ts";
 import {
   promptChoice,
   promptConfirmation,
@@ -43,7 +44,10 @@ function fakeStdinRead(
 }
 
 /** Capture stdout writes into a string array and stub stdin to return `input`. */
-function stubIO(input: string | null): {
+function stubIO(
+  input: string | null,
+  options?: { isTerminal?: boolean },
+): {
   written: string[];
   restore: () => void;
 } {
@@ -51,18 +55,21 @@ function stubIO(input: string | null): {
   const decoder = new TextDecoder();
   const origStdoutWrite = Deno.stdout.write.bind(Deno.stdout);
   const origStdinRead = Deno.stdin.read.bind(Deno.stdin);
+  const origIsTerminal = Deno.stdin.isTerminal.bind(Deno.stdin);
 
   Deno.stdout.write = (data: Uint8Array) => {
     written.push(decoder.decode(data));
     return Promise.resolve(data.length);
   };
   Deno.stdin.read = fakeStdinRead(input);
+  Deno.stdin.isTerminal = () => options?.isTerminal ?? true;
 
   return {
     written,
     restore() {
       Deno.stdout.write = origStdoutWrite;
       Deno.stdin.read = origStdinRead;
+      Deno.stdin.isTerminal = origIsTerminal;
     },
   };
 }
@@ -169,6 +176,22 @@ Deno.test("promptConfirmation: rejects arbitrary text", async () => {
   }
 });
 
+Deno.test("promptConfirmation: throws UserError on non-interactive stdin", async () => {
+  const io = stubIO("y\n", { isTerminal: false });
+  try {
+    const error = await assertRejects(
+      () => promptConfirmation("Delete?"),
+      UserError,
+    );
+    assertEquals(
+      error.message,
+      "stdin is not a terminal — use the confirmation-skip flag (e.g. --force or --yes) to run non-interactively",
+    );
+  } finally {
+    io.restore();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // promptChoice
 // ---------------------------------------------------------------------------
@@ -184,6 +207,22 @@ Deno.test("promptChoice: selects a numbered choice", async () => {
     assertEquals(output.includes("2. beta"), true);
     assertEquals(output.includes("3. gamma"), true);
     assertEquals(output.includes("Other path"), false);
+  } finally {
+    io.restore();
+  }
+});
+
+Deno.test("promptChoice: throws UserError on non-interactive stdin", async () => {
+  const io = stubIO("2\n", { isTerminal: false });
+  try {
+    const error = await assertRejects(
+      () => promptChoice("Pick:", ["alpha", "beta"]),
+      UserError,
+    );
+    assertEquals(
+      error.message,
+      "stdin is not a terminal — use the confirmation-skip flag (e.g. --force or --yes) to run non-interactively",
+    );
   } finally {
     io.restore();
   }
