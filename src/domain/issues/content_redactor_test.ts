@@ -145,6 +145,34 @@ Deno.test("redactIssueContent: distinct env-var values get distinct placeholders
   );
 });
 
+Deno.test("redactIssueContent: camelCase URI params with AUTH keyword pass through unredacted", () => {
+  const r1 = redactIssueContent(
+    "mongodb://HOST:27017/?replicaSet=rs0&authSource=admin",
+  );
+  assertEquals(
+    r1.text,
+    "mongodb://HOST:27017/?replicaSet=rs0&authSource=admin",
+  );
+  assertEquals(r1.summary.totalRedactions, 0);
+
+  const r2 = redactIssueContent(
+    "mongodb://HOST:27017/?authMechanism=SCRAM-SHA-256",
+  );
+  assertEquals(
+    r2.text,
+    "mongodb://HOST:27017/?authMechanism=SCRAM-SHA-256",
+  );
+  assertEquals(r2.summary.totalRedactions, 0);
+});
+
+Deno.test("redactIssueContent: UPPER_SNAKE_CASE env vars with AUTH keyword still redact", () => {
+  const r1 = redactIssueContent("AUTH_TOKEN=my_secret_token");
+  assertEquals(r1.text, "AUTH_TOKEN=[REDACTED-SECRET-1]");
+
+  const r2 = redactIssueContent("MY_AUTH=some_value");
+  assertEquals(r2.text, "MY_AUTH=[REDACTED-SECRET-1]");
+});
+
 Deno.test("redactIssueContent: redacts SSN patterns", () => {
   const result = redactIssueContent("SSN was 123-45-6789 in the form");
   assertEquals(result.text, "SSN was [REDACTED-ID] in the form");
