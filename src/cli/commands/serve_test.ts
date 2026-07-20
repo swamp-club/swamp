@@ -22,9 +22,12 @@ import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
   assertOffLoopbackSecurity,
   collectServeExtraArgs,
+  reapOrphanedWorkflowRuns,
   validateWebSocketOrigin,
 } from "./serve.ts";
 import { UserError } from "../../domain/errors.ts";
+import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 
 // Initialize logging for tests
 await initializeLogging({});
@@ -380,4 +383,198 @@ Deno.test("collectServeExtraArgs: forwards --trusted-hosts", () => {
 Deno.test("collectServeExtraArgs: omits --trusted-hosts when not set", () => {
   const args = collectServeExtraArgs({});
   assertEquals(args, []);
+});
+
+// --- reapOrphanedWorkflowRuns ---
+
+const WORKFLOW_ID = "96968218-50aa-4b91-8161-a6995ce96cae" as WorkflowId;
+
+type RunStatus =
+  | "pending"
+  | "running"
+  | "suspended"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+function makeRun(
+  overrides: {
+    status?: RunStatus;
+    pid?: number;
+    id?: string;
+  } = {},
+): WorkflowRun {
+  return WorkflowRun.fromData({
+    id: overrides.id ?? crypto.randomUUID(),
+    workflowId: WORKFLOW_ID,
+    workflowName: "test-workflow",
+    status: overrides.status ?? "running",
+    startedAt: "2026-07-20T20:00:00.000Z",
+    pid: overrides.pid,
+    jobs: [{
+      jobName: "main",
+      status: "running",
+      startedAt: "2026-07-20T20:00:00.000Z",
+      steps: [{
+        stepName: "step1",
+        status: "running",
+        startedAt: "2026-07-20T20:00:00.000Z",
+      }],
+    }],
+    tags: {},
+  });
+}
+
+// Helper: no tracker record for any run (legacy fallback path)
+const noTracker = () => null;
+
+// Helper: tracker says run is still running
+const trackerRunning = () => ({ status: "running" });
+
+// Helper: tracker says run was reaped (stale)
+const trackerReaped = () => ({ status: "failed" });
+
+Deno.test("reapOrphanedWorkflowRuns: skips run when tracker reports still running", async () => {
+  const run = makeRun({ pid: 42 });
+  const saved: string[] = [];
+  const result = await reapOrphanedWorkflowRuns(
+    [{ run, workflowId: WORKFLOW_ID }],
+    (_wid, r) => {
+      saved.push(r.id);
+      return Promise.resolve();
+    },
+    trackerRunning,
+  );
+  assertEquals(result.reaped, 0);
+  assertEquals(result.skipped, 1);
+  assertEquals(run.status, "running");
+  assertEquals(saved.length, 0);
+});
+
+Deno.test("reapOrphanedWorkflowRuns: cancels run when tracker confirmed stale", async () => {
+  const run = makeRun({ pid: 99999 });
+  const saved: string[] = [];
+  const result = await reapOrphanedWorkflowRuns(
+    [{ run, workflowId: WORKFLOW_ID }],
+    (_wid, r) => {
+      saved.push(r.id);
+      return Promise.resolve();
+    },
+    trackerReaped,
+  );
+  assertEquals(result.reaped, 1);
+  assertEquals(result.skipped, 0);
+  assertEquals(run.status, "cancelled");
+  assertEquals(saved.length, 1);
+});
+
+Deno.test("reapOrphanedWorkflowRuns: legacy run with live PID is skipped", async () => {
+  const run = makeRun({ pid: 42 });
+  const saved: string[] = [];
+  const result = await reapOrphanedWorkflowRuns(
+    [{ run, workflowId: WORKFLOW_ID }],
+    (_wid, r) => {
+      saved.push(r.id);
+      return Promise.resolve();
+    },
+    noTracker,
+    (_pid) => false, // PID is alive
+  );
+  assertEquals(result.reaped, 0);
+  assertEquals(result.skipped, 1);
+  assertEquals(run.status, "running");
+  assertEquals(saved.length, 0);
+});
+
+Deno.test("reapOrphanedWorkflowRuns: legacy run with dead PID is cancelled", async () => {
+  const run = makeRun({ pid: 99999 });
+  const saved: string[] = [];
+  const result = await reapOrphanedWorkflowRuns(
+    [{ run, workflowId: WORKFLOW_ID }],
+    (_wid, r) => {
+      saved.push(r.id);
+      return Promise.resolve();
+    },
+    noTracker,
+    (_pid) => true, // PID is dead
+  );
+  assertEquals(result.reaped, 1);
+  assertEquals(result.skipped, 0);
+  assertEquals(run.status, "cancelled");
+  assertEquals(saved.length, 1);
+});
+
+Deno.test("reapOrphanedWorkflowRuns: legacy run with no PID is cancelled", async () => {
+  const run = makeRun(); // no pid
+  const saved: string[] = [];
+  const result = await reapOrphanedWorkflowRuns(
+    [{ run, workflowId: WORKFLOW_ID }],
+    (_wid, r) => {
+      saved.push(r.id);
+      return Promise.resolve();
+    },
+    noTracker,
+    () => {
+      throw new Error("should not be called for undefined pid");
+    },
+  );
+  assertEquals(result.reaped, 1);
+  assertEquals(result.skipped, 0);
+  assertEquals(run.status, "cancelled");
+});
+
+Deno.test("reapOrphanedWorkflowRuns: skips run in terminal state", async () => {
+  const run = makeRun({ status: "succeeded" });
+  const saved: string[] = [];
+  const result = await reapOrphanedWorkflowRuns(
+    [{ run, workflowId: WORKFLOW_ID }],
+    (_wid, r) => {
+      saved.push(r.id);
+      return Promise.resolve();
+    },
+    noTracker,
+    () => true,
+  );
+  assertEquals(result.reaped, 0);
+  assertEquals(result.skipped, 0);
+  assertEquals(run.status, "succeeded");
+  assertEquals(saved.length, 0);
+});
+
+Deno.test("reapOrphanedWorkflowRuns: mixed scenario with tracker and legacy runs", async () => {
+  const trackedLive = makeRun({ pid: 100 });
+  const trackedStale = makeRun({ pid: 200 });
+  const legacyDeadPid = makeRun({ pid: 300 });
+  const legacyNoPid = makeRun();
+  const succeededRun = makeRun({ status: "succeeded" });
+  const saved: string[] = [];
+
+  const trackerMap = new Map<string, { status: string }>([
+    [trackedLive.id, { status: "running" }],
+    [trackedStale.id, { status: "failed" }],
+  ]);
+
+  const result = await reapOrphanedWorkflowRuns(
+    [
+      { run: trackedLive, workflowId: WORKFLOW_ID },
+      { run: trackedStale, workflowId: WORKFLOW_ID },
+      { run: legacyDeadPid, workflowId: WORKFLOW_ID },
+      { run: legacyNoPid, workflowId: WORKFLOW_ID },
+      { run: succeededRun, workflowId: WORKFLOW_ID },
+    ],
+    (_wid, r) => {
+      saved.push(r.id);
+      return Promise.resolve();
+    },
+    (runId) => trackerMap.get(runId) ?? null,
+    (pid) => pid === 300, // only PID 300 is dead
+  );
+  assertEquals(result.reaped, 3); // tracker-stale + legacy dead PID + legacy no PID
+  assertEquals(result.skipped, 1); // tracker-live
+  assertEquals(trackedLive.status, "running");
+  assertEquals(trackedStale.status, "cancelled");
+  assertEquals(legacyDeadPid.status, "cancelled");
+  assertEquals(legacyNoPid.status, "cancelled");
+  assertEquals(succeededRun.status, "succeeded");
+  assertEquals(saved.length, 3);
 });
