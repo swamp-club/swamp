@@ -173,6 +173,23 @@ Deno.test("redactIssueContent: UPPER_SNAKE_CASE env vars with AUTH keyword still
   assertEquals(r2.text, "MY_AUTH=[REDACTED-SECRET-1]");
 });
 
+Deno.test("redactIssueContent: camelCase names with high-confidence secret keywords still redact", () => {
+  const r1 = redactIssueContent("myPassword=hunter2");
+  assertEquals(r1.text, "myPassword=[REDACTED-SECRET-1]");
+
+  const r2 = redactIssueContent("accessToken=tok_abc");
+  assertEquals(r2.text, "accessToken=[REDACTED-SECRET-1]");
+
+  const r3 = redactIssueContent("apiSecret=xyz123");
+  assertEquals(r3.text, "apiSecret=[REDACTED-SECRET-1]");
+
+  const r4 = redactIssueContent("apiKey=sk-123");
+  assertEquals(r4.text, "apiKey=[REDACTED-SECRET-1]");
+
+  const r5 = redactIssueContent("authToken=eyJhbGciOiJIUzI1NiJ9");
+  assertEquals(r5.text, "authToken=[REDACTED-SECRET-1]");
+});
+
 Deno.test("redactIssueContent: redacts SSN patterns", () => {
   const result = redactIssueContent("SSN was 123-45-6789 in the form");
   assertEquals(result.text, "SSN was [REDACTED-ID] in the form");

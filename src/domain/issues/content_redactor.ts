@@ -134,9 +134,12 @@ const ENV_SECRET_RE =
 // exactly the "before" side of masking-bug evidence.
 const NON_SECRET_VALUE_RE = /^(?:\*+|\$\{[^}]*\})$/;
 
-// camelCase names (lowercase→uppercase transition) are configuration
-// identifiers (URI query params, config keys), not env vars.
+// camelCase names where the only matched keyword is AUTH are
+// configuration identifiers (URI query params like authSource),
+// not env vars. Names containing high-confidence secret keywords
+// (PASSWORD, SECRET, TOKEN, KEY) are still redacted even if camelCase.
 const CAMEL_CASE_RE = /[a-z][A-Z]/;
+const HIGH_CONFIDENCE_SECRET_RE = /PASSWORD|SECRET|TOKEN|KEY/i;
 
 // Connection strings with credentials. RFC 3986 forbids whitespace and "/"
 // in the userinfo component, so the user and password groups exclude them —
@@ -243,7 +246,9 @@ function applyRedactions(
         : "";
       const inner = quote ? value.slice(1, -1) : value;
       if (inner.length === 0 || NON_SECRET_VALUE_RE.test(inner)) return match;
-      if (CAMEL_CASE_RE.test(name)) return match;
+      if (CAMEL_CASE_RE.test(name) && !HIGH_CONFIDENCE_SECRET_RE.test(name)) {
+        return match;
+      }
       count("secret");
       const placeholder = placeholders.get("REDACTED-SECRET", inner);
       return `${name}=${quote}${placeholder}${quote}`;
