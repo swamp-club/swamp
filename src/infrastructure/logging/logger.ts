@@ -224,6 +224,12 @@ export function getRunLogger(modelName: string, methodName: string) {
   ]);
 }
 
+// LogTape interprets {…} in message templates as property placeholders.
+// Raw process output containing JSON objects would render as "undefined".
+export function escapeLogTemplate(text: string): string {
+  return text.replaceAll("{", "{{").replaceAll("}", "}}");
+}
+
 export function getWorkflowRunLogger(
   workflowName: string,
   jobName?: string,

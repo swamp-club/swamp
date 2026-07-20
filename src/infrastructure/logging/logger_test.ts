@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  escapeLogTemplate,
   getRunLogger,
   getSwampLogger,
   getWorkflowRunLogger,
@@ -107,6 +108,42 @@ Deno.test("initializeLogging accepts logLevel option", async () => {
   // logLevel should be accepted without error (idempotent, first call wins)
   await initializeLogging({ logLevel: "warning" });
   assertEquals(true, true);
+});
+
+Deno.test("escapeLogTemplate: escapes curly braces for LogTape", async (t) => {
+  await t.step("escapes JSON object", () => {
+    assertEquals(escapeLogTemplate('{"a":1}'), '{{"a":1}}');
+  });
+
+  await t.step("escapes empty object", () => {
+    assertEquals(escapeLogTemplate("{}"), "{{}}");
+  });
+
+  await t.step("escapes nested braces", () => {
+    assertEquals(
+      escapeLogTemplate('{"outer":{"inner":true}}'),
+      '{{"outer":{{"inner":true}}}}',
+    );
+  });
+
+  await t.step("leaves arrays unchanged", () => {
+    assertEquals(escapeLogTemplate("[1,2]"), "[1,2]");
+  });
+
+  await t.step("leaves plain strings unchanged", () => {
+    assertEquals(escapeLogTemplate("plain line"), "plain line");
+  });
+
+  await t.step("leaves empty string unchanged", () => {
+    assertEquals(escapeLogTemplate(""), "");
+  });
+
+  await t.step("handles mixed content", () => {
+    assertEquals(
+      escapeLogTemplate('tags: {} inputs: {"key":"val"}'),
+      'tags: {{}} inputs: {{"key":"val"}}',
+    );
+  });
 });
 
 Deno.test("getWorkflowRunLogger", async (t) => {

@@ -19,6 +19,7 @@
 
 import type { Logger } from "@logtape/logtape";
 import type { SecretRedactor } from "../../domain/secrets/mod.ts";
+import { escapeLogTemplate } from "../logging/logger.ts";
 
 /**
  * Options for executing a process.
@@ -187,18 +188,18 @@ export async function executeProcess(
         const redacted = redact(line);
         if (onOutput) {
           onOutput(redacted, "stdout");
-          logger.debug(redacted);
+          logger.debug(escapeLogTemplate(redacted));
         } else {
-          logger.info(redacted);
+          logger.info(escapeLogTemplate(redacted));
         }
       };
       stderrOnLine = (line: string) => {
         const redacted = redact(line);
         if (onOutput) {
           onOutput(redacted, "stderr");
-          logger.debug(redacted);
+          logger.debug(escapeLogTemplate(redacted));
         } else {
-          logger.warn(redacted);
+          logger.warn(escapeLogTemplate(redacted));
         }
       };
     }
@@ -328,18 +329,18 @@ export async function executeProcess(
           const redacted = redact(line);
           if (onOutput) {
             onOutput(redacted, "stdout");
-            logger.debug(redacted);
+            logger.debug(escapeLogTemplate(redacted));
           } else {
-            logger.info(redacted);
+            logger.info(escapeLogTemplate(redacted));
           }
         }),
         streamLines(process.stderr, (line) => {
           const redacted = redact(line);
           if (onOutput) {
             onOutput(redacted, "stderr");
-            logger.debug(redacted);
+            logger.debug(escapeLogTemplate(redacted));
           } else {
-            logger.warn(redacted);
+            logger.warn(escapeLogTemplate(redacted));
           }
         }),
         process.status,
