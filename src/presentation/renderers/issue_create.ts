@@ -24,7 +24,10 @@ import type {
 } from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
-import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import {
+  escapeLogTemplate,
+  getSwampLogger,
+} from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import type {
   RefusalReason,
@@ -302,7 +305,7 @@ export function renderExtensionRefusal(
   // log line — readable on terminals that wrap long single-line logs.
   const logger = getSwampLogger(["issue", "create"]);
   for (const line of data.guidance.split("\n")) {
-    logger.info(line);
+    logger.info(escapeLogTemplate(line));
   }
 }
 

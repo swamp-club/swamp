@@ -21,6 +21,7 @@ import type { EventHandlers, ModelMethodRunEvent } from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import {
+  escapeLogTemplate,
   getRunLogger,
   writeOutput,
 } from "../../infrastructure/logging/logger.ts";
@@ -109,10 +110,11 @@ class LogModelMethodRunRenderer implements ModelMethodRunRenderer {
       },
       method_output: (e) => {
         const logger = getRunLogger(e.modelName, e.methodName);
+        const escaped = escapeLogTemplate(e.line);
         if (e.stream === "stderr") {
-          logger.warn(e.line);
+          logger.warn(escaped);
         } else {
-          logger.info(e.line);
+          logger.info(escaped);
         }
       },
       method_event: (e) => {
