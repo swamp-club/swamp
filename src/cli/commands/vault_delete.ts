@@ -77,6 +77,7 @@ When using --server, the confirmation prompt is not available — use --force to
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
     )
+    .option("-y, --yes", "Skip confirmation prompt")
     .option("-f, --force", "Skip confirmation prompt and ignore missing keys"),
 ).action(async function (
   options: AnyOptions,
@@ -173,7 +174,7 @@ When using --server, the confirmation prompt is not available — use --force to
       );
     }
 
-    if (cliCtx.outputMode === "log" && !options.force) {
+    if (cliCtx.outputMode === "log" && !options.yes && !options.force) {
       const confirmed = await promptConfirmation(
         `Delete secret '${key}' from vault '${vaultName}'?`,
       );

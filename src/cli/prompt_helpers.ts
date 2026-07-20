@@ -34,13 +34,13 @@ function assertInteractiveStdin(): void {
   try {
     if (!Deno.stdin.isTerminal()) {
       throw new UserError(
-        "stdin is not a terminal — use the confirmation-skip flag (e.g. --force or --yes) to run non-interactively",
+        "stdin is not a terminal — use --yes (-y) to skip confirmation prompts non-interactively",
       );
     }
   } catch (error) {
     if (error instanceof UserError) throw error;
     throw new UserError(
-      "stdin is not a terminal — use the confirmation-skip flag (e.g. --force or --yes) to run non-interactively",
+      "stdin is not a terminal — use --yes (-y) to skip confirmation prompts non-interactively",
     );
   }
 }

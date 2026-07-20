@@ -170,7 +170,11 @@ When using --server, the value must be passed as a positional argument or KEY=VA
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
     )
-    .option("-f, --force", "Skip confirmation prompt when overwriting")
+    .option("-y, --yes", "Skip confirmation prompt when overwriting")
+    .option(
+      "-f, --force",
+      "Skip confirmation prompt when overwriting (alias for --yes)",
+    )
     .option(
       "--refresh-from <command:string>",
       "Command to run to refresh the secret value when the TTL expires",
@@ -359,12 +363,13 @@ When using --server, the value must be passed as a positional argument or KEY=VA
 
     // Phase 2: Prompt on overwrite
     if (
-      preview.secretExists && cliCtx.outputMode === "log" && !options.force
+      preview.secretExists && cliCtx.outputMode === "log" && !options.yes &&
+      !options.force
     ) {
       if (stdinContent !== null) {
         throw new UserError(
           `Secret '${key}' already exists in vault '${vaultName}'.\n` +
-            `Use --force (-f) to overwrite when piping from stdin.`,
+            `Use --yes (-y) to overwrite when piping from stdin.`,
         );
       }
       const confirmed = await promptConfirmation(

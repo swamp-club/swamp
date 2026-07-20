@@ -63,7 +63,8 @@ export const runGcCommand = new Command()
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
   .option("--dry-run", "Show what would be deleted without deleting")
-  .option("-f, --force", "Skip confirmation prompt")
+  .option("-y, --yes", "Skip confirmation prompt")
+  .option("-f, --force", "Skip confirmation prompt (alias for --yes)")
   .option(
     "--older-than <duration:string>",
     `Retention period. Units: m=minutes, h=hours, d=days, w=weeks, mo=months, y=years (e.g. 7d, 2w, 1mo). Default: ${DEFAULT_WORKFLOW_RUN_RETENTION_DAYS}d`,
@@ -98,7 +99,10 @@ export const runGcCommand = new Command()
       outputRetentionDays: retentionDays,
     };
 
-    if (cliCtx.outputMode === "log" && !options.force && !options.dryRun) {
+    if (
+      cliCtx.outputMode === "log" && !options.yes && !options.force &&
+      !options.dryRun
+    ) {
       const preview = await runGcPreview(ctx, deps, gcInput);
       if (
         preview.workflowRunsToDelete === 0 && preview.outputsToDelete === 0

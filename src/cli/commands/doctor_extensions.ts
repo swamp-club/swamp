@@ -128,7 +128,11 @@ export const doctorExtensionsCommand = withRemoteOptions(
       "--dry-run",
       "Preview repair operations without executing (use with --repair)",
     )
-    .option("-f, --force", "Skip confirmation prompt (use with --repair)"),
+    .option("-y, --yes", "Skip confirmation prompt (use with --repair)")
+    .option(
+      "-f, --force",
+      "Skip confirmation prompt (alias for --yes, use with --repair)",
+    ),
 ).action(async function (options: AnyOptions) {
   const cliCtx = createContext(options as GlobalOptions, [
     "doctor",
@@ -174,8 +178,8 @@ export const doctorExtensionsCommand = withRemoteOptions(
   const verbose = options.verbose === true;
   const repair = options.repair === true;
   const dryRun = options.dryRun === true;
-  const force = options.force === true;
-  const needsPrompt = repair && !dryRun && !force &&
+  const skipConfirm = options.yes === true || options.force === true;
+  const needsPrompt = repair && !dryRun && !skipConfirm &&
     cliCtx.outputMode === "log";
 
   const repoDir = resolveRepoDir(options.repoDir);

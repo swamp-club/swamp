@@ -59,6 +59,7 @@ export const extensionDeprecateCommand = new Command()
     "Extension that supersedes this one",
   )
   .option("-y, --yes", "Skip confirmation prompt")
+  .option("-f, --force", "Skip confirmation prompt (alias for --yes)")
   .action(async function (
     options: AnyOptions,
     extension: string,
@@ -89,7 +90,7 @@ export const extensionDeprecateCommand = new Command()
       throw error;
     }
 
-    if (cliCtx.outputMode === "log" && !options.yes) {
+    if (cliCtx.outputMode === "log" && !options.yes && !options.force) {
       let prompt =
         `Deprecate ${preview.extensionName}? Users will see a deprecation notice.`;
       if (preview.supersededBy) {

@@ -58,7 +58,8 @@ export const dataGcCommand = new Command()
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
   .option("--dry-run", "Show what would be deleted without deleting")
-  .option("-f, --force", "Skip confirmation prompt")
+  .option("-y, --yes", "Skip confirmation prompt")
+  .option("-f, --force", "Skip confirmation prompt (alias for --yes)")
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, ["data", "gc"]);
 
@@ -78,7 +79,10 @@ export const dataGcCommand = new Command()
     );
 
     // Phase 1: Preview + Prompt (only in interactive mode without --force and not dry-run)
-    if (cliCtx.outputMode === "log" && !options.force && !options.dryRun) {
+    if (
+      cliCtx.outputMode === "log" && !options.yes && !options.force &&
+      !options.dryRun
+    ) {
       const preview = await dataGcPreview(ctx, deps);
       if (
         preview.items.length === 0 && preview.versionGcItems.length === 0

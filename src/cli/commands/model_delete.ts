@@ -64,6 +64,7 @@ export const modelDeleteCommand = withRemoteOptions(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
     )
+    .option("-y, --yes", "Skip confirmation prompt")
     .option(
       "-f, --force",
       "Skip confirmation and allow deletion when data artifacts exist",
@@ -173,7 +174,7 @@ export const modelDeleteCommand = withRemoteOptions(
       }
 
       // Phase 2: Prompt (CLI concern)
-      if (cliCtx.outputMode === "log" && !force) {
+      if (cliCtx.outputMode === "log" && !force && !options.yes) {
         let deleteDetails = "";
         if (preview.outputCount > 0) {
           deleteDetails += ` ${preview.outputCount} output(s),`;

@@ -63,6 +63,7 @@ export const extensionYankCommand = new Command()
     "Release channel to yank: 'stable', 'beta', or 'rc' (default: all channels)",
   )
   .option("-y, --yes", "Skip confirmation prompt")
+  .option("-f, --force", "Skip confirmation prompt (alias for --yes)")
   .action(async function (
     options: AnyOptions,
     extension: string,
@@ -111,7 +112,7 @@ export const extensionYankCommand = new Command()
     }
 
     // Phase 2: Confirmation prompt (log mode only, unless --yes)
-    if (cliCtx.outputMode === "log" && !options.yes) {
+    if (cliCtx.outputMode === "log" && !options.yes && !options.force) {
       const prompt = preview.version
         ? `Yank ${preview.extensionName}@${preview.version}? This will mark it yanked.`
         : preview.channel

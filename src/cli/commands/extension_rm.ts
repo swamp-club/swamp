@@ -67,7 +67,8 @@ export const extensionRemoveCommand = withRemoteOptions(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
     )
-    .option("-f, --force", "Skip confirmation prompt"),
+    .option("-y, --yes", "Skip confirmation prompt")
+    .option("-f, --force", "Skip confirmation prompt (alias for --yes)"),
 ).action(async function (options: AnyOptions, extension: string) {
   const ctx = createContext(options as GlobalOptions, ["extension", "rm"]);
   ctx.logger.debug`Starting extension remove`;
@@ -140,7 +141,7 @@ export const extensionRemoveCommand = withRemoteOptions(
     }
 
     // Confirmation prompt (log mode only, unless --force)
-    if (ctx.outputMode === "log" && !options.force) {
+    if (ctx.outputMode === "log" && !options.yes && !options.force) {
       const confirmed = await promptConfirmation(
         `Remove ${preview.name} (v${preview.version})? This will delete ${preview.fileCount} file(s).`,
       );
