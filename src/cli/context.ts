@@ -18,7 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Logger } from "@logtape/logtape";
-import { resolve } from "@std/path";
+import { dirname, join, resolve } from "@std/path";
+import { SWAMP_MARKER_FILE } from "../infrastructure/persistence/paths.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { OutputMode } from "../presentation/output/output.ts";
 
@@ -107,13 +108,81 @@ export function isQuietFromArgs(args: string[]): boolean {
   return args.includes("--quiet") || args.includes("-q");
 }
 
+const MAX_ANCESTOR_DEPTH = 10;
+
+function getGitRootSync(startDir: string): string | null {
+  try {
+    const result = new Deno.Command("git", {
+      args: ["rev-parse", "--show-toplevel"],
+      cwd: startDir,
+      stdout: "piped",
+      stderr: "null",
+    }).outputSync();
+    if (result.success) {
+      const raw = new TextDecoder().decode(result.stdout).trim();
+      try {
+        return Deno.realPathSync(raw);
+      } catch {
+        return resolve(raw);
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Walks up the directory tree from `startDir` looking for a `.swamp.yaml`
+ * marker file.
+ *
+ * Stops at the git repository root (when inside a git repo) or after
+ * MAX_ANCESTOR_DEPTH levels (when not in a git repo).
+ *
+ * @returns The ancestor directory containing `.swamp.yaml`, or `null`.
+ */
+export function findAncestorRepoDir(startDir: string): string | null {
+  const gitRoot = getGitRootSync(startDir);
+
+  let dir: string;
+  try {
+    dir = Deno.realPathSync(startDir);
+  } catch {
+    dir = resolve(startDir);
+  }
+
+  for (let depth = 0; depth < MAX_ANCESTOR_DEPTH; depth++) {
+    try {
+      const stat = Deno.statSync(join(dir, SWAMP_MARKER_FILE));
+      if (stat.isFile) {
+        return dir;
+      }
+    } catch {
+      // .swamp.yaml not found at this level — continue up
+    }
+
+    if (gitRoot !== null && dir === gitRoot) {
+      break;
+    }
+
+    const parent = dirname(dir);
+    if (parent === dir) {
+      break;
+    }
+    dir = parent;
+  }
+
+  return null;
+}
+
 /**
  * Pre-parses --repo-dir from raw CLI arguments before Cliffy option parsing.
  *
  * Supports both `--repo-dir <value>` and `--repo-dir=<value>` forms.
  * Returns the resolved absolute path.
  *
- * Priority: --repo-dir flag > SWAMP_REPO_DIR env var > cwd.
+ * Priority: --repo-dir flag > SWAMP_REPO_DIR env var > cwd (with ancestor
+ * traversal).
  */
 export function getRepoDirFromArgs(args: string[]): string {
   for (let i = 0; i < args.length; i++) {
@@ -129,14 +198,16 @@ export function getRepoDirFromArgs(args: string[]): string {
   if (envDir && envDir.length > 0) {
     return resolve(envDir);
   }
-  return Deno.cwd();
+  const cwd = Deno.cwd();
+  return findAncestorRepoDir(cwd) ?? cwd;
 }
 
 /**
  * Resolves the repository directory for a command action, given the Cliffy
  * parsed `--repo-dir` option value.
  *
- * Priority: --repo-dir flag > SWAMP_REPO_DIR env var > "." (cwd).
+ * Priority: --repo-dir flag > SWAMP_REPO_DIR env var > cwd (with ancestor
+ * traversal).
  *
  * Command option definitions must NOT set a Cliffy `default` for `--repo-dir`
  * — otherwise Cliffy always populates the value and the env var is ignored.
@@ -149,7 +220,8 @@ export function resolveRepoDir(cliValue: string | undefined): string {
   if (envDir && envDir.length > 0) {
     return resolve(envDir);
   }
-  return Deno.cwd();
+  const cwd = Deno.cwd();
+  return findAncestorRepoDir(cwd) ?? cwd;
 }
 
 /**

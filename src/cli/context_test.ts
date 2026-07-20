@@ -19,8 +19,10 @@
 
 import { assertEquals } from "@std/assert";
 import { isAbsolute, resolve } from "@std/path";
+import { join } from "@std/path";
 import {
   createContext,
+  findAncestorRepoDir,
   getExtensionsDirFromArgs,
   getOutputModeFromArgs,
   getRepoDirFromArgs,
@@ -32,6 +34,7 @@ import {
 } from "./context.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { assertPathEquals } from "../infrastructure/persistence/path_test_helpers.ts";
+import { SWAMP_MARKER_FILE } from "../infrastructure/persistence/paths.ts";
 
 // Initialize logging once before tests run
 await initializeLogging({});
@@ -260,6 +263,114 @@ Deno.test("resolveRepoDir treats empty SWAMP_REPO_DIR as unset", () => {
     if (original !== undefined) Deno.env.set("SWAMP_REPO_DIR", original);
     else Deno.env.delete("SWAMP_REPO_DIR");
   }
+});
+
+// ============================================================================
+// findAncestorRepoDir Tests
+// ============================================================================
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-context-" });
+  try {
+    await fn(dir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+Deno.test("findAncestorRepoDir: returns dir when marker exists at startDir", async () => {
+  await withTempDir(async (dir) => {
+    const realDir = Deno.realPathSync(dir);
+    await Deno.writeTextFile(join(dir, SWAMP_MARKER_FILE), "swampVersion: 1");
+    const result = findAncestorRepoDir(dir);
+    assertPathEquals(result!, realDir);
+  });
+});
+
+Deno.test("findAncestorRepoDir: finds marker in parent directory", async () => {
+  await withTempDir(async (dir) => {
+    const realDir = Deno.realPathSync(dir);
+    await Deno.writeTextFile(join(dir, SWAMP_MARKER_FILE), "swampVersion: 1");
+    const subdir = join(dir, "models");
+    await Deno.mkdir(subdir);
+    const result = findAncestorRepoDir(subdir);
+    assertPathEquals(result!, realDir);
+  });
+});
+
+Deno.test("findAncestorRepoDir: finds marker in grandparent directory", async () => {
+  await withTempDir(async (dir) => {
+    const realDir = Deno.realPathSync(dir);
+    await Deno.writeTextFile(join(dir, SWAMP_MARKER_FILE), "swampVersion: 1");
+    const nested = join(dir, "models", "my-type");
+    await Deno.mkdir(nested, { recursive: true });
+    const result = findAncestorRepoDir(nested);
+    assertPathEquals(result!, realDir);
+  });
+});
+
+Deno.test("findAncestorRepoDir: returns null when no marker in any ancestor", async () => {
+  await withTempDir(async (dir) => {
+    const subdir = join(dir, "some", "path");
+    await Deno.mkdir(subdir, { recursive: true });
+    const result = findAncestorRepoDir(subdir);
+    assertEquals(result, null);
+  });
+});
+
+Deno.test("findAncestorRepoDir: stops at git root and does not traverse above it", async () => {
+  await withTempDir(async (dir) => {
+    // Create a .swamp.yaml ABOVE the git root — should not be found
+    await Deno.writeTextFile(join(dir, SWAMP_MARKER_FILE), "swampVersion: 1");
+
+    // Create a git repo in a subdirectory
+    const gitRepo = join(dir, "git-project");
+    await Deno.mkdir(gitRepo);
+    const gitInit = new Deno.Command("git", {
+      args: ["init"],
+      cwd: gitRepo,
+      stdout: "null",
+      stderr: "null",
+    });
+    const result = await gitInit.output();
+    if (!result.success) {
+      // git not available — skip this test
+      return;
+    }
+
+    const subdir = join(gitRepo, "src");
+    await Deno.mkdir(subdir);
+
+    const found = findAncestorRepoDir(subdir);
+    assertEquals(found, null);
+  });
+});
+
+Deno.test("findAncestorRepoDir: finds marker inside git root", async () => {
+  await withTempDir(async (dir) => {
+    const realDir = Deno.realPathSync(dir);
+    const gitInit = new Deno.Command("git", {
+      args: ["init"],
+      cwd: dir,
+      stdout: "null",
+      stderr: "null",
+    });
+    const result = await gitInit.output();
+    if (!result.success) {
+      return;
+    }
+
+    await Deno.writeTextFile(join(dir, SWAMP_MARKER_FILE), "swampVersion: 1");
+    const subdir = join(dir, "models", "my-type");
+    await Deno.mkdir(subdir, { recursive: true });
+
+    const found = findAncestorRepoDir(subdir);
+    assertPathEquals(found!, realDir);
+  });
 });
 
 // ============================================================================
