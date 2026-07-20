@@ -47,6 +47,7 @@ reach for it last.
 | Command errored — message is vague or unhelpful          | Tier 2 → re-run with `--json`, then escalate              |
 | Item "not found" / "not in search results"               | Tier 2 → check stderr for `swamp-warning:`                |
 | Method failed `Pre-flight check failed: …`               | Tier 2 → see [references/checks.md](references/checks.md) |
+| Model method or workflow run failed                      | Tier 2 → inspect generated reports                        |
 | Workflow / method / sync is slow                         | Tier 3 → enable tracing                                   |
 | "Where is this spending its time?"                       | Tier 3 → enable tracing                                   |
 | Need to understand internal behavior of a command        | Tier 4 → fetch source                                     |

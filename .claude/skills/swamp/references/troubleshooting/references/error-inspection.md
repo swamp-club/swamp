@@ -12,6 +12,7 @@ structured form via `--json` — read those before guessing.
 - [Switch to `--json`](#switch-to---json)
 - [Exit codes](#exit-codes)
 - [`swamp-warning:` lines](#swamp-warning-lines)
+- [Recipe: model method or workflow run failed](#recipe-model-method-or-workflow-run-failed)
 - [Recipe: extension not in `model type search`](#recipe-extension-not-in-model-type-search)
 - [Recipe: source extension not loading](#recipe-source-extension-not-loading)
 - [Recipe: method preflight check failed](#recipe-method-preflight-check-failed)
@@ -128,6 +129,39 @@ Source loading code:
 - `src/infrastructure/persistence/swamp_sources_repository.ts` — file reading
   and path resolution.
 - `src/cli/mod.ts` — wiring sources into the loader pipeline.
+
+## Recipe: model method or workflow run failed
+
+Symptom: `swamp model method run` or `swamp workflow run` exits non-zero and the
+stderr message doesn't point to an obvious fix.
+
+Reports run automatically after both successful and failed executions, capturing
+structured diagnostics that go beyond what stderr shows — error messages,
+execution status, arguments passed, and data output pointers.
+
+1. **Inspect the method-summary report** (for model method failures):
+   ```bash
+   swamp report get @swamp/method-summary --model <model> --json
+   ```
+   The JSON output includes `status`, `error`, `narrative`, and `dataProduced`
+   with retrieval commands for any data written before the failure.
+
+2. **Inspect the workflow-summary report** (for workflow failures):
+   ```bash
+   swamp report get @swamp/workflow-summary --workflow <workflow> --json
+   ```
+   The JSON output includes per-job step status, succeeded/failed/skipped
+   counts, and retrieval commands for failed step data.
+
+3. **Check for custom reports.** Model types can define additional reports that
+   run alongside the built-in summaries. List all reports for a model with
+   `swamp report get --model <model>` (no report name) to see what's available.
+
+4. **Run `swamp help report get`** to confirm current retrieval syntax — flags
+   may change between releases.
+
+If the report diagnostics identify the root cause, fix and retry. If not,
+escalate to Tier 3 (tracing) for execution flow analysis.
 
 ## Recipe: method preflight check failed
 
