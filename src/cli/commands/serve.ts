@@ -128,7 +128,12 @@ import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import { sweepStaleRecords } from "../../serve/boot_reconciliation.ts";
 import { installUnhandledRejectionGuard } from "../../serve/unhandled_rejection_guard.ts";
-import { checkOpenFileLimit } from "../../infrastructure/runtime/process.ts";
+import {
+  checkOpenFileLimit,
+  isProcessDead,
+} from "../../infrastructure/runtime/process.ts";
+import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -313,6 +318,74 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
     args.push("--trusted-hosts", options.trustedHosts as string);
   }
   return args;
+}
+
+export interface ReapResult {
+  readonly reaped: number;
+  readonly skipped: number;
+}
+
+export async function reapOrphanedWorkflowRuns(
+  runs: { run: WorkflowRun; workflowId: WorkflowId }[],
+  save: (workflowId: WorkflowId, run: WorkflowRun) => Promise<void>,
+  trackerLookup: (runId: string) => { status: string } | null,
+  isDeadFn: (pid: number) => boolean = isProcessDead,
+): Promise<ReapResult> {
+  let reaped = 0;
+  let skipped = 0;
+
+  for (const { run, workflowId } of runs) {
+    if (run.status !== "running") continue;
+
+    const tracked = trackerLookup(run.id);
+    if (tracked) {
+      if (tracked.status === "running") {
+        logger.info(
+          "Skipping workflow run {runId} (workflow: {workflowName}) — tracker reports still running",
+          { runId: run.id, workflowName: run.workflowName },
+        );
+        skipped++;
+        continue;
+      }
+      // Tracker already reaped this run (heartbeat stale + PID dead)
+      logger.warn(
+        "Reaping orphaned workflow run {runId} (workflow: {workflowName}, reason: {reason})",
+        {
+          runId: run.id,
+          workflowName: run.workflowName,
+          reason: "tracker confirmed stale",
+        },
+      );
+      run.cancel("daemon restarted (tracker confirmed stale)");
+      await save(workflowId, run);
+      reaped++;
+      continue;
+    }
+
+    // Not in tracker (legacy run) — fall back to PID check
+    const pid = run.pid;
+    if (pid !== undefined && !isDeadFn(pid)) {
+      logger.info(
+        "Skipping workflow run {runId} (workflow: {workflowName}) — owning process {pid} is still alive (no tracker record)",
+        { runId: run.id, workflowName: run.workflowName, pid },
+      );
+      skipped++;
+      continue;
+    }
+
+    const reason = pid === undefined
+      ? "daemon restarted (no PID recorded, no tracker record)"
+      : "daemon restarted (owning process dead, no tracker record)";
+    logger.warn(
+      "Reaping orphaned workflow run {runId} (workflow: {workflowName}, reason: {reason})",
+      { runId: run.id, workflowName: run.workflowName, reason },
+    );
+    run.cancel(reason);
+    await save(workflowId, run);
+    reaped++;
+  }
+
+  return { reaped, skipped };
 }
 
 const daemonEnableCommand = new Command()
@@ -1345,33 +1418,33 @@ export const serveCommand = new Command()
 
     const cancelRegistry = new RunCancelRegistry();
 
-    // Reap orphaned runs left in "running" state by a previous daemon.
-    // Workflow runs still use YAML-based reaping (tracker wiring deferred to #519).
-    const reapCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const recentRuns = await repoContext.workflowRunRepo.findAllGlobalSince(
-      reapCutoff,
-    );
-    for (const { run, workflowId } of recentRuns) {
-      if (run.status === "running") {
-        logger.warn(
-          "Reaping orphaned workflow run {runId} (workflow: {workflowName})",
-          { runId: run.id, workflowName: run.workflowName },
-        );
-        run.cancel("daemon restarted");
-        await repoContext.workflowRunRepo.save(workflowId, run);
-      }
-    }
-
-    // Model method runs use the SQLite run tracker for stale detection.
+    // Reap stale runs via the SQLite tracker (heartbeat + PID liveness).
+    // This handles both model-method and workflow runs registered with the tracker.
     const runTracker = RunTrackerStore.fromSwampDir(
       swampPath(resolvedRepoDir),
     );
     const reapedRuns = runTracker.reapStaleRuns(DEFAULT_STALE_TTL_MS);
     for (const run of reapedRuns) {
-      logger.warn`Reaped stale model method run ${run.id} (method: ${
-        run.methodName ?? "unknown"
+      logger.warn`Reaped stale ${run.runKind} run ${run.id} (${
+        run.methodName ?? run.workflowName ?? "unknown"
       })`;
     }
+
+    // Reconcile YAML-persisted workflow run state with tracker verdicts.
+    // The tracker is the liveness authority; the YAML entity is the run record.
+    // Legacy runs (pre-tracker) fall back to PID liveness checking.
+    const reapCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const recentRuns = await repoContext.workflowRunRepo.findAllGlobalSince(
+      reapCutoff,
+    );
+    await reapOrphanedWorkflowRuns(
+      recentRuns,
+      (wid, r) => repoContext.workflowRunRepo.save(wid, r),
+      (runId) => {
+        const tracked = runTracker.findById(runId);
+        return tracked ? { status: tracked.status } : null;
+      },
+    );
 
     const swept = await sweepStaleRecords({
       repoDir: resolvedRepoDir,
