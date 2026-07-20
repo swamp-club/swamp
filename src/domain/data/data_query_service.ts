@@ -29,6 +29,7 @@ import type { DataRecord } from "./data_record.ts";
 import {
   type ASTNode,
   collectRootIdentifiers,
+  extractModelNameEquality,
   HISTORY_OPT_IN_FIELDS,
   referencesAttributes,
   referencesContent,
@@ -374,13 +375,37 @@ export class DataQueryService {
       if (!needsContent) needsContent = referencesContent(selectAst);
     }
 
+    // SQL pushdown: pre-filter rows in SQLite before CEL evaluation.
+    // Only trivially correct translations are pushed down; the full CEL
+    // predicate still evaluates on every row returned by SQL.
+    const whereClauses: string[] = [];
+    const whereParams: (string | number)[] = [];
+
+    if (!opensHistory) {
+      whereClauses.push("is_latest = ?");
+      whereParams.push(1);
+    }
+
+    const modelNameLiteral = extractModelNameEquality(userAst);
+    if (modelNameLiteral !== null) {
+      whereClauses.push("model_name = ?");
+      whereParams.push(modelNameLiteral);
+    }
+
+    const rows = whereClauses.length > 0
+      ? this.catalogStore.iterateFiltered(
+        whereClauses.join(" AND "),
+        whereParams,
+      )
+      : this.catalogStore.iterate();
+
     // Iterate catalog rows and evaluate predicate.
     // CEL reserves "namespace" as an identifier, so we expose an "ns" alias
     // via a prototype-chain overlay — the record itself is not mutated.
     const results: DataRecord[] = [];
     const needsHydration = !needsAttributes && !selectParsed;
     const matchedRows: CatalogRow[] = [];
-    for (const row of this.catalogStore.iterate()) {
+    for (const row of rows) {
       const record = this.rowToRecord(row, needsAttributes, needsContent);
       const ctx = Object.create(
         record as unknown as Record<string, unknown>,
