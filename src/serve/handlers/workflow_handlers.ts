@@ -64,7 +64,11 @@ import type {
 } from "../protocol.ts";
 import { acquireModelLocks } from "../../cli/repo_context.ts";
 import { resolveSuspendedRun } from "../../domain/workflows/suspended_run_resolver.ts";
-import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import {
+  createWorkflowId,
+  type WorkflowRunId,
+} from "../../domain/workflows/workflow_id.ts";
+import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import {
   type StepLockHook,
   WorkflowExecutionService,
@@ -233,9 +237,21 @@ export async function handleWorkflowApprovals(
 
   try {
     const libCtx = createLibSwampContext();
+    const runRepo = ctx.repoContext.workflowRunRepo;
     const deps = createWorkflowApprovalsDeps(
       ctx.repoContext.workflowRepo,
-      ctx.repoContext.workflowRunRepo,
+      runRepo,
+      async (workflowId) => {
+        const summaries = await runRepo
+          .findAllSummariesByWorkflowId(workflowId);
+        const suspended = summaries.filter((s) => s.status === "suspended");
+        const runs = await Promise.all(
+          suspended.map((s) =>
+            runRepo.findById(workflowId, s.id as WorkflowRunId)
+          ),
+        );
+        return runs.filter((r): r is WorkflowRun => r !== null);
+      },
     );
 
     let result: Record<string, unknown> | undefined;
@@ -540,9 +556,8 @@ export async function handleWorkflowRunSearch(
     const deps: WorkflowRunSearchDeps = {
       findAllWorkflows: () => ctx.repoContext.workflowRepo.findAll(),
       findAllRunsByWorkflowId: (id) =>
-        ctx.repoContext.workflowRunRepo.findAllByWorkflowId(
-          createWorkflowId(id),
-        ),
+        ctx.repoContext.workflowRunRepo
+          .findAllSummariesByWorkflowId(createWorkflowId(id)),
     };
 
     let result: Record<string, unknown> | undefined;

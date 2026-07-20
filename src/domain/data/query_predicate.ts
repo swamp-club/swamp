@@ -188,6 +188,39 @@ export function referencesContent(node: ASTNode): boolean {
 }
 
 /**
+ * Extracts a string literal from a top-level `modelName == "literal"`
+ * equality in the AST. Walks through AND conjuncts but does not descend
+ * into OR branches. Returns null if no pushdown-eligible modelName
+ * equality is found.
+ */
+export function extractModelNameEquality(ast: ASTNode): string | null {
+  if (ast.op === "==") {
+    const [left, right] = ast.args as [ASTNode, ASTNode];
+    if (
+      left.op === "id" && left.args === "modelName" &&
+      right.op === "value" && typeof right.args === "string"
+    ) {
+      return right.args;
+    }
+    if (
+      right.op === "id" && right.args === "modelName" &&
+      left.op === "value" && typeof left.args === "string"
+    ) {
+      return left.args;
+    }
+    return null;
+  }
+
+  if (ast.op === "&&") {
+    const [left, right] = ast.args as [ASTNode, ASTNode];
+    return extractModelNameEquality(left) ??
+      extractModelNameEquality(right);
+  }
+
+  return null;
+}
+
+/**
  * Validates that all root identifiers in the AST are known query fields
  * or CEL built-ins. Throws UserError on unknown fields.
  */

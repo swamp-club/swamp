@@ -21,6 +21,8 @@ import type {
   WorkflowRepository,
   WorkflowRunRepository,
 } from "../../domain/workflows/repositories.ts";
+import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
+import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { evaluateApprovalTimeout } from "../../domain/workflows/approval_timeout.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -47,13 +49,19 @@ export type WorkflowApprovalsEvent =
 export interface WorkflowApprovalsDeps {
   workflowRepo: WorkflowRepository;
   runRepo: WorkflowRunRepository;
+  findSuspendedRuns?: (
+    workflowId: WorkflowId,
+  ) => Promise<WorkflowRun[]>;
 }
 
 export function createWorkflowApprovalsDeps(
   workflowRepo: WorkflowRepository,
   runRepo: WorkflowRunRepository,
+  findSuspendedRuns?: (
+    workflowId: WorkflowId,
+  ) => Promise<WorkflowRun[]>,
 ): WorkflowApprovalsDeps {
-  return { workflowRepo, runRepo };
+  return { workflowRepo, runRepo, findSuspendedRuns };
 }
 
 export async function* workflowApprovals(
@@ -70,7 +78,9 @@ export async function* workflowApprovals(
       const pending: PendingApproval[] = [];
 
       for (const workflow of workflows) {
-        const runs = await deps.runRepo.findAllByWorkflowId(workflow.id);
+        const runs = deps.findSuspendedRuns
+          ? await deps.findSuspendedRuns(workflow.id)
+          : await deps.runRepo.findAllByWorkflowId(workflow.id);
         for (const run of runs) {
           if (run.status !== "suspended") continue;
           const waiting = run.findWaitingApprovalStep();

@@ -544,6 +544,27 @@ export class CatalogStore {
     }
   }
 
+  *iterateFiltered(
+    whereClause: string,
+    params: readonly (string | number)[],
+  ): IterableIterator<CatalogRow> {
+    let offset = 0;
+    while (true) {
+      const stmt = this.db.prepare(
+        `SELECT * FROM catalog WHERE ${whereClause} ORDER BY rowid LIMIT ? OFFSET ?`,
+      );
+      const rows = stmt.all(
+        ...params,
+        ITERATE_PAGE_SIZE,
+        offset,
+      ) as unknown as CatalogRow[];
+      if (rows.length === 0) break;
+      yield* rows;
+      if (rows.length < ITERATE_PAGE_SIZE) break;
+      offset += ITERATE_PAGE_SIZE;
+    }
+  }
+
   *iterateNamespace(namespace: string): IterableIterator<CatalogRow> {
     const stmt = this.db.prepare(
       "SELECT * FROM catalog WHERE namespace = ? ORDER BY rowid LIMIT ? OFFSET ?",

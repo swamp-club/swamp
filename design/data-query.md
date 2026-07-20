@@ -359,23 +359,47 @@ the sync implementation internally.
 
 ## Query Execution
 
-Queries iterate over catalog rows and evaluate the full CEL predicate against
-each row. There is no SQL pushdown — SQLite serves as a fast metadata store,
-and CEL handles all filtering semantics.
+Queries use a two-phase evaluation: SQL pre-filtering narrows the candidate
+set, then the full CEL predicate evaluates on every row returned by SQL. The
+CEL evaluation is always the correctness authority — SQL pushdown is a
+performance optimization only.
+
+### SQL Pushdown
+
+Before iterating, the query service extracts trivially correct predicates from
+the CEL AST and pushes them down to SQL WHERE clauses:
+
+| CEL pattern                     | SQL pushdown                  | Notes                                              |
+| ------------------------------- | ----------------------------- | -------------------------------------------------- |
+| implicit `isLatest == true`     | `WHERE is_latest = 1`         | Applied when predicate doesn't reference `version` or `isLatest` |
+| `modelName == "<literal>"`      | `WHERE model_name = ?`        | Extracted from top-level AND conjuncts only         |
+
+All other predicates (OR expressions, comparisons, tag filters, `attributes`
+references, complex expressions) remain CEL-only and are evaluated per-row on
+the narrowed result set. Future versions may push down additional patterns
+(tag equality via `json_extract`, comparisons on indexed columns).
+
+The pushdown invariant: SQL must produce a **superset** of matching rows. CEL
+can only narrow, never widen. If a pushdown translation is uncertain, the
+conjunct stays in CEL.
+
+### Execution Flow
 
 ```
 1. Parse predicate into AST
 2. Validate field references
-3. Detect whether predicate references `attributes`
-4. SELECT metadata columns from catalog (via paged LIMIT/OFFSET queries using stmt.all())
-5. For each row:
+3. Extract SQL pushdown clauses (isLatest, modelName equality)
+4. Detect whether predicate references `attributes`
+5. SELECT metadata columns from catalog with WHERE pushdown
+   (via paged LIMIT/OFFSET queries using stmt.all())
+6. For each row:
    a. Project row into query record
    b. If predicate references `attributes`:
       load JSON content from disk for this row
-   c. Evaluate CEL predicate against query record
+   c. Evaluate full CEL predicate against query record
    d. If true: add to results
    e. If results.length >= limit: stop
-6. Return results
+7. Return results
 ```
 
 Iteration uses paged `stmt.all()` with `LIMIT/OFFSET` so that rows are fetched

@@ -1187,3 +1187,143 @@ Deno.test("getLatestRecord: namespace filtering works in scoped path", async () 
   catalog.close();
   Deno.removeSync(dir, { recursive: true });
 });
+
+// ---------------------------------------------------------------------------
+// SQL pushdown tests — verify that pushdown produces identical results to
+// full CEL evaluation for all predicate shapes.
+// ---------------------------------------------------------------------------
+
+Deno.test("DataQueryService pushdown: isLatest pushdown returns same results as CEL-only", () => {
+  const { catalog, service } = setupTest();
+  catalog.upsert(makeRow({ model_name: "a", is_latest: 1 }));
+  catalog.upsert(
+    makeRow({
+      data_name: "old",
+      model_name: "a",
+      is_latest: 0,
+      version: 1,
+      id: "uuid-old",
+    }),
+  );
+  catalog.upsert(
+    makeRow({
+      data_name: "other",
+      model_name: "b",
+      is_latest: 1,
+      id: "uuid-b",
+    }),
+  );
+
+  const results = service.querySync('modelName == "a"') as DataRecord[];
+  assertEquals(results.length, 1);
+  assertEquals(results[0].modelName, "a");
+  assertEquals(results[0].isLatest, true);
+  catalog.close();
+});
+
+Deno.test("DataQueryService pushdown: modelName equality narrows scan", () => {
+  const { catalog, service } = setupTest();
+  for (let i = 0; i < 50; i++) {
+    catalog.upsert(
+      makeRow({
+        data_name: `data-${i}`,
+        model_name: i < 5 ? "target" : "other",
+        id: `uuid-${i}`,
+      }),
+    );
+  }
+
+  const results = service.querySync(
+    'modelName == "target"',
+  ) as DataRecord[];
+  assertEquals(results.length, 5);
+  for (const r of results) {
+    assertEquals(r.modelName, "target");
+  }
+  catalog.close();
+});
+
+Deno.test("DataQueryService pushdown: compound modelName + specName", () => {
+  const { catalog, service } = setupTest();
+  catalog.upsert(makeRow({ model_name: "m1", spec_name: "result" }));
+  catalog.upsert(
+    makeRow({
+      data_name: "d2",
+      model_name: "m1",
+      spec_name: "log",
+      id: "uuid-2",
+    }),
+  );
+  catalog.upsert(
+    makeRow({
+      data_name: "d3",
+      model_name: "m2",
+      spec_name: "result",
+      id: "uuid-3",
+    }),
+  );
+
+  const results = service.querySync(
+    'modelName == "m1" && specName == "result"',
+  ) as DataRecord[];
+  assertEquals(results.length, 1);
+  assertEquals(results[0].modelName, "m1");
+  assertEquals(results[0].specName, "result");
+  catalog.close();
+});
+
+Deno.test("DataQueryService pushdown: version opt-in skips isLatest pushdown", () => {
+  const { catalog, service } = setupTest();
+  catalog.upsert(
+    makeRow({ model_name: "a", version: 1, is_latest: 0, id: "uuid-v1" }),
+  );
+  catalog.upsert(
+    makeRow({ model_name: "a", version: 2, is_latest: 1, id: "uuid-v2" }),
+  );
+
+  const all = service.querySync("version >= 0") as DataRecord[];
+  assertEquals(all.length, 2);
+
+  const latest = service.querySync("version == 2") as DataRecord[];
+  assertEquals(latest.length, 1);
+  assertEquals(latest[0].version, 2);
+  catalog.close();
+});
+
+Deno.test("DataQueryService pushdown: OR predicate falls back to full scan", () => {
+  const { catalog, service } = setupTest();
+  catalog.upsert(makeRow({ model_name: "a", id: "uuid-a" }));
+  catalog.upsert(
+    makeRow({ data_name: "d2", model_name: "b", id: "uuid-b" }),
+  );
+  catalog.upsert(
+    makeRow({ data_name: "d3", model_name: "c", id: "uuid-c" }),
+  );
+
+  const results = service.querySync(
+    'modelName == "a" || modelName == "b"',
+  ) as DataRecord[];
+  assertEquals(results.length, 2);
+  const names = results.map((r) => r.modelName).sort();
+  assertEquals(names, ["a", "b"]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService pushdown: limit interacts correctly with pushdown", () => {
+  const { catalog, service } = setupTest();
+  for (let i = 0; i < 10; i++) {
+    catalog.upsert(
+      makeRow({
+        data_name: `data-${i}`,
+        model_name: "target",
+        id: `uuid-${i}`,
+      }),
+    );
+  }
+
+  const results = service.querySync('modelName == "target"', {
+    limit: 3,
+  }) as DataRecord[];
+  assertEquals(results.length, 3);
+  catalog.close();
+});
