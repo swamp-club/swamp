@@ -192,8 +192,12 @@ export const datastoreNamespaceUnsetCommand = new Command()
     "Also reverse-migrate data back to un-namespaced layout",
   )
   .option(
-    "--confirm",
+    "-y, --yes",
     "Execute the migration (required with --migrate, ignored otherwise)",
+  )
+  .option(
+    "--confirm",
+    "Execute the migration (alias for --yes)",
   )
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [
@@ -257,13 +261,13 @@ export const datastoreNamespaceUnsetCommand = new Command()
       );
       await consumeStream(
         datastoreNamespaceMigrate(ctx, migrateDeps, {
-          confirm: !!options.confirm,
+          confirm: !!options.yes || !!options.confirm,
           reverse: true,
         }),
         migrateRenderer.handlers(),
       );
 
-      if (options.confirm) {
+      if (options.yes || options.confirm) {
         const current = await markerRepo.read(repoPath);
         if (current?.datastore) {
           delete current.datastore.namespace;
@@ -413,8 +417,12 @@ export const datastoreNamespaceMigrateCommand = new Command()
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
   .option(
-    "--confirm",
+    "-y, --yes",
     "Execute the migration (without this flag, only a preview is shown)",
+  )
+  .option(
+    "--confirm",
+    "Execute the migration (alias for --yes)",
   )
   .option(
     "--reverse",
@@ -462,7 +470,7 @@ export const datastoreNamespaceMigrateCommand = new Command()
     const renderer = createNamespaceMigrateRenderer(cliCtx.outputMode);
     await consumeStream(
       datastoreNamespaceMigrate(ctx, deps, {
-        confirm: !!options.confirm,
+        confirm: !!options.yes || !!options.confirm,
         reverse: !!options.reverse,
       }),
       renderer.handlers(),

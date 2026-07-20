@@ -196,7 +196,11 @@ export const extensionPullCommand = new Command()
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
-  .option("--force", "Overwrite existing files without prompting")
+  .option("-y, --yes", "Overwrite existing files without prompting")
+  .option(
+    "--force",
+    "Overwrite existing files without prompting (alias for --yes)",
+  )
   .option(
     "--channel <channel:string>",
     "Release channel: 'beta', 'rc', or 'stable' (default: stable)",
@@ -275,7 +279,7 @@ export const extensionPullCommand = new Command()
         lockfileRepository: deps.lockfileRepository,
         skillsDirs,
         repoDir,
-        force: options.force ?? false,
+        force: options.yes ?? options.force ?? false,
         outputMode: ctx.outputMode,
         alreadyPulled: new Set(),
         depth: 0,

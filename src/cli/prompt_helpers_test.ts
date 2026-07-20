@@ -185,7 +185,7 @@ Deno.test("promptConfirmation: throws UserError on non-interactive stdin", async
     );
     assertEquals(
       error.message,
-      "stdin is not a terminal — use the confirmation-skip flag (e.g. --force or --yes) to run non-interactively",
+      "stdin is not a terminal — use --yes (-y) to skip confirmation prompts non-interactively",
     );
   } finally {
     io.restore();
@@ -221,7 +221,7 @@ Deno.test("promptChoice: throws UserError on non-interactive stdin", async () =>
     );
     assertEquals(
       error.message,
-      "stdin is not a terminal — use the confirmation-skip flag (e.g. --force or --yes) to run non-interactively",
+      "stdin is not a terminal — use --yes (-y) to skip confirmation prompts non-interactively",
     );
   } finally {
     io.restore();

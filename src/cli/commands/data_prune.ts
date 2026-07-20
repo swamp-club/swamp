@@ -66,7 +66,8 @@ export const dataPruneCommand = new Command()
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
   .option("--dry-run", "Show what would be reclaimed without deleting")
-  .option("-f, --force", "Skip confirmation prompt")
+  .option("-y, --yes", "Skip confirmation prompt")
+  .option("-f, --force", "Skip confirmation prompt (alias for --yes)")
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, ["data", "prune"]);
 
@@ -82,7 +83,10 @@ export const dataPruneCommand = new Command()
     const deps = createDataPruneDeps(repoDir, datastoreResolver);
 
     // Phase 1: Preview + Prompt (only in interactive mode without --force and not dry-run)
-    if (cliCtx.outputMode === "log" && !options.force && !options.dryRun) {
+    if (
+      cliCtx.outputMode === "log" && !options.yes && !options.force &&
+      !options.dryRun
+    ) {
       const preview = await dataPrunePreview(ctx, deps);
       if (preview.items.length === 0) {
         console.log("No orphaned data to reclaim.");

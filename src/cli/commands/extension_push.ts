@@ -65,6 +65,7 @@ interface ExtensionPushOptions extends GlobalOptions {
   repoDir?: string;
   extensionsDir?: string;
   yes?: boolean;
+  force?: boolean;
   dryRun?: boolean;
   releaseNotes?: string;
   channel?: string;
@@ -183,6 +184,7 @@ export const extensionPushCommand = new Command()
     "Extensions source directory (env: SWAMP_EXTENSIONS_DIR)",
   )
   .option("-y, --yes", "Skip confirmation prompts")
+  .option("-f, --force", "Skip confirmation prompts (alias for --yes)")
   .option("--dry-run", "Build archive locally without pushing to registry")
   .option(
     "--release-notes <text:string>",
@@ -407,7 +409,7 @@ export const extensionPushCommand = new Command()
         } else if (details?.existingVersion) {
           // Version already exists — handle interactive bump
           const existingVersion = details.existingVersion as string;
-          if (cliCtx.outputMode === "log" && !options.yes) {
+          if (cliCtx.outputMode === "log" && !options.yes && !options.force) {
             const bumped = CalVer.bump(CalVer.create(existingVersion));
             const confirmed = await promptConfirmation(
               `Version ${existingVersion} already exists. Bump to ${bumped.value}?`,
@@ -520,6 +522,7 @@ export const extensionPushCommand = new Command()
       prepared.reviewRulesResult.warnings.length > 0;
     if (
       hasBlockableWarnings && !prepared.isDryRun && !options.yes &&
+      !options.force &&
       cliCtx.outputMode === "log"
     ) {
       const confirmed = await promptConfirmation(
@@ -551,7 +554,7 @@ export const extensionPushCommand = new Command()
     }
 
     // 8. Confirmation prompt
-    if (!options.yes && cliCtx.outputMode === "log") {
+    if (!options.yes && !options.force && cliCtx.outputMode === "log") {
       const confirmed = await promptConfirmation(
         `Push ${prepared.manifest.name}@${prepared.manifest.version} to registry?`,
       );

@@ -57,7 +57,8 @@ unless --force is set. In --json mode, outputs the value directly.`,
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
-  .option("-f, --force", "Skip confirmation prompt")
+  .option("-y, --yes", "Skip confirmation prompt")
+  .option("-f, --force", "Skip confirmation prompt (alias for --yes)")
   .action(async function (
     options: AnyOptions,
     vaultName: string,
@@ -81,7 +82,7 @@ unless --force is set. In --json mode, outputs the value directly.`,
     );
 
     try {
-      if (cliCtx.outputMode === "log" && !options.force) {
+      if (cliCtx.outputMode === "log" && !options.yes && !options.force) {
         const confirmed = await promptConfirmation(
           `This will reveal the secret '${key}' from vault '${vaultName}'. Continue?`,
         );

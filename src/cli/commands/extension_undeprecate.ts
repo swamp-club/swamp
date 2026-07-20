@@ -48,6 +48,7 @@ export const extensionUndeprecateCommand = new Command()
   )
   .arguments("<extension:string>")
   .option("-y, --yes", "Skip confirmation prompt")
+  .option("-f, --force", "Skip confirmation prompt (alias for --yes)")
   .action(async function (
     options: AnyOptions,
     extension: string,
@@ -76,7 +77,7 @@ export const extensionUndeprecateCommand = new Command()
       throw error;
     }
 
-    if (cliCtx.outputMode === "log" && !options.yes) {
+    if (cliCtx.outputMode === "log" && !options.yes && !options.force) {
       const confirmed = await promptConfirmation(
         `Remove deprecation from ${preview.extensionName}?`,
       );

@@ -63,7 +63,8 @@ Both the source and target vaults must be different types.`,
     "--config <config:string>",
     'Provider-specific config as JSON (e.g. \'{"region":"us-east-1"}\')',
   )
-  .option("-f, --force", "Skip confirmation prompt")
+  .option("-y, --yes", "Skip confirmation prompt")
+  .option("-f, --force", "Skip confirmation prompt (alias for --yes)")
   .option("--dry-run", "Preview migration without making changes")
   .option(
     "--repo-dir <dir:string>",
@@ -287,7 +288,7 @@ Both the source and target vaults must be different types.`,
       return;
     }
 
-    if (cliCtx.outputMode === "log" && !options.force) {
+    if (cliCtx.outputMode === "log" && !options.yes && !options.force) {
       const confirmed = await promptConfirmation(
         `Migrate vault backend from ${preview.currentType} to ${preview.targetType}?`,
       );

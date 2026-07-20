@@ -51,7 +51,8 @@ export const workflowDeleteCommand = new Command()
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
-  .option("-f, --force", "Skip confirmation prompt")
+  .option("-y, --yes", "Skip confirmation prompt")
+  .option("-f, --force", "Skip confirmation prompt (alias for --yes)")
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, workflowIdOrName: string) {
     const cliCtx = createContext(options as GlobalOptions, [
@@ -82,7 +83,7 @@ export const workflowDeleteCommand = new Command()
     }
 
     // Phase 2: Prompt
-    if (cliCtx.outputMode === "log" && !options.force) {
+    if (cliCtx.outputMode === "log" && !options.yes && !options.force) {
       const runWarning = preview.runCount > 0
         ? ` This will also delete ${preview.runCount} run${
           preview.runCount === 1 ? "" : "s"

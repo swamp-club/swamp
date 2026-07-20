@@ -110,7 +110,8 @@ export const dataDeleteCommand = withRemoteOptions(
     )
     .option("--all", "Delete all data for the model")
     .option("--dry-run", "Show what would be deleted without deleting")
-    .option("-f, --force", "Skip confirmation prompt"),
+    .option("-y, --yes", "Skip confirmation prompt")
+    .option("-f, --force", "Skip confirmation prompt (alias for --yes)"),
 ).action(
   async function (
     options: AnyOptions,
@@ -249,7 +250,10 @@ export const dataDeleteCommand = withRemoteOptions(
           : { kind: "prefix", value: prefix! };
 
         // Phase 1: Preview + Prompt (unless --force or --dry-run).
-        if (cliCtx.outputMode === "log" && !options.force && !dryRun) {
+        if (
+          cliCtx.outputMode === "log" && !options.yes && !options.force &&
+          !dryRun
+        ) {
           let preview;
           try {
             preview = await dataBatchDeletePreview(ctx, deps, {
@@ -288,7 +292,7 @@ export const dataDeleteCommand = withRemoteOptions(
         const renderer = createDataDeleteRenderer(cliCtx.outputMode);
 
         // Phase 1: Preview + Prompt (only in interactive log mode without --force).
-        if (cliCtx.outputMode === "log" && !options.force) {
+        if (cliCtx.outputMode === "log" && !options.yes && !options.force) {
           let preview;
           try {
             preview = await dataDeletePreview(ctx, deps, {
