@@ -570,12 +570,9 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
   collectGarbage(
     type: ModelType,
     modelId: string,
-    options?: { dryRun?: boolean; skipNumericCap?: boolean },
+    options?: { dryRun?: boolean },
   ): Promise<GarbageCollectionResult> {
     this.ensureNotDisposed();
-    if (options?.skipNumericCap) {
-      return Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 });
-    }
     let versionsRemoved = 0;
     let bytesReclaimed = 0;
 

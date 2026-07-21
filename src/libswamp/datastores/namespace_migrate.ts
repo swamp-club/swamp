@@ -70,7 +70,6 @@ export type NamespaceMigrateEvent =
   | { kind: "preview"; data: NamespaceMigratePreviewData }
   | { kind: "progress"; data: NamespaceMigrateProgressData }
   | { kind: "warning"; data: NamespaceMigrateWarningData }
-  | { kind: "catalog_invalidated_warning" }
   | { kind: "completed"; data: NamespaceMigrateCompletedData }
   | {
     kind: "error";
@@ -333,7 +332,6 @@ export async function* datastoreNamespaceMigrate(
 
       deps.invalidateCatalog();
       ctx.logger.info("Catalog invalidated — will rebuild on next access");
-      yield { kind: "catalog_invalidated_warning" } as const;
 
       if (deps.isExtensionDatastore) {
         await deps.markDirtyBulk();

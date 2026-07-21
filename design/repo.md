@@ -106,13 +106,12 @@ attributes to control the behaviour of the swamp operations.
   `trustedCollectives` list. Toggleable via
   `swamp extension trust auto-trust <on|off>`.
 - `autoGc`: Enable automatic garbage collection after model method runs.
-  Default: `false`. When `true`, runs for the model that just executed after
-  reports complete and the method result is shown. Enforces duration-based
-  `garbageCollection` policies (e.g. `"7d"`) and lifetime expiration, but skips
-  numeric version-count caps — those are enforced incrementally at write time
-  (via `pruneExcessVersions`) and on-demand via `swamp data gc` (with
-  preview/confirmation). Errors are logged but never fail the method run. The
-  sync push includes GC deletions so the current push benefits immediately.
+  Default: `false`. When `true`, `collectGarbage` runs for the model that just
+  executed after reports complete and the method result is shown. Reuses each
+  data item's declared `garbageCollection` policy (version-count caps and
+  duration-based retention). Errors are logged but never fail the method run.
+  The sync push includes GC deletions so the current push benefits immediately.
+  `swamp data gc` remains available for repo-wide manual GC.
 
 ### Run Garbage Collection
 
