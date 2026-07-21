@@ -1714,7 +1714,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         toRemove,
       );
       logger
-        .warn`Pruned ${toRemove.length} excess version(s) of ${dataName} (cap: ${cap}, prior: ${priorVersions.length})`;
+        .info`Pruned ${toRemove.length} excess version(s) of ${dataName} (cap: ${cap}, prior: ${priorVersions.length})`;
     }
   }
 
