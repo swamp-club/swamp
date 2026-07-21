@@ -441,3 +441,54 @@ Deno.test("extractInputReferencesFromCel: returns all branch inputs in ternary r
     new Set(["transport", "lan_host", "tailnet_host"]),
   );
 });
+
+// Multi-line expression tests (swamp-club#1316)
+
+Deno.test("containsExpression: detects expression spanning newlines", () => {
+  assertEquals(
+    containsExpression(
+      '${{ webhook.route == "/hooks/github"\n? webhook.headers["x-github-delivery"]\n: webhook.headers["linear-delivery"] }}',
+    ),
+    true,
+  );
+});
+
+Deno.test("extractExpressions: extracts expression spanning newlines", () => {
+  const data = {
+    deliveryId:
+      '${{ webhook.route == "/hooks/github"\n? webhook.headers["x-github-delivery"]\n: webhook.headers["linear-delivery"] }}',
+  };
+  const expressions = extractExpressions(data);
+  assertEquals(expressions.length, 1);
+  assertEquals(expressions[0].path, "deliveryId");
+  assertEquals(
+    expressions[0].celExpression,
+    'webhook.route == "/hooks/github"\n? webhook.headers["x-github-delivery"]\n: webhook.headers["linear-delivery"]',
+  );
+});
+
+Deno.test("replaceExpressions: replaces whole-value expression spanning newlines", () => {
+  const raw =
+    '${{ webhook.route == "/hooks/github"\n? webhook.headers["x-github-delivery"]\n: webhook.headers["linear-delivery"] }}';
+  const data = { deliveryId: raw };
+  const values = new Map<string, unknown>([[raw, "gh-abc-123"]]);
+  const result = replaceExpressions(data, values) as { deliveryId: unknown };
+  assertEquals(result.deliveryId, "gh-abc-123");
+});
+
+Deno.test("replaceExpressions: preserves type for whole-value expression with trailing newline", () => {
+  const raw = "${{ model.foo.resource.id }}";
+  const data = { value: raw + "\n" };
+  const values = new Map<string, unknown>([[raw, 42]]);
+  const result = replaceExpressions(data, values) as { value: unknown };
+  assertEquals(result.value, 42);
+});
+
+Deno.test("extractCelExpression: extracts expression spanning newlines", () => {
+  assertEquals(
+    extractCelExpression(
+      '${{ webhook.route == "/hooks/github"\n? webhook.headers["x"] }}',
+    ),
+    'webhook.route == "/hooks/github"\n? webhook.headers["x"]',
+  );
+});

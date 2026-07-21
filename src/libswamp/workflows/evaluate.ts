@@ -190,7 +190,7 @@ async function evaluateWorkflowInternal(
   for (const job of workflow.jobs) {
     for (const step of job.steps) {
       if (step.forEach) {
-        const match = step.forEach.in.match(/\$\{\{\s*(.+?)\s*\}\}/);
+        const match = step.forEach.in.match(/\$\{\{\s*(.+?)\s*\}\}/s);
         if (match) {
           forEachInExpressions.add(step.forEach.in);
         }
@@ -251,7 +251,7 @@ async function evaluateWorkflowInternal(
       }
 
       // Evaluate the forEach.in expression
-      const inMatch = stepData.forEach.in.match(/\$\{\{\s*(.+?)\s*\}\}/);
+      const inMatch = stepData.forEach.in.match(/\$\{\{\s*(.+?)\s*\}\}/s);
       if (!inMatch) {
         expandedSteps.push(stepData);
         continue;
@@ -262,7 +262,7 @@ async function evaluateWorkflowInternal(
       // propagates Promises through its evaluator natively.
       const items = await deps.evaluateCelAsync(inMatch[1], context);
       const itemName = stepData.forEach.item;
-      const nameHasExpression = /\$\{\{.+?\}\}/.test(stepData.name);
+      const nameHasExpression = /\$\{\{.+?\}\}/s.test(stepData.name);
 
       // Build one expanded step for a single forEach item: resolve every
       // available expression (self.* etc.) across the step name AND task in one
@@ -284,7 +284,7 @@ async function evaluateWorkflowInternal(
           // If any expression in the name could not be resolved, the raw name
           // would repeat across iterations — append a suffix to keep names
           // unique (matches ForEachExpansionService.resolveForEachStepName).
-          if (/\$\{\{.+?\}\}/.test(expandedName)) {
+          if (/\$\{\{.+?\}\}/s.test(expandedName)) {
             expandedName = `${expandedName}-${fallbackSuffix}`;
           }
         } else {

@@ -23,7 +23,7 @@ import type { ExpressionLocation } from "./expression.ts";
  * Pattern to match ${{ ... }} expressions.
  * Captures the inner CEL expression.
  */
-const EXPRESSION_PATTERN = /\$\{\{\s*(.+?)\s*\}\}/g;
+const EXPRESSION_PATTERN = /\$\{\{\s*(.+?)\s*\}\}/gs;
 
 /**
  * Transforms model references with hyphenated names to bracket notation.
@@ -49,7 +49,7 @@ export function transformHyphenatedModelRefs(expression: string): string {
  * Checks if a string contains any expressions.
  */
 export function containsExpression(value: string): boolean {
-  return /\$\{\{.+?\}\}/.test(value);
+  return /\$\{\{.+?\}\}/s.test(value);
 }
 
 /**
@@ -156,10 +156,10 @@ function replaceExpressionsRecursive(
 ): unknown {
   if (typeof data === "string") {
     // Check if the entire string is a single expression
-    const singleMatch = data.match(/^\$\{\{\s*(.+?)\s*\}\}$/);
+    const singleMatch = data.match(/^(\$\{\{\s*.+?\s*\}\})\s*$/s);
     if (singleMatch) {
       // Return the evaluated value directly (preserves type)
-      const evaluated = values.get(data);
+      const evaluated = values.get(singleMatch[1]);
       return evaluated !== undefined ? evaluated : data;
     }
 
@@ -205,7 +205,7 @@ function replaceExpressionsRecursive(
  * @returns The CEL expression (e.g., "model.foo.input") or null if not valid
  */
 export function extractCelExpression(raw: string): string | null {
-  const match = raw.match(/^\$\{\{\s*(.+?)\s*\}\}$/);
+  const match = raw.match(/^\$\{\{\s*(.+?)\s*\}\}\s*$/s);
   return match ? match[1].trim() : null;
 }
 

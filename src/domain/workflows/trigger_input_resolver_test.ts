@@ -117,6 +117,57 @@ Deno.test("TriggerInputResolver: supports has()/ternary fallback for a missing f
   assertEquals(result, { identifier: "FALLBACK-1" });
 });
 
+Deno.test("TriggerInputResolver: resolves a multi-line whole-value expression", async () => {
+  const resolver = new TriggerInputResolver(new CelEvaluator());
+  const ctx = contextWith({
+    body: {},
+    headers: {
+      "x-github-delivery": "gh-abc",
+      "linear-delivery": "lin-xyz",
+    },
+    route: "/hooks/github",
+  });
+  const result = await resolver.resolve(
+    {
+      deliveryId:
+        '${{ webhook.route == "/hooks/github"\n? webhook.headers["x-github-delivery"]\n: webhook.headers["linear-delivery"] }}',
+    },
+    ctx,
+  );
+  assertEquals(result, { deliveryId: "gh-abc" });
+});
+
+Deno.test("TriggerInputResolver: resolves a whole-value expression with trailing newline", async () => {
+  const resolver = new TriggerInputResolver(new CelEvaluator());
+  const ctx = contextWith({
+    body: { id: 42 },
+    headers: {},
+    route: "/hooks/x",
+  });
+  const result = await resolver.resolve(
+    { count: "${{ webhook.body.id }}\n" },
+    ctx,
+  );
+  assertEquals(result, { count: 42 });
+});
+
+Deno.test("TriggerInputResolver: resolves a multi-line embedded expression", async () => {
+  const resolver = new TriggerInputResolver(new CelEvaluator());
+  const ctx = contextWith({
+    body: {},
+    headers: { "x-github-delivery": "gh-abc" },
+    route: "/hooks/github",
+  });
+  const result = await resolver.resolve(
+    {
+      ref:
+        'delivery-${{ webhook.route == "/hooks/github"\n? webhook.headers["x-github-delivery"]\n: "unknown" }}-end',
+    },
+    ctx,
+  );
+  assertEquals(result, { ref: "delivery-gh-abc-end" });
+});
+
 Deno.test("TriggerInputResolver: propagates a hard reference error", async () => {
   const resolver = new TriggerInputResolver(new CelEvaluator());
   await assertRejects(() =>

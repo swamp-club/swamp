@@ -59,7 +59,7 @@ function collectEnvVarUsages(
   usages: EnvVarUsageDetail[],
 ): void {
   if (typeof data === "string") {
-    const exprPattern = /\$\{\{\s*(.+?)\s*\}\}/g;
+    const exprPattern = /\$\{\{\s*(.+?)\s*\}\}/gs;
     for (const match of data.matchAll(exprPattern)) {
       const celExpr = match[1];
       const envPattern = /\benv\.([a-zA-Z_][a-zA-Z0-9_]*)/g;

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-const EXPRESSION_PATTERN = /\$\{\{\s*(.+?)\s*\}\}/g;
+const EXPRESSION_PATTERN = /\$\{\{\s*(.+?)\s*\}\}/gs;
 
 const VAULT_GET_PATTERN =
   /vault\.get\(\s*(?:(['"`])(.+?)\1|([^\s,)]+))\s*,\s*(?:(['"`])(.+?)\4|([^\s,)]+))\s*\)/g;
