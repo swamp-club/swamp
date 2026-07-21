@@ -202,6 +202,10 @@ class LogModelMethodRunRenderer implements ModelMethodRunRenderer {
             reason: e.reason,
           });
       },
+      auto_gc_started: () => {
+        const logger = getRunLogger(this.modelName, this.methodName);
+        logger.info("Running auto-GC");
+      },
       auto_gc_completed: (e) => {
         const logger = getRunLogger(this.modelName, this.methodName);
         if (e.dataEntriesExpired > 0) {
@@ -292,6 +296,7 @@ class JsonModelMethodRunRenderer implements ModelMethodRunRenderer {
         this._failed = true;
         console.log(JSON.stringify(e.run, null, 2));
       },
+      auto_gc_started: () => {},
       auto_gc_completed: () => {},
       error: (e) => {
         throw new UserError(e.error.message, e.error.code);
