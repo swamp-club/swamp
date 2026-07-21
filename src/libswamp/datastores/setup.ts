@@ -430,7 +430,8 @@ export async function* datastoreSetupExtension(
         filesCopied = result.filesCopied;
         migrationResult = result;
 
-        // Push cache to remote via sync service
+        // Push cache to remote via sync service. Always pass namespace
+        // so the extension scopes the push to {namespace}/ on the remote.
         if (result.filesCopied > 0) {
           ctx.logger.debug`Pushing data to remote datastore...`;
           try {
@@ -441,7 +442,7 @@ export async function* datastoreSetupExtension(
               (signal) =>
                 syncService.pushChanged({
                   signal,
-                  ...(ns ? { namespace: ns } : {}),
+                  namespace: ns,
                 }),
             );
             ctx.logger.debug`Push complete`;
@@ -474,6 +475,10 @@ export async function* datastoreSetupExtension(
         yield { kind: "hydrating" };
         ctx.logger.debug`Hydrating cache from remote datastore...`;
         try {
+          // Always pass namespace so the extension scopes the pull to
+          // {namespace}/ on the remote. Without this, the extension
+          // reads the root index and downloads ALL data — including
+          // foreign namespaces — into the local cache (#1314, #1320).
           const pulled = await runBoundedSync(
             input.type,
             "pull",
@@ -481,7 +486,7 @@ export async function* datastoreSetupExtension(
             (signal) =>
               syncService.pullChanged({
                 signal,
-                ...(ns ? { namespace: ns } : {}),
+                namespace: ns,
                 ...(input.hydrationStrategy === "lazy"
                   ? { metadataOnly: true }
                   : {}),
@@ -520,15 +525,21 @@ export async function* datastoreSetupExtension(
       // configured but the data transfer was slow — the user can resume
       // with `swamp datastore sync --push --timeout <big>`. Hard failures
       // (auth, network, config) still block the type commit.
+      // Persist the datastore config to .swamp.yaml. Always include
+      // namespace when one was resolved — this replaces the entire
+      // datastore block, so omitting it would drop a pre-set namespace.
       if (errors.length === 0 || onlyTimeouts) {
-        await deps.updateRepoConfig(input.repoDir, {
+        const persistedConfig: Record<string, unknown> = {
           type: input.type,
           config: input.config,
-          ...(input.hydrationStrategy
-            ? { hydrationStrategy: input.hydrationStrategy }
-            : {}),
-          ...(ns ? { namespace: ns } : {}),
-        });
+        };
+        if (input.hydrationStrategy) {
+          persistedConfig.hydrationStrategy = input.hydrationStrategy;
+        }
+        if (ns) {
+          persistedConfig.namespace = ns;
+        }
+        await deps.updateRepoConfig(input.repoDir, persistedConfig);
       }
 
       // Register namespace manifest after config is persisted.

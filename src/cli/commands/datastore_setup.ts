@@ -152,6 +152,10 @@ const datastoreSetupExtensionCommand = new Command()
     "Set up S3 datastore",
     `swamp datastore setup extension @swamp/s3-datastore --config '{"bucket":"my-bucket","region":"us-east-1"}'`,
   )
+  .example(
+    "Set up with namespace (shared prefix)",
+    `swamp datastore setup extension @swamp/s3-datastore --namespace my-project --config '{"bucket":"shared","prefix":"swamp","region":"us-east-1"}'`,
+  )
   .arguments("<type:string>")
   .option(
     "--repo-dir <dir:string>",
@@ -161,6 +165,10 @@ const datastoreSetupExtensionCommand = new Command()
     "--config <config:string>",
     'JSON config object for the extension (e.g., \'{"bucket":"name","region":"us-east-1"}\')',
     { required: true },
+  )
+  .option(
+    "--namespace <slug:string>",
+    "Namespace to scope this datastore to (avoids absorbing foreign data from shared prefixes)",
   )
   .option(
     "--skip-migration",
@@ -244,7 +252,12 @@ const datastoreSetupExtensionCommand = new Command()
       ? parseTimeoutFlag(options.timeout)
       : undefined;
 
-    const namespace = typeof configNamespace === "string"
+    // Resolve namespace: --namespace flag wins, then --config JSON, then
+    // existing .swamp.yaml value. The namespace MUST survive setup so the
+    // initial pullChanged is scoped and the written config preserves it.
+    const namespace = typeof options.namespace === "string"
+      ? options.namespace
+      : typeof configNamespace === "string"
       ? configNamespace
       : marker?.datastore?.namespace;
 
