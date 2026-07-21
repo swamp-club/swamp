@@ -441,6 +441,7 @@ export async function requireInitializedRepoReadOnly(
     datastoreResolver,
     namespace: datastoreConfig.namespace,
     hydrateFile: hydrateFileHook,
+    autoGc: marker?.autoGc === true,
     ...factoryConfig,
   });
 
@@ -653,6 +654,7 @@ export function requireInitializedRepo(
         )
         : undefined,
       namespace: datastoreConfig.namespace,
+      autoGc: marker?.autoGc === true,
       ...factoryConfig,
     });
 

@@ -102,6 +102,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
      * filesystem layout. This is a tracked dependency, not an oversight.
      */
     public readonly namespace: Namespace = SOLO_NAMESPACE,
+    private readonly enableWriteGc: boolean = false,
   ) {
     this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.data);
   }
@@ -628,15 +629,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
     this.catalogUpsert(type, modelId, dataToSave);
 
-    // Enforce numeric garbageCollection cap at write time
-    const gc = data.garbageCollection;
-    if (typeof gc === "number") {
+    if (this.enableWriteGc && typeof data.garbageCollection === "number") {
       await this.pruneExcessVersions(
         type,
         modelId,
         data.name,
         priorVersions,
-        gc,
+        data.garbageCollection,
       );
     }
 
@@ -1130,15 +1129,16 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
     this.catalogUpsert(type, modelId, dataToSave);
 
-    // Enforce numeric garbageCollection cap at write time
-    const gc = data.garbageCollection;
-    if (typeof gc === "number" && priorVersions) {
+    if (
+      this.enableWriteGc && typeof data.garbageCollection === "number" &&
+      priorVersions
+    ) {
       await this.pruneExcessVersions(
         type,
         modelId,
         data.name,
         priorVersions,
-        gc,
+        data.garbageCollection,
       );
     }
 
@@ -1686,10 +1686,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     );
   }
 
-  /**
-   * Prunes oldest versions beyond a numeric cap. Best-effort: NotFound on
-   * already-removed directories is swallowed (idempotent under concurrency).
-   */
   private async pruneExcessVersions(
     type: ModelType,
     modelId: string,
