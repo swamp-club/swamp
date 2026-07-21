@@ -204,7 +204,7 @@ class LogModelMethodRunRenderer implements ModelMethodRunRenderer {
       },
       auto_gc_started: () => {
         const logger = getRunLogger(this.modelName, this.methodName);
-        logger.info("Running auto-GC");
+        logger.info("Running auto-GC (autoGc is enabled in .swamp.yaml)");
       },
       auto_gc_completed: (e) => {
         const logger = getRunLogger(this.modelName, this.methodName);
