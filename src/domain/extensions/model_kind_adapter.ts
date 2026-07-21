@@ -421,8 +421,10 @@ export const modelKindAdapter: KindAdapter = {
     return {
       typeNormalized,
       version: versionMatch?.[1] ?? "",
-      kind: extensionMatch ? "extension" as const : "model" as const,
-      extendsType: extensionMatch ? typeNormalized : "",
+      kind: extensionMatch && !modelMatch
+        ? "extension" as const
+        : "model" as const,
+      extendsType: extensionMatch && !modelMatch ? typeNormalized : "",
     };
   },
 
@@ -625,6 +627,11 @@ export const modelKindAdapter: KindAdapter = {
     });
 
     if (!module.extension) {
+      if (module.model) {
+        logger
+          .warn`Skipping standalone model bundle cataloged as extension: ${entry.bundle_path}`;
+        return;
+      }
       throw new Error(
         `Bundle has no extension export: ${entry.bundle_path}`,
       );
