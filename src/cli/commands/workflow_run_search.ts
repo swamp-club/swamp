@@ -196,7 +196,7 @@ export async function workflowRunSearchAction(
     // search only displays summary fields, and hydrating every run (with its
     // inline step outputs) OOMs on workflows with a large run history (#1173).
     findAllRunsByWorkflowId: (id) =>
-      runRepo.findAllSummariesByWorkflowId(createWorkflowId(id)),
+      runRepo.findAllSummariesFromIndex(createWorkflowId(id)),
   };
 
   const fetchPreview = effectiveMode === "log"

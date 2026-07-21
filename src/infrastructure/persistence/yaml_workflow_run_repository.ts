@@ -22,6 +22,16 @@ import { join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
+import {
+  countYamlRunFiles,
+  deleteRunIndex,
+  isIndexStale,
+  listDirEntries,
+  readRunIndex,
+  type WorkflowRunIndex,
+  type WorkflowRunIndexEntry,
+  writeRunIndex,
+} from "./workflow_run_index.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import {
@@ -50,6 +60,9 @@ import {
   createWorkflowRunFailed,
   createWorkflowRunStarted,
 } from "../../domain/events/types.ts";
+import { getLogger } from "@logtape/logtape";
+
+const logger = getLogger(["swamp", "persistence", "workflow-run-index"]);
 
 /**
  * YAML-based implementation of WorkflowRunRepository.
@@ -402,6 +415,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     const content = stringifyYaml(cleanData as Record<string, unknown>);
     await atomicWriteTextFile(path, content);
 
+    await this.updateIndexEntry(workflowId, run);
+
     // Emit events based on status changes
     if (this.eventBus) {
       const currentStatus = run.status;
@@ -485,6 +500,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     const cutoffMs = cutoff.getTime();
     let deleted = 0;
     let bytesReclaimed = 0;
+    const affectedDirs = new Set<string>();
 
     try {
       for await (const entry of Deno.readDir(this.baseDir)) {
@@ -546,6 +562,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
                   if (!(error instanceof Deno.errors.NotFound)) throw error;
                 }
                 await cleanupEmptyParentDirs(yamlPath, this.baseDir);
+                affectedDirs.add(dir);
               }
 
               deleted++;
@@ -566,6 +583,144 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       }
     }
 
+    for (const dir of affectedDirs) {
+      await deleteRunIndex(dir);
+    }
+
     return { deleted, bytesReclaimed };
   }
+
+  async findAllSummariesFromIndex(
+    workflowId: WorkflowId,
+  ): Promise<WorkflowRunSummary[]> {
+    const dir = this.getRunsDir(workflowId);
+    const index = await this.getValidatedIndex(dir);
+    if (!index) {
+      return this.findAllSummariesByWorkflowId(workflowId);
+    }
+    return indexToSummaries(index);
+  }
+
+  async findSummariesByStatus(
+    workflowId: WorkflowId,
+    status: string,
+  ): Promise<WorkflowRunSummary[]> {
+    const dir = this.getRunsDir(workflowId);
+    const index = await this.getValidatedIndex(dir);
+    if (!index) {
+      const all = await this.findAllSummariesByWorkflowId(workflowId);
+      return all.filter((s) => s.status === status);
+    }
+    return indexToSummaries(index).filter((s) => s.status === status);
+  }
+
+  private async getValidatedIndex(
+    dir: string,
+  ): Promise<WorkflowRunIndex | null> {
+    const entries = await listDirEntries(dir);
+    const yamlCount = countYamlRunFiles(entries);
+    if (yamlCount === 0) return null;
+
+    const index = await readRunIndex(dir);
+    if (!index || isIndexStale(index, yamlCount)) {
+      return await this.rebuildIndex(dir);
+    }
+
+    return index;
+  }
+
+  private async rebuildIndex(
+    dir: string,
+  ): Promise<WorkflowRunIndex | null> {
+    const index: WorkflowRunIndex = {};
+    try {
+      for await (const entry of Deno.readDir(dir)) {
+        if (
+          !entry.isFile || !entry.name.startsWith("workflow-run-") ||
+          !entry.name.endsWith(".yaml")
+        ) {
+          continue;
+        }
+        const path = join(dir, entry.name);
+        try {
+          const content = await Deno.readTextFile(path);
+          const summary = parseWorkflowRunSummary(parseYaml(content));
+          index[summary.id] = summaryToIndexEntry(summary);
+        } catch (error) {
+          if (error instanceof Deno.errors.NotFound) continue;
+          throw error;
+        }
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return null;
+      throw error;
+    }
+
+    try {
+      await writeRunIndex(dir, index);
+    } catch (error) {
+      logger
+        .warn`Failed to write rebuilt index, will retry next read: ${error}`;
+    }
+
+    return index;
+  }
+
+  private async updateIndexEntry(
+    workflowId: WorkflowId,
+    run: WorkflowRun,
+  ): Promise<void> {
+    const dir = this.getRunsDir(workflowId);
+    try {
+      const existing = await readRunIndex(dir) ?? {};
+      existing[run.id] = {
+        status: run.status,
+        workflowId: run.workflowId,
+        workflowName: run.workflowName,
+        startedAt: run.startedAt?.toISOString(),
+        completedAt: run.completedAt?.toISOString(),
+        tags: run.tags ?? {},
+        inputs: run.inputs ?? {},
+      };
+      await writeRunIndex(dir, existing);
+    } catch (error) {
+      logger.warn`Failed to update run index, deleting for rebuild: ${error}`;
+      await deleteRunIndex(dir);
+    }
+  }
+}
+
+function summaryToIndexEntry(
+  summary: WorkflowRunSummary,
+): WorkflowRunIndexEntry {
+  return {
+    status: summary.status,
+    workflowId: summary.workflowId,
+    workflowName: summary.workflowName,
+    startedAt: summary.startedAt?.toISOString(),
+    completedAt: summary.completedAt?.toISOString(),
+    tags: summary.tags,
+    inputs: summary.inputs as Record<string, unknown>,
+  };
+}
+
+function indexToSummaries(index: WorkflowRunIndex): WorkflowRunSummary[] {
+  const summaries: WorkflowRunSummary[] = [];
+  for (const [id, entry] of Object.entries(index)) {
+    summaries.push({
+      id,
+      workflowId: entry.workflowId,
+      workflowName: entry.workflowName,
+      status: entry.status,
+      startedAt: entry.startedAt ? new Date(entry.startedAt) : undefined,
+      completedAt: entry.completedAt ? new Date(entry.completedAt) : undefined,
+      tags: entry.tags,
+      inputs: entry.inputs,
+    });
+  }
+  return summaries.sort((a, b) => {
+    const aTime = a.startedAt?.getTime() ?? 0;
+    const bTime = b.startedAt?.getTime() ?? 0;
+    return bTime - aTime;
+  });
 }
