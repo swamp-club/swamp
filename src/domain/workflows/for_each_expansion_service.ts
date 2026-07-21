@@ -115,7 +115,7 @@ export class ForEachExpansionService {
       const inExpression = step.forEach.in;
       const itemName = step.forEach.item;
 
-      const match = inExpression.match(/\$\{\{\s*(.+?)\s*\}\}/);
+      const match = inExpression.match(/\$\{\{\s*(.+?)\s*\}\}/s);
       if (!match) {
         throw new UserError(
           `Invalid forEach.in expression: ${inExpression}. Must be in $\{{ }} format.`,
@@ -126,7 +126,7 @@ export class ForEachExpansionService {
       // query) that return Promises resolve here before we iterate.
       const items = await this.celEvaluator.evaluateAsync(match[1], context);
 
-      const nameHasExpression = /\$\{\{.+?\}\}/.test(step.name);
+      const nameHasExpression = /\$\{\{.+?\}\}/s.test(step.name);
       const expandedSteps: ExpandedStep[] = [];
 
       if (Array.isArray(items)) {

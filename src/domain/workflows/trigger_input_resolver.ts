@@ -20,8 +20,8 @@
 import type { ExpressionContext } from "../expressions/model_resolver.ts";
 import type { CelExpressionEvaluator } from "../expressions/cel_runtime.ts";
 
-const WHOLE_EXPRESSION = /^\$\{\{\s*(.+?)\s*\}\}$/;
-const EMBEDDED_EXPRESSION = /\$\{\{\s*(.+?)\s*\}\}/g;
+const WHOLE_EXPRESSION = /^\$\{\{\s*(.+?)\s*\}\}\s*$/s;
+const EMBEDDED_EXPRESSION = /\$\{\{\s*(.+?)\s*\}\}/gs;
 
 /**
  * Resolves a trigger's `inputs` value map by evaluating its CEL expressions

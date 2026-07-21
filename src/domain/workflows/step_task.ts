@@ -19,7 +19,7 @@
 
 import { z } from "zod";
 
-const EXPRESSION_PATTERN = /^\$\{\{\s*.+?\s*\}\}$/;
+const EXPRESSION_PATTERN = /^\$\{\{\s*.+?\s*\}\}\s*$/s;
 
 const recordOrExpression = z.union([
   z.record(z.string(), z.unknown()),

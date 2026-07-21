@@ -78,7 +78,7 @@ export class WorkflowExpressionEvaluator {
     for (const job of workflow.jobs) {
       for (const step of job.steps) {
         if (step.forEach) {
-          const match = step.forEach.in.match(/\$\{\{\s*(.+?)\s*\}\}/);
+          const match = step.forEach.in.match(/\$\{\{\s*(.+?)\s*\}\}/s);
           if (match) {
             forEachInExpressions.add(step.forEach.in);
           }
