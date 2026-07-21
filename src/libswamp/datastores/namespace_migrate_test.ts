@@ -48,6 +48,7 @@ function makeDeps(
     invalidateCatalog: () => {},
     markDirtyBulk: () => Promise.resolve(),
     removeNamespaceManifest: () => Promise.resolve(),
+    listLocalNamespaces: () => Promise.resolve([]),
     isExtensionDatastore: false,
     ...overrides,
   };
@@ -473,4 +474,60 @@ Deno.test("datastoreNamespaceMigrate: no collision check on reverse migration", 
   assertEquals(collisionCheckCalled, false);
   const completed = events.find((e) => e.kind === "completed");
   assertEquals(completed?.kind, "completed");
+});
+
+// ============================================================================
+// Foreign data detection
+// ============================================================================
+
+Deno.test("datastoreNamespaceMigrate: forward migration blocked when foreign namespaces exist", async () => {
+  const ctx = createLibSwampContext({});
+  const deps = makeDeps({
+    dirExists: () => Promise.resolve(true),
+    dirSize: () => Promise.resolve({ fileCount: 5, totalBytes: 2000 }),
+    listLocalNamespaces: () => Promise.resolve(["infra", "other-project"]),
+  });
+
+  const events = await collect<NamespaceMigrateEvent>(
+    datastoreNamespaceMigrate(ctx, deps, { confirm: true, reverse: false }),
+  );
+
+  assertEquals(events.length, 1);
+  assertEquals(events[0].kind, "error");
+  if (events[0].kind === "error") {
+    assertStringIncludes(events[0].error.message, "other-project");
+    assertStringIncludes(events[0].error.message, "absorbed during");
+  }
+});
+
+Deno.test("datastoreNamespaceMigrate: forward migration allowed when only own namespace exists", async () => {
+  const ctx = createLibSwampContext({});
+  const deps = makeDeps({
+    dirExists: () => Promise.resolve(true),
+    dirSize: () => Promise.resolve({ fileCount: 5, totalBytes: 2000 }),
+    listLocalNamespaces: () => Promise.resolve(["infra"]),
+  });
+
+  const events = await collect<NamespaceMigrateEvent>(
+    datastoreNamespaceMigrate(ctx, deps, { confirm: false, reverse: false }),
+  );
+
+  const preview = events.find((e) => e.kind === "preview");
+  assertEquals(preview?.kind, "preview");
+});
+
+Deno.test("datastoreNamespaceMigrate: reverse migration not blocked by foreign namespaces", async () => {
+  const ctx = createLibSwampContext({});
+  const deps = makeDeps({
+    dirExists: () => Promise.resolve(true),
+    dirSize: () => Promise.resolve({ fileCount: 5, totalBytes: 2000 }),
+    listLocalNamespaces: () => Promise.resolve(["infra", "other-project"]),
+  });
+
+  const events = await collect<NamespaceMigrateEvent>(
+    datastoreNamespaceMigrate(ctx, deps, { confirm: false, reverse: true }),
+  );
+
+  const preview = events.find((e) => e.kind === "preview");
+  assertEquals(preview?.kind, "preview");
 });

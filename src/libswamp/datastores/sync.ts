@@ -18,15 +18,18 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  DEFAULT_DATASTORE_SUBDIRS,
   isCustomDatastoreConfig,
   resolveSyncTimeoutMs,
 } from "../../domain/datastore/datastore_config.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
+import type { PushPreviewSummary } from "../../domain/datastore/datastore_sync_service.ts";
 import { runBoundedSync } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
+import { join } from "@std/path";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * Data structure for the datastore sync output.
@@ -38,13 +41,21 @@ export interface DatastoreSyncData {
   errors?: string[];
 }
 
+/** Preview data shown when `sync --push` runs without `--confirm`. */
+export interface DatastoreSyncPreviewData {
+  mode: "push";
+  summary: PushPreviewSummary;
+}
+
 export type DatastoreSyncEvent =
   | { kind: "syncing"; mode: "push" | "pull" | "sync" }
+  | { kind: "preview"; data: DatastoreSyncPreviewData }
   | { kind: "completed"; data: DatastoreSyncData }
   | { kind: "error"; error: SwampError };
 
 export interface DatastoreSyncInput {
   mode: "push" | "pull" | "sync";
+  confirm?: boolean;
 }
 
 /** Dependencies for the datastore sync operation. */
@@ -60,6 +71,12 @@ export interface DatastoreSyncDeps {
     filesPulled: number;
     filesPushed: number;
     errors: string[];
+  }>;
+  previewPush?: () => Promise<PushPreviewSummary>;
+  checkUnmigratedData?: () => Promise<{
+    unmigrated: boolean;
+    directories: string[];
+    namespace: string;
   }>;
 }
 
@@ -116,6 +133,20 @@ export async function createDatastoreSyncDeps(
     return {
       validateSyncSupport: () =>
         Promise.resolve({ supported: true, type: config.type }),
+      previewPush: syncService.previewPush
+        ? async () => {
+          return await runBoundedSync(
+            label,
+            "push",
+            timeoutMs,
+            (signal) =>
+              syncService.previewPush!({
+                signal,
+                ...(ns ? { namespace: ns } : {}),
+              }),
+          );
+        }
+        : undefined,
       pushSync: async () => {
         const count = await runBoundedSync(
           label,
@@ -169,6 +200,24 @@ export async function createDatastoreSyncDeps(
           errors: [],
         };
       },
+      checkUnmigratedData: ns
+        ? async () => {
+          const found: string[] = [];
+          for (const subdir of DEFAULT_DATASTORE_SUBDIRS) {
+            try {
+              const stat = await Deno.stat(join(config.cachePath!, subdir));
+              if (stat.isDirectory) found.push(subdir);
+            } catch {
+              // Not found — expected when migrated
+            }
+          }
+          return {
+            unmigrated: found.length > 0,
+            directories: found,
+            namespace: ns,
+          };
+        }
+        : undefined,
     };
   }
 
@@ -225,9 +274,37 @@ export async function* datastoreSync(
         return;
       }
 
+      if (
+        (input.mode === "push" || input.mode === "sync") &&
+        deps.checkUnmigratedData
+      ) {
+        const unmigratedResult = await deps.checkUnmigratedData();
+        if (unmigratedResult.unmigrated) {
+          yield {
+            kind: "error",
+            error: {
+              code: "unmigrated_data",
+              message: `Cannot push: un-migrated data found at root level ` +
+                `(${unmigratedResult.directories.join(", ")}). ` +
+                `Run 'swamp datastore namespace migrate' to preview, ` +
+                `then --confirm to move data under the ` +
+                `"${unmigratedResult.namespace}" namespace before pushing.`,
+            },
+          };
+          return;
+        }
+      }
+
       yield { kind: "syncing", mode: input.mode };
 
       if (input.mode === "push") {
+        if (!input.confirm && deps.previewPush) {
+          const summary = await deps.previewPush();
+          if (summary.total > 0) {
+            yield { kind: "preview", data: { mode: "push", summary } };
+            return;
+          }
+        }
         const result = await deps.pushSync();
         yield {
           kind: "completed",

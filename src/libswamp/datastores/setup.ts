@@ -64,10 +64,16 @@ export interface DatastoreSetupData {
   namespace?: string;
 }
 
+export interface DatastoreSetupWarningData {
+  message: string;
+  existingNamespaces: string[];
+}
+
 export type DatastoreSetupEvent =
   | { kind: "validating" }
   | { kind: "migrating" }
   | { kind: "hydrating" }
+  | { kind: "warning"; data: DatastoreSetupWarningData }
   | { kind: "completed"; data: DatastoreSetupData }
   | { kind: "error"; error: SwampError };
 
@@ -319,6 +325,36 @@ export async function* datastoreSetupExtension(
           },
         };
         return;
+      }
+
+      // Check for existing data at the remote prefix and warn if no
+      // namespace is set. This prevents silently absorbing foreign data.
+      if (provider.listNamespaces) {
+        const datastorePath = provider.resolveDatastorePath(input.repoDir);
+        try {
+          const remoteNamespaces = await provider.listNamespaces(
+            datastorePath,
+          );
+          if (remoteNamespaces.length > 0 && !input.namespace) {
+            yield {
+              kind: "warning",
+              data: {
+                message:
+                  `This datastore contains existing namespaces: ${
+                    remoteNamespaces.join(", ")
+                  }. ` +
+                  `Set a namespace with 'swamp datastore namespace set <name>' before ` +
+                  `connecting to avoid absorbing foreign data.`,
+                existingNamespaces: remoteNamespaces,
+              },
+            };
+          }
+        } catch (error) {
+          ctx.logger
+            .debug`Failed to list remote namespaces (non-fatal): ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+        }
       }
 
       // Migrate existing data, then hydrate the cache from the remote.

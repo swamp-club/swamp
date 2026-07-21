@@ -22,6 +22,7 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { bold, yellow } from "@std/fmt/colors";
 
 const ACTIVITY_INTERVAL_MS = 5_000;
 
@@ -62,6 +63,20 @@ class LogDatastoreSyncRenderer implements Renderer<DatastoreSyncEvent> {
           );
           writeOutput(`${activityMsg} (${elapsed}s)`);
         }, ACTIVITY_INTERVAL_MS);
+      },
+      preview: (e) => {
+        this.clearTimer();
+        const { summary } = e.data;
+        const lines = [
+          bold("Push preview:"),
+          `  Total:   ${summary.total} file(s)`,
+          `  New:     ${summary.new}`,
+          `  Changed: ${summary.changed}`,
+          `  Deleted: ${summary.deleted}`,
+          "",
+          yellow("Run with --confirm to proceed."),
+        ];
+        writeOutput(lines.join("\n"));
       },
       completed: (e) => {
         this.clearTimer();
@@ -104,6 +119,9 @@ class JsonDatastoreSyncRenderer implements Renderer<DatastoreSyncEvent> {
     return {
       syncing: () => {
         // No JSON output for progress events
+      },
+      preview: (e) => {
+        console.log(JSON.stringify(e.data, null, 2));
       },
       completed: (e) => {
         console.log(JSON.stringify(e.data, null, 2));

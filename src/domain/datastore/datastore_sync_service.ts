@@ -24,6 +24,18 @@ export interface SyncContext {
   models?: ReadonlyArray<{ modelType: string; modelId: string }>;
 }
 
+/** Summary returned by {@link DatastoreSyncService.previewPush}. */
+export interface PushPreviewSummary {
+  /** Total files that would be pushed. */
+  total: number;
+  /** Files new to the remote. */
+  new: number;
+  /** Files changed since the last push. */
+  changed: number;
+  /** Files deleted from the local cache (tombstones). */
+  deleted: number;
+}
+
 /** Capabilities a sync service advertises to swamp core. */
 export interface SyncCapabilities {
   scopedSync?: boolean;
@@ -45,6 +57,12 @@ export interface SyncCapabilities {
    * advertise this continue to use `pushChanged` under the global lock.
    */
   twoPhaseSync?: boolean;
+  /**
+   * When `true`, the extension supports {@link DatastoreSyncService.previewPush}
+   * — a dry-run that returns file counts without uploading anything.
+   * Core uses this to gate `sync --push` behind a confirmation prompt.
+   */
+  previewPush?: boolean;
 }
 
 /**
@@ -245,6 +263,23 @@ export interface DatastoreSyncService {
     namespace: string,
     relPath: string,
   ): Promise<Uint8Array | null>;
+
+  /**
+   * Dry-run push that returns a summary of what would be uploaded.
+   *
+   * Called by `swamp datastore sync --push` (without `--confirm`) to
+   * show a preview before executing. Extensions that advertise
+   * `previewPush: true` in their capabilities MUST implement this.
+   *
+   * Contract:
+   * 1. Compute the diff between local cache and remote index.
+   * 2. Return counts — do NOT upload or mutate anything.
+   * 3. Honor the `namespace` option (scope to the namespace subtree).
+   *
+   * Optional — extensions without preview support omit this method.
+   * Core falls back to pushing without preview.
+   */
+  previewPush?(options?: DatastoreSyncOptions): Promise<PushPreviewSummary>;
 
   /**
    * Phase 1 of two-phase push: upload changed files to the remote.

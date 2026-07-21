@@ -40,6 +40,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import { checkUnmigratedNamespaceData } from "../resolve_datastore.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import {
   createWorkflowId,
@@ -168,10 +169,11 @@ export async function workflowHistorySearchAction(
   const libCtx = createLibSwampContext();
   ctx.logger.debug`Searching workflow history with query: ${query ?? "(none)"}`;
 
-  const { repoContext } = await requireInitializedRepoReadOnly({
-    repoDir: resolveRepoDir(options.repoDir),
-    outputMode: effectiveMode,
-  });
+  const { repoContext, datastoreResolver } =
+    await requireInitializedRepoReadOnly({
+      repoDir: resolveRepoDir(options.repoDir),
+      outputMode: effectiveMode,
+    });
   const workflowRepo = repoContext.workflowRepo;
   const runRepo = repoContext.workflowRunRepo;
 
@@ -223,6 +225,16 @@ export async function workflowHistorySearchAction(
     // the run detail, so no additional findById+render call is needed.
   } else {
     ctx.logger.debug`Search cancelled`;
+    const dsConfig = datastoreResolver.config();
+    const unmigrated = await checkUnmigratedNamespaceData(dsConfig);
+    if (unmigrated.length > 0) {
+      ctx.logger.warn(
+        "Un-migrated data found at root level ({dirs}). " +
+          "Run 'swamp datastore namespace migrate' to preview, " +
+          'then --confirm to move data under the "{namespace}" namespace.',
+        { dirs: unmigrated.join(", "), namespace: dsConfig.namespace },
+      );
+    }
   }
 
   ctx.logger.debug("Workflow history search command completed");

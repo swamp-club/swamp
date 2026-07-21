@@ -126,6 +126,7 @@ export interface NamespaceMigrateDeps {
   invalidateCatalog: () => void;
   markDirtyBulk: () => Promise<void>;
   removeNamespaceManifest: (namespace: string) => Promise<void>;
+  listLocalNamespaces: () => Promise<string[]>;
   isExtensionDatastore: boolean;
 }
 
@@ -151,6 +152,28 @@ export async function* datastoreNamespaceMigrate(
       }
 
       const datastorePath = deps.getDatastorePath();
+
+      if (!input.reverse) {
+        const localNamespaces = await deps.listLocalNamespaces();
+        const foreign = localNamespaces.filter((ns) => ns !== namespace);
+        if (foreign.length > 0) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              `Local cache contains data from other namespaces: ${
+                foreign.join(", ")
+              }.\n` +
+                `These were absorbed during an unscoped setup. They must not be migrated ` +
+                `under your namespace.\n\n` +
+                `To clean up:\n` +
+                `  swamp datastore sync --pull    # re-sync from remote (scoped to your namespace)`,
+            ),
+            succeededDirectories: [],
+          };
+          return;
+        }
+      }
+
       const directories: SubdirPreview[] = [];
       const allCollisions: Array<{ subdir: string; paths: string[] }> = [];
 

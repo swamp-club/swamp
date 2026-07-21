@@ -40,6 +40,7 @@ import {
 } from "../remote_run.ts";
 import type { DoctorDatastoresResponse } from "../../serve/protocol.ts";
 import {
+  DEFAULT_DATASTORE_SUBDIRS,
   isCustomDatastoreConfig,
 } from "../../domain/datastore/datastore_config.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
@@ -48,6 +49,7 @@ import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { resolveDatastoreConfig } from "../resolve_datastore.ts";
+import { join } from "@std/path";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -89,6 +91,26 @@ async function createDoctorDatastoresDeps(
       } catch {
         return [];
       }
+    },
+    checkUnmigratedData: async (config) => {
+      if (!config.namespace) {
+        return { unmigrated: false, directories: [] };
+      }
+      const basePath = isCustomDatastoreConfig(config) && config.cachePath
+        ? config.cachePath
+        : isCustomDatastoreConfig(config)
+        ? config.datastorePath
+        : config.path;
+      const found: string[] = [];
+      for (const subdir of DEFAULT_DATASTORE_SUBDIRS) {
+        try {
+          const stat = await Deno.stat(join(basePath, subdir));
+          if (stat.isDirectory) found.push(subdir);
+        } catch {
+          // Directory doesn't exist — expected when migrated
+        }
+      }
+      return { unmigrated: found.length > 0, directories: found };
     },
   };
 }
