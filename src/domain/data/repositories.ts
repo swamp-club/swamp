@@ -335,7 +335,7 @@ export interface UnifiedDataRepository {
   collectGarbage(
     type: ModelType,
     modelId: string,
-    options?: { dryRun?: boolean },
+    options?: { dryRun?: boolean; skipNumericCap?: boolean },
   ): Promise<GarbageCollectionResult>;
 
   /**

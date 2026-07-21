@@ -160,6 +160,11 @@ Deno.test("datastoreNamespaceMigrate: confirm executes forward migration", async
   assertEquals(renamed[0].source, join(DS_PATH, "data"));
   assertEquals(renamed[0].destination, join(DS_PATH, NAMESPACE, "data"));
   assertEquals(catalogInvalidated, true);
+
+  const warningEvent = events.find((e) =>
+    e.kind === "catalog_invalidated_warning"
+  );
+  assertEquals(warningEvent?.kind, "catalog_invalidated_warning");
 });
 
 Deno.test("datastoreNamespaceMigrate: confirm executes reverse migration with manifest cleanup", async () => {

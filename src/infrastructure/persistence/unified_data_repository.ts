@@ -1493,9 +1493,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   async collectGarbage(
     type: ModelType,
     modelId: string,
-    options?: { dryRun?: boolean },
+    options?: { dryRun?: boolean; skipNumericCap?: boolean },
   ): Promise<GarbageCollectionResult> {
     const dryRun = options?.dryRun ?? false;
+    const skipNumericCap = options?.skipNumericCap ?? false;
     let versionsRemoved = 0;
     let bytesReclaimed = 0;
 
@@ -1509,7 +1510,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       let versionsToRemove: number[] = [];
 
       if (typeof gc === "number") {
-        // Keep N most recent versions
+        if (skipNumericCap) continue;
         const toKeep = gc;
         if (versions.length > toKeep) {
           versionsToRemove = versions.slice(0, versions.length - toKeep);

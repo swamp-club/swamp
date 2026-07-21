@@ -82,6 +82,14 @@ class LogNamespaceMigrateRenderer implements Renderer<NamespaceMigrateEvent> {
         ];
         writeOutput(lines.join("\n"));
       },
+      catalog_invalidated_warning: () => {
+        writeOutput(
+          yellow(
+            "  ⚠ Catalog invalidated. If your data specs declare garbageCollection limits,\n" +
+              "    run 'swamp data gc --dry-run' to preview what would be cleaned up.",
+          ),
+        );
+      },
       completed: (e) => {
         if (e.data.migratedDirectories.length === 0) return;
 
@@ -130,6 +138,7 @@ class LogNamespaceMigrateRenderer implements Renderer<NamespaceMigrateEvent> {
 class JsonNamespaceMigrateRenderer implements Renderer<NamespaceMigrateEvent> {
   #previewData: NamespaceMigratePreviewData | null = null;
   #warnings: NamespaceMigrateWarningData[] = [];
+  #catalogInvalidated = false;
 
   handlers(): EventHandlers<NamespaceMigrateEvent> {
     return {
@@ -140,11 +149,17 @@ class JsonNamespaceMigrateRenderer implements Renderer<NamespaceMigrateEvent> {
       warning: (e) => {
         this.#warnings.push(e.data);
       },
+      catalog_invalidated_warning: () => {
+        this.#catalogInvalidated = true;
+      },
       completed: (e) => {
         if (e.data.migratedDirectories.length > 0) {
-          const output = this.#warnings.length > 0
+          const base = this.#warnings.length > 0
             ? { ...e.data, warnings: this.#warnings }
-            : e.data;
+            : { ...e.data };
+          const output = this.#catalogInvalidated
+            ? { ...base, catalogInvalidated: true }
+            : base;
           writeOutput(JSON.stringify(output, null, 2));
         } else {
           writeOutput(JSON.stringify(this.#previewData, null, 2));

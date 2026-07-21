@@ -115,7 +115,7 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
   collectGarbage(
     type: ModelType,
     modelId: string,
-    options?: { dryRun?: boolean },
+    options?: { dryRun?: boolean; skipNumericCap?: boolean },
   ): Promise<GarbageCollectionResult> {
     return this.persistent.collectGarbage(type, modelId, options);
   }
