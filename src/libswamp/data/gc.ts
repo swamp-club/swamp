@@ -219,7 +219,6 @@ export async function autoGc(
     collectGarbage: (
       type: ModelType,
       modelId: string,
-      options?: { skipNumericCap?: boolean },
     ) => Promise<GarbageCollectionResult>;
   },
   type: ModelType,
@@ -228,9 +227,7 @@ export async function autoGc(
 ): Promise<AutoGcResult | null> {
   const logger = getLogger(["swamp", "auto-gc"]);
   try {
-    const result = await dataRepo.collectGarbage(type, modelId, {
-      skipNumericCap: true,
-    });
+    const result = await dataRepo.collectGarbage(type, modelId);
 
     let dataEntriesExpired = 0;
     if (lifecycleDeps) {

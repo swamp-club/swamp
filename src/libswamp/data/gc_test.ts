@@ -216,31 +216,13 @@ Deno.test("dataGc: passes dryRun flag through", async () => {
 function makeFakeDataRepo(
   result: GarbageCollectionResult = { versionsRemoved: 0, bytesReclaimed: 0 },
 ) {
-  const calls: Array<{
-    type: ModelType;
-    modelId: string;
-    options?: { skipNumericCap?: boolean };
-  }> = [];
   return {
-    calls,
     collectGarbage: (
-      type: ModelType,
-      modelId: string,
-      options?: { skipNumericCap?: boolean },
-    ): Promise<GarbageCollectionResult> => {
-      calls.push({ type, modelId, options });
-      return Promise.resolve(result);
-    },
+      _type: ModelType,
+      _modelId: string,
+    ): Promise<GarbageCollectionResult> => Promise.resolve(result),
   };
 }
-
-Deno.test("autoGc: passes skipNumericCap to collectGarbage", async () => {
-  const repo = makeFakeDataRepo({ versionsRemoved: 0, bytesReclaimed: 0 });
-  await autoGc(repo, ModelType.create("test/type"), "model-1");
-
-  assertEquals(repo.calls.length, 1);
-  assertEquals(repo.calls[0].options, { skipNumericCap: true });
-});
 
 Deno.test("autoGc: returns result when versions are removed", async () => {
   const repo = makeFakeDataRepo({ versionsRemoved: 10, bytesReclaimed: 4096 });
