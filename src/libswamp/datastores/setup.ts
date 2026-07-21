@@ -343,8 +343,8 @@ export async function* datastoreSetupExtension(
                   `This datastore contains existing namespaces: ${
                     remoteNamespaces.join(", ")
                   }. ` +
-                  `Set a namespace with 'swamp datastore namespace set <name>' before ` +
-                  `connecting to avoid absorbing foreign data.`,
+                  `Re-run setup with --namespace <name> to scope this connection ` +
+                  `and avoid absorbing foreign data from other projects.`,
                 existingNamespaces: remoteNamespaces,
               },
             };

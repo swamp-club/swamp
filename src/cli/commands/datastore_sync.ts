@@ -106,11 +106,11 @@ export const datastoreSyncCommand = new Command()
   .option("--push", "Push-only mode (upload all local cache data to S3)")
   .option(
     "-y, --yes",
-    "Confirm the push (required when the extension supports push preview)",
+    "Skip the push preview and upload immediately",
   )
   .option(
     "--confirm",
-    "Confirm the push (alias for --yes)",
+    "Skip the push preview and upload immediately (alias for --yes)",
   )
   .option(
     "--timeout <seconds:integer>",
@@ -159,6 +159,10 @@ export const datastoreSyncCommand = new Command()
       datastoreSync(ctx, deps, { mode, confirm }),
       renderer.handlers(),
     );
+
+    if (renderer.previewOnly) {
+      Deno.exit(1);
+    }
 
     if (mode === "pull" || mode === "sync") {
       const catalogStore = createCatalogStore(repoDir, datastoreResolver);

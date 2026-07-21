@@ -112,10 +112,13 @@ class JsonDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
         this.#warnings.push(e.data);
       },
       completed: (e) => {
-        const output = this.#warnings.length > 0
-          ? { ...e.data, warnings: this.#warnings }
-          : e.data;
-        console.log(JSON.stringify(output, null, 2));
+        console.log(
+          JSON.stringify(
+            { ...e.data, warnings: this.#warnings },
+            null,
+            2,
+          ),
+        );
       },
       error: (e) => {
         throw new UserError(e.error.message);

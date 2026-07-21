@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { DatastoreSyncEvent, EventHandlers } from "../../libswamp/mod.ts";
-import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
@@ -38,9 +37,15 @@ const syncModeLabels: Record<string, { initial: string; activity: string }> = {
   sync: { initial: "Syncing with remote...", activity: "Still syncing..." },
 };
 
-class LogDatastoreSyncRenderer implements Renderer<DatastoreSyncEvent> {
+export interface DatastoreSyncRenderer {
+  handlers(): EventHandlers<DatastoreSyncEvent>;
+  readonly previewOnly: boolean;
+}
+
+class LogDatastoreSyncRenderer implements DatastoreSyncRenderer {
   private activityTimer: ReturnType<typeof setInterval> | undefined;
   private startedAt: number | undefined;
+  previewOnly = false;
 
   private clearTimer(): void {
     if (this.activityTimer !== undefined) {
@@ -66,15 +71,16 @@ class LogDatastoreSyncRenderer implements Renderer<DatastoreSyncEvent> {
       },
       preview: (e) => {
         this.clearTimer();
+        this.previewOnly = true;
         const { summary } = e.data;
         const lines = [
-          bold("Push preview:"),
-          `  Total:   ${summary.total} file(s)`,
+          bold("Push preview — no data uploaded:"),
+          `  Total:   ${summary.total}`,
           `  New:     ${summary.new}`,
           `  Changed: ${summary.changed}`,
           `  Deleted: ${summary.deleted}`,
           "",
-          yellow("Run with --confirm to proceed."),
+          yellow("Run with --yes (or --confirm) to proceed."),
         ];
         writeOutput(lines.join("\n"));
       },
@@ -114,14 +120,17 @@ class LogDatastoreSyncRenderer implements Renderer<DatastoreSyncEvent> {
   }
 }
 
-class JsonDatastoreSyncRenderer implements Renderer<DatastoreSyncEvent> {
+class JsonDatastoreSyncRenderer implements DatastoreSyncRenderer {
+  previewOnly = false;
+
   handlers(): EventHandlers<DatastoreSyncEvent> {
     return {
       syncing: () => {
         // No JSON output for progress events
       },
       preview: (e) => {
-        console.log(JSON.stringify(e.data, null, 2));
+        this.previewOnly = true;
+        console.log(JSON.stringify({ ...e.data, pushed: false }, null, 2));
       },
       completed: (e) => {
         console.log(JSON.stringify(e.data, null, 2));
@@ -135,7 +144,7 @@ class JsonDatastoreSyncRenderer implements Renderer<DatastoreSyncEvent> {
 
 export function createDatastoreSyncRenderer(
   mode: OutputMode,
-): Renderer<DatastoreSyncEvent> {
+): DatastoreSyncRenderer {
   switch (mode) {
     case "json":
       return new JsonDatastoreSyncRenderer();
