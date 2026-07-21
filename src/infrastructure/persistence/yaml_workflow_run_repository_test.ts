@@ -19,9 +19,10 @@
 
 import { assert, assertEquals, assertNotEquals } from "@std/assert";
 import { ensureDir } from "@std/fs";
-import { dirname } from "@std/path";
+import { dirname, join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
+import { getIndexPath, readRunIndex } from "./workflow_run_index.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { Job } from "../../domain/workflows/job.ts";
@@ -772,3 +773,173 @@ Deno.test(
     });
   },
 );
+
+// --- Index-backed methods ---
+
+Deno.test("save: creates index entry alongside YAML file", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+
+    await repo.save(workflow.id, run);
+
+    const runsDir = join(
+      dir,
+      ".swamp",
+      "workflow-runs",
+      workflow.id,
+    );
+    const index = await readRunIndex(runsDir);
+    assertNotEquals(index, null);
+    assertEquals(index![run.id]?.status, "running");
+    assertEquals(index![run.id]?.workflowName, "test-workflow");
+  });
+});
+
+Deno.test("save: updates index entry on status change", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+
+    run.getJob("job1")!.getStep("step1")!.succeed();
+    run.getJob("job1")!.succeed();
+    run.complete();
+    await repo.save(workflow.id, run);
+
+    const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    const index = await readRunIndex(runsDir);
+    assertEquals(index![run.id]?.status, "succeeded");
+  });
+});
+
+Deno.test("findAllSummariesFromIndex: returns summaries from index", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+
+    const run1 = WorkflowRun.create(workflow);
+    run1.start();
+    await repo.save(workflow.id, run1);
+
+    const run2 = WorkflowRun.create(workflow);
+    run2.start();
+    run2.getJob("job1")!.getStep("step1")!.succeed();
+    run2.getJob("job1")!.succeed();
+    run2.complete();
+    await repo.save(workflow.id, run2);
+
+    const summaries = await repo.findAllSummariesFromIndex(workflow.id);
+    assertEquals(summaries.length, 2);
+    const statuses = summaries.map((s) => s.status).sort();
+    assertEquals(statuses, ["running", "succeeded"]);
+  });
+});
+
+Deno.test("findAllSummariesFromIndex: falls back to YAML scan when index missing", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+
+    // Delete the index to force fallback
+    const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    await Deno.remove(getIndexPath(runsDir));
+
+    const summaries = await repo.findAllSummariesFromIndex(workflow.id);
+    assertEquals(summaries.length, 1);
+    assertEquals(summaries[0].status, "running");
+  });
+});
+
+Deno.test("findSummariesByStatus: filters by status", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+
+    const run1 = WorkflowRun.create(workflow);
+    run1.start();
+    await repo.save(workflow.id, run1);
+
+    const run2 = WorkflowRun.create(workflow);
+    run2.start();
+    run2.getJob("job1")!.getStep("step1")!.succeed();
+    run2.getJob("job1")!.succeed();
+    run2.complete();
+    await repo.save(workflow.id, run2);
+
+    const running = await repo.findSummariesByStatus(workflow.id, "running");
+    assertEquals(running.length, 1);
+    assertEquals(running[0].id, run1.id);
+
+    const succeeded = await repo.findSummariesByStatus(
+      workflow.id,
+      "succeeded",
+    );
+    assertEquals(succeeded.length, 1);
+    assertEquals(succeeded[0].id, run2.id);
+
+    const failed = await repo.findSummariesByStatus(workflow.id, "failed");
+    assertEquals(failed.length, 0);
+  });
+});
+
+Deno.test("findSummariesByStatus: rebuilds stale index", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+
+    const run1 = WorkflowRun.create(workflow);
+    run1.start();
+    await repo.save(workflow.id, run1);
+
+    // Manually write a second YAML file without updating the index
+    // to simulate a concurrent write race
+    const run2 = WorkflowRun.create(workflow);
+    run2.start();
+    run2.suspend();
+    const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    const yamlPath = join(runsDir, `workflow-run-${run2.id}.yaml`);
+    const data = run2.toData();
+    const cleanData = JSON.parse(JSON.stringify(data));
+    await Deno.writeTextFile(
+      yamlPath,
+      stringifyYaml(cleanData as Record<string, unknown>),
+    );
+
+    // Index has 1 entry, but 2 YAML files exist — staleness detected
+    const suspended = await repo.findSummariesByStatus(
+      workflow.id,
+      "suspended",
+    );
+    assertEquals(suspended.length, 1);
+    assertEquals(suspended[0].id, run2.id);
+  });
+});
+
+Deno.test("index: corrupt JSON triggers rebuild on read", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+
+    // Corrupt the index
+    const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    await Deno.writeTextFile(getIndexPath(runsDir), "{{corrupt}}");
+
+    // Should fall back to YAML scan
+    const summaries = await repo.findAllSummariesFromIndex(workflow.id);
+    assertEquals(summaries.length, 1);
+    assertEquals(summaries[0].status, "running");
+  });
+});

@@ -242,9 +242,8 @@ export async function handleWorkflowApprovals(
       ctx.repoContext.workflowRepo,
       runRepo,
       async (workflowId) => {
-        const summaries = await runRepo
-          .findAllSummariesByWorkflowId(workflowId);
-        const suspended = summaries.filter((s) => s.status === "suspended");
+        const suspended = await runRepo
+          .findSummariesByStatus(workflowId, "suspended");
         const runs = await Promise.all(
           suspended.map((s) =>
             runRepo.findById(workflowId, s.id as WorkflowRunId)
@@ -492,7 +491,7 @@ export async function handleWorkflowHistorySearch(
     const deps: WorkflowHistorySearchDeps = {
       findAllWorkflows: () => ctx.repoContext.workflowRepo.findAll(),
       findAllRunsByWorkflowId: (id) =>
-        ctx.repoContext.workflowRunRepo.findAllByWorkflowId(
+        ctx.repoContext.workflowRunRepo.findAllSummariesFromIndex(
           createWorkflowId(id),
         ),
     };
@@ -557,7 +556,7 @@ export async function handleWorkflowRunSearch(
       findAllWorkflows: () => ctx.repoContext.workflowRepo.findAll(),
       findAllRunsByWorkflowId: (id) =>
         ctx.repoContext.workflowRunRepo
-          .findAllSummariesByWorkflowId(createWorkflowId(id)),
+          .findAllSummariesFromIndex(createWorkflowId(id)),
     };
 
     let result: Record<string, unknown> | undefined;

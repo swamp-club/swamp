@@ -40,6 +40,8 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { WorkflowApprovalsResponse } from "../../serve/protocol.ts";
+import type { WorkflowRunId } from "../../domain/workflows/workflow_id.ts";
+import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -123,9 +125,20 @@ export const workflowApprovalsCommand = withRemoteOptions(
   });
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const runRepo = repoContext.workflowRunRepo;
   const deps = createWorkflowApprovalsDeps(
     repoContext.workflowRepo,
-    repoContext.workflowRunRepo,
+    runRepo,
+    async (workflowId) => {
+      const suspended = await runRepo
+        .findSummariesByStatus(workflowId, "suspended");
+      const runs = await Promise.all(
+        suspended.map((s) =>
+          runRepo.findById(workflowId, s.id as WorkflowRunId)
+        ),
+      );
+      return runs.filter((r): r is WorkflowRun => r !== null);
+    },
   );
 
   let pending: PendingApproval[] = [];
