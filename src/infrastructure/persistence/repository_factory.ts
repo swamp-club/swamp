@@ -327,6 +327,7 @@ export interface RepositoryFactoryConfig {
    * row written by the unified data repository. Absent/empty → SOLO_NAMESPACE.
    */
   namespace?: string;
+  autoGc?: boolean;
 }
 
 /**
@@ -440,6 +441,7 @@ export function createRepositoryContext(
     markDirty,
     hydrateFile,
     namespace,
+    config.autoGc ?? false,
   );
 
   // Construct the query service alongside its dependencies so consumers

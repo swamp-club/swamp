@@ -156,6 +156,7 @@ export type ModelMethodRunEvent =
   }
   | { kind: "completed"; run: ModelMethodRunView }
   | { kind: "cancelled"; run: ModelMethodRunView; reason?: string }
+  | { kind: "auto_gc_started" }
   | {
     kind: "auto_gc_completed";
     versionsDeleted: number;
@@ -1141,6 +1142,7 @@ export async function* modelMethodRun(
           yield { kind: "completed", run: view };
 
           if (input.autoGc) {
+            yield { kind: "auto_gc_started" as const };
             let lifecycleDeps: AutoGcLifecycleDeps | undefined;
             if (deps.workflowRunRepo) {
               const lifecycleService = new DefaultDataLifecycleService(

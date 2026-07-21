@@ -903,29 +903,7 @@ Deno.test("collectGarbage: emits per-path markDirty for each removed version", a
       markDirty,
     );
 
-    // Use a high cap so write-time pruning doesn't fire during writes
-    const gcHighCap = Data.create({
-      name: "gc-dirty",
-      contentType: "text/plain",
-      lifetime: "infinite",
-      garbageCollection: 100,
-      streaming: false,
-      tags: { type: "resource" },
-      ownerDefinition: { ownerType: "manual", ownerRef: "test" },
-    });
-
-    // Save 3 versions with high cap (no write-time pruning)
-    for (let i = 0; i < 3; i++) {
-      await repo.save(
-        testType,
-        "gc-model",
-        gcHighCap,
-        new TextEncoder().encode(`v${i}`),
-      );
-    }
-
-    // Save a 4th version with cap=2 so collectGarbage prunes to 2
-    const gcLowCap = Data.create({
+    const gcData = Data.create({
       name: "gc-dirty",
       contentType: "text/plain",
       lifetime: "infinite",
@@ -934,21 +912,25 @@ Deno.test("collectGarbage: emits per-path markDirty for each removed version", a
       tags: { type: "resource" },
       ownerDefinition: { ownerType: "manual", ownerRef: "test" },
     });
-    await repo.save(
-      testType,
-      "gc-model",
-      gcLowCap,
-      new TextEncoder().encode("v3"),
-    );
 
-    // Write-time pruning on v3 write: priorVersions=[1,2,3], cap=2,
-    // removes [1,2]. So only [3,4] remain. collectGarbage has nothing to do.
-    // Instead, verify write-time pruning emitted markDirty calls.
+    for (let i = 0; i < 4; i++) {
+      await repo.save(
+        testType,
+        "gc-model",
+        gcData,
+        new TextEncoder().encode(`v${i}`),
+      );
+    }
+
     calls.length = 0;
 
     const result = await repo.collectGarbage(testType, "gc-model");
-    assertEquals(result.versionsRemoved, 0);
-    assertEquals(calls.length, 0);
+    assertEquals(result.versionsRemoved, 2);
+
+    const v1Dir = repo.getPath(testType, "gc-model", "gc-dirty", 1);
+    const v2Dir = repo.getPath(testType, "gc-model", "gc-dirty", 2);
+    const pruneCalls = calls.filter((c) => c === v1Dir || c === v2Dir);
+    assertEquals(pruneCalls.length, 2);
   } finally {
     if (Deno.build.os === "windows") {
       await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
@@ -1299,7 +1281,7 @@ Deno.test("getContent: returns null without hook when raw file is missing", asyn
   }
 });
 
-Deno.test("save: enforces numeric garbageCollection cap at write time", async () => {
+Deno.test("save: does not prune versions without enableWriteGc", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
@@ -1307,6 +1289,54 @@ Deno.test("save: enforces numeric garbageCollection cap at write time", async ()
       tmpDir,
       undefined,
       catalogStore,
+    );
+
+    const data = Data.create({
+      name: "no-prune",
+      contentType: "text/plain",
+      lifetime: "infinite",
+      garbageCollection: 3,
+      streaming: false,
+      tags: { type: "resource" },
+      ownerDefinition: { ownerType: "manual", ownerRef: "test" },
+    });
+
+    for (let i = 0; i < 8; i++) {
+      await repo.save(
+        testType,
+        "prune-model",
+        data,
+        new TextEncoder().encode(`v${i}`),
+      );
+    }
+
+    const versions = await repo.listVersions(
+      testType,
+      "prune-model",
+      "no-prune",
+    );
+    assertEquals(versions.length, 8);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("save: prunes versions at write time with enableWriteGc", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+      undefined,
+      undefined,
+      SOLO_NAMESPACE,
+      true,
     );
 
     const data = Data.create({
@@ -1331,141 +1361,6 @@ Deno.test("save: enforces numeric garbageCollection cap at write time", async ()
     const versions = await repo.listVersions(testType, "prune-model", "capped");
     assertEquals(versions.length, 3);
     assertEquals(versions, [6, 7, 8]);
-  } finally {
-    if (Deno.build.os === "windows") {
-      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
-    } else {
-      await Deno.remove(tmpDir, { recursive: true });
-    }
-  }
-});
-
-Deno.test("save: does not prune when garbageCollection is a duration string", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  try {
-    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
-    const repo = new FileSystemUnifiedDataRepository(
-      tmpDir,
-      undefined,
-      catalogStore,
-    );
-
-    const data = Data.create({
-      name: "duration-gc",
-      contentType: "text/plain",
-      lifetime: "infinite",
-      garbageCollection: "30d",
-      streaming: false,
-      tags: { type: "resource" },
-      ownerDefinition: { ownerType: "manual", ownerRef: "test" },
-    });
-
-    for (let i = 0; i < 5; i++) {
-      await repo.save(
-        testType,
-        "duration-model",
-        data,
-        new TextEncoder().encode(`v${i}`),
-      );
-    }
-
-    const versions = await repo.listVersions(
-      testType,
-      "duration-model",
-      "duration-gc",
-    );
-    assertEquals(versions.length, 5);
-  } finally {
-    if (Deno.build.os === "windows") {
-      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
-    } else {
-      await Deno.remove(tmpDir, { recursive: true });
-    }
-  }
-});
-
-Deno.test("save: cap=1 keeps only the latest version", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  try {
-    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
-    const repo = new FileSystemUnifiedDataRepository(
-      tmpDir,
-      undefined,
-      catalogStore,
-    );
-
-    const data = Data.create({
-      name: "single",
-      contentType: "text/plain",
-      lifetime: "infinite",
-      garbageCollection: 1,
-      streaming: false,
-      tags: { type: "resource" },
-      ownerDefinition: { ownerType: "manual", ownerRef: "test" },
-    });
-
-    for (let i = 0; i < 5; i++) {
-      await repo.save(
-        testType,
-        "single-model",
-        data,
-        new TextEncoder().encode(`v${i}`),
-      );
-    }
-
-    const versions = await repo.listVersions(
-      testType,
-      "single-model",
-      "single",
-    );
-    assertEquals(versions.length, 1);
-    assertEquals(versions, [5]);
-  } finally {
-    if (Deno.build.os === "windows") {
-      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
-    } else {
-      await Deno.remove(tmpDir, { recursive: true });
-    }
-  }
-});
-
-Deno.test("save: write-time pruning emits markDirty for each pruned version", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  try {
-    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
-    const calls: Array<string | undefined> = [];
-    const markDirty = (relPath?: string) => {
-      calls.push(relPath);
-      return Promise.resolve();
-    };
-    const repo = new FileSystemUnifiedDataRepository(
-      tmpDir,
-      undefined,
-      catalogStore,
-      markDirty,
-    );
-
-    const data = Data.create({
-      name: "dirty-prune",
-      contentType: "text/plain",
-      lifetime: "infinite",
-      garbageCollection: 2,
-      streaming: false,
-      tags: { type: "resource" },
-      ownerDefinition: { ownerType: "manual", ownerRef: "test" },
-    });
-
-    // Write 2 versions (no pruning yet)
-    await repo.save(testType, "m", data, new TextEncoder().encode("a"));
-    await repo.save(testType, "m", data, new TextEncoder().encode("b"));
-    calls.length = 0;
-
-    // Write a 3rd version — should prune version 1
-    await repo.save(testType, "m", data, new TextEncoder().encode("c"));
-
-    const v1Dir = repo.getPath(testType, "m", "dirty-prune", 1);
-    const pruneMarkDirty = calls.filter((c) => c === v1Dir);
-    assertEquals(pruneMarkDirty.length, 1);
   } finally {
     if (Deno.build.os === "windows") {
       await Deno.remove(tmpDir, { recursive: true }).catch(() => {});

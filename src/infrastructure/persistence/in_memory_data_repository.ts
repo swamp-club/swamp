@@ -74,6 +74,7 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     private readonly catalogStore: CatalogStore,
     public readonly namespace: Namespace = SOLO_NAMESPACE,
     maxBytes?: number,
+    private readonly enableWriteGc: boolean = false,
   ) {
     this.maxBytes = maxBytes ?? DEFAULT_EPHEMERAL_MAX_BYTES;
     catalogStore.markPopulated();
@@ -248,9 +249,11 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
 
     this.catalogUpsert(type, modelId, dataToSave);
 
-    const gc = data.garbageCollection;
-    if (typeof gc === "number") {
-      this.pruneExcessVersions(type, modelId, data.name, priorVersions, gc);
+    if (this.enableWriteGc) {
+      const gc = data.garbageCollection;
+      if (typeof gc === "number") {
+        this.pruneExcessVersions(type, modelId, data.name, priorVersions, gc);
+      }
     }
 
     return { version: newVersion };
