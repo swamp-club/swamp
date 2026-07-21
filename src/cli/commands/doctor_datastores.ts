@@ -47,7 +47,15 @@ import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/fi
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
-import { resolveDatastoreConfig } from "../resolve_datastore.ts";
+import {
+  datastoreBasePath,
+  resolveDatastoreConfig,
+} from "../resolve_datastore.ts";
+import {
+  createFilesystemDetectDeps,
+  detectUnmigratedNamespaceData,
+  formatUnmigratedWarning,
+} from "../../libswamp/datastores/namespace_migration_check.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -56,12 +64,20 @@ async function createDoctorDatastoresDeps(
   repoDir: string,
 ): Promise<DoctorDatastoresDeps> {
   await datastoreTypeRegistry.ensureLoaded();
+  const markerRepo = new RepoMarkerRepository();
+  const marker = await markerRepo.read(RepoPath.create(repoDir));
+  const datastoreConfig = await resolveDatastoreConfig(
+    marker,
+    undefined,
+    repoDir,
+  );
+  const dsBasePath = isCustomDatastoreConfig(datastoreConfig) &&
+      datastoreConfig.cachePath
+    ? datastoreConfig.cachePath
+    : datastoreBasePath(datastoreConfig);
+
   return {
-    getDatastoreConfig: async () => {
-      const markerRepo = new RepoMarkerRepository();
-      const marker = await markerRepo.read(RepoPath.create(repoDir));
-      return await resolveDatastoreConfig(marker, undefined, repoDir);
-    },
+    getDatastoreConfig: () => Promise.resolve(datastoreConfig),
     checkHealth: async (config) => {
       if (isCustomDatastoreConfig(config)) {
         await datastoreTypeRegistry.ensureTypeLoaded(config.type);
@@ -89,6 +105,20 @@ async function createDoctorDatastoresDeps(
       } catch {
         return [];
       }
+    },
+    checkMigrationStatus: async () => {
+      const unmigrated = await detectUnmigratedNamespaceData(
+        dsBasePath,
+        datastoreConfig.namespace,
+        createFilesystemDetectDeps(),
+      );
+      if (unmigrated.length > 0) {
+        return {
+          migrated: false,
+          message: formatUnmigratedWarning(unmigrated),
+        };
+      }
+      return { migrated: true };
     },
   };
 }

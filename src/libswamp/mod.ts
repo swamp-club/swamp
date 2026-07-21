@@ -1521,6 +1521,13 @@ export {
   type SubdirPreview,
 } from "./datastores/namespace_migrate.ts";
 export {
+  createFilesystemDetectDeps,
+  type DetectUnmigratedDeps,
+  detectUnmigratedNamespaceData,
+  formatUnmigratedWarning,
+  type UnmigratedSubdir,
+} from "./datastores/namespace_migration_check.ts";
+export {
   questPass,
   type QuestPassData,
   type QuestPassDeps,

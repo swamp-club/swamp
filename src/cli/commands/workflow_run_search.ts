@@ -40,6 +40,12 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import {
+  createFilesystemDetectDeps,
+  detectUnmigratedNamespaceData,
+  formatUnmigratedWarning,
+} from "../../libswamp/datastores/namespace_migration_check.ts";
+import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import {
   createWorkflowId,
@@ -175,10 +181,11 @@ export async function workflowRunSearchAction(
   const libCtx = createLibSwampContext();
   ctx.logger.debug`Searching workflow runs with query: ${query ?? "(none)"}`;
 
-  const { repoContext } = await requireInitializedRepoReadOnly({
-    repoDir: resolveRepoDir(options.repoDir),
-    outputMode: effectiveMode,
-  });
+  const { repoContext, datastoreResolver } =
+    await requireInitializedRepoReadOnly({
+      repoDir: resolveRepoDir(options.repoDir),
+      outputMode: effectiveMode,
+    });
   const workflowRepo = repoContext.workflowRepo;
   const runRepo = repoContext.workflowRunRepo;
 
@@ -221,6 +228,24 @@ export async function workflowRunSearchAction(
   );
 
   const selected = renderer.selectedItem();
+
+  if (!selected) {
+    const dsConfig = datastoreResolver.config();
+    if (dsConfig.namespace) {
+      const dsBasePath = isCustomDatastoreConfig(dsConfig)
+        ? (dsConfig.cachePath ?? dsConfig.datastorePath)
+        : dsConfig.path;
+      const unmigrated = await detectUnmigratedNamespaceData(
+        dsBasePath,
+        dsConfig.namespace,
+        createFilesystemDetectDeps(),
+      );
+      if (unmigrated.length > 0) {
+        ctx.logger.warn(formatUnmigratedWarning(unmigrated));
+      }
+    }
+  }
+
   if (selected) {
     ctx.logger.debug`Selected run: ${selected.runId}`;
     // In JSON mode, still display the full run details after auto-select

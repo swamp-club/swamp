@@ -60,6 +60,10 @@ export interface DoctorDatastoresDeps {
     config: DatastoreConfig,
   ) => Promise<{ healthy: boolean; message: string; latencyMs: number }>;
   getVaultConfigs: () => Promise<Array<{ name: string; type: string }>>;
+  checkMigrationStatus?: () => Promise<{
+    migrated: boolean;
+    message?: string;
+  }>;
 }
 
 /**
@@ -92,6 +96,19 @@ export async function* doctorDatastores(
         passed: healthy,
         message,
       });
+
+      // Namespace migration check
+      if (config.namespace && deps.checkMigrationStatus) {
+        const migration = await deps.checkMigrationStatus();
+        healthFindings.push({
+          check: "namespace-migration",
+          passed: migration.migrated,
+          message: migration.migrated
+            ? "Namespace data has been migrated"
+            : migration.message ??
+              "Un-migrated data detected. Run 'swamp datastore namespace migrate --confirm'.",
+        });
+      }
 
       // Vault mismatch check — only relevant for custom (remote) datastores
       if (isCustom) {

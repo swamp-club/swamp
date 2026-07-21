@@ -222,6 +222,69 @@ Deno.test("createDatastoreSyncDeps: omits namespace when config has none", async
   assertEquals(push?.options?.namespace, undefined);
 });
 
+Deno.test("datastoreSync: push blocked when un-migrated namespace data exists", async () => {
+  const deps = makeDeps({
+    checkMigrationStatus: () =>
+      Promise.resolve({
+        migrated: false,
+        message:
+          "Data in 2 directories (workflow-runs, data) has not been migrated.",
+      }),
+  });
+
+  const error = await assertErrors<DatastoreSyncEvent>(
+    datastoreSync(createLibSwampContext(), deps, { mode: "push" }),
+    "unmigrated_namespace_data",
+  );
+  assertEquals(
+    error.message,
+    "Data in 2 directories (workflow-runs, data) has not been migrated.",
+  );
+});
+
+Deno.test("datastoreSync: full sync blocked when un-migrated namespace data exists", async () => {
+  const deps = makeDeps({
+    checkMigrationStatus: () =>
+      Promise.resolve({
+        migrated: false,
+        message: "Un-migrated data detected.",
+      }),
+  });
+
+  const error = await assertErrors<DatastoreSyncEvent>(
+    datastoreSync(createLibSwampContext(), deps, { mode: "sync" }),
+    "unmigrated_namespace_data",
+  );
+  assertEquals(error.message, "Un-migrated data detected.");
+});
+
+Deno.test("datastoreSync: pull allowed when un-migrated namespace data exists", async () => {
+  const deps = makeDeps({
+    checkMigrationStatus: () =>
+      Promise.resolve({ migrated: false, message: "Un-migrated data." }),
+  });
+
+  const events = await collect<DatastoreSyncEvent>(
+    datastoreSync(createLibSwampContext(), deps, { mode: "pull" }),
+  );
+
+  assertEquals(events.length, 2);
+  assertEquals(events[0], { kind: "syncing", mode: "pull" });
+});
+
+Deno.test("datastoreSync: push succeeds when migration is complete", async () => {
+  const deps = makeDeps({
+    checkMigrationStatus: () => Promise.resolve({ migrated: true }),
+  });
+
+  const events = await collect<DatastoreSyncEvent>(
+    datastoreSync(createLibSwampContext(), deps, { mode: "push" }),
+  );
+
+  assertEquals(events.length, 2);
+  assertEquals(events[0], { kind: "syncing", mode: "push" });
+});
+
 Deno.test("datastoreSync: unsupported datastore type yields error", async () => {
   const deps = makeDeps({
     validateSyncSupport: () =>

@@ -34,6 +34,12 @@ import {
 import type { CommandContext } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import {
+  createFilesystemDetectDeps,
+  detectUnmigratedNamespaceData,
+  formatUnmigratedWarning,
+} from "../../libswamp/datastores/namespace_migration_check.ts";
+import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import {
   requestServerResponse,
   resolveServerToken,
   resolveServeUrl,
@@ -119,10 +125,11 @@ export const workflowApprovalsCommand = withRemoteOptions(
     return;
   }
 
-  const { repoContext } = await requireInitializedRepoUnlocked({
-    repoDir: resolveRepoDir(options.repoDir),
-    outputMode: cliCtx.outputMode,
-  });
+  const { repoContext, datastoreResolver } =
+    await requireInitializedRepoUnlocked({
+      repoDir: resolveRepoDir(options.repoDir),
+      outputMode: cliCtx.outputMode,
+    });
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
   const runRepo = repoContext.workflowRunRepo;
@@ -156,4 +163,21 @@ export const workflowApprovalsCommand = withRemoteOptions(
   );
 
   renderApprovals(cliCtx, pending);
+
+  if (pending.length === 0) {
+    const dsConfig = datastoreResolver.config();
+    if (dsConfig.namespace) {
+      const dsBasePath = isCustomDatastoreConfig(dsConfig)
+        ? (dsConfig.cachePath ?? dsConfig.datastorePath)
+        : dsConfig.path;
+      const unmigrated = await detectUnmigratedNamespaceData(
+        dsBasePath,
+        dsConfig.namespace,
+        createFilesystemDetectDeps(),
+      );
+      if (unmigrated.length > 0) {
+        cliCtx.logger.warn(formatUnmigratedWarning(unmigrated));
+      }
+    }
+  }
 });

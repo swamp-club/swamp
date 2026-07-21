@@ -26,6 +26,11 @@ import type { DatastorePathResolver } from "../../domain/datastore/datastore_pat
 import { runBoundedSync } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
+import {
+  createFilesystemDetectDeps,
+  detectUnmigratedNamespaceData,
+  formatUnmigratedWarning,
+} from "./namespace_migration_check.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
@@ -53,6 +58,10 @@ export interface DatastoreSyncDeps {
     supported: boolean;
     type: string;
     errorMessage?: string;
+  }>;
+  checkMigrationStatus?: () => Promise<{
+    migrated: boolean;
+    message?: string;
   }>;
   pushSync: () => Promise<{ filesPushed: number }>;
   pullSync: () => Promise<{ filesPulled: number }>;
@@ -116,6 +125,20 @@ export async function createDatastoreSyncDeps(
     return {
       validateSyncSupport: () =>
         Promise.resolve({ supported: true, type: config.type }),
+      checkMigrationStatus: async () => {
+        const unmigrated = await detectUnmigratedNamespaceData(
+          config.cachePath!,
+          ns,
+          createFilesystemDetectDeps(),
+        );
+        if (unmigrated.length > 0) {
+          return {
+            migrated: false,
+            message: formatUnmigratedWarning(unmigrated),
+          };
+        }
+        return { migrated: true };
+      },
       pushSync: async () => {
         const count = await runBoundedSync(
           label,
@@ -223,6 +246,25 @@ export async function* datastoreSync(
           },
         };
         return;
+      }
+
+      if (
+        (input.mode === "push" || input.mode === "sync") &&
+        deps.checkMigrationStatus
+      ) {
+        const migration = await deps.checkMigrationStatus();
+        if (!migration.migrated) {
+          yield {
+            kind: "error",
+            error: {
+              code: "unmigrated_namespace_data",
+              message: migration.message ??
+                "Un-migrated namespace data detected. " +
+                  "Run 'swamp datastore namespace migrate --confirm' before pushing.",
+            },
+          };
+          return;
+        }
       }
 
       yield { kind: "syncing", mode: input.mode };
