@@ -476,6 +476,14 @@ Deno.test("replaceExpressions: replaces whole-value expression spanning newlines
   assertEquals(result.deliveryId, "gh-abc-123");
 });
 
+Deno.test("replaceExpressions: preserves type for whole-value expression with trailing newline", () => {
+  const raw = "${{ model.foo.resource.id }}";
+  const data = { value: raw + "\n" };
+  const values = new Map<string, unknown>([[raw, 42]]);
+  const result = replaceExpressions(data, values) as { value: unknown };
+  assertEquals(result.value, 42);
+});
+
 Deno.test("extractCelExpression: extracts expression spanning newlines", () => {
   assertEquals(
     extractCelExpression(

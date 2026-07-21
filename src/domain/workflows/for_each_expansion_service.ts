@@ -64,7 +64,7 @@ export function resolveForEachStepName(
   if (hasExpression) {
     let hadEvalFailure = false;
     const resolved = template.replace(
-      /\$\{\{\s*(.+?)\s*\}\}/g,
+      /\$\{\{\s*(.+?)\s*\}\}/gs,
       (_match, expr) => {
         try {
           return String(

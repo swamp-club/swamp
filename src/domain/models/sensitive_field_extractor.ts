@@ -193,7 +193,7 @@ function isExpressionOnly(value: string): boolean {
   if (!containsExpression(value)) {
     return false;
   }
-  return value.replace(/\$\{\{.+?\}\}/g, "").trim() === "";
+  return value.replace(/\$\{\{.+?\}\}/gs, "").trim() === "";
 }
 
 /**

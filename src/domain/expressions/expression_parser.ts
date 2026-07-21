@@ -156,10 +156,10 @@ function replaceExpressionsRecursive(
 ): unknown {
   if (typeof data === "string") {
     // Check if the entire string is a single expression
-    const singleMatch = data.match(/^\$\{\{\s*(.+?)\s*\}\}\s*$/s);
+    const singleMatch = data.match(/^(\$\{\{\s*.+?\s*\}\})\s*$/s);
     if (singleMatch) {
       // Return the evaluated value directly (preserves type)
-      const evaluated = values.get(data);
+      const evaluated = values.get(singleMatch[1]);
       return evaluated !== undefined ? evaluated : data;
     }
 
