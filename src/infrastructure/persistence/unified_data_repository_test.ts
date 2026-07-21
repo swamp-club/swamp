@@ -1369,3 +1369,50 @@ Deno.test("save: prunes versions at write time with enableWriteGc", async () => 
     }
   }
 });
+
+Deno.test("save: write-time pruning emits markDirty for each pruned version", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const calls: Array<string | undefined> = [];
+    const markDirty = (relPath?: string) => {
+      calls.push(relPath);
+      return Promise.resolve();
+    };
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+      markDirty,
+      undefined,
+      SOLO_NAMESPACE,
+      true,
+    );
+
+    const data = Data.create({
+      name: "dirty-prune",
+      contentType: "text/plain",
+      lifetime: "infinite",
+      garbageCollection: 2,
+      streaming: false,
+      tags: { type: "resource" },
+      ownerDefinition: { ownerType: "manual", ownerRef: "test" },
+    });
+
+    await repo.save(testType, "m", data, new TextEncoder().encode("a"));
+    await repo.save(testType, "m", data, new TextEncoder().encode("b"));
+    calls.length = 0;
+
+    await repo.save(testType, "m", data, new TextEncoder().encode("c"));
+
+    const v1Dir = repo.getPath(testType, "m", "dirty-prune", 1);
+    const pruneMarkDirty = calls.filter((c) => c === v1Dir);
+    assertEquals(pruneMarkDirty.length, 1);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});

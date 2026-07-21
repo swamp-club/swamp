@@ -1142,7 +1142,7 @@ export async function* modelMethodRun(
           yield { kind: "completed", run: view };
 
           if (input.autoGc) {
-            yield { kind: "auto_gc_started" as const };
+            yield { kind: "auto_gc_started" };
             let lifecycleDeps: AutoGcLifecycleDeps | undefined;
             if (deps.workflowRunRepo) {
               const lifecycleService = new DefaultDataLifecycleService(

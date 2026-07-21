@@ -807,6 +807,7 @@ export async function requireInitializedRepoUnlocked(
       )
       : undefined,
     namespace: datastoreConfig.namespace,
+    autoGc: marker?.autoGc === true,
     ...factoryConfig,
   });
 

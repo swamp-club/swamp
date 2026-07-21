@@ -673,6 +673,7 @@ export type ModelMethodRunEvent =
   | { kind: "report_failed"; reportName: string; scope: string; error: string }
   | { kind: "completed"; run: ModelMethodRunView }
   | { kind: "cancelled"; run: ModelMethodRunView; reason?: string }
+  | { kind: "auto_gc_started" }
   | {
     kind: "auto_gc_completed";
     versionsDeleted: number;
