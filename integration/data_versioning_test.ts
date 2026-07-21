@@ -259,7 +259,7 @@ Deno.test("Data Versioning: garbage collection by version count", async () => {
       ownerDefinition: owner,
     });
 
-    // Write 6 versions — write-time pruning keeps at most 3
+    // Write 6 versions — no write-time pruning (enableWriteGc defaults to false)
     for (let i = 1; i <= 6; i++) {
       await repo.save(
         type,
@@ -269,13 +269,13 @@ Deno.test("Data Versioning: garbage collection by version count", async () => {
       );
     }
 
-    // Write-time pruning already enforced the cap
+    // All 6 versions are present before GC
     let versions = await repo.listVersions(type, modelId, "gc-count-test");
-    assertEquals(versions, [4, 5, 6]);
+    assertEquals(versions, [1, 2, 3, 4, 5, 6]);
 
-    // collectGarbage has nothing left to do
+    // collectGarbage enforces the cap
     const gcResult = await repo.collectGarbage(type, modelId);
-    assertEquals(gcResult.versionsRemoved, 0);
+    assertEquals(gcResult.versionsRemoved, 3);
 
     // Versions still accessible
     versions = await repo.listVersions(type, modelId, "gc-count-test");
@@ -355,7 +355,7 @@ Deno.test("Data Versioning: garbage collection dry-run reports counts without de
       ownerDefinition: owner,
     });
 
-    // Write 7 versions — write-time pruning keeps at most 3
+    // Write 7 versions — no write-time pruning
     for (let i = 1; i <= 7; i++) {
       await repo.save(
         type,
@@ -365,16 +365,15 @@ Deno.test("Data Versioning: garbage collection dry-run reports counts without de
       );
     }
 
-    // Write-time pruning already enforced the cap
     const before = await repo.listVersions(type, modelId, "gc-dryrun-test");
-    assertEquals(before, [5, 6, 7]);
+    assertEquals(before, [1, 2, 3, 4, 5, 6, 7]);
 
-    // Dry-run has nothing to report — already at cap
+    // Dry-run reports excess without deleting
     const gcResult = await repo.collectGarbage(type, modelId, { dryRun: true });
-    assertEquals(gcResult.versionsRemoved, 0);
+    assertEquals(gcResult.versionsRemoved, 4);
 
     const after = await repo.listVersions(type, modelId, "gc-dryrun-test");
-    assertEquals(after, [5, 6, 7]);
+    assertEquals(after, [1, 2, 3, 4, 5, 6, 7]);
   });
 });
 
@@ -410,7 +409,7 @@ Deno.test("Data Versioning: multiple data items with different GC policies", asy
       ownerDefinition: owner,
     });
 
-    // Write 4 versions to each — write-time pruning enforces caps inline
+    // Write 4 versions to each — no write-time pruning
     for (let i = 1; i <= 4; i++) {
       await repo.save(
         type,
@@ -426,11 +425,11 @@ Deno.test("Data Versioning: multiple data items with different GC policies", asy
       );
     }
 
-    // Write-time pruning already enforced — collectGarbage has nothing to do
+    // collectGarbage enforces caps
     const gcResult = await repo.collectGarbage(type, modelId);
-    assertEquals(gcResult.versionsRemoved, 0);
+    assertEquals(gcResult.versionsRemoved, 2);
 
-    // Verify data1 has 2 versions (cap=2)
+    // Verify data1 pruned to 2 versions (cap=2)
     const versions1 = await repo.listVersions(type, modelId, "data-keep-2");
     assertEquals(versions1, [3, 4]);
 
@@ -849,7 +848,7 @@ Deno.test("Data Versioning: deleteExpiredData removes excess version directories
       ownerDefinition: owner,
     });
 
-    // Write 25 versions — write-time pruning keeps at most 5
+    // Write 25 versions — no write-time pruning
     for (let i = 1; i <= 25; i++) {
       await repo.save(
         type,
@@ -859,23 +858,23 @@ Deno.test("Data Versioning: deleteExpiredData removes excess version directories
       );
     }
 
-    // Write-time pruning already enforced cap — only 5 remain
+    // All 25 version directories present before GC
     const dataNameDir = repo.getDataNameDir(type, modelId, "findings");
     let versionDirsBefore = 0;
     for await (const entry of Deno.readDir(dataNameDir)) {
       if (entry.isDirectory && entry.name !== "latest") versionDirsBefore++;
     }
-    assertEquals(versionDirsBefore, 5);
+    assertEquals(versionDirsBefore, 25);
 
-    // Run deleteExpiredData — nothing left to do
+    // Run deleteExpiredData — phase 2 enforces version cap
     const result = await service.deleteExpiredData();
 
     // Phase 1: nothing expired (lifetime: infinite)
     assertEquals(result.dataEntriesExpired, 0);
-    // Phase 2: nothing to prune (already at cap)
-    assertEquals(result.versionsDeleted, 0);
+    // Phase 2: prunes 20 excess versions (25 - 5 = 20)
+    assertEquals(result.versionsDeleted, 20);
 
-    // Verify PHYSICAL version directories unchanged
+    // Verify PHYSICAL version directories pruned
     let versionDirsAfter = 0;
     for await (const entry of Deno.readDir(dataNameDir)) {
       if (entry.isDirectory && entry.name !== "latest") versionDirsAfter++;
@@ -933,7 +932,7 @@ Deno.test("Data Versioning: deleteExpiredData with expired + excess versions", a
       ownerDefinition: owner,
     });
 
-    // Write versions for both items — write-time pruning enforces caps inline
+    // Write versions for both items — no write-time pruning
     for (let i = 1; i <= 10; i++) {
       await repo.save(
         type,
@@ -949,15 +948,13 @@ Deno.test("Data Versioning: deleteExpiredData with expired + excess versions", a
       );
     }
 
-    // Write-time pruning: expired-item has gc=5, so versions 6-10 survive.
-    // gc-target has gc=3, so versions 8-10 survive.
     const expiredDataNameDir = repo.getDataNameDir(
       type,
       modelId,
       "expired-item",
     );
 
-    // Backdate surviving expired-item metadata to make it actually expired
+    // Backdate all expired-item metadata to make it actually expired
     const expiredVersions = await repo.listVersions(
       type,
       modelId,
@@ -976,13 +973,13 @@ Deno.test("Data Versioning: deleteExpiredData with expired + excess versions", a
       await Deno.writeTextFile(metaPath, backdated);
     }
 
-    // Verify gc-target already at cap from write-time pruning
+    // Verify gc-target has all 10 versions (no write-time pruning)
     const gcDataNameDir = repo.getDataNameDir(type, modelId, "gc-target");
     let gcVersionsBefore = 0;
     for await (const entry of Deno.readDir(gcDataNameDir)) {
       if (entry.isDirectory && entry.name !== "latest") gcVersionsBefore++;
     }
-    assertEquals(gcVersionsBefore, 3);
+    assertEquals(gcVersionsBefore, 10);
 
     // Run deleteExpiredData (Phase 1 + Phase 2)
     const result = await service.deleteExpiredData();
@@ -993,7 +990,7 @@ Deno.test("Data Versioning: deleteExpiredData with expired + excess versions", a
     // Verify expired-item directory was completely removed by Phase 1
     assertEquals(existsSync(expiredDataNameDir), false);
 
-    // Verify gc-target unchanged (already at cap from write-time pruning)
+    // Phase 2 prunes gc-target from 10 to 3 versions
     let gcVersionsAfter = 0;
     for await (const entry of Deno.readDir(gcDataNameDir)) {
       if (entry.isDirectory && entry.name !== "latest") gcVersionsAfter++;
