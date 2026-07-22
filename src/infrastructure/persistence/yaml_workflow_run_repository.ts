@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { ensureDir } from "@std/fs";
-import { join } from "@std/path";
+import { basename, join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
@@ -468,6 +468,13 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     return join(this.baseDir, workflowId);
   }
 
+  private getLocalIndexDir(workflowId: WorkflowId): string {
+    return join(
+      swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns),
+      workflowId,
+    );
+  }
+
   async deleteAllByWorkflowId(workflowId: WorkflowId): Promise<number> {
     const dir = this.getRunsDir(workflowId);
 
@@ -488,6 +495,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         throw error;
       }
     }
+
+    await deleteRunIndex(this.getLocalIndexDir(workflowId));
 
     return count;
   }
@@ -585,6 +594,10 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
     for (const dir of affectedDirs) {
       await deleteRunIndex(dir);
+      const workflowId = basename(dir) as WorkflowId;
+      if (workflowId) {
+        await deleteRunIndex(this.getLocalIndexDir(workflowId));
+      }
     }
 
     return { deleted, bytesReclaimed };
@@ -593,8 +606,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   async findAllSummariesFromIndex(
     workflowId: WorkflowId,
   ): Promise<WorkflowRunSummary[]> {
-    const dir = this.getRunsDir(workflowId);
-    const index = await this.getValidatedIndex(dir);
+    const runsDir = this.getRunsDir(workflowId);
+    const indexDir = this.getLocalIndexDir(workflowId);
+    const index = await this.getValidatedIndex(runsDir, indexDir);
     if (!index) {
       return this.findAllSummariesByWorkflowId(workflowId);
     }
@@ -605,8 +619,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     workflowId: WorkflowId,
     status: string,
   ): Promise<WorkflowRunSummary[]> {
-    const dir = this.getRunsDir(workflowId);
-    const index = await this.getValidatedIndex(dir);
+    const runsDir = this.getRunsDir(workflowId);
+    const indexDir = this.getLocalIndexDir(workflowId);
+    const index = await this.getValidatedIndex(runsDir, indexDir);
     if (!index) {
       const all = await this.findAllSummariesByWorkflowId(workflowId);
       return all.filter((s) => s.status === status);
@@ -615,33 +630,35 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   private async getValidatedIndex(
-    dir: string,
+    runsDir: string,
+    indexDir: string,
   ): Promise<WorkflowRunIndex | null> {
-    const entries = await listDirEntries(dir);
+    const entries = await listDirEntries(runsDir);
     const yamlCount = countYamlRunFiles(entries);
     if (yamlCount === 0) return null;
 
-    const index = await readRunIndex(dir);
+    const index = await readRunIndex(indexDir);
     if (!index || isIndexStale(index, yamlCount)) {
-      return await this.rebuildIndex(dir);
+      return await this.rebuildIndex(runsDir, indexDir);
     }
 
     return index;
   }
 
   private async rebuildIndex(
-    dir: string,
+    runsDir: string,
+    indexDir: string,
   ): Promise<WorkflowRunIndex | null> {
     const index: WorkflowRunIndex = {};
     try {
-      for await (const entry of Deno.readDir(dir)) {
+      for await (const entry of Deno.readDir(runsDir)) {
         if (
           !entry.isFile || !entry.name.startsWith("workflow-run-") ||
           !entry.name.endsWith(".yaml")
         ) {
           continue;
         }
-        const path = join(dir, entry.name);
+        const path = join(runsDir, entry.name);
         try {
           const content = await Deno.readTextFile(path);
           const summary = parseWorkflowRunSummary(parseYaml(content));
@@ -657,7 +674,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     }
 
     try {
-      await writeRunIndex(dir, index);
+      await ensureDir(indexDir);
+      await writeRunIndex(indexDir, index);
     } catch (error) {
       logger
         .warn`Failed to write rebuilt index, will retry next read: ${error}`;
@@ -670,9 +688,10 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     workflowId: WorkflowId,
     run: WorkflowRun,
   ): Promise<void> {
-    const dir = this.getRunsDir(workflowId);
+    const indexDir = this.getLocalIndexDir(workflowId);
     try {
-      const existing = await readRunIndex(dir) ?? {};
+      await ensureDir(indexDir);
+      const existing = await readRunIndex(indexDir) ?? {};
       existing[run.id] = {
         status: run.status,
         workflowId: run.workflowId,
@@ -682,10 +701,10 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         tags: run.tags ?? {},
         inputs: run.inputs ?? {},
       };
-      await writeRunIndex(dir, existing);
+      await writeRunIndex(indexDir, existing);
     } catch (error) {
       logger.warn`Failed to update run index, deleting for rebuild: ${error}`;
-      await deleteRunIndex(dir);
+      await deleteRunIndex(indexDir);
     }
   }
 }

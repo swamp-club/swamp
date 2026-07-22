@@ -943,3 +943,28 @@ Deno.test("index: corrupt JSON triggers rebuild on read", async () => {
     assertEquals(summaries[0].status, "running");
   });
 });
+
+Deno.test("save: index is written to local path, not cache baseDir", async () => {
+  await withTempDir(async (dir) => {
+    const cacheDir = await Deno.makeTempDir();
+    try {
+      const repo = new YamlWorkflowRunRepository(dir, undefined, cacheDir);
+      const workflow = createTestWorkflow();
+      const run = WorkflowRun.create(workflow);
+      run.start();
+      await repo.save(workflow.id, run);
+
+      // Index must be under the repo-local .swamp/ path
+      const localIndexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+      const localIndex = await readRunIndex(localIndexDir);
+      assertNotEquals(localIndex, null, "index must exist under local .swamp/");
+      assertEquals(localIndex![run.id]?.status, "running");
+
+      // Index must NOT be in the cache baseDir (would pollute sync)
+      const cacheIndex = await readRunIndex(join(cacheDir, workflow.id));
+      assertEquals(cacheIndex, null, "index must not exist in cache baseDir");
+    } finally {
+      await Deno.remove(cacheDir, { recursive: true });
+    }
+  });
+});
