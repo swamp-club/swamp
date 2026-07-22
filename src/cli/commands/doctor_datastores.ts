@@ -273,7 +273,7 @@ export const doctorDatastoresCommand = withRemoteOptions(
     )
     .example(
       "Execute namespace contamination cleanup",
-      "swamp doctor datastores --repair --confirm",
+      "swamp doctor datastores --repair -y",
     )
     .option(
       "--repo-dir <dir:string>",
@@ -281,10 +281,10 @@ export const doctorDatastoresCommand = withRemoteOptions(
     )
     .option(
       "--repair",
-      "Detect and clean up foreign namespace contamination.",
+      "Preview foreign namespace contamination cleanup (add --confirm to execute).",
     )
     .option(
-      "--confirm",
+      "-y, --confirm",
       "Execute the repair (without this, --repair shows a preview).",
     ),
 ).action(async function (options: AnyOptions) {
