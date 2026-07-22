@@ -273,6 +273,12 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
       completed: (e) => {
         this.logger
           .info`Pushed ${e.data.name}@${e.data.version}`;
+        this.logger.info`Channel: ${e.data.channel}`;
+        this.logger.info`Visibility: ${e.data.visibility}`;
+        if (e.data.visibility === "private") {
+          this.logger
+            .warn`This extension is private — only collective members can pull it`;
+        }
         this.logger.info`Extension ID: ${e.data.extensionId}`;
         this.logger.info`Archive size: ${formatBytes(e.data.archiveSize)}`;
         const parts = [

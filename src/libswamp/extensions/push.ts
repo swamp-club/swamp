@@ -132,6 +132,8 @@ export interface ExtensionPushSuccessData {
   datastoreCount: number;
   reportCount: number;
   skillCount: number;
+  channel: string;
+  visibility: "public" | "private";
 }
 
 /** Data for compilation error output. */
@@ -325,6 +327,11 @@ export interface ExtensionPushExecuteDeps {
     metadata: ExtensionPushMetadata,
     apiKey: string,
   ) => Promise<{ name: string; version: string; extensionId: string }>;
+  getExtensionVisibility: (
+    serverUrl: string,
+    name: string,
+    apiKey: string,
+  ) => Promise<{ isPrivate: boolean } | null>;
 }
 
 // ── Deps factory ──────────────────────────────────────────────────────
@@ -421,6 +428,12 @@ export function createExtensionPushExecuteDeps(
     confirmPush: async (serverUrl, metadata, apiKey) => {
       const client = new ExtensionApiClient(serverUrl, identity);
       return await client.confirmPush(metadata, apiKey);
+    },
+    getExtensionVisibility: async (serverUrl, name, apiKey) => {
+      const client = new ExtensionApiClient(serverUrl, identity);
+      const info = await client.getExtension(name, apiKey);
+      if (!info) return null;
+      return { isPrivate: info.isPrivate ?? false };
     },
   };
 }
@@ -933,6 +946,18 @@ export async function* extensionPush(
         return;
       }
 
+      let visibility: "public" | "private" = "public";
+      try {
+        const info = await deps.getExtensionVisibility(
+          credentials.serverUrl,
+          confirmResult.name,
+          credentials.apiKey,
+        );
+        if (info?.isPrivate) visibility = "private";
+      } catch {
+        // Best-effort — don't fail the push over a visibility check.
+      }
+
       yield {
         kind: "completed" as const,
         data: {
@@ -948,6 +973,8 @@ export async function* extensionPush(
           datastoreCount: input.counts.datastores,
           reportCount: input.counts.reports,
           skillCount: input.counts.skills,
+          channel: input.channel ?? "stable",
+          visibility,
         },
       };
     })(),
