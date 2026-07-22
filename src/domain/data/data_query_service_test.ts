@@ -1327,3 +1327,168 @@ Deno.test("DataQueryService pushdown: limit interacts correctly with pushdown", 
   assertEquals(results.length, 3);
   catalog.close();
 });
+
+Deno.test("DataQueryService: content.field works as alias for attributes.field in predicate", () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-content-alias-" });
+  const dbPath = join(dir, ".swamp", "data", "_catalog.db");
+  const catalog = new CatalogStore(dbPath);
+  catalog.markPopulated();
+
+  const dataDir = join(
+    dir,
+    ".swamp",
+    "data",
+    "test-model",
+    "model-001",
+    "my-data",
+    "1",
+  );
+  ensureDirSync(dataDir);
+  Deno.writeTextFileSync(
+    join(dataDir, "raw"),
+    JSON.stringify({ status: "ok", count: 7 }),
+  );
+  Deno.writeTextFileSync(
+    join(dataDir, "metadata.yaml"),
+    stringifyYaml({
+      name: "my-data",
+      id: "00000000-0000-1000-8000-000000000001",
+      version: 1,
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      streaming: false,
+      tags: { type: "resource", specName: "result", modelName: "ingest" },
+      ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }),
+  );
+  Deno.writeTextFileSync(
+    join(dir, ".swamp", "data", "test-model", "model-001", "my-data", "latest"),
+    "1",
+  );
+
+  catalog.upsert(makeRow());
+
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const service = new DataQueryService(catalog, dataRepo);
+
+  const results = service.querySync(
+    'content.status == "ok"',
+  ) as DataRecord[];
+  assertEquals(results.length, 1);
+  assertEquals(results[0].attributes["status"], "ok");
+  assertEquals(results[0].attributes["count"], 7);
+  catalog.close();
+});
+
+Deno.test("DataQueryService: content.field works in --select projection", () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-content-select-" });
+  const dbPath = join(dir, ".swamp", "data", "_catalog.db");
+  const catalog = new CatalogStore(dbPath);
+  catalog.markPopulated();
+
+  const dataDir = join(
+    dir,
+    ".swamp",
+    "data",
+    "test-model",
+    "model-001",
+    "my-data",
+    "1",
+  );
+  ensureDirSync(dataDir);
+  Deno.writeTextFileSync(
+    join(dataDir, "raw"),
+    JSON.stringify({ kernel: "6.1", arch: "x86_64" }),
+  );
+  Deno.writeTextFileSync(
+    join(dataDir, "metadata.yaml"),
+    stringifyYaml({
+      name: "my-data",
+      id: "00000000-0000-1000-8000-000000000001",
+      version: 1,
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      streaming: false,
+      tags: { type: "resource", specName: "result", modelName: "ingest" },
+      ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }),
+  );
+  Deno.writeTextFileSync(
+    join(dir, ".swamp", "data", "test-model", "model-001", "my-data", "latest"),
+    "1",
+  );
+
+  catalog.upsert(makeRow());
+
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const service = new DataQueryService(catalog, dataRepo);
+
+  const projected = service.querySync(
+    'modelName == "ingest"',
+    { select: '{"k": content.kernel}' },
+  ) as Record<string, unknown>[];
+  assertEquals(projected.length, 1);
+  assertEquals(projected[0], { k: "6.1" });
+  catalog.close();
+});
+
+Deno.test("DataQueryService: content stays raw string for non-JSON records", () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-content-text-" });
+  const dbPath = join(dir, ".swamp", "data", "_catalog.db");
+  const catalog = new CatalogStore(dbPath);
+  catalog.markPopulated();
+
+  const dataDir = join(
+    dir,
+    ".swamp",
+    "data",
+    "test-model",
+    "model-001",
+    "my-log",
+    "1",
+  );
+  ensureDirSync(dataDir);
+  Deno.writeTextFileSync(join(dataDir, "raw"), "hello world");
+  Deno.writeTextFileSync(
+    join(dataDir, "metadata.yaml"),
+    stringifyYaml({
+      name: "my-log",
+      id: "00000000-0000-1000-8000-000000000002",
+      version: 1,
+      contentType: "text/plain",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      streaming: false,
+      tags: { type: "file", specName: "log", modelName: "ingest" },
+      ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }),
+  );
+  Deno.writeTextFileSync(
+    join(dir, ".swamp", "data", "test-model", "model-001", "my-log", "latest"),
+    "1",
+  );
+
+  catalog.upsert(makeRow({
+    data_name: "my-log",
+    id: "00000000-0000-1000-8000-000000000002",
+    content_type: "text/plain",
+    spec_name: "log",
+    data_type: "file",
+    streaming: 1,
+  }));
+
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const service = new DataQueryService(catalog, dataRepo);
+
+  const results = service.querySync(
+    'content == "hello world"',
+  ) as DataRecord[];
+  assertEquals(results.length, 1);
+  assertEquals(results[0].content, "hello world");
+  catalog.close();
+});
