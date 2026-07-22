@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { ensureDir } from "@std/fs";
-import { join } from "@std/path";
+import { basename, join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
@@ -496,6 +496,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       }
     }
 
+    await deleteRunIndex(this.getLocalIndexDir(workflowId));
+
     return count;
   }
 
@@ -592,7 +594,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
     for (const dir of affectedDirs) {
       await deleteRunIndex(dir);
-      const workflowId = dir.split("/").pop() as WorkflowId;
+      const workflowId = basename(dir) as WorkflowId;
       if (workflowId) {
         await deleteRunIndex(this.getLocalIndexDir(workflowId));
       }
