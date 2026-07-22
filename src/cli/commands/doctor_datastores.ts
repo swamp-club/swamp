@@ -281,10 +281,10 @@ export const doctorDatastoresCommand = withRemoteOptions(
     )
     .option(
       "--repair",
-      "Preview foreign namespace contamination cleanup (add --confirm to execute).",
+      "Preview foreign namespace contamination cleanup (add -y to execute).",
     )
     .option(
-      "-y, --confirm",
+      "-y, --yes",
       "Execute the repair (without this, --repair shows a preview).",
     ),
 ).action(async function (options: AnyOptions) {
@@ -323,8 +323,8 @@ export const doctorDatastoresCommand = withRemoteOptions(
     return;
   }
 
-  if (options.confirm && !options.repair) {
-    throw new UserError("The --confirm flag requires --repair.");
+  if (options.yes && !options.repair) {
+    throw new UserError("The --yes flag requires --repair.");
   }
 
   const repoDir = resolveRepoDir(options.repoDir);
@@ -337,7 +337,7 @@ export const doctorDatastoresCommand = withRemoteOptions(
 
     await consumeStream(
       repairDatastoreContamination(libCtx, deps, {
-        confirm: Boolean(options.confirm),
+        confirm: Boolean(options.yes),
       }),
       renderer.handlers(),
     );

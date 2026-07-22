@@ -199,7 +199,7 @@ class LogRepairDatastoresRenderer implements RepairDatastoresRenderer {
           `  Invalidate data catalog (will rebuild on next access)`,
         );
         writeOutput(
-          dim("\n  Run with --confirm to proceed."),
+          dim("\n  Run with -y to proceed."),
         );
       },
       step: (e) => {
