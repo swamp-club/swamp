@@ -198,9 +198,17 @@ export async function workflowHistorySearchAction(
     ? parseTags(options.input as string[])
     : undefined;
 
+  let resultCount = 0;
+  const handlers = renderer.handlers();
+  const origCompleted = handlers.completed;
+  handlers.completed = (e) => {
+    resultCount = e.data.results.length;
+    origCompleted(e);
+  };
+
   await consumeStream(
     workflowHistorySearch(libCtx, deps, { query, inputs: parsedInputs }),
-    renderer.handlers(),
+    handlers,
   );
 
   const selected = renderer.selectedItem();
@@ -221,10 +229,11 @@ export async function workflowHistorySearchAction(
         renderWorkflowRunDisplay(runData, effectiveMode);
       }
     }
-    // In interactive mode, the scrollback from the picker already contains
-    // the run detail, so no additional findById+render call is needed.
   } else {
-    ctx.logger.debug`Search cancelled`;
+    ctx.logger.debug`Search completed with no selection`;
+  }
+
+  if (resultCount === 0) {
     const dsConfig = datastoreResolver.config();
     const unmigrated = await checkUnmigratedNamespaceData(dsConfig);
     if (unmigrated.length > 0) {

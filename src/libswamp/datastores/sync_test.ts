@@ -236,9 +236,8 @@ Deno.test("datastoreSync: push without confirm yields preview when previewPush a
     datastoreSync(createLibSwampContext(), deps, { mode: "push" }),
   );
 
-  assertEquals(events.length, 2);
-  assertEquals(events[0], { kind: "syncing", mode: "push" });
-  const preview = events[1] as Extract<DatastoreSyncEvent, { kind: "preview" }>;
+  assertEquals(events.length, 1);
+  const preview = events[0] as Extract<DatastoreSyncEvent, { kind: "preview" }>;
   assertEquals(preview.kind, "preview");
   assertEquals(preview.data.mode, "push");
   assertEquals(preview.data.summary.total, 47);

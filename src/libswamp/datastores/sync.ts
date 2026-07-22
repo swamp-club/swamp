@@ -142,7 +142,7 @@ export async function createDatastoreSyncDeps(
             (signal) =>
               syncService.previewPush!({
                 signal,
-                ...(ns ? { namespace: ns } : {}),
+                namespace: ns,
               }),
           );
         }
@@ -295,8 +295,6 @@ export async function* datastoreSync(
         }
       }
 
-      yield { kind: "syncing", mode: input.mode };
-
       if (input.mode === "push") {
         if (!input.confirm && deps.previewPush) {
           const summary = await deps.previewPush();
@@ -305,18 +303,21 @@ export async function* datastoreSync(
             return;
           }
         }
+        yield { kind: "syncing", mode: input.mode };
         const result = await deps.pushSync();
         yield {
           kind: "completed",
           data: { mode: "push", filesPushed: result.filesPushed },
         };
       } else if (input.mode === "pull") {
+        yield { kind: "syncing", mode: input.mode };
         const result = await deps.pullSync();
         yield {
           kind: "completed",
           data: { mode: "pull", filesPulled: result.filesPulled },
         };
       } else {
+        yield { kind: "syncing", mode: input.mode };
         const result = await deps.fullSync();
         yield {
           kind: "completed",

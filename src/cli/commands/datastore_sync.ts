@@ -161,7 +161,7 @@ export const datastoreSyncCommand = new Command()
     );
 
     if (renderer.previewOnly) {
-      Deno.exit(1);
+      return;
     }
 
     if (mode === "pull" || mode === "sync") {
