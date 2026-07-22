@@ -21,6 +21,7 @@ import {
   type DatastoreConfig,
   isCustomDatastoreConfig,
 } from "../../domain/datastore/datastore_config.ts";
+import type { NamespaceContaminationSummary } from "../../domain/datastore/datastore_sync_service.ts";
 
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -40,12 +41,19 @@ export interface VaultMismatchFinding {
   vaultType: string;
 }
 
+/** Foreign namespace objects detected under the repo's own namespace. */
+export interface NamespaceContaminationFinding {
+  foreignNamespaces: ReadonlyArray<{ namespace: string; objectCount: number }>;
+  totalForeignObjects: number;
+}
+
 /** Outcome of a `doctor datastores` scan. */
 export interface DoctorDatastoresData {
   datastoreType: string;
   isCustom: boolean;
   healthFindings: DatastoreHealthFinding[];
   vaultMismatchFindings: VaultMismatchFinding[];
+  contaminationFinding?: NamespaceContaminationFinding;
 }
 
 export type DoctorDatastoresEvent =
@@ -63,15 +71,18 @@ export interface DoctorDatastoresDeps {
   checkUnmigratedData?: (
     config: DatastoreConfig,
   ) => Promise<{ unmigrated: boolean; directories: string[] }>;
+  checkNamespaceContamination?: (
+    config: DatastoreConfig,
+  ) => Promise<NamespaceContaminationSummary | null>;
 }
 
 /**
  * Diagnostic scan that checks:
  * 1. The configured datastore is reachable (health check).
- * 2. When a custom (remote) datastore is in use, any `local_encryption`
- *    vaults are flagged as an advisory mismatch — local encryption keys
- *    are tied to the machine and won't work from other hosts sharing the
- *    remote datastore.
+ * 2. When a namespace is set, data has been migrated under it.
+ * 3. When a namespace is set, no foreign namespace data is nested under it.
+ * 4. When a custom (remote) datastore is in use, any `local_encryption`
+ *    vaults are flagged as an advisory mismatch.
  */
 export async function* doctorDatastores(
   _ctx: LibSwampContext,
@@ -87,6 +98,7 @@ export async function* doctorDatastores(
       const isCustom = isCustomDatastoreConfig(config);
       const healthFindings: DatastoreHealthFinding[] = [];
       const vaultMismatchFindings: VaultMismatchFinding[] = [];
+      let contaminationFinding: NamespaceContaminationFinding | undefined;
 
       // Health check
       const { healthy, message } = await deps.checkHealth(config);
@@ -119,6 +131,31 @@ export async function* doctorDatastores(
         }
       }
 
+      // Namespace contamination check
+      if (config.namespace && isCustom && deps.checkNamespaceContamination) {
+        const summary = await deps.checkNamespaceContamination(config);
+        if (summary && summary.totalForeignObjects > 0) {
+          contaminationFinding = {
+            foreignNamespaces: summary.foreignNamespaces,
+            totalForeignObjects: summary.totalForeignObjects,
+          };
+          healthFindings.push({
+            check: "namespace_contamination",
+            passed: false,
+            message:
+              `Namespace contamination detected: ${summary.totalForeignObjects} foreign objects ` +
+              `found under "${config.namespace}". ` +
+              `Run 'swamp doctor datastores --repair' to preview cleanup.`,
+          });
+        } else if (summary) {
+          healthFindings.push({
+            check: "namespace_contamination",
+            passed: true,
+            message: `No foreign namespace data under "${config.namespace}"`,
+          });
+        }
+      }
+
       // Vault mismatch check — only relevant for custom (remote) datastores
       if (isCustom) {
         const vaults = await deps.getVaultConfigs();
@@ -139,7 +176,168 @@ export async function* doctorDatastores(
           isCustom,
           healthFindings,
           vaultMismatchFindings,
+          contaminationFinding,
         },
+      };
+    })(),
+  );
+}
+
+// ============================================================================
+// Repair: namespace contamination cleanup
+// ============================================================================
+
+/** Outcome of a completed repair operation. */
+export interface RepairDatastoresResult {
+  foreignNamespaces: ReadonlyArray<{ namespace: string; objectCount: number }>;
+  deletedObjects: number;
+  filesPulled: number;
+  workflowRunIndexesInvalidated: number;
+  catalogInvalidated: boolean;
+}
+
+export type RepairDatastoresEvent =
+  | { kind: "scanning" }
+  | {
+    kind: "preview";
+    contamination: NamespaceContaminationFinding;
+    namespace: string;
+  }
+  | { kind: "step"; step: number; total: number; description: string }
+  | {
+    kind: "completed";
+    result: RepairDatastoresResult;
+    namespace: string;
+  }
+  | { kind: "not_needed" }
+  | { kind: "error"; error: SwampError };
+
+/** Dependencies for the repair flow. */
+export interface RepairDatastoresDeps {
+  getDatastoreConfig: () => Promise<DatastoreConfig>;
+  detectContamination: () => Promise<NamespaceContaminationSummary>;
+  deleteContamination: () => Promise<NamespaceContaminationSummary>;
+  wipeLocalCache: () => Promise<void>;
+  pullScoped: () => Promise<number>;
+  invalidateWorkflowRunIndexes: () => Promise<number>;
+  invalidateCatalog: () => Promise<void>;
+}
+
+const REPAIR_STEPS = 6;
+
+/**
+ * Detect and repair namespace contamination in a datastore.
+ *
+ * Without `confirm`, yields a preview of what would be cleaned up.
+ * With `confirm`, executes the 7-step repair sequence:
+ *   1. Delete foreign objects from the remote
+ *   2. Rebuild the namespace index (handled by step 1's implementation)
+ *   3. Wipe the local cache
+ *   4. Re-pull with namespace scoping
+ *   5. Invalidate workflow run indexes
+ *   6. Invalidate the data catalog
+ */
+export async function* repairDatastoreContamination(
+  _ctx: LibSwampContext,
+  deps: RepairDatastoresDeps,
+  options: { confirm: boolean },
+): AsyncGenerator<RepairDatastoresEvent> {
+  yield* withGeneratorSpan(
+    "swamp.doctor.datastores.repair",
+    {},
+    (async function* () {
+      yield { kind: "scanning" };
+
+      const config = await deps.getDatastoreConfig();
+      if (!config.namespace) {
+        yield { kind: "not_needed" };
+        return;
+      }
+
+      const detection = await deps.detectContamination();
+      if (detection.totalForeignObjects === 0) {
+        yield { kind: "not_needed" };
+        return;
+      }
+
+      const contamination: NamespaceContaminationFinding = {
+        foreignNamespaces: detection.foreignNamespaces,
+        totalForeignObjects: detection.totalForeignObjects,
+      };
+
+      if (!options.confirm) {
+        yield {
+          kind: "preview",
+          contamination,
+          namespace: config.namespace,
+        };
+        return;
+      }
+
+      // Step 1: Delete foreign objects + rebuild remote index
+      yield {
+        kind: "step",
+        step: 1,
+        total: REPAIR_STEPS,
+        description:
+          `Deleting ${detection.totalForeignObjects} foreign objects and rebuilding namespace index`,
+      };
+      const result = await deps.deleteContamination();
+
+      // Step 2: Wipe local cache
+      yield {
+        kind: "step",
+        step: 2,
+        total: REPAIR_STEPS,
+        description: "Wiping local cache",
+      };
+      await deps.wipeLocalCache();
+
+      // Step 3: Re-pull scoped
+      yield {
+        kind: "step",
+        step: 3,
+        total: REPAIR_STEPS,
+        description: `Re-pulling data (scoped to ${config.namespace}/)`,
+      };
+      const filesPulled = await deps.pullScoped();
+
+      // Step 4: Invalidate workflow run indexes
+      yield {
+        kind: "step",
+        step: 4,
+        total: REPAIR_STEPS,
+        description: "Invalidating workflow run indexes",
+      };
+      const indexesInvalidated = await deps.invalidateWorkflowRunIndexes();
+
+      // Step 5: Invalidate data catalog
+      yield {
+        kind: "step",
+        step: 5,
+        total: REPAIR_STEPS,
+        description: "Invalidating data catalog",
+      };
+      await deps.invalidateCatalog();
+
+      // Step 6: Report
+      yield {
+        kind: "step",
+        step: 6,
+        total: REPAIR_STEPS,
+        description: "Verifying repair",
+      };
+
+      yield {
+        kind: "completed",
+        result: {
+          foreignNamespaces: result.foreignNamespaces,
+          deletedObjects: result.deleted,
+          filesPulled,
+          workflowRunIndexesInvalidated: indexesInvalidated,
+          catalogInvalidated: true,
+        },
+        namespace: config.namespace,
       };
     })(),
   );
