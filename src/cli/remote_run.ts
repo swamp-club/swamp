@@ -224,23 +224,39 @@ export function requestServerResponse<T>(
 
     options.signal?.addEventListener("abort", onAbort, { once: true });
 
-    socket.onerror = () => {
-      if (!settled) {
-        settled = true;
-        cleanup();
-        reject(
-          new UserError(`Could not connect to ${baseUrl}`),
-        );
+    let connectErrorDetail = "";
+    socket.onerror = (event) => {
+      if (event instanceof ErrorEvent && event.message) {
+        connectErrorDetail = `: ${event.message}`;
       }
-    };
-
-    socket.onclose = () => {
       if (!settled) {
         settled = true;
         cleanup();
         reject(
           new UserError(
-            "Connection closed before a response was received",
+            `Could not connect to ${baseUrl}${connectErrorDetail}`,
+          ),
+        );
+      }
+    };
+
+    socket.onclose = (event) => {
+      if (!settled) {
+        settled = true;
+        cleanup();
+        const parts: string[] = [];
+        if (event.code !== 1000 && event.code !== 1005) {
+          parts.push(`code ${event.code}`);
+        }
+        if (event.reason) {
+          parts.push(event.reason);
+        }
+        const detail = parts.length > 0 ? ` (${parts.join(": ")})` : "";
+        reject(
+          new UserError(
+            connectErrorDetail
+              ? `Could not connect to ${baseUrl}${connectErrorDetail}`
+              : `Connection closed before a response was received${detail}`,
           ),
         );
       }
@@ -370,8 +386,11 @@ async function* streamServerRun(
     socketClosed = true;
     notify();
   };
-  socket.onerror = () => {
-    connectError = `Could not connect to ${baseUrl}`;
+  socket.onerror = (event) => {
+    const detail = event instanceof ErrorEvent && event.message
+      ? `: ${event.message}`
+      : "";
+    connectError = `Could not connect to ${baseUrl}${detail}`;
     notify();
   };
 
@@ -387,18 +406,28 @@ async function* streamServerRun(
       clearTimeout(timer);
       resolve();
     };
-    const earlyFail = () => {
+    const earlyFail = (closeEvent?: CloseEvent) => {
       clearTimeout(timer);
-      reject(
-        new UserError(
-          connectError ?? `Connection to ${baseUrl} closed before it opened`,
-        ),
-      );
+      let message = connectError ??
+        `Connection to ${baseUrl} closed before it opened`;
+      if (closeEvent && !connectError) {
+        const parts: string[] = [];
+        if (closeEvent.code !== 1000 && closeEvent.code !== 1005) {
+          parts.push(`code ${closeEvent.code}`);
+        }
+        if (closeEvent.reason) {
+          parts.push(closeEvent.reason);
+        }
+        if (parts.length > 0) {
+          message += ` (${parts.join(": ")})`;
+        }
+      }
+      reject(new UserError(message));
     };
     const prevClose = socket.onclose;
     socket.onclose = (event) => {
       prevClose?.call(socket, event);
-      earlyFail();
+      earlyFail(event);
     };
   });
 

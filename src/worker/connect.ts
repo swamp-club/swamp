@@ -449,15 +449,29 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
       }
     };
 
-    socket.onclose = () => {
+    let connectErrorDetail = "";
+    socket.onclose = (event: CloseEvent | Event | undefined) => {
+      const parts: string[] = [];
+      const closeEvent = event instanceof CloseEvent ? event : undefined;
+      if (closeEvent && closeEvent.code !== 1000 && closeEvent.code !== 1005) {
+        parts.push(`code ${closeEvent.code}`);
+      }
+      if (closeEvent?.reason) {
+        parts.push(closeEvent.reason);
+      }
+      const detail = connectErrorDetail ||
+        (parts.length > 0 ? ` (${parts.join(": ")})` : "");
       finish(
-        enrolled ? "control socket closed" : "socket closed before enrollment",
+        enrolled
+          ? `control socket closed${detail}`
+          : `socket closed before enrollment${detail}`,
       );
     };
 
-    socket.onerror = () => {
-      // onclose follows; nothing to do here, but keep the handler so the
-      // runtime does not surface it as an unhandled error event.
+    socket.onerror = (event: Event) => {
+      if (event instanceof ErrorEvent && event.message) {
+        connectErrorDetail = `: ${event.message}`;
+      }
     };
   });
 }
