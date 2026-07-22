@@ -555,17 +555,28 @@ export class DefaultStepExecutor implements StepExecutor {
     }
 
     // Resolve every available expression (self.* from the forEach variable,
-    // run.*, etc.) anywhere in the task before model lookup. The expression
-    // context has self populated with the forEach variable by runStep().
-    // resolveAvailableExpressions defers vault/env and step-output kinds to their
-    // dedicated stages — see available_expression_resolver.ts.
+    // run.*, etc.) anywhere in the task and placement fields before model
+    // lookup. The expression context has self populated with the forEach
+    // variable by runStep(). resolveAvailableExpressions defers vault/env and
+    // step-output kinds to their dedicated stages — see
+    // available_expression_resolver.ts.
+    let resolvedPlacement = ctx.step?.placement;
     if (ctx.expressionContext) {
       const celEvaluator = new CelEvaluator();
+      const evaluate = (expr: string, context: Record<string, unknown>) =>
+        celEvaluator.evaluate(expr, context);
       task = resolveAvailableExpressions(
         task,
         ctx.expressionContext,
-        (expr, context) => celEvaluator.evaluate(expr, context),
+        evaluate,
       ) as typeof task;
+      if (resolvedPlacement) {
+        resolvedPlacement = resolveAvailableExpressions(
+          resolvedPlacement,
+          ctx.expressionContext,
+          evaluate,
+        ) as typeof resolvedPlacement;
+      }
     }
 
     // Resolve whole-field expression strings for inputs/globalArgs that survived
@@ -880,6 +891,7 @@ export class DefaultStepExecutor implements StepExecutor {
           evaluatedDefinition,
           runLogger,
           secretBag,
+          resolvedPlacement,
         });
 
         if (heartbeatInterval) clearInterval(heartbeatInterval);
@@ -962,6 +974,12 @@ export class DefaultStepExecutor implements StepExecutor {
       ExpressionEvaluationService["resolveRuntimeExpressionsInDefinition"]
     > extends Promise<infer R> ? R extends { secretBag: infer S } ? S : never
       : never;
+    resolvedPlacement?: {
+      target?: string;
+      labels?: Record<string, string>;
+      platform?: string;
+      queueTimeoutMs?: number;
+    };
   }): Promise<MethodResult> {
     const {
       task,
@@ -977,6 +995,7 @@ export class DefaultStepExecutor implements StepExecutor {
       evaluatedDefinition,
       runLogger,
       secretBag,
+      resolvedPlacement,
     } = args;
 
     runLogger.debug("Executing method {method}", { method: task.methodName });
@@ -1093,7 +1112,7 @@ export class DefaultStepExecutor implements StepExecutor {
             stepDataOutputOverrides,
           ),
           vaultSecrets: secretBag,
-          placement: ctx.step?.placement,
+          placement: resolvedPlacement,
           skipCheckNames: ctx.skipCheckNames,
           skipCheckLabels: ctx.skipCheckLabels,
           skipAllChecks: ctx.skipAllChecks,
