@@ -504,7 +504,7 @@ Deno.test("repairDatastoreContamination: confirm mode executes full repair", asy
 
   // Verify step events were emitted in order
   const steps = events.filter((e) => e.kind === "step");
-  assertEquals(steps.length, 6);
+  assertEquals(steps.length, 5);
   if (steps[0].kind === "step") {
     assertEquals(steps[0].step, 1);
   }
@@ -560,10 +560,10 @@ Deno.test("repairDatastoreContamination: emits progress steps during confirm", a
       e.kind === "step",
   );
 
-  assertEquals(steps.length, 6);
+  assertEquals(steps.length, 5);
   for (let i = 0; i < steps.length; i++) {
     assertEquals(steps[i].step, i + 1);
-    assertEquals(steps[i].total, 6);
+    assertEquals(steps[i].total, 5);
   }
 
   assertEquals(steps[0].description.includes("Deleting"), true);
@@ -571,5 +571,29 @@ Deno.test("repairDatastoreContamination: emits progress steps during confirm", a
   assertEquals(steps[2].description.includes("Re-pulling"), true);
   assertEquals(steps[3].description.includes("workflow run"), true);
   assertEquals(steps[4].description.includes("catalog"), true);
-  assertEquals(steps[5].description.includes("Verifying"), true);
+});
+
+Deno.test("repairDatastoreContamination: yields error event on mid-repair failure", async () => {
+  const deps = makeRepairDeps({
+    pullScoped: () => Promise.reject(new Error("network timeout")),
+  });
+
+  const events = await collect<RepairDatastoresEvent>(
+    repairDatastoreContamination(createLibSwampContext(), deps, {
+      confirm: true,
+    }),
+  );
+
+  const errorEvent = events.find((e) => e.kind === "error");
+  assertEquals(errorEvent?.kind, "error");
+  if (errorEvent?.kind === "error") {
+    assertEquals(errorEvent.error.code, "repair_failed");
+    assertEquals(errorEvent.error.message.includes("step 3/5"), true);
+    assertEquals(errorEvent.error.message.includes("network timeout"), true);
+    assertEquals(
+      errorEvent.error.message.includes("swamp datastore sync --pull"),
+      true,
+    );
+  }
+  assertEquals(events.find((e) => e.kind === "completed"), undefined);
 });

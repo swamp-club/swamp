@@ -223,19 +223,18 @@ export interface RepairDatastoresDeps {
   invalidateCatalog: () => Promise<void>;
 }
 
-const REPAIR_STEPS = 6;
+const REPAIR_STEPS = 5;
 
 /**
  * Detect and repair namespace contamination in a datastore.
  *
  * Without `confirm`, yields a preview of what would be cleaned up.
- * With `confirm`, executes the 7-step repair sequence:
- *   1. Delete foreign objects from the remote
- *   2. Rebuild the namespace index (handled by step 1's implementation)
- *   3. Wipe the local cache
- *   4. Re-pull with namespace scoping
- *   5. Invalidate workflow run indexes
- *   6. Invalidate the data catalog
+ * With `confirm`, executes the repair sequence:
+ *   1. Delete foreign objects and rebuild the remote namespace index
+ *   2. Wipe the local cache
+ *   3. Re-pull with namespace scoping
+ *   4. Invalidate workflow run indexes
+ *   5. Invalidate the data catalog
  */
 export async function* repairDatastoreContamination(
   _ctx: LibSwampContext,
@@ -274,71 +273,89 @@ export async function* repairDatastoreContamination(
         return;
       }
 
-      // Step 1: Delete foreign objects + rebuild remote index
-      yield {
-        kind: "step",
-        step: 1,
-        total: REPAIR_STEPS,
-        description:
-          `Deleting ${detection.totalForeignObjects} foreign objects and rebuilding namespace index`,
-      };
-      const result = await deps.deleteContamination();
+      let lastCompletedStep = 0;
+      try {
+        // Step 1: Delete foreign objects + rebuild remote index
+        yield {
+          kind: "step",
+          step: 1,
+          total: REPAIR_STEPS,
+          description:
+            `Deleting ${detection.totalForeignObjects} foreign objects and rebuilding namespace index`,
+        };
+        const result = await deps.deleteContamination();
+        lastCompletedStep = 1;
 
-      // Step 2: Wipe local cache
-      yield {
-        kind: "step",
-        step: 2,
-        total: REPAIR_STEPS,
-        description: "Wiping local cache",
-      };
-      await deps.wipeLocalCache();
+        // Step 2: Wipe local cache
+        yield {
+          kind: "step",
+          step: 2,
+          total: REPAIR_STEPS,
+          description: "Wiping local cache",
+        };
+        await deps.wipeLocalCache();
+        lastCompletedStep = 2;
 
-      // Step 3: Re-pull scoped
-      yield {
-        kind: "step",
-        step: 3,
-        total: REPAIR_STEPS,
-        description: `Re-pulling data (scoped to ${config.namespace}/)`,
-      };
-      const filesPulled = await deps.pullScoped();
+        // Step 3: Re-pull scoped
+        yield {
+          kind: "step",
+          step: 3,
+          total: REPAIR_STEPS,
+          description: `Re-pulling data (scoped to ${config.namespace}/)`,
+        };
+        const filesPulled = await deps.pullScoped();
+        lastCompletedStep = 3;
 
-      // Step 4: Invalidate workflow run indexes
-      yield {
-        kind: "step",
-        step: 4,
-        total: REPAIR_STEPS,
-        description: "Invalidating workflow run indexes",
-      };
-      const indexesInvalidated = await deps.invalidateWorkflowRunIndexes();
+        // Step 4: Invalidate workflow run indexes
+        yield {
+          kind: "step",
+          step: 4,
+          total: REPAIR_STEPS,
+          description: "Invalidating workflow run indexes",
+        };
+        const indexesInvalidated = await deps.invalidateWorkflowRunIndexes();
+        lastCompletedStep = 4;
 
-      // Step 5: Invalidate data catalog
-      yield {
-        kind: "step",
-        step: 5,
-        total: REPAIR_STEPS,
-        description: "Invalidating data catalog",
-      };
-      await deps.invalidateCatalog();
+        // Step 5: Invalidate data catalog
+        yield {
+          kind: "step",
+          step: 5,
+          total: REPAIR_STEPS,
+          description: "Invalidating data catalog",
+        };
+        await deps.invalidateCatalog();
+        lastCompletedStep = 5;
 
-      // Step 6: Report
-      yield {
-        kind: "step",
-        step: 6,
-        total: REPAIR_STEPS,
-        description: "Verifying repair",
-      };
-
-      yield {
-        kind: "completed",
-        result: {
-          foreignNamespaces: result.foreignNamespaces,
-          deletedObjects: result.deleted,
-          filesPulled,
-          workflowRunIndexesInvalidated: indexesInvalidated,
-          catalogInvalidated: true,
-        },
-        namespace: config.namespace,
-      };
+        yield {
+          kind: "completed",
+          result: {
+            foreignNamespaces: result.foreignNamespaces,
+            deletedObjects: result.deleted,
+            filesPulled,
+            workflowRunIndexesInvalidated: indexesInvalidated,
+            catalogInvalidated: true,
+          },
+          namespace: config.namespace,
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        yield {
+          kind: "error",
+          error: {
+            code: "repair_failed",
+            message:
+              `Repair failed at step ${
+                lastCompletedStep + 1
+              }/${REPAIR_STEPS}: ${message}. ` +
+              (lastCompletedStep >= 2
+                ? `Local cache was wiped — run 'swamp datastore sync --pull' to restore.`
+                : lastCompletedStep >= 1
+                ? `Foreign objects were deleted but local cache was not refreshed — run 'swamp datastore sync --pull' to restore.`
+                : `No changes were made.`),
+            cause: err instanceof Error ? err : undefined,
+          },
+        };
+      }
     })(),
   );
 }

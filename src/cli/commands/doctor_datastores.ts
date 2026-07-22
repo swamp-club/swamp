@@ -51,6 +51,7 @@ import {
 } from "../../domain/datastore/datastore_config.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
+import { UserError } from "../../domain/errors.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -165,7 +166,7 @@ async function createRepairDeps(
   const config = await resolveDatastoreConfig(marker, undefined, repoDir);
 
   if (!isCustomDatastoreConfig(config) || !config.namespace) {
-    throw new Error(
+    throw new UserError(
       "Repair is only available for custom datastores with a namespace configured.",
     );
   }
@@ -176,7 +177,7 @@ async function createRepairDeps(
   const syncService = provider.createSyncService?.(repoDir, cachePath);
 
   if (!syncService?.repairNamespaceContamination) {
-    throw new Error(
+    throw new UserError(
       `Datastore type "${config.type}" does not support namespace contamination repair.`,
     );
   }
@@ -320,6 +321,10 @@ export const doctorDatastoresCommand = withRemoteOptions(
       Deno.exit(1);
     }
     return;
+  }
+
+  if (options.confirm && !options.repair) {
+    throw new UserError("The --confirm flag requires --repair.");
   }
 
   const repoDir = resolveRepoDir(options.repoDir);

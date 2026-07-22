@@ -196,6 +196,9 @@ class LogRepairDatastoresRenderer implements RepairDatastoresRenderer {
           `  Invalidate workflow run indexes (forces rebuild from YAML files)`,
         );
         writeOutput(
+          `  Invalidate data catalog (will rebuild on next access)`,
+        );
+        writeOutput(
           dim("\n  Run with --confirm to proceed."),
         );
       },
