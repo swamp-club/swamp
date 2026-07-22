@@ -86,9 +86,10 @@ export function createExtensionVersionDeps(
 ): ExtensionVersionDeps {
   const serverUrl = resolveServerUrl();
   const client = new ExtensionApiClient(serverUrl, identity);
+  const apiKey = identity?.bearerToken;
   return {
     getPublishedVersions: async (name: string) => {
-      const info = await client.getExtension(name);
+      const info = await client.getExtension(name, apiKey);
       if (!info) return null;
       return {
         stable: info.latestVersion ?? null,

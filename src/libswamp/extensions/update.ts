@@ -114,6 +114,7 @@ export async function createExtensionUpdateDeps(options: {
     options.serverUrl ?? resolveServerUrl(),
     options.identity,
   );
+  const apiKey = options.identity?.bearerToken;
   return {
     lockfileRepository: await LockfileRepository.create(options.lockfilePath),
     getExtension: async (name, channel?) => {
@@ -121,11 +122,11 @@ export async function createExtensionUpdateDeps(options: {
         if (channel && channel !== "stable") {
           const versionInfo = await extensionClient.getLatestVersion(
             name,
-            undefined,
+            apiKey,
             channel,
           );
           if (!versionInfo) return null;
-          const info = await extensionClient.getExtension(name);
+          const info = await extensionClient.getExtension(name, apiKey);
           return {
             latestVersion: versionInfo.version,
             deprecatedAt: info?.deprecatedAt ?? null,
@@ -133,7 +134,7 @@ export async function createExtensionUpdateDeps(options: {
             supersededBy: info?.supersededBy ?? null,
           };
         }
-        const info = await extensionClient.getExtension(name);
+        const info = await extensionClient.getExtension(name, apiKey);
         if (!info) return null;
         return {
           latestVersion: info.latestVersion ?? null,

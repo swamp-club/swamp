@@ -473,18 +473,23 @@ export function configureExtensionAutoResolver(
   }
   const serverUrl = Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
   const extensionClient = new ExtensionApiClient(serverUrl, identity);
+  const apiKey = identity.bearerToken;
   const modelsDir = resolveModelsDir(marker);
   const denoRuntime = new EmbeddedDenoRuntime();
   setAutoResolver(
     new ExtensionAutoResolver({
       allowedCollectives: trustedCollectives,
-      extensionLookup: extensionClient,
+      extensionLookup: {
+        getExtension: (name) => extensionClient.getExtension(name, apiKey),
+        searchExtensions: (params) =>
+          extensionClient.searchExtensions(params, apiKey),
+      },
       extensionInstaller: createAutoResolveInstallerAdapter({
-        getExtension: (name) => extensionClient.getExtension(name),
+        getExtension: (name) => extensionClient.getExtension(name, apiKey),
         downloadArchive: (name, version, channel) =>
-          extensionClient.downloadArchive(name, version, undefined, channel),
+          extensionClient.downloadArchive(name, version, apiKey, channel),
         getChecksum: (name, version, channel) =>
-          extensionClient.getChecksum(name, version, channel),
+          extensionClient.getChecksum(name, version, apiKey, channel),
         lockfilePath: join(
           resolve(repoDir, modelsDir),
           "upstream_extensions.json",

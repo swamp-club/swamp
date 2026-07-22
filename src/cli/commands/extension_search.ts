@@ -272,12 +272,13 @@ export const extensionSearchCommand = withRemoteOptions(
     );
 
     const lockfileRepository = await LockfileRepository.create(lockfilePath);
+    const apiKey = identity.bearerToken;
     const pullCtx: PullContext = {
-      getExtension: (name) => client.getExtension(name),
+      getExtension: (name) => client.getExtension(name, apiKey),
       downloadArchive: (name, version, channel) =>
-        client.downloadArchive(name, version, undefined, channel),
+        client.downloadArchive(name, version, apiKey, channel),
       getChecksum: (name, version, channel) =>
-        client.getChecksum(name, version, channel),
+        client.getChecksum(name, version, apiKey, channel),
       logger: ctx.logger,
       lockfileRepository,
       skillsDirs,
