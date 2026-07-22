@@ -265,18 +265,31 @@ async function evaluateWorkflowInternal(
       const nameHasExpression = /\$\{\{.+?\}\}/s.test(stepData.name);
 
       // Build one expanded step for a single forEach item: resolve every
-      // available expression (self.* etc.) across the step name AND task in one
-      // pass via the shared resolver, then apply the unique-name suffix policy.
+      // available expression (self.* etc.) across the step name, task, AND
+      // placement fields in one pass via the shared resolver, then apply the
+      // unique-name suffix policy.
       const buildExpandedStep = (
         // deno-lint-ignore no-explicit-any
         stepContext: any,
         fallbackSuffix: string,
       ) => {
         const resolved = resolveAvailableExpressions(
-          { name: stepData.name, task: stepData.task },
+          {
+            name: stepData.name,
+            task: stepData.task,
+            target: stepData.target,
+            labels: stepData.labels,
+            platform: stepData.platform,
+          },
           stepContext,
           deps.evaluateCel,
-        ) as { name: string; task: typeof stepData.task };
+        ) as {
+          name: string;
+          task: typeof stepData.task;
+          target: typeof stepData.target;
+          labels: typeof stepData.labels;
+          platform: typeof stepData.platform;
+        };
 
         let expandedName: string;
         if (nameHasExpression) {
@@ -295,6 +308,9 @@ async function evaluateWorkflowInternal(
           ...stepData,
           name: expandedName,
           task: resolved.task,
+          target: resolved.target,
+          labels: resolved.labels,
+          platform: resolved.platform,
           forEach: undefined,
         };
       };

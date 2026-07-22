@@ -565,6 +565,120 @@ Deno.test("forEach: resolves self.* in modelName (model task parity)", async () 
   assertEquals((steps[1].task as any).modelName, "scanner-eu-west-1");
 });
 
+// --- forEach self.* in placement fields (target, labels, platform) ---
+
+Deno.test("forEach: resolves self.* in target", async () => {
+  const workflow = Workflow.fromData({
+    id: "00000000-0000-4000-8000-000000000010",
+    name: "foreach-target",
+    inputs: {},
+    jobs: [{
+      name: "collect",
+      steps: [{
+        name: "collect-${{ self.worker }}",
+        forEach: { item: "worker", in: "${{ items }}" },
+        target: "${{ self.worker }}",
+        task: {
+          type: "model_method",
+          modelIdOrName: "inventory",
+          methodName: "sync",
+        },
+      }],
+    }],
+  });
+
+  const data = await evaluateForEachWorkflow(workflow, {
+    buildExpressionContext: () =>
+      Promise.resolve(
+        { model: {}, env: {}, self: {}, items: ["worker-01", "worker-02"] } as // deno-lint-ignore no-explicit-any
+        any,
+      ),
+  });
+
+  assertEquals(data.forEachExpanded, true);
+  const steps = data.jobs![0].steps;
+  assertEquals(steps.length, 2);
+  assertEquals(steps[0].name, "collect-worker-01");
+  assertEquals(steps[0].target, "worker-01");
+  assertEquals(steps[1].name, "collect-worker-02");
+  assertEquals(steps[1].target, "worker-02");
+});
+
+Deno.test("forEach: resolves self.* in labels", async () => {
+  const workflow = Workflow.fromData({
+    id: "00000000-0000-4000-8000-000000000011",
+    name: "foreach-labels",
+    inputs: {},
+    jobs: [{
+      name: "deploy",
+      steps: [{
+        name: "deploy-${{ self.env }}",
+        forEach: { item: "env", in: "${{ items }}" },
+        labels: { environment: "${{ self.env }}" },
+        task: {
+          type: "model_method",
+          modelIdOrName: "app",
+          methodName: "deploy",
+        },
+      }],
+    }],
+  });
+
+  const data = await evaluateForEachWorkflow(workflow, {
+    buildExpressionContext: () =>
+      Promise.resolve(
+        { model: {}, env: {}, self: {}, items: ["staging", "production"] } as // deno-lint-ignore no-explicit-any
+        any,
+      ),
+  });
+
+  assertEquals(data.forEachExpanded, true);
+  const steps = data.jobs![0].steps;
+  assertEquals(steps.length, 2);
+  assertEquals(steps[0].labels, { environment: "staging" });
+  assertEquals(steps[1].labels, { environment: "production" });
+});
+
+Deno.test("forEach: resolves self.* in platform", async () => {
+  const workflow = Workflow.fromData({
+    id: "00000000-0000-4000-8000-000000000012",
+    name: "foreach-platform",
+    inputs: {},
+    jobs: [{
+      name: "build",
+      steps: [{
+        name: "build-${{ self.arch }}",
+        forEach: { item: "arch", in: "${{ items }}" },
+        platform: "${{ self.arch }}",
+        task: {
+          type: "model_method",
+          modelIdOrName: "builder",
+          methodName: "compile",
+        },
+      }],
+    }],
+  });
+
+  const data = await evaluateForEachWorkflow(workflow, {
+    buildExpressionContext: () =>
+      Promise.resolve(
+        {
+          model: {},
+          env: {},
+          self: {},
+          items: ["linux/amd64", "linux/arm64"],
+        } as // deno-lint-ignore no-explicit-any
+        any,
+      ),
+  });
+
+  assertEquals(data.forEachExpanded, true);
+  const steps = data.jobs![0].steps;
+  assertEquals(steps.length, 2);
+  assertEquals(steps[0].platform, "linux/amd64");
+  assertEquals(steps[1].platform, "linux/arm64");
+});
+
 Deno.test("isWorkflowEvaluateAllData: returns true for AllData, false for ItemData", () => {
   const allData: WorkflowEvaluateAllData = {
     items: [],
