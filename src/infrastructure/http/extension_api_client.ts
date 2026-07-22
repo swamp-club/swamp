@@ -526,15 +526,18 @@ export class ExtensionApiClient {
   async getChecksum(
     name: string,
     version: string,
+    apiKey?: string,
     channel?: string,
   ): Promise<string | null> {
     const encodedName = encodeURIComponent(name);
     const encodedVersion = encodeURIComponent(version);
+    const headers = apiKey ? this.authHeaders(apiKey) : {};
     const qs = channel ? `?channel=${encodeURIComponent(channel)}` : "";
     const res = await this.fetch(
       `/api/v1/extensions/${encodedName}@${encodedVersion}/checksum${qs}`,
       {
         method: "GET",
+        headers,
       },
     );
 

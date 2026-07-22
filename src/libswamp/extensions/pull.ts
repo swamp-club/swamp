@@ -1433,17 +1433,18 @@ export async function createExtensionPullDeps(
   },
 ): Promise<ExtensionPullDeps> {
   const client = new ExtensionApiClient(serverUrl, args?.identity);
+  const apiKey = args?.identity?.bearerToken;
   const lockfileRepository = await LockfileRepository.create(lockfilePath);
   return {
-    getExtension: (name) => client.getExtension(name),
+    getExtension: (name) => client.getExtension(name, apiKey),
     getLatestVersion: async (name, channel) => {
-      const info = await client.getLatestVersion(name, undefined, channel);
+      const info = await client.getLatestVersion(name, apiKey, channel);
       return info?.version ?? null;
     },
     downloadArchive: (name, version, channel) =>
-      client.downloadArchive(name, version, undefined, channel),
+      client.downloadArchive(name, version, apiKey, channel),
     getChecksum: (name, version, channel) =>
-      client.getChecksum(name, version, channel),
+      client.getChecksum(name, version, apiKey, channel),
     lockfileRepository,
     skillsDirs,
     repoDir,
@@ -1474,13 +1475,14 @@ export async function createInstallContext(
   },
 ): Promise<InstallContext> {
   const client = new ExtensionApiClient(serverUrl, opts.identity);
+  const apiKey = opts.identity?.bearerToken;
   const lockfileRepository = await LockfileRepository.create(opts.lockfilePath);
   return {
-    getExtension: (name) => client.getExtension(name),
+    getExtension: (name) => client.getExtension(name, apiKey),
     downloadArchive: (name, version, channel) =>
-      client.downloadArchive(name, version, undefined, channel),
+      client.downloadArchive(name, version, apiKey, channel),
     getChecksum: (name, version, channel) =>
-      client.getChecksum(name, version, channel),
+      client.getChecksum(name, version, apiKey, channel),
     logger: opts.logger,
     lockfileRepository,
     skillsDirs: opts.skillsDirs,

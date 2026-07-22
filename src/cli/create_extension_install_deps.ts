@@ -73,16 +73,16 @@ export async function createExtensionInstallDeps(
   const serverUrl = resolveServerUrl();
   const identity = await loadIdentity();
   const client = new ExtensionApiClient(serverUrl, identity);
+  const apiKey = identity.bearerToken;
 
   return {
     lockfilePath,
     repoDir: absoluteRepoDir,
     skillsDirsRelative,
     createInstallContext: async (_name, _version) => ({
-      getExtension: (n) => client.getExtension(n),
-      downloadArchive: (n, v, ch) =>
-        client.downloadArchive(n, v, undefined, ch),
-      getChecksum: (n, v, ch) => client.getChecksum(n, v, ch),
+      getExtension: (n) => client.getExtension(n, apiKey),
+      downloadArchive: (n, v, ch) => client.downloadArchive(n, v, apiKey, ch),
+      getChecksum: (n, v, ch) => client.getChecksum(n, v, apiKey, ch),
       logger,
       lockfileRepository: await LockfileRepository.create(lockfilePath),
       skillsDirs: absoluteSkillsDirs,
