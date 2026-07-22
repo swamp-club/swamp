@@ -40,6 +40,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import { checkUnmigratedNamespaceData } from "../resolve_datastore.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import {
   createWorkflowId,
@@ -168,10 +169,11 @@ export async function workflowHistorySearchAction(
   const libCtx = createLibSwampContext();
   ctx.logger.debug`Searching workflow history with query: ${query ?? "(none)"}`;
 
-  const { repoContext } = await requireInitializedRepoReadOnly({
-    repoDir: resolveRepoDir(options.repoDir),
-    outputMode: effectiveMode,
-  });
+  const { repoContext, datastoreResolver } =
+    await requireInitializedRepoReadOnly({
+      repoDir: resolveRepoDir(options.repoDir),
+      outputMode: effectiveMode,
+    });
   const workflowRepo = repoContext.workflowRepo;
   const runRepo = repoContext.workflowRunRepo;
 
@@ -196,9 +198,17 @@ export async function workflowHistorySearchAction(
     ? parseTags(options.input as string[])
     : undefined;
 
+  let resultCount = 0;
+  const handlers = renderer.handlers();
+  const origCompleted = handlers.completed;
+  handlers.completed = (e) => {
+    resultCount = e.data.results.length;
+    origCompleted(e);
+  };
+
   await consumeStream(
     workflowHistorySearch(libCtx, deps, { query, inputs: parsedInputs }),
-    renderer.handlers(),
+    handlers,
   );
 
   const selected = renderer.selectedItem();
@@ -219,10 +229,21 @@ export async function workflowHistorySearchAction(
         renderWorkflowRunDisplay(runData, effectiveMode);
       }
     }
-    // In interactive mode, the scrollback from the picker already contains
-    // the run detail, so no additional findById+render call is needed.
   } else {
-    ctx.logger.debug`Search cancelled`;
+    ctx.logger.debug`Search completed with no selection`;
+  }
+
+  if (resultCount === 0) {
+    const dsConfig = datastoreResolver.config();
+    const unmigrated = await checkUnmigratedNamespaceData(dsConfig);
+    if (unmigrated.length > 0) {
+      ctx.logger.warn(
+        "Un-migrated data found at root level ({dirs}). " +
+          "Run 'swamp datastore namespace migrate' to preview, " +
+          'then --confirm to move data under the "{namespace}" namespace.',
+        { dirs: unmigrated.join(", "), namespace: dsConfig.namespace },
+      );
+    }
   }
 
   ctx.logger.debug("Workflow history search command completed");

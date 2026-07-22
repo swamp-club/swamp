@@ -394,6 +394,10 @@ function buildMigrateDeps(
     },
     removeNamespaceManifest: (ns: string) =>
       removeNamespaceManifest(dsBasePath, ns),
+    listLocalNamespaces: async () => {
+      const manifests = await listNamespaceManifests(dsBasePath);
+      return manifests.map((m) => m.namespace);
+    },
     isExtensionDatastore: isExtension,
   };
 }

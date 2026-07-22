@@ -105,6 +105,14 @@ export const datastoreSyncCommand = new Command()
   .option("--pull", "Pull-only mode (fetch all remote data to local cache)")
   .option("--push", "Push-only mode (upload all local cache data to S3)")
   .option(
+    "-y, --yes",
+    "Skip the push preview and upload immediately",
+  )
+  .option(
+    "--confirm",
+    "Skip the push preview and upload immediately (alias for --yes)",
+  )
+  .option(
     "--timeout <seconds:integer>",
     "Override the per-direction sync timeout for this invocation (seconds, " +
       "max 21600). Wins over SWAMP_DATASTORE_SYNC_TIMEOUT_MS and per-datastore " +
@@ -140,15 +148,21 @@ export const datastoreSyncCommand = new Command()
         skipImplicitSync: true,
       });
 
+    const confirm = !!(options.yes || options.confirm);
+
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = await createDatastoreSyncDeps(repoDir, datastoreResolver, {
       syncTimeoutMsOverride,
     });
     const renderer = createDatastoreSyncRenderer(cliCtx.outputMode);
     await consumeStream(
-      datastoreSync(ctx, deps, { mode }),
+      datastoreSync(ctx, deps, { mode, confirm }),
       renderer.handlers(),
     );
+
+    if (renderer.previewOnly) {
+      return;
+    }
 
     if (mode === "pull" || mode === "sync") {
       const catalogStore = createCatalogStore(repoDir, datastoreResolver);

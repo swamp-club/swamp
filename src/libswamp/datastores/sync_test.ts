@@ -222,6 +222,135 @@ Deno.test("createDatastoreSyncDeps: omits namespace when config has none", async
   assertEquals(push?.options?.namespace, undefined);
 });
 
+// ============================================================================
+// Push preview + confirm
+// ============================================================================
+
+Deno.test("datastoreSync: push without confirm yields preview when previewPush available", async () => {
+  const deps = makeDeps({
+    previewPush: () =>
+      Promise.resolve({ total: 47, new: 12, changed: 35, deleted: 0 }),
+  });
+
+  const events = await collect<DatastoreSyncEvent>(
+    datastoreSync(createLibSwampContext(), deps, { mode: "push" }),
+  );
+
+  assertEquals(events.length, 1);
+  const preview = events[0] as Extract<DatastoreSyncEvent, { kind: "preview" }>;
+  assertEquals(preview.kind, "preview");
+  assertEquals(preview.data.mode, "push");
+  assertEquals(preview.data.summary.total, 47);
+  assertEquals(preview.data.summary.new, 12);
+});
+
+Deno.test("datastoreSync: push with confirm skips preview and pushes", async () => {
+  const deps = makeDeps({
+    previewPush: () =>
+      Promise.resolve({ total: 47, new: 12, changed: 35, deleted: 0 }),
+  });
+
+  const events = await collect<DatastoreSyncEvent>(
+    datastoreSync(createLibSwampContext(), deps, {
+      mode: "push",
+      confirm: true,
+    }),
+  );
+
+  assertEquals(events.length, 2);
+  assertEquals(events[0], { kind: "syncing", mode: "push" });
+  const completed = events[1] as Extract<
+    DatastoreSyncEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.filesPushed, 5);
+});
+
+Deno.test("datastoreSync: push without previewPush dep pushes directly", async () => {
+  const deps = makeDeps();
+
+  const events = await collect<DatastoreSyncEvent>(
+    datastoreSync(createLibSwampContext(), deps, { mode: "push" }),
+  );
+
+  assertEquals(events.length, 2);
+  assertEquals(events[0], { kind: "syncing", mode: "push" });
+  assertEquals(events[1].kind, "completed");
+});
+
+Deno.test("datastoreSync: push preview with zero total pushes directly", async () => {
+  const deps = makeDeps({
+    previewPush: () =>
+      Promise.resolve({ total: 0, new: 0, changed: 0, deleted: 0 }),
+  });
+
+  const events = await collect<DatastoreSyncEvent>(
+    datastoreSync(createLibSwampContext(), deps, { mode: "push" }),
+  );
+
+  assertEquals(events.length, 2);
+  assertEquals(events[0], { kind: "syncing", mode: "push" });
+  assertEquals(events[1].kind, "completed");
+});
+
+// ============================================================================
+// Un-migrated data guard
+// ============================================================================
+
+Deno.test("datastoreSync: push blocked when un-migrated data exists", async () => {
+  const deps = makeDeps({
+    checkUnmigratedData: () =>
+      Promise.resolve({
+        unmigrated: true,
+        directories: ["data", "outputs"],
+        namespace: "infra",
+      }),
+  });
+
+  const error = await assertErrors<DatastoreSyncEvent>(
+    datastoreSync(createLibSwampContext(), deps, { mode: "push" }),
+    "unmigrated_data",
+  );
+  assertEquals(error.message.includes("un-migrated data"), true);
+  assertEquals(error.message.includes("data, outputs"), true);
+});
+
+Deno.test("datastoreSync: sync blocked when un-migrated data exists", async () => {
+  const deps = makeDeps({
+    checkUnmigratedData: () =>
+      Promise.resolve({
+        unmigrated: true,
+        directories: ["data"],
+        namespace: "my-ns",
+      }),
+  });
+
+  const error = await assertErrors<DatastoreSyncEvent>(
+    datastoreSync(createLibSwampContext(), deps, { mode: "sync" }),
+    "unmigrated_data",
+  );
+  assertEquals(error.message.includes("un-migrated data"), true);
+});
+
+Deno.test("datastoreSync: pull not blocked by un-migrated data", async () => {
+  const deps = makeDeps({
+    checkUnmigratedData: () =>
+      Promise.resolve({
+        unmigrated: true,
+        directories: ["data"],
+        namespace: "my-ns",
+      }),
+  });
+
+  const events = await collect<DatastoreSyncEvent>(
+    datastoreSync(createLibSwampContext(), deps, { mode: "pull" }),
+  );
+
+  assertEquals(events.length, 2);
+  assertEquals(events[1].kind, "completed");
+});
+
 Deno.test("datastoreSync: unsupported datastore type yields error", async () => {
   const deps = makeDeps({
     validateSyncSupport: () =>

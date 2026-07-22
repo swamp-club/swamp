@@ -33,6 +33,7 @@ import {
 } from "../context.ts";
 import type { CommandContext } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import { checkUnmigratedNamespaceData } from "../resolve_datastore.ts";
 import {
   requestServerResponse,
   resolveServerToken,
@@ -119,10 +120,12 @@ export const workflowApprovalsCommand = withRemoteOptions(
     return;
   }
 
-  const { repoContext } = await requireInitializedRepoUnlocked({
-    repoDir: resolveRepoDir(options.repoDir),
-    outputMode: cliCtx.outputMode,
-  });
+  const { repoContext, datastoreConfig } = await requireInitializedRepoUnlocked(
+    {
+      repoDir: resolveRepoDir(options.repoDir),
+      outputMode: cliCtx.outputMode,
+    },
+  );
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
   const runRepo = repoContext.workflowRunRepo;
@@ -156,4 +159,16 @@ export const workflowApprovalsCommand = withRemoteOptions(
   );
 
   renderApprovals(cliCtx, pending);
+
+  if (pending.length === 0) {
+    const unmigrated = await checkUnmigratedNamespaceData(datastoreConfig);
+    if (unmigrated.length > 0) {
+      cliCtx.logger.warn(
+        "Un-migrated data found at root level ({dirs}). " +
+          "Run 'swamp datastore namespace migrate' to preview, " +
+          'then --confirm to move data under the "{namespace}" namespace.',
+        { dirs: unmigrated.join(", "), namespace: datastoreConfig.namespace },
+      );
+    }
+  }
 });

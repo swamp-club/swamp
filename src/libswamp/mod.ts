@@ -1443,6 +1443,7 @@ export {
   type DatastoreSyncDeps,
   type DatastoreSyncEvent,
   type DatastoreSyncInput,
+  type DatastoreSyncPreviewData,
 } from "./datastores/sync.ts";
 export {
   createDatastoreSetupDeps,
@@ -1453,6 +1454,7 @@ export {
   type DatastoreSetupExtensionInput,
   datastoreSetupFilesystem,
   type DatastoreSetupFilesystemInput,
+  type DatastoreSetupWarningData,
 } from "./datastores/setup.ts";
 export {
   createDatastoreLockReleaseDeps,

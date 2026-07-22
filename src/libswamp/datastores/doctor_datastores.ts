@@ -60,6 +60,9 @@ export interface DoctorDatastoresDeps {
     config: DatastoreConfig,
   ) => Promise<{ healthy: boolean; message: string; latencyMs: number }>;
   getVaultConfigs: () => Promise<Array<{ name: string; type: string }>>;
+  checkUnmigratedData?: (
+    config: DatastoreConfig,
+  ) => Promise<{ unmigrated: boolean; directories: string[] }>;
 }
 
 /**
@@ -92,6 +95,29 @@ export async function* doctorDatastores(
         passed: healthy,
         message,
       });
+
+      // Un-migrated namespace data check
+      if (config.namespace && deps.checkUnmigratedData) {
+        const result = await deps.checkUnmigratedData(config);
+        if (result.unmigrated) {
+          healthFindings.push({
+            check: "namespace_migration",
+            passed: false,
+            message:
+              `Un-migrated data found at root level (${
+                result.directories.join(", ")
+              }). ` +
+              `Run 'swamp datastore namespace migrate' to preview, then --confirm to move data ` +
+              `under the "${config.namespace}" namespace.`,
+          });
+        } else {
+          healthFindings.push({
+            check: "namespace_migration",
+            passed: true,
+            message: `All data is under namespace "${config.namespace}"`,
+          });
+        }
+      }
 
       // Vault mismatch check — only relevant for custom (remote) datastores
       if (isCustom) {

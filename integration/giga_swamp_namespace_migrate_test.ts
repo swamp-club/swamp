@@ -40,6 +40,7 @@ import {
   mergeDirInto,
 } from "../src/infrastructure/persistence/directory_merge.ts";
 import {
+  listNamespaceManifests,
   removeNamespaceManifest,
   writeNamespaceManifest,
 } from "../src/infrastructure/persistence/namespace_manifest.ts";
@@ -143,6 +144,10 @@ function buildDeps(
     markDirtyBulk: () => Promise.resolve(),
     removeNamespaceManifest: (ns: string) =>
       removeNamespaceManifest(dsPath, ns),
+    listLocalNamespaces: async () => {
+      const manifests = await listNamespaceManifests(dsPath);
+      return manifests.map((m) => m.namespace);
+    },
     isExtensionDatastore: false,
   };
 }

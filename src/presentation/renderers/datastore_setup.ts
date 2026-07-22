@@ -42,6 +42,15 @@ class LogDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
       hydrating: () => {
         logger.info`Hydrating cache from remote...`;
       },
+      warning: (e) => {
+        writeOutput(
+          [
+            "",
+            yellow(bold("Warning:")) + " " + e.data.message,
+            "",
+          ].join("\n"),
+        );
+      },
       completed: (e) => {
         const data = e.data;
         const lines = [
@@ -92,13 +101,24 @@ class LogDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
 }
 
 class JsonDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
+  #warnings: Array<{ message: string; existingNamespaces: string[] }> = [];
+
   handlers(): EventHandlers<DatastoreSetupEvent> {
     return {
       validating: () => {},
       migrating: () => {},
       hydrating: () => {},
+      warning: (e) => {
+        this.#warnings.push(e.data);
+      },
       completed: (e) => {
-        console.log(JSON.stringify(e.data, null, 2));
+        console.log(
+          JSON.stringify(
+            { ...e.data, warnings: this.#warnings },
+            null,
+            2,
+          ),
+        );
       },
       error: (e) => {
         throw new UserError(e.error.message);

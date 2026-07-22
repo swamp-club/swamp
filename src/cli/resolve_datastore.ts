@@ -36,6 +36,7 @@ import { getLogger } from "@logtape/logtape";
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 import {
   type DatastoreConfig,
+  DEFAULT_DATASTORE_SUBDIRS,
   isCustomDatastoreConfig,
 } from "../domain/datastore/datastore_config.ts";
 import { getSwampDataDir } from "../infrastructure/persistence/paths.ts";
@@ -387,4 +388,29 @@ export async function resolveDatastoreConfig(
   // 4. Default: filesystem at {repoDir}/.swamp/
   const defaultPath = repoDir ? join(repoDir, ".swamp") : ".swamp";
   return { type: "filesystem", path: defaultPath };
+}
+
+/**
+ * Checks whether a datastore with a namespace has un-migrated root-level data.
+ * Returns the list of root-level directories found, or empty if no issue.
+ */
+export async function checkUnmigratedNamespaceData(
+  config: DatastoreConfig,
+): Promise<string[]> {
+  if (!config.namespace) return [];
+  const basePath = isCustomDatastoreConfig(config) && config.cachePath
+    ? config.cachePath
+    : isCustomDatastoreConfig(config)
+    ? config.datastorePath
+    : config.path;
+  const found: string[] = [];
+  for (const subdir of DEFAULT_DATASTORE_SUBDIRS) {
+    try {
+      const stat = await Deno.stat(join(basePath, subdir));
+      if (stat.isDirectory) found.push(subdir);
+    } catch {
+      // Not found — expected when migrated
+    }
+  }
+  return found;
 }

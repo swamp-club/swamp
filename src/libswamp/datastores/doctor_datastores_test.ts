@@ -174,3 +174,86 @@ Deno.test("doctorDatastores: emits scanning event first", async () => {
   assertEquals(events[0].kind, "scanning");
   assertEquals(events[1].kind, "completed");
 });
+
+// ============================================================================
+// Un-migrated namespace data detection
+// ============================================================================
+
+Deno.test("doctorDatastores: flags un-migrated data when namespace is set", async () => {
+  const configWithNs: DatastoreConfig = {
+    type: "@swamp/s3-datastore",
+    config: { bucket: "test" },
+    datastorePath: "/tmp/cache",
+    namespace: "infra",
+  };
+  const deps: DoctorDatastoresDeps = {
+    getDatastoreConfig: () => Promise.resolve(configWithNs),
+    checkHealth: () =>
+      Promise.resolve({ healthy: true, message: "OK", latencyMs: 1 }),
+    getVaultConfigs: () => Promise.resolve([]),
+    checkUnmigratedData: () =>
+      Promise.resolve({ unmigrated: true, directories: ["data", "outputs"] }),
+  };
+
+  const events = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    const nsFinding = completed.data.healthFindings.find(
+      (f) => f.check === "namespace_migration",
+    );
+    assertEquals(nsFinding?.passed, false);
+    assertEquals(nsFinding?.message.includes("data, outputs"), true);
+  }
+});
+
+Deno.test("doctorDatastores: passes when all data is under namespace", async () => {
+  const configWithNs: DatastoreConfig = {
+    type: "@swamp/s3-datastore",
+    config: { bucket: "test" },
+    datastorePath: "/tmp/cache",
+    namespace: "infra",
+  };
+  const deps: DoctorDatastoresDeps = {
+    getDatastoreConfig: () => Promise.resolve(configWithNs),
+    checkHealth: () =>
+      Promise.resolve({ healthy: true, message: "OK", latencyMs: 1 }),
+    getVaultConfigs: () => Promise.resolve([]),
+    checkUnmigratedData: () =>
+      Promise.resolve({ unmigrated: false, directories: [] }),
+  };
+
+  const events = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    const nsFinding = completed.data.healthFindings.find(
+      (f) => f.check === "namespace_migration",
+    );
+    assertEquals(nsFinding?.passed, true);
+  }
+});
+
+Deno.test("doctorDatastores: skips namespace check when no namespace configured", async () => {
+  const deps = makeDeps(
+    customConfig,
+    { healthy: true, message: "OK", latencyMs: 1 },
+    [],
+  );
+
+  const events = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    const nsFinding = completed.data.healthFindings.find(
+      (f) => f.check === "namespace_migration",
+    );
+    assertEquals(nsFinding, undefined);
+  }
+});
