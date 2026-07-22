@@ -20,6 +20,7 @@
 import type {
   DataQueryData,
   DataQueryEvent,
+  DataRecord,
   EventHandlers,
   ProjectedData,
 } from "../../libswamp/mod.ts";
@@ -200,6 +201,21 @@ function renderProjected(data: DataQueryData): string {
 }
 
 /**
+ * Transforms a DataRecord for JSON output: moves the payload from
+ * `attributes` to `content` (matching `data get --json`) and strips
+ * the internal `attributes` key.
+ */
+function recordToJsonOutput(
+  record: DataRecord,
+): Record<string, unknown> {
+  const { attributes, content: _rawContent, ...rest } = record;
+  return {
+    ...rest,
+    content: record.contentType === "application/json" ? attributes : "",
+  };
+}
+
+/**
  * Renders JSON output for the completed event.
  */
 function renderJson(data: DataQueryData): void {
@@ -217,7 +233,16 @@ function renderJson(data: DataQueryData): void {
       2,
     ));
   } else {
-    writeOutput(JSON.stringify(data, null, 2));
+    writeOutput(JSON.stringify(
+      {
+        predicate: data.predicate,
+        results: data.results.map(recordToJsonOutput),
+        total: data.total,
+        limited: data.limited,
+      },
+      null,
+      2,
+    ));
   }
 }
 

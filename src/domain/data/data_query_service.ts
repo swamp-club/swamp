@@ -365,14 +365,18 @@ export class DataQueryService {
       ) => unknown;
     }
 
-    // Detect attributes and content usage — union filter and select expression
-    let needsAttributes = options?.loadAttributes ??
-      referencesAttributes(filterAst);
+    // Detect attributes and content usage — union filter and select expression.
+    // content is aliased to attributes for JSON records in the CEL context,
+    // so referencing content also requires loading attributes.
     let needsContent = referencesContent(filterAst);
+    let needsAttributes = options?.loadAttributes ??
+      (referencesAttributes(filterAst) || needsContent);
     if (options?.select) {
       const selectAst = (selectParsed as unknown as { ast: ASTNode }).ast;
-      if (!needsAttributes) needsAttributes = referencesAttributes(selectAst);
       if (!needsContent) needsContent = referencesContent(selectAst);
+      if (!needsAttributes) {
+        needsAttributes = referencesAttributes(selectAst) || needsContent;
+      }
     }
 
     // SQL pushdown: pre-filter rows in SQLite before CEL evaluation.
@@ -411,6 +415,9 @@ export class DataQueryService {
         record as unknown as Record<string, unknown>,
       ) as Record<string, unknown>;
       ctx["ns"] = record.namespace;
+      if (record.contentType === "application/json") {
+        ctx["content"] = record.attributes;
+      }
       try {
         const match = parsed(ctx);
         if (match === true) {
@@ -446,6 +453,9 @@ export class DataQueryService {
             r as unknown as Record<string, unknown>,
           ) as Record<string, unknown>;
           selectCtx["ns"] = r.namespace;
+          if (r.contentType === "application/json") {
+            selectCtx["content"] = r.attributes;
+          }
           return coerceBigInts(selectParsed(selectCtx));
         } catch {
           return null;
