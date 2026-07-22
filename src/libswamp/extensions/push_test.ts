@@ -150,6 +150,7 @@ function makeExecuteDeps(
         version: "2026.03.22.1",
         extensionId: "ext-123",
       }),
+    getExtensionVisibility: () => Promise.resolve({ isPrivate: false }),
     ...overrides,
   };
 }
@@ -502,6 +503,61 @@ Deno.test("extensionPush: yields pushing events for each phase", async () => {
     assertEquals(pushingEvents[0].phase, "initiate");
     assertEquals(pushingEvents[1].phase, "upload");
     assertEquals(pushingEvents[2].phase, "confirm");
+  }
+});
+
+Deno.test("extensionPush: completed includes visibility=private when extension is private", async () => {
+  const deps = makeExecuteDeps({
+    getExtensionVisibility: () => Promise.resolve({ isPrivate: true }),
+  });
+  const input = makeExecuteInput();
+
+  const events = await collect(extensionPush(ctx, deps, input));
+  const last = events[events.length - 1];
+  assertEquals(last.kind, "completed");
+  if (last.kind === "completed") {
+    assertEquals(last.data.visibility, "private");
+    assertEquals(last.data.channel, "stable");
+  }
+});
+
+Deno.test("extensionPush: completed includes visibility=public when extension is public", async () => {
+  const deps = makeExecuteDeps({
+    getExtensionVisibility: () => Promise.resolve({ isPrivate: false }),
+  });
+  const input = makeExecuteInput();
+
+  const events = await collect(extensionPush(ctx, deps, input));
+  const last = events[events.length - 1];
+  assertEquals(last.kind, "completed");
+  if (last.kind === "completed") {
+    assertEquals(last.data.visibility, "public");
+  }
+});
+
+Deno.test("extensionPush: completed includes channel from input", async () => {
+  const deps = makeExecuteDeps();
+  const input = makeExecuteInput({ channel: "beta" });
+
+  const events = await collect(extensionPush(ctx, deps, input));
+  const last = events[events.length - 1];
+  assertEquals(last.kind, "completed");
+  if (last.kind === "completed") {
+    assertEquals(last.data.channel, "beta");
+  }
+});
+
+Deno.test("extensionPush: visibility check failure defaults to public", async () => {
+  const deps = makeExecuteDeps({
+    getExtensionVisibility: () => Promise.reject(new Error("Network error")),
+  });
+  const input = makeExecuteInput();
+
+  const events = await collect(extensionPush(ctx, deps, input));
+  const last = events[events.length - 1];
+  assertEquals(last.kind, "completed");
+  if (last.kind === "completed") {
+    assertEquals(last.data.visibility, "public");
   }
 });
 

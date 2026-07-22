@@ -118,6 +118,7 @@ export interface ExtensionInfo {
   latestRc: string | null;
   latestBeta: string | null;
   dependencies?: string[];
+  isPrivate?: boolean;
 }
 
 /** Parameters for the extension search endpoint. */
