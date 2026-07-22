@@ -225,6 +225,11 @@ export {
   type DoctorDatastoresData,
   type DoctorDatastoresDeps,
   type DoctorDatastoresEvent,
+  type NamespaceContaminationFinding,
+  repairDatastoreContamination,
+  type RepairDatastoresDeps,
+  type RepairDatastoresEvent,
+  type RepairDatastoresResult,
   type VaultMismatchFinding,
 } from "./datastores/doctor_datastores.ts";
 export {

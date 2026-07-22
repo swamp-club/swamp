@@ -327,6 +327,23 @@ export interface DatastoreSyncService {
   ): Promise<number | void>;
 
   /**
+   * Detect and optionally remove foreign namespace data under the
+   * bound namespace.
+   *
+   * In `dryRun` mode, lists objects under `{namespace}/` and identifies
+   * any whose path starts with `{namespace}/{otherKnownNamespace}/`.
+   * With `dryRun: false`, deletes the foreign objects and rebuilds the
+   * namespace's remote index from the remaining (clean) objects.
+   *
+   * Optional — only implemented by extensions whose backend supports
+   * object listing and deletion (S3, GCS). Core duck-types the method's
+   * presence before calling.
+   */
+  repairNamespaceContamination?(
+    options?: RepairNamespaceContaminationOptions,
+  ): Promise<NamespaceContaminationSummary>;
+
+  /**
    * Migrate the remote index from monolithic format to shard-first.
    *
    * Reads the existing monolithic `.datastore-index.json`, partitions all
@@ -343,6 +360,28 @@ export interface DatastoreSyncService {
   migrateMonolithToShards?(
     options?: DatastoreSyncOptions,
   ): Promise<MigrateIndexResult>;
+}
+
+/** Summary of namespace contamination detection or repair. */
+export interface NamespaceContaminationSummary {
+  foreignNamespaces: ReadonlyArray<{
+    namespace: string;
+    objectCount: number;
+  }>;
+  totalForeignObjects: number;
+  /** Number of foreign objects deleted. Zero when `dryRun` is `true`. */
+  deleted: number;
+}
+
+/** Options for {@link DatastoreSyncService.repairNamespaceContamination}. */
+export interface RepairNamespaceContaminationOptions {
+  signal?: AbortSignal;
+  namespace?: string;
+  /**
+   * When `true`, detect contamination without deleting anything.
+   * When `false`, delete foreign objects and rebuild the namespace index.
+   */
+  dryRun?: boolean;
 }
 
 /** Result of a shard-first index migration. */

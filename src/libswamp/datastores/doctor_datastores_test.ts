@@ -24,6 +24,9 @@ import {
   doctorDatastores,
   type DoctorDatastoresDeps,
   type DoctorDatastoresEvent,
+  repairDatastoreContamination,
+  type RepairDatastoresDeps,
+  type RepairDatastoresEvent,
 } from "./doctor_datastores.ts";
 import type { DatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 
@@ -256,4 +259,341 @@ Deno.test("doctorDatastores: skips namespace check when no namespace configured"
     );
     assertEquals(nsFinding, undefined);
   }
+});
+
+// ============================================================================
+// Namespace contamination detection
+// ============================================================================
+
+const customConfigWithNs: DatastoreConfig = {
+  type: "@swamp/s3-datastore",
+  config: { bucket: "test" },
+  datastorePath: "/tmp/cache",
+  namespace: "dwh-infra",
+};
+
+Deno.test("doctorDatastores: detects namespace contamination", async () => {
+  const deps: DoctorDatastoresDeps = {
+    getDatastoreConfig: () => Promise.resolve(customConfigWithNs),
+    checkHealth: () =>
+      Promise.resolve({ healthy: true, message: "OK", latencyMs: 1 }),
+    getVaultConfigs: () => Promise.resolve([]),
+    checkNamespaceContamination: () =>
+      Promise.resolve({
+        foreignNamespaces: [
+          { namespace: "asdlc", objectCount: 803 },
+          { namespace: "swamp-extensions", objectCount: 13934 },
+        ],
+        totalForeignObjects: 14737,
+        deleted: 0,
+      }),
+  };
+
+  const events = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    const cFinding = completed.data.healthFindings.find(
+      (f) => f.check === "namespace_contamination",
+    );
+    assertEquals(cFinding?.passed, false);
+    assertEquals(cFinding?.message.includes("14737"), true);
+
+    assertEquals(
+      completed.data.contaminationFinding?.totalForeignObjects,
+      14737,
+    );
+    assertEquals(
+      completed.data.contaminationFinding?.foreignNamespaces.length,
+      2,
+    );
+  }
+});
+
+Deno.test("doctorDatastores: passes when no contamination found", async () => {
+  const deps: DoctorDatastoresDeps = {
+    getDatastoreConfig: () => Promise.resolve(customConfigWithNs),
+    checkHealth: () =>
+      Promise.resolve({ healthy: true, message: "OK", latencyMs: 1 }),
+    getVaultConfigs: () => Promise.resolve([]),
+    checkNamespaceContamination: () =>
+      Promise.resolve({
+        foreignNamespaces: [],
+        totalForeignObjects: 0,
+        deleted: 0,
+      }),
+  };
+
+  const events = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    const cFinding = completed.data.healthFindings.find(
+      (f) => f.check === "namespace_contamination",
+    );
+    assertEquals(cFinding?.passed, true);
+    assertEquals(completed.data.contaminationFinding, undefined);
+  }
+});
+
+Deno.test("doctorDatastores: skips contamination check for filesystem datastores", async () => {
+  const fsConfigWithNs: DatastoreConfig = {
+    type: "filesystem",
+    path: "/tmp/test-repo/.swamp",
+    namespace: "my-ns",
+  };
+  const deps: DoctorDatastoresDeps = {
+    getDatastoreConfig: () => Promise.resolve(fsConfigWithNs),
+    checkHealth: () =>
+      Promise.resolve({ healthy: true, message: "OK", latencyMs: 1 }),
+    getVaultConfigs: () => Promise.resolve([]),
+    checkNamespaceContamination: () => {
+      throw new Error("should not be called for filesystem datastores");
+    },
+  };
+
+  const events = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    const cFinding = completed.data.healthFindings.find(
+      (f) => f.check === "namespace_contamination",
+    );
+    assertEquals(cFinding, undefined);
+    assertEquals(completed.data.contaminationFinding, undefined);
+  }
+});
+
+Deno.test("doctorDatastores: skips contamination check when no namespace", async () => {
+  const deps: DoctorDatastoresDeps = {
+    getDatastoreConfig: () => Promise.resolve(customConfig),
+    checkHealth: () =>
+      Promise.resolve({ healthy: true, message: "OK", latencyMs: 1 }),
+    getVaultConfigs: () => Promise.resolve([]),
+    checkNamespaceContamination: () => {
+      throw new Error("should not be called without namespace");
+    },
+  };
+
+  const events = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    assertEquals(completed.data.contaminationFinding, undefined);
+  }
+});
+
+// ============================================================================
+// Repair: namespace contamination cleanup
+// ============================================================================
+
+function makeRepairDeps(
+  overrides: Partial<RepairDatastoresDeps> = {},
+): RepairDatastoresDeps {
+  return {
+    getDatastoreConfig: () => Promise.resolve(customConfigWithNs),
+    detectContamination: () =>
+      Promise.resolve({
+        foreignNamespaces: [
+          { namespace: "asdlc", objectCount: 803 },
+          { namespace: "swamp-extensions", objectCount: 13934 },
+        ],
+        totalForeignObjects: 14737,
+        deleted: 0,
+      }),
+    deleteContamination: () =>
+      Promise.resolve({
+        foreignNamespaces: [
+          { namespace: "asdlc", objectCount: 803 },
+          { namespace: "swamp-extensions", objectCount: 13934 },
+        ],
+        totalForeignObjects: 14737,
+        deleted: 14737,
+      }),
+    wipeLocalCache: () => Promise.resolve(),
+    pullScoped: () => Promise.resolve(1500),
+    invalidateWorkflowRunIndexes: () => Promise.resolve(3),
+    invalidateCatalog: () => Promise.resolve(),
+    ...overrides,
+  };
+}
+
+Deno.test("repairDatastoreContamination: preview mode shows what would be cleaned", async () => {
+  const deps = makeRepairDeps();
+
+  const events = await collect<RepairDatastoresEvent>(
+    repairDatastoreContamination(createLibSwampContext(), deps, {
+      confirm: false,
+    }),
+  );
+
+  assertEquals(events[0].kind, "scanning");
+  const preview = events.find((e) => e.kind === "preview");
+  assertEquals(preview?.kind, "preview");
+  if (preview?.kind === "preview") {
+    assertEquals(preview.namespace, "dwh-infra");
+    assertEquals(preview.contamination.totalForeignObjects, 14737);
+    assertEquals(preview.contamination.foreignNamespaces.length, 2);
+  }
+  assertEquals(events.find((e) => e.kind === "completed"), undefined);
+});
+
+Deno.test("repairDatastoreContamination: confirm mode executes full repair", async () => {
+  const callLog: string[] = [];
+  const deps = makeRepairDeps({
+    deleteContamination: () => {
+      callLog.push("deleteContamination");
+      return Promise.resolve({
+        foreignNamespaces: [
+          { namespace: "asdlc", objectCount: 803 },
+        ],
+        totalForeignObjects: 803,
+        deleted: 803,
+      });
+    },
+    wipeLocalCache: () => {
+      callLog.push("wipeLocalCache");
+      return Promise.resolve();
+    },
+    pullScoped: () => {
+      callLog.push("pullScoped");
+      return Promise.resolve(500);
+    },
+    invalidateWorkflowRunIndexes: () => {
+      callLog.push("invalidateWorkflowRunIndexes");
+      return Promise.resolve(2);
+    },
+    invalidateCatalog: () => {
+      callLog.push("invalidateCatalog");
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<RepairDatastoresEvent>(
+    repairDatastoreContamination(createLibSwampContext(), deps, {
+      confirm: true,
+    }),
+  );
+
+  // Verify correct execution order
+  assertEquals(callLog, [
+    "deleteContamination",
+    "wipeLocalCache",
+    "pullScoped",
+    "invalidateWorkflowRunIndexes",
+    "invalidateCatalog",
+  ]);
+
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    assertEquals(completed.namespace, "dwh-infra");
+    assertEquals(completed.result.deletedObjects, 803);
+    assertEquals(completed.result.filesPulled, 500);
+    assertEquals(completed.result.workflowRunIndexesInvalidated, 2);
+    assertEquals(completed.result.catalogInvalidated, true);
+  }
+
+  // Verify step events were emitted in order
+  const steps = events.filter((e) => e.kind === "step");
+  assertEquals(steps.length, 5);
+  if (steps[0].kind === "step") {
+    assertEquals(steps[0].step, 1);
+  }
+});
+
+Deno.test("repairDatastoreContamination: not needed when no contamination", async () => {
+  const deps = makeRepairDeps({
+    detectContamination: () =>
+      Promise.resolve({
+        foreignNamespaces: [],
+        totalForeignObjects: 0,
+        deleted: 0,
+      }),
+  });
+
+  const events = await collect<RepairDatastoresEvent>(
+    repairDatastoreContamination(createLibSwampContext(), deps, {
+      confirm: true,
+    }),
+  );
+
+  assertEquals(events[0].kind, "scanning");
+  assertEquals(events[1].kind, "not_needed");
+  assertEquals(events.length, 2);
+});
+
+Deno.test("repairDatastoreContamination: not needed when no namespace configured", async () => {
+  const deps = makeRepairDeps({
+    getDatastoreConfig: () => Promise.resolve(customConfig),
+  });
+
+  const events = await collect<RepairDatastoresEvent>(
+    repairDatastoreContamination(createLibSwampContext(), deps, {
+      confirm: true,
+    }),
+  );
+
+  assertEquals(events[0].kind, "scanning");
+  assertEquals(events[1].kind, "not_needed");
+});
+
+Deno.test("repairDatastoreContamination: emits progress steps during confirm", async () => {
+  const deps = makeRepairDeps();
+
+  const events = await collect<RepairDatastoresEvent>(
+    repairDatastoreContamination(createLibSwampContext(), deps, {
+      confirm: true,
+    }),
+  );
+
+  const steps = events.filter(
+    (e): e is Extract<RepairDatastoresEvent, { kind: "step" }> =>
+      e.kind === "step",
+  );
+
+  assertEquals(steps.length, 5);
+  for (let i = 0; i < steps.length; i++) {
+    assertEquals(steps[i].step, i + 1);
+    assertEquals(steps[i].total, 5);
+  }
+
+  assertEquals(steps[0].description.includes("Deleting"), true);
+  assertEquals(steps[1].description.includes("Wiping"), true);
+  assertEquals(steps[2].description.includes("Re-pulling"), true);
+  assertEquals(steps[3].description.includes("workflow run"), true);
+  assertEquals(steps[4].description.includes("catalog"), true);
+});
+
+Deno.test("repairDatastoreContamination: yields error event on mid-repair failure", async () => {
+  const deps = makeRepairDeps({
+    pullScoped: () => Promise.reject(new Error("network timeout")),
+  });
+
+  const events = await collect<RepairDatastoresEvent>(
+    repairDatastoreContamination(createLibSwampContext(), deps, {
+      confirm: true,
+    }),
+  );
+
+  const errorEvent = events.find((e) => e.kind === "error");
+  assertEquals(errorEvent?.kind, "error");
+  if (errorEvent?.kind === "error") {
+    assertEquals(errorEvent.error.code, "repair_failed");
+    assertEquals(errorEvent.error.message.includes("step 3/5"), true);
+    assertEquals(errorEvent.error.message.includes("network timeout"), true);
+    assertEquals(
+      errorEvent.error.message.includes("swamp datastore sync --pull"),
+      true,
+    );
+  }
+  assertEquals(events.find((e) => e.kind === "completed"), undefined);
 });
