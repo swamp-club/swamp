@@ -1079,23 +1079,13 @@ When a `namespace` is configured, the **global** lock key moves to
 repos writing to different namespaces of a shared datastore never contend on
 structural commands. `FileLock` lazily creates the `.locks/` directory on first
 acquire. This is a lock-**path** change only — the lifecycle protocol below is
-unchanged. Per-model lock keys (`data/{type}/{modelId}/.lock`) are **not**
-namespaced: model ids are UUIDs, so they are already globally unique across
-namespaces.
-
-Known cosmetic consequence of leaving per-model lock keys un-namespaced: in a
-namespaced repo the lock lives at `{datastore}/data/{type}/{modelId}/.lock`
-(un-namespaced tier) while the data it guards lives at
-`{datastore}/{namespace}/data/{type}/{modelId}/...`. Because `FileLock.acquire`
-runs `ensureDir(dirname(lockPath))`, acquiring the lock leaves an **empty**
-`{datastore}/data/{type}/{modelId}/` directory behind in the un-namespaced
-tier after release. This is harmless — no data, no catalog rows, and `data
-list`/`data query` (which read the repo-local catalog) are unaffected; the
-empty dirs are never confused with data because they contain no `raw`/metadata.
-Co-locating the lock with the namespaced data would require namespace-scoping
-`parseModelLockKey`/`scanModelLocks`/`waitForPerModelLocks` (which anchor on
-`data` as the first path segment), so it is deferred to the per-model lock
-namespacing work rather than expanding this phase's scope for a cosmetic issue.
+unchanged. Per-model lock keys are namespaced:
+`{namespace}/data/{type}/{modelId}/.lock` when a namespace is set,
+`data/{type}/{modelId}/.lock` otherwise. The `modelLockKey()` helper in
+`lock.ts` constructs the key; `createModelLock` and `acquireModelLocks` read
+`config.namespace` to thread it through. `parseModelLockKey` is unchanged —
+callers use `stripNamespacePrefix()` to strip the namespace from
+filesystem-relative paths before parsing.
 
 ### Lock Timeout and Retry Behavior
 
@@ -1163,14 +1153,11 @@ same model are unsafe). The coordinator uses unique keys per lock
 acquisition (suffixed with a random ID) so parallel steps on the same
 model get separate entries and do not overwrite each other.
 
-Because per-model lock keys are not namespaced, `waitForPerModelLocks`
-(which walks the datastore root) drains in-flight per-model writers across
-**all** namespaces, not just the structural command's own. This is a
-conservative over-wait, not a correctness issue: data dirs are
-namespace-partitioned, catalogs are repo-local, and global locks are
-namespaced, so there is no shared mutable state for a cross-namespace writer
-to corrupt. Structural commands are infrequent; namespacing per-model locks
-can be revisited if real contention appears.
+Per-model lock keys are namespace-scoped, so `waitForPerModelLocks` uses
+`stripNamespacePrefix` to match locks under the repo's namespace. The walk
+still starts from the datastore root, so locks from other namespaces are
+visible but filtered out by the prefix check — only the current namespace's
+per-model locks are drained.
 
 #### Symmetric Drain (structural commands)
 

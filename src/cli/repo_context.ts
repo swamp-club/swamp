@@ -46,7 +46,9 @@ import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
 import { resolveModelsDir } from "./resolve_models_dir.ts";
 import {
   enumeratePulledExtensionDirs,
+  modelLockKey,
   parseModelLockKey,
+  stripNamespacePrefix,
 } from "../libswamp/mod.ts";
 import { resolveDatastoreConfig } from "./resolve_datastore.ts";
 import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
@@ -577,7 +579,10 @@ export function requireInitializedRepo(
       // to be released. A writer that has *already* acquired a per-model
       // lock and passed its TOCTOU recheck (acquireModelLocks, this file)
       // is committed to writing data; we must let it finish.
-      await waitForPerModelLocks(datastoreConfig.path);
+      await waitForPerModelLocks(
+        datastoreConfig.path,
+        datastoreConfig.namespace,
+      );
 
       // Acquire the global lock. From here on, any writer that inspects
       // the global lock will back off — but a writer that slipped past the
@@ -601,7 +606,10 @@ export function requireInitializedRepo(
       // closes the symmetric TOCTOU window — do not remove without
       // updating the lock-lifecycle contract documented in
       // design/datastores.md.
-      await waitForPerModelLocks(datastoreConfig.path);
+      await waitForPerModelLocks(
+        datastoreConfig.path,
+        datastoreConfig.namespace,
+      );
 
       if (datastoreConfig.namespace) {
         needsCatalogInvalidation = true;
@@ -830,7 +838,7 @@ export async function createModelLock(
   modelType: string,
   modelId: string,
 ): Promise<DistributedLock> {
-  const lockKey = `data/${modelType}/${modelId}/.lock`;
+  const lockKey = modelLockKey(config.namespace, modelType, modelId);
   const maxWaitMs = resolveLockTimeoutMs();
   if (isCustomDatastoreConfig(config)) {
     const provider = await resolveCustomProvider(config);
@@ -858,6 +866,7 @@ export const SWAMP_LOCK_HOLDER_PID = "SWAMP_LOCK_HOLDER_PID";
 
 export async function waitForPerModelLocks(
   datastorePath: string,
+  namespace?: string,
   findModelLocksOverride?: () => Promise<number>,
 ): Promise<void> {
   const logger = getSwampLogger(["datastore", "lock"]);
@@ -875,7 +884,9 @@ export async function waitForPerModelLocks(
           })
         ) {
           const rel = relative(datastorePath, entry.path);
-          if (!parseModelLockKey(rel)) continue;
+          if (!parseModelLockKey(stripNamespacePrefix(namespace, rel))) {
+            continue;
+          }
           try {
             const content = await Deno.readTextFile(entry.path);
             const info = JSON.parse(content) as {
@@ -1100,7 +1111,7 @@ export async function acquireModelLocks(
   }
 
   for (const { modelType, modelId } of unique) {
-    const lockFileKey = `data/${modelType}/${modelId}/.lock`;
+    const lockFileKey = modelLockKey(config.namespace, modelType, modelId);
     // Use cached provider for custom types to avoid repeated registry lookups
     const lock = customProvider && isCustomDatastoreConfig(config)
       ? customProvider.createLock(config.datastorePath, {

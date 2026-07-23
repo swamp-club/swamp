@@ -30,8 +30,10 @@ import {
   type DatastoreLockStatusDeps,
   type DatastoreLockStatusEvent,
   type LockInfo,
+  modelLockKey,
   parseModelLockKey,
   parseModelSpec,
+  stripNamespacePrefix,
 } from "./lock.ts";
 
 const sampleLockInfo: LockInfo = {
@@ -333,6 +335,59 @@ Deno.test("parseModelSpec: empty string returns null", () => {
   assertEquals(parseModelSpec(""), null);
 });
 
+// ── modelLockKey ──────────────────────────────────────────────────────
+
+Deno.test("modelLockKey: without namespace", () => {
+  assertEquals(
+    modelLockKey(undefined, "aws-ec2", "server-1"),
+    "data/aws-ec2/server-1/.lock",
+  );
+});
+
+Deno.test("modelLockKey: with empty namespace", () => {
+  assertEquals(
+    modelLockKey("", "aws-ec2", "server-1"),
+    "data/aws-ec2/server-1/.lock",
+  );
+});
+
+Deno.test("modelLockKey: with namespace", () => {
+  assertEquals(
+    modelLockKey("infra", "aws-ec2", "server-1"),
+    "infra/data/aws-ec2/server-1/.lock",
+  );
+});
+
+Deno.test("modelLockKey: with namespace and scoped extension type", () => {
+  assertEquals(
+    modelLockKey("asdlc", "@hivemq/harvester-host-kernel", "abc-123"),
+    "asdlc/data/@hivemq/harvester-host-kernel/abc-123/.lock",
+  );
+});
+
+// ── stripNamespacePrefix ──────────────────────────────────────────────
+
+Deno.test("stripNamespacePrefix: no namespace returns input unchanged", () => {
+  const rel = ["data", "aws-ec2", "server-1", ".lock"].join(SEPARATOR);
+  assertEquals(stripNamespacePrefix(undefined, rel), rel);
+});
+
+Deno.test("stripNamespacePrefix: empty namespace returns input unchanged", () => {
+  const rel = ["data", "aws-ec2", "server-1", ".lock"].join(SEPARATOR);
+  assertEquals(stripNamespacePrefix("", rel), rel);
+});
+
+Deno.test("stripNamespacePrefix: strips matching namespace prefix", () => {
+  const rel = ["infra", "data", "aws-ec2", "server-1", ".lock"].join(SEPARATOR);
+  const stripped = ["data", "aws-ec2", "server-1", ".lock"].join(SEPARATOR);
+  assertEquals(stripNamespacePrefix("infra", rel), stripped);
+});
+
+Deno.test("stripNamespacePrefix: non-matching prefix returns input unchanged", () => {
+  const rel = ["other", "data", "aws-ec2", "server-1", ".lock"].join(SEPARATOR);
+  assertEquals(stripNamespacePrefix("infra", rel), rel);
+});
+
 // ── Functional: scanModelLocks against real filesystem ────────────────
 
 Deno.test("scanModelLocks: finds both simple and scoped extension type locks", async () => {
@@ -381,6 +436,48 @@ Deno.test("scanModelLocks: finds both simple and scoped extension type locks", a
       "data/@hivemq/harvester-host-kernel/abc/.lock",
       "data/aws-ec2/server-1/.lock",
     ]);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("scanModelLocks: finds locks under namespace-scoped directory", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-lock-ns-scan-" });
+  try {
+    const now = new Date().toISOString();
+    const lock = JSON.stringify({
+      holder: "h@h",
+      hostname: "h",
+      pid: 1,
+      acquiredAt: now,
+      ttlMs: 600000,
+      nonce: "n",
+    });
+    await Deno.mkdir(`${dir}/myns/data/aws-ec2/server-1`, { recursive: true });
+    await Deno.writeTextFile(
+      `${dir}/myns/data/aws-ec2/server-1/.lock`,
+      lock,
+    );
+
+    const deps = createDatastoreLockStatusDeps(
+      {
+        // deno-lint-ignore require-await
+        async inspect() {
+          return null;
+        },
+      } as unknown as Parameters<typeof createDatastoreLockStatusDeps>[0],
+      { type: "filesystem", path: dir, namespace: "myns" },
+    );
+
+    const locks = await deps.scanModelLocks();
+    assertEquals(locks.length, 1);
+    assertEquals(locks[0].modelType, "aws-ec2");
+    assertEquals(locks[0].modelId, "server-1");
+    assertEquals(locks[0].lockKey, "myns/data/aws-ec2/server-1/.lock");
   } finally {
     if (Deno.build.os === "windows") {
       await Deno.remove(dir, { recursive: true }).catch(() => {});
