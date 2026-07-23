@@ -84,10 +84,16 @@ and config details, build a single `swamp datastore setup` command and run it.
 Save the exact command string — if it fails, you will re-run it verbatim after
 the user fixes the issue.
 
+Before building the command, ask: **"Will other repos share this datastore?"**
+If yes, ask for a namespace slug (lowercase alphanumeric + hyphens, e.g.
+`infra`) and add `--namespace <slug>` to the `setup extension` command. This
+assigns the namespace during setup in one step — no separate `namespace set` +
+`namespace migrate` needed.
+
 | Choice                      | Command                                                                                                             |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| AWS S3                      | `swamp datastore setup extension @swamp/s3-datastore --config '{"bucket":"…","region":"…"}'`                        |
-| Google Cloud Storage        | `swamp datastore setup extension @swamp/gcs-datastore --config '{"bucket":"…"}'`                                    |
+| AWS S3                      | `swamp datastore setup extension @swamp/s3-datastore [--namespace <slug>] --config '{"bucket":"…","region":"…"}'`   |
+| Google Cloud Storage        | `swamp datastore setup extension @swamp/gcs-datastore [--namespace <slug>] --config '{"bucket":"…"}'`               |
 | S3-compatible (MinIO, etc.) | Same as S3 but add `"endpoint":"http://…","forcePathStyle":true` to config                                          |
 | Shared filesystem           | `swamp datastore setup filesystem --path <path>`                                                                    |
 | Other                       | `swamp extension search <keyword> --label datastore` → then `swamp datastore setup extension <type> --config '{…}'` |

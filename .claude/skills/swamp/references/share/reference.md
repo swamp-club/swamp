@@ -184,10 +184,10 @@ For multi-repo shared datastores, a namespace prevents data collisions. This is
 optional for simple two-person sharing but required when multiple repos share
 one S3 bucket.
 
-```bash
-swamp datastore namespace set <slug> --json
-swamp datastore namespace migrate --confirm --json
-```
+For new shared setups, include `--namespace <slug>` in the
+`swamp datastore setup extension` command — it assigns the namespace during
+setup in one step. Use `namespace set` + `namespace migrate` only when
+converting an existing solo repo.
 
 See [../repo/references/namespaces.md](../repo/references/namespaces.md) for
 full namespace documentation.
