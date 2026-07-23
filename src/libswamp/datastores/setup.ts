@@ -179,6 +179,7 @@ export async function* datastoreSetupFilesystem(
       let bytesCopied = 0;
       let directoriesMigrated: string[] = [];
       const errors: string[] = [];
+      let sourceDir = `${input.repoDir}/.swamp`;
 
       if (!input.skipMigration) {
         yield { kind: "migrating" };
@@ -186,7 +187,6 @@ export async function* datastoreSetupFilesystem(
         // When switching from a remote/sync-based datastore, content lives
         // in the local cache, not under .swamp/. Use the cache path when
         // it was provided and actually exists on disk.
-        let sourceDir = `${input.repoDir}/.swamp`;
         if (input.outgoingCachePath) {
           try {
             const stat = await Deno.stat(input.outgoingCachePath);
@@ -227,16 +227,12 @@ export async function* datastoreSetupFilesystem(
             `Migration verification: source has ${verification.sourceCount} files, destination has ${verification.destCount}`,
           );
         }
-
-        // Clean up migrated directories from source on success
-        if (errors.length === 0 && directoriesMigrated.length > 0) {
-          await deps.cleanupSourceDirs(sourceDir, directoriesMigrated);
-        }
       }
 
       // Update .swamp.yaml only when migration succeeded (or was skipped).
-      // Mirrors the extension path guard — avoids pointing the config at
-      // a destination with incomplete data.
+      // Persists BEFORE source cleanup so a crash leaves orphaned source
+      // data (harmless) rather than a repo still pointing at the old
+      // datastore with its cache already cleaned up.
       if (errors.length === 0) {
         const collapsedPath = deps.collapseEnvVars(input.datastorePath);
         await deps.updateRepoConfig(input.repoDir, {
@@ -244,6 +240,14 @@ export async function* datastoreSetupFilesystem(
           path: collapsedPath,
           directories: input.directories ?? undefined,
         });
+      }
+
+      // Clean up migrated directories from source after config is persisted
+      if (
+        !input.skipMigration && errors.length === 0 &&
+        directoriesMigrated.length > 0
+      ) {
+        await deps.cleanupSourceDirs(sourceDir, directoriesMigrated);
       }
 
       yield {
