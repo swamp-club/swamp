@@ -15,22 +15,18 @@ description: >
 
 ## Core Concepts
 
-- **Models** — typed definitions of resources (an EC2 instance, a DNS record, a
-  GitHub repo). Each exposes **methods** (create, start, stop, destroy, sync)
-  that operate on the real resource.
-- **Data** — versioned state snapshots produced by method runs; other models
-  reference them via CEL expressions.
-- **Workflows** — declarative DAGs chaining model methods, wiring step outputs
-  into step inputs.
-- **Vaults** — secret storage (API keys, tokens) that models reference at
-  runtime.
+- **Models** — typed resource definitions exposing **methods** (create, stop,
+  destroy, sync). Auto-created models (via direct type execution) live in
+  `.swamp/auto-definitions/` for data ownership only — they are not visible in
+  `model search`/`list`.
+- **Data** — versioned state snapshots produced by method runs; referenced via
+  CEL expressions.
+- **Workflows** — declarative DAGs chaining model methods.
+- **Vaults** — secret storage referenced by models at runtime.
 - **Extensions** — TypeScript packages adding model types, vault backends,
-  datastores, and report generators; published to a registry.
-- **Reports** — summaries of data across models for observability.
-- **Grants** — authorization rules controlling who can do what on a swamp serve
-  instance. Authored via CLI commands or YAML files in the `grants/` directory.
-- **Serve** — exposes the repo over the network with TLS, authentication (token
-  or OAuth via swamp-club), and grant-based authorization.
+  datastores, and reports; published to a registry.
+- **Grants** — authorization rules for swamp serve access control.
+- **Serve** — exposes the repo over the network with TLS and authentication.
 
 ## Routing Table
 
