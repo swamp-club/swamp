@@ -19,10 +19,19 @@
 
 import { Command } from "@cliffy/command";
 import { groupCommandAction } from "../group_action.ts";
+import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 import { authLoginCommand } from "./auth_login.ts";
 import { authLogoutCommand } from "./auth_logout.ts";
 import { authWhoamiCommand } from "./auth_whoami.ts";
 import { authServerLoginCommand } from "./auth_server_login.ts";
+import { authTokenCreateCommand } from "./auth_token_create.ts";
+
+export const authTokenCommand = new Command()
+  .name("token")
+  .description("Manage collective API tokens")
+  .error(unknownCommandErrorHandler)
+  .action(groupCommandAction)
+  .command("create", authTokenCreateCommand);
 
 export const authCommand = new Command()
   .name("auth")
@@ -31,4 +40,5 @@ export const authCommand = new Command()
   .command("login", authLoginCommand)
   .command("logout", authLogoutCommand)
   .command("whoami", authWhoamiCommand)
-  .command("server-login", authServerLoginCommand);
+  .command("server-login", authServerLoginCommand)
+  .command("token", authTokenCommand);
