@@ -153,6 +153,111 @@ Deno.test("datastoreSetupFilesystem: errors on non-upgraded repo", async () => {
   assertEquals(error.error.code, "validation_failed");
 });
 
+Deno.test("datastoreSetupFilesystem: migrates from outgoing cache path when provided and exists", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    // Create a fake cache directory with content
+    await Deno.mkdir(join(tempDir, "data"), { recursive: true });
+    await Deno.writeTextFile(
+      join(tempDir, "data", "test.json"),
+      '{"hello":"world"}',
+    );
+
+    let capturedSourceDir = "";
+    const deps = makeDeps({
+      migrateData: (sourceDir: string) => {
+        capturedSourceDir = sourceDir;
+        return Promise.resolve({
+          filesCopied: 1,
+          bytesCopied: 18,
+          directoriesMigrated: ["data"],
+          errors: [],
+        });
+      },
+    });
+    const input = makeFilesystemInput({ outgoingCachePath: tempDir });
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupFilesystem(createLibSwampContext(), deps, input),
+    );
+
+    assertEquals(
+      capturedSourceDir,
+      tempDir,
+      "migrateData should use the outgoing cache path as source",
+    );
+    const completed = events[events.length - 1] as Extract<
+      DatastoreSetupEvent,
+      { kind: "completed" }
+    >;
+    assertEquals(completed.kind, "completed");
+    assertEquals(completed.data.filesCopied, 1);
+    assertEquals(completed.data.errors, []);
+  } finally {
+    await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("datastoreSetupFilesystem: falls back to .swamp/ when outgoing cache path does not exist", async () => {
+  let capturedSourceDir = "";
+  const deps = makeDeps({
+    migrateData: (sourceDir: string) => {
+      capturedSourceDir = sourceDir;
+      return Promise.resolve({
+        filesCopied: 5,
+        bytesCopied: 1024,
+        directoriesMigrated: ["data", "outputs"],
+        errors: [],
+      });
+    },
+  });
+  const input = makeFilesystemInput({
+    outgoingCachePath: "/nonexistent/cache/path",
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupFilesystem(createLibSwampContext(), deps, input),
+  );
+
+  assertEquals(
+    capturedSourceDir,
+    "/tmp/repo/.swamp",
+    "migrateData should fall back to .swamp/ when cache path does not exist",
+  );
+  const completed = events[events.length - 1] as Extract<
+    DatastoreSetupEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.filesCopied, 5);
+});
+
+Deno.test("datastoreSetupFilesystem: uses .swamp/ when no outgoing cache path provided", async () => {
+  let capturedSourceDir = "";
+  const deps = makeDeps({
+    migrateData: (sourceDir: string) => {
+      capturedSourceDir = sourceDir;
+      return Promise.resolve({
+        filesCopied: 5,
+        bytesCopied: 1024,
+        directoriesMigrated: ["data", "outputs"],
+        errors: [],
+      });
+    },
+  });
+  const input = makeFilesystemInput();
+
+  await collect<DatastoreSetupEvent>(
+    datastoreSetupFilesystem(createLibSwampContext(), deps, input),
+  );
+
+  assertEquals(
+    capturedSourceDir,
+    "/tmp/repo/.swamp",
+    "migrateData should use .swamp/ when no outgoing cache path is set",
+  );
+});
+
 // ============================================================================
 // Extension datastore setup tests
 // ============================================================================

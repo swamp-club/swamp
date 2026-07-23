@@ -83,6 +83,13 @@ export interface DatastoreSetupFilesystemInput {
   repoDir: string;
   directories?: string[];
   skipMigration: boolean;
+  /**
+   * When switching from a remote/sync-based datastore, the absolute path
+   * to the outgoing datastore's local cache (e.g. ~/.swamp/repos/{repoId}).
+   * If provided and the directory exists, migration reads from this path
+   * instead of {repoDir}/.swamp.
+   */
+  outgoingCachePath?: string;
 }
 
 /** Dependencies for datastore setup operations. */
@@ -175,8 +182,26 @@ export async function* datastoreSetupFilesystem(
 
       if (!input.skipMigration) {
         yield { kind: "migrating" };
+
+        // When switching from a remote/sync-based datastore, content lives
+        // in the local cache, not under .swamp/. Use the cache path when
+        // it was provided and actually exists on disk.
+        let sourceDir = `${input.repoDir}/.swamp`;
+        if (input.outgoingCachePath) {
+          try {
+            const stat = await Deno.stat(input.outgoingCachePath);
+            if (stat.isDirectory) {
+              sourceDir = input.outgoingCachePath;
+              ctx.logger
+                .debug`Migrating from outgoing datastore cache at ${sourceDir}`;
+            }
+          } catch {
+            ctx.logger
+              .warn`Outgoing cache path ${input.outgoingCachePath} not found, falling back to ${sourceDir}`;
+          }
+        }
+
         ctx.logger.debug`Migrating data to ${input.datastorePath}...`;
-        const sourceDir = `${input.repoDir}/.swamp`;
         const config = {
           type: "filesystem" as const,
           path: input.datastorePath,
@@ -203,7 +228,7 @@ export async function* datastoreSetupFilesystem(
           );
         }
 
-        // Clean up migrated directories from .swamp/ on success
+        // Clean up migrated directories from source on success
         if (errors.length === 0 && directoriesMigrated.length > 0) {
           await deps.cleanupSourceDirs(sourceDir, directoriesMigrated);
         }

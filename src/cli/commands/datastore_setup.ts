@@ -18,16 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { isAbsolute, resolve } from "@std/path";
+import { isAbsolute, join, resolve } from "@std/path";
 import {
   createContext,
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import {
-  requireInitializedRepo,
-  resolveDatastoreForRepo,
-} from "../repo_context.ts";
+import { resolveDatastoreForRepo } from "../repo_context.ts";
 import {
   consumeStream,
   createDatastoreSetupDeps,
@@ -42,11 +39,14 @@ import {
   isCustomDatastoreConfig,
 } from "../../domain/datastore/datastore_config.ts";
 import { expandEnvVars } from "../../infrastructure/persistence/env_path.ts";
+import { getSwampDataDir } from "../../infrastructure/persistence/paths.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import { resolveDatastoreType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
 import { RENAMED_DATASTORE_TYPES } from "../resolve_datastore.ts";
 import { UserError } from "../../domain/errors.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { parseTimeoutFlag } from "./datastore_sync.ts";
 import { requireAuthenticated, requireScope } from "../auth_context.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
@@ -62,6 +62,47 @@ import {
 type AnyOptions = any;
 
 const encoder = new TextEncoder();
+
+/**
+ * Resolves the outgoing datastore's cache path when switching to filesystem.
+ * Returns undefined when the current datastore is already filesystem-based.
+ */
+async function resolveOutgoingCachePath(
+  repoDir: string,
+): Promise<{ resolvedRepoDir: string; outgoingCachePath?: string }> {
+  try {
+    const { repoDir: resolvedRepoDir, datastoreConfig, marker } =
+      await resolveDatastoreForRepo(repoDir);
+    if (isCustomDatastoreConfig(datastoreConfig)) {
+      const cachePath = datastoreConfig.cachePath ??
+        join(getSwampDataDir(), "repos", marker?.repoId ?? "unknown");
+      return { resolvedRepoDir, outgoingCachePath: cachePath };
+    }
+    return { resolvedRepoDir };
+  } catch {
+    // Extension may be uninstalled — fall back to reading the marker
+    // directly to get repoId and compute the default cache path.
+    const repoPath = RepoPath.create(repoDir);
+    try {
+      const markerRepo = new RepoMarkerRepository();
+      const marker = await markerRepo.read(repoPath);
+      if (marker?.repoId && marker?.datastore?.type !== "filesystem") {
+        const cachePath = join(
+          getSwampDataDir(),
+          "repos",
+          marker.repoId,
+        );
+        return {
+          resolvedRepoDir: repoPath.value,
+          outgoingCachePath: cachePath,
+        };
+      }
+      return { resolvedRepoDir: repoPath.value };
+    } catch {
+      return { resolvedRepoDir: repoPath.value };
+    }
+  }
+}
 
 async function nudgeVaultMigration(repoDir: string): Promise<void> {
   try {
@@ -109,7 +150,7 @@ const datastoreSetupFilesystemCommand = new Command()
   )
   .option(
     "--skip-migration",
-    "Skip copying existing .swamp/ data into the target path",
+    "Skip copying existing data into the target path",
   )
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [
@@ -118,10 +159,8 @@ const datastoreSetupFilesystemCommand = new Command()
       "filesystem",
     ]);
 
-    const { repoDir } = await requireInitializedRepo({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
+    const { resolvedRepoDir: repoDir, outgoingCachePath } =
+      await resolveOutgoingCachePath(resolveRepoDir(options.repoDir));
 
     // Expand env vars (e.g. ~/data or $HOME/data) then resolve path
     const expandedPath = expandEnvVars(options.path);
@@ -140,6 +179,7 @@ const datastoreSetupFilesystemCommand = new Command()
         directories: options.directories ??
           [...DEFAULT_DATASTORE_SUBDIRS],
         skipMigration: !!options.skipMigration,
+        outgoingCachePath,
       }),
       renderer.handlers(),
     );
@@ -336,13 +376,20 @@ export const datastoreSetupCommand = new Command()
 
     const repoDir = resolveRepoDir(options.repoDir);
 
-    // Show the current datastore configuration
+    // Resolve the current datastore configuration up front. The result is
+    // reused later by the filesystem branch to detect a remote-to-filesystem
+    // transition (ADV-6: avoids a redundant resolveDatastoreForRepo call).
+    let currentResolution:
+      | Awaited<
+        ReturnType<typeof resolveDatastoreForRepo>
+      >
+      | undefined;
     try {
-      const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
+      currentResolution = await resolveDatastoreForRepo(repoDir);
       await Deno.stdout.write(
         encoder.encode(
           `\nCurrent datastore: ${
-            describeCurrentDatastore(datastoreConfig)
+            describeCurrentDatastore(currentResolution.datastoreConfig)
           }\n\n`,
         ),
       );
@@ -489,10 +536,24 @@ export const datastoreSetupCommand = new Command()
 
     // Execute the chosen setup path
     if (filesystemPath) {
-      const { repoDir: resolvedRepoDir } = await requireInitializedRepo({
-        repoDir,
-        outputMode: cliCtx.outputMode,
-      });
+      let resolvedRepoDir: string;
+      let outgoingCachePath: string | undefined;
+
+      if (currentResolution) {
+        resolvedRepoDir = currentResolution.repoDir;
+        if (isCustomDatastoreConfig(currentResolution.datastoreConfig)) {
+          outgoingCachePath = currentResolution.datastoreConfig.cachePath ??
+            join(
+              getSwampDataDir(),
+              "repos",
+              currentResolution.marker?.repoId ?? "unknown",
+            );
+        }
+      } else {
+        const result = await resolveOutgoingCachePath(repoDir);
+        resolvedRepoDir = result.resolvedRepoDir;
+        outgoingCachePath = result.outgoingCachePath;
+      }
 
       const expandedPath = expandEnvVars(filesystemPath);
       const datastorePath = isAbsolute(expandedPath)
@@ -509,6 +570,7 @@ export const datastoreSetupCommand = new Command()
           repoDir: resolvedRepoDir,
           directories: [...DEFAULT_DATASTORE_SUBDIRS],
           skipMigration: false,
+          outgoingCachePath,
         }),
         renderer.handlers(),
       );

@@ -1316,6 +1316,17 @@ errors, so the user knows re-running is safe without consulting documentation.
 Run `swamp datastore setup` again with the new backend type. The setup command
 migrates data from the current location to the new one.
 
+When switching **from a remote/sync-based datastore to filesystem**, the CLI
+resolves the outgoing datastore's local cache path
+(`~/.swamp/repos/{repoId}/`) and passes it to `datastoreSetupFilesystem` as
+`outgoingCachePath`. The migration copies content from the cache — not from
+`{repoDir}/.swamp`, which is empty for remote datastores. If the cache path
+does not exist or cannot be resolved (e.g. the outgoing extension was
+uninstalled), the setup falls back to `{repoDir}/.swamp` and logs a warning.
+
+To ensure the cache is fully up to date before switching, run
+`swamp datastore sync --pull` first.
+
 ### Health Verification
 
 `requireInitializedRepo()` (write commands) and
