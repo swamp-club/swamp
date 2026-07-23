@@ -21,7 +21,9 @@ task:
 - `modelIdOrName` and `modelType` are **mutually exclusive** — the schema
   rejects YAML with both.
 - `modelType` requires `modelName` to name the auto-created definition.
-- Auto-created definitions are stored in `.swamp/auto-definitions/`.
+- Auto-created definitions are stored in `.swamp/auto-definitions/` and exist
+  for data ownership boundaries. They are not visible in `swamp model search` or
+  `swamp model list` (by design). Use `swamp model get <name>` to inspect them.
 - Inputs are routed between global args and method args using the type's schemas
   (method args take precedence on ambiguous keys).
 - An optional `globalArgs` field passes global arguments explicitly, bypassing

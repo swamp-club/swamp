@@ -44,6 +44,7 @@ export interface ModelGetData {
   version: number;
   tags: Record<string, string>;
   globalArguments: Record<string, unknown>;
+  autoCreated?: boolean;
   typeVersion?: string;
   globalArgumentsSchema?: object;
   methods?: MethodDescribeData[];
@@ -58,7 +59,9 @@ export type ModelGetEvent =
 export interface ModelGetDeps {
   lookupDefinition: (
     idOrName: string,
-  ) => Promise<{ definition: Definition; type: ModelType } | null>;
+  ) => Promise<
+    { definition: Definition; type: ModelType; autoCreated?: boolean } | null
+  >;
   getModelDef: (
     type: ModelType,
   ) => ModelDefinition | undefined | Promise<ModelDefinition | undefined>;
@@ -71,8 +74,21 @@ export async function createModelGetDeps(
   await modelRegistry.ensureLoaded();
   const definitionRepo = new YamlDefinitionRepository(repoDir);
   return {
-    lookupDefinition: (idOrName) =>
-      findDefinitionByIdOrName(definitionRepo, idOrName),
+    lookupDefinition: async (idOrName) => {
+      const result = await findDefinitionByIdOrName(definitionRepo, idOrName);
+      if (!result) return null;
+      const primaryPath = definitionRepo.getPath(
+        result.type,
+        result.definition.id,
+      );
+      let autoCreated = false;
+      try {
+        await Deno.stat(primaryPath);
+      } catch {
+        autoCreated = true;
+      }
+      return { ...result, autoCreated };
+    },
     getModelDef: async (type) => {
       await modelRegistry.ensureTypeLoaded(type);
       return modelRegistry.get(type);
@@ -98,7 +114,7 @@ export async function* modelGet(
         return;
       }
 
-      const { definition, type: modelType } = result;
+      const { definition, type: modelType, autoCreated } = result;
       const modelDef = await deps.getModelDef(modelType);
 
       // Redact global arguments marked `{ sensitive: true }` before they enter
@@ -120,6 +136,7 @@ export async function* modelGet(
         version: definition.version,
         tags: definition.tags,
         globalArguments,
+        autoCreated: autoCreated || undefined,
         typeVersion: modelDef?.version,
         globalArgumentsSchema: modelDef?.globalArguments
           ? zodToJsonSchema(modelDef.globalArguments)
