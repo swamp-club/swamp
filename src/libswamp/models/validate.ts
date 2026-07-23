@@ -41,6 +41,7 @@ import type { ModelType } from "../../domain/models/model_type.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
 
+import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Validation result for a single check. */
 export interface ValidationItemData {
@@ -146,6 +147,11 @@ export function createModelValidateDeps(
   );
   const dataQueryService = new DataQueryService(catalogStore, dataRepo);
   const validationService = new DefaultModelValidationService();
+  const expressionService = new ExpressionEvaluationService(
+    definitionRepo,
+    repoDir,
+    { dataRepo, dataQueryService },
+  );
 
   const checkContext: CheckValidationContext = {
     repoDir,
@@ -153,6 +159,8 @@ export function createModelValidateDeps(
     definitionRepository: definitionRepo,
     dataQueryService,
     createCelEnvironment: createExtensionCelEnvironment,
+    resolveRuntimeExpressions: (data) =>
+      expressionService.resolveRuntimeExpressionsInData(data),
     labels: options?.labels,
     method: options?.method,
   };

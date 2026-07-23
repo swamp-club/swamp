@@ -243,6 +243,12 @@ export interface CheckValidationContext {
    * (libswamp / CLI) supplies the implementation.
    */
   createCelEnvironment: MethodContext["createCelEnvironment"];
+  /**
+   * Resolves runtime expressions (vault.get, env.*) in arbitrary data.
+   * When provided, globalArguments are resolved before passing to checks
+   * so they see real secret values instead of raw expression text.
+   */
+  resolveRuntimeExpressions?: (data: unknown) => Promise<unknown>;
   labels?: string[];
   method?: string;
 }
@@ -359,6 +365,20 @@ export class DefaultModelValidationService implements ModelValidationService {
     const defChecks = definition.checkSelection;
     const skippedCheckNames = new Set(defChecks?.skip ?? []);
 
+    // Resolve vault/env expressions in globalArguments so checks see real
+    // values instead of raw ${{ vault.get(...) }} text. Falls back to the
+    // raw definition values if resolution is unavailable or fails.
+    let resolvedGlobalArgs = definition.globalArguments;
+    if (checkContext.resolveRuntimeExpressions) {
+      try {
+        resolvedGlobalArgs = await checkContext.resolveRuntimeExpressions(
+          definition.globalArguments,
+        ) as Record<string, unknown>;
+      } catch {
+        // Vault may not be configured; degrade to unresolved values
+      }
+    }
+
     for (const [name, check] of Object.entries(checks)) {
       // Definition-level skip always wins
       if (skippedCheckNames.has(name)) {
@@ -389,9 +409,7 @@ export class DefaultModelValidationService implements ModelValidationService {
           ? definition.getMethodArguments(methodName)
           : {};
         const filteredGlobalArgs: Record<string, unknown> = {};
-        for (
-          const [key, value] of Object.entries(definition.globalArguments)
-        ) {
+        for (const [key, value] of Object.entries(resolvedGlobalArgs)) {
           if (valueContainsExpression(value)) {
             continue;
           }
@@ -410,7 +428,7 @@ export class DefaultModelValidationService implements ModelValidationService {
             repoDir: checkContext.repoDir,
             modelType: modelDef.type,
             modelId: definition.id,
-            globalArgs: definition.globalArguments,
+            globalArgs: resolvedGlobalArgs,
             definition: {
               id: definition.id,
               name: definition.name,
