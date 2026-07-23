@@ -48,6 +48,10 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["worker", "connect"]);
 
+// Force HTTP/1.1 ALPN for wss:// so WebSocket upgrades succeed through
+// HTTP/2-capable reverse proxies. See: https://github.com/denoland/deno/issues/16923
+const wsHttpClient = Deno.createHttpClient({ http2: false });
+
 /** Refresh the session credential when 2/3 of its lifetime has elapsed. */
 const REFRESH_FRACTION = 2 / 3;
 
@@ -332,10 +336,13 @@ interface ConnectOnceArgs {
 function connectOnce(args: ConnectOnceArgs): Promise<string> {
   const { options, instanceUuid, machineId, session } = args;
   return new Promise<string>((resolve, reject) => {
-    const defaultCreate = (url: string, headers?: Record<string, string>) =>
-      headers && Object.keys(headers).length > 0
-        ? new WebSocket(url, { headers })
-        : new WebSocket(url);
+    const defaultCreate = (url: string, headers?: Record<string, string>) => {
+      const opts: Record<string, unknown> = { client: wsHttpClient };
+      if (headers && Object.keys(headers).length > 0) {
+        opts.headers = headers;
+      }
+      return new WebSocket(url, opts);
+    };
     const socket = (options.createSocket ?? defaultCreate)(
       options.url,
       options.headers,

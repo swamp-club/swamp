@@ -325,14 +325,22 @@ export function withRemoteOptions<T extends AnyCommand>(command: T): T {
     ) as T;
 }
 
+// Force HTTP/1.1 ALPN for wss:// connections so WebSocket upgrades succeed
+// through HTTP/2-capable reverse proxies (Caddy, Traefik, nginx). Without
+// this, Deno's default client advertises h2 ALPN, the proxy selects h2, and
+// the HTTP/1.1 WebSocket Upgrade is invalid over HTTP/2.
+// See: https://github.com/denoland/deno/issues/16923
+const wsHttpClient = Deno.createHttpClient({ http2: false });
+
 function defaultCreateSocket(
   url: string,
   headers?: Record<string, string>,
 ): WebSocket {
+  const opts: Record<string, unknown> = { client: wsHttpClient };
   if (headers && Object.keys(headers).length > 0) {
-    return new WebSocket(url, { headers });
+    opts.headers = headers;
   }
-  return new WebSocket(url);
+  return new WebSocket(url, opts);
 }
 
 interface OutboundRequest {
