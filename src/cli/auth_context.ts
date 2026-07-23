@@ -88,8 +88,10 @@ export function requireScope(scope: string): void {
   if (s.authScopes !== undefined && s.authScopes.includes(scope)) return;
 
   throw new UserError(
-    `Your token lacks the ${scope} scope.\n\n` +
-      `Create a new collective token at swamp-club.com/collectives that\n` +
+    `Your collective token lacks the ${scope} scope.\n\n` +
+      `Either sign in with your personal account:\n\n` +
+      `  swamp auth login\n\n` +
+      `Or create a collective token at swamp-club.com/collectives that\n` +
       `includes the ${scope} scope and set SWAMP_API_KEY.\n`,
     "missing_scope",
   );
