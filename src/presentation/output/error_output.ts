@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { ValidationError } from "@cliffy/command";
+import { bold, red } from "@std/fmt/colors";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
@@ -111,7 +112,9 @@ export function renderError(error: unknown, outputMode?: OutputMode): void {
     return;
   }
 
-  if (err instanceof UserError || err instanceof ValidationError) {
+  if (err instanceof UserError) {
+    console.error(`\n${red(bold("Error:"))} ${err.message}`);
+  } else if (err instanceof ValidationError) {
     logger.fatal("Error: {message}", { message: err.message });
   } else {
     logger.fatal("{error}", { error: err });

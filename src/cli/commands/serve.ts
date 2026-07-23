@@ -134,6 +134,7 @@ import {
 } from "../../infrastructure/runtime/process.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
+import { requireAuthenticated, requireScope } from "../auth_context.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -950,6 +951,11 @@ export const serveCommand = new Command()
         "--admins is set but --auth-mode is {mode} — admins will have no effect",
         { mode: authConfig.mode },
       );
+    }
+
+    if (authConfig.mode === "oauth" || authConfig.mode === "token") {
+      requireAuthenticated("swamp serve is a team feature", "serve:*");
+      requireScope("serve:*");
     }
 
     if (authConfig.mode === "none") {

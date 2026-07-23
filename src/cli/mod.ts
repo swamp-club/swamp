@@ -105,7 +105,12 @@ import { ExtensionAutoResolver } from "../domain/extensions/extension_auto_resol
 import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
 import type { ClientIdentity } from "../infrastructure/http/client_identity.ts";
 import { loadIdentity, USER_AGENT } from "./load_identity.ts";
-import { isAuthenticated, setAuthenticated } from "./auth_context.ts";
+import {
+  isAuthenticated,
+  setAuthenticated,
+  setAuthScopes,
+  setCollectiveToken,
+} from "./auth_context.ts";
 import {
   apiKeyFingerprint,
   DEFAULT_SWAMP_CLUB_URL,
@@ -1341,6 +1346,7 @@ export async function runCli(args: string[]): Promise<void> {
             response.username,
             collectives,
             apiKeyFingerprint(creds.apiKey),
+            response.scopes,
           );
         }
       }
@@ -1349,13 +1355,15 @@ export async function runCli(args: string[]): Promise<void> {
     }
   }
 
-  // Load cached auth collectives for membership-based trust
+  // Load cached auth collectives and scopes for membership-based trust
   let authCollectives: string[] | undefined;
   if (!hookMode) {
     try {
       const authRepo = new AuthRepository();
       const creds = await authRepo.load();
       authCollectives = creds?.collectives;
+      if (creds?.apiKey) setCollectiveToken(creds.apiKey);
+      setAuthScopes(creds?.scopes);
     } catch {
       // Auth file unreadable — continue without membership collectives
     }

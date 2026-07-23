@@ -31,7 +31,7 @@ import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_u
 
 await initializeLogging({});
 
-Deno.test("renderError logs UserError message without stack trace", () => {
+Deno.test("renderError logs UserError message directly to stderr without LogTape formatting", () => {
   const logs: string[] = [];
   const originalError = console.error;
   console.error = (...args: unknown[]) => logs.push(args.join(" "));
@@ -41,9 +41,12 @@ Deno.test("renderError logs UserError message without stack trace", () => {
     renderError(error);
 
     assertEquals(logs.length, 1);
+    assertStringIncludes(logs[0], "Error:");
     assertStringIncludes(logs[0], "Model not found");
     // Should not contain stack trace lines
     assertEquals(logs[0].includes("    at "), false);
+    // Should not contain LogTape formatting (level prefix, category)
+    assertEquals(logs[0].includes("FTL"), false);
   } finally {
     console.error = originalError;
   }
@@ -167,18 +170,20 @@ Deno.test("renderError: json mode emits clean JSON for ValidationError (issue #1
   }
 });
 
-Deno.test("renderError uses fatal level for all errors", () => {
+Deno.test("renderError: UserError goes to console.error directly, system errors go through LogTape", () => {
   const logs: string[] = [];
   const originalError = console.error;
-  // LogTape's console sink uses console.error for fatal level
   console.error = (...args: unknown[]) => logs.push(args.join(" "));
 
   try {
     renderError(new UserError("user error"));
     renderError(new Error("system error"));
 
-    // Both should have logged (fatal goes to console.error)
+    // Both should have logged (UserError direct, system via LogTape fatal)
     assertEquals(logs.length, 2);
+    // UserError: direct console.error, no LogTape formatting
+    assertStringIncludes(logs[0], "user error");
+    assertEquals(logs[0].includes("FTL"), false);
   } finally {
     console.error = originalError;
   }

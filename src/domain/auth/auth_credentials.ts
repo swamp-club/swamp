@@ -41,6 +41,8 @@ export interface AuthCredentials {
   username: string;
   /** Cached collective memberships (slugs) from the last login/whoami */
   collectives?: string[];
+  /** Cached token scopes from the last login/whoami (collective tokens only) */
+  scopes?: string[];
   /** Prefix of the API key that was active when identity was cached.
    *  Used to detect key rotation for SWAMP_API_KEY users. */
   apiKeyFingerprint?: string;
