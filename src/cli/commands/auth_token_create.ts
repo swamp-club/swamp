@@ -19,8 +19,7 @@
 
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireAuthenticated } from "../auth_context.ts";
-import { isCollectiveToken } from "../auth_context.ts";
+import { isCollectiveToken, requireAuthenticated } from "../auth_context.ts";
 import { loadIdentity } from "../load_identity.ts";
 import {
   authTokenCreate,
@@ -32,6 +31,7 @@ import {
   withDefaults,
 } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
+import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { renderAuthTokenCreate } from "../../presentation/output/auth_token_output.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -70,7 +70,7 @@ export const authTokenCreateCommand = new Command()
     ]);
 
     requireAuthenticated(
-      "Creating collective tokens is a feature",
+      "Collective tokens are a team feature",
       "collective:write",
     );
 
@@ -100,6 +100,13 @@ export const authTokenCreateCommand = new Command()
         name: options.name as string | undefined,
       }),
       withDefaults<AuthTokenCreateEvent>({
+        creating: (event) => {
+          if (cliCtx.outputMode === "log") {
+            writeOutput(
+              `Creating token "${event.name}" for collective "${event.collective}"...`,
+            );
+          }
+        },
         completed: (event) => {
           data = event.data;
         },

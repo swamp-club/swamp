@@ -667,9 +667,16 @@ export class SwampClubClient {
         );
       }
       if (res.status === 422) {
-        throw new UserError(
-          `Invalid token request: ${text}`,
-        );
+        let message = text;
+        try {
+          const parsed = JSON.parse(text);
+          if (typeof parsed?.error === "string") {
+            message = parsed.error;
+          }
+        } catch {
+          // use raw text
+        }
+        throw new UserError(`Invalid token request: ${message}`);
       }
       throw new UserError(
         `Failed to create collective token (HTTP ${res.status}): ${text}`,
