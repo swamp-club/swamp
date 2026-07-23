@@ -32,13 +32,14 @@ export function renderAuthTokenCreate(
   }
 
   const lines = [
-    `Token created for collective "${data.collective}"`,
+    `${bold(cyan("Token:"))} ${bold(data.name)}`,
+    `${bold(cyan("Collective:"))} ${data.collective}`,
     `${bold(cyan("Scopes:"))} ${data.scopes.join(", ")}`,
     "",
     `  ${bold(data.key)}`,
     "",
     yellow(
-      "This token is shown once and will not be displayed again — save it now.",
+      "This token is shown once and will not be displayed again — store it now.",
     ),
   ];
   writeOutput(lines.join("\n"));
