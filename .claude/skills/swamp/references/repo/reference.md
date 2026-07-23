@@ -304,12 +304,12 @@ swamp datastore namespace unset --json                 # Remove namespace
 swamp datastore catalog pull --namespaces <list> --json # Pull foreign catalogs
 ```
 
-Standard multi-repo flow:
+Standard multi-repo flow (new shared setups):
 
 ```bash
-swamp datastore namespace set infra
-swamp datastore namespace migrate --confirm
-swamp datastore sync --push
+swamp datastore setup extension @swamp/s3-datastore \
+  --namespace infra \
+  --config '{"bucket":"shared-bucket","prefix":"swamp","region":"us-east-1"}'
 ```
 
 For the full command reference, output shapes, and cross-namespace data access,

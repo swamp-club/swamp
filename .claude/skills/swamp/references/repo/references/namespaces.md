@@ -79,18 +79,22 @@ The standard flow when two repos share a remote datastore (e.g. S3 or GCS):
 
 ```bash
 # Repo 1 (infra):
-swamp datastore namespace set infra
-swamp datastore namespace migrate --confirm
-swamp datastore sync --push
+swamp datastore setup extension @swamp/s3-datastore \
+  --namespace infra \
+  --config '{"bucket":"shared-bucket","prefix":"swamp","region":"us-east-1"}'
 
 # Repo 2 (platform):
-swamp datastore namespace set platform
-swamp datastore namespace migrate --confirm
-swamp datastore sync --push
+swamp datastore setup extension @swamp/s3-datastore \
+  --namespace platform \
+  --config '{"bucket":"shared-bucket","prefix":"swamp","region":"us-east-1"}'
 ```
 
-After this, each repo's data lives under its own namespace prefix. Locks are
+This assigns the namespace and configures the datastore in one step. After
+setup, each repo's data lives under its own namespace prefix. Locks are
 per-namespace (`{prefix}/.locks/{namespace}.lock`), so the repos don't contend.
+
+> **Note:** `namespace set` + `namespace migrate` is only needed when converting
+> an existing solo repo to a namespaced layout — not for new shared setups.
 
 ## Cross-Namespace Data Access
 
