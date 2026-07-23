@@ -3603,6 +3603,167 @@ Deno.test("run.id expression in step inputs resolves to the workflow run UUID", 
   });
 });
 
+Deno.test("resume: run.id expression in step inputs resolves after suspend+resume", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    const capturedContexts: StepExecutionContext[] = [];
+    const capturingExecutor: StepExecutor = {
+      execute(
+        _step: Step,
+        ctx: StepExecutionContext,
+      ): Promise<unknown> {
+        capturedContexts.push(ctx);
+        return Promise.resolve({ executed: true });
+      },
+    };
+
+    const workflow = Workflow.create({
+      name: "run-id-resume-test",
+      jobs: [
+        Job.create({
+          name: "j",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("Approve"),
+            }),
+            Step.create({
+              name: "s",
+              task: StepTask.model("test-model", "run", {
+                scopedKey: "result-${{ run.id }}",
+                wfName: "${{ run.workflowName }}",
+              }),
+              dependsOn: [
+                { step: "gate", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      capturingExecutor,
+      undefined,
+      catalogStore,
+    );
+
+    const suspended = await service.execute(workflow.name);
+    assertEquals(suspended.status, "suspended");
+    assertEquals(capturedContexts.length, 0);
+
+    const toApprove = await runRepo.findById(workflow.id, suspended.id);
+    const waiting = toApprove!.findWaitingApprovalStep()!;
+    toApprove!.getJob(waiting.jobName)!.getStep(waiting.stepName)!.succeed();
+    await runRepo.save(workflow.id, toApprove!);
+
+    let resumedRun: WorkflowRun | undefined;
+    for await (
+      const event of service.resume(workflow.name, suspended.id)
+    ) {
+      if (event.kind === "completed") resumedRun = event.run;
+    }
+
+    assertEquals(resumedRun?.status, "succeeded");
+    assertEquals(capturedContexts.length, 1);
+
+    const ctx = capturedContexts[0];
+    assertNotEquals(ctx.expressionContext?.run, undefined);
+    assertEquals(ctx.expressionContext?.run?.id, suspended.id);
+    assertEquals(
+      ctx.expressionContext?.run?.workflowName,
+      "run-id-resume-test",
+    );
+    assertNotEquals(ctx.expressionContext?.run?.startedAt, undefined);
+  });
+});
+
+Deno.test("resume: workflowRunId expression resolves after suspend+resume", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    const capturedContexts: StepExecutionContext[] = [];
+    const capturingExecutor: StepExecutor = {
+      execute(
+        _step: Step,
+        ctx: StepExecutionContext,
+      ): Promise<unknown> {
+        capturedContexts.push(ctx);
+        return Promise.resolve({ executed: true });
+      },
+    };
+
+    const workflow = Workflow.create({
+      name: "wfrunid-resume-test",
+      jobs: [
+        Job.create({
+          name: "j",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("Approve"),
+            }),
+            Step.create({
+              name: "s",
+              task: StepTask.model("test-model", "run", {
+                runRef: "${{ workflowRunId }}",
+              }),
+              dependsOn: [
+                { step: "gate", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      capturingExecutor,
+      undefined,
+      catalogStore,
+    );
+
+    const suspended = await service.execute(workflow.name);
+    assertEquals(suspended.status, "suspended");
+
+    const toApprove = await runRepo.findById(workflow.id, suspended.id);
+    const waiting = toApprove!.findWaitingApprovalStep()!;
+    toApprove!.getJob(waiting.jobName)!.getStep(waiting.stepName)!.succeed();
+    await runRepo.save(workflow.id, toApprove!);
+
+    let resumedRun: WorkflowRun | undefined;
+    for await (
+      const event of service.resume(workflow.name, suspended.id)
+    ) {
+      if (event.kind === "completed") resumedRun = event.run;
+    }
+
+    assertEquals(resumedRun?.status, "succeeded");
+    assertEquals(capturedContexts.length, 1);
+
+    const ctx = capturedContexts[0];
+    assertEquals(
+      ctx.expressionContext?.workflowRunId,
+      suspended.id,
+    );
+  });
+});
+
 Deno.test(
   "stepNameFromCompositeKey: preserves colons in the step name segment",
   () => {

@@ -2043,6 +2043,15 @@ export class WorkflowExecutionService {
       resumeInputs,
     );
 
+    expressionContext.workflowRunId = existingRun.id;
+    expressionContext.run = {
+      id: existingRun.id,
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      startedAt: existingRun.startedAt!.toISOString(),
+      tags: { ...existingRun.tags },
+    };
+
     const evaluator = new WorkflowExpressionEvaluator(
       new CelEvaluator(),
     );
