@@ -107,6 +107,7 @@ import type { ClientIdentity } from "../infrastructure/http/client_identity.ts";
 import { loadIdentity, USER_AGENT } from "./load_identity.ts";
 import {
   isAuthenticated,
+  isCollectiveToken,
   setAuthenticated,
   setAuthScopes,
   setCollectiveToken,
@@ -1339,9 +1340,8 @@ export async function runCli(args: string[]): Promise<void> {
       const creds = await authRepo.load();
       if (creds) {
         if (creds.apiKey) setCollectiveToken(creds.apiKey);
-        const isCollective = creds.apiKey.startsWith("swamp_org_");
         const fingerprint = apiKeyFingerprint(creds.apiKey);
-        if (isCollective) {
+        if (isCollectiveToken()) {
           const cachedScopes = await authRepo.loadScopeCache(fingerprint);
           if (cachedScopes) {
             setAuthScopes(cachedScopes);

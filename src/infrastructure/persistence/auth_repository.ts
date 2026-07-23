@@ -213,13 +213,15 @@ export class AuthRepository {
     return undefined;
   }
 
-  /** Delete stored auth credentials. */
+  /** Delete stored auth credentials and scope cache. */
   async delete(): Promise<void> {
-    try {
-      await Deno.remove(this.getAuthPath());
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
-        throw error;
+    for (const path of [this.getAuthPath(), this.getScopeCachePath()]) {
+      try {
+        await Deno.remove(path);
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          throw error;
+        }
       }
     }
   }
