@@ -21,39 +21,56 @@ import { UserError } from "../domain/errors.ts";
 
 const COLLECTIVE_TOKEN_PREFIX = "swamp_org_";
 
-let authenticated = false;
-let collectiveToken = false;
-let authScopes: string[] | undefined;
+// State lives on globalThis so that all module copies produced by
+// --unstable-bundle share the same values at runtime.
+interface AuthState {
+  authenticated: boolean;
+  collectiveToken: boolean;
+  authScopes: string[] | undefined;
+}
+
+const STATE_KEY = "__swamp_auth_state__";
+function state(): AuthState {
+  const g = globalThis as unknown as Record<string, AuthState>;
+  if (!g[STATE_KEY]) {
+    g[STATE_KEY] = {
+      authenticated: false,
+      collectiveToken: false,
+      authScopes: undefined,
+    };
+  }
+  return g[STATE_KEY];
+}
 
 export function setAuthenticated(value: boolean): void {
-  authenticated = value;
+  state().authenticated = value;
 }
 
 export function isAuthenticated(): boolean {
-  return authenticated;
+  return state().authenticated;
 }
 
 export function setCollectiveToken(apiKey: string): void {
-  collectiveToken = apiKey.startsWith(COLLECTIVE_TOKEN_PREFIX);
+  state().collectiveToken = apiKey.startsWith(COLLECTIVE_TOKEN_PREFIX);
 }
 
 export function isCollectiveToken(): boolean {
-  return collectiveToken;
+  return state().collectiveToken;
 }
 
 export function setAuthScopes(scopes: string[] | undefined): void {
-  authScopes = scopes;
+  state().authScopes = scopes;
 }
 
 export function getAuthScopes(): string[] | undefined {
-  return authScopes;
+  return state().authScopes;
 }
 
 export function requireAuthenticated(
   featureSentence: string,
   scope: string,
 ): void {
-  if (!authenticated) {
+  if (!state().authenticated) {
     throw new UserError(
       `${featureSentence} that requires a free swamp-club.com account.\n\n` +
         `Sign in:\n\n` +
@@ -66,8 +83,9 @@ export function requireAuthenticated(
 }
 
 export function requireScope(scope: string): void {
-  if (!collectiveToken) return;
-  if (authScopes !== undefined && authScopes.includes(scope)) return;
+  const s = state();
+  if (!s.collectiveToken) return;
+  if (s.authScopes !== undefined && s.authScopes.includes(scope)) return;
 
   throw new UserError(
     `Your token lacks the ${scope} scope.\n\n` +

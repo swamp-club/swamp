@@ -179,6 +179,40 @@ export class AuthRepository {
     await this.save(merged);
   }
 
+  private getScopeCachePath(): string {
+    return join(this.getConfigDir(), "scope_cache.json");
+  }
+
+  async saveScopeCache(
+    fingerprint: string,
+    scopes: string[],
+  ): Promise<void> {
+    await Deno.mkdir(this.getConfigDir(), { recursive: true });
+    await atomicWriteTextFile(
+      this.getScopeCachePath(),
+      JSON.stringify({ fingerprint, scopes }, null, 2) + "\n",
+      { mode: 0o600 },
+    );
+  }
+
+  async loadScopeCache(
+    fingerprint: string,
+  ): Promise<string[] | undefined> {
+    try {
+      const content = await Deno.readTextFile(this.getScopeCachePath());
+      const cached = JSON.parse(content) as {
+        fingerprint?: string;
+        scopes?: string[];
+      };
+      if (cached.fingerprint === fingerprint) {
+        return cached.scopes;
+      }
+    } catch {
+      // No cache file
+    }
+    return undefined;
+  }
+
   /** Delete stored auth credentials. */
   async delete(): Promise<void> {
     try {
