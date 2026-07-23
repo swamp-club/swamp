@@ -107,6 +107,61 @@ Deno.test("createModelGetRenderer - factory returns correct type per mode", () =
   assertEquals(typeof jsonRenderer.handlers, "function");
 });
 
+Deno.test("LogModelGetRenderer - auto-created model runs without error", async () => {
+  const renderer = createModelGetRenderer("log");
+  const events: ModelGetEvent[] = [
+    { kind: "resolving" },
+    {
+      kind: "completed",
+      data: { ...testData, autoCreated: true },
+    },
+  ];
+  await consumeStream(toStream(events), renderer.handlers());
+});
+
+Deno.test("JsonModelGetRenderer - auto-created flag appears in JSON output", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createModelGetRenderer("json");
+    const events: ModelGetEvent[] = [
+      { kind: "resolving" },
+      {
+        kind: "completed",
+        data: { ...testData, autoCreated: true },
+      },
+    ];
+    await consumeStream(toStream(events), renderer.handlers());
+    assertEquals(logs.length, 1);
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.autoCreated, true);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("JsonModelGetRenderer - autoCreated absent when not set", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createModelGetRenderer("json");
+    const events: ModelGetEvent[] = [
+      { kind: "resolving" },
+      { kind: "completed", data: testData },
+    ];
+    await consumeStream(toStream(events), renderer.handlers());
+    assertEquals(logs.length, 1);
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.autoCreated, undefined);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
 Deno.test("formatSchemaType: returns undefined for undefined input", () => {
   assertEquals(formatSchemaType(undefined), undefined);
 });

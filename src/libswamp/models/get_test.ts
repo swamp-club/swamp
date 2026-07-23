@@ -32,7 +32,9 @@ function completedData(events: ModelGetEvent[]) {
 }
 
 function makeDeps(overrides: {
-  lookupResult?: { definition: object; type: object } | null;
+  lookupResult?:
+    | { definition: object; type: object; autoCreated?: boolean }
+    | null;
   modelDef?: object | undefined;
 }): ModelGetDeps {
   return {
@@ -80,12 +82,30 @@ Deno.test("modelGet yields resolving -> completed with model data on success", a
         version: 3,
         tags: { env: "prod" },
         globalArguments: { region: "us-east-1" },
+        autoCreated: undefined,
         typeVersion: undefined,
         globalArgumentsSchema: undefined,
         methods: undefined,
       },
     },
   ]);
+});
+
+Deno.test("modelGet: surfaces autoCreated flag when lookup returns it", async () => {
+  const deps = makeDeps({
+    lookupResult: {
+      definition: testDefinition,
+      type: testModelType,
+      autoCreated: true,
+    },
+    modelDef: undefined,
+  });
+
+  const events = await collect<ModelGetEvent>(
+    modelGet(createLibSwampContext(), deps, "my-model"),
+  );
+
+  assertEquals(completedData(events).autoCreated, true);
 });
 
 Deno.test("modelGet redacts sensitive global arguments when the schema is known", async () => {

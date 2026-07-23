@@ -28,11 +28,14 @@ ambiguous keys, unknown keys are rejected.
 
 ## Storage
 
-Auto-created definitions live in `.swamp/auto-definitions/{type}/{id}.yaml`:
+Auto-created definitions live in `.swamp/auto-definitions/{type}/{id}.yaml`.
+They exist for data ownership boundaries — giving model data a home without
+requiring a hand-authored definition file.
 
 - Not git-tracked (local runtime state)
-- Not shown in `swamp model search`
+- Not visible in `swamp model search` or `swamp model list` (by design)
 - Findable by name for `model get`, `model method run`, workflows
+- `swamp model get` shows `Auto-created: yes` for these definitions
 - Synced via datastores when configured (shared across team)
 
 ## Input Routing

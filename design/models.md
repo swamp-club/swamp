@@ -172,9 +172,11 @@ automatically — this ensures parameterized workflows that vary inputs per run
 always use the current values.
 
 **Storage:** Auto-created definitions live in `.swamp/auto-definitions/` (not
-`models/`). They are local runtime state, not git-tracked, and do not appear in
-`swamp model search` results. They are findable by name for `model get`,
-`model method run`, and workflow references.
+`models/`). They exist for data ownership boundaries — giving model data a home
+without requiring a hand-authored definition file. They are local runtime state,
+not git-tracked, and do not appear in `swamp model search` results (by design).
+They are findable by name for `model get`, `model method run`, and workflow
+references. `model get` shows `Auto-created: yes` for these definitions.
 
 ### Choosing Between the Two
 

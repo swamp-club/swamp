@@ -124,6 +124,10 @@ class LogModelGetRenderer implements Renderer<ModelGetEvent> {
           `${bold(cyan("Version:"))} ${data.version}`,
         ];
 
+        if (data.autoCreated) {
+          lines.push(`${bold(cyan("Auto-created:"))} ${dim("yes")}`);
+        }
+
         const tagEntries = Object.entries(data.tags);
         if (tagEntries.length > 0) {
           lines.push("");
