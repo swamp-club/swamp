@@ -83,24 +83,26 @@ async function resolveOutgoingCachePath(
     // Extension may be uninstalled — fall back to reading the marker
     // directly to get repoId and compute the default cache path.
     const repoPath = RepoPath.create(repoDir);
-    try {
-      const markerRepo = new RepoMarkerRepository();
-      const marker = await markerRepo.read(repoPath);
-      if (marker?.repoId && marker?.datastore?.type !== "filesystem") {
-        const cachePath = join(
-          getSwampDataDir(),
-          "repos",
-          marker.repoId,
-        );
-        return {
-          resolvedRepoDir: repoPath.value,
-          outgoingCachePath: cachePath,
-        };
-      }
-      return { resolvedRepoDir: repoPath.value };
-    } catch {
-      return { resolvedRepoDir: repoPath.value };
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(repoPath);
+    if (!marker) {
+      throw new UserError(
+        `Not a swamp repository: ${repoPath.value}. ` +
+          "To initialize a new repository, run 'swamp repo init'.",
+      );
     }
+    if (marker.repoId && marker.datastore?.type !== "filesystem") {
+      const cachePath = join(
+        getSwampDataDir(),
+        "repos",
+        marker.repoId,
+      );
+      return {
+        resolvedRepoDir: repoPath.value,
+        outgoingCachePath: cachePath,
+      };
+    }
+    return { resolvedRepoDir: repoPath.value };
   }
 }
 
