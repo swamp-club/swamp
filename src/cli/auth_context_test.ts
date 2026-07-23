@@ -90,6 +90,7 @@ Deno.test("requireScope: throws when collective token lacks scope", () => {
   );
   assertEquals(err.code, "missing_scope");
   assertStringIncludes(err.message, "serve:*");
+  assertStringIncludes(err.message, "swamp auth login");
   assertStringIncludes(err.message, "swamp-club.com");
   setCollectiveToken("");
   setAuthScopes(undefined);

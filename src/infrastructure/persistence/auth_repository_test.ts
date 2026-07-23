@@ -427,3 +427,101 @@ Deno.test("AuthRepository - load leaves custom server URLs untouched", async () 
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
+
+// ── Scope cache tests ───────────────────────────────────────────────────
+
+Deno.test("AuthRepository - saveScopeCache and loadScopeCache round trip", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const repo = new AuthRepository({ configDir: join(tmpDir, "swamp") });
+    const fingerprint = "swamp_org_te";
+    const scopes = ["extensions:*", "serve:*", "datastore:*", "vault:*"];
+
+    await repo.saveScopeCache(fingerprint, scopes);
+    const loaded = await repo.loadScopeCache(fingerprint);
+
+    assertEquals(loaded, scopes);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("AuthRepository - loadScopeCache returns undefined on fingerprint mismatch", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const repo = new AuthRepository({ configDir: join(tmpDir, "swamp") });
+
+    await repo.saveScopeCache("swamp_org_aa", ["serve:*"]);
+    const loaded = await repo.loadScopeCache("swamp_org_bb");
+
+    assertEquals(loaded, undefined);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("AuthRepository - loadScopeCache returns undefined when no cache file exists", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const repo = new AuthRepository({ configDir: join(tmpDir, "swamp") });
+    const loaded = await repo.loadScopeCache("swamp_org_te");
+
+    assertEquals(loaded, undefined);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("AuthRepository - loadScopeCache returns undefined on corrupted JSON", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configDir = join(tmpDir, "swamp");
+    await Deno.mkdir(configDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(configDir, "scope_cache.json"),
+      "not json{{{",
+    );
+
+    const repo = new AuthRepository({ configDir });
+    const loaded = await repo.loadScopeCache("swamp_org_te");
+
+    assertEquals(loaded, undefined);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("AuthRepository - saveScopeCache sets restrictive file permissions", async () => {
+  if (Deno.build.os === "windows") return;
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configDir = join(tmpDir, "swamp");
+    const repo = new AuthRepository({ configDir });
+
+    await repo.saveScopeCache("swamp_org_te", ["serve:*"]);
+
+    const stat = await Deno.stat(join(configDir, "scope_cache.json"));
+    assertEquals(stat.mode !== null && (stat.mode & 0o777) === 0o600, true);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("AuthRepository - delete also removes scope_cache.json", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configDir = join(tmpDir, "swamp");
+    const repo = new AuthRepository({ configDir });
+
+    await repo.save(TEST_CREDENTIALS);
+    await repo.saveScopeCache("swamp_org_te", ["serve:*"]);
+    await repo.delete();
+
+    const loaded = await repo.load();
+    assertEquals(loaded, null);
+    const scopes = await repo.loadScopeCache("swamp_org_te");
+    assertEquals(scopes, undefined);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
