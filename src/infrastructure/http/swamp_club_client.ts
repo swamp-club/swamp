@@ -27,6 +27,21 @@ import type { GenesisPass } from "../../domain/quest/genesis_pass.ts";
 
 export type { ClientIdentity };
 
+/** Response from creating a collective API token. */
+export interface CreateCollectiveTokenResponse {
+  token: {
+    id: string;
+    name: string;
+    keyPrefix: string;
+    enabled: boolean;
+    expiresAt: string | null;
+    createdAt: string;
+    lastUsedAt: string | null;
+    scopes: string[];
+  };
+  key: string;
+}
+
 /** Response from BetterAuth sign-in endpoint. */
 export interface SignInResponse {
   token: string;
@@ -605,6 +620,59 @@ export class SwampClubClient {
       const text = await res.text();
       throw new UserError(
         `Failed to fetch ghost quest pass (HTTP ${res.status}): ${text}`,
+      );
+    }
+
+    return await res.json();
+  }
+
+  /**
+   * Create a scoped API token for a collective.
+   * Requires a personal API key — collective tokens cannot create other tokens.
+   */
+  async createCollectiveToken(
+    apiKey: string,
+    collectiveSlug: string,
+    input: { name: string; scopes: string[] },
+    signal?: AbortSignal,
+  ): Promise<CreateCollectiveTokenResponse> {
+    const res = await this.fetch(
+      `/api/v1/collectives/${encodeURIComponent(collectiveSlug)}/api-tokens`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+        },
+        body: JSON.stringify({ name: input.name, scopes: input.scopes }),
+      },
+      signal,
+    );
+
+    if (!res.ok) {
+      const text = await res.text();
+      if (res.status === 401) {
+        throw new UserError(
+          "Not authenticated. Sign in with `swamp auth login`.",
+        );
+      }
+      if (res.status === 403) {
+        throw new UserError(
+          `You do not have permission to create tokens for collective "${collectiveSlug}". Only owners and admins can manage collective API tokens.`,
+        );
+      }
+      if (res.status === 404) {
+        throw new UserError(
+          `Collective "${collectiveSlug}" not found.`,
+        );
+      }
+      if (res.status === 422) {
+        throw new UserError(
+          `Invalid token request: ${text}`,
+        );
+      }
+      throw new UserError(
+        `Failed to create collective token (HTTP ${res.status}): ${text}`,
       );
     }
 

@@ -1247,6 +1247,17 @@ export {
   createAuthLoginDeps,
 } from "./auth/login.ts";
 
+// Auth token create operations
+export {
+  authTokenCreate,
+  type AuthTokenCreateData,
+  type AuthTokenCreateDeps,
+  type AuthTokenCreateEvent,
+  type AuthTokenCreateInput,
+  createAuthTokenCreateDeps,
+  type CreateAuthTokenCreateDepsOptions,
+} from "./auth/token_create.ts";
+
 // Auth logout operations
 export {
   authLogout,
