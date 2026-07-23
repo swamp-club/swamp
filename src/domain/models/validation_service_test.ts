@@ -1333,6 +1333,202 @@ Deno.test("validateModel no checkContext provided skips checks", async () => {
   assertEquals(checkResults.length, 0);
 });
 
+// ---------- Vault Expression Resolution in Checks ----------
+
+Deno.test("validateModel: checks receive resolved globalArgs when resolveRuntimeExpressions provided", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {
+      password: '${{ vault.get("my-vault", "MY_SECRET") }}',
+    },
+  });
+
+  let capturedGlobalArgs: Record<string, unknown> | undefined;
+  const model: ModelDefinition = {
+    type: ModelType.create("test/vault-check"),
+    version: "2026.02.09.1",
+    globalArguments: z.object({ password: z.string() }),
+    methods: {
+      create: {
+        description: "Create",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+    checks: {
+      "capture-args": {
+        description: "Captures globalArgs for assertion",
+        execute: (ctx) => {
+          capturedGlobalArgs = ctx.globalArgs as Record<string, unknown>;
+          return Promise.resolve({ pass: true });
+        },
+      },
+    },
+  };
+
+  await service.validateModel(
+    definition,
+    model,
+    undefined,
+    createCheckContext({
+      resolveRuntimeExpressions: (data) =>
+        Promise.resolve(
+          JSON.parse(
+            JSON.stringify(data).replace(
+              /\$\{\{[^}]+\}\}/g,
+              "resolved-secret",
+            ),
+          ),
+        ),
+    }),
+  );
+
+  assertEquals(capturedGlobalArgs?.password, "resolved-secret");
+});
+
+Deno.test("validateModel: checks receive raw globalArgs when resolveRuntimeExpressions not provided", async () => {
+  const service = new DefaultModelValidationService();
+  const vaultExpr = '${{ vault.get("my-vault", "MY_SECRET") }}';
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { password: vaultExpr },
+  });
+
+  let capturedGlobalArgs: Record<string, unknown> | undefined;
+  const model: ModelDefinition = {
+    type: ModelType.create("test/vault-check"),
+    version: "2026.02.09.1",
+    globalArguments: z.object({ password: z.string() }),
+    methods: {
+      create: {
+        description: "Create",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+    checks: {
+      "capture-args": {
+        description: "Captures globalArgs for assertion",
+        execute: (ctx) => {
+          capturedGlobalArgs = ctx.globalArgs as Record<string, unknown>;
+          return Promise.resolve({ pass: true });
+        },
+      },
+    },
+  };
+
+  await service.validateModel(
+    definition,
+    model,
+    undefined,
+    createCheckContext(),
+  );
+
+  // Without resolver, checks see the raw expression (existing behavior)
+  assertEquals(capturedGlobalArgs?.password, vaultExpr);
+});
+
+Deno.test("validateModel: vault resolution failure degrades gracefully to raw globalArgs", async () => {
+  const service = new DefaultModelValidationService();
+  const vaultExpr = '${{ vault.get("my-vault", "MY_SECRET") }}';
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { password: vaultExpr },
+  });
+
+  let capturedGlobalArgs: Record<string, unknown> | undefined;
+  const model: ModelDefinition = {
+    type: ModelType.create("test/vault-check"),
+    version: "2026.02.09.1",
+    globalArguments: z.object({ password: z.string() }),
+    methods: {
+      create: {
+        description: "Create",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+    checks: {
+      "capture-args": {
+        description: "Captures globalArgs for assertion",
+        execute: (ctx) => {
+          capturedGlobalArgs = ctx.globalArgs as Record<string, unknown>;
+          return Promise.resolve({ pass: true });
+        },
+      },
+    },
+  };
+
+  await service.validateModel(
+    definition,
+    model,
+    undefined,
+    createCheckContext({
+      resolveRuntimeExpressions: () => {
+        throw new Error("Vault not configured");
+      },
+    }),
+  );
+
+  // Resolution failed — checks fall back to raw expression
+  assertEquals(capturedGlobalArgs?.password, vaultExpr);
+});
+
+Deno.test("validateModel: resolved globalArgs also appear in unresolvedMethodArgs", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {
+      password: '${{ vault.get("my-vault", "MY_SECRET") }}',
+    },
+  });
+
+  let capturedUnresolvedMethodArgs: Record<string, unknown> | undefined;
+  const model: ModelDefinition = {
+    type: ModelType.create("test/vault-check"),
+    version: "2026.02.09.1",
+    globalArguments: z.object({ password: z.string() }),
+    methods: {
+      create: {
+        description: "Create",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+    checks: {
+      "capture-args": {
+        description: "Captures unresolvedMethodArgs for assertion",
+        execute: (ctx) => {
+          capturedUnresolvedMethodArgs = ctx
+            .unresolvedMethodArgs as Record<string, unknown>;
+          return Promise.resolve({ pass: true });
+        },
+      },
+    },
+  };
+
+  await service.validateModel(
+    definition,
+    model,
+    undefined,
+    createCheckContext({
+      resolveRuntimeExpressions: (data) =>
+        Promise.resolve(
+          JSON.parse(
+            JSON.stringify(data).replace(
+              /\$\{\{[^}]+\}\}/g,
+              "resolved-secret",
+            ),
+          ),
+        ),
+    }),
+  );
+
+  // Resolved value should pass through filteredGlobalArgs into unresolvedMethodArgs
+  assertEquals(capturedUnresolvedMethodArgs?.password, "resolved-secret");
+});
+
 // ---------- Check Selection Validation Tests ----------
 
 Deno.test("validateModel check selection passes when no selection set", async () => {
