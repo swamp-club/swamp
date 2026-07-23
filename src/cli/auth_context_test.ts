@@ -106,7 +106,7 @@ Deno.test("requireScope: throws when collective token has empty scopes", () => {
   setAuthScopes(undefined);
 });
 
-Deno.test("requireScope: throws when collective token has undefined scopes (cache miss)", () => {
+Deno.test("requireScope: throws when collective token has undefined scopes (whoami failed)", () => {
   setCollectiveToken("swamp_org_abc");
   setAuthScopes(undefined);
   assertThrows(
@@ -114,5 +114,4 @@ Deno.test("requireScope: throws when collective token has undefined scopes (cach
     UserError,
   );
   setCollectiveToken("");
-  setAuthScopes(undefined);
 });

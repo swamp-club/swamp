@@ -1327,27 +1327,51 @@ export async function runCli(args: string[]): Promise<void> {
     loaderSpan.end();
   }
 
-  // Resolve identity for SWAMP_API_KEY users on first use (or key rotation).
+  // Resolve identity and scopes for SWAMP_API_KEY users. Calls whoami only
+  // when the cache is stale (first use, key rotation, or missing scopes for
+  // a collective token). Scopes are set directly from the response to avoid
+  // cache round-trip issues with --unstable-bundle module duplication.
   // Must run before the authCollectives read so the first invocation gets
   // cached collectives for extension trust.
   if (!hookMode && Deno.env.get("SWAMP_API_KEY")) {
     try {
       const authRepo = new AuthRepository();
       const creds = await authRepo.load();
-      if (creds && !creds.username) {
-        const identity = await loadIdentity();
-        const client = new SwampClubClient(creds.serverUrl, identity);
-        const signal = AbortSignal.timeout(10_000);
-        const response = await client.whoami(creds.apiKey, signal);
-        if (response.authenticated && response.username) {
-          const collectives = getCollectives(response) ?? [];
-          await authRepo.saveIdentityCache(
-            creds.serverUrl,
-            response.username,
-            collectives,
-            apiKeyFingerprint(creds.apiKey),
-            response.scopes,
-          );
+      if (creds) {
+        if (creds.apiKey) setCollectiveToken(creds.apiKey);
+        const isCollective = creds.apiKey.startsWith("swamp_org_");
+        const fingerprint = apiKeyFingerprint(creds.apiKey);
+        if (isCollective) {
+          const cachedScopes = await authRepo.loadScopeCache(fingerprint);
+          if (cachedScopes) {
+            setAuthScopes(cachedScopes);
+          } else {
+            const identity = await loadIdentity();
+            const client = new SwampClubClient(creds.serverUrl, identity);
+            const signal = AbortSignal.timeout(10_000);
+            const response = await client.whoami(creds.apiKey, signal);
+            if (response.authenticated) {
+              setAuthScopes(response.scopes);
+              if (response.scopes) {
+                await authRepo.saveScopeCache(fingerprint, response.scopes);
+              }
+            }
+          }
+        } else if (!creds.username) {
+          const identity = await loadIdentity();
+          const client = new SwampClubClient(creds.serverUrl, identity);
+          const signal = AbortSignal.timeout(10_000);
+          const response = await client.whoami(creds.apiKey, signal);
+          if (response.authenticated && response.username) {
+            const collectives = getCollectives(response) ?? [];
+            await authRepo.saveIdentityCache(
+              creds.serverUrl,
+              response.username,
+              collectives,
+              fingerprint,
+              response.scopes,
+            );
+          }
         }
       }
     } catch {
@@ -1362,8 +1386,10 @@ export async function runCli(args: string[]): Promise<void> {
       const authRepo = new AuthRepository();
       const creds = await authRepo.load();
       authCollectives = creds?.collectives;
-      if (creds?.apiKey) setCollectiveToken(creds.apiKey);
-      setAuthScopes(creds?.scopes);
+      if (!Deno.env.get("SWAMP_API_KEY")) {
+        if (creds?.apiKey) setCollectiveToken(creds.apiKey);
+        setAuthScopes(creds?.scopes);
+      }
     } catch {
       // Auth file unreadable — continue without membership collectives
     }
