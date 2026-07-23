@@ -1031,7 +1031,7 @@ Deno.test(
     };
 
     const start = Date.now();
-    await waitForPerModelLocks("/unused/datastore/path", scanner);
+    await waitForPerModelLocks("/unused/datastore/path", undefined, scanner);
     const elapsed = Date.now() - start;
 
     // No polling loop entered — single scan call, no setTimeout delay.
@@ -1060,7 +1060,7 @@ Deno.test(
     };
 
     const start = Date.now();
-    await waitForPerModelLocks("/unused/datastore/path", scanner);
+    await waitForPerModelLocks("/unused/datastore/path", undefined, scanner);
     const elapsed = Date.now() - start;
 
     // 3 calls: initial check + 2 polls (the second poll observes 0 and
@@ -1086,7 +1086,11 @@ Deno.test(
         const prev = Deno.env.get("SWAMP_LOCK_TIMEOUT_MS");
         Deno.env.set("SWAMP_LOCK_TIMEOUT_MS", "2000");
         try {
-          await waitForPerModelLocks("/unused/datastore/path", scanner);
+          await waitForPerModelLocks(
+            "/unused/datastore/path",
+            undefined,
+            scanner,
+          );
         } finally {
           if (prev !== undefined) {
             Deno.env.set("SWAMP_LOCK_TIMEOUT_MS", prev);

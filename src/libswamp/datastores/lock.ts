@@ -31,6 +31,38 @@ import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 export type { LockInfo } from "../../domain/datastore/distributed_lock.ts";
 
+// ── Lock-key construction ─────────────────────────────────────────────
+
+/**
+ * Constructs the canonical per-model lock key, optionally scoped under a
+ * namespace. Uses `/` (not SEPARATOR) since lock keys are passed as opaque
+ * strings to custom providers (e.g. S3 object keys).
+ */
+export function modelLockKey(
+  namespace: string | undefined,
+  modelType: string,
+  modelId: string,
+): string {
+  const base = `data/${modelType}/${modelId}/.lock`;
+  return namespace ? `${namespace}/${base}` : base;
+}
+
+/**
+ * Strips a leading `{namespace}{SEPARATOR}` from a filesystem-relative path
+ * so that `parseModelLockKey` can parse it. Uses SEPARATOR because this
+ * operates on paths produced by `relative()` from `@std/path`.
+ * Returns the input unchanged when namespace is empty or the prefix doesn't
+ * match.
+ */
+export function stripNamespacePrefix(
+  namespace: string | undefined,
+  rel: string,
+): string {
+  if (!namespace) return rel;
+  const prefix = `${namespace}${SEPARATOR}`;
+  return rel.startsWith(prefix) ? rel.slice(prefix.length) : rel;
+}
+
 // ── Lock-key parsing ───────────────────────────────────────────────────
 
 /**
@@ -246,6 +278,7 @@ export async function* datastoreLockRelease(
  */
 async function scanModelLocks(
   datastorePath: string,
+  namespace?: string,
 ): Promise<
   Array<{
     lockKey: string;
@@ -269,14 +302,13 @@ async function scanModelLocks(
       })
     ) {
       const rel = relative(datastorePath, entry.path);
-      const parsed = parseModelLockKey(rel);
+      const parsed = parseModelLockKey(stripNamespacePrefix(namespace, rel));
       if (!parsed) continue;
       try {
         const content = await Deno.readTextFile(entry.path);
         const info = JSON.parse(content) as LockInfo;
         results.push({
-          // Canonical key form uses `/` regardless of platform separator
-          lockKey: `data/${parsed.modelType}/${parsed.modelId}/.lock`,
+          lockKey: modelLockKey(namespace, parsed.modelType, parsed.modelId),
           modelType: parsed.modelType,
           modelId: parsed.modelId,
           info,
@@ -303,7 +335,7 @@ export function createDatastoreLockStatusDeps(
 
   return {
     inspectGlobalLock: () => globalLock.inspect(),
-    scanModelLocks: () => scanModelLocks(datastorePath),
+    scanModelLocks: () => scanModelLocks(datastorePath, config.namespace),
   };
 }
 

@@ -1475,8 +1475,10 @@ export {
   type DatastoreLockStatusEvent,
   type DatastoreLockStatusInput,
   type LockInfo,
+  modelLockKey,
   parseModelLockKey,
   parseModelSpec,
+  stripNamespacePrefix,
 } from "./datastores/lock.ts";
 export {
   datastoreCompact,
