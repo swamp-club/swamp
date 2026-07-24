@@ -3457,3 +3457,58 @@ Deno.test(
     assertEquals(lastSave.output.error?.message, "intentional failure");
   },
 );
+
+Deno.test(
+  "execute: z.record() method args do not include globalArguments",
+  async () => {
+    const service = new DefaultMethodExecutionService();
+
+    let capturedArgs: Record<string, unknown> = {};
+    const recordModel: ModelDefinition = {
+      type: ModelType.create("test/record-args"),
+      version: "2026.07.24.1",
+      globalArguments: z.object({
+        baseUrl: z.string(),
+        apiKey: z.string(),
+      }),
+      methods: {
+        send: {
+          description: "Send key-value pairs",
+          arguments: z.record(z.string(), z.string()),
+          execute: (
+            args: Record<string, unknown>,
+          ): Promise<MethodResult> => {
+            capturedArgs = { ...args };
+            return Promise.resolve({ dataHandles: [] });
+          },
+        },
+      },
+    };
+
+    const definition = Definition.create({
+      name: "record-test",
+      globalArguments: {
+        baseUrl: "https://api.example.com",
+        apiKey: "secret-key",
+      },
+      methods: { send: { arguments: { someKey: "someValue" } } },
+    });
+
+    const { context } = createTestContext({
+      modelType: recordModel.type,
+      methodName: "send",
+      globalArgs: {
+        baseUrl: "https://api.example.com",
+        apiKey: "secret-key",
+      },
+    });
+
+    await service.execute(
+      definition,
+      recordModel.methods.send,
+      context,
+    );
+
+    assertEquals(capturedArgs, { someKey: "someValue" });
+  },
+);

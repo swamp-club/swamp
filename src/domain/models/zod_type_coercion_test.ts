@@ -19,7 +19,11 @@
 
 import { assertEquals } from "@std/assert";
 import { z } from "zod";
-import { coerceMethodArgs, getObjectShape } from "./zod_type_coercion.ts";
+import {
+  coerceMethodArgs,
+  getObjectShape,
+  isRecordSchema,
+} from "./zod_type_coercion.ts";
 
 Deno.test("coerces string 'true' to boolean true", () => {
   const schema = z.object({ enabled: z.boolean() });
@@ -244,4 +248,46 @@ Deno.test("getObjectShape handles Zod v3 ZodEffects (typeName + .schema)", () =>
   } as unknown as z.ZodTypeAny;
   const shape = getObjectShape(v3LikeRefined);
   assertEquals(Object.keys(shape ?? {}), ["name"]);
+});
+
+// ---------- isRecordSchema ----------
+
+Deno.test("isRecordSchema: returns true for plain z.record()", () => {
+  const schema = z.record(z.string(), z.string());
+  assertEquals(isRecordSchema(schema), true);
+});
+
+Deno.test("isRecordSchema: returns true for z.record() wrapped in .optional()", () => {
+  const schema = z.record(z.string(), z.string()).optional();
+  assertEquals(isRecordSchema(schema), true);
+});
+
+Deno.test("isRecordSchema: returns true for z.record() wrapped in .nullable()", () => {
+  const schema = z.record(z.string(), z.string()).nullable();
+  assertEquals(isRecordSchema(schema), true);
+});
+
+Deno.test("isRecordSchema: returns true for z.record() wrapped in .default()", () => {
+  const schema = z.record(z.string(), z.string()).default({});
+  assertEquals(isRecordSchema(schema), true);
+});
+
+Deno.test("isRecordSchema: returns true for z.record() wrapped in .refine()", () => {
+  const schema = z.record(z.string(), z.string()).refine(
+    (v) => Object.keys(v).length > 0,
+  );
+  assertEquals(isRecordSchema(schema), true);
+});
+
+Deno.test("isRecordSchema: returns false for z.object()", () => {
+  const schema = z.object({ name: z.string() });
+  assertEquals(isRecordSchema(schema), false);
+});
+
+Deno.test("isRecordSchema: returns false for z.string()", () => {
+  assertEquals(isRecordSchema(z.string()), false);
+});
+
+Deno.test("isRecordSchema: returns false for z.array()", () => {
+  assertEquals(isRecordSchema(z.array(z.string())), false);
 });

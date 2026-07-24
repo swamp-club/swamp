@@ -231,6 +231,12 @@ the definition combined with per-method arguments) as its first parameter, and a
 `definition` metadata (id, name, version, tags), `methodName`, and an optional
 `redactor` (`SecretRedactor`) for stripping vault secrets from output.
 
+When the method's `arguments` schema is a `z.record()` (rather than
+`z.object()`), global arguments are **not** merged into the method args — the
+method receives only the per-method arguments. This prevents global argument
+fields from leaking into the open-ended record. Global arguments remain
+accessible via `context.globalArgs`.
+
 Methods can write data, which is tracked by the method invocation and the
 definition required to re-instantiate the object.
 
