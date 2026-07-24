@@ -54,7 +54,7 @@ export async function loadIdentity(): Promise<ClientIdentity> {
   let bearerToken: string | undefined;
   try {
     const credentials = await new AuthRepository().load();
-    bearerToken = credentials?.apiKey;
+    bearerToken = credentials?.apiKey || undefined;
   } catch {
     bearerToken = undefined;
   }

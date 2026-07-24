@@ -33,6 +33,8 @@ import {
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { requireAuthenticated, requireScope } from "../auth_context.ts";
+import { RENAMED_VAULT_TYPES } from "../../domain/vaults/vault_types.ts";
+import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -58,7 +60,10 @@ async function promptVaultName(): Promise<string> {
 export const vaultCreateCommand = new Command()
   .name("create")
   .description("Create a new vault configuration")
-  .example("Create a vault", "swamp vault create env my-vault")
+  .example(
+    "Create a local vault",
+    "swamp vault create local_encryption my-vault",
+  )
   .example(
     "With provider config",
     `swamp vault create aws-secrets-manager my-vault --config '{"region":"us-east-1"}'`,
@@ -82,11 +87,6 @@ export const vaultCreateCommand = new Command()
       vaultType: string,
       vaultNameArg?: string,
     ) {
-      if (vaultType !== "local_encryption") {
-        requireAuthenticated("Non-local vaults are a team feature", "vault:*");
-        requireScope("vault:*");
-      }
-
       const cliCtx = createContext(options as GlobalOptions, [
         "vault",
         "create",
@@ -120,6 +120,24 @@ export const vaultCreateCommand = new Command()
             `Invalid JSON in --config: ${options.config}`,
           );
         }
+      }
+
+      // Validate type before the auth gate so typos produce "unknown type"
+      // instead of a paywall. Renamed types get a helpful redirect message.
+      if (vaultType.toLowerCase() !== "local_encryption") {
+        const renamed = RENAMED_VAULT_TYPES[vaultType.toLowerCase()];
+        if (
+          !renamed && !vaultType.startsWith("@") &&
+          !vaultTypeRegistry.has(vaultType)
+        ) {
+          const availableTypes = vaultTypeRegistry.getAll()
+            .map((t) => t.type).join(", ");
+          throw new UserError(
+            `Unknown vault type: ${vaultType}. Available types: ${availableTypes}. Use 'swamp vault type search' to see available types.`,
+          );
+        }
+        requireAuthenticated("Non-local vaults are a team feature", "vault:*");
+        requireScope("vault:*");
       }
 
       const ctx = createLibSwampContext({ logger: cliCtx.logger });

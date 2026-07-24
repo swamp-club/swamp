@@ -20,7 +20,10 @@
 import { assertEquals, assertExists } from "@std/assert";
 import { join } from "@std/path";
 import { AuthRepository } from "./auth_repository.ts";
-import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
+import {
+  type AuthCredentials,
+  scopeCacheFingerprint,
+} from "../../domain/auth/auth_credentials.ts";
 
 const TEST_CREDENTIALS: AuthCredentials = {
   serverUrl: "https://swamp-club.com",
@@ -507,6 +510,76 @@ Deno.test("AuthRepository - saveScopeCache sets restrictive file permissions", a
   }
 });
 
+Deno.test("AuthRepository - loadScopeCache returns undefined when cache has expired", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configDir = join(tmpDir, "swamp");
+    await Deno.mkdir(configDir, { recursive: true });
+
+    const fingerprint = "swamp_org_te";
+    const expiredAt = Date.now() - AuthRepository.SCOPE_CACHE_TTL_MS - 1;
+    await Deno.writeTextFile(
+      join(configDir, "scope_cache.json"),
+      JSON.stringify({
+        fingerprint,
+        scopes: ["serve:*"],
+        cachedAt: expiredAt,
+      }),
+    );
+
+    const repo = new AuthRepository({ configDir });
+    const loaded = await repo.loadScopeCache(fingerprint);
+    assertEquals(loaded, undefined);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("AuthRepository - loadScopeCache returns scopes when cache is fresh", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configDir = join(tmpDir, "swamp");
+    await Deno.mkdir(configDir, { recursive: true });
+
+    const fingerprint = "swamp_org_te";
+    const freshAt = Date.now() - 1000;
+    await Deno.writeTextFile(
+      join(configDir, "scope_cache.json"),
+      JSON.stringify({
+        fingerprint,
+        scopes: ["serve:*"],
+        cachedAt: freshAt,
+      }),
+    );
+
+    const repo = new AuthRepository({ configDir });
+    const loaded = await repo.loadScopeCache(fingerprint);
+    assertEquals(loaded, ["serve:*"]);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("AuthRepository - loadScopeCache treats legacy cache without cachedAt as valid", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configDir = join(tmpDir, "swamp");
+    await Deno.mkdir(configDir, { recursive: true });
+
+    const fingerprint = "swamp_org_te";
+    await Deno.writeTextFile(
+      join(configDir, "scope_cache.json"),
+      JSON.stringify({ fingerprint, scopes: ["serve:*"] }),
+    );
+
+    const repo = new AuthRepository({ configDir });
+    const loaded = await repo.loadScopeCache(fingerprint);
+    assertEquals(loaded, ["serve:*"]);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 Deno.test("AuthRepository - delete also removes scope_cache.json", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
@@ -524,4 +597,20 @@ Deno.test("AuthRepository - delete also removes scope_cache.json", async () => {
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
+});
+
+// ── scopeCacheFingerprint tests ───────────────────────────────────────
+
+import { assertNotEquals } from "@std/assert";
+
+Deno.test("scopeCacheFingerprint: tokens sharing 12-char prefix produce different hashes", async () => {
+  const fpA = await scopeCacheFingerprint("swamp_org_abTOKEN_A_REST");
+  const fpB = await scopeCacheFingerprint("swamp_org_abTOKEN_B_REST");
+  assertNotEquals(fpA, fpB);
+});
+
+Deno.test("scopeCacheFingerprint: same token produces stable hash", async () => {
+  const fp1 = await scopeCacheFingerprint("swamp_org_abMyToken123");
+  const fp2 = await scopeCacheFingerprint("swamp_org_abMyToken123");
+  assertEquals(fp1, fp2);
 });

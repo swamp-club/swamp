@@ -22,6 +22,7 @@ import {
   isAuthenticated,
   requireAuthenticated,
   requireScope,
+  scopeMatches,
   setAuthenticated,
   setAuthScopes,
   setCollectiveToken,
@@ -115,4 +116,49 @@ Deno.test("requireScope: throws when collective token has undefined scopes (whoa
     UserError,
   );
   setCollectiveToken("");
+});
+
+Deno.test("scopeMatches: exact match", () => {
+  assertEquals(scopeMatches("serve:*", "serve:*"), true);
+  assertEquals(scopeMatches("vault:*", "vault:*"), true);
+  assertEquals(scopeMatches("vault:*", "serve:*"), false);
+});
+
+Deno.test("scopeMatches: global wildcard matches everything", () => {
+  assertEquals(scopeMatches("*", "serve:*"), true);
+  assertEquals(scopeMatches("*", "vault:read"), true);
+  assertEquals(scopeMatches("*", "anything"), true);
+});
+
+Deno.test("scopeMatches: kind wildcard matches fine-grained scopes", () => {
+  assertEquals(scopeMatches("vault:*", "vault:read"), true);
+  assertEquals(scopeMatches("vault:*", "vault:write"), true);
+  assertEquals(scopeMatches("datastore:*", "datastore:setup"), true);
+  assertEquals(scopeMatches("datastore:*", "datastore:read"), true);
+});
+
+Deno.test("scopeMatches: kind wildcard does not match different kind", () => {
+  assertEquals(scopeMatches("vault:*", "serve:read"), false);
+  assertEquals(scopeMatches("datastore:*", "vault:setup"), false);
+});
+
+Deno.test("scopeMatches: fine-grained scope does not match wildcard requirement", () => {
+  assertEquals(scopeMatches("vault:read", "vault:*"), false);
+});
+
+Deno.test("requireScope: wildcard scope satisfies fine-grained gate", () => {
+  setCollectiveToken("swamp_org_abc");
+  setAuthScopes(["vault:*"]);
+  requireScope("vault:read");
+  setCollectiveToken("");
+  setAuthScopes(undefined);
+});
+
+Deno.test("requireScope: global wildcard satisfies any gate", () => {
+  setCollectiveToken("swamp_org_abc");
+  setAuthScopes(["*"]);
+  requireScope("serve:*");
+  requireScope("vault:read");
+  setCollectiveToken("");
+  setAuthScopes(undefined);
 });

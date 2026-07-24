@@ -228,12 +228,6 @@ const datastoreSetupExtensionCommand = new Command()
       "Preferred escape hatch for large first-time setups.",
   )
   .action(async function (options: AnyOptions, type: string) {
-    requireAuthenticated(
-      "External datastores are a team feature",
-      "datastore:*",
-    );
-    requireScope("datastore:*");
-
     const cliCtx = createContext(options as GlobalOptions, [
       "datastore",
       "setup",
@@ -263,6 +257,12 @@ const datastoreSetupExtensionCommand = new Command()
           `Install it with: swamp extension pull ${resolvedType}`,
       );
     }
+
+    requireAuthenticated(
+      "External datastores are a team feature",
+      "datastore:*",
+    );
+    requireScope("datastore:*");
 
     // Parse config JSON and extract namespace before provider validation
     let config: Record<string, unknown>;

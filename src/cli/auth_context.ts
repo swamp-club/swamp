@@ -82,10 +82,29 @@ export function requireAuthenticated(
   }
 }
 
+/**
+ * Check whether a held scope satisfies a required scope.
+ * `*` satisfies everything; `kind:*` satisfies any `kind:<action>`;
+ * exact strings match exactly.
+ */
+export function scopeMatches(held: string, required: string): boolean {
+  if (held === "*") return true;
+  if (held === required) return true;
+  const colonIdx = held.indexOf(":");
+  if (colonIdx !== -1 && held.endsWith("*")) {
+    const prefix = held.slice(0, colonIdx + 1);
+    return required.startsWith(prefix);
+  }
+  return false;
+}
+
 export function requireScope(scope: string): void {
   const s = state();
   if (!s.collectiveToken) return;
-  if (s.authScopes !== undefined && s.authScopes.includes(scope)) return;
+  if (
+    s.authScopes !== undefined &&
+    s.authScopes.some((held) => scopeMatches(held, scope))
+  ) return;
 
   throw new UserError(
     `Your collective token lacks the ${scope} scope.\n\n` +

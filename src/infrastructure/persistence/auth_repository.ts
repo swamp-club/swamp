@@ -183,6 +183,8 @@ export class AuthRepository {
     return join(this.getConfigDir(), "scope_cache.json");
   }
 
+  static readonly SCOPE_CACHE_TTL_MS = 3_600_000; // 1 hour
+
   async saveScopeCache(
     fingerprint: string,
     scopes: string[],
@@ -190,7 +192,8 @@ export class AuthRepository {
     await Deno.mkdir(this.getConfigDir(), { recursive: true });
     await atomicWriteTextFile(
       this.getScopeCachePath(),
-      JSON.stringify({ fingerprint, scopes }, null, 2) + "\n",
+      JSON.stringify({ fingerprint, scopes, cachedAt: Date.now() }, null, 2) +
+        "\n",
       { mode: 0o600 },
     );
   }
@@ -203,10 +206,16 @@ export class AuthRepository {
       const cached = JSON.parse(content) as {
         fingerprint?: string;
         scopes?: string[];
+        cachedAt?: number;
       };
-      if (cached.fingerprint === fingerprint) {
-        return cached.scopes;
+      if (cached.fingerprint !== fingerprint) return undefined;
+      if (
+        cached.cachedAt !== undefined &&
+        Date.now() - cached.cachedAt > AuthRepository.SCOPE_CACHE_TTL_MS
+      ) {
+        return undefined;
       }
+      return cached.scopes;
     } catch {
       // No cache file
     }
