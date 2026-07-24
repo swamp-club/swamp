@@ -154,6 +154,11 @@ async function main() {
     // Download deno binary for embedding
     await downloadDeno(options.target);
 
+    // Individual flags instead of --allow-all: least-privilege, and prevents
+    // auto-granting future Deno permission categories.  Trade-off: Deno.open()
+    // on device nodes (e.g. /dev/ttyUSB0) requires --allow-all in compiled
+    // binaries, so extensions must use Deno.Command for hardware I/O.
+    // See design/extension.md "Runtime Permissions".
     const baseCommand = [
       "deno",
       "compile",
