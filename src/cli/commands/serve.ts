@@ -803,7 +803,7 @@ export const serveCommand = new Command()
   )
   .option(
     "--admins <principals:string>",
-    "Comma-separated principal IDs for admin access (e.g. user:oauth|user-123)",
+    "Comma-separated admin principals: plain usernames for OAuth mode (e.g. dmc), user:<subject-id> for token mode",
   )
   .option(
     "--allowed-collectives <list:string>",
@@ -866,7 +866,11 @@ export const serveCommand = new Command()
   )
   .example(
     "Token auth",
-    "swamp serve --auth-mode token --admins 'user:oauth|user-123'",
+    "swamp serve --auth-mode token --admins 'user:abc-123'",
+  )
+  .example(
+    "OAuth auth",
+    "swamp serve --auth-mode oauth --admins dmc --allowed-collectives my-org",
   )
   .example(
     "Webhook (secret from env var)",
