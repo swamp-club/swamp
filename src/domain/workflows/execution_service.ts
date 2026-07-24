@@ -1007,6 +1007,7 @@ export class DefaultStepExecutor implements StepExecutor {
       ...(ctx.workflowTags ?? {}),
       source: "step-output",
       workflow: ctx.workflowName,
+      workflowId: ctx.workflowId,
       workflowRunId: ctx.workflowRunId,
       job: ctx.jobName,
       step: ctx.stepName,

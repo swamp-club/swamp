@@ -345,6 +345,67 @@ Deno.test("createResourceWriter: omits ownerDefinition.jobName when not in tagOv
   assertEquals(handle.metadata.ownerDefinition.jobName, undefined);
 });
 
+Deno.test("createResourceWriter: populates ownerDefinition.workflowId from tagOverrides", async () => {
+  const repo = createMockRepo();
+  const workflowId = "5e646ae3-17a6-4ada-9a5b-6355a657b088";
+  const tagOverrides = {
+    source: "step-output",
+    workflow: "my-wf",
+    workflowId,
+    workflowRunId: "7e820a5f-518e-4d35-8f9e-60b55bbb15df",
+  };
+
+  const { writeResource } = createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    testResources,
+    tagOverrides,
+  );
+
+  const handle = await writeResource("item", "test-item", { value: "hello" });
+  assertEquals(handle.metadata.ownerDefinition.workflowId, workflowId);
+});
+
+Deno.test("createResourceWriter: omits ownerDefinition.workflowId when not in tagOverrides", async () => {
+  const repo = createMockRepo();
+  const tagOverrides = { source: "step-output", workflow: "my-wf" };
+
+  const { writeResource } = createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    testResources,
+    tagOverrides,
+  );
+
+  const handle = await writeResource("item", "test-item", { value: "hello" });
+  assertEquals(handle.metadata.ownerDefinition.workflowId, undefined);
+});
+
+Deno.test("createFileWriterFactory: populates ownerDefinition.workflowId from tagOverrides", async () => {
+  const repo = createMockRepo();
+  const workflowId = "5e646ae3-17a6-4ada-9a5b-6355a657b088";
+  const tagOverrides = {
+    source: "step-output",
+    workflow: "my-wf",
+    workflowId,
+    workflowRunId: "7e820a5f-518e-4d35-8f9e-60b55bbb15df",
+  };
+
+  const { createFileWriter } = createFileWriterFactory(
+    repo,
+    modelType,
+    modelId,
+    testFiles,
+    tagOverrides,
+  );
+
+  const writer = createFileWriter("log", "test-log");
+  const handle = await writer.writeText("log content");
+  assertEquals(handle.metadata.ownerDefinition.workflowId, workflowId);
+});
+
 Deno.test("createFileWriterFactory: populates ownerDefinition.workflowRunId from tagOverrides", async () => {
   const repo = createMockRepo();
   const workflowRunId = "6be8c3b8-ff3f-4e23-b998-fd9456d84d0a";

@@ -929,3 +929,103 @@ Deno.test("deleteOrphanedData - no orphans when all models live", async () => {
   assertEquals(result.modelsReclaimed, 0);
   assertEquals(result.reclaimedModels.length, 0);
 });
+
+// --- isExpired: workflow/job lifetime ---
+
+function createWorkflowData(overrides: {
+  name: string;
+  lifetime: string;
+  workflowId?: string;
+  workflowRunId?: string;
+}): Data {
+  return Data.create({
+    name: overrides.name,
+    contentType: "application/json",
+    lifetime: overrides.lifetime,
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: {
+      ownerType: "model-method",
+      ownerRef: "test-ref",
+      ...(overrides.workflowId ? { workflowId: overrides.workflowId } : {}),
+      ...(overrides.workflowRunId
+        ? { workflowRunId: overrides.workflowRunId }
+        : {}),
+    },
+    createdAt: new Date("2020-01-01T00:00:00Z"),
+  });
+}
+
+Deno.test("isExpired: workflow lifetime — expired when workflow run is deleted", async () => {
+  const mockRunRepo = new MockWorkflowRunRepository();
+  mockRunRepo.findById = () => Promise.resolve(null);
+
+  const service = new DefaultDataLifecycleService(
+    new MockDataRepository() as never,
+    mockRunRepo as never,
+  );
+
+  const data = createWorkflowData({
+    name: "wf-data",
+    lifetime: "workflow",
+    workflowId: "5e646ae3-17a6-4ada-9a5b-6355a657b088",
+    workflowRunId: "7e820a5f-518e-4d35-8f9e-60b55bbb15df",
+  });
+
+  assertEquals(await service.isExpired(data), true);
+});
+
+Deno.test("isExpired: workflow lifetime — not expired when workflow run exists", async () => {
+  const mockRunRepo = new MockWorkflowRunRepository();
+  mockRunRepo.findById = () => Promise.resolve({} as never);
+
+  const service = new DefaultDataLifecycleService(
+    new MockDataRepository() as never,
+    mockRunRepo as never,
+  );
+
+  const data = createWorkflowData({
+    name: "wf-data",
+    lifetime: "workflow",
+    workflowId: "5e646ae3-17a6-4ada-9a5b-6355a657b088",
+    workflowRunId: "7e820a5f-518e-4d35-8f9e-60b55bbb15df",
+  });
+
+  assertEquals(await service.isExpired(data), false);
+});
+
+Deno.test("isExpired: job lifetime — expired when workflow run is deleted", async () => {
+  const mockRunRepo = new MockWorkflowRunRepository();
+  mockRunRepo.findById = () => Promise.resolve(null);
+
+  const service = new DefaultDataLifecycleService(
+    new MockDataRepository() as never,
+    mockRunRepo as never,
+  );
+
+  const data = createWorkflowData({
+    name: "job-data",
+    lifetime: "job",
+    workflowId: "5e646ae3-17a6-4ada-9a5b-6355a657b088",
+    workflowRunId: "7e820a5f-518e-4d35-8f9e-60b55bbb15df",
+  });
+
+  assertEquals(await service.isExpired(data), true);
+});
+
+Deno.test("isExpired: workflow lifetime — not expired when workflowId missing", async () => {
+  const mockRunRepo = new MockWorkflowRunRepository();
+
+  const service = new DefaultDataLifecycleService(
+    new MockDataRepository() as never,
+    mockRunRepo as never,
+  );
+
+  const data = createWorkflowData({
+    name: "legacy-data",
+    lifetime: "workflow",
+    workflowRunId: "7e820a5f-518e-4d35-8f9e-60b55bbb15df",
+  });
+
+  assertEquals(await service.isExpired(data), false);
+});
