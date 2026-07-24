@@ -115,6 +115,7 @@ import {
 import {
   apiKeyFingerprint,
   DEFAULT_SWAMP_CLUB_URL,
+  scopeCacheFingerprint,
 } from "../domain/auth/auth_credentials.ts";
 import { setAutoResolver } from "./auto_resolver_context.ts";
 import {
@@ -1340,9 +1341,9 @@ export async function runCli(args: string[]): Promise<void> {
       const creds = await authRepo.load();
       if (creds) {
         if (creds.apiKey) setCollectiveToken(creds.apiKey);
-        const fingerprint = await apiKeyFingerprint(creds.apiKey);
         if (isCollectiveToken()) {
-          const cachedScopes = await authRepo.loadScopeCache(fingerprint);
+          const scopeFingerprint = await scopeCacheFingerprint(creds.apiKey);
+          const cachedScopes = await authRepo.loadScopeCache(scopeFingerprint);
           if (cachedScopes) {
             setAuthScopes(cachedScopes);
           } else {
@@ -1353,7 +1354,10 @@ export async function runCli(args: string[]): Promise<void> {
             if (response.authenticated) {
               setAuthScopes(response.scopes);
               if (response.scopes) {
-                await authRepo.saveScopeCache(fingerprint, response.scopes);
+                await authRepo.saveScopeCache(
+                  scopeFingerprint,
+                  response.scopes,
+                );
               }
             }
           }
@@ -1368,7 +1372,7 @@ export async function runCli(args: string[]): Promise<void> {
               creds.serverUrl,
               response.username,
               collectives,
-              fingerprint,
+              apiKeyFingerprint(creds.apiKey),
               response.scopes,
             );
           }

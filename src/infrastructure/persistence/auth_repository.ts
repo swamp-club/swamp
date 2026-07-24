@@ -88,7 +88,7 @@ export class AuthRepository {
     const envApiKey = this.getApiKey();
     if (envApiKey) {
       const serverUrl = this.getServerUrl() ?? DEFAULT_SWAMP_CLUB_URL;
-      const fingerprint = await apiKeyFingerprint(envApiKey);
+      const fingerprint = apiKeyFingerprint(envApiKey);
 
       let username = "";
       let collectives: string[] | undefined;

@@ -24,9 +24,17 @@ export const DEFAULT_SWAMP_CLUB_URL = "https://swamp-club.com";
  * old domain can be transparently migrated on load. */
 export const LEGACY_SWAMP_CLUB_URL = "https://swamp.club";
 
-/** SHA-256-based fingerprint of an API key, used for stale-cache detection.
- *  Returns the first 16 hex characters of the hash. */
-export async function apiKeyFingerprint(apiKey: string): Promise<string> {
+/** First 12 characters of an API key, used for identity-cache staleness detection. */
+export function apiKeyFingerprint(apiKey: string): string {
+  return apiKey.slice(0, 12);
+}
+
+/** SHA-256-based fingerprint for the scope cache, avoiding the prefix-collision
+ *  problem where collective tokens sharing a 10-char `swamp_org_` prefix had
+ *  only 2 distinguishing characters in the old 12-char prefix scheme. */
+export async function scopeCacheFingerprint(
+  apiKey: string,
+): Promise<string> {
   const data = new TextEncoder().encode(apiKey);
   const hash = await crypto.subtle.digest("SHA-256", data);
   const bytes = new Uint8Array(hash);
