@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY,
   OAUTH_CLIENT_ID_KEY,
   OAUTH_CLIENT_SECRET_KEY,
   OAUTH_RESOLVED_ADMINS_KEY,
@@ -110,7 +111,62 @@ Deno.test("resolveOAuthClientCredentials: bootstrap registers and returns access
     storedSecrets.get(OAUTH_CLIENT_SECRET_KEY),
     "new-client-secret",
   );
-  assertEquals(storedSecrets.has("oauth-access-token"), false);
+  assertEquals(
+    storedSecrets.get(OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY),
+    "new-access-token",
+  );
+});
+
+Deno.test("resolveOAuthClientCredentials: returns stored access token when no cached resolutions exist", async () => {
+  const deps = createMockDeps({
+    getVaultSecret: (_, key) => {
+      if (key === OAUTH_CLIENT_ID_KEY) return Promise.resolve("stored-id");
+      if (key === OAUTH_CLIENT_SECRET_KEY) {
+        return Promise.resolve("stored-secret");
+      }
+      if (key === OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY) {
+        return Promise.resolve("stored-bootstrap-token");
+      }
+      return Promise.resolve(null);
+    },
+  });
+  const result = await resolveOAuthClientCredentials(
+    deps,
+    "https://swamp-club.com",
+    "default",
+    undefined,
+    AbortSignal.timeout(5000),
+  );
+  assertEquals(result.clientId, "stored-id");
+  assertEquals(result.clientSecret, "stored-secret");
+  assertEquals(result.accessToken, "stored-bootstrap-token");
+  assertEquals(result.resolvedAdmins, null);
+});
+
+Deno.test("resolveOAuthClientCredentials: prefers cached resolutions over stored access token", async () => {
+  const adminsJson = JSON.stringify({ swampadmin: "6a4d-sub-id" });
+  const deps = createMockDeps({
+    getVaultSecret: (_, key) => {
+      if (key === OAUTH_CLIENT_ID_KEY) return Promise.resolve("stored-id");
+      if (key === OAUTH_CLIENT_SECRET_KEY) {
+        return Promise.resolve("stored-secret");
+      }
+      if (key === OAUTH_RESOLVED_ADMINS_KEY) return Promise.resolve(adminsJson);
+      if (key === OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY) {
+        return Promise.resolve("stored-bootstrap-token");
+      }
+      return Promise.resolve(null);
+    },
+  });
+  const result = await resolveOAuthClientCredentials(
+    deps,
+    "https://swamp-club.com",
+    "default",
+    undefined,
+    AbortSignal.timeout(5000),
+  );
+  assertEquals(result.accessToken, null);
+  assertEquals(result.resolvedAdmins, { swampadmin: "6a4d-sub-id" });
 });
 
 Deno.test("storeResolvedAdmins: stores admin mapping in vault", async () => {

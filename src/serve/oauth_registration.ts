@@ -24,6 +24,7 @@ const logger = getSwampLogger(["serve", "oauth-registration"]);
 export const OAUTH_CLIENT_ID_KEY = "oauth-client-id";
 export const OAUTH_CLIENT_SECRET_KEY = "oauth-client-secret";
 export const OAUTH_RESOLVED_ADMINS_KEY = "oauth-resolved-admins";
+export const OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY = "oauth-bootstrap-access-token";
 
 // Well-known bootstrap client ID for first-time OAuth registration.
 // This is a public client ID baked into the binary — the same pattern
@@ -86,20 +87,26 @@ export async function resolveOAuthClientCredentials(
 
   if (explicitClientId && storedClientSecret) {
     logger.info("Using explicit --oauth-client-id with stored client secret");
+    const storedAccessToken = resolvedAdmins
+      ? null
+      : await deps.getVaultSecret(vaultName, OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY);
     return {
       clientId: explicitClientId,
       clientSecret: storedClientSecret,
-      accessToken: null,
+      accessToken: storedAccessToken,
       resolvedAdmins,
     };
   }
 
   if (storedClientId && storedClientSecret) {
     logger.info("Using stored OAuth client credentials from vault");
+    const storedAccessToken = resolvedAdmins
+      ? null
+      : await deps.getVaultSecret(vaultName, OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY);
     return {
       clientId: storedClientId,
       clientSecret: storedClientSecret,
-      accessToken: null,
+      accessToken: storedAccessToken,
       resolvedAdmins,
     };
   }
@@ -115,6 +122,11 @@ export async function resolveOAuthClientCredentials(
     vaultName,
     OAUTH_CLIENT_SECRET_KEY,
     result.clientSecret,
+  );
+  await deps.putVaultSecret(
+    vaultName,
+    OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY,
+    result.accessToken,
   );
 
   logger.info(
