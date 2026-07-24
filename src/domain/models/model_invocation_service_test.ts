@@ -191,6 +191,40 @@ Deno.test("ModelInvocationService: initializes tracking when not present on cont
     (result as RunModelResult & { ok: false }).error.message,
     "not found",
   );
+
+  // Tracking must be persisted on the caller context so subsequent calls
+  // share the same breadth counter
+  assertEquals(ctx._invocationTracking !== undefined, true);
+  assertEquals(ctx._invocationTracking!.breadthCounter.count, 1);
+});
+
+Deno.test("ModelInvocationService: breadth limit enforced from fresh context without pre-seeded tracking", async () => {
+  const svc = makeSvc();
+  const ctx = makeStubContext();
+
+  for (let i = 0; i < 100; i++) {
+    const result = await svc.invoke(
+      { definition: `def-${i}`, method: "read" },
+      ctx,
+    );
+    // Each call increments the counter and fails on definition lookup
+    assertEquals(result.ok, false);
+    assertStringIncludes(
+      (result as RunModelResult & { ok: false }).error.message,
+      "not found",
+    );
+  }
+
+  // Call 101 must be refused by the breadth guard
+  const result = await svc.invoke(
+    { definition: "one-too-many", method: "read" },
+    ctx,
+  );
+  assertEquals(result.ok, false);
+  assertStringIncludes(
+    (result as RunModelResult & { ok: false }).error.message,
+    "Maximum cross-model invocation count",
+  );
 });
 
 Deno.test("ModelInvocationService: depth 0 with no tracking allows first call", async () => {

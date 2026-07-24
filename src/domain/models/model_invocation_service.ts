@@ -154,11 +154,12 @@ export class ModelInvocationService {
     options: RunModelOptions,
     callerContext: MethodContext,
   ): Promise<RunModelResult> {
-    const tracking = callerContext._invocationTracking ?? {
+    callerContext._invocationTracking ??= {
       depth: 0,
       ancestors: new Set<string>(),
       breadthCounter: { count: 0 },
     };
+    const tracking = callerContext._invocationTracking;
 
     if (tracking.depth >= MAX_INVOCATION_DEPTH) {
       return {
