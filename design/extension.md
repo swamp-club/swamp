@@ -1016,6 +1016,64 @@ time and stored in the registry. During pull, the downloaded archive's checksum
 is verified against the registry. Legacy extensions that predate checksum
 support are marked as "unverified" but still allowed.
 
+## Runtime Permissions
+
+Extension model methods run in-process in the host Deno process (via
+`InProcessExecutor`). They share the process-level permissions baked into the
+compiled binary. The binary is compiled with individually scoped flags — not
+`--allow-all` — to maintain least-privilege and prevent auto-granting future Deno
+permission categories:
+
+| Flag            | Grants                                     |
+| --------------- | ------------------------------------------ |
+| `--allow-read`  | Filesystem reads (regular files)           |
+| `--allow-write` | Filesystem writes (regular files)          |
+| `--allow-env`   | Environment variable access                |
+| `--allow-run`   | Subprocess spawning (`Deno.Command`)       |
+| `--allow-sys`   | System info (hostname, OS, memory)         |
+| `--allow-net`   | Network access (HTTP, TCP, UDP)            |
+
+Flags deliberately **not** granted: `--allow-ffi` (foreign function interface).
+
+### Device Node I/O
+
+`Deno.open()` on character or block device nodes (e.g., `/dev/ttyUSB0`,
+`/dev/spidev0.0`) does not work in the compiled binary. Deno compiled binaries
+require `--allow-all` for device-node access, even when `--allow-read` and
+`--allow-write` are granted. This is a Deno limitation, not a swamp restriction.
+
+Extensions that need hardware I/O should use `Deno.Command` to spawn a
+subprocess, which is permitted by `--allow-run`:
+
+```typescript
+// Read from a serial device using cat
+const cmd = new Deno.Command("cat", { args: ["/dev/ttyUSB0"], stdout: "piped" });
+const { stdout } = await cmd.output();
+const data = new TextDecoder().decode(stdout);
+
+// Write to a serial device using dd
+const write = new Deno.Command("dd", {
+  args: ["of=/dev/ttyUSB0"],
+  stdin: "piped",
+});
+const child = write.spawn();
+const writer = child.stdin.getWriter();
+await writer.write(new TextEncoder().encode("AT\r\n"));
+await writer.close();
+await child.status;
+
+// Configure a serial port using stty
+const stty = new Deno.Command("stty", {
+  args: ["-F", "/dev/ttyUSB0", "115200", "cs8", "-cstopb", "-parenb"],
+});
+await stty.output();
+```
+
+The Docker execution driver (`design/execution-drivers.md`) runs extension
+bundles with `--allow-all`, so `Deno.open()` on device nodes works when using
+Docker placement. Only the local (in-process) and compiled-binary execution
+paths are affected by this limitation.
+
 ## Dependency Trust Audit
 
 Extension source files are scanned for `npm:` and `jsr:` import specifiers
