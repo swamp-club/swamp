@@ -378,7 +378,7 @@ export class DataPlane {
       await this.#vault(),
       dispatch.methodName,
       undefined, // onEvent
-      undefined, // redactor
+      dispatch.redactor,
     );
     // Mark the lease BEFORE persisting: a lease may over-report writes
     // (safe, conservative) but must never under-report them.

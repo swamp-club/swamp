@@ -59,6 +59,7 @@ import {
 import type { RpcStreamEvent } from "../remote/protocol.ts";
 import { hasPlacement } from "../remote/scheduler.ts";
 import { createDataId } from "../data/data_id.ts";
+import { extractSensitiveFieldValues } from "./sensitive_field_extractor.ts";
 
 /**
  * Maximum depth for recursive follow-up action processing.
@@ -371,6 +372,22 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       ) as Record<string, unknown>
       : executionRequest.globalArgs;
 
+    const secretValues: string[] = [];
+    if (secretBag && !secretBag.isEmpty) {
+      secretValues.push(...secretBag.rawValues);
+    }
+    if (modelDef.globalArguments) {
+      secretValues.push(
+        ...extractSensitiveFieldValues(modelDef.globalArguments, globalArgs),
+      );
+    }
+    const methodArgSchema = modelDef.methods[methodName]?.arguments;
+    if (methodArgSchema) {
+      secretValues.push(
+        ...extractSensitiveFieldValues(methodArgSchema, methodArgs),
+      );
+    }
+
     return await withSpan("swamp.remote.dispatch", {
       "model.type": context.modelType.normalized,
       "method.name": methodName,
@@ -395,6 +412,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         stepName: context.tagOverrides?.step,
         signal: context.signal,
         dataRepo: context.dataRepository,
+        secretValues: secretValues.length > 0 ? secretValues : undefined,
         onEvent: context.onEvent
           ? (event: RpcStreamEvent) => {
             if (event.kind === "method_event" && "event" in event) {

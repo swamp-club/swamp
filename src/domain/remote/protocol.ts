@@ -266,6 +266,14 @@ export const DispatchParamsSchema = z.object({
    * rather than the environment snapshot (which denylists SWAMP_* vars).
    */
   probeMarker: z.string().optional(),
+  /**
+   * Resolved vault secret values the worker must register with its
+   * SecretRedactor before executing the method body. The orchestrator
+   * extracts these from sensitive argument fields; the worker adds them
+   * so stdout/stderr redaction catches secrets injected through args.
+   * Optional for backward compatibility with older workers.
+   */
+  secretValues: z.array(z.string()).optional(),
 });
 
 export type DispatchParams = z.infer<typeof DispatchParamsSchema>;

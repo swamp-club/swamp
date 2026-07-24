@@ -72,6 +72,7 @@ import type { ActiveDispatch, DispatchRegistry } from "./dispatch_registry.ts";
 import type { BundleRegistry } from "./bundle_registry.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { extractVaultReferences } from "../domain/expressions/vault_reference_extractor.ts";
+import { SecretRedactor } from "../domain/secrets/secret_redactor.ts";
 
 export { hasPlacement };
 
@@ -152,6 +153,17 @@ export class DispatchService {
       ((input) => this.#defaultRunModelMethod(input));
     this.#captureEnvironment = options.captureEnvironment ??
       (() => captureEnvironmentSnapshot(Deno.env.toObject()));
+  }
+
+  #buildDispatchRedactor(
+    secretValues: string[] | undefined,
+  ): SecretRedactor | undefined {
+    if (!secretValues || secretValues.length === 0) return undefined;
+    const redactor = new SecretRedactor();
+    for (const value of secretValues) {
+      redactor.addSecret(value);
+    }
+    return redactor;
   }
 
   bindGateway(gateway: DispatchGateway): void {
@@ -375,6 +387,7 @@ export class DispatchService {
         request.globalArgs,
         request.methodArgs,
       ),
+      redactor: this.#buildDispatchRedactor(request.secretValues),
     });
 
     const params: DispatchParams = {
@@ -401,6 +414,7 @@ export class DispatchService {
         stepName: request.stepName,
       },
       probeMarker: request.probeMarker,
+      secretValues: request.secretValues,
     };
 
     try {

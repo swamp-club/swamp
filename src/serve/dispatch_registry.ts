@@ -30,6 +30,7 @@ import type { ModelType } from "../domain/models/model_type.ts";
 import type {
   VaultExtractionResult,
 } from "../domain/expressions/vault_reference_extractor.ts";
+import type { SecretRedactor } from "../domain/secrets/secret_redactor.ts";
 
 export interface ActiveDispatch {
   workerName: string;
@@ -45,6 +46,8 @@ export interface ActiveDispatch {
   runtimeTags?: Record<string, string>;
   dataRepo?: UnifiedDataRepository;
   allowedSecrets?: VaultExtractionResult;
+  /** Per-dispatch redactor populated with vault-derived secret values. */
+  redactor?: SecretRedactor;
 }
 
 export class DispatchRegistry {

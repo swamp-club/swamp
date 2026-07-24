@@ -80,6 +80,11 @@ export class VaultSecretBag {
     return this.secrets.size === 0;
   }
 
+  /** Returns all raw secret values (for registering with a SecretRedactor). */
+  get rawValues(): string[] {
+    return [...this.secrets.values()];
+  }
+
   /**
    * Returns sentinel tokens that appear inside single quotes in the given
    * command string. Single quotes prevent shell variable expansion, so an

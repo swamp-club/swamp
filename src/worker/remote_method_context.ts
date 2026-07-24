@@ -508,6 +508,11 @@ export function createRemoteMethodContext(
   } as unknown as DataQueryService;
 
   const redactor = new SecretRedactor();
+  if (dispatch.secretValues) {
+    for (const value of dispatch.secretValues) {
+      redactor.addSecret(value);
+    }
+  }
 
   const readResource = async (
     instanceName: string,
