@@ -63,6 +63,11 @@ export interface RemoteStepRequest {
   /** Dispatch-level probe marker for fleet verification. */
   probeMarker?: string;
   /**
+   * Resolved vault secret values for the worker's SecretRedactor.
+   * Extracted from sensitive argument fields on the orchestrator side.
+   */
+  secretValues?: string[];
+  /**
    * Bypass the scheduler and dispatch directly to the targeted worker.
    * Only used by the fleet verification probe, which must reach workers
    * in "unverified" status that the scheduler would otherwise exclude.

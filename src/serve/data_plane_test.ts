@@ -597,3 +597,33 @@ Deno.test("DataPlane: /bundle/{fp}/files caps total file count", async () => {
     }
   });
 });
+
+Deno.test("DataPlane: per-dispatch redactor scrubs secrets from written resources", async () => {
+  await withHarness(async (h) => {
+    const { SecretRedactor } = await import(
+      "../domain/secrets/secret_redactor.ts"
+    );
+    const redactor = new SecretRedactor();
+    redactor.addSecret("top-secret-value");
+    const d = activeDispatch();
+    d.redactor = redactor;
+    h.dispatches.register(d);
+
+    const resp = await h.plane.handle(
+      request("/data/resource", {
+        method: "POST",
+        body: JSON.stringify({
+          specName: "result",
+          name: "result",
+          data: { value: "output: top-secret-value" },
+        }),
+      }),
+    );
+    assertEquals(resp?.status, 200);
+
+    const key = `${MODEL_TYPE.normalized}/m-1/result`;
+    const entry = h.stored.get(key);
+    const content = JSON.parse(new TextDecoder().decode(entry!.content!));
+    assertEquals(content.value, "output: ***");
+  });
+});

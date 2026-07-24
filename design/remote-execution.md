@@ -958,6 +958,25 @@ provisioning credentials and extensions onto workers:
   the step that needs them (consistent with the out-of-process resolution pattern
   in [execution-drivers.md](./execution-drivers.md#vault-secret-resolution)).
 
+  **Secret redaction.** Vault-derived values must be scrubbed from all persisted
+  output — log resources, result resources, and workflow-run records — before
+  they reach durable storage or the WS event stream. Two complementary layers
+  enforce this:
+
+  1. **Worker-side (source redaction):** The orchestrator extracts resolved
+     secret values from sensitive argument fields and ships them in the dispatch
+     params (`secretValues`). The worker registers these with its
+     `SecretRedactor` before method execution, so `stdout`/`stderr` and any
+     `writeResource` data are redacted at the point of origin.
+  2. **Data plane (defense in depth):** The orchestrator stores a per-dispatch
+     `SecretRedactor` on the `ActiveDispatch` registration. When the data plane
+     persists a worker's `writeResource` call, it passes this redactor to
+     `createResourceWriter`, catching any value the worker-side redactor missed.
+
+  Both layers use the same `SecretRedactor` class and the same
+  `extractSensitiveFieldValues` utility that local execution has always used;
+  the invariant is identical, just extended across the dispatch boundary.
+
 - The **enrollment token** is named, time-boxed, and enrolls up to
   `maxEnrollments` machines, each binding to the worker's durable `machineId`. The
   `{token, machineId}` pair is a *bearer* reconnection secret rather than

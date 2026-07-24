@@ -72,6 +72,7 @@ function harness(
   scratchDir: string,
   extensionFilesDir?: string,
   artifactContent?: Record<string, unknown>,
+  overrideDispatch?: DispatchParams,
 ) {
   const calls: StubCall[] = [];
   // The orchestrator side of the control socket, with stub verb handlers.
@@ -196,7 +197,7 @@ function harness(
   const { context, getHandles } = createRemoteMethodContext({
     channel: worker,
     client,
-    dispatch: dispatch(),
+    dispatch: overrideDispatch ?? dispatch(),
     scratchDir,
     extensionFilesDir,
     signal: new AbortController().signal,
@@ -378,5 +379,27 @@ Deno.test("remote context: deleteResource calls client.deleteResource", async ()
       h.calls.filter((c) => c.method === "deleteResource"),
       [{ method: "deleteResource", params: { name: "stale-data" } }],
     );
+  });
+});
+
+Deno.test("remote context: secretValues populate the redactor", async () => {
+  await withScratch((dir) => {
+    const d = dispatch();
+    d.secretValues = ["super-secret-value"];
+    const h = harness(dir, undefined, undefined, d);
+    assertEquals(h.context.redactor!.hasSecrets, true);
+    assertEquals(
+      h.context.redactor!.redact("output: super-secret-value here"),
+      "output: *** here",
+    );
+    return Promise.resolve();
+  });
+});
+
+Deno.test("remote context: empty secretValues leaves redactor without secrets", async () => {
+  await withScratch((dir) => {
+    const h = harness(dir);
+    assertEquals(h.context.redactor!.hasSecrets, false);
+    return Promise.resolve();
   });
 });
