@@ -52,7 +52,13 @@ export type WorkflowExecutionEvent =
   | { kind: "job_started"; jobId: string }
   | { kind: "job_completed"; jobId: string; status: string }
   | { kind: "job_skipped"; jobId: string }
-  | { kind: "step_started"; jobId: string; stepId: string }
+  | {
+    kind: "step_started";
+    jobId: string;
+    stepId: string;
+    forEachTemplate?: string;
+    forEachIndex?: number;
+  }
   | {
     kind: "step_completed";
     jobId: string;
@@ -60,8 +66,16 @@ export type WorkflowExecutionEvent =
     dataHandles?: DataHandle[];
     /** "loopback" or the worker name that executed the step's method. */
     executor?: string;
+    forEachTemplate?: string;
+    forEachIndex?: number;
   }
-  | { kind: "step_skipped"; jobId: string; stepId: string }
+  | {
+    kind: "step_skipped";
+    jobId: string;
+    stepId: string;
+    forEachTemplate?: string;
+    forEachIndex?: number;
+  }
   | {
     kind: "approval_requested";
     runId: string;
@@ -86,6 +100,8 @@ export type WorkflowExecutionEvent =
      */
     modelName?: string;
     methodName?: string;
+    forEachTemplate?: string;
+    forEachIndex?: number;
   }
   | {
     kind: "model_resolved";

@@ -1124,6 +1124,8 @@ export async function* modelMethodRun(
             logFile: logFilePath,
             dataArtifacts,
             reports: reportResults,
+            globalArguments: reportGlobalArgs,
+            methodArguments: reportMethodArgs,
           };
           yield { kind: "completed", run: view };
 

@@ -178,7 +178,7 @@ Deno.test(
         const combined = stdoutStr + stderrStr;
         assertStringIncludes(
           combined,
-          "Step started",
+          "step nested-swamp",
           "workflow should have started the step",
         );
       } finally {

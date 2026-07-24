@@ -73,4 +73,6 @@ export interface ModelMethodRunView {
   logFile?: string;
   dataArtifacts: DataArtifactView[];
   reports?: Record<string, ReportResultView>;
+  globalArguments?: Record<string, unknown>;
+  methodArguments?: Record<string, unknown>;
 }

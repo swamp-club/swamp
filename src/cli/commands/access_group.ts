@@ -139,6 +139,7 @@ async function runGroupMethod(
       modelName: instanceName,
       methodName,
       isAuthenticated: isAuthenticated(),
+      quiet: ctx.verbosity === "quiet",
     });
 
     const typeArg = isDirectExecution

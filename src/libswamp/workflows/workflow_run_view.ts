@@ -43,6 +43,7 @@ export interface DataArtifactRefData {
   name: string;
   version: number;
   tags: Record<string, string>;
+  attributes?: Record<string, unknown>;
 }
 
 export interface StepRunView {
@@ -83,6 +84,7 @@ export interface WorkflowRunView {
   id: string;
   workflowId: string;
   workflowName: string;
+  inputs?: Record<string, unknown>;
   status:
     | "pending"
     | "running"

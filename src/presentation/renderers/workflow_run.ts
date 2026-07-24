@@ -26,42 +26,178 @@ import {
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import {
-  escapeLogTemplate,
-  getRunLogger,
-  getWorkflowRunLogger,
+  setSystemPipeWidth,
   writeOutput,
 } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
-import { InkWorkflowRunRenderer } from "./workflow_run_tree/mod.ts";
 import { AUTH_NUDGE_MESSAGE } from "../../domain/auth/auth_nudge.ts";
-
-function isStdoutTty(): boolean {
-  try {
-    return Deno.stdout.isTerminal();
-  } catch {
-    return false;
-  }
-}
+import { dim, yellow } from "@std/fmt/colors";
+import {
+  type DataArtifact,
+  type DataBoxOptions,
+  formatDuration,
+  formatTimestamp,
+  PipeWriter,
+  renderDataBox,
+  STATUS_COLORS,
+  writeBlankLine,
+} from "../output/console_writer.ts";
 
 export interface WorkflowRunRenderOpts {
   workflowName: string;
   forceLog?: boolean;
   isAuthenticated?: boolean;
+  quiet?: boolean;
 }
 
 export interface WorkflowRunRenderer extends Renderer<WorkflowRunEvent> {
   workflowFailed(): boolean;
 }
 
-class LogWorkflowRunRenderer implements WorkflowRunRenderer {
+const QUIET_BUFFER_LIMIT = 500;
+const HEARTBEAT_INTERVAL_MS = 10_000;
+
+class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
   private workflowName: string;
   private isAuthenticated: boolean;
+  private quiet: boolean;
   private _failed = false;
+  private pipe: PipeWriter | null = null;
+  private outputBuffers = new Map<string, string[]>();
+  private heartbeatTimers = new Map<string, ReturnType<typeof setInterval>>();
+  private heartbeatCounters = new Map<string, number>();
+  private forEachDisplayNames = new Map<string, string>();
+  private stepStartTimes = new Map<string, number>();
+  private jobStartTimes = new Map<string, number>();
+  private pendingJobStarts = new Map<string, string>();
+  private pendingStartLine: (() => void) | null = null;
 
   constructor(opts: WorkflowRunRenderOpts) {
     this.workflowName = opts.workflowName;
     this.isAuthenticated = opts.isAuthenticated ?? false;
+    this.quiet = opts.quiet ?? false;
+  }
+
+  private getDisplayName(jobId: string, stepId: string, event?: {
+    forEachTemplate?: string;
+    forEachIndex?: number;
+  }): string {
+    if (
+      event?.forEachTemplate !== undefined && event?.forEachIndex !== undefined
+    ) {
+      const display = `${event.forEachTemplate}[${event.forEachIndex}]`;
+      this.forEachDisplayNames.set(`${jobId}:${stepId}`, display);
+      return display;
+    }
+    return this.forEachDisplayNames.get(`${jobId}:${stepId}`) ?? jobId;
+  }
+
+  private getJobDisplayName(jobId: string): string {
+    return jobId;
+  }
+
+  private stepKey(jobId: string, stepId: string): string {
+    return `${jobId}:${stepId}`;
+  }
+
+  private startHeartbeat(jobId: string, stepId: string): void {
+    const key = this.stepKey(jobId, stepId);
+    this.heartbeatCounters.set(key, 0);
+    this.heartbeatTimers.set(
+      key,
+      setInterval(() => {
+        const count = (this.heartbeatCounters.get(key) ?? 0) + 1;
+        this.heartbeatCounters.set(key, count);
+        const elapsed = count * (HEARTBEAT_INTERVAL_MS / 1000);
+        const displayName = this.forEachDisplayNames.get(key) ?? jobId;
+        if (this.pipe) {
+          writeOutput(
+            this.pipe.line(
+              displayName,
+              dim(`Still running... [${elapsed}s elapsed]`),
+            ),
+          );
+        }
+      }, HEARTBEAT_INTERVAL_MS),
+    );
+  }
+
+  private resetHeartbeat(jobId: string, stepId: string): void {
+    const key = this.stepKey(jobId, stepId);
+    this.heartbeatCounters.set(key, 0);
+  }
+
+  private clearHeartbeat(jobId: string, stepId: string): void {
+    const key = this.stepKey(jobId, stepId);
+    const timer = this.heartbeatTimers.get(key);
+    if (timer) {
+      clearInterval(timer);
+      this.heartbeatTimers.delete(key);
+    }
+    this.heartbeatCounters.delete(key);
+  }
+
+  private clearAllHeartbeats(): void {
+    for (const timer of this.heartbeatTimers.values()) {
+      clearInterval(timer);
+    }
+    this.heartbeatTimers.clear();
+    this.heartbeatCounters.clear();
+  }
+
+  private flushPendingStartLine(): void {
+    if (this.pendingStartLine) {
+      this.pendingStartLine();
+      this.pendingStartLine = null;
+    }
+  }
+
+  private flushPendingJobStart(jobId: string): void {
+    this.flushPendingStartLine();
+    const ts = this.pendingJobStarts.get(jobId);
+    if (ts && this.pipe) {
+      writeOutput(this.pipe.startLine(this.getJobDisplayName(jobId), ts));
+      this.pendingJobStarts.delete(jobId);
+    }
+  }
+
+  private bufferOutput(jobId: string, stepId: string, line: string): void {
+    const key = this.stepKey(jobId, stepId);
+    let buffer = this.outputBuffers.get(key);
+    if (!buffer) {
+      buffer = [];
+      this.outputBuffers.set(key, buffer);
+    }
+    buffer.push(line);
+    if (buffer.length > QUIET_BUFFER_LIMIT) {
+      buffer.shift();
+    }
+  }
+
+  private replayBuffer(jobId: string, stepId: string): void {
+    const key = this.stepKey(jobId, stepId);
+    const buffer = this.outputBuffers.get(key);
+    if (!buffer || buffer.length === 0) return;
+    const displayName = this.forEachDisplayNames.get(key) ?? jobId;
+    if (this.pipe) {
+      writeOutput(this.pipe.line(displayName, ""));
+      writeOutput(
+        this.pipe.line(displayName, dim(`─── output from ${stepId} ───`)),
+      );
+      for (const line of buffer) {
+        writeOutput(this.pipe.line(displayName, line));
+      }
+      writeOutput(
+        this.pipe.line(displayName, dim("─────────────────────────────────")),
+      );
+      writeOutput(this.pipe.line(displayName, ""));
+    }
+    this.outputBuffers.delete(key);
+  }
+
+  private discardBuffer(jobId: string, stepId: string): void {
+    this.outputBuffers.delete(this.stepKey(jobId, stepId));
   }
 
   handlers(): EventHandlers<WorkflowRunEvent> {
@@ -70,198 +206,343 @@ class LogWorkflowRunRenderer implements WorkflowRunRenderer {
       evaluating_workflow: () => {},
       started: (e) => {
         this.workflowName = e.workflowName;
-        getWorkflowRunLogger(e.workflowName).info("Starting workflow");
+        const jobNames = [...e.jobs.map((j) => j.id), "system"];
+        this.pipe = new PipeWriter(jobNames);
+        setSystemPipeWidth(this.pipe.maxWidth);
+        const ts = formatTimestamp();
+        const wfName = e.workflowName;
+        this.pendingStartLine = () => {
+          if (!this.pipe) return;
+          writeOutput(
+            this.pipe.statusLine(
+              "system",
+              "Starting",
+              STATUS_COLORS.info,
+              `workflow ${wfName}`,
+              ts,
+            ),
+          );
+          writeBlankLine();
+        };
       },
       job_started: (e) => {
-        getWorkflowRunLogger(this.workflowName, e.jobId).info("Job started");
+        if (!this.pipe) return;
+        this.jobStartTimes.set(e.jobId, Date.now());
+        this.pendingJobStarts.set(e.jobId, formatTimestamp());
       },
       job_completed: (e) => {
-        const jobLogger = getWorkflowRunLogger(this.workflowName, e.jobId);
+        if (!this.pipe) return;
+        this.flushPendingJobStart(e.jobId);
+        const ts = formatTimestamp();
+        const name = this.getJobDisplayName(e.jobId);
+        const startTime = this.jobStartTimes.get(e.jobId);
+        const duration = startTime
+          ? formatDuration(Date.now() - startTime)
+          : "";
         if (e.status === "failed") {
-          jobLogger.error("Job failed");
+          writeOutput(this.pipe.failedJobLine(name, ts));
         } else {
-          jobLogger.info("Job completed");
+          writeOutput(this.pipe.completedLine(name, duration, ts));
         }
       },
       job_skipped: (e) => {
-        getWorkflowRunLogger(this.workflowName, e.jobId).info("Job skipped");
+        if (!this.pipe) return;
+        writeOutput(
+          this.pipe.skippedLine(this.getJobDisplayName(e.jobId)),
+        );
       },
       step_started: (e) => {
-        getWorkflowRunLogger(this.workflowName, e.jobId, e.stepId).info(
-          "Step started",
-        );
+        if (!this.pipe) return;
+        this.stepStartTimes.set(this.stepKey(e.jobId, e.stepId), Date.now());
+        const displayName = this.getDisplayName(e.jobId, e.stepId, e);
+        if (displayName !== e.jobId) {
+          this.pipe.updateWidth([displayName]);
+          setSystemPipeWidth(this.pipe.maxWidth);
+        }
+        this.flushPendingJobStart(e.jobId);
+        this.startHeartbeat(e.jobId, e.stepId);
       },
       step_completed: (e) => {
-        getWorkflowRunLogger(this.workflowName, e.jobId, e.stepId).info(
-          "Step completed",
-        );
+        if (!this.pipe) return;
+        this.clearHeartbeat(e.jobId, e.stepId);
+        if (this.quiet) {
+          this.discardBuffer(e.jobId, e.stepId);
+        }
+        const displayName = this.getDisplayName(e.jobId, e.stepId, e);
+        const ts = formatTimestamp();
+        const key = this.stepKey(e.jobId, e.stepId);
+        const startTime = this.stepStartTimes.get(key);
+        const duration = startTime
+          ? formatDuration(Date.now() - startTime)
+          : "";
+        writeOutput(this.pipe.doneLine(displayName, e.stepId, duration, ts));
       },
       step_skipped: (e) => {
-        getWorkflowRunLogger(this.workflowName, e.jobId, e.stepId).info(
-          "Step skipped",
-        );
+        if (!this.pipe) return;
+        this.clearHeartbeat(e.jobId, e.stepId);
+        const displayName = this.getDisplayName(e.jobId, e.stepId, e);
+        writeOutput(this.pipe.skippedLine(displayName));
       },
       step_queued: (e) => {
-        getWorkflowRunLogger(this.workflowName, e.jobId, e.stepId).info(
-          "Waiting for a worker matching {requirement}",
-          { requirement: e.requirement },
+        if (!this.pipe) return;
+        const displayName = this.forEachDisplayNames.get(
+          this.stepKey(e.jobId, e.stepId),
+        ) ?? e.jobId;
+        writeOutput(
+          this.pipe.line(
+            displayName,
+            dim(`queued, waiting for worker matching ${e.requirement}`),
+          ),
         );
       },
       step_failed: (e) => {
-        getWorkflowRunLogger(this.workflowName, e.jobId, e.stepId).error(
-          "Step failed: {error}",
-          { error: e.error },
+        if (!this.pipe) return;
+        this.clearHeartbeat(e.jobId, e.stepId);
+        if (this.quiet) {
+          this.replayBuffer(e.jobId, e.stepId);
+        }
+        const displayName = this.getDisplayName(e.jobId, e.stepId, e);
+        const ts = formatTimestamp();
+        const key = this.stepKey(e.jobId, e.stepId);
+        const startTime = this.stepStartTimes.get(key);
+        const duration = startTime
+          ? formatDuration(Date.now() - startTime)
+          : "";
+        writeOutput(
+          this.pipe.failedStepLine(displayName, e.stepId, duration, ts),
         );
       },
       approval_requested: (e) => {
-        const logger = getWorkflowRunLogger(
-          this.workflowName,
-          e.jobId,
-          e.stepId,
+        if (!this.pipe) return;
+        const name = this.getJobDisplayName(e.jobId);
+        writeOutput(
+          this.pipe.waitingLine(
+            name,
+            `approval required: "${e.prompt}"`,
+          ),
         );
-        logger.info("Awaiting manual approval: {prompt}", {
-          prompt: e.prompt,
-        });
-        logger.info(
-          "To approve: swamp workflow approve {workflowName} {stepName}",
-          { workflowName: this.workflowName, stepName: e.stepId },
+        writeBlankLine();
+        writeOutput(
+          this.pipe.line(
+            name,
+            `${
+              yellow("To approve:")
+            }  swamp workflow approve ${this.workflowName} ${e.stepId}`,
+          ),
         );
-        logger.info(
-          "To reject:  swamp workflow reject {workflowName} {stepName}",
-          { workflowName: this.workflowName, stepName: e.stepId },
+        writeOutput(
+          this.pipe.line(
+            name,
+            `${
+              yellow("To reject:")
+            }   swamp workflow reject ${this.workflowName} ${e.stepId}`,
+          ),
         );
       },
       model_resolved: (e) => {
-        getRunLogger(e.modelName, e.methodName).info(
-          "Found model {name} ({type})",
-          { name: e.modelName, type: e.modelType },
+        if (!this.pipe) return;
+        const displayName = this.forEachDisplayNames.get(
+          this.stepKey(e.jobId, e.stepId),
+        ) ?? e.jobId;
+        writeOutput(
+          this.pipe.stepLine(
+            displayName,
+            e.stepId,
+            e.modelName,
+            e.methodName,
+            formatTimestamp(),
+          ),
         );
       },
       env_var_warning: (e) => {
-        const logger = getWorkflowRunLogger(
-          this.workflowName,
-          e.jobId,
-          e.stepId,
+        if (!this.pipe) return;
+        const displayName = this.forEachDisplayNames.get(
+          this.stepKey(e.jobId, e.stepId),
+        ) ?? e.jobId;
+        writeOutput(
+          this.pipe.statusLine(
+            displayName,
+            "warning",
+            STATUS_COLORS.warn,
+            "Environment variables detected in model definition",
+          ),
         );
-        logger.warn("Environment variables detected in model definition");
         for (const detail of e.envVars) {
-          logger.warn("  {path} uses {envVar}", {
-            path: detail.path,
-            envVar: detail.envVar,
-          });
+          writeOutput(
+            this.pipe.line(
+              displayName,
+              `  ${detail.path} uses ${detail.envVar}`,
+            ),
+          );
         }
-        logger.warn(e.message);
+        writeOutput(this.pipe.line(displayName, e.message));
       },
-      method_executing: (e) => {
-        getRunLogger(e.modelName, e.methodName).info(
-          "Executing method {method}",
-          { method: e.methodName },
-        );
-      },
+      method_executing: () => {},
       method_output: (e) => {
-        const logger = getRunLogger(e.modelName, e.methodName);
-        const escaped = escapeLogTemplate(e.line);
-        if (e.stream === "stderr") {
-          logger.warn(escaped);
+        if (!this.pipe) return;
+        const displayName = this.forEachDisplayNames.get(
+          this.stepKey(e.jobId, e.stepId),
+        ) ?? e.jobId;
+        this.resetHeartbeat(e.jobId, e.stepId);
+        if (this.quiet) {
+          this.bufferOutput(e.jobId, e.stepId, e.line);
         } else {
-          logger.info(escaped);
+          writeOutput(this.pipe.line(displayName, e.line));
         }
       },
       method_event: (e) => {
-        const logger = getRunLogger(e.modelName, e.methodName);
+        if (!this.pipe) return;
+        const displayName = this.forEachDisplayNames.get(
+          this.stepKey(e.jobId, e.stepId),
+        ) ?? e.jobId;
         switch (e.event.type) {
           case "vault_secret_stored":
-            logger.info(
-              "Stored sensitive field '{fieldPath}' in vault '{vaultName}'",
-              {
-                fieldPath: e.event.fieldPath,
-                vaultName: e.event.vaultName,
-              },
+            writeOutput(
+              this.pipe.line(
+                displayName,
+                dim(
+                  `stored '${e.event.fieldPath}' in vault '${e.event.vaultName}'`,
+                ),
+              ),
             );
             break;
           case "schema_validation_warning":
-            logger.warn(
-              "Resource '{specName}' (instance '{instanceName}') data does not match schema: {error}",
-              {
-                specName: e.event.specName,
-                instanceName: e.event.instanceName,
-                error: e.event.error,
-              },
+            writeOutput(
+              this.pipe.statusLine(
+                displayName,
+                "warning",
+                STATUS_COLORS.warn,
+                `Resource '${e.event.specName}' data does not match schema: ${e.event.error}`,
+              ),
             );
             break;
           case "vault_single_quote_warning":
-            logger.warn(e.event.message);
+            writeOutput(
+              this.pipe.statusLine(
+                displayName,
+                "warning",
+                STATUS_COLORS.warn,
+                e.event.message,
+              ),
+            );
             break;
         }
       },
       report_started: () => {},
       report_completed: (e) => {
-        const logger = getWorkflowRunLogger(this.workflowName);
-        logger.info('Running report: "{reportName}"', {
-          reportName: e.reportName,
-        });
-        const separator = "\u2500".repeat(60);
+        if (!this.pipe) return;
+        if (e.reportName === "@swamp/method-summary") return;
+        if (e.reportName === "@swamp/workflow-summary") return;
+        writeBlankLine();
         writeOutput(
-          `\u2500\u2500 Report: ${e.reportName} ${separator}\n${
+          this.pipe.statusLine(
+            "system",
+            "Report",
+            STATUS_COLORS.info,
+            e.reportName,
+          ),
+        );
+        const separator = "─".repeat(60);
+        writeOutput(
+          `── Report: ${e.reportName} ${separator}\n${
             renderMarkdownToTerminal(e.markdown)
           }\n${separator}`,
         );
       },
       report_failed: (e) => {
-        getWorkflowRunLogger(this.workflowName).warn(
-          "Report {reportName} failed, fell back to default error report: {error}",
-          { reportName: e.reportName, error: e.error },
+        if (!this.pipe) return;
+        writeOutput(
+          this.pipe.statusLine(
+            "system",
+            "Warning",
+            STATUS_COLORS.warn,
+            `Report ${e.reportName} failed: ${e.error}`,
+          ),
         );
       },
       completed: (e) => {
-        const wfLogger = getWorkflowRunLogger(this.workflowName);
+        this.clearAllHeartbeats();
+        if (!this.pipe) return;
         if (e.run.status === "failed") {
           this._failed = true;
           const stepError = extractFirstStepError(e.run);
-          wfLogger.error("Workflow failed: {error}", { error: stepError });
+          const duration = e.run.duration
+            ? ` ${dim(`in ${formatDuration(e.run.duration)}`)}`
+            : "";
+          writeBlankLine();
+          writeOutput(
+            this.pipe.statusLine(
+              "system",
+              "Failed",
+              STATUS_COLORS.error,
+              `workflow ${this.workflowName}${duration}`,
+              formatTimestamp(),
+            ),
+          );
+          writeBlankLine();
+          writeOutput(this.pipe.line("system", STATUS_COLORS.error(stepError)));
         } else {
-          wfLogger.with({ summary: true }).info("Workflow {status}", {
-            status: e.run.status,
-          });
-          this.renderDataArtifactHints(e.run, wfLogger);
+          const duration = e.run.duration
+            ? ` ${dim(`in ${formatDuration(e.run.duration)}`)}`
+            : "";
+          writeBlankLine();
+          writeOutput(
+            this.pipe.statusLine(
+              "system",
+              "Completed",
+              STATUS_COLORS.success,
+              `workflow ${this.workflowName}${duration}`,
+              formatTimestamp(),
+            ),
+          );
+          this.renderDataArtifacts(e.run);
           if (!this.isAuthenticated) {
-            wfLogger.info("");
-            wfLogger.info(AUTH_NUDGE_MESSAGE);
+            writeBlankLine();
+            writeOutput(dim(AUTH_NUDGE_MESSAGE));
           }
         }
       },
       cancelled: (e) => {
         this._failed = true;
-        const wfLogger = getWorkflowRunLogger(this.workflowName);
-        if (e.reason) {
-          wfLogger.warn("Workflow cancelled: {reason}", {
-            reason: e.reason,
-          });
-        } else {
-          wfLogger.warn("Workflow cancelled");
-        }
+        this.clearAllHeartbeats();
+        if (!this.pipe) return;
+        const reason = e.reason ? `: ${e.reason}` : "";
+        writeBlankLine();
+        writeOutput(
+          this.pipe.statusLine(
+            "system",
+            "Cancelled",
+            STATUS_COLORS.warn,
+            `workflow ${this.workflowName}${reason}`,
+            formatTimestamp(),
+          ),
+        );
       },
-      suspended: (e) => {
-        const wfLogger = getWorkflowRunLogger(this.workflowName);
-        wfLogger.info("Workflow suspended — awaiting approval on step {step}", {
-          step: e.stepId,
-        });
-        wfLogger.info("");
-        wfLogger.info(
-          "  swamp workflow approve {workflowName} {stepName}",
-          { workflowName: this.workflowName, stepName: e.stepId },
+      suspended: () => {
+        this.clearAllHeartbeats();
+        if (!this.pipe) return;
+        writeBlankLine();
+        writeOutput(
+          this.pipe.statusLine(
+            "system",
+            "Suspended",
+            STATUS_COLORS.warn,
+            `workflow ${this.workflowName}`,
+            formatTimestamp(),
+          ),
         );
-        wfLogger.info(
-          "  swamp workflow reject  {workflowName} {stepName}",
-          { workflowName: this.workflowName, stepName: e.stepId },
-        );
-        wfLogger.info("");
-        wfLogger.info(
-          "After approval: swamp workflow resume {workflowName}",
-          { workflowName: this.workflowName },
+        writeBlankLine();
+        writeOutput(
+          this.pipe.line(
+            "system",
+            `${
+              dim("After approval:")
+            }  swamp workflow resume ${this.workflowName}`,
+          ),
         );
       },
       error: (e) => {
+        this.clearAllHeartbeats();
         throw new UserError(e.error.message, e.error.code);
       },
     };
@@ -271,39 +552,37 @@ class LogWorkflowRunRenderer implements WorkflowRunRenderer {
     return this._failed;
   }
 
-  private renderDataArtifactHints(
-    run: WorkflowRunView,
-    logger: ReturnType<typeof getWorkflowRunLogger>,
-  ): void {
-    const artifactNames = new Set<string>();
+  private renderDataArtifacts(run: WorkflowRunView): void {
+    const artifacts: DataArtifact[] = [];
     for (const job of run.jobs) {
       for (const step of job.steps) {
         if (step.dataArtifacts) {
           for (const artifact of step.dataArtifacts) {
-            artifactNames.add(artifact.name);
+            artifacts.push({
+              name: artifact.name,
+              attributes: artifact.attributes,
+              source: job.name,
+            });
           }
         }
       }
     }
     if (run.workflowDataArtifacts) {
       for (const artifact of run.workflowDataArtifacts) {
-        artifactNames.add(artifact.name);
+        artifacts.push({
+          name: artifact.name,
+          attributes: artifact.attributes,
+        });
       }
     }
-
-    if (artifactNames.size > 0) {
-      logger.info("");
-      logger.info("View produced data:");
-      logger.info(
-        "  swamp data list --workflow {workflowName}",
-        { workflowName: run.workflowName },
-      );
-      for (const name of artifactNames) {
-        logger.info(
-          "  swamp data get --workflow {workflowName} {artifactName}",
-          { workflowName: run.workflowName, artifactName: name },
-        );
-      }
+    const opts: DataBoxOptions = {};
+    if (run.inputs && Object.keys(run.inputs).length > 0) {
+      opts.globalArguments = run.inputs as Record<string, unknown>;
+    }
+    if (artifacts.length === 0 && !opts.globalArguments) return;
+    const lines = renderDataBox(artifacts, opts);
+    for (const line of lines) {
+      writeOutput(`  ${line}`);
     }
   }
 }
@@ -383,9 +662,6 @@ export function createWorkflowRunRenderer(
     case "json":
       return new JsonWorkflowRunRenderer();
     case "log":
-      if (!opts.forceLog && isStdoutTty()) {
-        return new InkWorkflowRunRenderer(opts);
-      }
-      return new LogWorkflowRunRenderer(opts);
+      return new ConsoleWorkflowRunRenderer(opts);
   }
 }

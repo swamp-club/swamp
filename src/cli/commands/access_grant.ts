@@ -164,6 +164,7 @@ const accessGrantCreateCommand = new Command()
         modelName: instanceName,
         methodName: "create",
         isAuthenticated: isAuthenticated(),
+        quiet: ctx.verbosity === "quiet",
       });
       await consumeStream(
         runModelMethodOverServer({
@@ -240,6 +241,7 @@ const accessGrantCreateCommand = new Command()
         modelName: instanceName,
         methodName: "create",
         isAuthenticated: isAuthenticated(),
+        quiet: ctx.verbosity === "quiet",
       });
 
       await consumeStream(
@@ -461,6 +463,7 @@ const accessGrantRevokeCommand = new Command()
         modelName: match.instanceName,
         methodName: "revoke",
         isAuthenticated: isAuthenticated(),
+        quiet: ctx.verbosity === "quiet",
       });
       await consumeStream(
         runModelMethodOverServer({
@@ -542,6 +545,7 @@ const accessGrantRevokeCommand = new Command()
         modelName: match.instanceName,
         methodName: "revoke",
         isAuthenticated: isAuthenticated(),
+        quiet: ctx.verbosity === "quiet",
       });
 
       await consumeStream(

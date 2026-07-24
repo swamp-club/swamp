@@ -2399,12 +2399,21 @@ export class WorkflowExecutionService {
           let forEachVar: { name: string; value: unknown } | undefined;
           let originalStep: Step | undefined;
 
+          let forEachIndex: number | undefined;
+          let forEachTemplate: string | undefined;
+
           if (expandedStepsMap) {
-            for (const [, expanded] of expandedStepsMap) {
-              const found = expanded.find((e) => e.expandedName === stepName);
-              if (found) {
-                forEachVar = found.forEachVar;
-                originalStep = found.step;
+            for (const [templateName, expanded] of expandedStepsMap) {
+              const idx = expanded.findIndex((e) =>
+                e.expandedName === stepName
+              );
+              if (idx >= 0) {
+                forEachVar = expanded[idx].forEachVar;
+                originalStep = expanded[idx].step;
+                if (expanded[idx].forEachVar.name !== "") {
+                  forEachIndex = idx;
+                  forEachTemplate = templateName;
+                }
                 break;
               }
             }
@@ -2427,6 +2436,8 @@ export class WorkflowExecutionService {
             forEachVar,
             expressionContext,
             options,
+            forEachIndex,
+            forEachTemplate,
           );
         });
 
@@ -2513,6 +2524,8 @@ export class WorkflowExecutionService {
     forEachVar: { name: string; value: unknown } | undefined,
     expressionContext: ExpressionContext | undefined,
     options: StepOptions,
+    forEachIndex?: number,
+    forEachTemplate?: string,
   ): AsyncGenerator<WorkflowExecutionEvent> {
     const stepSpan = getTracer().startSpan("swamp.workflow.step", {
       attributes: {
@@ -2559,14 +2572,26 @@ export class WorkflowExecutionService {
         stepRun.skip();
         stepSpan.setAttribute("step.status", "skipped");
         stepSpan.end();
-        yield { kind: "step_skipped", jobId: job.name, stepId: stepName };
+        yield {
+          kind: "step_skipped",
+          jobId: job.name,
+          stepId: stepName,
+          forEachTemplate,
+          forEachIndex,
+        };
         return;
       }
     }
 
     // Start step
     stepRun.start();
-    yield { kind: "step_started", jobId: job.name, stepId: stepName };
+    yield {
+      kind: "step_started",
+      jobId: job.name,
+      stepId: stepName,
+      forEachTemplate,
+      forEachIndex,
+    };
 
     try {
       // Shallow-copy the expression context so parallel steps don't race on
@@ -2758,6 +2783,8 @@ export class WorkflowExecutionService {
         stepId: stepName,
         dataHandles: stepDataHandles,
         executor,
+        forEachTemplate,
+        forEachIndex,
       };
     } catch (error) {
       if (error instanceof WorkflowSuspendedError) {
@@ -2811,6 +2838,8 @@ export class WorkflowExecutionService {
         methodName: taskData.type === "model_method"
           ? taskData.methodName
           : undefined,
+        forEachTemplate,
+        forEachIndex,
       };
       // Do not re-throw: merge() continues draining all step generators
       // (allSettled semantics). The job generator tracks failure via step_failed events.

@@ -85,7 +85,16 @@ import type {
   SyncContext,
 } from "../domain/datastore/datastore_sync_service.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
-import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import {
+  getSwampLogger,
+  getSystemPipeWidth,
+} from "../infrastructure/logging/logger.ts";
+import { dim, yellow } from "@std/fmt/colors";
+
+function systemPrefix(): string {
+  const padded = "system".padStart(getSystemPipeWidth() + 1);
+  return dim(`${padded} │`);
+}
 import { withSpan } from "../infrastructure/tracing/mod.ts";
 import {
   collectDirsForKind,
@@ -869,8 +878,6 @@ export async function waitForPerModelLocks(
   namespace?: string,
   findModelLocksOverride?: () => Promise<number>,
 ): Promise<void> {
-  const logger = getSwampLogger(["datastore", "lock"]);
-
   const parentPid = Deno.env.get(SWAMP_LOCK_HOLDER_PID);
 
   const findModelLocks = findModelLocksOverride ??
@@ -915,9 +922,10 @@ export async function waitForPerModelLocks(
   const maxWaitMs = resolveLockTimeoutMs();
   const held = await findModelLocks();
   if (held > 0) {
-    logger.info(
-      "Waiting for {count} per-model lock(s) to be released",
-      { count: held },
+    console.error(
+      `${systemPrefix()} ${
+        yellow(`Waiting for ${held} per-model lock(s) to be released...`)
+      }`,
     );
     const waitStart = Date.now();
     while (true) {
@@ -933,7 +941,7 @@ export async function waitForPerModelLocks(
         );
       }
     }
-    logger.info`Per-model locks released`;
+    console.error(`${systemPrefix()} ${dim("Per-model locks released")}`);
   }
 }
 
@@ -1047,9 +1055,12 @@ export async function acquireModelLocks(
     : await createDatastoreLock(config);
   const globalInfo = await globalLock.inspect();
   if (globalInfo) {
-    logger.info(
-      "Global lock held by {holder} — waiting for structural command to finish",
-      { holder: globalInfo.holder },
+    console.error(
+      `${systemPrefix()} ${
+        yellow(
+          `Global lock held by ${globalInfo.holder} — waiting for structural command to finish...`,
+        )
+      }`,
     );
     // Poll until the global lock is released or expires (stale lock).
     // Timeout after 2x TTL to prevent indefinite hangs if staleness
@@ -1063,9 +1074,12 @@ export async function acquireModelLocks(
       // Check if the lock has exceeded its TTL (stale/crashed process)
       const acquiredAt = new Date(info.acquiredAt).getTime();
       if (Date.now() - acquiredAt > info.ttlMs) {
-        logger.warn(
-          "Global lock held by {holder} appears stale (exceeded TTL of {ttl}ms) — proceeding",
-          { holder: info.holder, ttl: info.ttlMs },
+        console.error(
+          `${systemPrefix()} ${
+            dim(
+              `Global lock held by ${info.holder} appears stale (exceeded TTL of ${info.ttlMs}ms) — proceeding`,
+            )
+          }`,
         );
         await tryForceReleaseStaleLock(globalLock, info);
         break;
@@ -1080,7 +1094,11 @@ export async function acquireModelLocks(
         );
       }
     }
-    logger.info`Global lock released, proceeding with per-model locks`;
+    console.error(
+      `${systemPrefix()} ${
+        dim("Global lock released, proceeding with per-model locks")
+      }`,
+    );
   }
 
   // Sort models for deterministic lock ordering (deadlock prevention)
@@ -1131,9 +1149,12 @@ export async function acquireModelLocks(
     // and this per-model acquisition, release everything and wait.
     const postAcquireGlobalInfo = await globalLock.inspect();
     if (postAcquireGlobalInfo) {
-      logger.info(
-        "Global lock acquired by {holder} during per-model lock acquisition — releasing and retrying",
-        { holder: postAcquireGlobalInfo.holder },
+      console.error(
+        `${systemPrefix()} ${
+          dim(
+            `Global lock acquired by ${postAcquireGlobalInfo.holder} during per-model lock acquisition — releasing and retrying`,
+          )
+        }`,
       );
       // Release all per-model locks acquired so far
       for (const acquiredKey of lockKeys) {
@@ -1150,9 +1171,12 @@ export async function acquireModelLocks(
         if (!info) break;
         const acquiredAt = new Date(info.acquiredAt).getTime();
         if (Date.now() - acquiredAt > info.ttlMs) {
-          logger.warn(
-            "Global lock held by {holder} appears stale (exceeded TTL of {ttl}ms) — proceeding",
-            { holder: info.holder, ttl: info.ttlMs },
+          console.error(
+            `${systemPrefix()} ${
+              dim(
+                `Global lock held by ${info.holder} appears stale (exceeded TTL of ${info.ttlMs}ms) — proceeding`,
+              )
+            }`,
           );
           await tryForceReleaseStaleLock(globalLock, info);
           break;
@@ -1182,10 +1206,11 @@ export async function acquireModelLocks(
     // For custom sync-capable datastores: pull after acquiring per-model lock
     if (customSyncService) {
       try {
-        logger.info("Syncing model {type}/{id} from datastore...", {
-          type: modelType,
-          id: modelId,
-        });
+        console.error(
+          `${systemPrefix()} ${
+            dim(`Syncing model ${modelType}/${modelId} from datastore...`)
+          }`,
+        );
 
         const ns = isCustomDatastoreConfig(config)
           ? config.namespace
@@ -1206,9 +1231,11 @@ export async function acquireModelLocks(
         synced = true;
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
-        logger.error("Failed to pull model data from datastore: {error}", {
-          error: msg,
-        });
+        console.error(
+          `${systemPrefix()} ${
+            dim(`Failed to pull model data from datastore: ${msg}`)
+          }`,
+        );
         throw new Error(
           `Datastore sync failed: could not pull data for ${modelType}/${modelId}: ${msg}`,
         );

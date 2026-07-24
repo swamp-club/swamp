@@ -416,6 +416,7 @@ export const workflowRunCommand = new Command()
           workflowName: workflowIdOrName,
           forceLog: ctx.forceLog,
           isAuthenticated: isAuthenticated(),
+          quiet: ctx.verbosity === "quiet",
         });
         const eventStream = workflowRun(libCtx, deps, {
           workflowIdOrName,
@@ -570,6 +571,7 @@ async function runWorkflowViaServer(
         workflowName: workflowIdOrName,
         forceLog: ctx.forceLog,
         isAuthenticated: isAuthenticated(),
+        quiet: ctx.verbosity === "quiet",
       });
       await consumeStream(
         runWorkflowOverServer({

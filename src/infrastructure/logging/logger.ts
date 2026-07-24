@@ -57,6 +57,15 @@ function createStderrSink(): Sink {
 }
 
 let isInitialized = false;
+let systemPipeWidth = 6;
+
+export function setSystemPipeWidth(width: number): void {
+  systemPipeWidth = Math.max(width, 6);
+}
+
+export function getSystemPipeWidth(): number {
+  return systemPipeWidth;
+}
 
 export async function initializeLogging(
   options: LoggingOptions,
