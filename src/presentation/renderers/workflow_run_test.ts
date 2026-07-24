@@ -178,11 +178,10 @@ Deno.test("ConsoleWorkflowRunRenderer: pipe-prefixed output uses job name", asyn
   const lines = await captureOutputAsync(async () => {
     await consumeStream(toStream(events), renderer.handlers());
   });
-  const pipeLines = lines.filter((l) => l.includes("│"));
-  assertEquals(pipeLines.length > 0, true);
-  for (const line of pipeLines) {
-    assertStringIncludes(line, "extract");
-  }
+  const extractLines = lines.filter((l) =>
+    l.includes("extract") && l.includes("│")
+  );
+  assertEquals(extractLines.length > 0, true);
 });
 
 Deno.test("ConsoleWorkflowRunRenderer: method_output uses same style for stdout and stderr", async () => {

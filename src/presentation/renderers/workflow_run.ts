@@ -491,7 +491,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
               "system",
               "Completed",
               STATUS_COLORS.success,
-              `workflow ${this.workflowName}${duration}`,
+              `workflow ${this.workflowName} succeeded${duration}`,
               formatTimestamp(),
             ),
           );
