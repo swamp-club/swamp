@@ -33,6 +33,8 @@ import {
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { requireAuthenticated, requireScope } from "../auth_context.ts";
+import { RENAMED_VAULT_TYPES } from "../../domain/vaults/vault_types.ts";
+import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -120,7 +122,20 @@ export const vaultCreateCommand = new Command()
         }
       }
 
+      // Validate type before the auth gate so typos produce "unknown type"
+      // instead of a paywall. Renamed types get a helpful redirect message.
       if (vaultType.toLowerCase() !== "local_encryption") {
+        const renamed = RENAMED_VAULT_TYPES[vaultType.toLowerCase()];
+        if (
+          !renamed && !vaultType.startsWith("@") &&
+          !vaultTypeRegistry.has(vaultType)
+        ) {
+          const availableTypes = vaultTypeRegistry.getAll()
+            .map((t) => t.type).join(", ");
+          throw new UserError(
+            `Unknown vault type: ${vaultType}. Available types: ${availableTypes}. Use 'swamp vault type search' to see available types.`,
+          );
+        }
         requireAuthenticated("Non-local vaults are a team feature", "vault:*");
         requireScope("vault:*");
       }
