@@ -24,6 +24,7 @@ import type { ModelDefinition } from "../../domain/models/model.ts";
 import {
   coerceMethodArgs,
   getObjectShape,
+  isRecordSchema,
 } from "../../domain/models/zod_type_coercion.ts";
 import { stripExpressionFields } from "../../domain/expressions/expression_parser.ts";
 import {
@@ -84,6 +85,7 @@ export function routeInputsBySchema(
   }
 
   const methodShape = getObjectShape(method.arguments);
+  const methodIsRecord = isRecordSchema(method.arguments);
   const globalShape = modelDef.globalArguments
     ? getObjectShape(modelDef.globalArguments)
     : null;
@@ -104,6 +106,8 @@ export function routeInputsBySchema(
       methodArguments[key] = value;
     } else if (globalKeys.has(key)) {
       globalArguments[key] = value;
+    } else if (methodIsRecord) {
+      methodArguments[key] = value;
     } else {
       unknownKeys.push(key);
     }

@@ -35,7 +35,11 @@ import { ModelOutput } from "./model_output.ts";
 import { DataOutputValidationService } from "./data_output_validation_service.ts";
 import { DefinitionUpgradeService } from "./definition_upgrade_service.ts";
 import { modelRequiresVault } from "./data_writer.ts";
-import { coerceMethodArgs, getObjectShape } from "./zod_type_coercion.ts";
+import {
+  coerceMethodArgs,
+  getObjectShape,
+  isRecordSchema,
+} from "./zod_type_coercion.ts";
 import {
   extractExpressions,
   valueContainsExpression,
@@ -211,7 +215,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       filteredRawGlobalArgs[key] = value;
     }
 
-    const mergedArgs = { ...filteredGlobalArgs, ...resolvedMethodArgs };
+    const mergedArgs = isRecordSchema(method.arguments)
+      ? resolvedMethodArgs
+      : { ...filteredGlobalArgs, ...resolvedMethodArgs };
     const methodArgs = coerceMethodArgs(mergedArgs, method.arguments);
     const argsResult = method.arguments.safeParse(methodArgs);
 

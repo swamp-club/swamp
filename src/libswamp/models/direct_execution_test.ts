@@ -158,6 +158,47 @@ Deno.test("routeInputsBySchema: handles empty inputs", () => {
   }
 });
 
+Deno.test("routeInputsBySchema: z.record() method routes non-global keys to method args", () => {
+  const modelDef = createTestModelDef(
+    z.object({ baseUrl: z.string(), apiKey: z.string() }),
+    { send: z.record(z.string(), z.string()) },
+  );
+
+  const result = routeInputsBySchema(
+    { baseUrl: "https://example.com", someKey: "someValue", other: "data" },
+    "send",
+    modelDef,
+  );
+
+  assertEquals("error" in result, false);
+  if (!("error" in result)) {
+    assertEquals(result.globalArguments, { baseUrl: "https://example.com" });
+    assertEquals(result.methodArguments, {
+      someKey: "someValue",
+      other: "data",
+    });
+  }
+});
+
+Deno.test("routeInputsBySchema: z.record() method with no global args routes all to method", () => {
+  const modelDef = createTestModelDef(
+    undefined,
+    { send: z.record(z.string(), z.string()) },
+  );
+
+  const result = routeInputsBySchema(
+    { foo: "bar", baz: "qux" },
+    "send",
+    modelDef,
+  );
+
+  assertEquals("error" in result, false);
+  if (!("error" in result)) {
+    assertEquals(result.methodArguments, { foo: "bar", baz: "qux" });
+    assertEquals(result.globalArguments, {});
+  }
+});
+
 Deno.test("resolveOrCreateDefinition: auto-creates definition with routed globalArgs", async () => {
   const modelDef = createTestModelDef(
     z.object({ region: z.string(), account: z.string() }),

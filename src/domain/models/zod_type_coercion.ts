@@ -181,3 +181,13 @@ export function getObjectShape(
   }
   return readShape(getSchemaDef(unwrapped));
 }
+
+/**
+ * Returns true when the schema (after unwrapping optional/nullable/default/
+ * effects wrappers) resolves to a ZodRecord. Record schemas accept arbitrary
+ * string keys, so key-based routing and unknown-key checks don't apply.
+ */
+export function isRecordSchema(schema: z.ZodTypeAny): boolean {
+  const unwrapped = unwrapSchema(schema);
+  return getSchemaType(unwrapped) === "record";
+}

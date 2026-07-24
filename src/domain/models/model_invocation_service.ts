@@ -38,7 +38,7 @@ import { resolveModelType } from "../extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../extensions/auto_resolver_context.ts";
 import { buildMethodContext } from "./method_context.ts";
 import type { CommonMethodContextDeps } from "./method_context.ts";
-import { getObjectShape } from "./zod_type_coercion.ts";
+import { getObjectShape, isRecordSchema } from "./zod_type_coercion.ts";
 
 const MAX_INVOCATION_DEPTH = 10;
 const MAX_INVOCATION_BREADTH = 100;
@@ -95,6 +95,7 @@ function routeArguments(
   }
 
   const methodShape = getObjectShape(method.arguments);
+  const methodIsRecord = isRecordSchema(method.arguments);
   const globalShape = modelDef.globalArguments
     ? getObjectShape(modelDef.globalArguments)
     : null;
@@ -115,6 +116,8 @@ function routeArguments(
       methodArgs[key] = value;
     } else if (globalKeys.has(key)) {
       globalArgs[key] = value;
+    } else if (methodIsRecord) {
+      methodArgs[key] = value;
     } else {
       unknownKeys.push(key);
     }
