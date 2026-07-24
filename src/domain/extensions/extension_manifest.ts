@@ -25,6 +25,8 @@ import { UserError } from "../errors.ts";
 /** Scoped name pattern: @collective/name or @collective/name/subname/... */
 const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 
+export const MAX_LABELS = 20;
+
 /**
  * Checks whether a relative path is safe for use in an extension manifest.
  * Rejects absolute paths and paths containing '..' components, which would
@@ -100,7 +102,9 @@ const ExtensionManifestSchemaV1 = z.object({
   additionalFiles: z.array(safePathString).optional(),
   binaries: z.array(safePathString).optional(),
   platforms: z.array(z.string().min(1)).optional(),
-  labels: z.array(z.string().min(1)).optional(),
+  labels: z.array(z.string().min(1)).max(MAX_LABELS, {
+    message: `Too many labels (max ${MAX_LABELS})`,
+  }).optional(),
   releaseNotes: z.string().max(5000).optional(),
   dependencies: z.array(
     z.string().refine((dep) => dep.includes("/"), {
