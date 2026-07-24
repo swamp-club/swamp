@@ -627,3 +627,104 @@ Deno.test("ModelInvocationService: routes method args for by-type auto-creation"
   assertEquals(capturedDef!.getMethodArguments("greet"), { name: "World" });
   assertEquals(capturedCtx!.globalArgs, { region: "us-west-2" });
 });
+
+// ── z.record() argument routing tests ──
+
+const RECORD_ROUTING_TYPE = ModelType.create("test/record-routing-target");
+if (!modelRegistry.get(RECORD_ROUTING_TYPE)) {
+  const recordModel: ModelDefinition = {
+    type: RECORD_ROUTING_TYPE,
+    version: "2026.07.24.1",
+    globalArguments: z.object({
+      baseUrl: z.string(),
+      apiKey: z.string(),
+    }),
+    methods: {
+      send: {
+        description: "test method with z.record() args",
+        arguments: z.record(z.string(), z.string()),
+        execute: () => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  };
+  defineModel(recordModel);
+}
+
+function makeRecordArgRoutingSvc(options: {
+  captureDefinition: (def: Definition) => void;
+  captureContext: (ctx: MethodContext) => void;
+  targetDefName: string;
+  targetDef: Definition;
+}) {
+  const mockExecutionService: MethodExecutionService = {
+    execute: () => Promise.resolve({ dataHandles: [] }),
+    executeWorkflow: (def, _modelDef, _method, ctx) => {
+      options.captureDefinition(def);
+      options.captureContext(ctx);
+      return Promise.resolve({ dataHandles: [] });
+    },
+  };
+
+  const stubDataRepo = {
+    findAllForModel: () => Promise.resolve([]),
+    getContent: () => Promise.resolve(null),
+  };
+
+  return new ModelInvocationService({
+    executionService: mockExecutionService,
+    commonDeps: {
+      dataRepository: stubDataRepo,
+      definitionRepository: {
+        findByNameGlobal: (name: string) => {
+          if (name === options.targetDefName) {
+            return Promise.resolve({
+              definition: options.targetDef,
+              type: RECORD_ROUTING_TYPE,
+            });
+          }
+          return Promise.resolve(null);
+        },
+        findById: () => Promise.resolve(null),
+        save: () => Promise.resolve(),
+      },
+      createCelEnvironment: () =>
+        ({}) as ReturnType<MethodContext["createCelEnvironment"]>,
+    } as unknown as CommonMethodContextDeps,
+    repoDir: "/tmp/test-repo",
+  });
+}
+
+Deno.test("ModelInvocationService: z.record() method routes non-global keys to method args", async () => {
+  let capturedDef: Definition | undefined;
+
+  const targetDef = Definition.create({
+    name: "record-def",
+    type: "test/record-routing-target",
+    globalArguments: { baseUrl: "https://example.com", apiKey: "key123" },
+  });
+
+  const svc = makeRecordArgRoutingSvc({
+    captureDefinition: (def) => {
+      capturedDef = def;
+    },
+    captureContext: () => {},
+    targetDefName: "record-def",
+    targetDef,
+  });
+
+  const callerCtx = makeStubContext();
+  const result = await svc.invoke(
+    {
+      definition: "record-def",
+      method: "send",
+      arguments: { someKey: "someValue", other: "data" },
+    },
+    callerCtx,
+  );
+
+  assertEquals(result.ok, true);
+  assertEquals(capturedDef!.getMethodArguments("send"), {
+    someKey: "someValue",
+    other: "data",
+  });
+});
