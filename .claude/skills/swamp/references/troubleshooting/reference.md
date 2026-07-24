@@ -1,5 +1,13 @@
 ## The diagnostic loop
 
+### Before you start — Version-drift check
+
+Before entering the tiers, check whether the swamp binary or any installed
+extensions are out of date. A stale version is the most common "invisible" root
+cause — the fix may already ship in a newer release.
+
+→ See [references/version-check.md](references/version-check.md).
+
 ### Tier 1 — Health checks
 
 For symptoms tied to a known integration (audit pipeline, extension loading).
@@ -37,6 +45,8 @@ reach for it last.
 
 | Symptom                                                  | Start at                                                  |
 | -------------------------------------------------------- | --------------------------------------------------------- |
+| Extension or binary misbehaves unexpectedly              | Before you start → version-drift check                    |
+| "This used to work" / suspected regression               | Before you start → version-drift check                    |
 | Audit log empty / hooks not firing                       | Tier 1 → `swamp doctor audit`                             |
 | Extension model/vault/driver/datastore/report not loaded | Tier 1 → `swamp doctor extensions`                        |
 | `swamp-warning:` line on stderr                          | Tier 1 → `swamp doctor extensions`                        |
@@ -78,6 +88,9 @@ For a typical investigation:
 
 ## References
 
+- [references/version-check.md](references/version-check.md) — Before you start:
+  `swamp update --check`, `swamp extension outdated`, deciding whether to update
+  before diagnosing.
 - [references/health-checks.md](references/health-checks.md) — Tier 1: doctor
   commands (`swamp doctor audit`, `swamp doctor extensions`), exit codes, CI
   usage.
