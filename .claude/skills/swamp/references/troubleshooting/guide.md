@@ -9,6 +9,26 @@ current tier doesn't resolve the issue.
 both `log` (default, human-readable) and `--json` (structured) output, and
 returns non-zero on user-facing failure.
 
+## Before you start: version-drift check
+
+Before entering the diagnostic tiers, check whether the swamp binary or any
+installed extensions are out of date. A stale version is a common root cause —
+the fix may already exist in a newer release, and the check takes seconds.
+
+```bash
+swamp update --check          # is the swamp binary up to date?
+swamp extension outdated      # are any extensions behind their latest version?
+```
+
+- If either reports an update is available, run `swamp update` and/or
+  `swamp extension pull <name>` to get the latest, then retry the failing
+  operation before continuing.
+- If both report up to date (or the commands fail), proceed to the diagnostic
+  tiers below.
+
+For the full procedure (JSON output interpretation, what to do when updates are
+found), see [references/version-check.md](references/version-check.md).
+
 ## Diagnostic mindset
 
 - **Start cheap, escalate.** Don't fetch source when a doctor command would name
@@ -31,15 +51,17 @@ returns non-zero on user-facing failure.
 
 ## Symptom → tier index
 
-| Symptom                                           | Start at                              |
-| ------------------------------------------------- | ------------------------------------- |
-| Extension not loaded / `swamp-warning:` on stderr | Tier 1 → `swamp doctor extensions`    |
-| Run stuck in "running" / orphaned after crash     | Tier 1 → `swamp run doctor --fix`     |
-| "Is anything running right now?"                  | Tier 1 → `swamp run history --active` |
-| Command errored — message is clear                | Tier 2 → read it, fix the named issue |
-| Command errored — message is vague                | Tier 2 → re-run with `--json`         |
-| Model method or workflow run failed               | Tier 2 → inspect generated reports    |
-| Workflow / method / sync is slow                  | Tier 3 → enable tracing               |
-| Need to understand internal behavior              | Tier 4 → fetch source                 |
+| Symptom                                           | Start at                               |
+| ------------------------------------------------- | -------------------------------------- |
+| Extension or binary misbehaves unexpectedly       | Before you start → version-drift check |
+| "This used to work" / suspected regression        | Before you start → version-drift check |
+| Extension not loaded / `swamp-warning:` on stderr | Tier 1 → `swamp doctor extensions`     |
+| Run stuck in "running" / orphaned after crash     | Tier 1 → `swamp run doctor --fix`      |
+| "Is anything running right now?"                  | Tier 1 → `swamp run history --active`  |
+| Command errored — message is clear                | Tier 2 → read it, fix the named issue  |
+| Command errored — message is vague                | Tier 2 → re-run with `--json`          |
+| Model method or workflow run failed               | Tier 2 → inspect generated reports     |
+| Workflow / method / sync is slow                  | Tier 3 → enable tracing                |
+| Need to understand internal behavior              | Tier 4 → fetch source                  |
 
 For detailed walkthroughs of each tier, see [reference.md](reference.md).
