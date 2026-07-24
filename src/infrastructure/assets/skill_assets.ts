@@ -370,6 +370,11 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     relativePath: "swamp/references/troubleshooting/references/tracing.md",
     name: "swamp",
   },
+  {
+    relativePath:
+      "swamp/references/troubleshooting/references/version-check.md",
+    name: "swamp",
+  },
   // serve
   { relativePath: "swamp/references/serve/guide.md", name: "swamp" },
   // swamp share guide area
