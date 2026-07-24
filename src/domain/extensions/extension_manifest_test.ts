@@ -21,6 +21,7 @@ import { assertEquals, assertThrows } from "@std/assert";
 import { assertStringIncludes } from "@std/assert/string-includes";
 import {
   isSafeRelativePath,
+  MAX_LABELS,
   parseExtensionManifest,
 } from "./extension_manifest.ts";
 
@@ -289,6 +290,36 @@ labels:
 `;
   const manifest = parseExtensionManifest(yaml);
   assertEquals(manifest.labels, ["aws", "kubernetes", "security"]);
+});
+
+Deno.test("parseExtensionManifest accepts manifest with exactly MAX_LABELS labels", () => {
+  const labels = Array.from({ length: MAX_LABELS }, (_, i) => `label-${i}`);
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+models:
+  - foo.ts
+labels:
+${labels.map((l) => `  - ${l}`).join("\n")}
+`;
+  const manifest = parseExtensionManifest(yaml);
+  assertEquals(manifest.labels.length, MAX_LABELS);
+});
+
+Deno.test("parseExtensionManifest rejects manifest with more than MAX_LABELS labels", () => {
+  const labels = Array.from({ length: MAX_LABELS + 1 }, (_, i) => `label-${i}`);
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+models:
+  - foo.ts
+labels:
+${labels.map((l) => `  - ${l}`).join("\n")}
+`;
+  const error = assertThrows(() => parseExtensionManifest(yaml));
+  assertStringIncludes(String(error), "Too many labels");
 });
 
 Deno.test("parseExtensionManifest parses valid manifest with repository", () => {
