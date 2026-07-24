@@ -274,7 +274,7 @@ const datastoreSetupExtensionCommand = new Command()
       );
     }
 
-    const { namespace: configNamespace, ...providerConfig } = config;
+    const configNamespace = config.namespace;
 
     const { repoDir, marker } = await resolveDatastoreForRepo(
       resolveRepoDir(options.repoDir),
@@ -313,7 +313,7 @@ const datastoreSetupExtensionCommand = new Command()
     await consumeStream(
       datastoreSetupExtension(ctx, deps, {
         type: resolvedType,
-        config: providerConfig,
+        config,
         repoDir,
         repoId: marker?.repoId,
         skipMigration: !!options.skipMigration,

@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import { join } from "@std/path";
 import { z } from "zod";
 import { collect } from "../testing.ts";
@@ -442,6 +446,31 @@ Deno.test("datastoreSetupExtension: errors on invalid config schema", async () =
   assertEquals(error.kind, "error");
   assertEquals(error.error.code, "validation_failed");
   assertStringIncludes(error.error.message, "Invalid config");
+});
+
+Deno.test("datastoreSetupExtension: passes config with namespace to extension schema that requires it", async () => {
+  const schema = z.object({
+    uri: z.string(),
+    namespace: z.string(),
+  });
+  ensureTestExtensionType("test-ext-ns-required", { configSchema: schema });
+  const deps = makeDeps();
+  const input = makeExtensionInput({
+    type: "test-ext-ns-required",
+    config: { uri: "mongodb://localhost:27017", namespace: "my-ns" },
+    namespace: "my-ns",
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  const error = events.find((e) => e.kind === "error") as
+    | Extract<DatastoreSetupEvent, { kind: "error" }>
+    | undefined;
+  assertEquals(error, undefined, "expected no validation error");
+  const completed = events.find((e) => e.kind === "completed");
+  assertNotEquals(completed, undefined, "expected setup to complete");
 });
 
 Deno.test("datastoreSetupExtension: errors on unhealthy backend", async () => {
