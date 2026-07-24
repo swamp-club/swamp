@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
+import {
+  apiKeyFingerprint,
+  type AuthCredentials,
+} from "../../domain/auth/auth_credentials.ts";
 import type { WhoamiResponse } from "../../infrastructure/http/swamp_club_client.ts";
 import { createLibSwampContext } from "../context.ts";
 import { collect } from "../testing.ts";
@@ -252,7 +255,10 @@ Deno.test("createAuthDeps: saveCredentials caches identity when SWAMP_API_KEY is
     const saved = JSON.parse(raw) as AuthCredentials;
     assertEquals(saved.username, "adam");
     assertEquals(saved.collectives, ["myorg"]);
-    assertEquals(saved.apiKeyFingerprint, "swamp_test_e");
+    assertEquals(
+      saved.apiKeyFingerprint,
+      await apiKeyFingerprint("swamp_test_env_key"),
+    );
     // apiKey/apiKeyId should be empty — not the env var key
     assertEquals(saved.apiKey, "");
     assertEquals(saved.apiKeyId, "");

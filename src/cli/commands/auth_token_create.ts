@@ -19,7 +19,7 @@
 
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { isCollectiveToken, requireAuthenticated } from "../auth_context.ts";
+import { isAuthenticated, isCollectiveToken } from "../auth_context.ts";
 import { loadIdentity } from "../load_identity.ts";
 import {
   authTokenCreate,
@@ -69,10 +69,14 @@ export const authTokenCreateCommand = new Command()
       "create",
     ]);
 
-    requireAuthenticated(
-      "Collective tokens are a team feature",
-      "collective:write",
-    );
+    if (!isAuthenticated()) {
+      throw new UserError(
+        "Creating collective tokens requires a personal swamp-club.com account.\n\n" +
+          "Sign in with:\n\n" +
+          "  swamp auth login\n",
+        "auth_required",
+      );
+    }
 
     const scopes = (options.scopes as string)
       .split(",")

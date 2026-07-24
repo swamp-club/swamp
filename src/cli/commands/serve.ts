@@ -484,6 +484,12 @@ const daemonEnableCommand = new Command()
     "swamp serve daemon enable --cert-file cert.pem --key-file key.pem --auth-mode token",
   )
   .action(async function (options: AnyOptions) {
+    const authMode = (options.authMode as string | undefined) ?? "none";
+    if (authMode === "oauth" || authMode === "token") {
+      requireAuthenticated("swamp serve is a team feature", "serve:*");
+      requireScope("serve:*");
+    }
+
     const ctx = createContext(options as GlobalOptions, [
       "serve",
       "daemon",

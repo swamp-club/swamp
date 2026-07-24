@@ -1340,7 +1340,7 @@ export async function runCli(args: string[]): Promise<void> {
       const creds = await authRepo.load();
       if (creds) {
         if (creds.apiKey) setCollectiveToken(creds.apiKey);
-        const fingerprint = apiKeyFingerprint(creds.apiKey);
+        const fingerprint = await apiKeyFingerprint(creds.apiKey);
         if (isCollectiveToken()) {
           const cachedScopes = await authRepo.loadScopeCache(fingerprint);
           if (cachedScopes) {
@@ -1398,7 +1398,7 @@ export async function runCli(args: string[]): Promise<void> {
   // Create auto-resolver for trusted collectives (merging membership collectives)
   if (!hookMode) {
     const autoResolverIdentity = await loadIdentity();
-    setAuthenticated(autoResolverIdentity.bearerToken !== undefined);
+    setAuthenticated(Boolean(autoResolverIdentity.bearerToken));
     configureExtensionAutoResolver(
       repoDir,
       marker,

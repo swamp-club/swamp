@@ -58,7 +58,10 @@ async function promptVaultName(): Promise<string> {
 export const vaultCreateCommand = new Command()
   .name("create")
   .description("Create a new vault configuration")
-  .example("Create a vault", "swamp vault create env my-vault")
+  .example(
+    "Create a local vault",
+    "swamp vault create local_encryption my-vault",
+  )
   .example(
     "With provider config",
     `swamp vault create aws-secrets-manager my-vault --config '{"region":"us-east-1"}'`,
@@ -82,11 +85,6 @@ export const vaultCreateCommand = new Command()
       vaultType: string,
       vaultNameArg?: string,
     ) {
-      if (vaultType !== "local_encryption") {
-        requireAuthenticated("Non-local vaults are a team feature", "vault:*");
-        requireScope("vault:*");
-      }
-
       const cliCtx = createContext(options as GlobalOptions, [
         "vault",
         "create",
@@ -120,6 +118,11 @@ export const vaultCreateCommand = new Command()
             `Invalid JSON in --config: ${options.config}`,
           );
         }
+      }
+
+      if (vaultType.toLowerCase() !== "local_encryption") {
+        requireAuthenticated("Non-local vaults are a team feature", "vault:*");
+        requireScope("vault:*");
       }
 
       const ctx = createLibSwampContext({ logger: cliCtx.logger });

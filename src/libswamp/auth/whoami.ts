@@ -88,14 +88,14 @@ export function createAuthDeps(options: CreateAuthDepsOptions = {}): AuthDeps {
     (() => Deno.env.get("SWAMP_API_KEY"));
   return {
     loadCredentials: () => repo.load(),
-    saveCredentials: (credentials) => {
+    saveCredentials: async (credentials) => {
       const envKey = getApiKey();
       if (envKey) {
         return repo.saveIdentityCache(
           credentials.serverUrl,
           credentials.username,
           credentials.collectives ?? [],
-          apiKeyFingerprint(envKey),
+          await apiKeyFingerprint(envKey),
         );
       }
       return repo.save(credentials);

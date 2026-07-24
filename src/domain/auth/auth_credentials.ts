@@ -24,9 +24,14 @@ export const DEFAULT_SWAMP_CLUB_URL = "https://swamp-club.com";
  * old domain can be transparently migrated on load. */
 export const LEGACY_SWAMP_CLUB_URL = "https://swamp.club";
 
-/** First 12 characters of an API key, used for stale-cache detection. */
-export function apiKeyFingerprint(apiKey: string): string {
-  return apiKey.slice(0, 12);
+/** SHA-256-based fingerprint of an API key, used for stale-cache detection.
+ *  Returns the first 16 hex characters of the hash. */
+export async function apiKeyFingerprint(apiKey: string): Promise<string> {
+  const data = new TextEncoder().encode(apiKey);
+  const hash = await crypto.subtle.digest("SHA-256", data);
+  const bytes = new Uint8Array(hash);
+  return Array.from(bytes.slice(0, 8), (b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 /** Stored authentication credentials for swamp-club API access. */
