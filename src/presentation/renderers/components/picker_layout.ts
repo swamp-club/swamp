@@ -107,8 +107,7 @@ const STACKED_RESULTS_FRACTION = 0.45;
  * Computes the appropriate layout tier and dimensions given terminal size.
  * Pure function — no side effects, fully deterministic.
  *
- * Follows the same pattern as workflow_run_tree/budget.ts: check from
- * richest tier to most compact, returning the first that fits.
+ * Checks from richest tier to most compact, returning the first that fits.
  */
 export function computePickerLayout(
   width: number,

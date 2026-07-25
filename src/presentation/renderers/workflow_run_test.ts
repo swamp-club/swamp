@@ -343,7 +343,7 @@ Deno.test("ConsoleWorkflowRunRenderer: quiet mode replays buffer on step failure
   assertStringIncludes(output, "Failed");
 });
 
-Deno.test("ConsoleWorkflowRunRenderer: suspended workflow shows approval instructions", async () => {
+Deno.test("ConsoleWorkflowRunRenderer: suspended workflow shows step ID and approval instructions", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",
   });
@@ -377,8 +377,9 @@ Deno.test("ConsoleWorkflowRunRenderer: suspended workflow shows approval instruc
   });
   const output = lines.join("\n");
   assertStringIncludes(output, "Suspended");
-  assertStringIncludes(output, "swamp workflow approve");
-  assertStringIncludes(output, "swamp workflow resume");
+  assertStringIncludes(output, "awaiting approval on step apply");
+  assertStringIncludes(output, "swamp workflow approve test-pipeline apply");
+  assertStringIncludes(output, "swamp workflow resume test-pipeline");
 });
 
 Deno.test("ConsoleWorkflowRunRenderer: cancelled run sets workflowFailed()", async () => {
@@ -566,6 +567,43 @@ Deno.test("JsonWorkflowRunRenderer: never shows auth nudge", async () => {
   }
 });
 
+Deno.test("JsonWorkflowRunRenderer: suspended includes stepId and prompt", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createWorkflowRunRenderer("json", {
+      workflowName: "test-pipeline",
+    });
+    const events: WorkflowRunEvent[] = [
+      { kind: "validating_inputs" },
+      { kind: "evaluating_workflow" },
+      {
+        kind: "started",
+        runId: "run-1",
+        workflowName: "test-pipeline",
+        jobs: [{ id: "deploy", stepCount: 1, dependsOn: [] }],
+      },
+      {
+        kind: "suspended",
+        run: makeRunView("succeeded"),
+        jobId: "deploy",
+        stepId: "apply",
+        prompt: "Review the plan",
+      },
+    ];
+    await consumeStream(toStream(events), renderer.handlers());
+    assertEquals(logs.length, 1);
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.approvalRequired.stepId, "apply");
+    assertEquals(parsed.approvalRequired.jobId, "deploy");
+    assertEquals(parsed.approvalRequired.prompt, "Review the plan");
+  } finally {
+    console.log = originalLog;
+  }
+});
+
 Deno.test("createWorkflowRunRenderer: factory returns correct type per mode", () => {
   const logRenderer = createWorkflowRunRenderer("log", {
     workflowName: "w",
@@ -578,12 +616,4 @@ Deno.test("createWorkflowRunRenderer: factory returns correct type per mode", ()
   assertEquals(typeof logRenderer.workflowFailed, "function");
   assertEquals(typeof jsonRenderer.handlers, "function");
   assertEquals(typeof jsonRenderer.workflowFailed, "function");
-});
-
-Deno.test("createWorkflowRunRenderer: forceLog flag accepted but irrelevant", () => {
-  const renderer = createWorkflowRunRenderer("log", {
-    workflowName: "w",
-    forceLog: true,
-  });
-  assertEquals(typeof renderer.handlers, "function");
 });

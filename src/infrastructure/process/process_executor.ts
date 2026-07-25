@@ -186,21 +186,13 @@ export async function executeProcess(
       const onOutput = options.onOutput;
       stdoutOnLine = (line: string) => {
         const redacted = redact(line);
-        if (onOutput) {
-          onOutput(redacted, "stdout");
-          logger.debug(escapeLogTemplate(redacted));
-        } else {
-          logger.info(escapeLogTemplate(redacted));
-        }
+        if (onOutput) onOutput(redacted, "stdout");
+        logger.info(escapeLogTemplate(redacted));
       };
       stderrOnLine = (line: string) => {
         const redacted = redact(line);
-        if (onOutput) {
-          onOutput(redacted, "stderr");
-          logger.debug(escapeLogTemplate(redacted));
-        } else {
-          logger.warn(escapeLogTemplate(redacted));
-        }
+        if (onOutput) onOutput(redacted, "stderr");
+        logger.warn(escapeLogTemplate(redacted));
       };
     }
 
@@ -327,21 +319,13 @@ export async function executeProcess(
       const [stdoutResult, stderrResult, status] = await Promise.all([
         streamLines(process.stdout, (line) => {
           const redacted = redact(line);
-          if (onOutput) {
-            onOutput(redacted, "stdout");
-            logger.debug(escapeLogTemplate(redacted));
-          } else {
-            logger.info(escapeLogTemplate(redacted));
-          }
+          if (onOutput) onOutput(redacted, "stdout");
+          logger.info(escapeLogTemplate(redacted));
         }),
         streamLines(process.stderr, (line) => {
           const redacted = redact(line);
-          if (onOutput) {
-            onOutput(redacted, "stderr");
-            logger.debug(escapeLogTemplate(redacted));
-          } else {
-            logger.warn(escapeLogTemplate(redacted));
-          }
+          if (onOutput) onOutput(redacted, "stderr");
+          logger.warn(escapeLogTemplate(redacted));
         }),
         process.status,
       ]);

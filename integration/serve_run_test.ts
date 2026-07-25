@@ -147,7 +147,6 @@ Deno.test({
       const kinds: string[] = [];
       const renderer = createWorkflowRunRenderer("log", {
         workflowName: "serve-run-demo",
-        forceLog: true,
       });
       const handlers = renderer.handlers();
 
@@ -184,7 +183,6 @@ Deno.test({
       // the renderer's error handler throws — identical to local behavior.
       const renderer = createWorkflowRunRenderer("log", {
         workflowName: "no-such-workflow",
-        forceLog: true,
       });
       const handlers = renderer.handlers() as Record<
         string,
