@@ -79,6 +79,16 @@ class LogDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
         }
         lines.push(`  Dirs:     ${data.directoriesMigrated.join(", ")}`);
 
+        if (data.sourcePath && data.destinationPath) {
+          lines.push("");
+          lines.push(
+            yellow(bold("Relocated:")) + " " +
+              data.directoriesMigrated.join(", ") +
+              " now resolve under " + bold(data.destinationPath),
+          );
+          lines.push(`  Moved from: ${data.sourcePath}`);
+        }
+
         if (data.errors.length > 0) {
           lines.push("");
           lines.push(yellow("Warnings:"));

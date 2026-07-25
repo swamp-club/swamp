@@ -62,6 +62,8 @@ export interface DatastoreSetupData {
   errors: string[];
   retryHint?: string;
   namespace?: string;
+  sourcePath?: string;
+  destinationPath?: string;
 }
 
 export interface DatastoreSetupWarningData {
@@ -266,6 +268,12 @@ export async function* datastoreSetupFilesystem(
                 "Re-run the same command to retry. Local data is preserved and the retry is safe.",
             }
             : {}),
+          ...(directoriesMigrated.length > 0
+            ? {
+              sourcePath: sourceDir,
+              destinationPath: input.datastorePath,
+            }
+            : {}),
         },
       };
     })(),
@@ -438,6 +446,7 @@ export async function* datastoreSetupExtension(
       let migrationResult:
         | {
           filesCopied: number;
+          bytesCopied: number;
           directoriesMigrated: string[];
         }
         | undefined;
@@ -594,20 +603,29 @@ export async function* datastoreSetupExtension(
         }
       }
 
+      const migratedDirs = migrationResult?.directoriesMigrated ?? [];
+      const migratedBytes = migrationResult?.bytesCopied ?? 0;
+
       yield {
         kind: "completed",
         data: {
           type: input.type,
           filesCopied,
           filesPulled,
-          bytesCopied: 0,
-          directoriesMigrated: [],
+          bytesCopied: migratedBytes,
+          directoriesMigrated: migratedDirs,
           errors,
           ...(ns ? { namespace: ns } : {}),
           ...(errors.length > 0
             ? {
               retryHint:
                 "Re-run the same command to retry. Local data is preserved and the retry is safe.",
+            }
+            : {}),
+          ...(migratedDirs.length > 0
+            ? {
+              sourcePath: `${input.repoDir}/.swamp`,
+              destinationPath: cachePath,
             }
             : {}),
         },
