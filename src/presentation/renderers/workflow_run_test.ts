@@ -17,13 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import {
-  assertEquals,
-  assertNotEquals,
-  assertStringIncludes,
-  assertThrows,
-} from "@std/assert";
-import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import { setColorEnabled } from "@std/fmt/colors";
 import {
   consumeStream,
   type WorkflowRunEvent,
@@ -33,52 +28,38 @@ import { createWorkflowRunRenderer } from "./workflow_run.ts";
 import { UserError } from "../../domain/errors.ts";
 import { AUTH_NUDGE_MESSAGE } from "../../domain/auth/auth_nudge.ts";
 
-await initializeLogging({});
-
-function makeRunData(
+function makeRunView(
   status: "succeeded" | "failed",
 ): WorkflowRunView {
   return {
     id: "run-1",
     workflowId: "wf-1",
-    workflowName: "test-workflow",
+    workflowName: "test-pipeline",
     status,
+    duration: 3600,
     jobs: [{
-      name: "job-1",
+      name: "extract",
       status: status === "succeeded" ? "succeeded" : "failed",
+      duration: 3200,
       steps: [{
-        name: "step-1",
+        name: "fetch",
         status: status === "succeeded" ? "succeeded" : "failed",
-      }],
-    }],
-  };
-}
-
-function makeRunDataWithArtifacts(): WorkflowRunView {
-  return {
-    id: "run-1",
-    workflowId: "wf-1",
-    workflowName: "test-workflow",
-    status: "succeeded",
-    jobs: [{
-      name: "job-1",
-      status: "succeeded",
-      steps: [{
-        name: "step-1",
-        status: "succeeded",
+        duration: 3200,
+        error: status === "failed" ? "connection refused" : undefined,
         dataArtifacts: [{
           dataId: "d-1",
-          name: "my-data",
+          name: "api-records",
           version: 1,
           tags: {},
+          attributes: { total_records: 1247 },
         }],
       }],
     }],
   };
 }
 
-function fullEventStream(
-  runData: WorkflowRunView,
+function simpleEvents(
+  runView: WorkflowRunView,
 ): WorkflowRunEvent[] {
   return [
     { kind: "validating_inputs" },
@@ -86,39 +67,43 @@ function fullEventStream(
     {
       kind: "started",
       runId: "run-1",
-      workflowName: "test-workflow",
-      jobs: [],
+      workflowName: "test-pipeline",
+      jobs: [{ id: "extract", stepCount: 1, dependsOn: [] }],
     },
-    { kind: "job_started", jobId: "job-1" },
-    { kind: "step_started", jobId: "job-1", stepId: "step-1" },
+    { kind: "job_started", jobId: "extract" },
+    { kind: "step_started", jobId: "extract", stepId: "fetch" },
     {
       kind: "model_resolved",
-      jobId: "job-1",
-      stepId: "step-1",
-      modelName: "my-model",
+      jobId: "extract",
+      stepId: "fetch",
+      modelName: "my-api",
       modelType: "command/shell",
-      modelId: "test-model-id",
-      methodName: "run",
+      modelId: "m-1",
+      methodName: "extract",
     },
     {
       kind: "method_executing",
-      jobId: "job-1",
-      stepId: "step-1",
-      modelName: "my-model",
-      methodName: "run",
+      jobId: "extract",
+      stepId: "fetch",
+      modelName: "my-api",
+      methodName: "extract",
     },
     {
       kind: "method_output",
-      jobId: "job-1",
-      stepId: "step-1",
-      modelName: "my-model",
-      methodName: "run",
+      jobId: "extract",
+      stepId: "fetch",
+      modelName: "my-api",
+      methodName: "extract",
       stream: "stdout",
-      line: "hello world",
+      line: "Downloading records...",
     },
-    { kind: "step_completed", jobId: "job-1", stepId: "step-1" },
-    { kind: "job_completed", jobId: "job-1", status: "succeeded" },
-    { kind: "completed", run: runData },
+    {
+      kind: "step_completed",
+      jobId: "extract",
+      stepId: "fetch",
+    },
+    { kind: "job_completed", jobId: "extract", status: runView.status },
+    { kind: "completed", run: runView },
   ];
 }
 
@@ -130,53 +115,79 @@ async function* toStream(
   }
 }
 
-Deno.test("LogWorkflowRunRenderer - succeeded workflow sets workflowFailed() to false", async () => {
+async function captureOutputAsync(
+  fn: () => Promise<void>,
+): Promise<string[]> {
+  const lines: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => {
+    lines.push(
+      args.map((a) => typeof a === "string" ? a : String(a)).join(" "),
+    );
+  };
+  setColorEnabled(false);
+  try {
+    await fn();
+  } finally {
+    console.log = origLog;
+    setColorEnabled(true);
+  }
+  return lines;
+}
+
+Deno.test("ConsoleWorkflowRunRenderer: succeeded run shows Starting, pipe output, Completed", async () => {
   const renderer = createWorkflowRunRenderer("log", {
-    workflowName: "test-workflow",
+    workflowName: "test-pipeline",
+    isAuthenticated: true,
   });
-  const events = fullEventStream(makeRunData("succeeded"));
-  await consumeStream(toStream(events), renderer.handlers());
+  const events = simpleEvents(makeRunView("succeeded"));
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
   assertEquals(renderer.workflowFailed(), false);
+  const output = lines.join("\n");
+  assertStringIncludes(output, "Starting");
+  assertStringIncludes(output, "test-pipeline");
+  assertStringIncludes(output, "extract");
+  assertStringIncludes(output, "Downloading records...");
+  assertStringIncludes(output, "Completed");
 });
 
-Deno.test("LogWorkflowRunRenderer - failed workflow sets workflowFailed() to true", async () => {
+Deno.test("ConsoleWorkflowRunRenderer: failed run shows Failed with error", async () => {
   const renderer = createWorkflowRunRenderer("log", {
-    workflowName: "test-workflow",
+    workflowName: "test-pipeline",
+    isAuthenticated: true,
   });
-  const events: WorkflowRunEvent[] = [
-    { kind: "validating_inputs" },
-    {
-      kind: "started",
-      runId: "run-1",
-      workflowName: "test-workflow",
-      jobs: [],
-    },
-    { kind: "job_started", jobId: "job-1" },
-    {
-      kind: "step_failed",
-      jobId: "job-1",
-      stepId: "step-1",
-      error: "something broke",
-    },
-    { kind: "job_completed", jobId: "job-1", status: "failed" },
-    { kind: "completed", run: makeRunData("failed") },
-  ];
-  await consumeStream(toStream(events), renderer.handlers());
+  const runView = makeRunView("failed");
+  const events = simpleEvents(runView);
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
   assertEquals(renderer.workflowFailed(), true);
+  const output = lines.join("\n");
+  assertStringIncludes(output, "Failed");
+  assertStringIncludes(output, "connection refused");
 });
 
-Deno.test("LogWorkflowRunRenderer - handles data artifact hints without error", async () => {
+Deno.test("ConsoleWorkflowRunRenderer: pipe-prefixed output uses job name", async () => {
   const renderer = createWorkflowRunRenderer("log", {
-    workflowName: "test-workflow",
+    workflowName: "test-pipeline",
+    isAuthenticated: true,
   });
-  const events = fullEventStream(makeRunDataWithArtifacts());
-  await consumeStream(toStream(events), renderer.handlers());
-  assertEquals(renderer.workflowFailed(), false);
+  const events = simpleEvents(makeRunView("succeeded"));
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const extractLines = lines.filter((l) =>
+    l.includes("extract") && l.includes("│")
+  );
+  assertEquals(extractLines.length > 0, true);
 });
 
-Deno.test("LogWorkflowRunRenderer - handles skipped events", async () => {
+Deno.test("ConsoleWorkflowRunRenderer: method_output uses same style for stdout and stderr", async () => {
   const renderer = createWorkflowRunRenderer("log", {
-    workflowName: "test-workflow",
+    workflowName: "test-pipeline",
+    isAuthenticated: true,
   });
   const events: WorkflowRunEvent[] = [
     { kind: "validating_inputs" },
@@ -184,21 +195,59 @@ Deno.test("LogWorkflowRunRenderer - handles skipped events", async () => {
     {
       kind: "started",
       runId: "run-1",
-      workflowName: "test-workflow",
-      jobs: [],
+      workflowName: "test-pipeline",
+      jobs: [{ id: "job1", stepCount: 1, dependsOn: [] }],
     },
-    { kind: "job_started", jobId: "job-1" },
-    { kind: "step_skipped", jobId: "job-1", stepId: "step-1" },
-    { kind: "job_skipped", jobId: "job-1" },
-    { kind: "completed", run: makeRunData("succeeded") },
+    { kind: "job_started", jobId: "job1" },
+    { kind: "step_started", jobId: "job1", stepId: "s1" },
+    {
+      kind: "method_output",
+      jobId: "job1",
+      stepId: "s1",
+      modelName: "m",
+      methodName: "r",
+      stream: "stdout",
+      line: "stdout-line",
+    },
+    {
+      kind: "method_output",
+      jobId: "job1",
+      stepId: "s1",
+      modelName: "m",
+      methodName: "r",
+      stream: "stderr",
+      line: "stderr-line",
+    },
+    { kind: "step_completed", jobId: "job1", stepId: "s1" },
+    { kind: "job_completed", jobId: "job1", status: "succeeded" },
+    { kind: "completed", run: makeRunView("succeeded") },
   ];
-  await consumeStream(toStream(events), renderer.handlers());
-  assertEquals(renderer.workflowFailed(), false);
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "stdout-line");
+  assertStringIncludes(output, "stderr-line");
 });
 
-Deno.test("LogWorkflowRunRenderer - error event throws UserError", () => {
+Deno.test("ConsoleWorkflowRunRenderer: shows inline data artifacts", async () => {
   const renderer = createWorkflowRunRenderer("log", {
-    workflowName: "test-workflow",
+    workflowName: "test-pipeline",
+    isAuthenticated: true,
+  });
+  const events = simpleEvents(makeRunView("succeeded"));
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "Data produced");
+  assertStringIncludes(output, "api-records");
+  assertStringIncludes(output, "total_records");
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: error event throws UserError", () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
   });
   const handlers = renderer.handlers();
   assertThrows(
@@ -212,14 +261,222 @@ Deno.test("LogWorkflowRunRenderer - error event throws UserError", () => {
   );
 });
 
-Deno.test("JsonWorkflowRunRenderer - intermediate events produce no output", () => {
+Deno.test("ConsoleWorkflowRunRenderer: shows auth nudge when not authenticated", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+    isAuthenticated: false,
+  });
+  const events = simpleEvents(makeRunView("succeeded"));
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  assertStringIncludes(lines.join("\n"), AUTH_NUDGE_MESSAGE);
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: suppresses auth nudge when authenticated", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+    isAuthenticated: true,
+  });
+  const events = simpleEvents(makeRunView("succeeded"));
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  assertEquals(lines.join("\n").includes(AUTH_NUDGE_MESSAGE), false);
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: quiet mode buffers output and discards on success", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+    isAuthenticated: true,
+    quiet: true,
+  });
+  const events = simpleEvents(makeRunView("succeeded"));
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertEquals(output.includes("Downloading records..."), false);
+  assertStringIncludes(output, "Completed");
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: quiet mode replays buffer on step failure", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+    isAuthenticated: true,
+    quiet: true,
+  });
+  const events: WorkflowRunEvent[] = [
+    { kind: "validating_inputs" },
+    { kind: "evaluating_workflow" },
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test-pipeline",
+      jobs: [{ id: "job1", stepCount: 1, dependsOn: [] }],
+    },
+    { kind: "job_started", jobId: "job1" },
+    { kind: "step_started", jobId: "job1", stepId: "s1" },
+    {
+      kind: "method_output",
+      jobId: "job1",
+      stepId: "s1",
+      modelName: "m",
+      methodName: "r",
+      stream: "stdout",
+      line: "important error context",
+    },
+    {
+      kind: "step_failed",
+      jobId: "job1",
+      stepId: "s1",
+      error: "process exited 1",
+    },
+    { kind: "job_completed", jobId: "job1", status: "failed" },
+    { kind: "completed", run: makeRunView("failed") },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "important error context");
+  assertStringIncludes(output, "Failed");
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: suspended workflow shows approval instructions", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+  });
+  const events: WorkflowRunEvent[] = [
+    { kind: "validating_inputs" },
+    { kind: "evaluating_workflow" },
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test-pipeline",
+      jobs: [{ id: "deploy", stepCount: 1, dependsOn: [] }],
+    },
+    { kind: "job_started", jobId: "deploy" },
+    {
+      kind: "approval_requested",
+      runId: "run-1",
+      jobId: "deploy",
+      stepId: "apply",
+      prompt: "Review the plan",
+    },
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "deploy",
+      stepId: "apply",
+      prompt: "Review the plan",
+    },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "Suspended");
+  assertStringIncludes(output, "swamp workflow approve");
+  assertStringIncludes(output, "swamp workflow resume");
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: cancelled run sets workflowFailed()", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+  });
+  const events: WorkflowRunEvent[] = [
+    { kind: "validating_inputs" },
+    { kind: "evaluating_workflow" },
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test-pipeline",
+      jobs: [],
+    },
+    { kind: "cancelled", run: makeRunView("failed"), reason: "user interrupt" },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  assertEquals(renderer.workflowFailed(), true);
+  assertStringIncludes(lines.join("\n"), "Cancelled");
+  assertStringIncludes(lines.join("\n"), "user interrupt");
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: forEach steps show [index] notation", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+    isAuthenticated: true,
+  });
+  const events: WorkflowRunEvent[] = [
+    { kind: "validating_inputs" },
+    { kind: "evaluating_workflow" },
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test-pipeline",
+      jobs: [{ id: "extract", stepCount: 2, dependsOn: [] }],
+    },
+    { kind: "job_started", jobId: "extract" },
+    {
+      kind: "step_started",
+      jobId: "extract",
+      stepId: "fetch-dev",
+      forEachTemplate: "fetch",
+      forEachIndex: 0,
+    },
+    {
+      kind: "step_started",
+      jobId: "extract",
+      stepId: "fetch-prod",
+      forEachTemplate: "fetch",
+      forEachIndex: 1,
+    },
+    {
+      kind: "method_output",
+      jobId: "extract",
+      stepId: "fetch-dev",
+      modelName: "m",
+      methodName: "r",
+      stream: "stdout",
+      line: "from dev",
+    },
+    {
+      kind: "step_completed",
+      jobId: "extract",
+      stepId: "fetch-dev",
+      forEachTemplate: "fetch",
+      forEachIndex: 0,
+    },
+    {
+      kind: "step_completed",
+      jobId: "extract",
+      stepId: "fetch-prod",
+      forEachTemplate: "fetch",
+      forEachIndex: 1,
+    },
+    { kind: "job_completed", jobId: "extract", status: "succeeded" },
+    { kind: "completed", run: makeRunView("succeeded") },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "fetch[0]");
+  assertStringIncludes(output, "fetch[1]");
+});
+
+// --- JsonWorkflowRunRenderer tests ---
+
+Deno.test("JsonWorkflowRunRenderer: intermediate events produce no output", () => {
   const logs: string[] = [];
   const originalLog = console.log;
   console.log = (msg: string) => logs.push(msg);
 
   try {
     const renderer = createWorkflowRunRenderer("json", {
-      workflowName: "test-workflow",
+      workflowName: "test-pipeline",
     });
     const events: WorkflowRunEvent[] = [
       { kind: "validating_inputs" },
@@ -227,253 +484,17 @@ Deno.test("JsonWorkflowRunRenderer - intermediate events produce no output", () 
       {
         kind: "started",
         runId: "run-1",
-        workflowName: "test-workflow",
+        workflowName: "test-pipeline",
         jobs: [],
       },
-      { kind: "job_started", jobId: "job-1" },
-      { kind: "step_started", jobId: "job-1", stepId: "step-1" },
-      { kind: "step_completed", jobId: "job-1", stepId: "step-1" },
-      { kind: "job_completed", jobId: "job-1", status: "succeeded" },
-    ];
-    for (const event of events) {
-      const handler = renderer.handlers()[event.kind];
-      // deno-lint-ignore no-explicit-any
-      handler(event as any);
-    }
-    assertEquals(logs.length, 0);
-  } finally {
-    console.log = originalLog;
-  }
-});
-
-Deno.test("JsonWorkflowRunRenderer - completed serializes JSON", async () => {
-  const logs: string[] = [];
-  const originalLog = console.log;
-  console.log = (msg: string) => logs.push(msg);
-
-  try {
-    const renderer = createWorkflowRunRenderer("json", {
-      workflowName: "test-workflow",
-    });
-    const runData = makeRunData("succeeded");
-    const events = fullEventStream(runData);
-    await consumeStream(toStream(events), renderer.handlers());
-    assertEquals(logs.length, 1);
-    const parsed = JSON.parse(logs[0]);
-    assertEquals(parsed.id, "run-1");
-    assertEquals(parsed.workflowName, "test-workflow");
-    assertEquals(parsed.status, "succeeded");
-  } finally {
-    console.log = originalLog;
-  }
-});
-
-Deno.test("JsonWorkflowRunRenderer - failed workflow sets workflowFailed() to true", async () => {
-  const logs: string[] = [];
-  const originalLog = console.log;
-  console.log = (msg: string) => logs.push(msg);
-
-  try {
-    const renderer = createWorkflowRunRenderer("json", {
-      workflowName: "test-workflow",
-    });
-    const events: WorkflowRunEvent[] = [
-      { kind: "validating_inputs" },
-      { kind: "completed", run: makeRunData("failed") },
-    ];
-    await consumeStream(toStream(events), renderer.handlers());
-    assertEquals(renderer.workflowFailed(), true);
-  } finally {
-    console.log = originalLog;
-  }
-});
-
-Deno.test("JsonWorkflowRunRenderer - succeeded workflow sets workflowFailed() to false", async () => {
-  const logs: string[] = [];
-  const originalLog = console.log;
-  console.log = (msg: string) => logs.push(msg);
-
-  try {
-    const renderer = createWorkflowRunRenderer("json", {
-      workflowName: "test-workflow",
-    });
-    const events: WorkflowRunEvent[] = [
-      { kind: "validating_inputs" },
-      { kind: "completed", run: makeRunData("succeeded") },
-    ];
-    await consumeStream(toStream(events), renderer.handlers());
-    assertEquals(renderer.workflowFailed(), false);
-  } finally {
-    console.log = originalLog;
-  }
-});
-
-Deno.test("JsonWorkflowRunRenderer - error event throws UserError", () => {
-  const renderer = createWorkflowRunRenderer("json", {
-    workflowName: "test-workflow",
-  });
-  const handlers = renderer.handlers();
-  assertThrows(
-    () =>
-      handlers.error({
-        kind: "error",
-        error: { code: "test", message: "boom" },
-      }),
-    UserError,
-    "boom",
-  );
-});
-
-Deno.test("createWorkflowRunRenderer - factory returns correct type per mode", () => {
-  const logRenderer = createWorkflowRunRenderer("log", {
-    workflowName: "wf",
-  });
-  const jsonRenderer = createWorkflowRunRenderer("json", {
-    workflowName: "wf",
-  });
-
-  // Both should implement the WorkflowRunRenderer interface
-  assertEquals(typeof logRenderer.handlers, "function");
-  assertEquals(typeof logRenderer.workflowFailed, "function");
-  assertEquals(typeof jsonRenderer.handlers, "function");
-  assertEquals(typeof jsonRenderer.workflowFailed, "function");
-});
-
-Deno.test("LogWorkflowRunRenderer - handles model_resolved event without error", async () => {
-  const renderer = createWorkflowRunRenderer("log", {
-    workflowName: "test-workflow",
-  });
-  const events: WorkflowRunEvent[] = [
-    { kind: "validating_inputs" },
-    { kind: "evaluating_workflow" },
-    {
-      kind: "started",
-      runId: "run-1",
-      workflowName: "test-workflow",
-      jobs: [],
-    },
-    { kind: "job_started", jobId: "job-1" },
-    { kind: "step_started", jobId: "job-1", stepId: "step-1" },
-    {
-      kind: "model_resolved",
-      jobId: "job-1",
-      stepId: "step-1",
-      modelName: "my-model",
-      modelType: "command/shell",
-      modelId: "test-model-id",
-      methodName: "run",
-    },
-    { kind: "step_completed", jobId: "job-1", stepId: "step-1" },
-    { kind: "job_completed", jobId: "job-1", status: "succeeded" },
-    { kind: "completed", run: makeRunData("succeeded") },
-  ];
-  await consumeStream(toStream(events), renderer.handlers());
-  assertEquals(renderer.workflowFailed(), false);
-});
-
-Deno.test("LogWorkflowRunRenderer - handles method_executing event without error", async () => {
-  const renderer = createWorkflowRunRenderer("log", {
-    workflowName: "test-workflow",
-  });
-  const events: WorkflowRunEvent[] = [
-    { kind: "validating_inputs" },
-    { kind: "evaluating_workflow" },
-    {
-      kind: "started",
-      runId: "run-1",
-      workflowName: "test-workflow",
-      jobs: [],
-    },
-    { kind: "job_started", jobId: "job-1" },
-    { kind: "step_started", jobId: "job-1", stepId: "step-1" },
-    {
-      kind: "method_executing",
-      jobId: "job-1",
-      stepId: "step-1",
-      modelName: "my-model",
-      methodName: "run",
-    },
-    { kind: "step_completed", jobId: "job-1", stepId: "step-1" },
-    { kind: "job_completed", jobId: "job-1", status: "succeeded" },
-    { kind: "completed", run: makeRunData("succeeded") },
-  ];
-  await consumeStream(toStream(events), renderer.handlers());
-  assertEquals(renderer.workflowFailed(), false);
-});
-
-Deno.test("LogWorkflowRunRenderer - handles method_output events without error", async () => {
-  const renderer = createWorkflowRunRenderer("log", {
-    workflowName: "test-workflow",
-  });
-  const events: WorkflowRunEvent[] = [
-    { kind: "validating_inputs" },
-    { kind: "evaluating_workflow" },
-    {
-      kind: "started",
-      runId: "run-1",
-      workflowName: "test-workflow",
-      jobs: [],
-    },
-    { kind: "job_started", jobId: "job-1" },
-    { kind: "step_started", jobId: "job-1", stepId: "step-1" },
-    {
-      kind: "method_output",
-      jobId: "job-1",
-      stepId: "step-1",
-      modelName: "my-model",
-      methodName: "run",
-      stream: "stdout",
-      line: "hello world",
-    },
-    {
-      kind: "method_output",
-      jobId: "job-1",
-      stepId: "step-1",
-      modelName: "my-model",
-      methodName: "run",
-      stream: "stderr",
-      line: "warning message",
-    },
-    { kind: "step_completed", jobId: "job-1", stepId: "step-1" },
-    { kind: "job_completed", jobId: "job-1", status: "succeeded" },
-    { kind: "completed", run: makeRunData("succeeded") },
-  ];
-  await consumeStream(toStream(events), renderer.handlers());
-  assertEquals(renderer.workflowFailed(), false);
-});
-
-Deno.test("JsonWorkflowRunRenderer - new step execution events produce no output", () => {
-  const logs: string[] = [];
-  const originalLog = console.log;
-  console.log = (msg: string) => logs.push(msg);
-
-  try {
-    const renderer = createWorkflowRunRenderer("json", {
-      workflowName: "test-workflow",
-    });
-    const events: WorkflowRunEvent[] = [
-      {
-        kind: "model_resolved",
-        jobId: "job-1",
-        stepId: "step-1",
-        modelName: "my-model",
-        modelType: "command/shell",
-        modelId: "test-model-id",
-        methodName: "run",
-      },
-      {
-        kind: "method_executing",
-        jobId: "job-1",
-        stepId: "step-1",
-        modelName: "my-model",
-        methodName: "run",
-      },
+      { kind: "job_started", jobId: "job1" },
+      { kind: "step_started", jobId: "job1", stepId: "s1" },
       {
         kind: "method_output",
-        jobId: "job-1",
-        stepId: "step-1",
-        modelName: "my-model",
-        methodName: "run",
+        jobId: "job1",
+        stepId: "s1",
+        modelName: "m",
+        methodName: "r",
         stream: "stdout",
         line: "hello",
       },
@@ -489,236 +510,80 @@ Deno.test("JsonWorkflowRunRenderer - new step execution events produce no output
   }
 });
 
-Deno.test("LogWorkflowRunRenderer - handles method_event vault_secret_stored without error", async () => {
-  const renderer = createWorkflowRunRenderer("log", {
-    workflowName: "test-workflow",
-  });
-  const events: WorkflowRunEvent[] = [
-    { kind: "validating_inputs" },
-    { kind: "evaluating_workflow" },
-    {
-      kind: "started",
-      runId: "run-1",
-      workflowName: "test-workflow",
-      jobs: [],
-    },
-    { kind: "job_started", jobId: "job-1" },
-    { kind: "step_started", jobId: "job-1", stepId: "step-1" },
-    {
-      kind: "method_event",
-      jobId: "job-1",
-      stepId: "step-1",
-      modelName: "my-model",
-      methodName: "create",
-      event: {
-        type: "vault_secret_stored",
-        fieldPath: "password",
-        vaultName: "default",
-        vaultKey: "my-key",
-      },
-    },
-    { kind: "step_completed", jobId: "job-1", stepId: "step-1" },
-    { kind: "job_completed", jobId: "job-1", status: "succeeded" },
-    { kind: "completed", run: makeRunData("succeeded") },
-  ];
-  await consumeStream(toStream(events), renderer.handlers());
-  assertEquals(renderer.workflowFailed(), false);
-});
-
-Deno.test("LogWorkflowRunRenderer - handles method_event schema_validation_warning without error", async () => {
-  const renderer = createWorkflowRunRenderer("log", {
-    workflowName: "test-workflow",
-  });
-  const events: WorkflowRunEvent[] = [
-    { kind: "validating_inputs" },
-    { kind: "evaluating_workflow" },
-    {
-      kind: "started",
-      runId: "run-1",
-      workflowName: "test-workflow",
-      jobs: [],
-    },
-    { kind: "job_started", jobId: "job-1" },
-    { kind: "step_started", jobId: "job-1", stepId: "step-1" },
-    {
-      kind: "method_event",
-      jobId: "job-1",
-      stepId: "step-1",
-      modelName: "my-model",
-      methodName: "create",
-      event: {
-        type: "schema_validation_warning",
-        specName: "resource",
-        instanceName: "my-instance",
-        error: "field required",
-      },
-    },
-    { kind: "step_completed", jobId: "job-1", stepId: "step-1" },
-    { kind: "job_completed", jobId: "job-1", status: "succeeded" },
-    { kind: "completed", run: makeRunData("succeeded") },
-  ];
-  await consumeStream(toStream(events), renderer.handlers());
-  assertEquals(renderer.workflowFailed(), false);
-});
-
-Deno.test("JsonWorkflowRunRenderer - method_event produces no output", () => {
+Deno.test("JsonWorkflowRunRenderer: completed serializes WorkflowRunView", async () => {
   const logs: string[] = [];
   const originalLog = console.log;
   console.log = (msg: string) => logs.push(msg);
 
   try {
     const renderer = createWorkflowRunRenderer("json", {
-      workflowName: "test-workflow",
+      workflowName: "test-pipeline",
     });
-    const events: WorkflowRunEvent[] = [
-      {
-        kind: "method_event",
-        jobId: "job-1",
-        stepId: "step-1",
-        modelName: "my-model",
-        methodName: "create",
-        event: {
-          type: "vault_secret_stored",
-          fieldPath: "password",
-          vaultName: "default",
-          vaultKey: "my-key",
-        },
-      },
-    ];
-    for (const event of events) {
-      const handler = renderer.handlers()[event.kind];
-      // deno-lint-ignore no-explicit-any
-      handler(event as any);
-    }
-    assertEquals(logs.length, 0);
+    const runView = makeRunView("succeeded");
+    const events = simpleEvents(runView);
+    await consumeStream(toStream(events), renderer.handlers());
+    assertEquals(logs.length, 1);
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.workflowName, "test-pipeline");
+    assertEquals(parsed.status, "succeeded");
   } finally {
     console.log = originalLog;
   }
 });
 
-// --- Factory tests ---
-
-Deno.test("createWorkflowRunRenderer: forceLog=true returns LogWorkflowRunRenderer", () => {
-  const renderer = createWorkflowRunRenderer("log", {
-    workflowName: "test",
-    forceLog: true,
-  });
-  assertEquals(renderer.workflowFailed(), false);
-  const handlers = renderer.handlers();
-  assertNotEquals(handlers.started, undefined);
-});
-
-Deno.test("createWorkflowRunRenderer: json mode ignores forceLog", () => {
+Deno.test("JsonWorkflowRunRenderer: error event throws UserError", () => {
   const renderer = createWorkflowRunRenderer("json", {
-    workflowName: "test",
-    forceLog: true,
+    workflowName: "test-pipeline",
   });
-  assertEquals(renderer.workflowFailed(), false);
+  const handlers = renderer.handlers();
+  assertThrows(
+    () =>
+      handlers.error({
+        kind: "error",
+        error: { code: "test", message: "boom" },
+      }),
+    UserError,
+    "boom",
+  );
 });
 
-// --- Auth nudge tests ---
-
-function captureLog(fn: () => void): string {
-  const lines: string[] = [];
-  const methods = ["log", "info", "warn", "error", "debug"] as const;
-  const originals = methods.map((m) => [m, console[m]] as const);
-  for (const [m] of originals) {
-    console[m] = (...args: unknown[]) => {
-      lines.push(
-        args.map((a) => typeof a === "string" ? a : String(a)).join(" "),
-      );
-    };
-  }
-  try {
-    fn();
-  } finally {
-    for (const [m, orig] of originals) {
-      console[m] = orig;
-    }
-  }
-  return lines.join("\n");
-}
-
-Deno.test("LogWorkflowRunRenderer - shows auth nudge on success when not authenticated", () => {
-  const renderer = createWorkflowRunRenderer("log", {
-    workflowName: "test-workflow",
-    isAuthenticated: false,
-  });
-  const events = fullEventStream(makeRunData("succeeded"));
-  const output = captureLog(() => {
-    for (const event of events) {
-      const handler = renderer.handlers()[event.kind];
-      // deno-lint-ignore no-explicit-any
-      handler(event as any);
-    }
-  });
-  assertStringIncludes(output, AUTH_NUDGE_MESSAGE);
-});
-
-Deno.test("LogWorkflowRunRenderer - suppresses auth nudge when authenticated", () => {
-  const renderer = createWorkflowRunRenderer("log", {
-    workflowName: "test-workflow",
-    isAuthenticated: true,
-  });
-  const events = fullEventStream(makeRunData("succeeded"));
-  const output = captureLog(() => {
-    for (const event of events) {
-      const handler = renderer.handlers()[event.kind];
-      // deno-lint-ignore no-explicit-any
-      handler(event as any);
-    }
-  });
-  assertEquals(output.includes(AUTH_NUDGE_MESSAGE), false);
-});
-
-Deno.test("LogWorkflowRunRenderer - suppresses auth nudge on failed run", () => {
-  const renderer = createWorkflowRunRenderer("log", {
-    workflowName: "test-workflow",
-    isAuthenticated: false,
-  });
-  const events: WorkflowRunEvent[] = [
-    { kind: "validating_inputs" },
-    {
-      kind: "started",
-      runId: "run-1",
-      workflowName: "test-workflow",
-      jobs: [],
-    },
-    { kind: "job_started", jobId: "job-1" },
-    {
-      kind: "step_failed",
-      jobId: "job-1",
-      stepId: "step-1",
-      error: "something broke",
-    },
-    { kind: "job_completed", jobId: "job-1", status: "failed" },
-    { kind: "completed", run: makeRunData("failed") },
-  ];
-  const output = captureLog(() => {
-    for (const event of events) {
-      const handler = renderer.handlers()[event.kind];
-      // deno-lint-ignore no-explicit-any
-      handler(event as any);
-    }
-  });
-  assertEquals(output.includes(AUTH_NUDGE_MESSAGE), false);
-});
-
-Deno.test("JsonWorkflowRunRenderer - never shows auth nudge", async () => {
+Deno.test("JsonWorkflowRunRenderer: never shows auth nudge", async () => {
   const logs: string[] = [];
   const originalLog = console.log;
   console.log = (msg: string) => logs.push(msg);
 
   try {
     const renderer = createWorkflowRunRenderer("json", {
-      workflowName: "test-workflow",
+      workflowName: "test-pipeline",
       isAuthenticated: false,
     });
-    const events = fullEventStream(makeRunData("succeeded"));
+    const events = simpleEvents(makeRunView("succeeded"));
     await consumeStream(toStream(events), renderer.handlers());
     const combined = logs.join("\n");
     assertEquals(combined.includes(AUTH_NUDGE_MESSAGE), false);
   } finally {
     console.log = originalLog;
   }
+});
+
+Deno.test("createWorkflowRunRenderer: factory returns correct type per mode", () => {
+  const logRenderer = createWorkflowRunRenderer("log", {
+    workflowName: "w",
+  });
+  const jsonRenderer = createWorkflowRunRenderer("json", {
+    workflowName: "w",
+  });
+
+  assertEquals(typeof logRenderer.handlers, "function");
+  assertEquals(typeof logRenderer.workflowFailed, "function");
+  assertEquals(typeof jsonRenderer.handlers, "function");
+  assertEquals(typeof jsonRenderer.workflowFailed, "function");
+});
+
+Deno.test("createWorkflowRunRenderer: forceLog flag accepted but irrelevant", () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "w",
+    forceLog: true,
+  });
+  assertEquals(typeof renderer.handlers, "function");
 });

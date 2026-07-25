@@ -181,6 +181,7 @@ export const workflowResumeCommand = withRemoteOptions(
       const renderer = createWorkflowRunRenderer(cliCtx.outputMode, {
         workflowName: workflowIdOrName,
         isAuthenticated: isAuthenticated(),
+        quiet: cliCtx.verbosity === "quiet",
       });
       try {
         await consumeStream(
@@ -398,6 +399,7 @@ export const workflowResumeCommand = withRemoteOptions(
     const renderer = createWorkflowRunRenderer(cliCtx.outputMode, {
       workflowName,
       isAuthenticated: isAuthenticated(),
+      quiet: cliCtx.verbosity === "quiet",
     });
 
     const traceparent = resolveTraceparent(

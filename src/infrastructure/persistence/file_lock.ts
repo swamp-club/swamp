@@ -34,7 +34,8 @@ import type {
   LockOptions,
 } from "../../domain/datastore/distributed_lock.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
-import { getSwampLogger } from "../logging/logger.ts";
+import { getSwampLogger, getSystemPipeWidth } from "../logging/logger.ts";
+import { dim, yellow } from "@std/fmt/colors";
 import { isProcessDead } from "../runtime/process.ts";
 
 const DEFAULT_TTL_MS = 30_000;
@@ -92,7 +93,6 @@ export class FileLock implements DistributedLock {
     await ensureDir(dirname(this.lockPath));
 
     const nonce = crypto.randomUUID();
-    const logger = getSwampLogger(["datastore", "lock"]);
     let contentionLogged = false;
     let retryCount = 0;
     let currentBackoff = this.retryIntervalMs;
@@ -127,9 +127,11 @@ export class FileLock implements DistributedLock {
 
         if (retryCount > 0) {
           const waitMs = Date.now() - startTime;
-          logger.info(
-            "Acquired lock {path} after {retries} retries ({waitMs}ms)",
-            { path: this.lockPath, retries: retryCount, waitMs },
+          const syspad = "system".padStart(getSystemPipeWidth() + 1);
+          console.error(
+            `${dim(`${syspad} │`)} ${
+              dim(`Acquired lock after ${retryCount} retries (${waitMs}ms)`)
+            }`,
           );
         }
         return;
@@ -159,14 +161,13 @@ export class FileLock implements DistributedLock {
 
         if (!contentionLogged) {
           const ageMs = Date.now() - new Date(existing.acquiredAt).getTime();
-          logger.warn(
-            "Waiting for lock {path} held by {holder} (pid {pid}, acquired {age}ms ago)",
-            {
-              path: this.lockPath,
-              holder: existing.holder,
-              pid: existing.pid,
-              age: ageMs,
-            },
+          const syspad2 = "system".padStart(getSystemPipeWidth() + 1);
+          console.error(
+            `${dim(`${syspad2} │`)} ${
+              yellow(
+                `Waiting for lock held by ${existing.holder} (pid ${existing.pid}, acquired ${ageMs}ms ago)`,
+              )
+            }`,
           );
           contentionLogged = true;
         }

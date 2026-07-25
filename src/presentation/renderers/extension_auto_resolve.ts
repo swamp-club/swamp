@@ -18,13 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { OutputMode } from "../output/output.ts";
-import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import {
+  gutterLine,
+  STATUS_COLORS,
+  writeContentLine,
+} from "../output/console_writer.ts";
 
-const logger = getSwampLogger(["extension", "auto-resolve"]);
-
-/**
- * Renders a searching message when auto-resolution begins.
- */
 export function renderAutoResolveSearching(
   type: string,
   mode: OutputMode,
@@ -34,14 +34,16 @@ export function renderAutoResolveSearching(
       JSON.stringify({ event: "auto_resolve", status: "searching", type }),
     );
   } else {
-    logger
-      .info`Extension type ${type} not found locally, searching registry...`;
+    writeOutput(
+      gutterLine(
+        "Resolving",
+        STATUS_COLORS.info,
+        `${type} not found locally, searching registry...`,
+      ),
+    );
   }
 }
 
-/**
- * Renders a message when an extension is found and about to be installed.
- */
 export function renderAutoResolveInstalling(
   extension: string,
   version: string,
@@ -58,16 +60,16 @@ export function renderAutoResolveInstalling(
       }),
     );
   } else {
-    logger.info`Found extension ${extension}${
-      description ? ` (${description})` : ""
-    }`;
-    logger.info`Installing ${extension}@${version}...`;
+    writeOutput(
+      gutterLine(
+        "Installing",
+        STATUS_COLORS.info,
+        `${extension}@${version}${description ? ` (${description})` : ""}`,
+      ),
+    );
   }
 }
 
-/**
- * Renders a message when an extension has been installed and models registered.
- */
 export function renderAutoResolveInstalled(
   extension: string,
   version: string,
@@ -85,14 +87,16 @@ export function renderAutoResolveInstalled(
       }),
     );
   } else {
-    logger
-      .info`Installed ${extension}@${version} (${modelsRegistered} models registered)`;
+    writeOutput(
+      gutterLine(
+        "Installed",
+        STATUS_COLORS.success,
+        `${extension}@${version} (${modelsRegistered} models registered)`,
+      ),
+    );
   }
 }
 
-/**
- * Renders an error message when auto-resolution fails because no extension was found.
- */
 export function renderAutoResolveNotFound(
   type: string,
   mode: OutputMode,
@@ -107,19 +111,19 @@ export function renderAutoResolveNotFound(
       }),
     );
   } else {
-    logger
-      .error`Auto-resolution failed for type ${type}: no extension publishes this type. Verify the type name is correct.`;
-    logger.error`Install manually with: swamp extension pull <extension-name>`;
+    writeOutput(
+      gutterLine(
+        "Warning",
+        STATUS_COLORS.warn,
+        `auto-resolution failed for type ${type}: no extension publishes this type`,
+      ),
+    );
+    writeContentLine(
+      `Install manually with: swamp extension pull <extension-name>`,
+    );
   }
 }
 
-/**
- * Renders an error message when auto-resolution finds the extension
- * on disk but refuses to re-install it (issue #121). The user likely
- * has local edits preventing the type from registering; they must
- * either fix the source or opt in to discarding edits via an explicit
- * `extension pull --force`.
- */
 export function renderAutoResolveAlreadyInstalled(
   extension: string,
   path: string,
@@ -136,22 +140,22 @@ export function renderAutoResolveAlreadyInstalled(
       }),
     );
   } else {
-    logger
-      .error`Extension ${extension} is already installed at ${path} but failed to load.`;
-    logger
-      .error`Local edits may be preventing it from registering — inspect the source and fix errors.`;
-    logger
-      .error`To reset to the registry version and discard local changes, run: swamp extension pull ${extension} --force`;
+    writeOutput(
+      gutterLine(
+        "Warning",
+        STATUS_COLORS.warn,
+        `${extension} is installed at ${path} but failed to load`,
+      ),
+    );
+    writeContentLine(
+      "Local edits may be preventing it from registering — inspect the source and fix errors.",
+    );
+    writeContentLine(
+      `To reset: swamp extension pull ${extension} --force`,
+    );
   }
 }
 
-/**
- * Renders an error when a pulled extension directory is present but
- * incomplete — one or more files listed in the lockfile are missing on
- * disk. Distinct from `renderAutoResolveAlreadyInstalled` (intact tree,
- * user edits): here the tree itself is broken, so re-pulling with
- * `--force` is the recovery. See swamp-club#133.
- */
 export function renderAutoResolveTruncated(
   extension: string,
   path: string,
@@ -170,28 +174,22 @@ export function renderAutoResolveTruncated(
       }),
     );
   } else {
-    const missingCount = missing.length;
-    // Build the full list string before interpolating so logtape quotes
-    // it once rather than quoting preview and suffix separately (which
-    // produces an odd `"a, b", ...` rendering).
     const list = missing.length > 5
       ? `${missing.slice(0, 5).join(", ")}, ... and ${missing.length - 5} more`
       : missing.join(", ");
-    logger
-      .error`Extension ${extension} at ${path} is incomplete — missing ${missingCount} file(s): ${list}.`;
-    logger
-      .error`The pulled tree was partially removed or never fully extracted; it cannot be loaded in this state.`;
-    logger
-      .error`To re-fetch and repair, run: swamp extension pull ${extension} --force`;
+    writeOutput(
+      gutterLine(
+        "Warning",
+        STATUS_COLORS.warn,
+        `${extension} at ${path} is incomplete — missing ${missing.length} file(s): ${list}`,
+      ),
+    );
+    writeContentLine(
+      `To re-fetch and repair: swamp extension pull ${extension} --force`,
+    );
   }
 }
 
-/**
- * Renders an actionable error when a referenced `@collective/*` type cannot
- * auto-resolve because its collective is not trusted (swamp-club#465).
- * Membership collectives are not trusted by default — this tells the user how
- * to opt in instead of dead-ending on an opaque "unknown type" error.
- */
 export function renderAutoResolveCollectiveNotTrusted(
   collective: string,
   type: string,
@@ -208,16 +206,19 @@ export function renderAutoResolveCollectiveNotTrusted(
       }),
     );
   } else {
-    logger
-      .warn`Type ${type} is from collective ${collective}, which is not trusted, so it was not auto-resolved.`;
-    logger
-      .warn`To allow its extensions to auto-resolve, run: swamp extension trust add ${collective}`;
+    writeOutput(
+      gutterLine(
+        "Warning",
+        STATUS_COLORS.warn,
+        `${type} is from collective "${collective}", which is not trusted`,
+      ),
+    );
+    writeContentLine(
+      `To allow: swamp extension trust add "${collective}"`,
+    );
   }
 }
 
-/**
- * Renders an error message when auto-resolution fails due to a network error.
- */
 export function renderAutoResolveNetworkError(
   type: string,
   error: string,
@@ -234,15 +235,19 @@ export function renderAutoResolveNetworkError(
       }),
     );
   } else {
-    logger.error`Auto-resolution failed for type ${type}: ${error}`;
-    logger.error`Install manually with: swamp extension pull <extension-name>`;
+    writeOutput(
+      gutterLine(
+        "Warning",
+        STATUS_COLORS.warn,
+        `auto-resolution failed for type ${type}: ${error}`,
+      ),
+    );
+    writeContentLine(
+      `Install manually with: swamp extension pull <extension-name>`,
+    );
   }
 }
 
-/**
- * Renders an error message when auto-resolution finds an extension that
- * has no stable version (only prerelease channels).
- */
 export function renderAutoResolveNoStableVersion(
   extension: string,
   mode: OutputMode,
@@ -257,9 +262,15 @@ export function renderAutoResolveNoStableVersion(
       }),
     );
   } else {
-    logger
-      .warn`Extension ${extension} has no stable version and cannot be auto-resolved.`;
-    logger
-      .warn`Install manually with: swamp extension pull ${extension} --channel <rc|beta>`;
+    writeOutput(
+      gutterLine(
+        "Warning",
+        STATUS_COLORS.warn,
+        `${extension} has no stable version and cannot be auto-resolved`,
+      ),
+    );
+    writeContentLine(
+      `Install manually: swamp extension pull ${extension} --channel <rc|beta>`,
+    );
   }
 }

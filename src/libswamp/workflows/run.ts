@@ -84,15 +84,29 @@ export type WorkflowRunEvent =
   | { kind: "job_started"; jobId: string }
   | { kind: "job_completed"; jobId: string; status: string }
   | { kind: "job_skipped"; jobId: string }
-  | { kind: "step_started"; jobId: string; stepId: string }
+  | {
+    kind: "step_started";
+    jobId: string;
+    stepId: string;
+    forEachTemplate?: string;
+    forEachIndex?: number;
+  }
   | {
     kind: "step_completed";
     jobId: string;
     stepId: string;
     /** "loopback" or the worker name that executed the step's method. */
     executor?: string;
+    forEachTemplate?: string;
+    forEachIndex?: number;
   }
-  | { kind: "step_skipped"; jobId: string; stepId: string }
+  | {
+    kind: "step_skipped";
+    jobId: string;
+    stepId: string;
+    forEachTemplate?: string;
+    forEachIndex?: number;
+  }
   | {
     kind: "approval_requested";
     runId: string;
@@ -114,6 +128,8 @@ export type WorkflowRunEvent =
      */
     modelName?: string;
     methodName?: string;
+    forEachTemplate?: string;
+    forEachIndex?: number;
   }
   | {
     kind: "model_resolved";
@@ -331,10 +347,15 @@ export function toRunData(
   const startTime = run.startedAt?.getTime();
   const endTime = run.completedAt?.getTime();
 
+  const inputs = run.inputs && Object.keys(run.inputs).length > 0
+    ? run.inputs
+    : undefined;
+
   return {
     id: run.id,
     workflowId: run.workflowId,
     workflowName: run.workflowName,
+    inputs,
     status: run.status,
     jobs: run.jobs.map((job) => {
       const jobStart = job.startedAt?.getTime();
@@ -362,11 +383,21 @@ export function toRunData(
           }
 
           if (step.dataArtifacts && step.dataArtifacts.length > 0) {
+            const stepOutput = step.output as
+              | Record<string, unknown>
+              | undefined;
+            const resourceAttrs = stepOutput?.type === "model_method"
+              ? stepOutput.resourceAttributes as
+                | Record<string, unknown>
+                | undefined
+              : undefined;
+
             stepData.dataArtifacts = step.dataArtifacts.map((a) => ({
               dataId: a.dataId,
               name: a.name,
               version: a.version,
               tags: a.tags,
+              attributes: resourceAttrs,
             }));
           }
 

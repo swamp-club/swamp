@@ -439,6 +439,7 @@ Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — 
               modelName: modelIdOrName,
               methodName,
               isAuthenticated: isAuthenticated(),
+              quiet: ctx.verbosity === "quiet",
             });
 
             await consumeStream(
@@ -597,6 +598,7 @@ async function runMethodViaServer(
         modelName: modelIdOrName,
         methodName,
         isAuthenticated: isAuthenticated(),
+        quiet: ctx.verbosity === "quiet",
       });
       await consumeStream(
         runModelMethodOverServer({

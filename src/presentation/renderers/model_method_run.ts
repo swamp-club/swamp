@@ -20,36 +20,50 @@
 import type { EventHandlers, ModelMethodRunEvent } from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
-import {
-  escapeLogTemplate,
-  getRunLogger,
-  writeOutput,
-} from "../../infrastructure/logging/logger.ts";
+import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 import { getTerminalColumns } from "../output/terminal_size.ts";
 import { AUTH_NUDGE_MESSAGE } from "../../domain/auth/auth_nudge.ts";
+import { dim } from "@std/fmt/colors";
+import {
+  type DataArtifact,
+  type DataBoxOptions,
+  formatDuration,
+  formatTimestamp,
+  renderDataBox,
+  STATUS_COLORS,
+  writeBlankLine,
+  writeContentLine,
+  writeGutterLine,
+} from "../output/console_writer.ts";
 
 export interface ModelMethodRunRenderOpts {
   modelName: string;
   methodName: string;
   isAuthenticated?: boolean;
+  quiet?: boolean;
 }
 
 export interface ModelMethodRunRenderer extends Renderer<ModelMethodRunEvent> {
   runFailed(): boolean;
 }
 
-class LogModelMethodRunRenderer implements ModelMethodRunRenderer {
+const QUIET_BUFFER_LIMIT = 500;
+
+class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
   private modelName: string;
   private methodName: string;
   private isAuthenticated: boolean;
+  private quiet: boolean;
   private _failed = false;
+  private outputBuffer: string[] = [];
 
   constructor(opts: ModelMethodRunRenderOpts) {
     this.modelName = opts.modelName;
     this.methodName = opts.methodName;
     this.isAuthenticated = opts.isAuthenticated ?? false;
+    this.quiet = opts.quiet ?? false;
   }
 
   handlers(): EventHandlers<ModelMethodRunEvent> {
@@ -57,111 +71,92 @@ class LogModelMethodRunRenderer implements ModelMethodRunRenderer {
       validating_inputs: () => {},
       resolving_model: () => {},
       auto_created: (e) => {
-        const logger = getRunLogger(this.modelName, this.methodName);
-        logger.info(
-          "Auto-created definition {name} (type: {type})",
-          { name: e.definitionName, type: e.modelType },
+        writeGutterLine(
+          "Created",
+          STATUS_COLORS.info,
+          `${e.definitionName} ${dim(`(${e.modelType})`)}`,
         );
-        logger.info(
-          "Definition created at {path}",
-          { path: e.definitionPath },
-        );
+        writeContentLine(dim(`at ${e.definitionPath}`));
       },
       global_args_updated: (e) => {
-        getRunLogger(this.modelName, this.methodName).info(
-          "Updated global arguments on definition {name}",
-          { name: e.definitionName },
+        writeGutterLine(
+          "Updated",
+          STATUS_COLORS.info,
+          `global arguments on ${e.definitionName}`,
         );
       },
       model_resolved: (e) => {
         this.modelName = e.modelName;
         this.methodName = e.methodName;
-        getRunLogger(e.modelName, e.methodName).info(
-          "Found model {name} ({type})",
-          { name: e.modelName, type: e.modelType },
+        writeGutterLine(
+          "Resolved",
+          STATUS_COLORS.info,
+          `${e.modelName} ${dim(`(${e.modelType})`)}`,
         );
       },
       env_var_warning: (e) => {
-        const logger = getRunLogger(e.modelName, this.methodName);
-        logger.warn(
+        writeGutterLine(
+          "Warning",
+          STATUS_COLORS.warn,
           "Environment variables detected in model definition",
         );
         for (const detail of e.envVars) {
-          logger.warn("  {path} uses {envVar}", {
-            path: detail.path,
-            envVar: detail.envVar,
-          });
+          writeContentLine(`${detail.path} uses ${detail.envVar}`);
         }
-        logger.warn("{message}", { message: e.message });
+        writeContentLine(e.message);
       },
-      evaluating_expressions: (e) => {
-        const logger = getRunLogger(this.modelName, this.methodName);
-        if (e.lastEvaluated) {
-          logger.info("Loading last evaluated definition");
-        } else {
-          logger.info("Evaluating expressions");
-        }
-      },
+      evaluating_expressions: () => {},
       executing: (e) => {
-        getRunLogger(e.modelName, e.methodName).info(
-          "Executing method {method}",
-          { method: e.methodName },
+        writeGutterLine(
+          "Executing",
+          STATUS_COLORS.info,
+          e.methodName,
+          formatTimestamp(),
         );
       },
       method_output: (e) => {
-        const logger = getRunLogger(e.modelName, e.methodName);
-        const escaped = escapeLogTemplate(e.line);
-        if (e.stream === "stderr") {
-          logger.warn(escaped);
+        if (this.quiet) {
+          this.outputBuffer.push(e.line);
+          if (this.outputBuffer.length > QUIET_BUFFER_LIMIT) {
+            this.outputBuffer.shift();
+          }
         } else {
-          logger.info(escaped);
+          writeContentLine(e.line);
         }
       },
       method_event: (e) => {
-        const logger = getRunLogger(e.modelName, e.methodName);
         switch (e.event.type) {
           case "vault_secret_stored":
-            logger.info(
-              "Stored sensitive field '{fieldPath}' in vault '{vaultName}'",
-              {
-                fieldPath: e.event.fieldPath,
-                vaultName: e.event.vaultName,
-              },
+            writeGutterLine(
+              "Stored",
+              STATUS_COLORS.dim,
+              `'${e.event.fieldPath}' in vault '${e.event.vaultName}'`,
             );
             break;
           case "schema_validation_warning":
-            logger.warn(
-              "Resource '{specName}' (instance '{instanceName}') data does not match schema: {error}",
-              {
-                specName: e.event.specName,
-                instanceName: e.event.instanceName,
-                error: e.event.error,
-              },
+            writeGutterLine(
+              "Warning",
+              STATUS_COLORS.warn,
+              `Resource '${e.event.specName}' (instance '${e.event.instanceName}') data does not match schema: ${e.event.error}`,
             );
             break;
           case "vault_single_quote_warning":
-            logger.warn(e.event.message);
+            writeGutterLine("Warning", STATUS_COLORS.warn, e.event.message);
             break;
         }
       },
-      data_artifact_saved: (e) => {
-        getRunLogger(this.modelName, this.methodName).info(
-          "Data saved to {path}",
-          { path: e.path, name: e.name },
-        );
-      },
+      data_artifact_saved: () => {},
       report_started: () => {},
       report_completed: (e) => {
-        const logger = getRunLogger(this.modelName, this.methodName);
-        logger.info('Running report: "{reportName}"', {
-          reportName: e.reportName,
-        });
+        if (e.reportName === "@swamp/method-summary") return;
         const cols = getTerminalColumns();
-        const headerPrefix = `\u2500\u2500 Report: ${e.reportName} `;
-        const headerSep = "\u2500".repeat(
+        const headerPrefix = `── Report: ${e.reportName} `;
+        const headerSep = "─".repeat(
           Math.max(0, cols - headerPrefix.length),
         );
-        const separator = "\u2500".repeat(cols);
+        const separator = "─".repeat(cols);
+        writeBlankLine();
+        writeGutterLine("Report", STATUS_COLORS.info, e.reportName);
         writeOutput(
           `${headerPrefix}${headerSep}\n${
             renderMarkdownToTerminal(e.markdown, { maxWidth: cols })
@@ -169,62 +164,73 @@ class LogModelMethodRunRenderer implements ModelMethodRunRenderer {
         );
       },
       report_failed: (e) => {
-        getRunLogger(this.modelName, this.methodName).warn(
-          "Report {reportName} failed, fell back to default error report: {error}",
-          { reportName: e.reportName, error: e.error },
+        writeGutterLine(
+          "Warning",
+          STATUS_COLORS.warn,
+          `Report ${e.reportName} failed: ${e.error}`,
         );
       },
       completed: (e) => {
         if (e.run.status === "failed") {
           this._failed = true;
+          this.replayBufferOnFailure();
+          writeBlankLine();
+          const duration = e.run.duration
+            ? ` ${dim(`in ${formatDuration(e.run.duration)}`)}`
+            : "";
+          writeGutterLine(
+            "Failed",
+            STATUS_COLORS.error,
+            `${e.run.methodName} on ${e.run.modelName}${duration}`,
+            formatTimestamp(),
+          );
+          if (e.run.logFile) {
+            writeBlankLine();
+            writeContentLine(dim(`Full output: ${e.run.logFile}`));
+          }
         } else {
-          getRunLogger(e.run.modelName, e.run.methodName)
-            .with({ summary: true })
-            .info("Method {method} completed on {model}", {
-              method: e.run.methodName,
-              model: e.run.modelName,
-              artifacts: e.run.dataArtifacts.length,
-            });
+          writeBlankLine();
+          const duration = e.run.duration
+            ? ` ${dim(`in ${formatDuration(e.run.duration)}`)}`
+            : "";
+          writeGutterLine(
+            "Completed",
+            STATUS_COLORS.success,
+            `${e.run.methodName} on ${e.run.modelName} succeeded${duration}`,
+            formatTimestamp(),
+          );
+          this.renderDataArtifacts(e.run.dataArtifacts, {
+            globalArguments: e.run.globalArguments,
+            methodArguments: e.run.methodArguments,
+            modelName: e.run.modelName,
+          });
           if (!this.isAuthenticated) {
-            getRunLogger(e.run.modelName, e.run.methodName).info("");
-            getRunLogger(e.run.modelName, e.run.methodName)
-              .info(AUTH_NUDGE_MESSAGE);
+            writeBlankLine();
+            writeOutput(dim(AUTH_NUDGE_MESSAGE));
           }
         }
       },
       cancelled: (e) => {
         this._failed = true;
-        getRunLogger(e.run.modelName, e.run.methodName)
-          .with({ summary: true })
-          .warn("Method {method} cancelled on {model}", {
-            method: e.run.methodName,
-            model: e.run.modelName,
-            reason: e.reason,
-          });
+        const reason = e.reason ? `: ${e.reason}` : "";
+        writeBlankLine();
+        writeGutterLine(
+          "Cancelled",
+          STATUS_COLORS.warn,
+          `${e.run.methodName} on ${e.run.modelName}${reason}`,
+          formatTimestamp(),
+        );
       },
-      auto_gc_started: () => {
-        const logger = getRunLogger(this.modelName, this.methodName);
-        logger.info("Running auto-GC (autoGc is enabled in .swamp.yaml)");
-      },
+      auto_gc_started: () => {},
       auto_gc_completed: (e) => {
-        const logger = getRunLogger(this.modelName, this.methodName);
-        if (e.dataEntriesExpired > 0) {
-          logger.info(
-            "Auto-GC: expired {dataEntriesExpired} data entry/entries, removed {versionsDeleted} version(s), reclaimed {bytesReclaimed} bytes",
-            {
-              dataEntriesExpired: e.dataEntriesExpired,
-              versionsDeleted: e.versionsDeleted,
-              bytesReclaimed: e.bytesReclaimed,
-            },
-          );
-        } else {
-          logger.info(
-            "Auto-GC: removed {versionsDeleted} version(s), reclaimed {bytesReclaimed} bytes",
-            {
-              versionsDeleted: e.versionsDeleted,
-              bytesReclaimed: e.bytesReclaimed,
-            },
-          );
+        if (e.versionsDeleted > 0 || e.dataEntriesExpired > 0) {
+          const parts: string[] = [];
+          if (e.dataEntriesExpired > 0) {
+            parts.push(`${e.dataEntriesExpired} expired`);
+          }
+          parts.push(`${e.versionsDeleted} version(s) removed`);
+          parts.push(`${e.bytesReclaimed} bytes reclaimed`);
+          writeGutterLine("Cleanup", STATUS_COLORS.dim, parts.join(", "));
         }
       },
       error: (e) => {
@@ -235,6 +241,31 @@ class LogModelMethodRunRenderer implements ModelMethodRunRenderer {
 
   runFailed(): boolean {
     return this._failed;
+  }
+
+  private replayBufferOnFailure(): void {
+    if (!this.quiet || this.outputBuffer.length === 0) return;
+    writeBlankLine();
+    writeContentLine(dim(`─── output ───`));
+    for (const line of this.outputBuffer) {
+      writeContentLine(line);
+    }
+    writeContentLine(dim(`───────────────`));
+    this.outputBuffer = [];
+  }
+
+  private renderDataArtifacts(
+    artifacts: Array<{ name: string; attributes?: Record<string, unknown> }>,
+    options?: DataBoxOptions,
+  ): void {
+    const dataArtifacts: DataArtifact[] = artifacts.map((a) => ({
+      name: a.name,
+      attributes: a.attributes,
+    }));
+    const lines = renderDataBox(dataArtifacts, options);
+    for (const line of lines) {
+      writeOutput(`  ${line}`);
+    }
   }
 }
 
@@ -317,6 +348,6 @@ export function createModelMethodRunRenderer(
     case "json":
       return new JsonModelMethodRunRenderer();
     case "log":
-      return new LogModelMethodRunRenderer(opts);
+      return new ConsoleModelMethodRunRenderer(opts);
   }
 }
