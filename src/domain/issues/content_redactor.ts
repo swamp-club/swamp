@@ -123,11 +123,12 @@ const LONG_BASE64_RE = /\b[A-Za-z0-9+/]{32,}={0,2}(?=\s|$)/g;
 
 // env-var style secrets: VAR_NAME=value where name contains sensitive
 // keywords. The value is either an explicitly quoted span (matched as a
-// unit so the interior can be redacted with the delimiters preserved) or
-// an unquoted run that stops before a closing quote/backtick — a bare \S+
-// would consume the delimiter and break surrounding shell/YAML syntax.
+// unit so the interior can be redacted with the delimiters preserved),
+// an angle-bracket placeholder (<description>), or an unquoted run that
+// stops before a closing quote/backtick — a bare \S+ would consume the
+// delimiter and break surrounding shell/YAML syntax.
 const ENV_SECRET_RE =
-  /\b([A-Z_]*(?:PASSWORD|SECRET|TOKEN|API_KEY|APIKEY|PRIVATE_KEY|ACCESS_KEY|AUTH)[A-Z_]*)=("[^"\n]*"|'[^'\n]*'|`[^`\n]*`|[^\s"'`]+)/gi;
+  /\b([A-Z_]*(?:PASSWORD|SECRET|TOKEN|API_KEY|APIKEY|PRIVATE_KEY|ACCESS_KEY|AUTH)[A-Z_]*)=("[^"\n]*"|'[^'\n]*'|`[^`\n]*`|<[^>\n]*>|[^\s"'`]+)/gi;
 
 // Values that contain no secret material and must survive redaction:
 // already-masked values (all asterisks) and shell variable references —
@@ -196,6 +197,297 @@ function isPublicHost(host: string): boolean {
   return false;
 }
 
+function isSafeIpv4(ip: string): boolean {
+  if (ip === "0.0.0.0" || ip === "255.255.255.255") return true;
+  const parts = ip.split(".");
+  if (parts.length !== 4) return false;
+  const [a, b, c] = parts.map(Number);
+  // 127.0.0.0/8 loopback
+  if (a === 127) return true;
+  // 169.254.0.0/16 link-local
+  if (a === 169 && b === 254) return true;
+  // RFC 5737 documentation ranges
+  if (a === 192 && b === 0 && c === 2) return true;
+  if (a === 198 && b === 51 && c === 100) return true;
+  if (a === 203 && b === 0 && c === 113) return true;
+  return false;
+}
+
+function isSafeIpv6(ip: string): boolean {
+  const lower = ip.toLowerCase();
+  if (lower === "::1") return true;
+  if (lower.startsWith("fe80:") || lower.startsWith("fe80::")) return true;
+  return false;
+}
+
+// Common TLDs — used to distinguish real hostnames from dotted code
+// identifiers in the FQDN matcher. Code identifiers like "includes",
+// "get", "env", "length" are not TLDs so they get skipped.
+const COMMON_TLDS = new Set([
+  "ac",
+  "ad",
+  "ae",
+  "af",
+  "ag",
+  "ai",
+  "al",
+  "am",
+  "ao",
+  "app",
+  "ar",
+  "as",
+  "at",
+  "au",
+  "az",
+  "ba",
+  "be",
+  "bg",
+  "bh",
+  "bi",
+  "biz",
+  "bj",
+  "bn",
+  "bo",
+  "br",
+  "bs",
+  "bt",
+  "bw",
+  "by",
+  "bz",
+  "ca",
+  "cat",
+  "cc",
+  "cd",
+  "cf",
+  "cg",
+  "ch",
+  "ci",
+  "ck",
+  "cl",
+  "cloud",
+  "cm",
+  "cn",
+  "co",
+  "com",
+  "cr",
+  "cu",
+  "cv",
+  "cx",
+  "cy",
+  "cz",
+  "de",
+  "dev",
+  "dj",
+  "dk",
+  "dm",
+  "do",
+  "dz",
+  "ec",
+  "edu",
+  "ee",
+  "eg",
+  "er",
+  "es",
+  "et",
+  "eu",
+  "fi",
+  "fj",
+  "fk",
+  "fm",
+  "fo",
+  "fr",
+  "ga",
+  "gd",
+  "ge",
+  "gg",
+  "gh",
+  "gi",
+  "gl",
+  "gm",
+  "gn",
+  "gov",
+  "gp",
+  "gq",
+  "gr",
+  "gs",
+  "gt",
+  "gu",
+  "gw",
+  "gy",
+  "hk",
+  "hm",
+  "hn",
+  "hr",
+  "ht",
+  "hu",
+  "id",
+  "ie",
+  "il",
+  "im",
+  "in",
+  "info",
+  "int",
+  "io",
+  "iq",
+  "ir",
+  "is",
+  "it",
+  "je",
+  "jm",
+  "jo",
+  "jobs",
+  "jp",
+  "ke",
+  "kg",
+  "kh",
+  "ki",
+  "km",
+  "kn",
+  "kp",
+  "kr",
+  "kw",
+  "ky",
+  "kz",
+  "la",
+  "land",
+  "lb",
+  "lc",
+  "li",
+  "lk",
+  "lr",
+  "ls",
+  "lt",
+  "lu",
+  "lv",
+  "ly",
+  "ma",
+  "mc",
+  "md",
+  "me",
+  "mg",
+  "mh",
+  "mil",
+  "mk",
+  "ml",
+  "mm",
+  "mn",
+  "mo",
+  "mp",
+  "mq",
+  "mr",
+  "ms",
+  "mt",
+  "mu",
+  "museum",
+  "mv",
+  "mw",
+  "mx",
+  "my",
+  "mz",
+  "na",
+  "name",
+  "nc",
+  "ne",
+  "net",
+  "nf",
+  "ng",
+  "ni",
+  "nl",
+  "no",
+  "np",
+  "nr",
+  "nu",
+  "nz",
+  "om",
+  "onion",
+  "org",
+  "pa",
+  "page",
+  "pe",
+  "pf",
+  "pg",
+  "ph",
+  "pk",
+  "pl",
+  "pm",
+  "pn",
+  "pr",
+  "pro",
+  "ps",
+  "pt",
+  "pw",
+  "py",
+  "qa",
+  "re",
+  "ro",
+  "rs",
+  "ru",
+  "run",
+  "rw",
+  "sa",
+  "sb",
+  "sc",
+  "sd",
+  "se",
+  "sg",
+  "sh",
+  "si",
+  "site",
+  "sk",
+  "sl",
+  "sm",
+  "sn",
+  "so",
+  "sr",
+  "ss",
+  "st",
+  "su",
+  "sv",
+  "sx",
+  "sy",
+  "sz",
+  "tc",
+  "td",
+  "tel",
+  "tf",
+  "tg",
+  "th",
+  "tj",
+  "tk",
+  "tl",
+  "tm",
+  "tn",
+  "to",
+  "today",
+  "tr",
+  "tt",
+  "tv",
+  "tw",
+  "tz",
+  "ua",
+  "ug",
+  "uk",
+  "us",
+  "uy",
+  "uz",
+  "va",
+  "vc",
+  "ve",
+  "vg",
+  "vi",
+  "vn",
+  "vu",
+  "website",
+  "wf",
+  "ws",
+  "xxx",
+  "ye",
+  "yt",
+  "za",
+  "zm",
+  "zw",
+]);
+
 function applyRedactions(
   text: string,
   placeholders: PlaceholderMap,
@@ -241,6 +533,7 @@ function applyRedactions(
     ENV_SECRET_RE,
     (match, name: string, value: string) => {
       const first = value[0];
+      if (first === "<") return match;
       const quote = first === '"' || first === "'" || first === "`"
         ? first
         : "";
@@ -324,6 +617,7 @@ function applyRedactions(
 
   // 12. IPv6 (before IPv4 to avoid partial matches on mapped addresses)
   result = result.replace(IPV6_RE, (match) => {
+    if (isSafeIpv6(match)) return match;
     count("IP address");
     return placeholders.get("IP", match);
   });
@@ -331,6 +625,7 @@ function applyRedactions(
   // 13. IPv4 (the regex requires exactly 4 octets, so 3-segment version
   //     strings like "1.23.4" never match — no version guard needed)
   result = result.replace(IPV4_RE, (match) => {
+    if (isSafeIpv4(match)) return match;
     count("IP address");
     return placeholders.get("IP", match);
   });
@@ -343,12 +638,18 @@ function applyRedactions(
   });
 
   // 15. FQDNs (3+ segments)
-  result = result.replace(FQDN_RE, (match) => {
-    if (isPublicHost(match)) return match;
-    if (isVersionString(match)) return match;
-    count("hostname");
-    return placeholders.get("HOST", match);
-  });
+  result = result.replace(
+    FQDN_RE,
+    (match: string, offset: number, source: string) => {
+      if (isPublicHost(match)) return match;
+      if (isVersionString(match)) return match;
+      if (source[offset + match.length] === "(") return match;
+      const tld = match.slice(match.lastIndexOf(".") + 1).toLowerCase();
+      if (!COMMON_TLDS.has(tld)) return match;
+      count("hostname");
+      return placeholders.get("HOST", match);
+    },
+  );
 
   // 16. Long hex strings (likely tokens/hashes — after all specific patterns)
   result = result.replace(LONG_HEX_RE, (match) => {
