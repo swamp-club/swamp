@@ -456,7 +456,7 @@ Deno.test("FileLock - contention message includes lock file path", async () => {
 
     await assertRejects(() => waiter.acquire(), LockTimeoutError);
 
-    const lockPath = join(dir, ".datastore.lock");
+    const lockPath = `${dir}/.datastore.lock`;
     const messages = capturedLogRecords.map((r) =>
       r.message.map((p) => String(p)).join("")
     );
