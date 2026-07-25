@@ -102,8 +102,9 @@ Deno.test("renderAutoResolveAlreadyInstalled: log mode shows Error not Warning",
   const output = lines.join("\n");
   assertStringIncludes(output, "Error");
   assertEquals(output.includes("Warning"), false);
+  assertStringIncludes(output, "already installed at");
   assertStringIncludes(output, "failed to load");
-  assertStringIncludes(output, "swamp extension pull @acme/widget --force");
+  assertStringIncludes(output, 'swamp extension pull "@acme/widget" --force');
 });
 
 Deno.test("renderAutoResolveTruncated: log mode shows Error not Warning", () => {

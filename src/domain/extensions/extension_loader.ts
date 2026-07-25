@@ -377,7 +377,7 @@ export class ExtensionLoader {
     });
     if (guard.shouldInvalidate && guard.reason !== "not-populated") {
       this.logger
-        .info`Catalog invalidated for ${this.adapter.kind} rescan: ${guard.reason}`;
+        .debug`Catalog invalidated for ${this.adapter.kind} rescan: ${guard.reason}`;
       catalog.invalidate(this.adapter.kind);
 
       if (guard.reason === "layout-version-mismatch") {

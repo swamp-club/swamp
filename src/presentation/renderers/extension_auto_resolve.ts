@@ -144,14 +144,14 @@ export function renderAutoResolveAlreadyInstalled(
       gutterLine(
         "Error",
         STATUS_COLORS.error,
-        `${extension} is installed at ${path} but failed to load`,
+        `${extension} already installed at ${path} but failed to load`,
       ),
     );
     writeContentLine(
       "Local edits may be preventing it from registering — inspect the source and fix errors.",
     );
     writeContentLine(
-      `To reset: swamp extension pull ${extension} --force`,
+      `To reset: swamp extension pull "${extension}" --force`,
     );
   }
 }
