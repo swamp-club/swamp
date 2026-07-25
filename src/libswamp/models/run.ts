@@ -677,23 +677,9 @@ export async function* modelMethodRun(
               });
           }
 
-          if (
-            "workflowGateService" in executionService &&
-            !executionService.workflowGateService &&
-            deps.workflowRepo &&
-            deps.workflowRunRepo
-          ) {
-            const { createWorkflowGateService } = await import(
-              "./workflow_gate.ts"
-            );
-            (executionService as {
-              workflowGateService?:
-                import("../../domain/models/workflow_gate_service.ts").WorkflowGateService;
-            }).workflowGateService = createWorkflowGateService(
-              deps.workflowRepo,
-              deps.workflowRunRepo,
-            );
-          }
+          // Gate service intentionally not wired here — approving/rejecting
+          // workflow gates from model code bypasses authorization. Use the
+          // CLI (swamp workflow approve/reject) or WebSocket API instead.
 
           // Start heartbeat inside the try so it's always cleaned up on error.
           if (deps.runTracker) {

@@ -27,6 +27,7 @@ interface AuthState {
   authenticated: boolean;
   collectiveToken: boolean;
   authScopes: string[] | undefined;
+  scopeResolutionFailed: boolean;
 }
 
 const STATE_KEY = "__swamp_auth_state__";
@@ -37,6 +38,7 @@ function state(): AuthState {
       authenticated: false,
       collectiveToken: false,
       authScopes: undefined,
+      scopeResolutionFailed: false,
     };
   }
   return g[STATE_KEY];
@@ -64,6 +66,10 @@ export function setAuthScopes(scopes: string[] | undefined): void {
 
 export function getAuthScopes(): string[] | undefined {
   return state().authScopes;
+}
+
+export function setScopeResolutionFailed(value: boolean): void {
+  state().scopeResolutionFailed = value;
 }
 
 export function requireAuthenticated(
@@ -105,6 +111,17 @@ export function requireScope(scope: string): void {
     s.authScopes !== undefined &&
     s.authScopes.some((held) => scopeMatches(held, scope))
   ) return;
+
+  if (s.authScopes === undefined && s.scopeResolutionFailed) {
+    throw new UserError(
+      `Could not verify your collective token's scopes (the startup\n` +
+        `connectivity check to swamp-club.com failed). Retry, or check\n` +
+        `your network connectivity.\n\n` +
+        `If the problem persists, sign in with your personal account:\n\n` +
+        `  swamp auth login\n`,
+      "scope_unverified",
+    );
+  }
 
   throw new UserError(
     `Your collective token lacks the ${scope} scope.\n\n` +

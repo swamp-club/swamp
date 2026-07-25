@@ -19,7 +19,6 @@
 
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { createLibSwampContext, modelMethodRun } from "../libswamp/mod.ts";
-import { SERVER_TOKEN_MODEL_TYPE } from "../domain/models/access/server_token_model.ts";
 import { createModelMethodRunDeps } from "./deps.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
@@ -121,9 +120,7 @@ export async function authenticateServerToken(
     };
   }
 
-  const deps = await createModelMethodRunDeps(repoDir, repoContext, {
-    directExecution: true,
-  });
+  const deps = await createModelMethodRunDeps(repoDir, repoContext);
   const libCtx = createLibSwampContext({});
 
   let principalId: string | undefined;
@@ -135,8 +132,6 @@ export async function authenticateServerToken(
       methodName: "redeem",
       inputs: { presentedToken: presented },
       lastEvaluated: false,
-      typeArg: SERVER_TOKEN_MODEL_TYPE.normalized,
-      definitionName: split.name,
       skipAllReports: true,
     })
   ) {
