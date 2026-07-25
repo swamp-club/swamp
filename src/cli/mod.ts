@@ -111,6 +111,7 @@ import {
   setAuthenticated,
   setAuthScopes,
   setCollectiveToken,
+  setScopeResolutionFailed,
 } from "./auth_context.ts";
 import {
   apiKeyFingerprint,
@@ -1378,8 +1379,11 @@ export async function runCli(args: string[]): Promise<void> {
           }
         }
       }
-    } catch {
-      // Best-effort — don't block CLI startup
+    } catch (err) {
+      setScopeResolutionFailed(true);
+      logger.warn`Scope resolution failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`;
     }
   }
 

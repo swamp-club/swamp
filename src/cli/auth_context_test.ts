@@ -26,6 +26,7 @@ import {
   setAuthenticated,
   setAuthScopes,
   setCollectiveToken,
+  setScopeResolutionFailed,
 } from "./auth_context.ts";
 import { UserError } from "../domain/errors.ts";
 
@@ -108,14 +109,31 @@ Deno.test("requireScope: throws when collective token has empty scopes", () => {
   setAuthScopes(undefined);
 });
 
-Deno.test("requireScope: throws when collective token has undefined scopes (whoami failed)", () => {
+Deno.test("requireScope: throws missing_scope when collective token has undefined scopes", () => {
   setCollectiveToken("swamp_org_abc");
   setAuthScopes(undefined);
-  assertThrows(
+  setScopeResolutionFailed(false);
+  const err = assertThrows(
     () => requireScope("serve:*"),
     UserError,
   );
+  assertEquals(err.code, "missing_scope");
   setCollectiveToken("");
+});
+
+Deno.test("requireScope: throws scope_unverified when scope resolution failed", () => {
+  setCollectiveToken("swamp_org_abc");
+  setAuthScopes(undefined);
+  setScopeResolutionFailed(true);
+  const err = assertThrows(
+    () => requireScope("serve:*"),
+    UserError,
+  );
+  assertEquals(err.code, "scope_unverified");
+  assertStringIncludes(err.message, "Could not verify");
+  assertStringIncludes(err.message, "swamp-club.com");
+  setCollectiveToken("");
+  setScopeResolutionFailed(false);
 });
 
 Deno.test("scopeMatches: exact match", () => {

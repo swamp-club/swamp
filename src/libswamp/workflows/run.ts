@@ -562,15 +562,9 @@ export async function* workflowRun(
           ephemeral.catalog,
         );
 
-        if (!service.workflowGateService) {
-          const { createWorkflowGateService } = await import(
-            "../models/workflow_gate.ts"
-          );
-          service.workflowGateService = createWorkflowGateService(
-            deps.workflowRepo,
-            deps.runRepo,
-          );
-        }
+        // Gate service intentionally not wired here — approving/rejecting
+        // workflow gates from model code bypasses authorization. Use the
+        // CLI (swamp workflow approve/reject) or WebSocket API instead.
 
         // Per-method-invocation telemetry bridge. Constructed once per
         // stream consumption and finalized in the outer try/finally so

@@ -1926,7 +1926,7 @@ export const serveCommand = new Command()
           if (webhookResponse) return webhookResponse;
         }
 
-        // Cancel endpoint (authenticated — same auth as WebSocket)
+        // Cancel endpoint (authenticated + authorized)
         if (req.method === "POST") {
           const url = new URL(req.url);
           const cancelMatch = url.pathname.match(
@@ -1935,6 +1935,14 @@ export const serveCommand = new Command()
           const isBulkCancel = url.pathname === "/api/v1/cancel";
           if (cancelMatch || isBulkCancel) {
             if (authConfig.mode !== "none") {
+              const cancelRemoteAddr = trustProxy
+                ? (req.headers.get("x-forwarded-for")
+                  ?.split(",")[0]?.trim() ??
+                  info.remoteAddr.hostname)
+                : info.remoteAddr.hostname;
+              if (!checkRateLimit(cancelRemoteAddr)) {
+                return new Response("Too Many Requests", { status: 429 });
+              }
               const authHeader = req.headers.get("authorization");
               const token = authHeader?.startsWith("Bearer ")
                 ? authHeader.slice(7)
@@ -1951,6 +1959,27 @@ export const serveCommand = new Command()
               );
               if (!authResult.ok) {
                 return new Response("Unauthorized", { status: 401 });
+              }
+              clearRateLimit(cancelRemoteAddr);
+
+              const cancelPrincipal = parsePrincipal(authResult.principalId);
+              if (policySnapshotLoader) {
+                const service = policySnapshotLoader.decisionService;
+                const decision = service.decide(
+                  {
+                    principal: cancelPrincipal,
+                    collectives: [...authResult.collectives],
+                    groups: [...authResult.groups],
+                  },
+                  "admin",
+                  { kind: "access", name: "*", fields: {} },
+                );
+                if (!decision || decision.effect !== "allow") {
+                  return Response.json({
+                    status: "error",
+                    message: "Access denied: cancel requires admin permission",
+                  }, { status: 403 });
+                }
               }
             }
           }
