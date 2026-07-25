@@ -33,7 +33,6 @@ Deno.test("withConsoleGuard: captures console.log into logs array", async () => 
 
   assertEquals(logs.length, 1);
   assertStringIncludes(logs[0], "hello from extension");
-  assertStringIncludes(logs[0], "[log]");
 });
 
 Deno.test("withConsoleGuard: captures all console methods", async () => {
@@ -52,11 +51,11 @@ Deno.test("withConsoleGuard: captures all console methods", async () => {
   );
 
   assertEquals(logs.length, 5);
-  assertStringIncludes(logs[0], "[log] log msg");
-  assertStringIncludes(logs[1], "[info] info msg");
-  assertStringIncludes(logs[2], "[debug] debug msg");
-  assertStringIncludes(logs[3], "[warn] warn msg");
-  assertStringIncludes(logs[4], "[error] error msg");
+  assertStringIncludes(logs[0], "log msg");
+  assertStringIncludes(logs[1], "info msg");
+  assertStringIncludes(logs[2], "debug msg");
+  assertStringIncludes(logs[3], "warn msg");
+  assertStringIncludes(logs[4], "error msg");
 });
 
 Deno.test("withConsoleGuard: restores console after normal completion", async () => {
@@ -142,7 +141,7 @@ Deno.test("withConsoleGuard: handles circular objects without throwing", async (
   );
 
   assertEquals(logs.length, 1);
-  assertStringIncludes(logs[0], "[log] circular:");
+  assertStringIncludes(logs[0], "circular:");
   assertStringIncludes(logs[0], "name");
 });
 
@@ -187,11 +186,12 @@ Deno.test("withConsoleGuard: concurrent guards restore console after both comple
   assertEquals(console.log, originalLog);
 });
 
-Deno.test("withConsoleGuard: skips capture in non-JSON mode", async () => {
+Deno.test("withConsoleGuard: captures in non-JSON mode without stderr replay", async () => {
   const logs: string[] = [];
 
   const result = await withConsoleGuard(
     () => {
+      console.log("captured in log mode");
       return 99;
     },
     logs,
@@ -199,5 +199,6 @@ Deno.test("withConsoleGuard: skips capture in non-JSON mode", async () => {
   );
 
   assertEquals(result, 99);
-  assertEquals(logs.length, 0);
+  assertEquals(logs.length, 1);
+  assertStringIncludes(logs[0], "captured in log mode");
 });
