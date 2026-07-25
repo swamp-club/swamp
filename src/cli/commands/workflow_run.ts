@@ -414,7 +414,7 @@ export const workflowRunCommand = new Command()
 
         const renderer = createWorkflowRunRenderer(ctx.outputMode, {
           workflowName: workflowIdOrName,
-          forceLog: ctx.forceLog,
+
           isAuthenticated: isAuthenticated(),
           quiet: ctx.verbosity === "quiet",
         });
@@ -569,7 +569,6 @@ async function runWorkflowViaServer(
       }
       const renderer = createWorkflowRunRenderer(ctx.outputMode, {
         workflowName: workflowIdOrName,
-        forceLog: ctx.forceLog,
         isAuthenticated: isAuthenticated(),
         quiet: ctx.verbosity === "quiet",
       });

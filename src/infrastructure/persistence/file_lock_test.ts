@@ -17,12 +17,20 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { join } from "@std/path";
+import { configure, type LogRecord } from "@logtape/logtape";
 import { FileLock } from "./file_lock.ts";
 import type { LockInfo } from "../../domain/datastore/distributed_lock.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { initializeLogging } from "../logging/logger.ts";
+
+const capturedLogRecords: LogRecord[] = [];
 
 await initializeLogging({});
 
@@ -414,5 +422,51 @@ Deno.test("FileLock - maxWaitMs override is respected", async () => {
     );
 
     await holder.release();
+  });
+});
+
+Deno.test("FileLock - contention message includes lock file path", async () => {
+  await withTempDir(async (dir) => {
+    // Set up a LogTape capture sink for the datastore.lock category
+    capturedLogRecords.length = 0;
+    await configure({
+      sinks: {
+        capture: (record: LogRecord) => {
+          capturedLogRecords.push(record);
+        },
+      },
+      loggers: [
+        {
+          category: ["datastore", "lock"],
+          lowestLevel: "info",
+          sinks: ["capture"],
+        },
+      ],
+      reset: true,
+    });
+
+    const holder = new FileLock(dir, { ttlMs: 60_000 });
+    await holder.acquire();
+
+    const waiter = new FileLock(dir, {
+      ttlMs: 60_000,
+      retryIntervalMs: 50,
+      maxWaitMs: 300,
+    });
+
+    await assertRejects(() => waiter.acquire(), LockTimeoutError);
+
+    const lockPath = `${dir}/.datastore.lock`;
+    const messages = capturedLogRecords.map((r) =>
+      r.message.map((p) => String(p)).join("")
+    );
+    const output = messages.join("\n");
+    assertStringIncludes(output, lockPath);
+    assertStringIncludes(output, "Waiting for lock");
+
+    await holder.release();
+
+    // Restore normal logging
+    await initializeLogging({ _reset: true });
   });
 });

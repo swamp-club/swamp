@@ -183,18 +183,14 @@ export async function initializeLogging(
       {
         category: ["model", "method", "run"],
         lowestLevel: logLevel,
-        // In JSON mode these loggers override parent sinks, so the otel sink
-        // must be listed here explicitly or per-run logs would never reach it.
-        // In non-JSON mode they inherit the root's otel sink, so adding it here
-        // too would double-export — hence the jsonMode guard.
-        sinks: jsonMode ? ["runFile", ...otelSinks] : ["runFile"],
-        parentSinks: jsonMode ? "override" : "inherit",
+        sinks: ["runFile", ...otelSinks],
+        parentSinks: "override",
       },
       {
         category: ["workflow", "run"],
         lowestLevel: logLevel,
-        sinks: jsonMode ? ["runFile", ...otelSinks] : ["runFile"],
-        parentSinks: jsonMode ? "override" : "inherit",
+        sinks: ["runFile", ...otelSinks],
+        parentSinks: "override",
       },
       {
         category: ["logtape", "meta"],

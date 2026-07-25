@@ -113,8 +113,8 @@ export function renderAutoResolveNotFound(
   } else {
     writeOutput(
       gutterLine(
-        "Warning",
-        STATUS_COLORS.warn,
+        "Error",
+        STATUS_COLORS.error,
         `auto-resolution failed for type ${type}: no extension publishes this type`,
       ),
     );
@@ -142,8 +142,8 @@ export function renderAutoResolveAlreadyInstalled(
   } else {
     writeOutput(
       gutterLine(
-        "Warning",
-        STATUS_COLORS.warn,
+        "Error",
+        STATUS_COLORS.error,
         `${extension} is installed at ${path} but failed to load`,
       ),
     );
@@ -179,8 +179,8 @@ export function renderAutoResolveTruncated(
       : missing.join(", ");
     writeOutput(
       gutterLine(
-        "Warning",
-        STATUS_COLORS.warn,
+        "Error",
+        STATUS_COLORS.error,
         `${extension} at ${path} is incomplete — missing ${missing.length} file(s): ${list}`,
       ),
     );
@@ -237,8 +237,8 @@ export function renderAutoResolveNetworkError(
   } else {
     writeOutput(
       gutterLine(
-        "Warning",
-        STATUS_COLORS.warn,
+        "Error",
+        STATUS_COLORS.error,
         `auto-resolution failed for type ${type}: ${error}`,
       ),
     );

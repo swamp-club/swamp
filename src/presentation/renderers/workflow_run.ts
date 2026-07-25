@@ -46,7 +46,6 @@ import {
 
 export interface WorkflowRunRenderOpts {
   workflowName: string;
-  forceLog?: boolean;
   isAuthenticated?: boolean;
   quiet?: boolean;
 }
@@ -518,7 +517,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
           ),
         );
       },
-      suspended: () => {
+      suspended: (e) => {
         this.clearAllHeartbeats();
         if (!this.pipe) return;
         writeBlankLine();
@@ -527,11 +526,19 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             "system",
             "Suspended",
             STATUS_COLORS.warn,
-            `workflow ${this.workflowName}`,
+            `workflow ${this.workflowName} — awaiting approval on step ${e.stepId}`,
             formatTimestamp(),
           ),
         );
         writeBlankLine();
+        writeOutput(
+          this.pipe.line(
+            "system",
+            `${
+              yellow("To approve:")
+            }  swamp workflow approve ${this.workflowName} ${e.stepId}`,
+          ),
+        );
         writeOutput(
           this.pipe.line(
             "system",

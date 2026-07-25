@@ -19,8 +19,6 @@
 
 import { dirname, join, resolve, SEPARATOR, toFileUrl } from "@std/path";
 import { getLogger } from "@logtape/logtape";
-import { dim } from "@std/fmt/colors";
-import { getSystemPipeWidth } from "../../infrastructure/logging/logger.ts";
 import {
   bundleExtension,
   fixCjsEsmInterop,
@@ -378,14 +376,8 @@ export class ExtensionLoader {
       expectedSourceDirsFingerprint: currentSourceFingerprint,
     });
     if (guard.shouldInvalidate && guard.reason !== "not-populated") {
-      const syspad = "system".padStart(getSystemPipeWidth() + 1);
-      console.error(
-        `${dim(`${syspad} │`)} ${
-          dim(
-            `Catalog invalidated for ${this.adapter.kind} rescan: ${guard.reason}`,
-          )
-        }`,
-      );
+      this.logger
+        .info`Catalog invalidated for ${this.adapter.kind} rescan: ${guard.reason}`;
       catalog.invalidate(this.adapter.kind);
 
       if (guard.reason === "layout-version-mismatch") {

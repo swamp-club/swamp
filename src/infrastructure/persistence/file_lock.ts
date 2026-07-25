@@ -34,8 +34,7 @@ import type {
   LockOptions,
 } from "../../domain/datastore/distributed_lock.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
-import { getSwampLogger, getSystemPipeWidth } from "../logging/logger.ts";
-import { dim, yellow } from "@std/fmt/colors";
+import { getSwampLogger } from "../logging/logger.ts";
 import { isProcessDead } from "../runtime/process.ts";
 
 const DEFAULT_TTL_MS = 30_000;
@@ -127,12 +126,9 @@ export class FileLock implements DistributedLock {
 
         if (retryCount > 0) {
           const waitMs = Date.now() - startTime;
-          const syspad = "system".padStart(getSystemPipeWidth() + 1);
-          console.error(
-            `${dim(`${syspad} │`)} ${
-              dim(`Acquired lock after ${retryCount} retries (${waitMs}ms)`)
-            }`,
-          );
+          const logger = getSwampLogger(["datastore", "lock"]);
+          logger
+            .info`Acquired lock ${this.lockPath} after ${retryCount} retries (${waitMs}ms)`;
         }
         return;
       } catch (error) {
@@ -161,14 +157,9 @@ export class FileLock implements DistributedLock {
 
         if (!contentionLogged) {
           const ageMs = Date.now() - new Date(existing.acquiredAt).getTime();
-          const syspad2 = "system".padStart(getSystemPipeWidth() + 1);
-          console.error(
-            `${dim(`${syspad2} │`)} ${
-              yellow(
-                `Waiting for lock held by ${existing.holder} (pid ${existing.pid}, acquired ${ageMs}ms ago)`,
-              )
-            }`,
-          );
+          const logger = getSwampLogger(["datastore", "lock"]);
+          logger
+            .warn`Waiting for lock ${this.lockPath} held by ${existing.holder} (pid ${existing.pid}, acquired ${ageMs}ms ago)`;
           contentionLogged = true;
         }
       }
