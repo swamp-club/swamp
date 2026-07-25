@@ -394,6 +394,109 @@ Deno.test("redactIssueContent: IPv6 addresses are redacted", () => {
   );
 });
 
+// --- FQDN false-positive guards ---
+
+Deno.test("redactIssueContent: dotted code identifiers are not treated as hostnames", () => {
+  const r1 = redactIssueContent("s.authScopes.includes(scope)");
+  assertEquals(r1.text, "s.authScopes.includes(scope)");
+  assertEquals(r1.summary.totalRedactions, 0);
+
+  const r2 = redactIssueContent('Deno.env.get("SWAMP_API_KEY")');
+  assertEquals(r2.text, 'Deno.env.get("SWAMP_API_KEY")');
+  assertEquals(r2.summary.totalRedactions, 0);
+
+  const r3 = redactIssueContent("array.forEach.call(ctx)");
+  assertEquals(r3.text, "array.forEach.call(ctx)");
+  assertEquals(r3.summary.totalRedactions, 0);
+});
+
+Deno.test("redactIssueContent: dotted identifiers with non-TLD segments are not treated as hostnames", () => {
+  const r1 = redactIssueContent("config.database.timeout was 30s");
+  assertEquals(r1.text, "config.database.timeout was 30s");
+  assertEquals(r1.summary.totalRedactions, 0);
+
+  const r2 = redactIssueContent("obj.prototype.toString");
+  assertEquals(r2.text, "obj.prototype.toString");
+  assertEquals(r2.summary.totalRedactions, 0);
+});
+
+Deno.test("redactIssueContent: real FQDNs are still redacted", () => {
+  const result = redactIssueContent("Connected to api.acme-corp.prod.net");
+  assertStringIncludes(result.text, "[HOST-");
+  assertEquals(result.text.includes("api.acme-corp.prod.net"), false);
+});
+
+// --- Safe IP addresses ---
+
+Deno.test("redactIssueContent: loopback IPv4 is not redacted", () => {
+  const r1 = redactIssueContent("curl http://127.0.0.1:8080/api/health");
+  assertEquals(r1.text, "curl http://127.0.0.1:8080/api/health");
+  assertEquals(r1.summary.totalRedactions, 0);
+
+  const r2 = redactIssueContent("listening on 127.0.0.2");
+  assertEquals(r2.text, "listening on 127.0.0.2");
+  assertEquals(r2.summary.totalRedactions, 0);
+});
+
+Deno.test("redactIssueContent: RFC 5737 documentation IPs are not redacted", () => {
+  const r1 = redactIssueContent("example: curl http://192.0.2.1/test");
+  assertEquals(r1.text, "example: curl http://192.0.2.1/test");
+
+  const r2 = redactIssueContent("see 198.51.100.42 in the docs");
+  assertEquals(r2.text, "see 198.51.100.42 in the docs");
+
+  const r3 = redactIssueContent("203.0.113.5 is reserved for documentation");
+  assertEquals(r3.text, "203.0.113.5 is reserved for documentation");
+});
+
+Deno.test("redactIssueContent: 0.0.0.0 is not redacted", () => {
+  const result = redactIssueContent("bind to 0.0.0.0:3000");
+  assertEquals(result.text, "bind to 0.0.0.0:3000");
+});
+
+Deno.test("redactIssueContent: link-local IPv4 is not redacted", () => {
+  const result = redactIssueContent("APIPA assigned 169.254.1.5");
+  assertEquals(result.text, "APIPA assigned 169.254.1.5");
+});
+
+Deno.test("redactIssueContent: real IPv4 addresses are still redacted", () => {
+  const result = redactIssueContent("Server at 52.14.88.201");
+  assertStringIncludes(result.text, "[IP-");
+  assertEquals(result.text.includes("52.14.88.201"), false);
+});
+
+Deno.test("redactIssueContent: IPv6 localhost and link-local are not redacted", () => {
+  const r1 = redactIssueContent("listening on ::1 port 8080");
+  assertStringIncludes(r1.text, "::1");
+
+  const r2 = redactIssueContent(
+    "found fe80:0000:0000:0000:0000:0000:0000:0001 on interface",
+  );
+  assertStringIncludes(r2.text, "fe80:");
+});
+
+// --- Angle-bracket placeholder handling ---
+
+Deno.test("redactIssueContent: angle-bracket placeholders in env vars are not redacted", () => {
+  const r1 = redactIssueContent("SWAMP_API_KEY=<collective token>");
+  assertEquals(r1.text, "SWAMP_API_KEY=<collective token>");
+  assertEquals(r1.summary.totalRedactions, 0);
+
+  const r2 = redactIssueContent(
+    "SWAMP_API_KEY=<token with the matching 12-char head>",
+  );
+  assertEquals(r2.text, "SWAMP_API_KEY=<token with the matching 12-char head>");
+  assertEquals(r2.summary.totalRedactions, 0);
+});
+
+Deno.test("redactIssueContent: real env-var secrets are still redacted alongside safe IPs", () => {
+  const result = redactIssueContent(
+    "API_TOKEN=real_secret_value on 127.0.0.1",
+  );
+  assertStringIncludes(result.text, "[REDACTED-SECRET-1]");
+  assertStringIncludes(result.text, "127.0.0.1");
+});
+
 // --- redactIssueTitleAndBody ---
 
 Deno.test("redactIssueTitleAndBody: shares placeholders across title and body", () => {
