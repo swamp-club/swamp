@@ -53,6 +53,10 @@ import {
   SWAMP_SUBDIRS,
   swampPath,
 } from "../src/infrastructure/persistence/paths.ts";
+import { createDataPruneDeps } from "../src/libswamp/data/prune.ts";
+import { DefaultDatastorePathResolver } from "../src/infrastructure/persistence/default_datastore_path_resolver.ts";
+import { namespaceFromResolver } from "../src/infrastructure/persistence/repository_factory.ts";
+import type { DatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-data-prune-" });
@@ -214,5 +218,133 @@ Deno.test("Data Prune: no orphans when every model has a live definition", async
       (await dataRepo.listVersions(type, live.id, "state")).length,
       2,
     );
+  });
+});
+
+Deno.test("Data Prune: external datastore — auto-definition-backed model is NOT pruned (swamp-club#1396)", async () => {
+  await withTempDir(async (repoDir) => {
+    const datastoreDir = await Deno.makeTempDir({
+      prefix: "swamp-prune-ds-",
+    });
+    try {
+      const dsConfig: DatastoreConfig = {
+        type: "filesystem",
+        path: datastoreDir,
+      };
+      const resolver = new DefaultDatastorePathResolver(repoDir, dsConfig);
+
+      await ensureDir(join(repoDir, "models"));
+      await ensureDir(resolver.resolvePath(SWAMP_SUBDIRS.data));
+      await ensureDir(resolver.resolvePath(SWAMP_SUBDIRS.autoDefinitions));
+
+      const deps = createDataPruneDeps(repoDir, resolver);
+      const type = ModelType.create("swamp/server-token");
+
+      const autoDef = Definition.create({ name: "prodtoken" });
+      const autoDefRepo = new YamlDefinitionRepository(
+        repoDir,
+        undefined,
+        resolver.resolvePath(SWAMP_SUBDIRS.autoDefinitions),
+      );
+      await autoDefRepo.save(type, autoDef);
+
+      const dataRepo = new FileSystemUnifiedDataRepository(
+        repoDir,
+        resolver.resolvePath(SWAMP_SUBDIRS.data),
+        new CatalogStore(join(repoDir, "_catalog.db")),
+      );
+      await writeData(dataRepo, type, autoDef.id, "token-main", 1);
+
+      const orphans = await deps.findOrphanedData();
+      assertEquals(
+        orphans.length,
+        0,
+        "auto-def model must not be flagged as orphaned",
+      );
+
+      const result = await deps.deleteOrphanedData({ dryRun: false });
+      assertEquals(
+        result.modelsReclaimed,
+        0,
+        "auto-def model data must not be deleted",
+      );
+      assertEquals(
+        (await dataRepo.listVersions(type, autoDef.id, "token-main")).length,
+        1,
+        "token data must survive prune",
+      );
+    } finally {
+      if (Deno.build.os === "windows") {
+        await Deno.remove(datastoreDir, { recursive: true }).catch(() => {});
+      } else {
+        await Deno.remove(datastoreDir, { recursive: true });
+      }
+    }
+  });
+});
+
+Deno.test("Data Prune: namespaced datastore — auto-definition-backed model is NOT pruned (swamp-club#1396)", async () => {
+  await withTempDir(async (repoDir) => {
+    const datastoreDir = await Deno.makeTempDir({
+      prefix: "swamp-prune-ns-",
+    });
+    try {
+      const dsConfig: DatastoreConfig = {
+        type: "filesystem",
+        path: datastoreDir,
+        namespace: "team-alpha",
+      };
+      const resolver = new DefaultDatastorePathResolver(repoDir, dsConfig);
+
+      await ensureDir(join(repoDir, "models"));
+      await ensureDir(resolver.resolvePath(SWAMP_SUBDIRS.data));
+      await ensureDir(resolver.resolvePath(SWAMP_SUBDIRS.autoDefinitions));
+
+      const deps = createDataPruneDeps(repoDir, resolver);
+      const type = ModelType.create("swamp/grant");
+
+      const autoDef = Definition.create({ name: "grant-config-abc123" });
+      const autoDefRepo = new YamlDefinitionRepository(
+        repoDir,
+        undefined,
+        resolver.resolvePath(SWAMP_SUBDIRS.autoDefinitions),
+      );
+      await autoDefRepo.save(type, autoDef);
+
+      const dataRepo = new FileSystemUnifiedDataRepository(
+        repoDir,
+        resolver.resolvePath(SWAMP_SUBDIRS.data),
+        new CatalogStore(join(repoDir, "_catalog.db")),
+        undefined,
+        undefined,
+        namespaceFromResolver(resolver),
+      );
+      await writeData(dataRepo, type, autoDef.id, "grant-main", 1);
+
+      const orphans = await deps.findOrphanedData();
+      assertEquals(
+        orphans.length,
+        0,
+        "namespaced auto-def model must not be flagged as orphaned",
+      );
+
+      const result = await deps.deleteOrphanedData({ dryRun: false });
+      assertEquals(
+        result.modelsReclaimed,
+        0,
+        "namespaced auto-def model data must not be deleted",
+      );
+      assertEquals(
+        (await dataRepo.listVersions(type, autoDef.id, "grant-main")).length,
+        1,
+        "grant data must survive prune",
+      );
+    } finally {
+      if (Deno.build.os === "windows") {
+        await Deno.remove(datastoreDir, { recursive: true }).catch(() => {});
+      } else {
+        await Deno.remove(datastoreDir, { recursive: true });
+      }
+    }
   });
 });

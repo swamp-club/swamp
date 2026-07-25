@@ -125,7 +125,13 @@ export function createDataPruneDeps(
   // `swamp model get <id>` reports. isModelLive MUST use this per-item lookup —
   // NOT model search / findAllGlobal, which skip auto-definitions and would
   // falsely flag every auto-definition-backed model as orphaned.
-  const definitionRepo = new YamlDefinitionRepository(repoDir);
+  const autoDefDir = dsPath(SWAMP_SUBDIRS.autoDefinitions);
+  const definitionRepo = new YamlDefinitionRepository(
+    repoDir,
+    undefined,
+    undefined,
+    autoDefDir ?? undefined,
+  );
   const isModelLive: IsModelLive = async (type, modelId) =>
     (await definitionRepo.findById(type, createDefinitionId(modelId))) !== null;
 
