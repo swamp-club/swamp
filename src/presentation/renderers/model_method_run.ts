@@ -196,7 +196,7 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
           writeGutterLine(
             "Completed",
             STATUS_COLORS.success,
-            `${e.run.methodName} on ${e.run.modelName}${duration}`,
+            `${e.run.methodName} on ${e.run.modelName} succeeded${duration}`,
             formatTimestamp(),
           );
           this.renderDataArtifacts(e.run.dataArtifacts, {

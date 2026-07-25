@@ -347,7 +347,9 @@ export function toRunData(
   const startTime = run.startedAt?.getTime();
   const endTime = run.completedAt?.getTime();
 
-  const inputs = Object.keys(run.inputs).length > 0 ? run.inputs : undefined;
+  const inputs = run.inputs && Object.keys(run.inputs).length > 0
+    ? run.inputs
+    : undefined;
 
   return {
     id: run.id,
