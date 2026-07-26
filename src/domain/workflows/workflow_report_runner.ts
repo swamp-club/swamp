@@ -61,6 +61,7 @@ export interface WorkflowReportArgs {
   workflow: Workflow;
   workflowRunId: string;
   workflowStatus: "succeeded" | "failed";
+  inputs?: Record<string, unknown>;
   stepExecutions: WorkflowStepExecutionDetail[];
   reportFilterOptions: ReportFilterOptions;
   repoDir: string;
@@ -145,6 +146,7 @@ export class WorkflowReportRunner {
       workflowRunId: args.workflowRunId,
       workflowName: args.workflow.name,
       workflowStatus: args.workflowStatus,
+      inputs: args.inputs,
       stepExecutions: args.stepExecutions,
     };
 
