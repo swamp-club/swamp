@@ -341,7 +341,7 @@ Deno.test("CLI: workflow validate with no args validates all workflows", async (
   });
 });
 
-Deno.test("CLI: workflow validate errors when no workflows found", async () => {
+Deno.test("CLI: workflow validate succeeds with empty result when no workflows found", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
     const result = await runCliCommand(
@@ -355,8 +355,10 @@ Deno.test("CLI: workflow validate errors when no workflows found", async () => {
       Deno.cwd(),
     );
 
-    assertEquals(result.code !== 0, true, "Command should fail");
-    assertStringIncludes(result.stderr + result.stdout, "No workflows found");
+    assertEquals(result.code, 0, "Command should succeed");
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.passed, true);
+    assertEquals(output.workflows.length, 0);
   });
 });
 
