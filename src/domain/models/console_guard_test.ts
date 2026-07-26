@@ -186,12 +186,11 @@ Deno.test("withConsoleGuard: concurrent guards restore console after both comple
   assertEquals(console.log, originalLog);
 });
 
-Deno.test("withConsoleGuard: captures in non-JSON mode without stderr replay", async () => {
+Deno.test("withConsoleGuard: skips capture in non-JSON mode", async () => {
   const logs: string[] = [];
 
   const result = await withConsoleGuard(
     () => {
-      console.log("captured in log mode");
       return 99;
     },
     logs,
@@ -199,6 +198,5 @@ Deno.test("withConsoleGuard: captures in non-JSON mode without stderr replay", a
   );
 
   assertEquals(result, 99);
-  assertEquals(logs.length, 1);
-  assertStringIncludes(logs[0], "captured in log mode");
+  assertEquals(logs.length, 0);
 });

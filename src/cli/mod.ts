@@ -1467,6 +1467,7 @@ export async function runCli(args: string[]): Promise<void> {
         logLevel,
         jsonMode: options.json ?? false,
         noColor,
+        forceLog: options.log ?? false,
       });
 
       // Emit deferred warnings now that logging is initialized

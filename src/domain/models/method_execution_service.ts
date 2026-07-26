@@ -860,12 +860,6 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             "model.type": context.modelType.normalized,
           }, () => inProcessExecutor.execute(executionRequest));
 
-          if (context.onEvent && executionResult.logs.length > 0) {
-            for (const line of executionResult.logs) {
-              context.onEvent({ type: "output", line, stream: "stdout" });
-            }
-          }
-
           if (executionResult.outputs.some((o) => o.kind === "pending")) {
             throw new Error(
               "In-process execution unexpectedly produced pending outputs — " +

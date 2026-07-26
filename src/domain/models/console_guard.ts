@@ -55,15 +55,19 @@ export interface ConsoleGuardOptions {
 }
 
 // Redirects console methods to a capture array during fn execution.
-// Captures console output from extension code into `logs` so callers can
-// emit it as method_output events. In JSON mode, captured lines are also
-// replayed to stderr to prevent stdout pollution.
+// In JSON mode, captures console output from extension code into `logs`
+// and replays to stderr to prevent stdout pollution. In non-JSON mode,
+// console output flows to stdout normally (the renderer is not involved).
 export async function withConsoleGuard<T>(
   fn: () => T | Promise<T>,
   logs: string[],
   options?: ConsoleGuardOptions,
 ): Promise<T> {
   const effectiveJsonMode = options?.jsonMode ?? _jsonMode;
+
+  if (!effectiveJsonMode) {
+    return await fn();
+  }
 
   allActiveLogs.add(logs);
   if (activeGuards === 0) {
@@ -92,7 +96,7 @@ export async function withConsoleGuard<T>(
       }
     }
 
-    if (effectiveJsonMode && logs.length > 0) {
+    if (logs.length > 0) {
       for (const line of logs) {
         writeStderr(line);
       }
