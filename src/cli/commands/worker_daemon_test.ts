@@ -17,8 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
-import { collectWorkerEnv, collectWorkerExtraArgs } from "./worker_daemon.ts";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { resolve } from "@std/path";
+import {
+  collectWorkerEnv,
+  collectWorkerExtraArgs,
+  validateCacheDir,
+} from "./worker_daemon.ts";
+import { UserError } from "../../domain/errors.ts";
 
 Deno.test("collectWorkerExtraArgs: includes data-plane-url when provided", () => {
   const args = collectWorkerExtraArgs({
@@ -72,4 +78,47 @@ Deno.test("collectWorkerEnv: omits SWAMP_SERVER_TOKEN when not provided", () => 
 Deno.test("collectWorkerEnv: returns empty when no options", () => {
   const env = collectWorkerEnv({});
   assertEquals(Object.keys(env).length, 0);
+});
+
+Deno.test("validateCacheDir: rejects non-existent absolute path", async () => {
+  const err = await assertRejects(
+    () => validateCacheDir("/tmp/swamp-nonexistent-dir-abc123"),
+    UserError,
+  );
+  assertStringIncludes(err.message, "--cache-dir does not exist");
+  assertStringIncludes(err.message, "mkdir -p");
+});
+
+Deno.test("validateCacheDir: resolves relative path and rejects if missing", async () => {
+  const err = await assertRejects(
+    () => validateCacheDir("./nonexistent-relative-dir-abc123"),
+    UserError,
+  );
+  assertStringIncludes(err.message, "--cache-dir does not exist");
+  const expected = resolve("./nonexistent-relative-dir-abc123");
+  assertStringIncludes(err.message, expected);
+});
+
+Deno.test("validateCacheDir: accepts existing directory and returns absolute path", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp-test-cache-" });
+  try {
+    const result = await validateCacheDir(tmpDir);
+    assertEquals(result, tmpDir);
+  } finally {
+    await Deno.remove(tmpDir).catch(() => {});
+  }
+});
+
+Deno.test("validateCacheDir: rejects path that is a file, not a directory", async () => {
+  const tmpFile = await Deno.makeTempFile({ prefix: "swamp-test-cache-" });
+  try {
+    const err = await assertRejects(
+      () => validateCacheDir(tmpFile),
+      UserError,
+    );
+    assertStringIncludes(err.message, "--cache-dir is not a directory");
+    assertStringIncludes(err.message, "mkdir -p");
+  } finally {
+    await Deno.remove(tmpFile).catch(() => {});
+  }
 });
