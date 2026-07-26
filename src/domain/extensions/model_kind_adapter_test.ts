@@ -87,6 +87,53 @@ export const model = {
   assertEquals(result?.extendsType, "");
 });
 
+Deno.test("extractTypeFromSource: model with inline structural type annotation extracts type and version", () => {
+  const source = `
+import { z } from "npm:zod";
+export const model: {
+  type: string;
+  version: string;
+  resources: Record<string, {
+    nested: { deep: true };
+  }>;
+} = {
+  type: "@test/greeter",
+  version: "2026.01.01.0",
+};`;
+  const result = modelKindAdapter.extractTypeFromSource(source);
+  assertEquals(result?.typeNormalized, "@test/greeter");
+  assertEquals(result?.version, "2026.01.01.0");
+  assertEquals(result?.kind, "model");
+  assertEquals(result?.extendsType, "");
+});
+
+Deno.test("extractTypeFromSource: extension with inline type annotation extracts type", () => {
+  const source = `
+import { z } from "npm:zod";
+export const extension: {
+  type: string;
+} = {
+  type: "@test/greeter",
+};`;
+  const result = modelKindAdapter.extractTypeFromSource(source);
+  assertEquals(result?.typeNormalized, "@test/greeter");
+  assertEquals(result?.kind, "extension");
+  assertEquals(result?.extendsType, "@test/greeter");
+});
+
+Deno.test("extractTypeFromSource: model with simple named type annotation extracts type", () => {
+  const source = `
+import { z } from "npm:zod";
+export const model: ModelDefinition = {
+  type: "@test/greeter",
+  version: "2026.01.01.0",
+};`;
+  const result = modelKindAdapter.extractTypeFromSource(source);
+  assertEquals(result?.typeNormalized, "@test/greeter");
+  assertEquals(result?.version, "2026.01.01.0");
+  assertEquals(result?.kind, "model");
+});
+
 Deno.test("importAndExtendBundle: skips standalone model bundle without throwing", async () => {
   const entry = {
     source_path: "/tmp/fake/model.ts",

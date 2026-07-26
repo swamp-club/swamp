@@ -71,7 +71,7 @@ export const vaultKindAdapter: KindAdapter = {
   extractTypeFromSource(source: string) {
     if (!/export\s+const\s+vault\s*[=:]/.test(source)) return null;
     const typeMatch = source.match(
-      /export\s+const\s+vault\s*=\s*\{[\s\S]*?type\s*:\s*["']([^"']+)["']/,
+      /export\s+const\s+vault\b[\s\S]*?=\s*\{[\s\S]*?type\s*:\s*["']([^"']+)["']/,
     );
     if (!typeMatch) return null;
     return {
