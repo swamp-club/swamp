@@ -26,6 +26,7 @@ import type {
 import type { Workflow } from "./workflow.ts";
 import { DataArtifactRefSchema } from "../models/model_output.ts";
 import type { DataArtifactRef } from "../models/model_output.ts";
+import { AssertSeveritySchema } from "./step_task.ts";
 
 /**
  * Zod schema for an approval decision recorded on a manual_approval step.
@@ -38,6 +39,15 @@ export const ApprovalDecisionSchema = z.object({
 });
 
 export type ApprovalDecisionData = z.infer<typeof ApprovalDecisionSchema>;
+
+export const AssertResultSchema = z.object({
+  passed: z.boolean(),
+  expr: z.string(),
+  message: z.string(),
+  severity: AssertSeveritySchema,
+});
+
+export type AssertResultData = z.infer<typeof AssertResultSchema>;
 
 /**
  * Zod schema for step run.
@@ -59,6 +69,7 @@ export const StepRunSchema = z.object({
   dataArtifacts: z.array(DataArtifactRefSchema).optional(),
   allowedFailure: z.boolean().optional(),
   approvalDecision: ApprovalDecisionSchema.optional(),
+  assertResult: AssertResultSchema.optional(),
 });
 
 /**
@@ -145,6 +156,7 @@ export class StepRun {
     private _dataArtifacts: DataArtifactRef[] = [],
     private _allowedFailure: boolean = false,
     private _approvalDecision: ApprovalDecisionData | undefined = undefined,
+    private _assertResult: AssertResultData | undefined = undefined,
   ) {}
 
   /**
@@ -178,6 +190,7 @@ export class StepRun {
       validated.dataArtifacts ?? [],
       validated.allowedFailure ?? false,
       validated.approvalDecision,
+      validated.assertResult,
     );
   }
 
@@ -219,11 +232,19 @@ export class StepRun {
     return this._approvalDecision;
   }
 
+  get assertResult(): AssertResultData | undefined {
+    return this._assertResult;
+  }
+
   /**
    * Records an approval or rejection decision on this step.
    */
   recordApprovalDecision(decision: ApprovalDecisionData): void {
     this._approvalDecision = decision;
+  }
+
+  recordAssertResult(result: AssertResultData): void {
+    this._assertResult = result;
   }
 
   /**
@@ -303,6 +324,9 @@ export class StepRun {
     }
     if (this._approvalDecision) {
       data.approvalDecision = { ...this._approvalDecision };
+    }
+    if (this._assertResult) {
+      data.assertResult = { ...this._assertResult };
     }
     return data;
   }

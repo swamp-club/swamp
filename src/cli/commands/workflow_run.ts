@@ -26,6 +26,10 @@ import {
   resolveTracestate,
 } from "../context.ts";
 import {
+  type AssertSeverity,
+  AssertSeveritySchema,
+} from "../../libswamp/mod.ts";
+import {
   acquireModelLocks,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
@@ -77,6 +81,7 @@ import {
   type WorkflowTelemetrySink,
 } from "../../libswamp/mod.ts";
 import { createWorkflowRunRenderer } from "../../presentation/renderers/workflow_run.ts";
+import { JUnitWorkflowRunRenderer } from "../../presentation/renderers/workflow_run_junit.ts";
 import { isAuthenticated } from "../auth_context.ts";
 import { getActiveTelemetryService } from "../telemetry_integration.ts";
 import {
@@ -177,6 +182,19 @@ export const workflowRunCommand = new Command()
     { collect: true },
   )
   .option(
+    "--fail-on <severity:string>",
+    "Minimum assert severity that fails the run (low, medium, high). Default: low (any failure).",
+  )
+  .option(
+    "--junit",
+    "Output assert results as JUnit XML instead of normal log output",
+    { default: false },
+  )
+  .option(
+    "--out <file:string>",
+    "Write output to file instead of stdout (only with --junit)",
+  )
+  .option(
     "--timeout <duration:string>",
     "Cancellation deadline — seconds (e.g. 30, 1800) or duration string (e.g. 30s, 5m, 1h). Cooperative — only honored by methods that check AbortSignal.",
   )
@@ -201,8 +219,36 @@ export const workflowRunCommand = new Command()
     const ctx = createContext(options as GlobalOptions, ["workflow", "run"]);
     ctx.logger.debug`Running workflow: ${workflowIdOrName}`;
 
+    // Validate flag combinations early, before local/server branch
+    let failOnSeverity: AssertSeverity | undefined;
+    if (options.failOn) {
+      const parsed = AssertSeveritySchema.safeParse(options.failOn);
+      if (!parsed.success) {
+        throw new UserError(
+          `Invalid --fail-on value "${options.failOn}". Must be one of: low, medium, high`,
+        );
+      }
+      failOnSeverity = parsed.data;
+    }
+    if (options.out && !options.junit) {
+      throw new UserError(
+        "--out requires --junit. Did you mean: swamp workflow run " +
+          `${workflowIdOrName} --junit --out ${options.out}`,
+      );
+    }
+    if (options.junit && ctx.outputMode === "json") {
+      throw new UserError(
+        "--junit and --json cannot be combined. Use --junit for JUnit XML output or --json for JSON output, not both.",
+      );
+    }
+
     const server = resolveServeUrl(options.server as string | undefined);
     if (server) {
+      if (failOnSeverity) {
+        throw new UserError(
+          "--fail-on is not yet supported with --server.",
+        );
+      }
       await runWorkflowViaServer(ctx, { ...options, server }, workflowIdOrName);
       return;
     }
@@ -412,12 +458,17 @@ export const workflowRunCommand = new Command()
           }/${inputSets.length}]`;
         }
 
-        const renderer = createWorkflowRunRenderer(ctx.outputMode, {
-          workflowName: workflowIdOrName,
-
-          isAuthenticated: isAuthenticated(),
-          quiet: ctx.verbosity === "quiet",
-        });
+        const renderer = options.junit
+          ? new JUnitWorkflowRunRenderer({
+            failOnSeverity,
+            outFile: options.out as string | undefined,
+          })
+          : createWorkflowRunRenderer(ctx.outputMode, {
+            workflowName: workflowIdOrName,
+            isAuthenticated: isAuthenticated(),
+            quiet: ctx.verbosity === "quiet",
+            failOnSeverity,
+          });
         const eventStream = workflowRun(libCtx, deps, {
           workflowIdOrName,
           lastEvaluated,
@@ -439,6 +490,7 @@ export const workflowRunCommand = new Command()
           tracestate: resolveTracestate(
             options.tracestate as string | undefined,
           ),
+          assertFailOnSeverity: failOnSeverity,
         });
 
         const baseHandlers = renderer.handlers();
@@ -567,11 +619,15 @@ async function runWorkflowViaServer(
           i + 1
         }/${inputSets.length}] via ${options.server}`;
       }
-      const renderer = createWorkflowRunRenderer(ctx.outputMode, {
-        workflowName: workflowIdOrName,
-        isAuthenticated: isAuthenticated(),
-        quiet: ctx.verbosity === "quiet",
-      });
+      const renderer = options.junit
+        ? new JUnitWorkflowRunRenderer({
+          outFile: options.out as string | undefined,
+        })
+        : createWorkflowRunRenderer(ctx.outputMode, {
+          workflowName: workflowIdOrName,
+          isAuthenticated: isAuthenticated(),
+          quiet: ctx.verbosity === "quiet",
+        });
       await consumeStream(
         runWorkflowOverServer({
           server: options.server as string,

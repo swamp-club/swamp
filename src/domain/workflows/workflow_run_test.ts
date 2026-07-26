@@ -855,3 +855,35 @@ Deno.test("WorkflowRun: cancelled round-trips through serialization", () => {
   assertEquals(restored.status, "cancelled");
   assertEquals(restored.tags.cancel_reason, "test reason");
 });
+
+Deno.test("StepRun: recordAssertResult persists through toData/fromData", () => {
+  const step = StepRun.pending("check-vpc");
+  step.start();
+  step.recordAssertResult({
+    passed: true,
+    expr: "1 == 1",
+    message: "Math works",
+    severity: "high",
+  });
+  step.succeed();
+
+  const data = step.toData();
+  assertEquals(data.assertResult?.passed, true);
+  assertEquals(data.assertResult?.expr, "1 == 1");
+  assertEquals(data.assertResult?.severity, "high");
+
+  const restored = StepRun.fromData(data);
+  assertEquals(restored.assertResult?.passed, true);
+  assertEquals(restored.assertResult?.expr, "1 == 1");
+  assertEquals(restored.assertResult?.message, "Math works");
+  assertEquals(restored.assertResult?.severity, "high");
+});
+
+Deno.test("StepRun: assertResult is undefined when not recorded", () => {
+  const step = StepRun.pending("normal-step");
+  step.start();
+  step.succeed();
+
+  assertEquals(step.assertResult, undefined);
+  assertEquals(step.toData().assertResult, undefined);
+});

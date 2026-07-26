@@ -20,6 +20,8 @@
 import type { Workflow } from "./workflow.ts";
 import type { Job } from "./job.ts";
 import type { Step } from "./step.ts";
+import type { AssertSeverity } from "./step_task.ts";
+import { severityAtOrAbove } from "./assert_severity.ts";
 import {
   type ExpandedStep,
   ForEachExpansionService,
@@ -1457,6 +1459,8 @@ interface StepOptions {
   skipCheckLabels?: string[];
   /** Skip all pre-flight checks */
   skipAllChecks?: boolean;
+  /** Minimum assert severity that fails the run (default: all failures fail) */
+  assertFailOnSeverity?: AssertSeverity;
 }
 
 /**
@@ -1563,6 +1567,8 @@ export class WorkflowExecutionService {
       skipCheckLabels?: string[];
       /** Skip all pre-flight checks */
       skipAllChecks?: boolean;
+      /** Minimum assert severity that fails the run */
+      assertFailOnSeverity?: AssertSeverity;
     },
   ): AsyncGenerator<WorkflowExecutionEvent> {
     const tracer = getTracer();
@@ -1739,6 +1745,7 @@ export class WorkflowExecutionService {
         skipCheckNames: options?.skipCheckNames,
         skipCheckLabels: options?.skipCheckLabels,
         skipAllChecks: options?.skipAllChecks,
+        assertFailOnSeverity: options?.assertFailOnSeverity,
       };
 
       // Sort jobs topologically
@@ -1994,6 +2001,8 @@ export class WorkflowExecutionService {
       swampSha?: string;
       /** Additional/override inputs supplied at resume time (CLI --input). */
       inputs?: Record<string, unknown>;
+      /** Minimum assert severity that fails the run */
+      assertFailOnSeverity?: AssertSeverity;
     },
   ): AsyncGenerator<WorkflowExecutionEvent> {
     const workflow = await this.workflowRepo.findByName(workflowIdOrName) ??
@@ -2103,6 +2112,7 @@ export class WorkflowExecutionService {
         // resumed runs still execute reports instead of silently skipping.
         reportFilterOptions: options?.reportFilterOptions ?? {},
         swampSha: options?.swampSha,
+        assertFailOnSeverity: options?.assertFailOnSeverity,
       };
 
       // Re-activate the tracker row (suspended → running) and start heartbeat
@@ -2641,6 +2651,117 @@ export class WorkflowExecutionService {
           task.prompt,
           task.timeout,
         );
+      }
+
+      // Handle assert tasks — evaluate CEL predicate, record pass/fail
+      if (task.type === "assert") {
+        const celEvaluator = new CelEvaluator();
+        try {
+          const result = await celEvaluator.evaluateAsync(
+            task.expr,
+            stepExprContext ?? {},
+          );
+          const passed = !!result;
+
+          // Interpolate ${{ }} expressions in the message
+          let resolvedMessage = task.message;
+          const exprPattern = /\$\{\{\s*(.+?)\s*\}\}/gs;
+          const matches = [...task.message.matchAll(exprPattern)];
+          for (const match of matches) {
+            const celExpr = match[1].trim();
+            try {
+              const value = await celEvaluator.evaluateAsync(
+                celExpr,
+                stepExprContext ?? {},
+              );
+              resolvedMessage = resolvedMessage.replace(
+                match[0],
+                () => String(value ?? ""),
+              );
+            } catch {
+              // Leave the expression as-is if evaluation fails
+            }
+          }
+
+          const assertResult = {
+            passed,
+            expr: task.expr,
+            message: resolvedMessage,
+            severity: task.severity,
+          };
+          stepRun.recordAssertResult(assertResult);
+
+          if (passed) {
+            stepRun.succeed();
+          } else {
+            stepRun.fail(resolvedMessage);
+          }
+
+          yield {
+            kind: "assert_result" as const,
+            jobId: job.name,
+            stepId: stepName,
+            passed,
+            message: resolvedMessage,
+            severity: task.severity,
+            expr: task.expr,
+          };
+
+          if (passed) {
+            stepSpan.setStatus({ code: SpanStatusCode.OK });
+            yield {
+              kind: "step_completed",
+              jobId: job.name,
+              stepId: stepName,
+              forEachTemplate,
+              forEachIndex,
+            };
+          } else {
+            const belowThreshold = options.assertFailOnSeverity
+              ? !severityAtOrAbove(
+                task.severity,
+                options.assertFailOnSeverity,
+              )
+              : false;
+            const isAllowed = !!step.allowFailure || belowThreshold;
+            if (isAllowed) {
+              stepRun.markAllowedFailure();
+            }
+            stepSpan.setStatus({
+              code: SpanStatusCode.ERROR,
+              message: resolvedMessage,
+            });
+            yield {
+              kind: "step_failed",
+              jobId: job.name,
+              stepId: stepName,
+              error: resolvedMessage,
+              allowedFailure: isAllowed || undefined,
+              forEachTemplate,
+              forEachIndex,
+            };
+          }
+        } catch (error) {
+          const errorMessage = error instanceof Error
+            ? error.message
+            : String(error);
+          stepRun.fail(errorMessage);
+          stepSpan.setStatus({
+            code: SpanStatusCode.ERROR,
+            message: errorMessage,
+          });
+          yield {
+            kind: "step_failed",
+            jobId: job.name,
+            stepId: stepName,
+            error: errorMessage,
+            forEachTemplate,
+            forEachIndex,
+          };
+        } finally {
+          stepSpan.end();
+        }
+        return;
       }
 
       // Handle workflow tasks inline to forward nested workflow events

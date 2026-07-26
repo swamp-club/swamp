@@ -517,3 +517,64 @@ Deno.test("StepTaskSchema still accepts record inputs", () => {
     assertEquals(result.inputs, { foo: "bar", count: 42 });
   }
 });
+
+Deno.test("StepTask.assert: creates assert task with defaults", () => {
+  const task = StepTask.assert("1 == 1", "Math check");
+  assertEquals(task.data.type, "assert");
+  assertEquals(task.isAssert(), true);
+  assertEquals(task.isModelMethod(), false);
+  if (task.data.type === "assert") {
+    assertEquals(task.data.expr, "1 == 1");
+    assertEquals(task.data.message, "Math check");
+    assertEquals(task.data.severity, "high");
+  }
+});
+
+Deno.test("StepTask.assert: accepts explicit severity", () => {
+  const task = StepTask.assert("true", "msg", "low");
+  if (task.data.type === "assert") {
+    assertEquals(task.data.severity, "low");
+  }
+});
+
+Deno.test("StepTaskSchema: parses assert task from raw data", () => {
+  const result = StepTaskSchema.parse({
+    type: "assert",
+    expr: "size(items) > 0",
+    message: "No items found",
+    severity: "medium",
+  });
+  assertEquals(result.type, "assert");
+  if (result.type === "assert") {
+    assertEquals(result.expr, "size(items) > 0");
+    assertEquals(result.message, "No items found");
+    assertEquals(result.severity, "medium");
+  }
+});
+
+Deno.test("StepTaskSchema: assert defaults severity to high", () => {
+  const result = StepTaskSchema.parse({
+    type: "assert",
+    expr: "true",
+    message: "check",
+  });
+  if (result.type === "assert") {
+    assertEquals(result.severity, "high");
+  }
+});
+
+Deno.test("StepTaskSchema: rejects assert with empty expr", () => {
+  assertThrows(() =>
+    StepTaskSchema.parse({
+      type: "assert",
+      expr: "",
+      message: "check",
+    })
+  );
+});
+
+Deno.test("StepTask.assert: value equality works", () => {
+  const a = StepTask.assert("true", "msg", "high");
+  const b = StepTask.assert("true", "msg", "high");
+  assertEquals(a.equals(b), true);
+});

@@ -20,6 +20,7 @@
 import type { MethodExecutionEvent } from "../models/method_events.ts";
 import type { DataHandle } from "../models/model.ts";
 import type { EnvVarUsageDetail } from "../models/validation_service.ts";
+import type { AssertSeverity } from "./step_task.ts";
 // deno-lint-ignore verbatim-module-syntax
 import { WorkflowRun } from "./workflow_run.ts";
 
@@ -173,6 +174,15 @@ export type WorkflowExecutionEvent =
     error: string;
     jobId?: string;
     stepId?: string;
+  }
+  | {
+    kind: "assert_result";
+    jobId: string;
+    stepId: string;
+    passed: boolean;
+    message: string;
+    severity: AssertSeverity;
+    expr: string;
   }
   | { kind: "completed"; run: WorkflowRun }
   | { kind: "cancelled"; run: WorkflowRun; reason?: string }

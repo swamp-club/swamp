@@ -32,7 +32,8 @@ import {
 import { UserError } from "../../domain/errors.ts";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 import { AUTH_NUDGE_MESSAGE } from "../../domain/auth/auth_nudge.ts";
-import { dim, yellow } from "@std/fmt/colors";
+import { dim, green, red, yellow } from "@std/fmt/colors";
+import { type AssertSeverity, severityAtOrAbove } from "../../libswamp/mod.ts";
 import {
   type DataArtifact,
   type DataBoxOptions,
@@ -48,6 +49,7 @@ export interface WorkflowRunRenderOpts {
   workflowName: string;
   isAuthenticated?: boolean;
   quiet?: boolean;
+  failOnSeverity?: AssertSeverity;
 }
 
 export interface WorkflowRunRenderer extends Renderer<WorkflowRunEvent> {
@@ -69,6 +71,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
   private workflowName: string;
   private isAuthenticated: boolean;
   private quiet: boolean;
+  private failOnSeverity: AssertSeverity;
   private _failed = false;
   private pipe: PipeWriter | null = null;
   private outputBuffers = new Map<string, string[]>();
@@ -79,11 +82,19 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
   private jobStartTimes = new Map<string, number>();
   private pendingJobStarts = new Map<string, string>();
   private pendingStartLine: (() => void) | null = null;
+  private assertResults: Array<{
+    stepId: string;
+    passed: boolean;
+    message: string;
+    severity: AssertSeverity;
+  }> = [];
+  private assertStepIds = new Set<string>();
 
   constructor(opts: WorkflowRunRenderOpts) {
     this.workflowName = opts.workflowName;
     this.isAuthenticated = opts.isAuthenticated ?? false;
     this.quiet = opts.quiet ?? false;
+    this.failOnSeverity = opts.failOnSeverity ?? "low";
   }
 
   private getDisplayName(jobId: string, stepId: string, event?: {
@@ -271,13 +282,14 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
       },
       step_completed: (e) => {
         if (!this.pipe) return;
+        const key = this.stepKey(e.jobId, e.stepId);
+        if (this.assertStepIds.has(key)) return;
         this.clearHeartbeat(e.jobId, e.stepId);
         if (this.quiet) {
           this.discardBuffer(e.jobId, e.stepId);
         }
         const displayName = this.getDisplayName(e.jobId, e.stepId, e);
         const ts = formatTimestamp();
-        const key = this.stepKey(e.jobId, e.stepId);
         const startTime = this.stepStartTimes.get(key);
         const duration = startTime
           ? formatDuration(Date.now() - startTime)
@@ -304,13 +316,14 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
       },
       step_failed: (e) => {
         if (!this.pipe) return;
+        const key = this.stepKey(e.jobId, e.stepId);
+        if (this.assertStepIds.has(key)) return;
         this.clearHeartbeat(e.jobId, e.stepId);
         if (this.quiet) {
           this.replayBuffer(e.jobId, e.stepId);
         }
         const displayName = this.getDisplayName(e.jobId, e.stepId, e);
         const ts = formatTimestamp();
-        const key = this.stepKey(e.jobId, e.stepId);
         const startTime = this.stepStartTimes.get(key);
         const duration = startTime
           ? formatDuration(Date.now() - startTime)
@@ -435,6 +448,46 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             break;
         }
       },
+      assert_result: (e) => {
+        if (!this.pipe) return;
+        const key = this.stepKey(e.jobId, e.stepId);
+        this.assertStepIds.add(key);
+        this.clearHeartbeat(e.jobId, e.stepId);
+        this.assertResults.push({
+          stepId: e.stepId,
+          passed: e.passed,
+          message: e.message,
+          severity: e.severity,
+        });
+        const displayName = this.forEachDisplayNames.get(key) ?? e.jobId;
+        const startTime = this.stepStartTimes.get(key);
+        const duration = startTime
+          ? formatDuration(Date.now() - startTime)
+          : "";
+        const ts = formatTimestamp();
+        if (e.passed) {
+          writeOutput(
+            this.pipe.doneLine(
+              displayName,
+              `${green("✓")} ${e.stepId}`,
+              duration,
+              ts,
+            ),
+          );
+        } else {
+          writeOutput(
+            this.pipe.failedStepLine(
+              displayName,
+              `${red("✗")} ${e.stepId}`,
+              duration,
+              ts,
+            ),
+          );
+          writeOutput(
+            this.pipe.line(displayName, `  ${e.message}`),
+          );
+        }
+      },
       report_started: () => {},
       report_completed: (e) => {
         if (!this.pipe) return;
@@ -470,6 +523,30 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
       completed: (e) => {
         this.clearAllHeartbeats();
         if (!this.pipe) return;
+
+        // Render assert summary if any assert steps ran
+        if (this.assertResults.length > 0) {
+          const passed = this.assertResults.filter((r) => r.passed).length;
+          const failed = this.assertResults.filter((r) => !r.passed).length;
+          const failedAboveThreshold = this.assertResults.filter(
+            (r) =>
+              !r.passed &&
+              severityAtOrAbove(r.severity, this.failOnSeverity),
+          ).length;
+
+          writeBlankLine();
+          const summary = failed > 0
+            ? `${passed} passed, ${failed} failed`
+            : `${passed} passed`;
+          writeOutput(
+            this.pipe.line("system", dim(`Assertions: ${summary}`)),
+          );
+
+          if (failedAboveThreshold > 0) {
+            this._failed = true;
+          }
+        }
+
         if (e.run.status === "failed") {
           this._failed = true;
           const stepError = extractFirstStepError(e.run);
@@ -488,6 +565,20 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
           );
           writeBlankLine();
           writeOutput(this.pipe.line("system", STATUS_COLORS.error(stepError)));
+        } else if (this._failed) {
+          const duration = e.run.duration
+            ? ` ${dim(`in ${formatDuration(e.run.duration)}`)}`
+            : "";
+          writeBlankLine();
+          writeOutput(
+            this.pipe.statusLine(
+              "system",
+              "Failed",
+              STATUS_COLORS.error,
+              `workflow ${this.workflowName} — assertion failures above threshold (${this.failOnSeverity})${duration}`,
+              formatTimestamp(),
+            ),
+          );
         } else {
           const duration = e.run.duration
             ? ` ${dim(`in ${formatDuration(e.run.duration)}`)}`
@@ -634,6 +725,7 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
           }));
         }
       },
+      assert_result: () => {},
       report_started: () => {},
       report_completed: () => {},
       report_failed: () => {},

@@ -83,6 +83,7 @@ export {
 } from "./workflows/run.ts";
 export type { MethodExecutionEvent } from "../domain/models/method_events.ts";
 export {
+  type AssertResultView,
   type DataArtifactRefData,
   extractFirstStepError,
   type JobRunView,
@@ -90,6 +91,13 @@ export {
   type StepRunView,
   type WorkflowRunView,
 } from "./workflows/workflow_run_view.ts";
+
+export {
+  type AssertSeverity,
+  AssertSeveritySchema,
+} from "../domain/workflows/step_task.ts";
+
+export { severityAtOrAbove } from "../domain/workflows/assert_severity.ts";
 
 // Scheduled execution
 export {
