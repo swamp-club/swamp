@@ -74,6 +74,11 @@ export class JUnitWorkflowRunRenderer implements WorkflowRunRenderer {
       evaluating_workflow: () => {},
       started: (e) => {
         this.workflowName = e.workflowName;
+        if (!this.outFile) {
+          console.error(
+            `JUnit XML will be written to stdout on completion.`,
+          );
+        }
       },
       job_started: () => {},
       job_completed: () => {},
@@ -110,6 +115,11 @@ export class JUnitWorkflowRunRenderer implements WorkflowRunRenderer {
       report_failed: () => {},
       completed: async (e) => {
         this.totalDuration = (e.run.duration ?? 0) / 1000;
+        if (this.asserts.length === 0) {
+          console.error(
+            "Warning: --junit produced 0 testcases. The workflow has no assert steps.",
+          );
+        }
         const failedAboveThreshold = this.asserts.filter(
           (a) =>
             !a.passed && severityAtOrAbove(a.severity, this.failOnSeverity),
@@ -199,11 +209,13 @@ export class JUnitWorkflowRunRenderer implements WorkflowRunRenderer {
             }">`,
           );
           lines.push(
-            `      <failure message="${escapeXml(r.message)}" type="${
-              escapeXml(r.severity)
-            }">`,
+            `      <failure message="${
+              escapeXml(r.message)
+            }" type="AssertionFailure">`,
           );
-          lines.push(`expr: ${escapeXml(r.expr)}`);
+          lines.push(
+            `severity: ${r.severity}\nexpr: ${escapeXml(r.expr)}`,
+          );
           lines.push(`      </failure>`);
           lines.push(`    </testcase>`);
         }

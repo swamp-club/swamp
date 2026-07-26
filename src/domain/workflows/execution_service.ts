@@ -2565,6 +2565,19 @@ export class WorkflowExecutionService {
       (stepRun.status === "succeeded" || stepRun.status === "failed" ||
         stepRun.status === "skipped")
     ) {
+      // Replay assert_result for completed assert steps so renderers
+      // (JUnit, console summary) include prior-run results.
+      if (stepRun.assertResult) {
+        yield {
+          kind: "assert_result" as const,
+          jobId: job.name,
+          stepId: stepName,
+          passed: stepRun.assertResult.passed,
+          message: stepRun.assertResult.message,
+          severity: stepRun.assertResult.severity,
+          expr: stepRun.assertResult.expr,
+        };
+      }
       stepSpan.end();
       return;
     }

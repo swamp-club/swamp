@@ -450,6 +450,13 @@ export const workflowRunCommand = new Command()
         )
         : [cliInputs];
 
+      if (options.junit && inputSets.length > 1) {
+        throw new UserError(
+          "--junit cannot be combined with multiple input sets (--stdin with NDJSON). " +
+            "Each input set would produce a separate XML document, resulting in malformed output.",
+        );
+      }
+
       for (let i = 0; i < inputSets.length; i++) {
         if (inputSets.length > 1) {
           ctx.logger

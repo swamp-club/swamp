@@ -226,6 +226,12 @@ Non-assert steps are omitted from the JUnit output.
 **forEach compatibility:** Assert steps support `forEach` expansion. Each
 expanded iteration produces its own assert result and JUnit `<testcase>`.
 
+**Known limitation — message interpolation:** The `${{ }}` pattern in `message`
+uses non-greedy matching. A CEL expression containing a literal `}}` (e.g.
+map/struct literals) will be split prematurely. The error is silently caught and
+the expression left as-is, so it degrades gracefully. Keep `message`
+interpolation to simple value lookups; use the `expr` field for complex CEL.
+
 ## Concurrency Limits
 
 By default, all jobs in a topological level and all steps in a topological level
