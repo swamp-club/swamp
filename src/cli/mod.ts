@@ -1559,7 +1559,7 @@ export async function runCli(args: string[]): Promise<void> {
               telemetryCtx.telemetryEndpoint,
               USER_AGENT,
             );
-            const flushed = await telemetryCtx.service.flushTelemetry({
+            const flushResult = await telemetryCtx.service.flushTelemetry({
               sender,
               distinctId,
               repoId: telemetryCtx.repoId,
@@ -1567,9 +1567,13 @@ export async function runCli(args: string[]): Promise<void> {
               keepFlushed: telemetryCtx.keepFlushed,
               signal: AbortSignal.timeout(2000),
             });
-            if (!flushed) {
-              logger
-                .warn`Telemetry flush failed — entries are queued locally and will retry on the next invocation`;
+            if (!flushResult.ok) {
+              const detail = flushResult.reason
+                ? ` (${flushResult.reason})`
+                : "";
+              logger.warn(
+                `Telemetry flush failed${detail} — entries are queued locally and will retry on the next invocation`,
+              );
             }
           }
 

@@ -19,26 +19,21 @@
 
 import type { TelemetryEntry } from "./telemetry_entry.ts";
 
+export interface TelemetryFlushResult {
+  ok: boolean;
+  reason?: string;
+}
+
 /**
  * Port for sending telemetry events to a remote endpoint.
  * Implemented by infrastructure adapters (e.g. HttpTelemetrySender).
  */
 export interface TelemetrySender {
-  /**
-   * Sends a batch of telemetry entries to the remote endpoint.
-   *
-   * @param entries - The entries to send
-   * @param distinctId - The user or repo UUID used as distinct_id
-   * @param repoId - Optional repo UUID included as a property
-   * @param authToken - Optional API key sent via x-api-key header to authenticate the flush request
-   * @param signal - Optional AbortSignal for cancellation
-   * @returns true if the batch was accepted, false otherwise
-   */
   sendBatch(
     entries: TelemetryEntry[],
     distinctId: string,
     repoId?: string,
     authToken?: string,
     signal?: AbortSignal,
-  ): Promise<boolean>;
+  ): Promise<TelemetryFlushResult>;
 }

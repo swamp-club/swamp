@@ -71,7 +71,10 @@ export {
 
 export type { TelemetryRepository } from "./repositories.ts";
 
-export type { TelemetrySender } from "./telemetry_sender.ts";
+export type {
+  TelemetryFlushResult,
+  TelemetrySender,
+} from "./telemetry_sender.ts";
 
 export {
   type TelemetryFlushConfig,

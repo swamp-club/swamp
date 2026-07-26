@@ -17,7 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { TelemetrySender } from "../../domain/telemetry/telemetry_sender.ts";
+import type {
+  TelemetryFlushResult,
+  TelemetrySender,
+} from "../../domain/telemetry/telemetry_sender.ts";
 import type { TelemetryEntry } from "../../domain/telemetry/telemetry_entry.ts";
 
 /**
@@ -41,7 +44,7 @@ export class HttpTelemetrySender implements TelemetrySender {
     repoId?: string,
     authToken?: string,
     signal?: AbortSignal,
-  ): Promise<boolean> {
+  ): Promise<TelemetryFlushResult> {
     const events = entries.map((entry) => ({
       event: "cli_invocation",
       distinct_id: distinctId,
@@ -75,9 +78,18 @@ export class HttpTelemetrySender implements TelemetrySender {
       });
       // Consume the response body to prevent resource leaks
       await response.body?.cancel();
-      return response.status === 202;
-    } catch {
-      return false;
+      if (response.status === 202) {
+        return { ok: true };
+      }
+      return { ok: false, reason: `HTTP ${response.status}` };
+    } catch (error: unknown) {
+      if (
+        error instanceof DOMException &&
+        (error.name === "AbortError" || error.name === "TimeoutError")
+      ) {
+        return { ok: false, reason: "timeout" };
+      }
+      return { ok: false, reason: "network error" };
     }
   }
 }

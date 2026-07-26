@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { TelemetryRepository } from "./repositories.ts";
-import type { TelemetrySender } from "./telemetry_sender.ts";
+import type {
+  TelemetryFlushResult,
+  TelemetrySender,
+} from "./telemetry_sender.ts";
 import { TelemetryEntry } from "./telemetry_entry.ts";
 import type { CommandInvocationData } from "./command_invocation.ts";
 import type { InvocationContextData } from "./invocation_context.ts";
@@ -249,12 +252,14 @@ export class TelemetryService {
 
   /**
    * Flushes unflushed telemetry entries to a remote endpoint.
-   * Returns true if the flush succeeded (or there was nothing to flush),
-   * false if the send failed. Never throws.
+   * Returns a result indicating whether the flush succeeded and, on failure,
+   * the reason. Never throws.
    *
    * @param config - Flush configuration with sender and distinctId
    */
-  async flushTelemetry(config: TelemetryFlushConfig): Promise<boolean> {
+  async flushTelemetry(
+    config: TelemetryFlushConfig,
+  ): Promise<TelemetryFlushResult> {
     const batchSize = config.batchSize ?? DEFAULT_FLUSH_BATCH_SIZE;
     const keepFlushed = config.keepFlushed ?? false;
 
@@ -269,7 +274,7 @@ export class TelemetryService {
         config.signal,
       );
     } catch {
-      return false;
+      return { ok: false, reason: "unexpected error" };
     }
   }
 
@@ -281,23 +286,23 @@ export class TelemetryService {
     repoId?: string,
     authToken?: string,
     signal?: AbortSignal,
-  ): Promise<boolean> {
+  ): Promise<TelemetryFlushResult> {
     const entries = await this.repository.findUnflushed(batchSize);
-    if (entries.length === 0) return true;
+    if (entries.length === 0) return { ok: true };
 
-    const success = await sender.sendBatch(
+    const result = await sender.sendBatch(
       entries,
       distinctId,
       repoId,
       authToken,
       signal,
     );
-    if (success) {
+    if (result.ok) {
       for (const entry of entries) {
         await this.repository.markFlushed(entry, keepFlushed);
       }
     }
-    return success;
+    return result;
   }
 
   /**
