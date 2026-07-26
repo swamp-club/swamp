@@ -198,9 +198,13 @@ export class JsonTelemetryRepository implements TelemetryRepository {
 
   /**
    * Finds unflushed telemetry entries, sorted oldest first.
+   *
+   * Uses filename-based sorting (date prefix is chronologically sortable)
+   * and only reads/parses the first `limit` files. This avoids O(n) file
+   * reads when the spool contains thousands of accumulated entries.
    */
   async findUnflushed(limit: number): Promise<TelemetryEntry[]> {
-    const entries: Array<{ entry: TelemetryEntry; startedAt: Date }> = [];
+    const filenames: string[] = [];
 
     try {
       const telemetryDir = this.getTelemetryDir();
@@ -212,15 +216,7 @@ export class JsonTelemetryRepository implements TelemetryRepository {
           dirEntry.name.endsWith(".json") &&
           !dirEntry.name.endsWith(".flushed.json")
         ) {
-          try {
-            const path = join(telemetryDir, dirEntry.name);
-            const content = await Deno.readTextFile(path);
-            const data = JSON.parse(content) as TelemetryEntryData;
-            const entry = TelemetryEntry.fromData(data);
-            entries.push({ entry, startedAt: entry.startedAt });
-          } catch {
-            // Skip files that can't be parsed
-          }
+          filenames.push(dirEntry.name);
         }
       }
     } catch (error) {
@@ -230,10 +226,25 @@ export class JsonTelemetryRepository implements TelemetryRepository {
       throw error;
     }
 
-    // Sort oldest first by startedAt
-    entries.sort((a, b) => a.startedAt.getTime() - b.startedAt.getTime());
+    // Sort by filename — the `telemetry-YYYY-MM-DD-` prefix gives
+    // chronological ordering. Within the same day, order is arbitrary
+    // but acceptable for batch priority.
+    filenames.sort();
 
-    return entries.slice(0, limit).map((e) => e.entry);
+    const telemetryDir = this.getTelemetryDir();
+    const entries: TelemetryEntry[] = [];
+    for (const filename of filenames.slice(0, limit)) {
+      try {
+        const path = join(telemetryDir, filename);
+        const content = await Deno.readTextFile(path);
+        const data = JSON.parse(content) as TelemetryEntryData;
+        entries.push(TelemetryEntry.fromData(data));
+      } catch {
+        // Skip files that can't be parsed
+      }
+    }
+
+    return entries;
   }
 
   /**
