@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { isAbsolute, resolve } from "@std/path";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { groupCommandAction } from "../group_action.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -42,6 +43,30 @@ export function collectWorkerExtraArgs(options: AnyOptions): string[] {
     args.push("--no-reconnect");
   }
   return args;
+}
+
+export async function validateCacheDir(
+  rawPath: string,
+): Promise<string> {
+  const resolved = isAbsolute(rawPath) ? rawPath : resolve(rawPath);
+  try {
+    const stat = await Deno.stat(resolved);
+    if (!stat.isDirectory) {
+      throw new UserError(
+        `--cache-dir is not a directory: ${resolved}\n\n` +
+          `  Create it with: mkdir -p ${resolved}`,
+      );
+    }
+  } catch (err: unknown) {
+    if (err instanceof Deno.errors.NotFound) {
+      throw new UserError(
+        `--cache-dir does not exist: ${resolved}\n\n` +
+          `  Create it with: mkdir -p ${resolved}`,
+      );
+    }
+    throw err;
+  }
+  return resolved;
 }
 
 export function collectWorkerEnv(options: AnyOptions): Record<string, string> {
@@ -155,7 +180,12 @@ const daemonEnableCommand = new Command()
       );
     }
 
-    const resolvedOptions = { ...options, url: urlArg };
+    let cacheDir: string | undefined;
+    if (options.cacheDir) {
+      cacheDir = await validateCacheDir(options.cacheDir as string);
+    }
+
+    const resolvedOptions = { ...options, url: urlArg, cacheDir };
     const mode = await resolveServiceMode({
       user: options.user as boolean | undefined,
     });
@@ -167,7 +197,7 @@ const daemonEnableCommand = new Command()
       binaryPath: Deno.execPath(),
       extraArgs: extraArgs.length > 0 ? extraArgs : undefined,
       env: Object.keys(env).length > 0 ? env : undefined,
-      cacheDir: options.cacheDir as string | undefined,
+      cacheDir,
     });
 
     renderWorkerDaemonEnabled(ctx.outputMode, toServiceMode(mode));
