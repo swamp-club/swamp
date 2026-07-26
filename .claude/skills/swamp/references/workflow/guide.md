@@ -87,7 +87,9 @@ swamp workflow schema get --json
   "jobDependency": {/* JSON Schema for job dependency with condition */},
   "step": {/* JSON Schema for step objects */},
   "stepDependency": {/* JSON Schema for step dependency with condition */},
-  "stepTask": {/* JSON Schema for task (model_method or workflow) */},
+  "stepTask": {
+    /* JSON Schema for task (model_method, workflow, manual_approval, or assert) */
+  },
   "triggerCondition": {/* JSON Schema for dependency conditions */}
 }
 ```
