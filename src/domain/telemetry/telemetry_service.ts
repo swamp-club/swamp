@@ -228,26 +228,27 @@ export class TelemetryService {
    * Unflushed entries survive until the hard cap (`HARD_RETENTION_DAYS`,
    * 7 days) to allow retry, then are deleted to prevent unbounded growth.
    *
-   * This method is fire-and-forget and does not block.
-   *
    * @param retentionDays - Number of days to retain flushed entries (default: 2)
    */
-  cleanupOldTelemetry(retentionDays: number = DEFAULT_RETENTION_DAYS): void {
+  async cleanupOldTelemetry(
+    retentionDays: number = DEFAULT_RETENTION_DAYS,
+  ): Promise<void> {
     const flushedCutoff = new Date();
     flushedCutoff.setDate(flushedCutoff.getDate() - retentionDays);
 
     const hardCutoff = new Date();
     hardCutoff.setDate(hardCutoff.getDate() - HARD_RETENTION_DAYS);
 
-    // Fire-and-forget: don't await, don't let errors propagate
-    Promise.all([
-      this.repository.deleteOlderThan(flushedCutoff),
-      this.repository.deleteAllOlderThan(hardCutoff),
-    ]).catch((error) => {
+    try {
+      await Promise.all([
+        this.repository.deleteOlderThan(flushedCutoff),
+        this.repository.deleteAllOlderThan(hardCutoff),
+      ]);
+    } catch (error) {
       if (Deno.env.get("SWAMP_DEBUG")) {
         console.error("[Telemetry] Cleanup failed:", error);
       }
-    });
+    }
   }
 
   /**

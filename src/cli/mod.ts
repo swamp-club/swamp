@@ -1577,8 +1577,11 @@ export async function runCli(args: string[]): Promise<void> {
             }
           }
 
-          // Trigger cleanup asynchronously (fire-and-forget)
-          telemetryCtx.service.cleanupOldTelemetry();
+          // Cleanup with bounded timeout so Deno.exit() doesn't kill it
+          await Promise.race([
+            telemetryCtx.service.cleanupOldTelemetry(),
+            new Promise<void>((r) => setTimeout(r, 3000)),
+          ]);
         } catch {
           // Best effort — never break the CLI for telemetry failures
         }
