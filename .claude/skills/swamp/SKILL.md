@@ -15,16 +15,15 @@ description: >
 
 ## Core Concepts
 
-- **Models** — typed resource definitions exposing **methods** (create, stop,
-  destroy, sync). Auto-created models (via direct type execution) live in
-  `.swamp/auto-definitions/` for data ownership only — they are not visible in
-  `model search`/`list`.
+- **Models** — typed resource definitions exposing methods (create, stop,
+  destroy, sync).
 - **Data** — versioned state snapshots produced by method runs; referenced via
   CEL expressions.
-- **Workflows** — declarative DAGs chaining model methods.
+- **Workflows** — declarative DAGs chaining model methods with assert steps for
+  validation.
 - **Vaults** — secret storage referenced by models at runtime.
 - **Extensions** — TypeScript packages adding model types, vault backends,
-  datastores, and reports; published to a registry.
+  datastores, and reports.
 - **Grants** — authorization rules for swamp serve access control.
 - **Serve** — exposes the repo over the network with TLS and authentication.
 
@@ -82,36 +81,35 @@ swamp report run <name>                        # run a report
 swamp extension init <name>                    # scaffold a new extension
 ```
 
+## Workflow
+
+Follow this procedure for every swamp task:
+
+1. **Route** — match the user's intent to a guide in the routing table above.
+2. **Load** — read that guide. If it doesn't answer the question, load its
+   companion `reference.md`. Load deeper `references/` files only when the guide
+   tells you to.
+3. **Validate** — before running any workflow: `swamp workflow validate <name>`.
+   Before destructive methods (delete, stop, destroy):
+   `swamp model get <name> --json` to confirm the target. Proceed only when
+   validation passes.
+4. **Execute** — run the command.
+5. **On failure** — load
+   [references/troubleshooting/guide.md](references/troubleshooting/guide.md)
+   and diagnose before retrying or changing definitions.
+
 ## Rules
 
-1. **Always load the guide first.** Before answering any swamp question, read
-   the matching guide from the table above.
-2. **Load deeper references as needed.** Each guide references additional files
-   in its `references/` subdirectory — load those when the guide tells you to.
-3. **Read guides selectively.** Each guide contains only essential reference
-   (commands, rules, quick-start). If the guide doesn't answer your question,
-   load its companion `reference.md` in the same directory for detailed
-   walkthroughs. If the question spans topics, load both relevant guides but do
-   NOT load `reference.md` files upfront — only on demand.
-4. **Use the routing table, not memory.** Don't answer from cached knowledge
+1. **Use the routing table, not memory.** Don't answer from cached knowledge
    about swamp commands — always load the current guide.
-5. **Validate before acting.** Run `swamp workflow validate <name>` before
-   `workflow run`, and inspect with `swamp model get <name> --json` to verify
-   resource IDs before destructive methods (delete, stop, destroy). Proceed only
-   when validation passes and the target is confirmed.
-6. **On failure, route to troubleshooting.** If validation reports errors, a
-   method run fails, or any command errors unexpectedly, load
-   [references/troubleshooting/guide.md](references/troubleshooting/guide.md)
-   and diagnose before retrying or changing the definition.
-7. **Consult the architecture guide for design decisions.** Before choosing
+2. **Consult the architecture guide for design decisions.** Before choosing
    between primitives (model vs. workflow vs. extension vs. report) or
-   explaining a design trade-off to a human, load
+   explaining a design trade-off, load
    [references/architecture/guide.md](references/architecture/guide.md) and cite
-   the design doc or manual page you relied on.
-8. **Use swamp commands, don't go around them.** Query data with
+   the design doc you relied on.
+3. **Use swamp commands, don't go around them.** Query data with
    `swamp data query`, not by grepping `.swamp/` files. Interact with resources
-   through model methods, not raw CLI tools (`curl`, `aws`, `gcloud`, `kubectl`)
-   when a model type already wraps the API — check with
-   `swamp model type search`. Use `swamp help` for CLI discovery. Composing with
-   swamp `--json` output (e.g. piping through `jq`) is fine — the anti-pattern
-   is bypassing swamp entirely.
+   through model methods, not raw CLI tools when a model type already wraps the
+   API — check with `swamp model type search`. Composing with `--json` output
+   (e.g. piping through `jq`) is fine — the anti-pattern is bypassing swamp
+   entirely.
