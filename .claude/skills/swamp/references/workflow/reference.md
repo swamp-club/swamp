@@ -472,7 +472,7 @@ steps:
 
 ## Step Task Types
 
-Steps support three task types:
+Steps support four task types:
 
 **`model_method`** — prefer `modelType` + `modelName` (direct type execution)
 for dynamic inputs. Use `modelIdOrName` only for persistent definitions with CEL
@@ -537,6 +537,217 @@ strict, so a workflow must declare the inputs it references at run time: declare
 the input at run (e.g. a placeholder) and supply or override its value at
 resume. The run record records the resume input key names (not values) for
 audit.
+
+**`assert`** — A CEL predicate that evaluates over prior step data and records
+pass/fail. Use assert steps to validate that earlier steps produced the expected
+state before the workflow continues.
+
+```yaml
+- name: vpc-cidr-correct
+  task:
+    type: assert
+    expr: >-
+      data.latest("describe-infra", "result").attributes.stdout.contains("10.0.0.0/16")
+    message: "VPC does not have expected CIDR 10.0.0.0/16"
+    severity: high
+```
+
+**Fields:**
+
+| Field      | Required | Description                                                     |
+| ---------- | -------- | --------------------------------------------------------------- |
+| `expr`     | Yes      | CEL expression that must evaluate to a truthy value to pass     |
+| `message`  | Yes      | Human-readable failure message (shown when the assertion fails) |
+| `severity` | No       | `low`, `medium`, or `high` (default: `high`)                    |
+
+**YAML quoting rule:** CEL expressions containing double quotes (e.g. inside
+`.contains("...")`) MUST use a YAML block scalar (`>-`) to avoid YAML parse
+errors. Without the block scalar, the inner double quotes break YAML parsing:
+
+```yaml
+# WRONG — YAML parse error from nested double quotes:
+- name: check
+  task:
+    type: assert
+    expr: data.latest("model", "spec").attributes.value == "expected"
+    message: "Check failed"
+
+# CORRECT — block scalar avoids quoting conflicts:
+- name: check
+  task:
+    type: assert
+    expr: >-
+      data.latest("model", "spec").attributes.value == "expected"
+    message: "Check failed"
+```
+
+**Accessing prior step data in `expr`:** Assert expressions have access to the
+same expression context as other step expressions. Use `data.latest()` to read
+output from prior steps:
+
+```
+data.latest("<modelName>", "<specName>").attributes.<field>
+```
+
+The result of `data.latest()` is a `DataRecord` — access fields via
+`.attributes.<field>`, NOT `.content.<field>`. The `.attributes` map contains
+the structured output data that models produce.
+
+**Dynamic messages:** The `message` field supports `${{ }}` expression
+interpolation. Use this to include actual values in failure messages:
+
+```yaml
+- name: replica-count-ok
+  task:
+    type: assert
+    expr: >-
+      int(data.latest("describe-deploy", "result").attributes.stdout) >= 3
+    message: >-
+      Expected at least 3 replicas, got ${{ data.latest("describe-deploy", "result").attributes.stdout }}
+    severity: high
+```
+
+**Severity and failure behavior:**
+
+- An assert step that fails records `status: failed` with the resolved message
+- By default, ANY failed assert fails the job and workflow (like any other step)
+- Use `allowFailure: true` on the step to let execution continue regardless
+- Use `--fail-on <severity>` on `swamp workflow run` to set a severity threshold
+  — assertions below the threshold are treated as allowed failures
+
+**Common CEL patterns for assert expressions:**
+
+```yaml
+# String containment
+expr: >-
+  data.latest("model", "spec").attributes.stdout.contains("expected-value")
+
+# Exact equality
+expr: >-
+  data.latest("model", "spec").attributes.status == "active"
+
+# Numeric comparison
+expr: >-
+  int(data.latest("model", "spec").attributes.count) > 0
+
+# Compound predicates (AND / OR)
+expr: >-
+  data.latest("model", "spec").attributes.status == "running"
+  && int(data.latest("model", "spec").attributes.replicas) >= 3
+
+# Negation
+expr: >-
+  !data.latest("model", "spec").attributes.output.contains("ERROR")
+
+# Optional access (returns null if data doesn't exist yet)
+expr: >-
+  data.latest("model", "spec").?attributes.?ready == true
+```
+
+### Assert Output: `--fail-on` and `--junit`
+
+Two flags on `swamp workflow run` control assert result handling:
+
+**`--fail-on <severity>`** — Set the minimum severity that causes the run to
+fail. Only assertions at or above this threshold fail the workflow; those below
+are treated as allowed failures.
+
+| Value    | Effect                                         |
+| -------- | ---------------------------------------------- |
+| `low`    | Any failed assertion fails the run (default)   |
+| `medium` | Only `medium` and `high` failures fail the run |
+| `high`   | Only `high` severity failures fail the run     |
+
+```bash
+# Only fail on high-severity assertions (treat low/medium as warnings)
+swamp workflow run my-checks --fail-on high
+
+# Default behavior — any failure fails the run
+swamp workflow run my-checks --fail-on low
+```
+
+**`--junit`** — Output assert results as JUnit XML instead of normal log output.
+JUnit XML is understood by CI systems (GitHub Actions, Jenkins, GitLab CI) for
+test reporting.
+
+```bash
+# Print JUnit XML to stdout
+swamp workflow run my-checks --junit
+
+# Write JUnit XML to a file
+swamp workflow run my-checks --junit --out results.xml
+
+# Combine with --fail-on for CI gating
+swamp workflow run my-checks --junit --out results.xml --fail-on high
+```
+
+**Constraints:**
+
+- `--junit` cannot be combined with `--json` (they are mutually exclusive output
+  formats)
+- `--out` requires `--junit` (it only applies to JUnit output)
+- `--junit` cannot be combined with multiple input sets (`--stdin` with NDJSON)
+- `--fail-on` is not yet supported with `--server`
+
+### Assert Step Example: Full Workflow
+
+A complete workflow that provisions infrastructure and validates the result:
+
+```yaml
+id: provision-and-verify
+name: provision-and-verify
+description: Create infrastructure and assert expected state
+version: 1
+jobs:
+  - name: provision
+    steps:
+      - name: create-vpc
+        task:
+          type: model_method
+          modelType: "command/shell"
+          modelName: create-vpc
+          methodName: execute
+  - name: verify
+    dependsOn:
+      - job: provision
+        condition:
+          type: succeeded
+    steps:
+      - name: describe-vpc
+        task:
+          type: model_method
+          modelType: "command/shell"
+          modelName: describe-vpc
+          methodName: execute
+      - name: cidr-correct
+        dependsOn:
+          - step: describe-vpc
+            condition:
+              type: succeeded
+        task:
+          type: assert
+          expr: >-
+            data.latest("describe-vpc", "result").attributes.stdout.contains("10.0.0.0/16")
+          message: "VPC CIDR is not 10.0.0.0/16"
+          severity: high
+      - name: has-tags
+        dependsOn:
+          - step: describe-vpc
+            condition:
+              type: succeeded
+        task:
+          type: assert
+          expr: >-
+            data.latest("describe-vpc", "result").attributes.stdout.contains("env=production")
+          message: "VPC is missing env=production tag"
+          severity: medium
+```
+
+Run with severity gating and JUnit output for CI:
+
+```bash
+swamp workflow run provision-and-verify --junit --out test-results.xml --fail-on high
+```
 
 ## Working with Vaults
 
