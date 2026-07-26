@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { green, red, yellow } from "@std/fmt/colors";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { WorkflowRunView } from "../../libswamp/mod.ts";
@@ -51,7 +52,7 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
       writeOutput(`    ${stepIcon} ${step.name}${stepDuration}`);
 
       if (step.error) {
-        writeOutput(`      -> ${step.error}`);
+        writeOutput(`      -> ${red(step.error)}`);
       }
     }
   }
@@ -59,7 +60,13 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
   const durationSuffix = data.duration !== undefined
     ? ` (${data.duration}ms)`
     : "";
-  writeOutput(`Result: ${data.status.toUpperCase()}${durationSuffix}`);
+  const resultText = `Result: ${data.status.toUpperCase()}${durationSuffix}`;
+  const colorize = data.status === "failed"
+    ? red
+    : data.status === "cancelled"
+    ? yellow
+    : green;
+  writeOutput(colorize(resultText));
 
   if (data.path) {
     writeOutput(`Saved to: ${data.path}`);

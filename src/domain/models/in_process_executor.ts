@@ -50,22 +50,28 @@ function wrapLoggerWithOutput(
   return new Proxy(logger, {
     get(target, prop, receiver) {
       if (prop === "info" || prop === "warn") {
-        return (
-          tpl: TemplateStringsArray | string,
-          props?: Record<string, unknown>,
-        ) => {
+        return (...args: unknown[]) => {
           const original = Reflect.get(target, prop, receiver) as (
-            ...args: unknown[]
+            ...a: unknown[]
           ) => void;
-          original.call(target, tpl, props);
+          original.call(target, ...args);
+          const tpl = args[0];
           let line: string;
           if (typeof tpl === "string") {
+            const props = args[1] as Record<string, unknown> | undefined;
             line = props
               ? tpl.replace(
                 /\{(\w+)\}/g,
                 (_, k) => String(props[k] ?? ""),
               )
               : tpl;
+          } else if (Array.isArray(tpl)) {
+            const values = args.slice(1);
+            line = (tpl as string[]).reduce(
+              (acc, str, i) =>
+                acc + str + (i < values.length ? String(values[i]) : ""),
+              "",
+            );
           } else {
             line = String(tpl);
           }

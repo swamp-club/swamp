@@ -258,10 +258,12 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
     artifacts: Array<{ name: string; attributes?: Record<string, unknown> }>,
     options?: DataBoxOptions,
   ): void {
-    const dataArtifacts: DataArtifact[] = artifacts.map((a) => ({
-      name: a.name,
-      attributes: a.attributes,
-    }));
+    const dataArtifacts: DataArtifact[] = artifacts
+      .filter((a) => !a.name.startsWith("report-") && a.name !== "log")
+      .map((a) => ({
+        name: a.name,
+        attributes: a.attributes,
+      }));
     const lines = renderDataBox(dataArtifacts, options);
     for (const line of lines) {
       writeOutput(`  ${line}`);
