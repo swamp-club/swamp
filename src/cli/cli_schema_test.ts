@@ -152,7 +152,7 @@ Deno.test("buildCliSchema filters global options from subcommands", () => {
   assertEquals(subLocal !== undefined, true);
 });
 
-Deno.test("buildCliSchema stripGlobalOptions removes globals from root too", () => {
+Deno.test("buildCliSchema stripGlobalOptions removes globals from options and populates globalOptions", () => {
   const sub = new Command().description("subcommand").option(
     "--local",
     "Local option",
@@ -166,13 +166,45 @@ Deno.test("buildCliSchema stripGlobalOptions removes globals from root too", () 
   // Build schema for the subcommand with stripGlobalOptions
   const schema = buildCliSchema(sub, "1.0.0", { stripGlobalOptions: true });
 
-  // Global option should NOT appear even though sub is the root of this schema
+  // Global option should NOT appear in options
   const jsonOpt = schema.root.options.find((o) => o.flags.includes("--json"));
   assertEquals(jsonOpt, undefined);
 
-  // Local option should still appear
+  // Local option should still appear in options
   const localOpt = schema.root.options.find((o) => o.flags.includes("--local"));
   assertEquals(localOpt !== undefined, true);
+
+  // Global option should appear in globalOptions
+  assertEquals(schema.root.globalOptions !== undefined, true);
+  const globalJson = schema.root.globalOptions!.find((o) =>
+    o.flags.includes("--json")
+  );
+  assertEquals(globalJson !== undefined, true);
+  assertEquals(globalJson!.description, "JSON output");
+
+  // Local option should NOT appear in globalOptions
+  const globalLocal = schema.root.globalOptions!.find((o) =>
+    o.flags.includes("--local")
+  );
+  assertEquals(globalLocal, undefined);
+});
+
+Deno.test("buildCliSchema without stripGlobalOptions does not set globalOptions", () => {
+  const root = new Command()
+    .name("cli")
+    .description("root")
+    .globalOption("--json", "JSON output")
+    .command(
+      "sub",
+      new Command().description("subcommand").option(
+        "--local",
+        "Local option",
+      ),
+    );
+
+  const schema = buildCliSchema(root, "1.0.0");
+
+  assertEquals(schema.root.globalOptions, undefined);
 });
 
 Deno.test("buildCliSchema filters builtin --help and --version flags", () => {
