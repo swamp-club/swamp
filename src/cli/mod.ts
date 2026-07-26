@@ -1461,13 +1461,18 @@ export async function runCli(args: string[]): Promise<void> {
         if (resolved) logLevel = parseLogLevel(resolved);
       }
 
+      const forceLog = options.log ?? false;
+      const verbose = options.verbose ?? false;
+      if (verbose && logLevel === "info") {
+        logLevel = "debug";
+      }
       await initializeLogging({
         prettyOutput,
         showProperties: options.showProperties ?? false,
         logLevel,
         jsonMode: options.json ?? false,
         noColor,
-        forceLog: options.log ?? false,
+        forceLog: forceLog || verbose,
       });
 
       // Emit deferred warnings now that logging is initialized

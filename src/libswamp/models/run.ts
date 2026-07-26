@@ -451,6 +451,12 @@ export async function* modelMethodRun(
           Object.assign(inputs, inputsWithDefaults);
         }
 
+        const runLogger = getRunLogger(definition.name, input.methodName);
+        runLogger.debug("Found model {name} ({type})", {
+          name: definition.name,
+          type: modelType.normalized,
+        });
+
         yield {
           kind: "model_resolved",
           modelName: definition.name,
@@ -614,6 +620,10 @@ export async function* modelMethodRun(
           runtimeSpan.end();
 
           // --- Execute ---
+          runLogger.debug("Executing method {method}", {
+            method: input.methodName,
+          });
+
           yield {
             kind: "executing",
             modelName: definition.name,
@@ -940,6 +950,11 @@ export async function* modelMethodRun(
               };
             }
           }
+
+          runLogger.debug(
+            "Method {method} completed on {model}",
+            { method: input.methodName, model: definition.name },
+          );
 
           // Mark output as succeeded and save (write-once)
           if (heartbeatInterval) clearInterval(heartbeatInterval);

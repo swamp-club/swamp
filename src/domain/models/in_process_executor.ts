@@ -17,11 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { Logger } from "@logtape/logtape";
 import type {
   ExecutionRequest,
   ExecutionResult,
 } from "./execution_envelope.ts";
 import type { Definition } from "../definitions/definition.ts";
+import type { MethodExecutionEvent } from "./method_events.ts";
 import type {
   MethodContext,
   MethodDefinition,
@@ -39,6 +41,45 @@ import {
 } from "./data_writer.ts";
 import { DataAccessService } from "../data/data_access_service.ts";
 import { withConsoleGuard } from "./console_guard.ts";
+
+function wrapLoggerWithOutput(
+  logger: Logger,
+  onEvent: ((event: MethodExecutionEvent) => void) | undefined,
+): Logger {
+  if (!onEvent) return logger;
+  return new Proxy(logger, {
+    get(target, prop, receiver) {
+      if (prop === "info" || prop === "warn") {
+        return (
+          tpl: TemplateStringsArray | string,
+          props?: Record<string, unknown>,
+        ) => {
+          const original = Reflect.get(target, prop, receiver) as (
+            ...args: unknown[]
+          ) => void;
+          original.call(target, tpl, props);
+          let line: string;
+          if (typeof tpl === "string") {
+            line = props
+              ? tpl.replace(
+                /\{(\w+)\}/g,
+                (_, k) => String(props[k] ?? ""),
+              )
+              : tpl;
+          } else {
+            line = String(tpl);
+          }
+          onEvent({
+            type: "output",
+            line,
+            stream: prop === "warn" ? "stderr" : "stdout",
+          });
+        };
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+}
 
 function restoreEnv(key: string, saved: string | undefined): void {
   if (saved !== undefined) {
@@ -175,6 +216,7 @@ export class InProcessExecutor {
     this.contextWithWriters = {
       ...this.context,
       methodName: this.methodName,
+      logger: wrapLoggerWithOutput(this.context.logger, this.context.onEvent),
       writeResource,
       readResource,
       deleteResource,
