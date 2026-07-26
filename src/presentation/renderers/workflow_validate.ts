@@ -127,6 +127,12 @@ class LogWorkflowValidateRenderer implements WorkflowValidateRenderer {
 
   private renderAll(data: WorkflowValidateAllData): void {
     this._passed = data.passed;
+
+    if (data.workflows.length === 0) {
+      writeOutput(`${bold(cyan("No workflows to validate"))}`);
+      return;
+    }
+
     const lines: string[] = [];
     lines.push(bold(cyan("Validating all workflows...")));
 

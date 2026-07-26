@@ -27,7 +27,7 @@ import {
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { LibSwampContext } from "../context.ts";
-import { notFound, type SwampError, validationFailed } from "../errors.ts";
+import { notFound, type SwampError } from "../errors.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -276,8 +276,14 @@ async function* validateAll(
 
   if (allWorkflows.length === 0 && brokenWorkflows.length === 0) {
     yield {
-      kind: "error",
-      error: validationFailed("No workflows found"),
+      kind: "completed",
+      data: {
+        workflows: [],
+        totalPassed: 0,
+        totalFailed: 0,
+        totalWarnings: 0,
+        passed: true,
+      },
     };
     return;
   }

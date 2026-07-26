@@ -264,3 +264,28 @@ Deno.test("workflowValidate all: broken files alone still yield results, not no-
   }
   assertEquals(completed.data.totalFailed, 1);
 });
+
+Deno.test("workflowValidate all: empty repository yields passed=true with no workflows", async () => {
+  const deps = makeDeps({
+    findAllWorkflows: () => Promise.resolve([]),
+    listBrokenWorkflows: () => Promise.resolve([]),
+  });
+  const events = await collect<WorkflowValidateEvent>(
+    workflowValidate(createLibSwampContext(), deps, {}),
+  );
+
+  assertEquals(events.length, 2);
+  assertEquals(events[0], { kind: "resolving" });
+  const completed = events[1] as Extract<
+    WorkflowValidateEvent,
+    { kind: "completed" }
+  >;
+  if (!isWorkflowValidateAllData(completed.data)) {
+    throw new Error("expected aggregate data");
+  }
+  assertEquals(completed.data.passed, true);
+  assertEquals(completed.data.workflows.length, 0);
+  assertEquals(completed.data.totalPassed, 0);
+  assertEquals(completed.data.totalFailed, 0);
+  assertEquals(completed.data.totalWarnings, 0);
+});
