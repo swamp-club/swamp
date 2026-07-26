@@ -17,8 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { green, red, yellow } from "@std/fmt/colors";
 import type { OutputMode } from "../output/output.ts";
-import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { WorkflowRunView } from "../../libswamp/mod.ts";
 
 export function renderWorkflowRunDisplay(
@@ -33,22 +34,13 @@ export function renderWorkflowRunDisplay(
 }
 
 function renderLogWorkflowRun(data: WorkflowRunView): void {
-  const logger = getSwampLogger(["workflow", "run"]);
-
-  logger.info("Workflow: {workflowName} (Run ID: {id})", {
-    workflowName: data.workflowName,
-    id: data.id,
-  });
+  writeOutput(`Workflow: ${data.workflowName} (Run ID: ${data.id})`);
 
   for (const job of data.jobs) {
     const durationSuffix = job.duration !== undefined
       ? ` (${job.duration}ms)`
       : "";
-    logger.info("  {status} {jobName}{duration}", {
-      status: statusIcon(job.status),
-      jobName: job.name,
-      duration: durationSuffix,
-    });
+    writeOutput(`  ${statusIcon(job.status)} ${job.name}${durationSuffix}`);
 
     for (const step of job.steps) {
       const stepDuration = step.duration !== undefined
@@ -57,33 +49,27 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
       const stepIcon = step.status === "failed" && step.allowedFailure
         ? "\u26A0"
         : statusIcon(step.status);
-      logger.info("    {status} {stepName}{duration}", {
-        status: stepIcon,
-        stepName: step.name,
-        duration: stepDuration,
-      });
+      writeOutput(`    ${stepIcon} ${step.name}${stepDuration}`);
 
       if (step.error) {
-        logger.error("      -> {error}", { error: step.error });
+        writeOutput(`      -> ${red(step.error)}`);
       }
     }
   }
 
-  const resultLevel = data.status === "failed"
-    ? "error"
-    : data.status === "cancelled"
-    ? "warn"
-    : "info";
   const durationSuffix = data.duration !== undefined
     ? ` (${data.duration}ms)`
     : "";
-  logger[resultLevel]("Result: {status}{duration}", {
-    status: data.status.toUpperCase(),
-    duration: durationSuffix,
-  });
+  const resultText = `Result: ${data.status.toUpperCase()}${durationSuffix}`;
+  const colorize = data.status === "failed"
+    ? red
+    : data.status === "cancelled"
+    ? yellow
+    : green;
+  writeOutput(colorize(resultText));
 
   if (data.path) {
-    logger.info("Saved to: {path}", { path: data.path });
+    writeOutput(`Saved to: ${data.path}`);
   }
 }
 

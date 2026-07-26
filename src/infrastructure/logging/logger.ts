@@ -38,6 +38,8 @@ export interface LoggingOptions {
   logLevel?: LogLevel;
   jsonMode?: boolean;
   noColor?: boolean;
+  /** When true, run loggers also write to the console sink (flat [INF] output for --log mode). */
+  forceLog?: boolean;
   /** Write all log output to stderr only (for dispatch runners where stdout carries RPC frames). */
   stderrOnly?: boolean;
   /** Test-only: clear the once-per-process guard so logging can be reconfigured. */
@@ -176,6 +178,8 @@ export async function initializeLogging(
   // logtape.meta logger's own sinks in JSON mode so its warnings
   // don't reach the console at all.
   const jsonMode = options.jsonMode ?? false;
+  const forceLog = options.forceLog ?? false;
+  const runParentSinks = forceLog ? "inherit" : "override";
   await configure({
     sinks,
     loggers: [
@@ -184,13 +188,13 @@ export async function initializeLogging(
         category: ["model", "method", "run"],
         lowestLevel: logLevel,
         sinks: ["runFile", ...otelSinks],
-        parentSinks: "override",
+        parentSinks: runParentSinks,
       },
       {
         category: ["workflow", "run"],
         lowestLevel: logLevel,
         sinks: ["runFile", ...otelSinks],
-        parentSinks: "override",
+        parentSinks: runParentSinks,
       },
       {
         category: ["logtape", "meta"],

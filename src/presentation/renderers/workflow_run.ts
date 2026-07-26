@@ -54,6 +54,14 @@ export interface WorkflowRunRenderer extends Renderer<WorkflowRunEvent> {
   workflowFailed(): boolean;
 }
 
+function isUserFacingArtifact(
+  artifact: { name: string },
+): boolean {
+  if (artifact.name.startsWith("report-")) return false;
+  if (artifact.name === "log") return false;
+  return true;
+}
+
 const QUIET_BUFFER_LIMIT = 500;
 const HEARTBEAT_INTERVAL_MS = 10_000;
 
@@ -565,6 +573,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
       for (const step of job.steps) {
         if (step.dataArtifacts) {
           for (const artifact of step.dataArtifacts) {
+            if (!isUserFacingArtifact(artifact)) continue;
             artifacts.push({
               name: artifact.name,
               attributes: artifact.attributes,
@@ -576,6 +585,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
     }
     if (run.workflowDataArtifacts) {
       for (const artifact of run.workflowDataArtifacts) {
+        if (!isUserFacingArtifact(artifact)) continue;
         artifacts.push({
           name: artifact.name,
           attributes: artifact.attributes,
