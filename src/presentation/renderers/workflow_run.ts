@@ -575,7 +575,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
               "system",
               "Failed",
               STATUS_COLORS.error,
-              `workflow ${this.workflowName} — assertion failures above threshold (${this.failOnSeverity})${duration}`,
+              `workflow ${this.workflowName} — assertion failures at severity ≥ ${this.failOnSeverity}${duration}`,
               formatTimestamp(),
             ),
           );
