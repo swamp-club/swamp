@@ -218,3 +218,87 @@ Deno.test("workflow assert: assert results persist in workflow run", async () =>
     assertStringIncludes(step.assertResult.expr, "2 + 2 == 4");
   });
 });
+
+Deno.test("workflow assert: --fail-on high allows low severity failures to pass", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+
+    const workflow = Workflow.create({
+      name: "assert-severity-gate",
+      description: "Test severity gating",
+      jobs: [
+        Job.create({
+          name: "verify",
+          steps: [
+            Step.create({
+              name: "low-fail",
+              task: StepTask.assert("false", "Low issue", "low"),
+            }),
+            Step.create({
+              name: "high-pass",
+              task: StepTask.assert("true", "High check", "high"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await saveWorkflow(repoDir, workflow);
+
+    const result = await runCliCommand(
+      [
+        "workflow",
+        "run",
+        "assert-severity-gate",
+        "--fail-on",
+        "high",
+        "--repo-dir",
+        repoDir,
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      result.code,
+      0,
+      `Expected exit 0 (low failure below --fail-on high threshold) but got ${result.code}. stderr: ${result.stderr}`,
+    );
+  });
+});
+
+Deno.test("workflow assert: --fail-on rejects invalid values", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+
+    const workflow = Workflow.create({
+      name: "assert-invalid-failon",
+      jobs: [
+        Job.create({
+          name: "verify",
+          steps: [
+            Step.create({
+              name: "check",
+              task: StepTask.assert("true", "ok", "high"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await saveWorkflow(repoDir, workflow);
+
+    const result = await runCliCommand(
+      [
+        "workflow",
+        "run",
+        "assert-invalid-failon",
+        "--fail-on",
+        "critical",
+        "--repo-dir",
+        repoDir,
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(result.code, 1);
+    assertStringIncludes(result.stderr, "Invalid --fail-on");
+  });
+});

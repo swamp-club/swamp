@@ -36,8 +36,14 @@ interface AssertRecord {
   duration?: number;
 }
 
+const XML_ILLEGAL_CHARS = new RegExp(
+  "[\x00-\x08\x0B\x0C\x0E-\x1F]",
+  "g",
+);
+
 export function escapeXml(str: string): string {
   return str
+    .replace(XML_ILLEGAL_CHARS, "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -102,7 +108,7 @@ export class JUnitWorkflowRunRenderer implements WorkflowRunRenderer {
       report_started: () => {},
       report_completed: () => {},
       report_failed: () => {},
-      completed: (e) => {
+      completed: async (e) => {
         this.totalDuration = (e.run.duration ?? 0) / 1000;
         const failedAboveThreshold = this.asserts.filter(
           (a) =>
@@ -111,14 +117,14 @@ export class JUnitWorkflowRunRenderer implements WorkflowRunRenderer {
         if (failedAboveThreshold > 0 || e.run.status === "failed") {
           this._failed = true;
         }
-        this.writeJUnit();
+        await this.writeJUnit();
       },
-      cancelled: () => {
+      cancelled: async () => {
         this._failed = true;
-        this.writeJUnit();
+        await this.writeJUnit();
       },
-      suspended: () => {
-        this.writeJUnit();
+      suspended: async () => {
+        await this.writeJUnit();
       },
       error: (e) => {
         throw new UserError(e.error.message, e.error.code);
@@ -130,10 +136,10 @@ export class JUnitWorkflowRunRenderer implements WorkflowRunRenderer {
     return this._failed;
   }
 
-  private writeJUnit(): void {
+  private async writeJUnit(): Promise<void> {
     const xml = this.buildXml();
     if (this.outFile) {
-      Deno.writeTextFileSync(this.outFile, xml);
+      await Deno.writeTextFile(this.outFile, xml);
     } else {
       console.log(xml);
     }

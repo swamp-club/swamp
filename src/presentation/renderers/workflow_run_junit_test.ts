@@ -40,3 +40,15 @@ Deno.test("escapeXml: handles empty string", () => {
 Deno.test("escapeXml: passes through safe strings", () => {
   assertEquals(escapeXml("hello world 123"), "hello world 123");
 });
+
+Deno.test("escapeXml: strips XML 1.0 illegal control characters", () => {
+  assertEquals(escapeXml("hello\x00world"), "helloworld");
+  assertEquals(escapeXml("tab\x08here"), "tabhere");
+  assertEquals(escapeXml("a\x0Bb"), "ab");
+});
+
+Deno.test("escapeXml: preserves legal whitespace", () => {
+  assertEquals(escapeXml("line\nbreak"), "line\nbreak");
+  assertEquals(escapeXml("tab\there"), "tab\there");
+  assertEquals(escapeXml("cr\rhere"), "cr\rhere");
+});

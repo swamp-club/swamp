@@ -219,8 +219,36 @@ export const workflowRunCommand = new Command()
     const ctx = createContext(options as GlobalOptions, ["workflow", "run"]);
     ctx.logger.debug`Running workflow: ${workflowIdOrName}`;
 
+    // Validate flag combinations early, before local/server branch
+    let failOnSeverity: AssertSeverity | undefined;
+    if (options.failOn) {
+      const parsed = AssertSeveritySchema.safeParse(options.failOn);
+      if (!parsed.success) {
+        throw new UserError(
+          `Invalid --fail-on value "${options.failOn}". Must be one of: low, medium, high`,
+        );
+      }
+      failOnSeverity = parsed.data;
+    }
+    if (options.out && !options.junit) {
+      throw new UserError(
+        "--out requires --junit. Did you mean: swamp workflow run " +
+          `${workflowIdOrName} --junit --out ${options.out}`,
+      );
+    }
+    if (options.junit && ctx.outputMode === "json") {
+      throw new UserError(
+        "--junit and --json cannot be combined. Use --junit for JUnit XML output or --json for JSON output, not both.",
+      );
+    }
+
     const server = resolveServeUrl(options.server as string | undefined);
     if (server) {
+      if (failOnSeverity) {
+        throw new UserError(
+          "--fail-on is not yet supported with --server.",
+        );
+      }
       await runWorkflowViaServer(ctx, { ...options, server }, workflowIdOrName);
       return;
     }
@@ -430,16 +458,6 @@ export const workflowRunCommand = new Command()
           }/${inputSets.length}]`;
         }
 
-        let failOnSeverity: AssertSeverity | undefined;
-        if (options.failOn) {
-          const parsed = AssertSeveritySchema.safeParse(options.failOn);
-          if (!parsed.success) {
-            throw new UserError(
-              `Invalid --fail-on value "${options.failOn}". Must be one of: low, medium, high`,
-            );
-          }
-          failOnSeverity = parsed.data;
-        }
         const renderer = options.junit
           ? new JUnitWorkflowRunRenderer({
             failOnSeverity,
@@ -601,19 +619,14 @@ async function runWorkflowViaServer(
           i + 1
         }/${inputSets.length}] via ${options.server}`;
       }
-      const failOnSeverity = (options.failOn as string | undefined) as
-        | AssertSeverity
-        | undefined;
       const renderer = options.junit
         ? new JUnitWorkflowRunRenderer({
-          failOnSeverity,
           outFile: options.out as string | undefined,
         })
         : createWorkflowRunRenderer(ctx.outputMode, {
           workflowName: workflowIdOrName,
           isAuthenticated: isAuthenticated(),
           quiet: ctx.verbosity === "quiet",
-          failOnSeverity,
         });
       await consumeStream(
         runWorkflowOverServer({
