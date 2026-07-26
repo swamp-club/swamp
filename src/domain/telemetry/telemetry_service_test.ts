@@ -20,7 +20,10 @@
 import { assertEquals } from "@std/assert";
 import { TelemetryService } from "./telemetry_service.ts";
 import type { TelemetryRepository } from "./repositories.ts";
-import type { TelemetrySender } from "./telemetry_sender.ts";
+import type {
+  TelemetryFlushResult,
+  TelemetrySender,
+} from "./telemetry_sender.ts";
 import { TelemetryEntry, type TelemetryEntryData } from "./telemetry_entry.ts";
 
 /** Mock repository for testing */
@@ -76,7 +79,7 @@ class MockTelemetrySender implements TelemetrySender {
     repoId?: string;
     authToken?: string;
   }> = [];
-  shouldSucceed = true;
+  result: TelemetryFlushResult = { ok: true };
 
   sendBatch(
     entries: TelemetryEntry[],
@@ -84,9 +87,9 @@ class MockTelemetrySender implements TelemetrySender {
     repoId?: string,
     authToken?: string,
     _signal?: AbortSignal,
-  ): Promise<boolean> {
+  ): Promise<TelemetryFlushResult> {
     this.sentBatches.push({ entries, distinctId, repoId, authToken });
-    return Promise.resolve(this.shouldSucceed);
+    return Promise.resolve(this.result);
   }
 }
 
@@ -283,17 +286,17 @@ Deno.test("TelemetryService.flushTelemetry sends unflushed entries and marks the
     distinctId: "repo-uuid",
   });
 
-  assertEquals(result, true);
+  assertEquals(result.ok, true);
   assertEquals(sender.sentBatches.length, 1);
   assertEquals(sender.sentBatches[0].entries.length, 2);
   assertEquals(sender.sentBatches[0].distinctId, "repo-uuid");
   assertEquals(repo.flushedEntries.length, 2);
 });
 
-Deno.test("TelemetryService.flushTelemetry returns false on send failure", async () => {
+Deno.test("TelemetryService.flushTelemetry propagates failure reason from sender", async () => {
   const repo = new MockTelemetryRepository();
   const sender = new MockTelemetrySender();
-  sender.shouldSucceed = false;
+  sender.result = { ok: false, reason: "HTTP 401" };
   const service = new TelemetryService(repo, "1.0.0");
 
   const entry = createFlushTestEntry(
@@ -307,12 +310,13 @@ Deno.test("TelemetryService.flushTelemetry returns false on send failure", async
     distinctId: "repo-uuid",
   });
 
-  assertEquals(result, false);
+  assertEquals(result.ok, false);
+  assertEquals(result.reason, "HTTP 401");
   assertEquals(sender.sentBatches.length, 1);
   assertEquals(repo.flushedEntries.length, 0);
 });
 
-Deno.test("TelemetryService.flushTelemetry returns true when no unflushed entries", async () => {
+Deno.test("TelemetryService.flushTelemetry returns ok when no unflushed entries", async () => {
   const repo = new MockTelemetryRepository();
   const sender = new MockTelemetrySender();
   const service = new TelemetryService(repo, "1.0.0");
@@ -324,7 +328,7 @@ Deno.test("TelemetryService.flushTelemetry returns true when no unflushed entrie
     distinctId: "repo-uuid",
   });
 
-  assertEquals(result, true);
+  assertEquals(result.ok, true);
   assertEquals(sender.sentBatches.length, 0);
   assertEquals(repo.flushedEntries.length, 0);
 });

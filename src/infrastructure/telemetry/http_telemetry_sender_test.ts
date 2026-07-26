@@ -59,7 +59,7 @@ Deno.test("HttpTelemetrySender.sendBatch sends single event format for one entry
 
   const result = await sender.sendBatch([entry], "repo-uuid-123");
 
-  assertEquals(result, true);
+  assertEquals(result.ok, true);
   assertEquals(capturedUrl, `http://localhost:${port}/ingest`);
 
   const parsed = JSON.parse(capturedBody!);
@@ -85,7 +85,7 @@ Deno.test("HttpTelemetrySender.sendBatch sends batch format for multiple entries
 
   const result = await sender.sendBatch([entry1, entry2], "repo-uuid");
 
-  assertEquals(result, true);
+  assertEquals(result.ok, true);
 
   const parsed = JSON.parse(capturedBody!);
   assertEquals(parsed.events.length, 2);
@@ -96,7 +96,7 @@ Deno.test("HttpTelemetrySender.sendBatch sends batch format for multiple entries
   await server.shutdown();
 });
 
-Deno.test("HttpTelemetrySender.sendBatch returns false on non-202 status", async () => {
+Deno.test("HttpTelemetrySender.sendBatch returns reason on non-202 status", async () => {
   const server = Deno.serve({ port: 0 }, () => {
     return new Response(JSON.stringify({ error: "bad request" }), {
       status: 400,
@@ -108,18 +108,20 @@ Deno.test("HttpTelemetrySender.sendBatch returns false on non-202 status", async
   const entry = createTestEntry("uuid-1", new Date("2024-03-10T10:00:00Z"));
 
   const result = await sender.sendBatch([entry], "repo-uuid");
-  assertEquals(result, false);
+  assertEquals(result.ok, false);
+  assertEquals(result.reason, "HTTP 400");
 
   await server.shutdown();
 });
 
-Deno.test("HttpTelemetrySender.sendBatch returns false on network error", async () => {
+Deno.test("HttpTelemetrySender.sendBatch returns network error reason on connection failure", async () => {
   // Use a port that nothing is listening on
   const sender = new HttpTelemetrySender("http://localhost:1");
   const entry = createTestEntry("uuid-1", new Date("2024-03-10T10:00:00Z"));
 
   const result = await sender.sendBatch([entry], "repo-uuid");
-  assertEquals(result, false);
+  assertEquals(result.ok, false);
+  assertEquals(result.reason, "network error");
 });
 
 Deno.test("HttpTelemetrySender.sendBatch includes $repo_id when provided", async () => {
@@ -143,7 +145,7 @@ Deno.test("HttpTelemetrySender.sendBatch includes $repo_id when provided", async
     "repo-uuid-456",
   );
 
-  assertEquals(result, true);
+  assertEquals(result.ok, true);
 
   const parsed = JSON.parse(capturedBody!);
   assertEquals(parsed.distinct_id, "user-uuid-123");
@@ -169,7 +171,7 @@ Deno.test("HttpTelemetrySender.sendBatch omits $repo_id when not provided", asyn
 
   const result = await sender.sendBatch([entry], "user-uuid-123");
 
-  assertEquals(result, true);
+  assertEquals(result.ok, true);
 
   const parsed = JSON.parse(capturedBody!);
   assertEquals(parsed.distinct_id, "user-uuid-123");
@@ -201,7 +203,7 @@ Deno.test("HttpTelemetrySender.sendBatch includes x-api-key header when authToke
     "test-api-key-abc",
   );
 
-  assertEquals(result, true);
+  assertEquals(result.ok, true);
   assertEquals(capturedApiKey, "test-api-key-abc");
 
   await server.shutdown();
@@ -225,7 +227,7 @@ Deno.test("HttpTelemetrySender.sendBatch omits x-api-key header when authToken n
 
   const result = await sender.sendBatch([entry], "user-uuid-123");
 
-  assertEquals(result, true);
+  assertEquals(result.ok, true);
   assertEquals(capturedApiKey, null);
 
   await server.shutdown();
@@ -252,7 +254,7 @@ Deno.test("HttpTelemetrySender.sendBatch includes User-Agent header when provide
 
   const result = await sender.sendBatch([entry], "user-uuid-123");
 
-  assertEquals(result, true);
+  assertEquals(result.ok, true);
   assertEquals(capturedUserAgent, "swamp-cli/1.2.3");
 
   await server.shutdown();
@@ -297,7 +299,7 @@ Deno.test("HttpTelemetrySender.sendBatch lands invocationContext at properties.i
   });
 
   const ok = await sender.sendBatch([entry], "user-uuid");
-  assertEquals(ok, true);
+  assertEquals(ok.ok, true);
 
   const parsed = JSON.parse(capturedBody!);
   assertEquals(parsed.properties.invocationContext.configuredAiTools, [
@@ -354,7 +356,7 @@ Deno.test("HttpTelemetrySender.sendBatch lands parentInvocationId and workflowCo
   });
 
   const ok = await sender.sendBatch([entry], "user-uuid");
-  assertEquals(ok, true);
+  assertEquals(ok.ok, true);
 
   const parsed = JSON.parse(capturedBody!);
   assertEquals(parsed.properties.parentInvocationId, "parent-wire");
@@ -386,7 +388,7 @@ Deno.test("HttpTelemetrySender.sendBatch omits parentInvocationId / workflowCont
   );
 
   const ok = await sender.sendBatch([entry], "user-uuid");
-  assertEquals(ok, true);
+  assertEquals(ok.ok, true);
 
   const parsed = JSON.parse(capturedBody!);
   assertEquals("parentInvocationId" in parsed.properties, false);
