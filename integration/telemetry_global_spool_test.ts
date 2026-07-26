@@ -173,9 +173,12 @@ Deno.test("repo-less telemetry spools to the user-global directory", async () =>
 
 async function seedRepoLocalEntry(repoDir: string): Promise<string> {
   // Simulate a legacy repo-local spool holding one unflushed entry.
+  // Use today's date so the hard-retention cleanup (7-day cap) doesn't
+  // delete it before the test can verify it was migrated.
   const spool = join(repoDir, ".swamp", "telemetry");
   await Deno.mkdir(spool, { recursive: true });
-  const name = `telemetry-2026-07-13-${crypto.randomUUID()}.json`;
+  const today = new Date().toISOString().split("T")[0];
+  const name = `telemetry-${today}-${crypto.randomUUID()}.json`;
   await Deno.writeTextFile(join(spool, name), '{"id":"legacy"}');
   return name;
 }
