@@ -1287,6 +1287,25 @@ timeout, Ctrl-C, transient 5xx), the repo stays in a safe, resumable state:
   idempotent, so a subsequent push overwrites with identical content.
 
 **To retry:** re-run the exact same `swamp datastore setup extension` command.
+
+### Directory Relocation
+
+When a datastore is enabled on a repo that previously used the default
+filesystem layout, the runtime directories (`data`, `outputs`, `workflow-runs`,
+and others listed in `DEFAULT_DATASTORE_SUBDIRS`) are relocated from
+`{repoDir}/.swamp/` to the datastore path. For extension datastores this is the
+local cache (`~/.swamp/repos/{repoId}/`), not the remote. The setup command
+prints which directories moved and where:
+
+```
+Relocated: data, outputs, workflow-runs now resolve under /new/path
+  Moved from: /repo/.swamp
+```
+
+After setup, `DefaultDatastorePathResolver.resolvePath()` routes these
+subdirectories to the new location. Code that hardcodes `.swamp/workflow-runs/`
+or similar paths will silently break — use `swamp workflow run search --json`,
+`swamp data get`, or equivalent CLI commands instead of direct filesystem access.
 The migration copies files to the cache (overwriting any partial cache from the
 previous attempt), pushes to the remote (idempotent), pulls from the remote,
 and only then updates `.swamp.yaml` and cleans up `.swamp/`.

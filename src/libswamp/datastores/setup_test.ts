@@ -99,6 +99,8 @@ Deno.test("datastoreSetupFilesystem: completes with migration", async () => {
   assertEquals(completed.data.bytesCopied, 1024);
   assertEquals(completed.data.directoriesMigrated, ["data", "outputs"]);
   assertEquals(completed.data.errors, []);
+  assertEquals(completed.data.sourcePath, "/tmp/repo/.swamp");
+  assertEquals(completed.data.destinationPath, "/tmp/datastore");
 });
 
 Deno.test("datastoreSetupFilesystem: completes with skip migration", async () => {
@@ -118,6 +120,8 @@ Deno.test("datastoreSetupFilesystem: completes with skip migration", async () =>
   assertEquals(completed.kind, "completed");
   assertEquals(completed.data.filesCopied, 0);
   assertEquals(completed.data.directoriesMigrated, []);
+  assertEquals(completed.data.sourcePath, undefined);
+  assertEquals(completed.data.destinationPath, undefined);
 });
 
 Deno.test("datastoreSetupFilesystem: errors on unhealthy path", async () => {
@@ -383,6 +387,10 @@ Deno.test("datastoreSetupExtension: completes with valid config", async () => {
   >;
   assertEquals(completed.kind, "completed");
   assertEquals(completed.data.type, "test-ext-setup");
+  assertEquals(completed.data.directoriesMigrated, ["data", "outputs"]);
+  assertEquals(completed.data.bytesCopied, 1024);
+  assertEquals(completed.data.sourcePath, "/tmp/repo/.swamp");
+  assertEquals(completed.data.destinationPath, "/tmp/repo/.custom-cache");
 });
 
 Deno.test("datastoreSetupExtension: completes with skip migration", async () => {
@@ -409,6 +417,8 @@ Deno.test("datastoreSetupExtension: completes with skip migration", async () => 
   >;
   assertEquals(completed.kind, "completed");
   assertEquals(completed.data.filesCopied, 0);
+  assertEquals(completed.data.sourcePath, undefined);
+  assertEquals(completed.data.destinationPath, undefined);
 });
 
 Deno.test("datastoreSetupExtension: errors on unregistered type", async () => {
