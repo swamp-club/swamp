@@ -71,7 +71,7 @@ export const datastoreKindAdapter: KindAdapter = {
   extractTypeFromSource(source: string) {
     if (!/export\s+const\s+datastore\s*[=:]/.test(source)) return null;
     const typeMatch = source.match(
-      /export\s+const\s+datastore\s*=\s*\{[\s\S]*?type\s*:\s*["']([^"']+)["']/,
+      /export\s+const\s+datastore\b[\s\S]*?=\s*\{[\s\S]*?type\s*:\s*["']([^"']+)["']/,
     );
     if (!typeMatch) return null;
     return {

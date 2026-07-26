@@ -726,3 +726,17 @@ export const datastore = {
   assertNotEquals(result, null);
   assertEquals(result?.typeNormalized, "@org/correct-datastore");
 });
+
+Deno.test("datastoreKindAdapter.extractTypeFromSource: handles inline structural type annotation", () => {
+  const source = `
+export const datastore: {
+  type: string;
+  connect: () => Promise<unknown>;
+} = {
+  type: "@org/typed-datastore",
+  connect: async () => ({}),
+};`;
+  const result = datastoreKindAdapter.extractTypeFromSource(source);
+  assertNotEquals(result, null);
+  assertEquals(result?.typeNormalized, "@org/typed-datastore");
+});

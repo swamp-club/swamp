@@ -409,13 +409,13 @@ export const modelKindAdapter: KindAdapter = {
     if (!modelMatch && !extensionMatch) return null;
 
     const typeMatch = source.match(
-      /export\s+const\s+(?:model|extension)\s*=\s*\{[\s\S]*?type\s*:\s*["']([^"']+)["']/,
+      /export\s+const\s+(?:model|extension)\b[\s\S]*?=\s*\{[\s\S]*?type\s*:\s*["']([^"']+)["']/,
     );
     if (!typeMatch) return null;
 
     const typeNormalized = ModelType.create(typeMatch[1]).normalized;
     const versionMatch = source.match(
-      /export\s+const\s+(?:model|extension)\s*=\s*\{[\s\S]*?version\s*:\s*["']([^"']+)["']/,
+      /export\s+const\s+(?:model|extension)\b[\s\S]*?=\s*\{[\s\S]*?version\s*:\s*["']([^"']+)["']/,
     );
 
     return {

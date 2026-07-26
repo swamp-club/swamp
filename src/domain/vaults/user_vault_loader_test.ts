@@ -838,3 +838,17 @@ export const vault = {
   assertNotEquals(result, null);
   assertEquals(result?.typeNormalized, "@org/correct-vault");
 });
+
+Deno.test("vaultKindAdapter.extractTypeFromSource: handles inline structural type annotation", () => {
+  const source = `
+export const vault: {
+  type: string;
+  resolve: () => Promise<string>;
+} = {
+  type: "@org/typed-vault",
+  resolve: async () => "secret",
+};`;
+  const result = vaultKindAdapter.extractTypeFromSource(source);
+  assertNotEquals(result, null);
+  assertEquals(result?.typeNormalized, "@org/typed-vault");
+});

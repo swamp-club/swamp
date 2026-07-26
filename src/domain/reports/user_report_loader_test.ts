@@ -402,3 +402,17 @@ export const report = {
   assertNotEquals(result, null);
   assertEquals(result?.typeNormalized, "@org/correct-report");
 });
+
+Deno.test("reportKindAdapter.extractTypeFromSource: handles inline structural type annotation", () => {
+  const source = `
+export const report: {
+  name: string;
+  render: () => string;
+} = {
+  name: "@org/typed-report",
+  render: () => "",
+};`;
+  const result = reportKindAdapter.extractTypeFromSource(source);
+  assertNotEquals(result, null);
+  assertEquals(result?.typeNormalized, "@org/typed-report");
+});
