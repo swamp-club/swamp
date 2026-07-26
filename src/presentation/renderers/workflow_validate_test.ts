@@ -74,3 +74,57 @@ Deno.test("WorkflowValidateRenderer - error throws UserError", () => {
     "boom",
   );
 });
+
+Deno.test("LogWorkflowValidateRenderer - empty workflows prints informational message", async () => {
+  const renderer = createWorkflowValidateRenderer("log");
+  await consumeStream(
+    toStream([
+      { kind: "resolving" },
+      {
+        kind: "completed",
+        data: {
+          workflows: [],
+          totalPassed: 0,
+          totalFailed: 0,
+          totalWarnings: 0,
+          passed: true,
+        },
+      },
+    ]),
+    renderer.handlers(),
+  );
+  assertEquals(renderer.passed(), true);
+});
+
+Deno.test("JsonWorkflowValidateRenderer - empty workflows outputs valid JSON with passed=true", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createWorkflowValidateRenderer("json");
+    await consumeStream(
+      toStream([
+        { kind: "resolving" },
+        {
+          kind: "completed",
+          data: {
+            workflows: [],
+            totalPassed: 0,
+            totalFailed: 0,
+            totalWarnings: 0,
+            passed: true,
+          },
+        },
+      ]),
+      renderer.handlers(),
+    );
+    assertEquals(logs.length, 1);
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.passed, true);
+    assertEquals(parsed.workflows.length, 0);
+    assertEquals(renderer.passed(), true);
+  } finally {
+    console.log = originalLog;
+  }
+});
