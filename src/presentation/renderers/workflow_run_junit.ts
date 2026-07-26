@@ -17,10 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { EventHandlers, WorkflowRunEvent } from "../../libswamp/mod.ts";
+import {
+  type AssertSeverity,
+  type EventHandlers,
+  severityAtOrAbove,
+  type WorkflowRunEvent,
+} from "../../libswamp/mod.ts";
 import type { WorkflowRunRenderer } from "./workflow_run.ts";
 import { UserError } from "../../domain/errors.ts";
-import type { AssertSeverity } from "../../domain/workflows/step_task.ts";
 
 interface AssertRecord {
   jobId: string;
@@ -32,20 +36,7 @@ interface AssertRecord {
   duration?: number;
 }
 
-const SEVERITY_RANK: Record<AssertSeverity, number> = {
-  low: 0,
-  medium: 1,
-  high: 2,
-};
-
-function severityAtOrAbove(
-  severity: AssertSeverity,
-  threshold: AssertSeverity,
-): boolean {
-  return SEVERITY_RANK[severity] >= SEVERITY_RANK[threshold];
-}
-
-function escapeXml(str: string): string {
+export function escapeXml(str: string): string {
   return str
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")

@@ -33,7 +33,7 @@ import { UserError } from "../../domain/errors.ts";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 import { AUTH_NUDGE_MESSAGE } from "../../domain/auth/auth_nudge.ts";
 import { dim, green, red, yellow } from "@std/fmt/colors";
-import type { AssertSeverity } from "../../domain/workflows/step_task.ts";
+import { type AssertSeverity, severityAtOrAbove } from "../../libswamp/mod.ts";
 import {
   type DataArtifact,
   type DataBoxOptions,
@@ -66,19 +66,6 @@ function isUserFacingArtifact(
 
 const QUIET_BUFFER_LIMIT = 500;
 const HEARTBEAT_INTERVAL_MS = 10_000;
-
-const SEVERITY_RANK: Record<AssertSeverity, number> = {
-  low: 0,
-  medium: 1,
-  high: 2,
-};
-
-function severityAtOrAbove(
-  severity: AssertSeverity,
-  threshold: AssertSeverity,
-): boolean {
-  return SEVERITY_RANK[severity] >= SEVERITY_RANK[threshold];
-}
 
 class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
   private workflowName: string;

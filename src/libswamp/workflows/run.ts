@@ -305,6 +305,8 @@ export interface WorkflowRunInput {
   traceparent?: string;
   /** W3C tracestate header for per-invocation trace context. */
   tracestate?: string;
+  /** Minimum assert severity that fails the run. */
+  assertFailOnSeverity?: AssertSeverity;
 }
 
 /**
@@ -645,6 +647,7 @@ export async function* workflowRun(
               skipCheckNames: resolvedInput.skipCheckNames,
               skipCheckLabels: resolvedInput.skipCheckLabels,
               skipAllChecks: resolvedInput.skipAllChecks,
+              assertFailOnSeverity: resolvedInput.assertFailOnSeverity,
             })
           ) {
             if (event.kind === "report_completed") {

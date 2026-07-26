@@ -25,7 +25,10 @@ import {
   resolveTraceparent,
   resolveTracestate,
 } from "../context.ts";
-import type { AssertSeverity } from "../../domain/workflows/step_task.ts";
+import {
+  type AssertSeverity,
+  AssertSeveritySchema,
+} from "../../libswamp/mod.ts";
 import {
   acquireModelLocks,
   requireInitializedRepoUnlocked,
@@ -427,9 +430,16 @@ export const workflowRunCommand = new Command()
           }/${inputSets.length}]`;
         }
 
-        const failOnSeverity = (options.failOn as string | undefined) as
-          | AssertSeverity
-          | undefined;
+        let failOnSeverity: AssertSeverity | undefined;
+        if (options.failOn) {
+          const parsed = AssertSeveritySchema.safeParse(options.failOn);
+          if (!parsed.success) {
+            throw new UserError(
+              `Invalid --fail-on value "${options.failOn}". Must be one of: low, medium, high`,
+            );
+          }
+          failOnSeverity = parsed.data;
+        }
         const renderer = options.junit
           ? new JUnitWorkflowRunRenderer({
             failOnSeverity,
@@ -462,6 +472,7 @@ export const workflowRunCommand = new Command()
           tracestate: resolveTracestate(
             options.tracestate as string | undefined,
           ),
+          assertFailOnSeverity: failOnSeverity,
         });
 
         const baseHandlers = renderer.handlers();
