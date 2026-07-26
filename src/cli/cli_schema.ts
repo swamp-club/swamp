@@ -38,6 +38,7 @@ export interface CliCommandSchema {
   description: string;
   arguments: CliArgumentSchema[];
   options: CliOptionSchema[];
+  globalOptions?: CliOptionSchema[];
   subcommands: CliCommandSchema[];
 }
 
@@ -70,10 +71,26 @@ export function buildCliSchema(
   options?: BuildCliSchemaOptions,
 ): CliSchema {
   const stripGlobals = options?.stripGlobalOptions ?? false;
-  return {
-    version,
-    root: walkCommand(rootCommand, !stripGlobals, stripGlobals),
-  };
+  const root = walkCommand(rootCommand, !stripGlobals, stripGlobals);
+  if (stripGlobals) {
+    root.globalOptions = rootCommand.getOptions()
+      .filter((opt: { name: string }) => !BUILTIN_OPTION_NAMES.has(opt.name))
+      .filter((opt: { global?: boolean }) => opt.global === true)
+      // deno-lint-ignore no-explicit-any
+      .map((opt: any) => {
+        const schema: CliOptionSchema = {
+          flags: (opt.flags as string[]).join(", "),
+          description: opt.description as string,
+          required: opt.required === true,
+          collect: opt.collect === true,
+        };
+        if (opt.default !== undefined) {
+          schema.default = opt.default;
+        }
+        return schema;
+      });
+  }
+  return { version, root };
 }
 
 function walkCommand(
