@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { ReportResultView } from "../models/model_method_run_view.ts";
+import type { AssertSeverity } from "../../domain/workflows/step_task.ts";
 
 /**
  * Read-model projections of workflow run domain aggregates.
@@ -46,6 +47,13 @@ export interface DataArtifactRefData {
   attributes?: Record<string, unknown>;
 }
 
+export interface AssertResultView {
+  passed: boolean;
+  expr: string;
+  message: string;
+  severity: AssertSeverity;
+}
+
 export interface StepRunView {
   name: string;
   status:
@@ -65,6 +73,8 @@ export interface StepRunView {
   dataArtifacts?: DataArtifactRefData[];
   /** Whether this step's failure was allowed (did not fail the job) */
   allowedFailure?: boolean;
+  /** Assert result if this step is an assert task */
+  assertResult?: AssertResultView;
 }
 
 export interface JobRunView {

@@ -183,6 +183,49 @@ datastore).
 creates N parallel approval gates, each independently approvable via its expanded
 step name.
 
+### Assert (`assert`)
+
+Evaluates a CEL predicate over prior step data, records a pass/fail result, and
+fails the step when the predicate is false. No model-method required.
+
+```yaml
+steps:
+  - name: instance-count
+    task:
+      type: assert
+      expr: size(data.latest("cp-nodes", "instances")) == 3
+      message: "Expected 3 instances, got ${{ size(data.latest('cp-nodes', 'instances')) }}"
+      severity: high
+```
+
+**Fields:**
+
+- `expr` (required, string) — CEL expression evaluated via `evaluateAsync()`.
+  Has access to the full expression context including `data.latest()`,
+  `inputs.*`, and `self.*`.
+- `message` (required, string) — human-readable message. Supports `${{ }}`
+  expression interpolation. Displayed on failure and included in JUnit XML
+  output.
+- `severity` (optional, `low` | `medium` | `high`, default `high`) — controls
+  whether a failure triggers the `--fail-on` exit code threshold.
+
+**Execution:** The CEL `expr` is evaluated asynchronously. A truthy result marks
+the step as succeeded; a falsy result marks it as failed with the resolved
+`message`. The `assertResult` (passed, expr, resolved message, severity) is
+recorded on the `StepRun` and persisted to the workflow run record.
+
+**Exit code control (`--fail-on`):** `swamp workflow run` accepts
+`--fail-on <severity>` (default `low`). The run exits non-zero only when at
+least one assert failure is at or above the threshold. A `low` severity failure
+under `--fail-on high` is recorded but does not affect the exit code.
+
+**JUnit XML output (`--junit`):** `swamp workflow run --junit [--out <file>]`
+emits one `<testcase>` per assert step, with a `<failure>` element on false.
+Non-assert steps are omitted from the JUnit output.
+
+**forEach compatibility:** Assert steps support `forEach` expansion. Each
+expanded iteration produces its own assert result and JUnit `<testcase>`.
+
 ## Concurrency Limits
 
 By default, all jobs in a topological level and all steps in a topological level

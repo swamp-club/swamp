@@ -26,12 +26,17 @@ const recordOrExpression = z.union([
   z.string().regex(EXPRESSION_PATTERN),
 ]).optional();
 
+export const AssertSeveritySchema = z.enum(["low", "medium", "high"]);
+export type AssertSeverity = z.infer<typeof AssertSeveritySchema>;
+
 /**
  * Raw schema for step tasks (without backward compat preprocessing).
  *
  * A task can be either:
  * - A model method invocation (`type: "model_method"`)
  * - A nested workflow invocation (`type: "workflow"`)
+ * - A manual approval gate (`type: "manual_approval"`)
+ * - A CEL predicate assertion (`type: "assert"`)
  */
 const StepTaskRawSchema = z.discriminatedUnion("type", [
   z.object({
@@ -52,6 +57,12 @@ const StepTaskRawSchema = z.discriminatedUnion("type", [
     type: z.literal("manual_approval"),
     prompt: z.string().min(1),
     timeout: z.number().positive().optional(),
+  }),
+  z.object({
+    type: z.literal("assert"),
+    expr: z.string().min(1),
+    message: z.string().min(1),
+    severity: AssertSeveritySchema.default("high"),
   }),
 ]);
 
@@ -215,6 +226,22 @@ export class StepTask {
   }
 
   /**
+   * Creates an assert task.
+   */
+  static assert(
+    expr: string,
+    message: string,
+    severity: AssertSeverity = "high",
+  ): StepTask {
+    return new StepTask({
+      type: "assert",
+      expr,
+      message,
+      severity,
+    });
+  }
+
+  /**
    * Returns true if this is a model method task.
    */
   isModelMethod(): boolean {
@@ -241,6 +268,13 @@ export class StepTask {
    */
   isManualApproval(): boolean {
     return this.data.type === "manual_approval";
+  }
+
+  /**
+   * Returns true if this is an assert task.
+   */
+  isAssert(): boolean {
+    return this.data.type === "assert";
   }
 
   /**

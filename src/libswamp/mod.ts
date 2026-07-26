@@ -83,6 +83,7 @@ export {
 } from "./workflows/run.ts";
 export type { MethodExecutionEvent } from "../domain/models/method_events.ts";
 export {
+  type AssertResultView,
   type DataArtifactRefData,
   extractFirstStepError,
   type JobRunView,

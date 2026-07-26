@@ -34,6 +34,7 @@ import type {
   StepRunView,
   WorkflowRunView,
 } from "./workflow_run_view.ts";
+import type { AssertSeverity } from "../../domain/workflows/step_task.ts";
 import type { ReportResultView } from "../models/model_method_run_view.ts";
 import type {
   WorkflowRepository,
@@ -177,6 +178,15 @@ export type WorkflowRunEvent =
     modelName: string;
     methodName: string;
     event: MethodExecutionEvent;
+  }
+  | {
+    kind: "assert_result";
+    jobId: string;
+    stepId: string;
+    passed: boolean;
+    message: string;
+    severity: AssertSeverity;
+    expr: string;
   }
   | {
     kind: "report_started";
@@ -405,6 +415,10 @@ export function toRunData(
             stepData.allowedFailure = true;
           }
 
+          if (step.assertResult) {
+            stepData.assertResult = { ...step.assertResult };
+          }
+
           return stepData;
         }),
         duration: jobStart && jobEnd ? jobEnd - jobStart : undefined,
@@ -494,6 +508,7 @@ export function mapWorkflowExecutionEvent(
     case "method_executing":
     case "method_output":
     case "method_event":
+    case "assert_result":
     case "report_started":
     case "report_completed":
     case "report_failed":

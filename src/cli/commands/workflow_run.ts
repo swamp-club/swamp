@@ -25,6 +25,7 @@ import {
   resolveTraceparent,
   resolveTracestate,
 } from "../context.ts";
+import type { AssertSeverity } from "../../domain/workflows/step_task.ts";
 import {
   acquireModelLocks,
   requireInitializedRepoUnlocked,
@@ -77,6 +78,7 @@ import {
   type WorkflowTelemetrySink,
 } from "../../libswamp/mod.ts";
 import { createWorkflowRunRenderer } from "../../presentation/renderers/workflow_run.ts";
+import { JUnitWorkflowRunRenderer } from "../../presentation/renderers/workflow_run_junit.ts";
 import { isAuthenticated } from "../auth_context.ts";
 import { getActiveTelemetryService } from "../telemetry_integration.ts";
 import {
@@ -175,6 +177,19 @@ export const workflowRunCommand = new Command()
     "--skip-check-label <label:string>",
     "Skip pre-flight checks with this label",
     { collect: true },
+  )
+  .option(
+    "--fail-on <severity:string>",
+    "Minimum assert severity that fails the run (low, medium, high). Default: low (any failure).",
+  )
+  .option(
+    "--junit",
+    "Output assert results as JUnit XML instead of normal log output",
+    { default: false },
+  )
+  .option(
+    "--out <file:string>",
+    "Write output to file instead of stdout (only with --junit)",
   )
   .option(
     "--timeout <duration:string>",
@@ -412,12 +427,20 @@ export const workflowRunCommand = new Command()
           }/${inputSets.length}]`;
         }
 
-        const renderer = createWorkflowRunRenderer(ctx.outputMode, {
-          workflowName: workflowIdOrName,
-
-          isAuthenticated: isAuthenticated(),
-          quiet: ctx.verbosity === "quiet",
-        });
+        const failOnSeverity = (options.failOn as string | undefined) as
+          | AssertSeverity
+          | undefined;
+        const renderer = options.junit
+          ? new JUnitWorkflowRunRenderer({
+            failOnSeverity,
+            outFile: options.out as string | undefined,
+          })
+          : createWorkflowRunRenderer(ctx.outputMode, {
+            workflowName: workflowIdOrName,
+            isAuthenticated: isAuthenticated(),
+            quiet: ctx.verbosity === "quiet",
+            failOnSeverity,
+          });
         const eventStream = workflowRun(libCtx, deps, {
           workflowIdOrName,
           lastEvaluated,
@@ -567,11 +590,20 @@ async function runWorkflowViaServer(
           i + 1
         }/${inputSets.length}] via ${options.server}`;
       }
-      const renderer = createWorkflowRunRenderer(ctx.outputMode, {
-        workflowName: workflowIdOrName,
-        isAuthenticated: isAuthenticated(),
-        quiet: ctx.verbosity === "quiet",
-      });
+      const failOnSeverity = (options.failOn as string | undefined) as
+        | AssertSeverity
+        | undefined;
+      const renderer = options.junit
+        ? new JUnitWorkflowRunRenderer({
+          failOnSeverity,
+          outFile: options.out as string | undefined,
+        })
+        : createWorkflowRunRenderer(ctx.outputMode, {
+          workflowName: workflowIdOrName,
+          isAuthenticated: isAuthenticated(),
+          quiet: ctx.verbosity === "quiet",
+          failOnSeverity,
+        });
       await consumeStream(
         runWorkflowOverServer({
           server: options.server as string,
