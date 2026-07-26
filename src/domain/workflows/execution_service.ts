@@ -3018,7 +3018,11 @@ export class WorkflowExecutionService {
     }
 
     if (!childRun || childRun.status === "failed") {
-      const errorMessage = `Nested workflow "${task.workflowIdOrName}" failed.`;
+      const childStepError = childRun?.jobs
+        .flatMap((j) => j.steps)
+        .find((s) => s.status === "failed" && !s.allowedFailure)?.error;
+      const errorMessage = childStepError ??
+        `Nested workflow "${task.workflowIdOrName}" failed.`;
       stepRun.fail(errorMessage);
       if (allowFailure) {
         stepRun.markAllowedFailure();

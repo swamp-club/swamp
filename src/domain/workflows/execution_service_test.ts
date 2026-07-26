@@ -17,7 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertNotEquals, assertRejects } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { join } from "@std/path";
 import {
   DefaultStepExecutor,
@@ -1428,6 +1434,71 @@ Deno.test("workflow step fails on direct cycle detection", async () => {
     assertEquals(
       events[0].error?.includes("Workflow cycle detected"),
       true,
+    );
+  });
+});
+
+Deno.test("workflow step propagates cycle error from mutually recursive workflows", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    const cycleA = Workflow.create({
+      name: "cycle-a",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "call-b",
+              task: StepTask.workflow("cycle-b"),
+            }),
+          ],
+        }),
+      ],
+    });
+
+    const cycleB = Workflow.create({
+      name: "cycle-b",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "call-a",
+              task: StepTask.workflow("cycle-a"),
+            }),
+          ],
+        }),
+      ],
+    });
+
+    await workflowRepo.save(cycleA);
+    await workflowRepo.save(cycleB);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      undefined,
+      undefined,
+      catalogStore,
+    );
+
+    let completedRun: import("./workflow_run.ts").WorkflowRun | undefined;
+    for await (const event of service.run("cycle-a")) {
+      if (event.kind === "completed") {
+        completedRun = event.run;
+      }
+    }
+
+    assert(completedRun, "expected a completed run");
+    assertEquals(completedRun.status, "failed");
+    const stepError = completedRun.jobs[0].steps[0].error ?? "";
+    assertStringIncludes(
+      stepError.toLowerCase(),
+      "workflow cycle detected",
     );
   });
 });
