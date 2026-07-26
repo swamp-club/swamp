@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { InputsSchema } from "../../domain/definitions/definition.ts";
+import type { ReportSelection } from "../../domain/reports/report_selection.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import {
   createWorkflowId,
@@ -36,6 +38,9 @@ export interface WorkflowGetData {
   name: string;
   description?: string;
   version: number;
+  inputs?: InputsSchema;
+  tags: Record<string, string>;
+  reports?: ReportSelection;
   jobs: {
     name: string;
     description?: string;
@@ -107,6 +112,9 @@ export async function* workflowGet(
         name: workflow.name,
         description: workflow.description,
         version: workflow.version,
+        inputs: workflow.inputs,
+        tags: workflow.tags,
+        reports: workflow.reports,
         jobs: workflow.jobs.map((job) => ({
           name: job.name,
           description: job.description,

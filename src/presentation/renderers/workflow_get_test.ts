@@ -19,14 +19,22 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { consumeStream } from "../../libswamp/mod.ts";
-import type { WorkflowGetEvent } from "../../libswamp/mod.ts";
+import type { WorkflowGetData, WorkflowGetEvent } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createWorkflowGetRenderer } from "./workflow_get.ts";
 
-const testData = {
+const testData: WorkflowGetData = {
   id: "wf-1",
   name: "my-workflow",
   version: 1,
+  inputs: {
+    properties: {
+      env: { type: "string", default: "dev" },
+    },
+    required: [],
+  },
+  tags: { team: "platform" },
+  reports: undefined,
   jobs: [],
   path: "/repo/workflows/my-workflow.yaml",
 };

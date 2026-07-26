@@ -32,6 +32,14 @@ const testWorkflow = {
   id: "550e8400-e29b-41d4-a716-446655440000" as unknown as WorkflowId,
   name: "my-workflow",
   version: 1,
+  inputs: {
+    properties: {
+      labelKey: { type: "string", default: "role", description: "Label key" },
+    },
+    required: [],
+  },
+  tags: { env: "staging" },
+  reports: { require: ["junit"] },
   jobs: [{
     name: "job1",
     steps: [{ name: "step1", task: { toData: () => ({ type: "model/run" }) } }],
@@ -73,6 +81,18 @@ Deno.test("workflowGet yields resolving -> completed with workflow data on succe
         name: "my-workflow",
         description: undefined,
         version: 1,
+        inputs: {
+          properties: {
+            labelKey: {
+              type: "string",
+              default: "role",
+              description: "Label key",
+            },
+          },
+          required: [],
+        },
+        tags: { env: "staging" },
+        reports: { require: ["junit"] },
         jobs: [{
           name: "job1",
           description: undefined,
