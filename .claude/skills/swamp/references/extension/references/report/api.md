@@ -29,8 +29,7 @@ export const report = {
 ## Name Conventions
 
 Report names follow `@collective/name` (e.g. `@myorg/cost-report`,
-`@myorg/aws/cost-report`) — same convention as models, drivers, vaults, and
-datastores.
+`@myorg/aws/cost-report`) — same convention as models, vaults, and datastores.
 
 ## Report Scopes
 

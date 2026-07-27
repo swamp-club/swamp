@@ -1,6 +1,6 @@
 # Swamp Extension
 
-Create TypeScript extensions that swamp loads at startup. Five extension types
+Create TypeScript extensions that swamp loads at startup. Four extension types
 share the same workflow: implement an interface, register in a manifest, publish
 via `swamp-extension-publish`.
 
@@ -10,7 +10,6 @@ via `swamp-extension-publish`.
 | ---------------------------------------------- | --------- | ------------------------ | -------------------------------- |
 | New data source, API integration, automation   | Model     | `export const model`     | `extensions/models/*.ts`         |
 | Custom secret backend (HashiCorp Vault, 1P, …) | Vault     | `export const vault`     | `extensions/vaults/*/mod.ts`     |
-| Control where/how model methods execute        | Driver    | `export const driver`    | `extensions/drivers/*/mod.ts`    |
 | Custom storage backend (GCS, DB, …)            | Datastore | `export const datastore` | `extensions/datastores/*/mod.ts` |
 | Repeatable analysis of model/workflow output   | Report    | `export const report`    | `extensions/reports/*.ts`        |
 
@@ -26,8 +25,8 @@ via `swamp-extension-publish`.
    ```
 
    Available filters: `--platform` (aws, gcp, azure, …), `--content-type`
-   (models, workflows, vaults, datastores, drivers, reports), `--label`,
-   `--collective`. Prefer `@swamp/*` official extensions first.
+   (models, workflows, vaults, datastores, reports), `--label`, `--collective`.
+   Prefer `@swamp/*` official extensions first.
 
 2. **Inspect before pulling.** Once you find a candidate, check its types and
    methods with `extension info` — don't pull until you confirm it has what you

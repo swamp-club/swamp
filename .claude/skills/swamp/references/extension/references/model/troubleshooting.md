@@ -238,7 +238,7 @@ Models directory priority:
 manifest.** A manifest with no `paths` field — or with the explicit
 `paths.base: typedDir` — uses this priority chain to find the configured models
 directory. Only manifests that explicitly opt in with `paths.base: manifest`
-skip the table entirely and resolve typed keys (`models`, `vaults`, `drivers`,
+skip the table entirely and resolve typed keys (`models`, `vaults`,
 `datastores`, `reports`, `include`) relative to the manifest's own directory.
 Default behavior is unchanged. See
 [extension-publish references/publishing.md](../../../extension-publish/references/publishing.md#path-resolution--pathsbase)
