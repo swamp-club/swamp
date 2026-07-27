@@ -79,10 +79,6 @@ import {
   withGeneratorTraceContext,
 } from "../../infrastructure/tracing/mod.ts";
 import { resolveOrCreateDefinition } from "./direct_execution.ts";
-import {
-  SWAMP_SUBDIRS,
-  swampPath,
-} from "../../infrastructure/persistence/paths.ts";
 import { autoGc, type AutoGcLifecycleDeps } from "../data/gc.ts";
 import { DefaultDataLifecycleService } from "../../domain/data/data_lifecycle_service.ts";
 import { ActiveRun } from "../../domain/models/active_run.ts";
@@ -215,6 +211,7 @@ export interface ModelMethodRunDeps {
     definition: Definition,
   ) => Promise<void>;
   getDefinitionPath?: (type: ModelType, id: string) => string;
+  autoDefinitionsDir?: string;
   runTracker?: RunTrackerRepository;
   eventBus?: EventBus;
   workflowRepo?:
@@ -346,7 +343,7 @@ export async function* modelMethodRun(
             resolvedType,
             resolvedModelDef,
             undefined,
-            swampPath(deps.repoDir, SWAMP_SUBDIRS.autoDefinitions),
+            deps.autoDefinitionsDir,
           );
 
           if (!result.ok) {

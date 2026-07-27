@@ -378,6 +378,9 @@ Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — 
               );
             }
             : undefined,
+          autoDefinitionsDir: isDirectExecution
+            ? repoContext.autoDefinitionsDir
+            : undefined,
           runTracker,
           workflowRepo: repoContext.workflowRepo,
           workflowRunRepo: repoContext.workflowRunRepo,

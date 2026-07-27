@@ -19,7 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import { z } from "zod";
-import { resolveOrCreateDefinition } from "../src/libswamp/models/direct_execution.ts";
+import { resolveOrCreateDefinition } from "../src/libswamp/mod.ts";
 import type { ModelDefinition } from "../src/domain/models/model.ts";
 import type { Definition } from "../src/domain/definitions/definition.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";

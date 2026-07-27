@@ -34,6 +34,7 @@ import {
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
 import { FileLock } from "../../infrastructure/persistence/file_lock.ts";
+import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 
 export interface DirectExecutionDeps {
   lookupDefinition: (
@@ -334,34 +335,52 @@ export async function resolveOrCreateDefinition(
       ttlMs: 5_000,
       maxWaitMs: 10_000,
     });
-    return await lock.withLock(async () => {
-      const raceWinner = await deps.lookupDefinition(definitionName);
-      if (raceWinner) {
-        if (raceWinner.type.normalized !== resolvedType.normalized) {
+    try {
+      return await lock.withLock(async () => {
+        // Re-check under lock — race losers adopt the winner's definition.
+        // Global-args reconciliation is skipped here: concurrent auto-creators
+        // share the same input line, so args are identical.
+        const raceWinner = await deps.lookupDefinition(definitionName);
+        if (raceWinner) {
+          if (raceWinner.type.normalized !== resolvedType.normalized) {
+            return {
+              ok: false,
+              error: validationFailed(
+                `Definition '${definitionName}' exists with type '${raceWinner.type.normalized}' ` +
+                  `but '${typeArg}' resolves to '${resolvedType.normalized}'. ` +
+                  `Type mismatch — delete the existing definition or use a different name.`,
+              ),
+            };
+          }
           return {
-            ok: false,
-            error: validationFailed(
-              `Definition '${definitionName}' exists with type '${raceWinner.type.normalized}' ` +
-                `but '${typeArg}' resolves to '${resolvedType.normalized}'. ` +
-                `Type mismatch — delete the existing definition or use a different name.`,
+            ok: true,
+            definition: raceWinner.definition,
+            modelType: raceWinner.type,
+            modelDef,
+            created: false,
+            definitionPath: deps.getDefinitionPath(
+              raceWinner.type,
+              raceWinner.definition.id,
             ),
+            routedInputs: routed,
           };
         }
+        return await createResult();
+      });
+    } catch (e) {
+      if (e instanceof LockTimeoutError) {
         return {
-          ok: true,
-          definition: raceWinner.definition,
-          modelType: raceWinner.type,
-          modelDef,
-          created: false,
-          definitionPath: deps.getDefinitionPath(
-            raceWinner.type,
-            raceWinner.definition.id,
-          ),
-          routedInputs: routed,
+          ok: false,
+          error: {
+            code: "lock_timeout",
+            message:
+              `Timed out waiting for auto-definition lock on '${definitionName}'. ` +
+              `Another process may be creating this definition.`,
+          },
         };
       }
-      return await createResult();
-    });
+      throw e;
+    }
   }
 
   return await createResult();

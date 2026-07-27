@@ -210,6 +210,9 @@ export function buildModelMethodRunDeps(
         );
       }
       : undefined,
+    autoDefinitionsDir: isDirectExecution
+      ? repoContext.autoDefinitionsDir
+      : undefined,
     workflowRepo: repoContext.workflowRepo,
     workflowRunRepo: repoContext.workflowRunRepo,
   };
