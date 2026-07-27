@@ -86,6 +86,26 @@ export class CelFileNamespace {
 }
 
 /**
+ * Wrapper class for workers namespace context objects.
+ * Provides helpers for querying workers eligible for dispatch.
+ */
+export class CelWorkersNamespace {
+  private readonly delegate: Record<string, unknown>;
+
+  constructor(delegate: Record<string, unknown>) {
+    this.delegate = delegate;
+  }
+
+  connected(): unknown {
+    const fn = this.delegate["connected"];
+    if (typeof fn === "function") {
+      return (fn as () => unknown)();
+    }
+    return [];
+  }
+}
+
+/**
  * Wrapper class for data namespace context objects.
  */
 export class CelDataNamespace {
@@ -271,6 +291,7 @@ export class CelEvaluator {
     // matching instead of trying to infer them as maps.
     this.env.registerType("CelFileNamespace", CelFileNamespace);
     this.env.registerType("CelDataNamespace", CelDataNamespace);
+    this.env.registerType("CelWorkersNamespace", CelWorkersNamespace);
 
     // Register receiver methods for file namespace
     this.env.registerFunction(
@@ -356,6 +377,12 @@ export class CelEvaluator {
       "CelDataNamespace.query(string, string): dyn",
       (receiver: CelDataNamespace, predicate: string, select: string) =>
         receiver.query(predicate, select),
+    );
+
+    // Register receiver methods for workers namespace
+    this.env.registerFunction(
+      "CelWorkersNamespace.connected(): dyn",
+      (receiver: CelWorkersNamespace) => receiver.connected(),
     );
   }
 
@@ -484,7 +511,8 @@ export class CelEvaluator {
   ): Record<string, unknown> {
     const file = context["file"];
     const data = context["data"];
-    if (!file && !data) return context;
+    const workers = context["workers"];
+    if (!file && !data && !workers) return context;
 
     const wrapped = { ...context };
     if (
@@ -496,6 +524,14 @@ export class CelEvaluator {
       data && typeof data === "object" && !(data instanceof CelDataNamespace)
     ) {
       wrapped["data"] = new CelDataNamespace(data as Record<string, unknown>);
+    }
+    if (
+      workers && typeof workers === "object" &&
+      !(workers instanceof CelWorkersNamespace)
+    ) {
+      wrapped["workers"] = new CelWorkersNamespace(
+        workers as Record<string, unknown>,
+      );
     }
     return wrapped;
   }

@@ -51,6 +51,10 @@ export type MethodExecutionEvent =
     requirement: string;
   }
   | {
+    type: "step_target_disconnected";
+    target: string;
+  }
+  | {
     type: "nested_model_invocation";
     targetModelType: string;
     targetMethod: string;

@@ -256,6 +256,13 @@ export interface FileNamespace {
 }
 
 /**
+ * Namespace for querying workers eligible for dispatch in CEL expressions.
+ */
+export interface WorkersNamespace {
+  connected(): Promise<DataRecord[]>;
+}
+
+/**
  * Workflow run metadata exposed as `run.*` in CEL expressions.
  * Populated by the workflow engine after the run starts; only available
  * inside workflow step inputs (not during workflow-level evaluation).
@@ -325,6 +332,8 @@ export interface ExpressionContext {
   env: Record<string, string>;
   /** Data namespace for versioned data access */
   data?: DataNamespace;
+  /** Workers namespace for querying dispatchable workers */
+  workers?: WorkersNamespace;
   /** File namespace for lazy-loading file contents */
   file?: FileNamespace;
   /**
@@ -683,6 +692,7 @@ export class ModelResolver {
 
     const ownNamespace = this.dataRepo?.namespace ?? ("" as Namespace);
     context.data = this.buildDataNamespace(ownNamespace, coordsMap);
+    context.workers = this.buildWorkersNamespace();
 
     // Create file namespace for lazy-loading file contents
     context.file = {
@@ -729,7 +739,22 @@ export class ModelResolver {
       env: buildEnvContext(),
     };
     context.data = this.buildDataNamespace(ownNamespace, new Map());
+    context.workers = this.buildWorkersNamespace();
     return context;
+  }
+
+  private buildWorkersNamespace(): WorkersNamespace {
+    return {
+      connected: async (): Promise<DataRecord[]> => {
+        if (!this.dataQueryService) return [];
+        const predicate =
+          `modelType == "swamp/worker" && name == "state-main" && ` +
+          `attributes.status != "disconnected"`;
+        return await this.dataQueryService.query(predicate, {
+          loadAttributes: true,
+        }) as DataRecord[];
+      },
+    };
   }
 
   private buildDataNamespace(

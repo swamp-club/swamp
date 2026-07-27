@@ -1140,6 +1140,13 @@ export class DefaultStepExecutor implements StepExecutor {
                   stepId: ctx.stepName,
                   requirement: event.requirement,
                 });
+              } else if (event.type === "step_target_disconnected") {
+                ctx.emitEvent!({
+                  kind: "step_target_disconnected",
+                  jobId: ctx.jobName,
+                  stepId: ctx.stepName,
+                  target: event.target,
+                });
               } else {
                 ctx.emitEvent!({
                   kind: "method_event",

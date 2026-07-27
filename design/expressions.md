@@ -100,6 +100,40 @@ name.
 For workflows, you should be able to reference other workflows by name or id, in
 addition to any model.
 
+## Workers Namespace
+
+The `workers` namespace provides helpers for querying workers eligible for
+dispatch. It is available in the same contexts as `data.*` (model
+globalArguments, workflow step inputs, forEach.in expressions).
+
+### `workers.connected()`
+
+Returns an array of worker data records whose status is not `disconnected`.
+This is the canonical query for building fleet fan-out workflows:
+
+```yaml
+steps:
+  - name: scan-${{ self.worker.attributes.name }}
+    forEach:
+      item: worker
+      in: "${{ workers.connected() }}"
+    target: "${{ self.worker.attributes.name }}"
+    task:
+      model: fleet-scanner
+      method: scan
+```
+
+Internally equivalent to:
+
+```
+data.query('modelType == "swamp/worker" && name == "state-main" && attributes.status != "disconnected"')
+```
+
+The `workers.connected()` helper exists because the unfiltered
+`data.query('modelType == "swamp/worker"')` includes disconnected workers,
+which causes fleet fan-out workflows to create steps for unavailable workers
+that queue until `queueTimeout` expires.
+
 ## Input Access
 
 Both model definitions and workflow definitions can specify inputs

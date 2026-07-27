@@ -315,6 +315,22 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
           ),
         );
       },
+      step_target_disconnected: (e) => {
+        if (!this.pipe) return;
+        const displayName = this.forEachDisplayNames.get(
+          this.stepKey(e.jobId, e.stepId),
+        ) ?? e.jobId;
+        writeOutput(
+          this.pipe.line(
+            displayName,
+            yellow(`warning`) +
+              dim(
+                `: target worker '${e.target}' is disconnected; ` +
+                  `use workers.connected() to filter dispatchable workers`,
+              ),
+          ),
+        );
+      },
       step_failed: (e) => {
         if (!this.pipe) return;
         const key = this.stepKey(e.jobId, e.stepId);
@@ -717,6 +733,7 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       step_completed: () => {},
       step_skipped: () => {},
       step_queued: () => {},
+      step_target_disconnected: () => {},
       step_failed: () => {},
       approval_requested: () => {},
       model_resolved: () => {},
