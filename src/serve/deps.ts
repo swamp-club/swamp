@@ -148,6 +148,7 @@ export async function createWorkflowRunDeps(
           resolvedType,
           modelDef,
           globalArgs,
+          repoContext.autoDefinitionsDir,
         );
         if (!result.ok) throw new Error(result.error.message);
         return {

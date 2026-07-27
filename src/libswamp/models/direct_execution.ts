@@ -33,6 +33,7 @@ import {
 } from "../../domain/models/sensitive_field_extractor.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
+import { FileLock } from "../../infrastructure/persistence/file_lock.ts";
 
 export interface DirectExecutionDeps {
   lookupDefinition: (
@@ -135,8 +136,23 @@ export function routeInputsBySchema(
 }
 
 /**
+ * Lock key for serializing concurrent auto-creation of the same definition name.
+ * Flattens '/' from scoped names (e.g. @collective/name) to avoid creating
+ * intermediate directories in the lock path.
+ */
+export function autoDefinitionLockKey(name: string): string {
+  const sanitized = name.replace(/\//g, "--");
+  return `.auto-definition-create/${sanitized}.lock`;
+}
+
+/**
  * Resolves an existing definition by name or auto-creates one.
  * When the definition exists, verifies the type matches.
+ *
+ * When `lockDir` is provided, concurrent auto-creation of the same name is
+ * serialized with a file lock (double-check locking): the fast-path lookup
+ * runs without a lock; only when the definition is missing does the lock
+ * acquire, re-check, and create.
  */
 export async function resolveOrCreateDefinition(
   deps: DirectExecutionDeps,
@@ -147,6 +163,7 @@ export async function resolveOrCreateDefinition(
   resolvedType: ModelType,
   modelDef: ModelDefinition,
   explicitGlobalArgs?: Record<string, unknown>,
+  lockDir?: string,
 ): Promise<DirectExecutionResult> {
   // When explicit globalArgs are provided, skip routing — treat inputs as
   // method args only and use the explicit values as global args.
@@ -290,25 +307,62 @@ export async function resolveOrCreateDefinition(
     };
   }
 
-  // Auto-create the definition
-  const definition = Definition.create({
-    name: definitionName,
-    type: resolvedType.normalized,
-    typeVersion: modelDef.version,
-    globalArguments: routed.globalArguments,
-  });
-
-  await deps.saveDefinition(resolvedType, definition);
-
-  const definitionPath = deps.getDefinitionPath(resolvedType, definition.id);
-
-  return {
-    ok: true,
-    definition,
-    modelType: resolvedType,
-    modelDef,
-    created: true,
-    definitionPath,
-    routedInputs: routed,
+  const createResult = async (): Promise<DirectExecutionResult> => {
+    const definition = Definition.create({
+      name: definitionName,
+      type: resolvedType.normalized,
+      typeVersion: modelDef.version,
+      globalArguments: routed.globalArguments,
+    });
+    await deps.saveDefinition(resolvedType, definition);
+    return {
+      ok: true,
+      definition,
+      modelType: resolvedType,
+      modelDef,
+      created: true,
+      definitionPath: deps.getDefinitionPath(resolvedType, definition.id),
+      routedInputs: routed,
+    };
   };
+
+  // Serialize auto-creation with a name-based file lock so concurrent
+  // processes converge on a single definition instead of creating duplicates.
+  if (lockDir) {
+    const lock = new FileLock(lockDir, {
+      lockKey: autoDefinitionLockKey(definitionName),
+      ttlMs: 5_000,
+      maxWaitMs: 10_000,
+    });
+    return await lock.withLock(async () => {
+      const raceWinner = await deps.lookupDefinition(definitionName);
+      if (raceWinner) {
+        if (raceWinner.type.normalized !== resolvedType.normalized) {
+          return {
+            ok: false,
+            error: validationFailed(
+              `Definition '${definitionName}' exists with type '${raceWinner.type.normalized}' ` +
+                `but '${typeArg}' resolves to '${resolvedType.normalized}'. ` +
+                `Type mismatch — delete the existing definition or use a different name.`,
+            ),
+          };
+        }
+        return {
+          ok: true,
+          definition: raceWinner.definition,
+          modelType: raceWinner.type,
+          modelDef,
+          created: false,
+          definitionPath: deps.getDefinitionPath(
+            raceWinner.type,
+            raceWinner.definition.id,
+          ),
+          routedInputs: routed,
+        };
+      }
+      return await createResult();
+    });
+  }
+
+  return await createResult();
 }

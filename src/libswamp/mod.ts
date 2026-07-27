@@ -155,6 +155,7 @@ export {
   unknownModelType,
 } from "./models/run.ts";
 export {
+  autoDefinitionLockKey,
   type DirectExecutionDeps,
   type DirectExecutionResult,
   resolveOrCreateDefinition,

@@ -356,6 +356,8 @@ export const workflowResumeCommand = withRemoteOptions(
         inputs,
         resolvedType,
         modelDef,
+        undefined,
+        repoContext.autoDefinitionsDir,
       );
       if (!result.ok) throw new Error(result.error.message);
       return {
