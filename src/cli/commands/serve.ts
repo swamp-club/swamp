@@ -1120,14 +1120,19 @@ export const serveCommand = new Command()
 
     let oauthClientSecret = "";
     if (authConfig.mode === "oauth") {
-      const vaultService = await VaultService.fromRepository(resolvedRepoDir);
+      const vaultService = await VaultService.fromRepository(
+        resolvedRepoDir,
+        undefined,
+        undefined,
+        repoMarker?.defaultVault,
+      );
       const vaultNames = vaultService.getVaultNames();
       if (vaultNames.length === 0) {
         throw new UserError(
           "oauth mode requires a vault — run 'swamp vault create local default' first",
         );
       }
-      const vaultName = vaultNames[0];
+      const vaultName = vaultService.getDefaultVaultName() ?? vaultNames[0];
       const credentials = await resolveOAuthClientCredentials(
         {
           getVaultSecret: async (v, k) => {
@@ -1594,9 +1599,19 @@ export const serveCommand = new Command()
       groupRefreshMs > 0 && authConfig.mode === "oauth" &&
       oauthClientSecret
     ) {
-      const vaultService = await VaultService.fromRepository(resolvedRepoDir);
+      const vaultService = await VaultService.fromRepository(
+        resolvedRepoDir,
+        undefined,
+        undefined,
+        repoMarker?.defaultVault,
+      );
       const vaultNames = vaultService.getVaultNames();
-      const vaultName = vaultNames[0];
+      if (vaultNames.length === 0) {
+        throw new UserError(
+          "group refresh requires a vault — run 'swamp vault create local default' first",
+        );
+      }
+      const vaultName = vaultService.getDefaultVaultName() ?? vaultNames[0];
 
       const {
         CollectiveRefreshService,
@@ -2062,6 +2077,7 @@ export const serveCommand = new Command()
             oauthClientSecret,
             resolvedRepoDir,
             repoContext,
+            repoMarker?.defaultVault,
           );
           const deviceAuthResponse = await handleDeviceAuth(
             req,

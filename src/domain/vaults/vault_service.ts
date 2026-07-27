@@ -62,9 +62,14 @@ export class VaultService {
   private readonly auditFlags = new Map<string, boolean>();
   private readonly refreshOptions?: VaultRefreshOptions;
   private auditRepository?: VaultAuditRepository;
+  private readonly defaultVaultName_?: string;
 
-  constructor(refreshOptions?: VaultRefreshOptions) {
+  constructor(
+    refreshOptions?: VaultRefreshOptions,
+    defaultVaultName?: string,
+  ) {
     this.refreshOptions = refreshOptions;
+    this.defaultVaultName_ = defaultVaultName;
   }
 
   setAuditRepository(repo: VaultAuditRepository): void {
@@ -86,9 +91,10 @@ export class VaultService {
     repoDir: string,
     vaultsDir?: string,
     refreshOptions?: VaultRefreshOptions,
+    defaultVaultName?: string,
   ): Promise<VaultService> {
     await vaultTypeRegistry.ensureLoaded();
-    const vaultService = new VaultService(refreshOptions);
+    const vaultService = new VaultService(refreshOptions, defaultVaultName);
     let vaultConfigs: Awaited<
       ReturnType<YamlVaultConfigRepository["findAll"]>
     >;
@@ -453,6 +459,20 @@ export class VaultService {
    */
   getVaultNames(): string[] {
     return Array.from(this.providers.keys());
+  }
+
+  /**
+   * Returns the repo-level default vault name if configured and the vault
+   * is registered, otherwise undefined.
+   */
+  getDefaultVaultName(): string | undefined {
+    if (
+      this.defaultVaultName_ !== undefined &&
+      this.providers.has(this.defaultVaultName_)
+    ) {
+      return this.defaultVaultName_;
+    }
+    return undefined;
   }
 
   /**

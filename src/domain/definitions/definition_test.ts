@@ -571,3 +571,40 @@ Deno.test("Legacy numeric typeVersion coerced to undefined", () => {
 
   assertEquals(definition.typeVersion, undefined);
 });
+
+Deno.test("Definition.parse: accepts resources with vaultName override", () => {
+  const data: DefinitionData = {
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "test-definition",
+    version: 1,
+    tags: {},
+    globalArguments: {},
+    methods: {},
+    inputs: undefined,
+    resources: {
+      creds: { vaultName: "secure-vault" },
+    },
+  };
+
+  const definition = Definition.fromData(data);
+  assertEquals(definition.resources?.creds?.vaultName, "secure-vault");
+});
+
+Deno.test("Definition.parse: resources without vaultName remain backwards compatible", () => {
+  const data: DefinitionData = {
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "test-definition",
+    version: 1,
+    tags: {},
+    globalArguments: {},
+    methods: {},
+    inputs: undefined,
+    resources: {
+      result: { lifetime: "infinite", garbageCollection: 5 },
+    },
+  };
+
+  const definition = Definition.fromData(data);
+  assertEquals(definition.resources?.result?.vaultName, undefined);
+  assertEquals(definition.resources?.result?.lifetime, "infinite");
+});

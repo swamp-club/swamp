@@ -1788,3 +1788,119 @@ Deno.test("createResourceDeleter: propagates repository errors", async () => {
     "delete failed",
   );
 });
+
+Deno.test("processSensitiveResourceData: uses defaultVaultName when no field or spec vaultName", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      secret: z.string().meta({ sensitive: true }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+
+  const data: Record<string, unknown> = { secret: "my-secret" };
+  const vaultService = new VaultService(undefined, "repo-default");
+  vaultService.registerVault({
+    name: "first-vault",
+    type: "mock",
+    config: {},
+  });
+  vaultService.registerVault({
+    name: "repo-default",
+    type: "mock",
+    config: {},
+  });
+
+  await processSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+    "creds",
+    "main",
+  );
+
+  assertStringIncludes(data.secret as string, "'repo-default'");
+});
+
+Deno.test("createResourceWriter: definition-level vaultName override routes sensitive fields to specified vault", async () => {
+  const repo = createMockRepo();
+  const sensitiveResources: Record<string, ResourceOutputSpec> = {
+    creds: {
+      schema: z.object({
+        secret: z.string().meta({ sensitive: true }),
+      }),
+      lifetime: "infinite",
+      garbageCollection: 10,
+    },
+  };
+
+  const vaultService = new VaultService();
+  vaultService.registerVault({
+    name: "default-vault",
+    type: "mock",
+    config: {},
+  });
+  vaultService.registerVault({
+    name: "override-vault",
+    type: "mock",
+    config: {},
+  });
+
+  const { writeResource } = createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    sensitiveResources,
+    undefined, // tagOverrides
+    [{ specName: "creds", vaultName: "override-vault" }], // dataOutputOverrides
+    undefined, // definitionTags
+    undefined, // runtimeTags
+    undefined, // definitionName
+    vaultService,
+    "create", // methodName
+  );
+
+  const data = { secret: "my-secret-value" };
+  await writeResource("creds", "main", data);
+
+  assertStringIncludes(data.secret as string, "'override-vault'");
+});
+
+Deno.test("processSensitiveResourceData: falls back to vaultNames[0] when no default configured", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      secret: z.string().meta({ sensitive: true }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+
+  const data: Record<string, unknown> = { secret: "my-secret" };
+  const vaultService = new VaultService();
+  vaultService.registerVault({
+    name: "alpha-vault",
+    type: "mock",
+    config: {},
+  });
+  vaultService.registerVault({
+    name: "beta-vault",
+    type: "mock",
+    config: {},
+  });
+
+  await processSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+    "creds",
+    "main",
+  );
+
+  assertStringIncludes(data.secret as string, "'alpha-vault'");
+});

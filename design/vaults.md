@@ -490,8 +490,48 @@ single quotes.
 The vault used for storing a sensitive field is resolved in this order:
 
 1. Field-level `vaultName` from `.meta()` metadata
-2. Spec-level `vaultName` from `ResourceOutputSpec`
-3. First available vault from `VaultService`
+2. Spec-level `vaultName` from `ResourceOutputSpec` (set by extension author or
+   overridden via definition YAML `resources.<specName>.vaultName`)
+3. Repo-level `defaultVault` from `.swamp.yaml`
+4. First available vault from `VaultService`
+
+### Definition-Level Vault Override
+
+Model definition YAML can override which vault a resource's sensitive fields are
+stored in, using the existing `resources` block:
+
+```yaml
+resources:
+  credentials:
+    vaultName: high-trust-vault
+  runtime-tokens:
+    vaultName: runtime-vault
+```
+
+The `vaultName` here maps to the extension's `ResourceOutputSpec` names. It
+slots into the resolution order at tier 2, overriding the extension author's
+default but still below any field-level `.meta()` override.
+
+### Repo-Level Default Vault
+
+Set a repo-wide default vault in `.swamp.yaml`:
+
+```yaml
+defaultVault: my-vault
+```
+
+This applies when no field-level or spec-level `vaultName` is set. It also
+applies to `swamp serve` vault operations (OAuth credentials, device auth
+tokens). If not set, the system falls back to the first available vault —
+identical to the behaviour before this feature.
+
+### Sensitive Method Arguments
+
+Sensitive method arguments are the user's responsibility to vault. The runtime
+enforces that `sensitive: true` global arguments must not be literal values (they
+must be `${{ vault.get(...) }}` expressions), but it does not automatically
+route argument values into a vault. Use `swamp vault put` to store argument
+values before referencing them in definitions.
 
 ### Processing Behavior
 

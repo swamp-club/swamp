@@ -784,3 +784,30 @@ Deno.test("VaultService - audit trail", async (t) => {
     },
   );
 });
+
+Deno.test("VaultService - getDefaultVaultName", async (t) => {
+  await t.step("returns undefined when no defaultVaultName is set", () => {
+    const service = new VaultService();
+    service.registerVault({ name: "vault-a", type: "mock", config: {} });
+    assertEquals(service.getDefaultVaultName(), undefined);
+  });
+
+  await t.step(
+    "returns the default vault name when it is registered",
+    () => {
+      const service = new VaultService(undefined, "vault-b");
+      service.registerVault({ name: "vault-a", type: "mock", config: {} });
+      service.registerVault({ name: "vault-b", type: "mock", config: {} });
+      assertEquals(service.getDefaultVaultName(), "vault-b");
+    },
+  );
+
+  await t.step(
+    "returns undefined when default vault name is not registered",
+    () => {
+      const service = new VaultService(undefined, "nonexistent");
+      service.registerVault({ name: "vault-a", type: "mock", config: {} });
+      assertEquals(service.getDefaultVaultName(), undefined);
+    },
+  );
+});

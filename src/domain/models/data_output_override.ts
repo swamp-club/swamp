@@ -44,6 +44,9 @@ export interface DataOutputOverride {
 
   /** Input key names to vary by — produces composite data names per dimension */
   vary?: string[];
+
+  /** Override vault name for sensitive field storage */
+  vaultName?: string;
 }
 
 export const DataOutputOverrideSchema = z.object({
@@ -52,4 +55,5 @@ export const DataOutputOverrideSchema = z.object({
   garbageCollection: GarbageCollectionSchema.optional(),
   tags: z.record(z.string(), z.string()).optional(),
   vary: z.array(z.string().min(1)).optional(),
+  vaultName: z.string().optional(),
 });

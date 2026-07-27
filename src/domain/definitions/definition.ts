@@ -145,6 +145,7 @@ export type CheckSelection = {
 const ResourceOverrideSchema = z.object({
   lifetime: LifetimeSchema.optional(),
   garbageCollection: GarbageCollectionSchema.optional(),
+  vaultName: z.string().optional(),
 });
 
 export type ResourceOverride = z.infer<typeof ResourceOverrideSchema>;

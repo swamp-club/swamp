@@ -208,6 +208,7 @@ function mergeDataOutputOverrides(
       specName,
       lifetime: override.lifetime,
       garbageCollection: override.garbageCollection,
+      vaultName: override.vaultName,
     }))
     : [];
 

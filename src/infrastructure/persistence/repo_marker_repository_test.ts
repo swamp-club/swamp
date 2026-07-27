@@ -445,3 +445,38 @@ Deno.test("RepoMarkerRepository.createUpgradeMarker always sets upgradedAt", () 
   // The new upgradedAt should be different from the old one
   assertEquals(marker.upgradedAt !== existing.upgradedAt, true);
 });
+
+Deno.test("RepoMarkerRepository.write and read roundtrip with defaultVault", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new RepoMarkerRepository();
+    const repoPath = RepoPath.create(dir);
+
+    const original = {
+      swampVersion: "1.2.3",
+      initializedAt: "2024-01-15T10:30:00.000Z",
+      defaultVault: "my-secure-vault",
+    };
+
+    await repo.write(repoPath, original);
+    const result = await repo.read(repoPath);
+
+    assertEquals(result?.defaultVault, "my-secure-vault");
+  });
+});
+
+Deno.test("RepoMarkerRepository.read: missing defaultVault returns undefined", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new RepoMarkerRepository();
+    const repoPath = RepoPath.create(dir);
+
+    const original = {
+      swampVersion: "1.2.3",
+      initializedAt: "2024-01-15T10:30:00.000Z",
+    };
+
+    await repo.write(repoPath, original);
+    const result = await repo.read(repoPath);
+
+    assertEquals(result?.defaultVault, undefined);
+  });
+});

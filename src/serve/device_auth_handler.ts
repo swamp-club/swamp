@@ -286,19 +286,25 @@ async function mintServerTokenImpl(
   groups: string[],
   repoDir: string,
   repoContext: RepositoryContext,
+  defaultVault?: string,
 ): Promise<string> {
   const tokenName = `oauth-${crypto.randomUUID().slice(0, 8)}`;
   const secretKey = serverTokenSecretKey(tokenName);
   const plaintext = generateOpaqueToken();
 
-  const vaultService = await VaultService.fromRepository(repoDir);
+  const vaultService = await VaultService.fromRepository(
+    repoDir,
+    undefined,
+    undefined,
+    defaultVault,
+  );
   const vaultNames = vaultService.getVaultNames();
   if (vaultNames.length === 0) {
     throw new Error(
       "No vaults configured — create one with: swamp vault create local default",
     );
   }
-  const vaultName = vaultNames[0];
+  const vaultName = vaultService.getDefaultVaultName() ?? vaultNames[0];
 
   await vaultService.put(vaultName, secretKey, plaintext);
 
@@ -360,6 +366,7 @@ export function createDeviceAuthDeps(
   clientSecret: string,
   repoDir: string,
   repoContext: RepositoryContext,
+  defaultVault?: string,
 ): DeviceAuthDeps {
   return {
     authConfig,
@@ -370,13 +377,34 @@ export function createDeviceAuthDeps(
     pollForToken: oauthPollForToken,
     getUserInfo: oauthGetUserInfo,
     checkAdmission,
-    mintServerToken: mintServerTokenImpl,
+    mintServerToken: (
+      principalId: string,
+      principalEmail: string,
+      collectives: string[],
+      groups: string[],
+      rd: string,
+      rc: RepositoryContext,
+    ) =>
+      mintServerTokenImpl(
+        principalId,
+        principalEmail,
+        collectives,
+        groups,
+        rd,
+        rc,
+        defaultVault,
+      ),
     storeAccessToken: async (tokenName: string, accessToken: string) => {
-      const vaultService = await VaultService.fromRepository(repoDir);
+      const vaultService = await VaultService.fromRepository(
+        repoDir,
+        undefined,
+        undefined,
+        defaultVault,
+      );
       const vaultNames = vaultService.getVaultNames();
       if (vaultNames.length === 0) return;
       await vaultService.put(
-        vaultNames[0],
+        vaultService.getDefaultVaultName() ?? vaultNames[0],
         oauthAccessTokenKey(tokenName),
         accessToken,
       );
