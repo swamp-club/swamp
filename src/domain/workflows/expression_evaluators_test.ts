@@ -225,6 +225,36 @@ Deno.test("WorkflowExpressionEvaluator: skips task.inputs that depend on step ou
   assertEquals(result.expressionsEvaluated, 0);
 });
 
+Deno.test("WorkflowExpressionEvaluator: skips assert task.message that depends on step outputs", async () => {
+  const evaluator = new WorkflowExpressionEvaluator(new CelEvaluator());
+  const workflow = Workflow.create({
+    name: "assert-msg-deferred",
+    jobs: [
+      Job.create({
+        name: "j",
+        steps: [
+          Step.create({
+            name: "collect",
+            task: StepTask.model("server", "run"),
+          }),
+          Step.create({
+            name: "verify",
+            task: StepTask.assert(
+              'data.latest("server", "result").attributes.exitCode == 0',
+              'Exit code was ${{ data.latest("server", "result").attributes.exitCode }}',
+            ),
+          }),
+        ],
+      }),
+    ],
+  });
+  const result = await evaluator.evaluate(workflow, emptyContext());
+  assertEquals(result.expressionsEvaluated, 0);
+  const assertStep = result.workflow.jobs[0].steps[1];
+  const task = assertStep.task.data as { message: string };
+  assertStringIncludes(task.message, "${{ data.latest");
+});
+
 Deno.test("WorkflowExpressionEvaluator: STRICT — per-expression eval error propagates", async () => {
   const evaluator = new WorkflowExpressionEvaluator(new ThrowingEvaluator());
   const workflow = Workflow.create({

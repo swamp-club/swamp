@@ -22,6 +22,7 @@ import type { Workflow, WorkflowInput } from "./workflow.ts";
 import { Workflow as WorkflowClass } from "./workflow.ts";
 import {
   extractExpressions,
+  isAssertMessagePath,
   isTaskInputsPath,
   isTriggerInputsPath,
   replaceExpressions,
@@ -114,10 +115,11 @@ export class WorkflowExpressionEvaluator {
       if (isTriggerInputsPath(expr.path)) {
         continue;
       }
-      // task.inputs that depend on step outputs are evaluated at step
-      // execution time when upstream step outputs are available.
+      // task.inputs and assert task.message that depend on step outputs
+      // are evaluated at step execution time when upstream step outputs
+      // are available.
       if (
-        isTaskInputsPath(expr.path) &&
+        (isTaskInputsPath(expr.path) || isAssertMessagePath(expr.path)) &&
         hasStepOutputDependency(expr.celExpression)
       ) {
         continue;

@@ -28,6 +28,7 @@ import {
 } from "../../domain/workflows/workflow_id.ts";
 import {
   extractExpressions,
+  isAssertMessagePath,
   isTaskGlobalArgsPath,
   isTaskInputsPath,
   replaceExpressions,
@@ -212,10 +213,11 @@ async function evaluateWorkflowInternal(
     if (forEachInExpressions.has(expr.raw)) {
       continue;
     }
-    // Skip task.inputs/globalArgs expressions that depend on step outputs (resource, file, execution, data, file.contents).
+    // Skip task.inputs/globalArgs/message expressions that depend on step outputs (resource, file, execution, data, file.contents).
     // These are evaluated at step execution time when upstream step outputs are available.
     if (
-      (isTaskInputsPath(expr.path) || isTaskGlobalArgsPath(expr.path)) &&
+      (isTaskInputsPath(expr.path) || isTaskGlobalArgsPath(expr.path) ||
+        isAssertMessagePath(expr.path)) &&
       hasStepOutputDependency(expr.celExpression)
     ) {
       continue;

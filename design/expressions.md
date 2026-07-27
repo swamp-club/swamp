@@ -440,11 +440,12 @@ inputs:
 
 All `data.*` functions (`data.latest`, `data.version`, `data.listVersions`,
 `data.findBySpec`, `data.query`, `data.findByTag`) are classified as
-step-output dependencies. In workflow step `task.inputs`, they are **deferred**
-past workflow evaluation and resolved at step execution time — after upstream
-steps have run and their data is available. This enables patterns where step 1
-produces ephemeral data and step 2 consumes it via `data.findBySpec()` or
-`data.query()`.
+step-output dependencies. In workflow step `task.inputs` and assert step
+`task.message`, they are **deferred** past workflow evaluation and resolved at
+step execution time — after upstream steps have run and their data is available.
+This enables patterns where step 1 produces ephemeral data and step 2 consumes
+it via `data.findBySpec()` or `data.query()`, and assert steps that interpolate
+prior-step data in their failure messages.
 
 The `--last-evaluated` flag preserves this behavior: deferred expressions saved
 as raw `${{ }}` in the evaluated workflow are resolved at step execution time

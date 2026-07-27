@@ -24,6 +24,7 @@ import {
   extractExpressions,
   extractInputReferences,
   extractInputReferencesFromCel,
+  isAssertMessagePath,
   isTaskGlobalArgsPath,
   isTaskInputsPath,
   isTriggerInputsPath,
@@ -336,6 +337,36 @@ Deno.test("isTaskGlobalArgsPath returns true for globalArgs field itself", () =>
 Deno.test("isTaskGlobalArgsPath returns false for task.inputs", () => {
   assertEquals(
     isTaskGlobalArgsPath("jobs[0].steps[0].task.inputs.foo"),
+    false,
+  );
+});
+
+// Tests for isAssertMessagePath
+
+Deno.test("isAssertMessagePath: returns true for task.message", () => {
+  assertEquals(
+    isAssertMessagePath("jobs[0].steps[1].task.message"),
+    true,
+  );
+});
+
+Deno.test("isAssertMessagePath: returns false for task.inputs", () => {
+  assertEquals(
+    isAssertMessagePath("jobs[0].steps[0].task.inputs.foo"),
+    false,
+  );
+});
+
+Deno.test("isAssertMessagePath: returns false for task.expr", () => {
+  assertEquals(
+    isAssertMessagePath("jobs[0].steps[0].task.expr"),
+    false,
+  );
+});
+
+Deno.test("isAssertMessagePath: returns false for step name", () => {
+  assertEquals(
+    isAssertMessagePath("jobs[0].steps[0].name"),
     false,
   );
 });
