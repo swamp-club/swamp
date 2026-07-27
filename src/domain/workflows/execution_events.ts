@@ -183,6 +183,7 @@ export type WorkflowExecutionEvent =
     message: string;
     severity: AssertSeverity;
     expr: string;
+    error?: string;
   }
   | { kind: "completed"; run: WorkflowRun }
   | { kind: "cancelled"; run: WorkflowRun; reason?: string }

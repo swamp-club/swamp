@@ -87,6 +87,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
     passed: boolean;
     message: string;
     severity: AssertSeverity;
+    error?: string;
   }> = [];
   private assertStepIds = new Set<string>();
 
@@ -458,6 +459,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
           passed: e.passed,
           message: e.message,
           severity: e.severity,
+          error: e.error,
         });
         const displayName = this.forEachDisplayNames.get(key) ?? e.jobId;
         const startTime = this.stepStartTimes.get(key);
@@ -527,7 +529,9 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
         // Render assert summary if any assert steps ran
         if (this.assertResults.length > 0) {
           const passed = this.assertResults.filter((r) => r.passed).length;
-          const failed = this.assertResults.filter((r) => !r.passed).length;
+          const failed = this.assertResults.filter((r) => !r.passed && !r.error)
+            .length;
+          const errors = this.assertResults.filter((r) => !!r.error).length;
           const failedAboveThreshold = this.assertResults.filter(
             (r) =>
               !r.passed &&
@@ -535,11 +539,14 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
           ).length;
 
           writeBlankLine();
-          const summary = failed > 0
-            ? `${passed} passed, ${failed} failed`
-            : `${passed} passed`;
+          const parts = [`${passed} passed`];
+          if (failed > 0) parts.push(`${failed} failed`);
+          if (errors > 0) parts.push(`${errors} errored`);
           writeOutput(
-            this.pipe.line("system", dim(`Assertions: ${summary}`)),
+            this.pipe.line(
+              "system",
+              dim(`Assertions: ${parts.join(", ")}`),
+            ),
           );
 
           if (failedAboveThreshold > 0) {

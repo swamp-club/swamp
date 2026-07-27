@@ -2577,6 +2577,7 @@ export class WorkflowExecutionService {
           message: stepRun.assertResult.message,
           severity: stepRun.assertResult.severity,
           expr: stepRun.assertResult.expr,
+          error: stepRun.assertResult.error,
         };
       }
       stepSpan.end();
@@ -2759,11 +2760,30 @@ export class WorkflowExecutionService {
           const errorMessage = error instanceof Error
             ? error.message
             : String(error);
+
+          const assertResult = {
+            passed: false,
+            expr: task.expr,
+            message: errorMessage,
+            severity: task.severity,
+            error: errorMessage,
+          };
+          stepRun.recordAssertResult(assertResult);
           stepRun.fail(errorMessage);
           stepSpan.setStatus({
             code: SpanStatusCode.ERROR,
             message: errorMessage,
           });
+          yield {
+            kind: "assert_result" as const,
+            jobId: job.name,
+            stepId: stepName,
+            passed: false,
+            message: errorMessage,
+            severity: task.severity,
+            expr: task.expr,
+            error: errorMessage,
+          };
           yield {
             kind: "step_failed",
             jobId: job.name,

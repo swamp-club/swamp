@@ -52,6 +52,7 @@ export interface AssertResultView {
   expr: string;
   message: string;
   severity: AssertSeverity;
+  error?: string;
 }
 
 export interface StepRunView {
