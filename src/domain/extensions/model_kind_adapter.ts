@@ -248,8 +248,8 @@ function formatUserModelError(error: z.ZodError): string {
 
   return issues
     .map((i) => {
-      const path = i.path.join(".");
-      return `${path}: ${i.message}`;
+      if (i.path.length === 0) return i.message;
+      return `${i.path.join(".")}: ${i.message}`;
     })
     .join("; ");
 }

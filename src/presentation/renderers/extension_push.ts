@@ -50,6 +50,7 @@ export interface ExtensionPushRenderer extends Renderer<ExtensionPushEvent> {
     mismatches: CollectiveMismatch[],
   ): void;
   renderQualityErrors(issues: QualityIssue[]): void;
+  renderUpgradeChainErrors(issues: QualityIssue[]): void;
   renderVersionDriftWarnings(warnings: QualityIssue[]): void;
   renderCompilationErrors(errors: CompilationError[]): void;
   renderDryRun(data: {
@@ -243,6 +244,13 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
       .error`Run 'swamp extension fmt <manifest-path>' to fix these issues.`;
   }
 
+  renderUpgradeChainErrors(issues: QualityIssue[]): void {
+    this.logger.error`Upgrade chain validation failed (push blocked):`;
+    for (const issue of issues) {
+      this.logger.error`  ${issue.output}`;
+    }
+  }
+
   renderVersionDriftWarnings(warnings: QualityIssue[]): void {
     this.logger.warn`Version drift warnings (non-blocking):`;
     for (const w of warnings) {
@@ -356,6 +364,10 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
 
   renderQualityErrors(issues: QualityIssue[]): void {
     console.log(JSON.stringify({ qualityErrors: issues }, null, 2));
+  }
+
+  renderUpgradeChainErrors(issues: QualityIssue[]): void {
+    console.log(JSON.stringify({ upgradeChainErrors: issues }, null, 2));
   }
 
   renderVersionDriftWarnings(warnings: QualityIssue[]): void {
