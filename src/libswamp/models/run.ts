@@ -211,6 +211,7 @@ export interface ModelMethodRunDeps {
     definition: Definition,
   ) => Promise<void>;
   getDefinitionPath?: (type: ModelType, id: string) => string;
+  autoDefinitionsDir?: string;
   runTracker?: RunTrackerRepository;
   eventBus?: EventBus;
   workflowRepo?:
@@ -341,6 +342,8 @@ export async function* modelMethodRun(
             input.inputs,
             resolvedType,
             resolvedModelDef,
+            undefined,
+            deps.autoDefinitionsDir,
           );
 
           if (!result.ok) {

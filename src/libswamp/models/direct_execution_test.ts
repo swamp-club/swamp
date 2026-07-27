@@ -20,6 +20,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import {
+  autoDefinitionLockKey,
   resolveOrCreateDefinition,
   routeInputsBySchema,
 } from "./direct_execution.ts";
@@ -711,4 +712,168 @@ Deno.test("resolveOrCreateDefinition: explicit globalArgs object is not mutated 
     "42",
     "caller's explicitGlobalArgs must not be mutated by coercion",
   );
+});
+
+// ── autoDefinitionLockKey ──────────────────────────────────────────────
+
+Deno.test("autoDefinitionLockKey: simple name", () => {
+  assertEquals(
+    autoDefinitionLockKey("my-model"),
+    ".auto-definition-create/my-model.lock",
+  );
+});
+
+Deno.test("autoDefinitionLockKey: scoped name flattens slashes", () => {
+  assertEquals(
+    autoDefinitionLockKey("@collective/model-name"),
+    ".auto-definition-create/@collective--model-name.lock",
+  );
+});
+
+Deno.test("autoDefinitionLockKey: deeply scoped name flattens all slashes", () => {
+  assertEquals(
+    autoDefinitionLockKey("@org/nested/deep"),
+    ".auto-definition-create/@org--nested--deep.lock",
+  );
+});
+
+// ── resolveOrCreateDefinition with lockDir ──────────────────────────────
+
+async function withTempDir(
+  fn: (dir: string) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-direct-exec-test-" });
+  try {
+    await fn(dir);
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+}
+
+Deno.test("resolveOrCreateDefinition: with lockDir creates definition under lock", async () => {
+  await withTempDir(async (lockDir) => {
+    const modelDef = createTestModelDef(
+      undefined,
+      { run: z.object({}) },
+    );
+    const resolvedType = ModelType.create("test/model");
+    let saveCount = 0;
+
+    const result = await resolveOrCreateDefinition(
+      {
+        lookupDefinition: () => Promise.resolve(null),
+        getModelDef: () => modelDef,
+        saveDefinition: () => {
+          saveCount++;
+          return Promise.resolve();
+        },
+        getDefinitionPath: (_type, id) => `/tmp/${id}.yaml`,
+      },
+      "test/model",
+      "locked-model",
+      "run",
+      {},
+      resolvedType,
+      modelDef,
+      undefined,
+      lockDir,
+    );
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.created, true);
+      assertEquals(result.definition.name, "locked-model");
+    }
+    assertEquals(saveCount, 1);
+  });
+});
+
+Deno.test("resolveOrCreateDefinition: with lockDir skips lock when definition exists (fast path)", async () => {
+  await withTempDir(async (lockDir) => {
+    const modelDef = createTestModelDef(
+      z.object({ region: z.string() }),
+      { run: z.object({}) },
+    );
+    const resolvedType = ModelType.create("test/model");
+    const existingDef = Definition.create({
+      name: "existing",
+      type: "test/model",
+      typeVersion: "2026.01.01.1",
+      globalArguments: { region: "us-east-1" },
+    });
+
+    const result = await resolveOrCreateDefinition(
+      {
+        lookupDefinition: () =>
+          Promise.resolve({ definition: existingDef, type: resolvedType }),
+        getModelDef: () => modelDef,
+        saveDefinition: () => Promise.resolve(),
+        getDefinitionPath: (_type, id) => `/tmp/${id}.yaml`,
+      },
+      "test/model",
+      "existing",
+      "run",
+      { region: "us-east-1" },
+      resolvedType,
+      modelDef,
+      undefined,
+      lockDir,
+    );
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.created, false);
+      assertEquals(result.definition.id, existingDef.id);
+    }
+  });
+});
+
+Deno.test("resolveOrCreateDefinition: with lockDir adopts race winner's definition", async () => {
+  await withTempDir(async (lockDir) => {
+    const modelDef = createTestModelDef(
+      undefined,
+      { run: z.object({}) },
+    );
+    const resolvedType = ModelType.create("test/model");
+    const winnerDef = Definition.create({
+      name: "racy",
+      type: "test/model",
+      typeVersion: "2026.01.01.1",
+    });
+    let lookupCount = 0;
+
+    const result = await resolveOrCreateDefinition(
+      {
+        lookupDefinition: () => {
+          lookupCount++;
+          // First call (fast path): not found. Second call (under lock): found.
+          if (lookupCount === 1) return Promise.resolve(null);
+          return Promise.resolve({
+            definition: winnerDef,
+            type: resolvedType,
+          });
+        },
+        getModelDef: () => modelDef,
+        saveDefinition: () => {
+          throw new Error("should not save — race winner exists");
+        },
+        getDefinitionPath: (_type, id) => `/tmp/${id}.yaml`,
+      },
+      "test/model",
+      "racy",
+      "run",
+      {},
+      resolvedType,
+      modelDef,
+      undefined,
+      lockDir,
+    );
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.created, false);
+      assertEquals(result.definition.id, winnerDef.id);
+    }
+    assertEquals(lookupCount, 2);
+  });
 });

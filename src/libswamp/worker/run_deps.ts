@@ -130,6 +130,7 @@ export async function createWorkerModelRunDeps(
         `${id}.yaml`,
       );
     },
+    autoDefinitionsDir: repoContext.autoDefinitionsDir,
     workflowRepo: repoContext.workflowRepo,
     workflowRunRepo: repoContext.workflowRunRepo,
   };
