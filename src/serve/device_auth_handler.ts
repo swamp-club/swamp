@@ -299,7 +299,7 @@ async function mintServerTokenImpl(
   const vaultNames = vaultService.getVaultNames();
   if (vaultNames.length === 0) {
     throw new Error(
-      "No vaults configured — create one with: swamp vault create local default",
+      "No vaults configured — create one with: swamp vault create local_encryption default",
     );
   }
   const vaultName = vaultService.getDefaultVaultName() ?? vaultNames[0];
