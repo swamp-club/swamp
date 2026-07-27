@@ -40,6 +40,8 @@ export interface LoggingOptions {
   noColor?: boolean;
   /** When true, run loggers also write to the console sink (flat [INF] output for --log mode). */
   forceLog?: boolean;
+  /** Suppress console output while keeping the run file sink at info level. */
+  quiet?: boolean;
   /** Write all log output to stderr only (for dispatch runners where stdout carries RPC frames). */
   stderrOnly?: boolean;
   /** Test-only: clear the once-per-process guard so logging can be reconfigured. */
@@ -179,20 +181,22 @@ export async function initializeLogging(
   // don't reach the console at all.
   const jsonMode = options.jsonMode ?? false;
   const forceLog = options.forceLog ?? false;
-  const runParentSinks = forceLog ? "inherit" : "override";
+  const quiet = options.quiet ?? false;
+  const runParentSinks = forceLog && !quiet ? "inherit" : "override";
+  const runLogLevel: LogLevel = quiet ? "info" : logLevel;
   await configure({
     sinks,
     loggers: [
       ...loggers,
       {
         category: ["model", "method", "run"],
-        lowestLevel: logLevel,
+        lowestLevel: runLogLevel,
         sinks: ["runFile", ...otelSinks],
         parentSinks: runParentSinks,
       },
       {
         category: ["workflow", "run"],
-        lowestLevel: logLevel,
+        lowestLevel: runLogLevel,
         sinks: ["runFile", ...otelSinks],
         parentSinks: runParentSinks,
       },

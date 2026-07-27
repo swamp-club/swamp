@@ -1473,6 +1473,7 @@ export async function runCli(args: string[]): Promise<void> {
         jsonMode: options.json ?? false,
         noColor,
         forceLog: forceLog || verbose,
+        quiet: options.quiet ?? false,
       });
 
       // Emit deferred warnings now that logging is initialized
