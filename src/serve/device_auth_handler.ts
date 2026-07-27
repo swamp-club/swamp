@@ -294,14 +294,12 @@ async function mintServerTokenImpl(
 
   const vaultService = await VaultService.fromRepository(
     repoDir,
-    undefined,
-    undefined,
-    defaultVault,
+    { defaultVaultName: defaultVault },
   );
   const vaultNames = vaultService.getVaultNames();
   if (vaultNames.length === 0) {
     throw new Error(
-      "No vaults configured — create one with: swamp vault create local default",
+      "No vaults configured — create one with: swamp vault create local_encryption default",
     );
   }
   const vaultName = vaultService.getDefaultVaultName() ?? vaultNames[0];
@@ -397,9 +395,7 @@ export function createDeviceAuthDeps(
     storeAccessToken: async (tokenName: string, accessToken: string) => {
       const vaultService = await VaultService.fromRepository(
         repoDir,
-        undefined,
-        undefined,
-        defaultVault,
+        { defaultVaultName: defaultVault },
       );
       const vaultNames = vaultService.getVaultNames();
       if (vaultNames.length === 0) return;

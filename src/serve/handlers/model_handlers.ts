@@ -172,7 +172,11 @@ export async function handleModelMethodRun(
     const deps = await createModelMethodRunDeps(
       ctx.repoDir,
       ctx.repoContext,
-      { directExecution: isDirectExecution, runTracker: ctx.runTracker },
+      {
+        directExecution: isDirectExecution,
+        runTracker: ctx.runTracker,
+        defaultVault: ctx.defaultVault,
+      },
     );
     const libCtx = createLibSwampContext({ signal: controller.signal });
 

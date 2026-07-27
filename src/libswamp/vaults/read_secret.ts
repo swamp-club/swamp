@@ -73,8 +73,7 @@ export function createVaultReadSecretDeps(
     if (!vaultServicePromise) {
       vaultServicePromise = VaultService.fromRepository(
         repoDir,
-        undefined,
-        createVaultRefreshOptions(),
+        { refreshOptions: createVaultRefreshOptions() },
       );
     }
     return vaultServicePromise;

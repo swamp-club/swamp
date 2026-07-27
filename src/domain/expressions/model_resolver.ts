@@ -486,8 +486,7 @@ export class ModelResolver {
     if (this.repoDir) {
       this.vaultService = await VaultService.fromRepository(
         this.repoDir,
-        undefined,
-        refreshOpts,
+        { refreshOptions: refreshOpts },
       );
     } else {
       // No repoDir, create an empty vault service with defaults
