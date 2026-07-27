@@ -179,7 +179,7 @@ continue). Do not proceed to step 5 until the user has acknowledged the report.
 
 ## Universal Dimensions
 
-These apply to **all** extension types (models, drivers, vaults, datastores).
+These apply to **all** extension types (models, vaults, datastores).
 
 ### 1. Credentials & Secrets
 
@@ -228,8 +228,7 @@ These apply to **all** extension types (models, drivers, vaults, datastores).
 ### 4. Testing Completeness
 
 - Unit tests use the appropriate test context (`createModelTestContext`,
-  `createDriverTestContext`, `assertVaultExportConformance`,
-  `assertDatastoreExportConformance`).
+  `assertVaultExportConformance`, `assertDatastoreExportConformance`).
 - Cover both success and failure paths — test what happens when the API returns
   an error, when a resource already exists, when input is invalid.
 - Use the injectable client pattern or mock primitives (`withMockedFetch`,
@@ -300,15 +299,6 @@ These apply to **all** extension types (models, drivers, vaults, datastores).
   reading back stored state in update/delete/sync methods.
 - **Version upgrades**: When bumping the model `version`, always add an
   `upgrades` entry with migration logic.
-
-### Drivers
-
-- Return the correct output `kind` — `"pending"` for data that swamp should
-  persist, `"persisted"` for data already written by the driver.
-- Record `durationMs` accurately in execution results.
-- Forward logs to the host via `callbacks.onLog()`.
-- Handle the `initialize`/`shutdown` lifecycle correctly.
-- On error, set `status: "error"` with a useful error message.
 
 ### Vaults
 

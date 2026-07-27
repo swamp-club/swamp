@@ -101,55 +101,6 @@ export const vault = {
 };
 ```
 
-### Driver
-
-```typescript
-/**
- * Custom execution driver for running methods on a remote host.
- *
- * @module
- */
-// extensions/drivers/my-driver/mod.ts
-import { z } from "npm:zod@4";
-
-const ConfigSchema = z.object({
-  host: z.string(),
-  port: z.number().default(22),
-});
-
-/** Execution driver definition. */
-export const driver = {
-  type: "@myorg/my-driver",
-  name: "My Custom Driver",
-  description: "Executes methods on a remote host",
-  configSchema: ConfigSchema,
-  createDriver: (config: Record<string, unknown>) => {
-    const parsed = ConfigSchema.parse(config);
-    return {
-      type: "@myorg/my-driver",
-      execute: async (request, callbacks?) => {
-        callbacks?.onLog?.(`Executing ${request.methodName} on ${parsed.host}`);
-        const output = new TextEncoder().encode(
-          JSON.stringify({ result: "ok" }),
-        );
-        return {
-          status: "success" as const,
-          outputs: [{
-            kind: "pending" as const,
-            specName: request.methodName,
-            name: request.methodName,
-            type: "resource" as const,
-            content: output,
-          }],
-          logs: [],
-          durationMs: 0,
-        };
-      },
-    };
-  },
-};
-```
-
 ### Datastore
 
 ```typescript
@@ -203,8 +154,8 @@ All extension types follow the same lifecycle:
 1. **Confirm nothing covers it** — search built-in and community first.
 2. **Author the extension file** — use the Quick Start above;
    `~/.swamp/deno/deno check`.
-3. **Verify registration** — `swamp model type search --json` (models/drivers)
-   or `swamp vault status --json` / `swamp datastore status --json`.
+3. **Verify registration** — `swamp model type search --json` (models) or
+   `swamp vault status --json` / `swamp datastore status --json`.
 4. **Adversarial review** — see
    [Adversarial Review Gate](#adversarial-review-gate) below.
 5. **Smoke test** (models) — see
@@ -261,7 +212,6 @@ All extension types follow the same lifecycle:
 | --------- | ------------------------------- | ------------------------ | --------------------------- |
 | Model     | `extensions/models/**/*.ts`     | `export const model`     | (bundled inline)            |
 | Vault     | `extensions/vaults/**/*.ts`     | `export const vault`     | `.swamp/vault-bundles/`     |
-| Driver    | `extensions/drivers/**/*.ts`    | `export const driver`    | `.swamp/driver-bundles/`    |
 | Datastore | `extensions/datastores/**/*.ts` | `export const datastore` | `.swamp/datastore-bundles/` |
 | Report    | `extensions/reports/*.ts`       | `export const report`    | (bundled inline)            |
 

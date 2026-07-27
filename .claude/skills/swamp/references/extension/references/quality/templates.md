@@ -22,8 +22,6 @@ additionalFiles:
 # Pick one — or multiple — and remove the rest.
 models:
   - my-model.ts
-# drivers:
-#   - my-driver.ts
 # vaults:
 #   - my-vault.ts
 # datastores:
