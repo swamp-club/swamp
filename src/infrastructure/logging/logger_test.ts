@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import { join } from "@std/path";
 import {
   escapeLogTemplate,
   getRunLogger,
@@ -25,6 +26,7 @@ import {
   getWorkflowRunLogger,
   initializeLogging,
 } from "./logger.ts";
+import { runFileSink } from "./run_file_sink.ts";
 
 // Note: LogTape can only be configured once per process.
 // These tests are structured to work within that limitation.
@@ -176,4 +178,36 @@ Deno.test("getWorkflowRunLogger", async (t) => {
     assertEquals(typeof logger1.info, "function");
     assertEquals(typeof logger2.info, "function");
   });
+});
+
+Deno.test("initializeLogging: quiet mode keeps run file sink at info level", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "logger-quiet-test-" });
+  try {
+    const logPath = join(dir, "run.log");
+    const handle = await runFileSink.register(
+      ["model", "method", "run", "quiet-test"],
+      logPath,
+    );
+    try {
+      await initializeLogging({
+        logLevel: "error",
+        quiet: true,
+        _reset: true,
+      });
+
+      const logger = getRunLogger("quiet-test", "greet");
+      logger.info`Extension says hello`;
+
+      const content = await Deno.readTextFile(logPath);
+      assertStringIncludes(content, "Extension says hello");
+    } finally {
+      runFileSink.unregister(handle);
+    }
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
 });
