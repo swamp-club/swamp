@@ -1325,22 +1325,26 @@ export async function flushSinglePhasePush(
     await pushLock.acquire();
     const lockMs = Date.now() - lockStart;
     if (lockMs > 5_000 && !config.namespace) {
-      logger.warn(
-        "Lock acquisition took {ms}ms — multiple repos sharing this " +
-          "datastore without namespaces serialize all writes behind a " +
-          "single global lock. Run 'swamp datastore namespace set " +
-          "<name>' to scope each repo to its own lock and index",
-        { ms: lockMs },
+      console.error(
+        `${systemPrefix()} ${
+          yellow(
+            `Lock acquisition took ${lockMs}ms — multiple repos sharing this ` +
+              "datastore without namespaces serialize all writes behind a " +
+              "single global lock. Run 'swamp datastore namespace set " +
+              "<name>' to scope each repo to its own lock and index",
+          )
+        }`,
       );
     }
-    logger.info`Pushing changes to datastore...`;
+    console.error(
+      `${systemPrefix()} ${dim("Pushing changes to datastore...")}`,
+    );
 
     await writeCatalogExportIfNeeded(
       syncService,
       config,
       namespace,
       catalogStore,
-      logger,
     );
 
     let pushed: number | void;
@@ -1356,11 +1360,13 @@ export async function flushSinglePhasePush(
       pushed = await syncService.pushChanged();
     }
     if (pushed && pushed > 0) {
-      logger.info("Pushed {count} file(s) to datastore", {
-        count: pushed,
-      });
+      console.error(
+        `${systemPrefix()} ${dim(`Pushed ${pushed} file(s) to datastore`)}`,
+      );
     } else {
-      logger.info`Push complete, no changes`;
+      console.error(
+        `${systemPrefix()} ${dim("Push complete, no changes")}`,
+      );
     }
   } catch (error) {
     const { summary, fields } = summarizeSyncError(
@@ -1412,13 +1418,14 @@ export async function flushTwoPhasePush(
     config,
     namespace,
     catalogStore,
-    logger,
   );
 
   // Phase 1: upload files outside the global lock
   let manifest: PushManifest;
   try {
-    logger.info`Preparing push (uploading files)...`;
+    console.error(
+      `${systemPrefix()} ${dim("Preparing push (uploading files)...")}`,
+    );
     const prepareOpts = caps?.scopedSync
       ? {
         context: { models: [...models] } as SyncContext,
@@ -1451,24 +1458,33 @@ export async function flushTwoPhasePush(
     await pushLock.acquire();
     const lockMs = Date.now() - lockStart;
     if (lockMs > 5_000 && !config.namespace) {
-      logger.warn(
-        "Lock acquisition took {ms}ms — multiple repos sharing this " +
-          "datastore without namespaces serialize all writes behind a " +
-          "single global lock. Run 'swamp datastore namespace set " +
-          "<name>' to scope each repo to its own lock and index",
-        { ms: lockMs },
+      console.error(
+        `${systemPrefix()} ${
+          yellow(
+            `Lock acquisition took ${lockMs}ms — multiple repos sharing this ` +
+              "datastore without namespaces serialize all writes behind a " +
+              "single global lock. Run 'swamp datastore namespace set " +
+              "<name>' to scope each repo to its own lock and index",
+          )
+        }`,
       );
     }
-    logger.info`Committing index update...`;
+    console.error(
+      `${systemPrefix()} ${dim("Committing index update...")}`,
+    );
 
     const commitOpts = namespace ? { namespace } : undefined;
     const pushed = await syncService.commitPush!(manifest, commitOpts);
     if (pushed && pushed > 0) {
-      logger.info("Committed {count} file(s) to datastore index", {
-        count: pushed,
-      });
+      console.error(
+        `${systemPrefix()} ${
+          dim(`Committed ${pushed} file(s) to datastore index`)
+        }`,
+      );
     } else {
-      logger.info`Commit complete, no index changes`;
+      console.error(
+        `${systemPrefix()} ${dim("Commit complete, no index changes")}`,
+      );
     }
   } catch (error) {
     const { summary, fields } = summarizeSyncError(
@@ -1496,7 +1512,6 @@ export async function writeCatalogExportIfNeeded(
   config: CustomDatastoreConfig,
   namespace: string | undefined,
   catalogStore: CatalogStore | undefined,
-  logger: ReturnType<typeof getSwampLogger>,
 ): Promise<void> {
   if (namespace && catalogStore && config.cachePath) {
     try {
@@ -1508,16 +1523,17 @@ export async function writeCatalogExportIfNeeded(
       await syncService.markDirty({
         relPath: `${namespace}/.catalog-export.json`,
       });
-      logger.info(
-        "Wrote catalog export ({count} row(s)) for namespace {namespace}",
-        { count: exportCount, namespace },
+      console.error(
+        `${systemPrefix()} ${
+          dim(
+            `Wrote catalog export (${exportCount} row(s)) for namespace ${namespace}`,
+          )
+        }`,
       );
     } catch (error) {
-      logger.warn(
-        "Catalog export write failed: {error}",
-        {
-          error: error instanceof Error ? error.message : String(error),
-        },
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(
+        `${systemPrefix()} ${yellow(`Catalog export write failed: ${msg}`)}`,
       );
     }
   }
