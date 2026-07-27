@@ -478,3 +478,55 @@ Deno.test("Step placement: queueTimeout converts seconds to milliseconds", () =>
   assertEquals(restored.queueTimeout, 30);
   assertEquals(restored.placement?.queueTimeoutMs, 30_000);
 });
+
+Deno.test("Step: guard field is parsed when present", () => {
+  const step = Step.fromData({
+    name: "guarded-step",
+    task: {
+      type: "model_method",
+      modelIdOrName: "my-model",
+      methodName: "run",
+    },
+    guard: '${{ data.latest("plate-reader", "scan-complete").attributes.id }}',
+  });
+  assertEquals(
+    step.guard,
+    '${{ data.latest("plate-reader", "scan-complete").attributes.id }}',
+  );
+});
+
+Deno.test("Step: guard field is undefined when absent", () => {
+  const step = Step.fromData({
+    name: "no-guard",
+    task: {
+      type: "model_method",
+      modelIdOrName: "my-model",
+      methodName: "run",
+    },
+  });
+  assertEquals(step.guard, undefined);
+});
+
+Deno.test("Step: guard field roundtrips through toData", () => {
+  const guard = '${{ data.latest("plate-reader", "result") }}';
+  const step = Step.fromData({
+    name: "guarded",
+    task: {
+      type: "model_method",
+      modelIdOrName: "my-model",
+      methodName: "run",
+    },
+    guard,
+  });
+  const data = step.toData();
+  assertEquals(data.guard, guard);
+  const restored = Step.fromData(data);
+  assertEquals(restored.guard, guard);
+});
+
+Deno.test("Step.create: guard field is passed through", () => {
+  const task = StepTask.model("my-model", "run");
+  const guard = '${{ data.latest("sensor", "reading") }}';
+  const step = Step.create({ name: "guarded", task, guard });
+  assertEquals(step.guard, guard);
+});

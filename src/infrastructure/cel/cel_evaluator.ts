@@ -205,6 +205,37 @@ export class CelDataNamespace {
 }
 
 /**
+ * Wrapper class for model namespace context objects.
+ * Provides model.method() for invoking model methods from CEL expressions
+ * (e.g., guard expressions).
+ */
+export class CelModelNamespace {
+  private readonly delegate: Record<string, unknown>;
+
+  constructor(delegate: Record<string, unknown>) {
+    this.delegate = delegate;
+  }
+
+  method(
+    modelName: string,
+    methodName: string,
+    inputs?: Record<string, unknown>,
+  ): unknown {
+    const fn = this.delegate["method"];
+    if (typeof fn === "function") {
+      return (
+        fn as (
+          m: string,
+          n: string,
+          i?: Record<string, unknown>,
+        ) => unknown
+      )(modelName, methodName, inputs);
+    }
+    return null;
+  }
+}
+
+/**
  * Builds a fresh, isolated cel-js `Environment` with swamp's baseline
  * registrations for extension use.
  *
@@ -292,6 +323,7 @@ export class CelEvaluator {
     this.env.registerType("CelFileNamespace", CelFileNamespace);
     this.env.registerType("CelDataNamespace", CelDataNamespace);
     this.env.registerType("CelWorkersNamespace", CelWorkersNamespace);
+    this.env.registerType("CelModelNamespace", CelModelNamespace);
 
     // Register receiver methods for file namespace
     this.env.registerFunction(
@@ -383,6 +415,31 @@ export class CelEvaluator {
     this.env.registerFunction(
       "CelWorkersNamespace.connected(): dyn",
       (receiver: CelWorkersNamespace) => receiver.connected(),
+    );
+
+    // Register receiver methods for model namespace
+    this.env.registerFunction(
+      "CelModelNamespace.method(string, string): dyn",
+      (
+        receiver: CelModelNamespace,
+        modelName: string,
+        methodName: string,
+      ) => receiver.method(modelName, methodName),
+    );
+
+    this.env.registerFunction(
+      "CelModelNamespace.method(string, string, dyn): dyn",
+      (
+        receiver: CelModelNamespace,
+        modelName: string,
+        methodName: string,
+        inputs: unknown,
+      ) =>
+        receiver.method(
+          modelName,
+          methodName,
+          inputs as Record<string, unknown>,
+        ),
     );
   }
 
@@ -512,7 +569,8 @@ export class CelEvaluator {
     const file = context["file"];
     const data = context["data"];
     const workers = context["workers"];
-    if (!file && !data && !workers) return context;
+    const modelMethod = context["modelMethod"];
+    if (!file && !data && !workers && !modelMethod) return context;
 
     const wrapped = { ...context };
     if (
@@ -532,6 +590,15 @@ export class CelEvaluator {
       wrapped["workers"] = new CelWorkersNamespace(
         workers as Record<string, unknown>,
       );
+    }
+    if (
+      modelMethod && typeof modelMethod === "object" &&
+      !(modelMethod instanceof CelModelNamespace)
+    ) {
+      wrapped["model"] = new CelModelNamespace(
+        modelMethod as Record<string, unknown>,
+      );
+      delete wrapped["modelMethod"];
     }
     return wrapped;
   }

@@ -265,6 +265,17 @@ export function isTriggerInputsPath(path: string): boolean {
 }
 
 /**
+ * Checks if an expression path is a step's guard field.
+ *
+ * Guard expressions are evaluated at step execution time — they check runtime
+ * state (data outputs from upstream steps, forEach variables) to decide whether
+ * a step should be skipped, so workflow-body evaluation must leave them raw.
+ */
+export function isGuardPath(path: string): boolean {
+  return path.endsWith(".guard");
+}
+
+/**
  * Pattern to match `inputs.fieldName` (dot notation) in CEL expressions.
  * Uses negative lookbehind to exclude cross-model references like `model.foo.input.bar`.
  */

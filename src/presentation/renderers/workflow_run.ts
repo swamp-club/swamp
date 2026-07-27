@@ -301,7 +301,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
         if (!this.pipe) return;
         this.clearHeartbeat(e.jobId, e.stepId);
         const displayName = this.getDisplayName(e.jobId, e.stepId, e);
-        writeOutput(this.pipe.skippedLine(displayName));
+        writeOutput(this.pipe.skippedLine(displayName, e.reason));
       },
       step_queued: (e) => {
         if (!this.pipe) return;
@@ -731,7 +731,16 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       job_skipped: () => {},
       step_started: () => {},
       step_completed: () => {},
-      step_skipped: () => {},
+      step_skipped: (e) => {
+        if (e.reason === "guarded") {
+          console.log(JSON.stringify({
+            step: e.stepId,
+            job: e.jobId,
+            status: "skipped",
+            reason: "guarded",
+          }));
+        }
+      },
       step_queued: () => {},
       step_target_disconnected: () => {},
       step_failed: () => {},
