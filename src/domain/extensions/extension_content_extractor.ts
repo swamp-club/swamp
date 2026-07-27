@@ -328,6 +328,35 @@ export function extractModelVersion(content: string): string | null {
 }
 
 /**
+ * Extracts the last upgrade `toVersion` from the `export const model` body.
+ * Returns null when no upgrades array is present or no toVersion is found.
+ */
+export function extractLastUpgradeToVersion(
+  content: string,
+): string | null {
+  const modelExportMatch = content.match(/export\s+const\s+model\s*=\s*\{/);
+  if (!modelExportMatch || modelExportMatch.index === undefined) return null;
+
+  const bodyStart = modelExportMatch.index + modelExportMatch[0].length;
+  const body = extractBalancedBraces(content, bodyStart);
+  if (!body) return null;
+
+  const upgradesMatch = body.match(/upgrades:\s*\[/);
+  if (!upgradesMatch || upgradesMatch.index === undefined) return null;
+
+  const arrayStart = upgradesMatch.index + upgradesMatch[0].length;
+  const arrayBody = extractBalancedBrackets(body, arrayStart);
+  if (!arrayBody) return null;
+
+  const toVersionMatches = [
+    ...arrayBody.matchAll(/toVersion:\s*["']([^"']+)["']/g),
+  ];
+  if (toVersionMatches.length === 0) return null;
+
+  return toVersionMatches[toVersionMatches.length - 1][1];
+}
+
+/**
  * Extracts global arguments from the model source.
  * Looks for top-level `globalArguments: z.object({...})` or a named schema reference.
  */

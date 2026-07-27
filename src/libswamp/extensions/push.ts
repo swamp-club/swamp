@@ -344,7 +344,10 @@ import {
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
 import { analyzeExtensionSafety } from "../../domain/extensions/extension_safety_analyzer.ts";
-import { checkExtensionQuality } from "../../domain/extensions/extension_quality_checker.ts";
+import {
+  checkExtensionQuality,
+  checkUpgradeChainConsistency,
+} from "../../domain/extensions/extension_quality_checker.ts";
 import { extractDependencySpecifiers } from "../../domain/extensions/extension_dependency_extractor.ts";
 import { checkDependencyTrust } from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import { checkReviewRules as checkReviewRulesImpl } from "../../domain/extensions/extension_review_rules.ts";
@@ -729,6 +732,19 @@ export async function extensionPushPrepare(
         { qualityErrors: qualityResult.issues },
       );
     }
+  }
+
+  // 10a. Upgrade chain consistency — validate that each model's upgrade
+  // chain terminates at its declared version. Always runs (not gated on
+  // cache hit) since it's a fast file read.
+  const upgradeChainIssues = await checkUpgradeChainConsistency(
+    input.allModelFiles,
+  );
+  if (upgradeChainIssues.length > 0) {
+    throw validationFailed(
+      "Extension has model upgrade chain errors that must be resolved before pushing.",
+      { upgradeChainErrors: upgradeChainIssues },
+    );
   }
 
   // 10b. Review — runs after the mechanical gates (safety/deps/fmt) so those

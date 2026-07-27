@@ -18,11 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { basename } from "@std/path";
-import { extractModelVersion } from "./extension_content_extractor.ts";
+import {
+  extractLastUpgradeToVersion,
+  extractModelVersion,
+} from "./extension_content_extractor.ts";
 
 /** A quality issue found during checking. */
 export interface QualityIssue {
-  check: "fmt" | "lint" | "dynamic-import" | "version-drift";
+  check: "fmt" | "lint" | "dynamic-import" | "version-drift" | "upgrade-chain";
   output: string;
 }
 
@@ -36,6 +39,8 @@ export function qualityCheckLabel(check: QualityIssue["check"]): string {
       return "Dynamic import";
     case "version-drift":
       return "Version drift";
+    case "upgrade-chain":
+      return "Upgrade chain";
   }
 }
 
@@ -346,6 +351,54 @@ export async function checkVersionConsistency(
           `${basename(file)}: model version "${modelVersion}" differs from ` +
           `manifest version "${manifestVersion}" ` +
           `(update the model's version field to align)`,
+      });
+    }
+  }
+
+  return issues;
+}
+
+/**
+ * Validates that each model file's upgrade chain terminates at its
+ * declared version. Blocks push when upgrades are present but the last
+ * toVersion does not match the model version. Files without upgrades
+ * (new models) pass cleanly.
+ */
+export async function checkUpgradeChainConsistency(
+  modelFiles: string[],
+): Promise<QualityIssue[]> {
+  const issues: QualityIssue[] = [];
+
+  for (const file of modelFiles) {
+    let content: string;
+    try {
+      content = await Deno.readTextFile(file);
+    } catch (e) {
+      if (!(e instanceof Deno.errors.NotFound)) {
+        issues.push({
+          check: "upgrade-chain",
+          output: `${basename(file)}: could not read file: ${e}`,
+        });
+      }
+      continue;
+    }
+
+    const modelVersion = extractModelVersion(content);
+    if (!modelVersion) continue;
+
+    const lastToVersion = extractLastUpgradeToVersion(content);
+    if (!lastToVersion) continue;
+
+    if (lastToVersion !== modelVersion) {
+      issues.push({
+        check: "upgrade-chain",
+        output:
+          `${
+            basename(file)
+          }: last upgrade toVersion "${lastToVersion}" does not match ` +
+          `model version "${modelVersion}". The upgrade chain must terminate ` +
+          `at the current version — add an upgrade entry for "${modelVersion}" ` +
+          `or update the model version to match.`,
       });
     }
   }
