@@ -95,6 +95,13 @@ main() {
   indent "$dest/$bin" --version
   echo
 
+  info "By using Swamp you agree to its software license and extension"
+  info "registry terms."
+  info ""
+  info "  Software License:     https://swamp-club.com/software-license-agreement"
+  info "  Extension Registry:   https://swamp-club.com/extension-registry-terms"
+  echo
+
   # Prompt to connect to SWAMP CLUB when running interactively
   if [ -e /dev/tty ] && [ -t 1 ]; then
     echo

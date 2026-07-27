@@ -326,6 +326,13 @@ function Main {
     Write-Header "Installation of '$BinName' release '$Version' complete"
     Write-Info ""
 
+    Write-Info "By using Swamp you agree to its software license and extension"
+    Write-Info "registry terms."
+    Write-Info ""
+    Write-Info "  Software License:     https://swamp-club.com/software-license-agreement"
+    Write-Info "  Extension Registry:   https://swamp-club.com/extension-registry-terms"
+    Write-Host ""
+
     # Prompt to connect to SWAMP CLUB when running interactively
     if ([Environment]::UserInteractive -and [Console]::KeyAvailable -ne $null) {
         Write-Host ""
