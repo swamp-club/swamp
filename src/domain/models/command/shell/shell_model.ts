@@ -136,10 +136,6 @@ async function executeCommand(
       signal: context.signal,
       logger: context.logger,
       redactor: context.redactor,
-      onOutput: context.onEvent
-        ? (line: string, stream: "stdout" | "stderr") =>
-          context.onEvent!({ type: "output", line, stream })
-        : undefined,
     });
 
     stdout = redact(result.stdout);

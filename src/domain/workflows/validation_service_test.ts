@@ -1628,3 +1628,76 @@ Deno.test("validate: no warning when queueTimeout is set with placement", async 
   );
   assertEquals(warning, undefined);
 });
+
+// --- Assert expr interpolation validation tests ---
+
+Deno.test("validate: fails when assert expr is wrapped in interpolation syntax", async () => {
+  const workflow = Workflow.create({
+    name: "test-assert-wrapped",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "verify",
+            task: StepTask.assert("${{ true }}", "should pass", "high"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const assertResult = results.find((r) => r.name.includes("Assert expr"));
+  assertEquals(assertResult?.passed, false);
+  assertEquals(
+    assertResult?.error?.includes("raw CEL expression"),
+    true,
+  );
+});
+
+Deno.test("validate: passes when assert expr is raw CEL", async () => {
+  const workflow = Workflow.create({
+    name: "test-assert-raw",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "verify",
+            task: StepTask.assert("1 == 1", "should pass", "high"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const assertResult = results.find((r) => r.name.includes("Assert expr"));
+  assertEquals(assertResult, undefined);
+});
+
+Deno.test("validate: fails when assert expr uses multiline interpolation", async () => {
+  const workflow = Workflow.create({
+    name: "test-assert-multiline",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "verify",
+            task: StepTask.assert(
+              '${{ data.latest("m", "s").attributes.x == 1 }}',
+              "check data",
+              "high",
+            ),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const assertResult = results.find((r) => r.name.includes("Assert expr"));
+  assertEquals(assertResult?.passed, false);
+});

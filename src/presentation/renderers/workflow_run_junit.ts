@@ -33,6 +33,7 @@ interface AssertRecord {
   message: string;
   severity: AssertSeverity;
   expr: string;
+  error?: string;
   duration?: number;
 }
 
@@ -107,6 +108,7 @@ export class JUnitWorkflowRunRenderer implements WorkflowRunRenderer {
           message: e.message,
           severity: e.severity,
           expr: e.expr,
+          error: e.error,
           duration,
         });
       },
@@ -157,7 +159,9 @@ export class JUnitWorkflowRunRenderer implements WorkflowRunRenderer {
 
   private buildXml(): string {
     const totalTests = this.asserts.length;
-    const totalFailures = this.asserts.filter((a) => !a.passed).length;
+    const totalFailures = this.asserts.filter((a) => !a.passed && !a.error)
+      .length;
+    const totalErrors = this.asserts.filter((a) => !!a.error).length;
 
     // Group by job
     const byJob = new Map<string, AssertRecord[]>();
@@ -174,18 +178,20 @@ export class JUnitWorkflowRunRenderer implements WorkflowRunRenderer {
       `<?xml version="1.0" encoding="UTF-8"?>`,
       `<testsuites name="${
         escapeXml(this.workflowName)
-      }" tests="${totalTests}" failures="${totalFailures}" time="${
+      }" tests="${totalTests}" failures="${totalFailures}" errors="${totalErrors}" time="${
         this.totalDuration.toFixed(1)
       }">`,
     ];
 
     for (const [jobId, records] of byJob) {
-      const suiteFailures = records.filter((r) => !r.passed).length;
+      const suiteFailures = records.filter((r) => !r.passed && !r.error)
+        .length;
+      const suiteErrors = records.filter((r) => !!r.error).length;
       const suiteTime = records.reduce((s, r) => s + (r.duration ?? 0), 0);
       lines.push(
         `  <testsuite name="${
           escapeXml(jobId)
-        }" tests="${records.length}" failures="${suiteFailures}" time="${
+        }" tests="${records.length}" failures="${suiteFailures}" errors="${suiteErrors}" time="${
           suiteTime.toFixed(1)
         }">`,
       );
@@ -200,6 +206,24 @@ export class JUnitWorkflowRunRenderer implements WorkflowRunRenderer {
               (r.duration ?? 0).toFixed(1)
             }"/>`,
           );
+        } else if (r.error) {
+          lines.push(
+            `    <testcase name="${
+              escapeXml(r.stepId)
+            }" classname="${classname}" time="${
+              (r.duration ?? 0).toFixed(1)
+            }">`,
+          );
+          lines.push(
+            `      <error message="${
+              escapeXml(r.error)
+            }" type="ExpressionEvaluationError">`,
+          );
+          lines.push(
+            `severity: ${r.severity}\nexpr: ${escapeXml(r.expr)}`,
+          );
+          lines.push(`      </error>`);
+          lines.push(`    </testcase>`);
         } else {
           lines.push(
             `    <testcase name="${

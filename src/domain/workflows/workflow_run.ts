@@ -45,6 +45,7 @@ export const AssertResultSchema = z.object({
   expr: z.string(),
   message: z.string(),
   severity: AssertSeveritySchema,
+  error: z.string().optional(),
 });
 
 export type AssertResultData = z.infer<typeof AssertResultSchema>;

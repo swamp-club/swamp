@@ -171,6 +171,9 @@ export class DefaultWorkflowValidationService
     // 10. queueTimeout without placement is a no-op
     results.push(...this.validateQueueTimeoutPlacement(workflow));
 
+    // 11. Assert expr must not be wrapped in ${{ }}
+    results.push(...this.validateAssertExprNotInterpolated(workflow));
+
     return results;
   }
 
@@ -186,6 +189,31 @@ export class DefaultWorkflowValidationService
               `queueTimeout without placement in job '${job.name}' step '${step.name}'`,
               `Step '${step.name}' sets queueTimeout but has no target, labels, or platform — ` +
                 `queueTimeout only applies to remote-execution steps with placement requirements`,
+            ),
+          );
+        }
+      }
+    }
+    return results;
+  }
+
+  private validateAssertExprNotInterpolated(
+    workflow: Workflow,
+  ): WorkflowValidationResult[] {
+    const results: WorkflowValidationResult[] = [];
+    const exprPattern = /^\$\{\{.*\}\}\s*$/s;
+    for (const job of workflow.jobs) {
+      for (const step of job.steps) {
+        if (!step.task) continue;
+        const taskData = step.task.data;
+        if (taskData.type !== "assert") continue;
+        if (exprPattern.test(taskData.expr)) {
+          results.push(
+            WorkflowValidationResult.fail(
+              `Assert expr in job '${job.name}' step '${step.name}'`,
+              `assert expr must be a raw CEL expression — remove the ` +
+                `\${{ }} wrapper. Interpolation converts the expression ` +
+                `before runtime evaluation, which causes a type error`,
             ),
           );
         }

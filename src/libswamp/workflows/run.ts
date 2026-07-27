@@ -187,6 +187,7 @@ export type WorkflowRunEvent =
     message: string;
     severity: AssertSeverity;
     expr: string;
+    error?: string;
   }
   | {
     kind: "report_started";
