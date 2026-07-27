@@ -233,6 +233,20 @@ export function isTaskGlobalArgsPath(path: string): boolean {
 }
 
 /**
+ * Checks if an expression path is a step's assert task.message field.
+ *
+ * Assert message expressions with step-output dependencies must be deferred
+ * past workflow evaluation — the message is interpolated at step execution
+ * time when upstream step outputs are available.
+ *
+ * @param path - The expression path (e.g., "jobs[0].steps[1].task.message")
+ * @returns True if the path is a step's task.message
+ */
+export function isAssertMessagePath(path: string): boolean {
+  return path.endsWith(".task.message");
+}
+
+/**
  * Checks if an expression path is within a workflow's `trigger.inputs`.
  *
  * These values are resolved at fire time by the trigger machinery — webhook
