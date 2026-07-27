@@ -186,6 +186,7 @@ export async function createModelMethodRunDeps(
   options?: {
     directExecution?: boolean;
     runTracker?: ModelMethodRunDeps["runTracker"];
+    defaultVault?: string;
   },
 ): Promise<ModelMethodRunDeps> {
   await Promise.all([
@@ -220,7 +221,13 @@ export async function createModelMethodRunDeps(
     saveEvaluatedDefinition: (type, definition) =>
       repoContext.evaluatedDefinitionRepo.save(type, definition),
     createExecutionService: () => new DefaultMethodExecutionService(),
-    createVaultService: () => VaultService.fromRepository(repoDir),
+    createVaultService: () =>
+      VaultService.fromRepository(
+        repoDir,
+        undefined,
+        undefined,
+        options?.defaultVault,
+      ),
     dataRepo: repoContext.unifiedDataRepo,
     definitionRepo: repoContext.definitionRepo,
     outputRepo: repoContext.outputRepo,

@@ -747,6 +747,7 @@ export async function* modelMethodRun(
                           specName,
                           lifetime: override.lifetime,
                           garbageCollection: override.garbageCollection,
+                          vaultName: override.vaultName,
                         }))
                         : undefined,
                       vaultSecrets: secretBag,

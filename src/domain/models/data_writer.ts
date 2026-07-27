@@ -385,7 +385,8 @@ export async function processSensitiveResourceData(
   }
 
   for (const { field, originalValue } of fieldsWithValues) {
-    const targetVault = field.vaultName ?? spec.vaultName ?? vaultNames[0];
+    const targetVault = field.vaultName ?? spec.vaultName ??
+      vaultService.getDefaultVaultName() ?? vaultNames[0];
     const vaultKey = field.vaultKey ??
       sanitizeVaultKey(
         `${modelType.normalized}/${modelId}/${methodName}/${specName}/${instanceName}/${field.path}`,
@@ -446,6 +447,7 @@ export function createResourceWriter(
     garbageCollection?: GarbageCollectionPolicy;
     tags?: Record<string, string>;
     resolvedVarySuffix?: string;
+    vaultName?: string;
   }>,
   definitionTags?: Record<string, string>,
   runtimeTags?: Record<string, string>,
@@ -575,13 +577,24 @@ export function createResourceWriter(
       }
     }
 
+    // Resolve definition-level vaultName override for this spec
+    let effectiveSpec = spec;
+    if (dataOutputOverrides) {
+      const override = dataOutputOverrides.find(
+        (o) => o.specName === specName,
+      );
+      if (override?.vaultName) {
+        effectiveSpec = { ...spec, vaultName: override.vaultName };
+      }
+    }
+
     // Process sensitive fields before serialization
-    const hasSensitiveFields = spec.sensitiveOutput ||
-      extractSensitiveFields(spec.schema).length > 0;
+    const hasSensitiveFields = effectiveSpec.sensitiveOutput ||
+      extractSensitiveFields(effectiveSpec.schema).length > 0;
     if (hasSensitiveFields && !vaultService) {
-      const fields = extractSensitiveFields(spec.schema)
+      const fields = extractSensitiveFields(effectiveSpec.schema)
         .map((f) => `'${f.path}'`).join(", ");
-      const detail = spec.sensitiveOutput
+      const detail = effectiveSpec.sensitiveOutput
         ? `resource '${specName}' is marked sensitiveOutput`
         : `fields ${fields} in resource '${specName}' are marked as sensitive`;
       throw new Error(
@@ -592,7 +605,7 @@ export function createResourceWriter(
     if (vaultService && methodName && hasSensitiveFields) {
       await processSensitiveResourceData(
         data,
-        spec,
+        effectiveSpec,
         vaultService,
         modelType,
         modelId,
