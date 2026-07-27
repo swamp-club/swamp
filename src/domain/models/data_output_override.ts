@@ -55,5 +55,5 @@ export const DataOutputOverrideSchema = z.object({
   garbageCollection: GarbageCollectionSchema.optional(),
   tags: z.record(z.string(), z.string()).optional(),
   vary: z.array(z.string().min(1)).optional(),
-  vaultName: z.string().optional(),
+  vaultName: z.string().min(1).optional(),
 });

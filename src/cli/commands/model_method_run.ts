@@ -327,12 +327,9 @@ Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — 
             repoContext.evaluatedDefinitionRepo.save(type, definition),
           createExecutionService: () => new DefaultMethodExecutionService(),
           createVaultService: () =>
-            VaultService.fromRepository(
-              repoDir,
-              undefined,
-              undefined,
-              marker?.defaultVault,
-            ),
+            VaultService.fromRepository(repoDir, {
+              defaultVaultName: marker?.defaultVault,
+            }),
           dataRepo: repoContext.unifiedDataRepo,
           definitionRepo: repoContext.definitionRepo,
           outputRepo: repoContext.outputRepo,

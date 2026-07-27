@@ -1122,14 +1122,12 @@ export const serveCommand = new Command()
     if (authConfig.mode === "oauth") {
       const vaultService = await VaultService.fromRepository(
         resolvedRepoDir,
-        undefined,
-        undefined,
-        repoMarker?.defaultVault,
+        { defaultVaultName: repoMarker?.defaultVault },
       );
       const vaultNames = vaultService.getVaultNames();
       if (vaultNames.length === 0) {
         throw new UserError(
-          "oauth mode requires a vault — run 'swamp vault create local default' first",
+          "oauth mode requires a vault — run 'swamp vault create local_encryption default' first",
         );
       }
       const vaultName = vaultService.getDefaultVaultName() ?? vaultNames[0];
@@ -1499,6 +1497,7 @@ export const serveCommand = new Command()
         cancelRegistry,
         runTracker,
         dispatchService,
+        defaultVault: repoMarker?.defaultVault,
       };
 
     const ac = new AbortController();
@@ -1601,14 +1600,12 @@ export const serveCommand = new Command()
     ) {
       const vaultService = await VaultService.fromRepository(
         resolvedRepoDir,
-        undefined,
-        undefined,
-        repoMarker?.defaultVault,
+        { defaultVaultName: repoMarker?.defaultVault },
       );
       const vaultNames = vaultService.getVaultNames();
       if (vaultNames.length === 0) {
         throw new UserError(
-          "group refresh requires a vault — run 'swamp vault create local default' first",
+          "group refresh requires a vault — run 'swamp vault create local_encryption default' first",
         );
       }
       const vaultName = vaultService.getDefaultVaultName() ?? vaultNames[0];

@@ -222,12 +222,9 @@ export async function createModelMethodRunDeps(
       repoContext.evaluatedDefinitionRepo.save(type, definition),
     createExecutionService: () => new DefaultMethodExecutionService(),
     createVaultService: () =>
-      VaultService.fromRepository(
-        repoDir,
-        undefined,
-        undefined,
-        options?.defaultVault,
-      ),
+      VaultService.fromRepository(repoDir, {
+        defaultVaultName: options?.defaultVault,
+      }),
     dataRepo: repoContext.unifiedDataRepo,
     definitionRepo: repoContext.definitionRepo,
     outputRepo: repoContext.outputRepo,

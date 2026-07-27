@@ -17,18 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for vault selection across the full resolution chain.
- *
- * Tests every tier of the vault resolution order:
- *   1. Field-level vaultName from .meta() metadata
- *   2. Spec-level vaultName from ResourceOutputSpec (or definition YAML override)
- *   3. Repo-level defaultVault from .swamp.yaml (via VaultService)
- *   4. First available vault from VaultService (backwards-compat fallback)
- *
- * Also tests createResourceWriter with definition-level vaultName overrides
- * and VaultService.getDefaultVaultName() for the serve/device_auth path.
- */
+// Integration tests for the vault selection resolution chain (field → spec → definition → defaultVault → first-available).
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { ensureDir } from "@std/fs";
@@ -462,9 +451,7 @@ Deno.test("vault selection: fromRepository with defaultVaultName routes put to t
   await withTwoVaultRepo(async (repoDir) => {
     const vaultService = await VaultService.fromRepository(
       repoDir,
-      undefined,
-      undefined,
-      "beta-vault",
+      { defaultVaultName: "beta-vault" },
     );
 
     assertEquals(vaultService.getDefaultVaultName(), "beta-vault");
@@ -500,9 +487,7 @@ Deno.test("vault selection: fromRepository + processSensitiveResourceData end-to
   await withTwoVaultRepo(async (repoDir) => {
     const vaultService = await VaultService.fromRepository(
       repoDir,
-      undefined,
-      undefined,
-      "beta-vault",
+      { defaultVaultName: "beta-vault" },
     );
 
     const spec = createSensitiveSpec();

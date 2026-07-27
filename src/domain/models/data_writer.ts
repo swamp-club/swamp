@@ -560,6 +560,7 @@ export function createResourceWriter(
       spec.garbageCollection;
 
     // Apply data output overrides for this spec name
+    let effectiveSpec = spec;
     if (dataOutputOverrides) {
       const override = dataOutputOverrides.find(
         (o) => o.specName === specName,
@@ -570,21 +571,12 @@ export function createResourceWriter(
         if (override.tags) {
           Object.assign(resolvedTags, override.tags);
         }
-        // Apply vary suffix to produce composite instance names
         if (override.resolvedVarySuffix) {
           instanceName = `${instanceName}-${override.resolvedVarySuffix}`;
         }
-      }
-    }
-
-    // Resolve definition-level vaultName override for this spec
-    let effectiveSpec = spec;
-    if (dataOutputOverrides) {
-      const override = dataOutputOverrides.find(
-        (o) => o.specName === specName,
-      );
-      if (override?.vaultName) {
-        effectiveSpec = { ...spec, vaultName: override.vaultName };
+        if (override.vaultName) {
+          effectiveSpec = { ...spec, vaultName: override.vaultName };
+        }
       }
     }
 

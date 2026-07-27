@@ -294,9 +294,7 @@ async function mintServerTokenImpl(
 
   const vaultService = await VaultService.fromRepository(
     repoDir,
-    undefined,
-    undefined,
-    defaultVault,
+    { defaultVaultName: defaultVault },
   );
   const vaultNames = vaultService.getVaultNames();
   if (vaultNames.length === 0) {
@@ -397,9 +395,7 @@ export function createDeviceAuthDeps(
     storeAccessToken: async (tokenName: string, accessToken: string) => {
       const vaultService = await VaultService.fromRepository(
         repoDir,
-        undefined,
-        undefined,
-        defaultVault,
+        { defaultVaultName: defaultVault },
       );
       const vaultNames = vaultService.getVaultNames();
       if (vaultNames.length === 0) return;
