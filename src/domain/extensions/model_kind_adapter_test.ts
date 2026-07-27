@@ -188,3 +188,75 @@ Deno.test("importAndExtendBundle: throws for bundle with neither model nor exten
     "Bundle has no extension export",
   );
 });
+
+// ── validatePrimaryExport: upgrade chain consistency ─────────────────
+
+const fakeZodSchema = {
+  _def: {},
+  parse: () => ({}),
+  safeParse: () => ({ success: true, data: {} }),
+};
+
+function makeValidModel(overrides: Record<string, unknown> = {}) {
+  return {
+    type: "@test/greeter",
+    version: "2026.01.01.1",
+    methods: {
+      greet: {
+        description: "Say hello",
+        arguments: fakeZodSchema,
+        execute: () => Promise.resolve({ message: "hi" }),
+      },
+    },
+    ...overrides,
+  };
+}
+
+Deno.test("validatePrimaryExport: model without upgrades passes", () => {
+  const result = modelKindAdapter.validatePrimaryExport(makeValidModel());
+  assertEquals(result.success, true);
+});
+
+Deno.test("validatePrimaryExport: model with empty upgrades passes", () => {
+  const result = modelKindAdapter.validatePrimaryExport(
+    makeValidModel({ upgrades: [] }),
+  );
+  assertEquals(result.success, true);
+});
+
+Deno.test("validatePrimaryExport: model with matching last toVersion passes", () => {
+  const result = modelKindAdapter.validatePrimaryExport(
+    makeValidModel({
+      version: "2026.03.28.2",
+      upgrades: [
+        {
+          toVersion: "2026.01.01.1",
+          description: "Initial",
+          upgradeAttributes: (old: Record<string, unknown>) => old,
+        },
+        {
+          toVersion: "2026.03.28.2",
+          description: "Latest",
+          upgradeAttributes: (old: Record<string, unknown>) => old,
+        },
+      ],
+    }),
+  );
+  assertEquals(result.success, true);
+});
+
+Deno.test("validatePrimaryExport: model with mismatching last toVersion fails", () => {
+  const result = modelKindAdapter.validatePrimaryExport(
+    makeValidModel({
+      version: "2026.07.16.2",
+      upgrades: [
+        {
+          toVersion: "2026.03.28.2",
+          description: "Old upgrade",
+          upgradeAttributes: (old: Record<string, unknown>) => old,
+        },
+      ],
+    }),
+  );
+  assertEquals(result.success, false);
+});

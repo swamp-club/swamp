@@ -149,6 +149,18 @@ const UserModelSchema = z.object({
   checks: z.record(z.string(), UserCheckSchema).optional(),
   upgrades: z.array(UserUpgradeSchema).optional(),
   reports: z.array(z.string()).optional(),
+}).superRefine((model, ctx) => {
+  if (!model.upgrades || model.upgrades.length === 0) return;
+  const last = model.upgrades[model.upgrades.length - 1];
+  if (last.toVersion !== model.version) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        `Last upgrade toVersion "${last.toVersion}" does not match model ` +
+        `version "${model.version}". ` +
+        `The upgrade chain must terminate at the current version.`,
+    });
+  }
 });
 
 const UserExtensionSchema = z.object({
@@ -236,8 +248,8 @@ function formatUserModelError(error: z.ZodError): string {
 
   return issues
     .map((i) => {
-      const path = i.path.join(".");
-      return `${path}: ${i.message}`;
+      if (i.path.length === 0) return i.message;
+      return `${i.path.join(".")}: ${i.message}`;
     })
     .join("; ");
 }

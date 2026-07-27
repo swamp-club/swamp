@@ -21,6 +21,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import {
   checkExtensionQuality,
+  checkUpgradeChainConsistency,
   checkVersionConsistency,
   stripCommentsAndStrings,
 } from "./extension_quality_checker.ts";
@@ -491,4 +492,106 @@ Deno.test("checkVersionConsistency: nonexistent files are skipped", async () => 
     "/tmp/does-not-exist-12345.ts",
   ]);
   assertEquals(issues, []);
+});
+
+// ── checkUpgradeChainConsistency tests ─────────────────────────────
+
+Deno.test("checkUpgradeChainConsistency: model without upgrades produces no issues", async () => {
+  await withTempFiles(
+    {
+      "model.ts": `export const model = {
+  type: "@test/greeter",
+  version: "2026.05.22.1",
+  methods: {},
+};
+`,
+    },
+    async (_dir, paths) => {
+      const issues = await checkUpgradeChainConsistency(paths);
+      assertEquals(issues, []);
+    },
+  );
+});
+
+Deno.test("checkUpgradeChainConsistency: matching last toVersion produces no issues", async () => {
+  await withTempFiles(
+    {
+      "model.ts": `export const model = {
+  type: "@test/greeter",
+  version: "2026.05.22.1",
+  methods: {},
+  upgrades: [
+    {
+      toVersion: "2026.03.01.1",
+      description: "First upgrade",
+      upgradeAttributes: (old) => old,
+    },
+    {
+      toVersion: "2026.05.22.1",
+      description: "Latest upgrade",
+      upgradeAttributes: (old) => old,
+    },
+  ],
+};
+`,
+    },
+    async (_dir, paths) => {
+      const issues = await checkUpgradeChainConsistency(paths);
+      assertEquals(issues, []);
+    },
+  );
+});
+
+Deno.test("checkUpgradeChainConsistency: mismatching last toVersion reports error", async () => {
+  await withTempFiles(
+    {
+      "model.ts": `export const model = {
+  type: "@test/greeter",
+  version: "2026.07.16.2",
+  methods: {},
+  upgrades: [
+    {
+      toVersion: "2026.03.28.2",
+      description: "Old upgrade",
+      upgradeAttributes: (old) => old,
+    },
+  ],
+};
+`,
+    },
+    async (_dir, paths) => {
+      const issues = await checkUpgradeChainConsistency(paths);
+      assertEquals(issues.length, 1);
+      assertEquals(issues[0].check, "upgrade-chain");
+      assertStringIncludes(issues[0].output, "2026.03.28.2");
+      assertStringIncludes(issues[0].output, "2026.07.16.2");
+    },
+  );
+});
+
+Deno.test("checkUpgradeChainConsistency: empty file list produces no issues", async () => {
+  const issues = await checkUpgradeChainConsistency([]);
+  assertEquals(issues, []);
+});
+
+Deno.test("checkUpgradeChainConsistency: nonexistent files are skipped", async () => {
+  const issues = await checkUpgradeChainConsistency([
+    "/tmp/does-not-exist-12345.ts",
+  ]);
+  assertEquals(issues, []);
+});
+
+Deno.test("checkUpgradeChainConsistency: file without model export is skipped", async () => {
+  await withTempFiles(
+    {
+      "helper.ts": `export function add(a: number, b: number): number {
+  return a + b;
+}
+`,
+    },
+    async (_dir, paths) => {
+      const issues = await checkUpgradeChainConsistency(paths);
+      assertEquals(issues, []);
+    },
+  );
 });

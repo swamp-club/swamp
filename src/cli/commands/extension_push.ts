@@ -393,6 +393,10 @@ export const extensionPushCommand = new Command()
           renderer.renderSafetyErrors(
             details.safetyErrors as SafetyIssue[],
           );
+        } else if (details?.upgradeChainErrors) {
+          renderer.renderUpgradeChainErrors(
+            details.upgradeChainErrors as QualityIssue[],
+          );
         } else if (details?.qualityErrors) {
           renderer.renderQualityErrors(
             details.qualityErrors as QualityIssue[],
