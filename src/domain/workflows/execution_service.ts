@@ -3321,6 +3321,7 @@ export class WorkflowExecutionService {
       workflow,
       workflowRunId: run.id,
       workflowStatus: run.status === "succeeded" ? "succeeded" : "failed",
+      inputs: run.inputs,
       stepExecutions,
       reportFilterOptions: filterOptions,
       repoDir: this.repoDir,

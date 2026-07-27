@@ -89,6 +89,7 @@ export interface WorkflowReportTestContextOptions
   workflowRunId?: string;
   workflowName?: string;
   workflowStatus?: "succeeded" | "failed";
+  inputs?: Record<string, unknown>;
   stepExecutions?: WorkflowReportContext["stepExecutions"];
 }
 
@@ -256,6 +257,7 @@ export function createReportTestContext(
       workflowRunId: options.workflowRunId ?? crypto.randomUUID(),
       workflowName: options.workflowName ?? "test-workflow",
       workflowStatus: options.workflowStatus ?? "succeeded",
+      inputs: options.inputs,
       stepExecutions: options.stepExecutions ?? [],
     } satisfies WorkflowReportContext;
   } else if (options.scope === "model") {

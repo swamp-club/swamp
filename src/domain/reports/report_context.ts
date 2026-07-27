@@ -124,6 +124,7 @@ export interface WorkflowReportContext extends BaseReportContext {
   workflowRunId: string;
   workflowName: string;
   workflowStatus: "succeeded" | "failed";
+  inputs?: Record<string, unknown>;
   stepExecutions: Array<{
     jobName: string;
     stepName: string;

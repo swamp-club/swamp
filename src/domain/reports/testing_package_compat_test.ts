@@ -105,6 +105,7 @@ function _checkWorkflowReportContextFields(ctx: TestingWorkflowReportContext) {
     ctx.workflowName;
   const _workflowStatus: CanonicalWorkflowReportContext["workflowStatus"] =
     ctx.workflowStatus;
+  const _inputs: CanonicalWorkflowReportContext["inputs"] = ctx.inputs;
 
   // stepExecutions sub-fields
   if (ctx.stepExecutions.length > 0) {
@@ -131,7 +132,14 @@ function _checkWorkflowReportContextFields(ctx: TestingWorkflowReportContext) {
     ];
   }
 
-  void [_scope, _workflowId, _workflowRunId, _workflowName, _workflowStatus];
+  void [
+    _scope,
+    _workflowId,
+    _workflowRunId,
+    _workflowName,
+    _workflowStatus,
+    _inputs,
+  ];
 }
 
 Deno.test("testing package report types: compile-time compatibility check", () => {
