@@ -144,6 +144,12 @@ export type WorkflowExecutionEvent =
     requirement: string;
   }
   | {
+    kind: "step_target_disconnected";
+    jobId: string;
+    stepId: string;
+    target: string;
+  }
+  | {
     kind: "method_event";
     jobId: string;
     stepId: string;

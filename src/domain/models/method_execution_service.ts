@@ -430,6 +430,13 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
                 type: "step_queued",
                 requirement: event.requirement as string,
               });
+            } else if (
+              event.kind === "target_disconnected" && "target" in event
+            ) {
+              context.onEvent!({
+                type: "step_target_disconnected",
+                target: event.target as string,
+              });
             }
           }
           : undefined,

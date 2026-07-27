@@ -556,3 +556,57 @@ Deno.test("DispatchService: worker_draining re-queues instead of failing the run
   assertEquals(result.durationMs, 1);
   assertEquals(attempts, 2);
 });
+
+Deno.test("executeRemote: emits target_disconnected event for grace-window disconnected worker", async () => {
+  const h = createHarness({
+    workers: [
+      snapshot({ name: "w1", connected: false, status: "idle" }),
+    ],
+    queueTimeoutMs: 100,
+  });
+  const events: Array<{ kind: string; [key: string]: unknown }> = [];
+  await assertRejects(
+    () =>
+      h.service.executeRemote(stepRequest({
+        placement: { target: "w1" },
+        onEvent: (event) => events.push(event),
+      })),
+    Error,
+    "Timed out",
+  );
+  const disconnectedEvents = events.filter(
+    (e) => e.kind === "target_disconnected",
+  );
+  assertEquals(disconnectedEvents.length, 1);
+  assertEquals(disconnectedEvents[0].target, "w1");
+});
+
+Deno.test("executeRemote: no target_disconnected event for connected worker", async () => {
+  const h = createHarness({
+    workers: [snapshot({ name: "w1", connected: true, status: "idle" })],
+  });
+  const events: Array<{ kind: string; [key: string]: unknown }> = [];
+  await h.service.executeRemote(stepRequest({
+    placement: { target: "w1" },
+    onEvent: (event) => events.push(event),
+  }));
+  const disconnectedEvents = events.filter(
+    (e) => e.kind === "target_disconnected",
+  );
+  assertEquals(disconnectedEvents.length, 0);
+});
+
+Deno.test("executeRemote: no target_disconnected event without explicit target", async () => {
+  const h = createHarness({
+    workers: [snapshot({ name: "w1", connected: true, status: "idle" })],
+  });
+  const events: Array<{ kind: string; [key: string]: unknown }> = [];
+  await h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux" },
+    onEvent: (event) => events.push(event),
+  }));
+  const disconnectedEvents = events.filter(
+    (e) => e.kind === "target_disconnected",
+  );
+  assertEquals(disconnectedEvents.length, 0);
+});

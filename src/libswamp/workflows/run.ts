@@ -172,6 +172,12 @@ export type WorkflowRunEvent =
     requirement: string;
   }
   | {
+    kind: "step_target_disconnected";
+    jobId: string;
+    stepId: string;
+    target: string;
+  }
+  | {
     kind: "method_event";
     jobId: string;
     stepId: string;
@@ -505,6 +511,7 @@ export function mapWorkflowExecutionEvent(
     case "step_skipped":
     case "approval_requested":
     case "step_queued":
+    case "step_target_disconnected":
     case "step_failed":
     case "model_resolved":
     case "env_var_warning":

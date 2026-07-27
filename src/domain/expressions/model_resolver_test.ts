@@ -1008,3 +1008,168 @@ Deno.test("findBySpec: returns all data when workflowRunId is not set", async ()
     catalog.close();
   });
 });
+
+// ============================================================================
+// workers.connected() returns only non-disconnected workers
+// ============================================================================
+
+Deno.test("workers.connected() returns only non-disconnected workers", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const workerType = ModelType.create("swamp/worker");
+
+    const worker1 = Definition.create({
+      name: "worker-01",
+      globalArguments: {},
+    });
+    await defRepo.save(workerType, worker1);
+
+    const worker2 = Definition.create({
+      name: "worker-02",
+      globalArguments: {},
+    });
+    await defRepo.save(workerType, worker2);
+
+    const worker3 = Definition.create({
+      name: "worker-03",
+      globalArguments: {},
+    });
+    await defRepo.save(workerType, worker3);
+
+    const workerState = (name: string, status: string) =>
+      JSON.stringify({
+        name,
+        instanceUuid: `uuid-${name}`,
+        tokenName: "tok",
+        status,
+        labels: {},
+        platform: "linux",
+        arch: "x86_64",
+        swampVersion: "1.0.0",
+        protocolVersion: 1,
+        enrolledAt: "2026-01-01T00:00:00Z",
+        lastSeenAt: "2026-01-01T00:00:00Z",
+        capacity: 1,
+        activeDispatchIds: [],
+      });
+
+    for (
+      const [def, status] of [
+        [worker1, "idle"],
+        [worker2, "disconnected"],
+        [worker3, "busy"],
+      ] as const
+    ) {
+      const data = Data.create({
+        name: "state-main",
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 5,
+        tags: {
+          type: "resource",
+          specName: "state",
+          modelName: def.name,
+        },
+        ownerDefinition: owner,
+      });
+      await dataRepo.save(
+        workerType,
+        def.id,
+        data,
+        new TextEncoder().encode(workerState(def.name, status)),
+      );
+    }
+
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
+    const ctx = await resolver.buildContext();
+
+    assertExists(ctx.workers);
+    const connected = await ctx.workers.connected();
+    assertEquals(connected.length, 2);
+    const names = connected.map((r) => r.attributes.name).sort();
+    assertEquals(names, ["worker-01", "worker-03"]);
+    catalog.close();
+  });
+});
+
+Deno.test("workers.connected() returns empty array when all workers disconnected", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const workerType = ModelType.create("swamp/worker");
+
+    const worker1 = Definition.create({
+      name: "stale-worker",
+      globalArguments: {},
+    });
+    await defRepo.save(workerType, worker1);
+
+    const data = Data.create({
+      name: "state-main",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 5,
+      tags: {
+        type: "resource",
+        specName: "state",
+        modelName: "stale-worker",
+      },
+      ownerDefinition: owner,
+    });
+    await dataRepo.save(
+      workerType,
+      worker1.id,
+      data,
+      new TextEncoder().encode(JSON.stringify({
+        name: "stale-worker",
+        instanceUuid: "uuid-stale",
+        tokenName: "tok",
+        status: "disconnected",
+        labels: {},
+        platform: "linux",
+        arch: "x86_64",
+        swampVersion: "1.0.0",
+        protocolVersion: 1,
+        enrolledAt: "2026-01-01T00:00:00Z",
+        lastSeenAt: "2026-01-01T00:00:00Z",
+        capacity: 1,
+        activeDispatchIds: [],
+      })),
+    );
+
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
+    const ctx = await resolver.buildContext();
+
+    assertExists(ctx.workers);
+    const connected = await ctx.workers.connected();
+    assertEquals(connected.length, 0);
+    catalog.close();
+  });
+});

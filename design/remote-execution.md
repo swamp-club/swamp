@@ -856,6 +856,18 @@ Dispatch matches a ready step against the pool:
 4. **Tiebreak** — least-loaded (or round-robin) among matching workers; queue
    when all matching workers are busy.
 
+### Disconnected-worker early warning
+
+When a step explicitly targets a worker by name and that worker is in the live
+pool but disconnected (within the grace window), the dispatch service emits a
+`step_target_disconnected` warning event before entering the queue loop. This
+is defense-in-depth — the primary prevention mechanism is `workers.connected()`
+(see [expressions.md](./expressions.md#workers-namespace)), which filters out
+disconnected workers at query time so fleet fan-out workflows never create
+steps for unavailable workers. The early warning only fires for workers still
+in the in-memory grace window; workers already removed from the pool are not
+checked.
+
 Label + platform matching plus direct targeting is the whole affinity story for
 v1; data-locality affinity is explicitly not pursued yet. Because every capability
 proxies home, **compute location and state location are fully decoupled** — a

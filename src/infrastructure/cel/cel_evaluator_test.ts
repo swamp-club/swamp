@@ -1201,3 +1201,48 @@ Deno.test("evaluate: sync data functions that return arrays still work", () => {
   assertEquals(Array.isArray(result), true);
   assertEquals((result as unknown[]).length, 1);
 });
+
+Deno.test("evaluateAsync: workers.connected() returns filtered worker records", async () => {
+  const evaluator = new CelEvaluator();
+  const workers = [
+    { name: "worker-01", attributes: { status: "idle" } },
+    { name: "worker-02", attributes: { status: "busy" } },
+  ];
+  const context = {
+    workers: {
+      connected: () => Promise.resolve(workers),
+    },
+  };
+
+  const result = await evaluator.evaluateAsync(
+    "workers.connected()",
+    context,
+  );
+  assertEquals(Array.isArray(result), true);
+  assertEquals((result as unknown[]).length, 2);
+});
+
+Deno.test("evaluateAsync: workers.connected() returns empty array when no workers", async () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    workers: {
+      connected: () => Promise.resolve([]),
+    },
+  };
+
+  const result = await evaluator.evaluateAsync(
+    "workers.connected()",
+    context,
+  );
+  assertEquals(result, []);
+});
+
+Deno.test("evaluate: workers.connected() returns empty array when delegate missing", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    workers: {},
+  };
+
+  const result = evaluator.evaluate("workers.connected()", context);
+  assertEquals(result, []);
+});

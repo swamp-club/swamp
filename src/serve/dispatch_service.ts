@@ -265,6 +265,27 @@ export class DispatchService {
     request.signal?.addEventListener("abort", onAbort, { once: true });
 
     try {
+      if (request.placement.target) {
+        const pool = this.#poolSnapshot();
+        const targetWorker = pool.find(
+          (w) =>
+            w.name === request.placement.target ||
+            w.instanceUuid === request.placement.target,
+        );
+        if (targetWorker && !targetWorker.connected) {
+          request.onEvent?.({
+            kind: "target_disconnected",
+            target: request.placement.target,
+          });
+          logger.warn(
+            "Step targets worker {target} which is disconnected " +
+              "(within grace window); use workers.connected() to " +
+              "filter dispatchable workers",
+            { target: request.placement.target },
+          );
+        }
+      }
+
       while (true) {
         request.signal?.throwIfAborted();
         const workerName = request.skipScheduler && request.placement.target
