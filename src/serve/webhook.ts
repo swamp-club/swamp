@@ -308,7 +308,6 @@ export interface WebhookEndpointInfo {
 
 export class WebhookService {
   private readonly runQueue: Array<{
-    runId: string;
     workflowIdOrName: string;
     route: string;
     payload: WebhookPayload;
@@ -416,9 +415,7 @@ export class WebhookService {
       );
     }
 
-    const runId = crypto.randomUUID();
     this.runQueue.push({
-      runId,
       workflowIdOrName: endpoint.workflowIdOrName,
       route: endpoint.route,
       payload: buildWebhookPayload(
@@ -456,7 +453,6 @@ export class WebhookService {
     return Response.json({
       status: "queued",
       workflow: endpoint.workflowIdOrName,
-      runId,
     });
   }
 

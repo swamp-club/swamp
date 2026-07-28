@@ -111,6 +111,7 @@ import {
   handleWorkerVerify,
 } from "./handlers/admin_handlers.ts";
 import {
+  authorizeOrReject,
   type ConnectionContext,
   createSocketSubscriber,
   MAX_PREDICATE_LENGTH,
@@ -1698,6 +1699,7 @@ export function handleMessage(
         request.id,
         request.payload,
         controller,
+        principal,
       ));
       break;
   }
@@ -1720,6 +1722,7 @@ function handleRunAttach(
   requestId: string,
   payload: { runId: string; afterSeq?: number },
   controller: AbortController,
+  principal: import("../domain/access/principal.ts").Principal | null,
 ): void {
   const run = ctx.activeRunRegistry?.get(payload.runId);
   if (!run) {
@@ -1731,6 +1734,15 @@ function handleRunAttach(
     );
     return;
   }
+
+  const resourceKind = run.kind === "method-run" ? "model" : "workflow";
+  if (
+    !authorizeOrReject(socket, requestId, principal, "run", {
+      kind: resourceKind,
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
 
   send(socket, {
     type: "run.attached",

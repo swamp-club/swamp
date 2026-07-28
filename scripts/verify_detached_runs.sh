@@ -389,18 +389,9 @@ else
   fail "explicit cancel did not stop the run" "History: ${CANCEL_HISTORY:0:300}"
 fi
 
-# ── Test 8: Webhook response includes runId ──────────────────────────
+# ── Test 8: Graceful shutdown ────────────────────────────────────────
 
-bold "Test 8: Webhook response includes runId (code check)"
-if grep -q 'runId' "$(dirname "$0")/../src/serve/webhook.ts" 2>/dev/null; then
-  pass "webhook.ts includes runId in response"
-else
-  pass "webhook runId — skipped (code verification only)"
-fi
-
-# ── Test 9: Graceful shutdown ────────────────────────────────────────
-
-bold "Test 9: Graceful shutdown drains active runs"
+bold "Test 8: Graceful shutdown drains active runs"
 
 # Kill current serve and start a fresh one
 kill "$SERVE_PID" 2>/dev/null || true

@@ -84,7 +84,11 @@ export class RunEventBuffer {
     }
 
     for (const sub of this.#subscribers) {
-      sub.onEvent(seq, event);
+      try {
+        sub.onEvent(seq, event);
+      } catch {
+        // Subscriber errors must not break delivery to other subscribers
+      }
     }
 
     return seq;
@@ -97,10 +101,18 @@ export class RunEventBuffer {
     this.#terminal = terminal;
 
     for (const sub of this.#subscribers) {
-      sub.onTerminal(terminal);
+      try {
+        sub.onTerminal(terminal);
+      } catch {
+        // Subscriber errors must not break delivery to other subscribers
+      }
     }
     for (const sub of this.#subscribers) {
-      sub.onDetach();
+      try {
+        sub.onDetach();
+      } catch {
+        // Subscriber errors must not break delivery to other subscribers
+      }
     }
     this.#subscribers.clear();
   }

@@ -57,6 +57,7 @@ export class ActiveRunRegistry {
   rekey(oldId: string, newId: string): boolean {
     const run = this.#runs.get(oldId);
     if (!run) return false;
+    if (this.#runs.has(newId)) return false;
     this.#runs.delete(oldId);
     this.#runs.set(newId, { ...run, runId: newId });
     return true;
