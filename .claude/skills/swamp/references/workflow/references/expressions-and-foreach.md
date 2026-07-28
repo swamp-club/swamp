@@ -151,6 +151,35 @@ through `task.inputs`. See
 [nested-workflows.md § When to Use Nested Workflows](nested-workflows.md#when-to-use-nested-workflows)
 for the full pattern.
 
+### forEach with Guards
+
+Guard expressions can reference `self.*`, so each forEach iteration evaluates
+its own guard independently. This enables partial re-execution — on resume or
+re-run, completed iterations are skipped while failed or unstarted iterations
+execute:
+
+```yaml
+steps:
+  - name: deploy-${{ self.env }}
+    forEach:
+      item: env
+      in: ${{ inputs.environments }}
+    guard: ${{ data.latest("deploy-service", "result", [self.env]) }}
+    task:
+      type: model_method
+      modelIdOrName: deploy-service
+      methodName: deploy
+      inputs:
+        environment: ${{ self.env }}
+    dataOutputOverrides:
+      - specName: result
+        vary:
+          - environment
+```
+
+If `dev` and `staging` succeed but `prod` fails, re-running the workflow skips
+`dev` and `staging` (their guards are truthy) and retries only `prod`.
+
 ### forEach with Concurrency Limits
 
 By default, all forEach iterations run in parallel. Add `concurrency` to cap

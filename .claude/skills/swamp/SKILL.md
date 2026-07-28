@@ -19,8 +19,8 @@ description: >
   destroy, sync).
 - **Data** — versioned state snapshots produced by method runs; referenced via
   CEL expressions.
-- **Workflows** — declarative DAGs chaining model methods with assert steps for
-  validation.
+- **Workflows** — declarative DAGs chaining model methods with guard expressions
+  for idempotent execution and assert steps for validation.
 - **Vaults** — secret storage referenced by models at runtime.
 - **Extensions** — TypeScript packages adding model types, vault backends,
   datastores, and reports.
@@ -65,9 +65,12 @@ swamp data get <name>                          # get latest data snapshot
 
 # Workflows
 swamp workflow create <name>                   # create a new workflow
-swamp workflow run <name>                      # execute a workflow
 swamp workflow validate <name>                 # validate DAG before running
-swamp workflow history <name>                  # view past workflow runs
+swamp workflow run <name>                      # execute a workflow
+swamp workflow run <name> --input key=value    # execute with inputs
+swamp workflow resume <name>                   # resume a suspended workflow
+swamp workflow resume <name> --from <step>     # re-enter failed run at step
+swamp workflow history search --json           # search run history
 
 # Run tracking
 swamp run history                              # recent runs (last 24h)
@@ -83,16 +86,13 @@ swamp extension init <name>                    # scaffold a new extension
 
 ## Workflow
 
-Follow this procedure for every swamp task:
-
-1. **Route** — match the user's intent to a guide in the routing table above.
-2. **Load** — read that guide. If it doesn't answer the question, load its
-   companion `reference.md`. Load deeper `references/` files only when the guide
-   tells you to.
+1. **Route** — match intent to a guide in the routing table.
+2. **Load** — read the guide; load its `reference.md` if needed, deeper
+   `references/` only when the guide says to.
 3. **Validate** — before running any workflow: `swamp workflow validate <name>`.
    Before destructive methods (delete, stop, destroy):
-   `swamp model get <name> --json` to confirm the target. Proceed only when
-   validation passes.
+   `swamp model get <name> --json` to confirm the target exists and is in the
+   expected state. Proceed only when validation passes.
 4. **Execute** — run the command.
 5. **On failure** — load
    [references/troubleshooting/guide.md](references/troubleshooting/guide.md)

@@ -48,6 +48,25 @@ guards always execute on resume. Only works on failed runs — use the
 gate-approval path for suspended runs. If multiple failed runs exist, add
 `--run <run-id>` to disambiguate.
 
+## Step Evaluation Order
+
+When a step is ready to execute (all dependency conditions met), the executor
+follows this sequence:
+
+1. **Dependency conditions** — `dependsOn` conditions are checked. If not met,
+   the step is skipped with reason `"dependency"`.
+2. **Expression context** — the step's expression context is built, including
+   `self.*` for forEach steps, `inputs.*`, `data.*`, and `run.*`.
+3. **Guard evaluation** — if the step declares a `guard` expression, it is
+   evaluated. A truthy result skips the step with reason `"guarded"` (already
+   done). A falsy result proceeds to execution. A CEL error fails the step.
+4. **Task execution** — the step's task runs (model method, nested workflow,
+   manual approval, or assert).
+
+Guard evaluation happens after dependency checks but before task execution. This
+means a guarded step still respects its dependency graph — it won't evaluate the
+guard at all if its dependencies haven't been met.
+
 ## Concurrency Limits
 
 The `concurrency` field caps parallel execution at three levels:

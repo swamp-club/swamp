@@ -9,6 +9,7 @@ End-to-end scenarios showing how to build workflows for common use cases.
 - [Scenario 3: forEach Iteration](#scenario-3-foreach-iteration)
 - [Scenario 4: Conditional Cleanup](#scenario-4-conditional-cleanup)
 - [Scenario 5: Nested Workflows](#scenario-5-nested-workflows)
+- [Scenario 6: Idempotent Provisioning with Guards](#scenario-6-idempotent-provisioning-with-guards)
 
 ---
 
@@ -561,6 +562,167 @@ swamp workflow run deploy-and-notify --input environment=production
 | deploy-and-notify | `inputs.environment` | Parent workflow input |
 | notify-team       | `inputs.message`     | Passed from parent    |
 | notify-team       | `inputs.channel`     | Passed from parent    |
+
+---
+
+## Scenario 6: Idempotent Provisioning with Guards
+
+### User Request
+
+> "I need a provisioning workflow I can safely re-run. If a step already
+> completed, it should skip instead of re-creating the resource."
+
+### What You'll Build
+
+- 1 workflow with guard expressions on each step
+- Guards that check whether output data already exists
+- Safe re-run: only incomplete steps execute
+
+### Decision Tree
+
+```
+Need to re-run safely → Guard expressions
+Check if step already done → data.latest() truthiness
+Check external state → model.method() in guard
+Per-iteration resume → forEach + guard with self.*
+```
+
+### Step-by-Step
+
+**1. Create the models**
+
+```bash
+swamp model create @user/vpc networking-vpc --json
+swamp model create @user/subnet public-subnet --json
+swamp model create @user/security-group app-sg --json
+```
+
+**2. Create the workflow with guards**
+
+```bash
+swamp workflow create provision-networking --json
+```
+
+```yaml
+id: a9b0c1d2-e3f4-4a5b-6c7d-8e9f0a1b2c3d
+name: provision-networking
+description: Idempotent networking provisioning — safe to re-run
+version: 1
+jobs:
+  - name: create-vpc
+    steps:
+      - name: vpc
+        guard: ${{ data.latest("networking-vpc", "resource") }}
+        task:
+          type: model_method
+          modelIdOrName: networking-vpc
+          methodName: create
+
+  - name: create-subnets
+    dependsOn:
+      - job: create-vpc
+        condition:
+          type: succeeded
+    steps:
+      - name: subnet
+        guard: ${{ data.latest("public-subnet", "resource") }}
+        task:
+          type: model_method
+          modelIdOrName: public-subnet
+          methodName: create
+
+  - name: create-sg
+    dependsOn:
+      - job: create-subnets
+        condition:
+          type: succeeded
+    steps:
+      - name: security-group
+        guard: ${{ data.latest("app-sg", "resource") }}
+        task:
+          type: model_method
+          modelIdOrName: app-sg
+          methodName: create
+```
+
+**3. First run — everything executes**
+
+```bash
+swamp workflow run provision-networking
+# vpc ✓, subnet ✓, security-group ✓
+```
+
+**4. Second run — everything skips**
+
+```bash
+swamp workflow run provision-networking
+# vpc skipped (guarded), subnet skipped (guarded), security-group skipped (guarded)
+```
+
+**5. Partial failure recovery**
+
+If subnet succeeded but security-group failed, re-running skips vpc and subnet,
+retries only security-group.
+
+### Guard Patterns Used
+
+| Guard expression                                | Meaning                      |
+| ----------------------------------------------- | ---------------------------- |
+| `data.latest("model", "spec")`                  | Truthy if data exists        |
+| `data.latest("model", "spec").attributes.field` | Truthy if field has a value  |
+| `model.method("model", "check", {}).stdout`     | Truthy if probe returns data |
+| `data.latest(...).attributes.v == inputs.v`     | Truthy if values match       |
+
+### Combining Guards with forEach
+
+For multi-environment provisioning, guards make each iteration independently
+resumable:
+
+```yaml
+jobs:
+  - name: deploy-all
+    steps:
+      - name: deploy-${{ self.env }}
+        forEach:
+          item: env
+          in: ${{ inputs.environments }}
+        guard: ${{ data.latest("deploy-service", "result", [self.env]) }}
+        task:
+          type: model_method
+          modelIdOrName: deploy-service
+          methodName: deploy
+          inputs:
+            environment: ${{ self.env }}
+        dataOutputOverrides:
+          - specName: result
+            vary:
+              - environment
+```
+
+If `dev` and `staging` succeed but `prod` fails, re-running skips `dev` and
+`staging` (their guards find existing data) and retries only `prod`.
+
+### Combining Guards with Scheduled Workflows
+
+Guards are essential for cron-scheduled workflows. Without guards, a scheduled
+workflow re-executes every step on every tick. With guards, completed steps are
+skipped and only pending work executes:
+
+```yaml
+trigger:
+  schedule: "*/30 * * * *"
+jobs:
+  - name: sync
+    steps:
+      - name: fetch-data
+        guard: >-
+          ${{ model.method("api-client", "check-freshness",
+              {"maxAge": 1800}).stdout }}
+        task:
+          type: model_method
+          modelIdOrName: api-client
+          methodName: fetch
+```
 
 ---
 
