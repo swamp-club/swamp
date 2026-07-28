@@ -419,6 +419,11 @@ export type DoctorWorkflowsPayload = Record<string, never>;
 
 export type DoctorExtensionsPayload = Record<string, never>;
 
+export interface RunAttachPayload {
+  runId: string;
+  afterSeq?: number;
+}
+
 export type ServerRequest =
   | { type: "workflow.run"; id: string; payload: WorkflowRunPayload }
   | { type: "model.method.run"; id: string; payload: ModelMethodRunPayload }
@@ -582,6 +587,7 @@ export type ServerRequest =
     id: string;
     payload?: RunDoctorPayload;
   }
+  | { type: "run.attach"; id: string; payload: RunAttachPayload }
   | { type: "cancel"; id: string };
 
 // ── Outbound (server → client) ───────────────────────────────────────────
@@ -1081,4 +1087,9 @@ export type ServerMessage =
     payload: DoctorExtensionsResponse;
   }
   | { type: "run.history"; id: string; payload: RunHistoryResponse }
-  | { type: "run.doctor"; id: string; payload: RunDoctorResponse };
+  | { type: "run.doctor"; id: string; payload: RunDoctorResponse }
+  | {
+    type: "run.attached";
+    id: string;
+    payload: { runId: string; kind: string; startedAt: string };
+  };

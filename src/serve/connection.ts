@@ -112,8 +112,10 @@ import {
 } from "./handlers/admin_handlers.ts";
 import {
   type ConnectionContext,
+  createSocketSubscriber,
   MAX_PREDICATE_LENGTH,
   MAX_QUERY_RESULTS,
+  send,
   sendError,
 } from "./handlers/shared.ts";
 
@@ -800,6 +802,15 @@ const RunDoctorRequestSchema = z.object({
   }).optional(),
 });
 
+const RunAttachRequestSchema = z.object({
+  type: z.literal("run.attach"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    runId: z.string().min(1).max(256),
+    afterSeq: z.number().int().nonnegative().optional(),
+  }),
+});
+
 const ServerRequestSchema = z.discriminatedUnion("type", [
   WorkflowRunRequestSchema,
   ModelMethodRunRequestSchema,
@@ -870,6 +881,7 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   DoctorExtensionsRequestSchema,
   RunHistoryRequestSchema,
   RunDoctorRequestSchema,
+  RunAttachRequestSchema,
   CancelRequestSchema,
 ]);
 
@@ -972,7 +984,9 @@ export function handleMessage(
     const controller = activeRequests.get(request.id);
     if (controller) {
       controller.abort();
+      return;
     }
+    ctx.activeRunRegistry?.cancel(request.id);
     return;
   }
 
@@ -1677,6 +1691,15 @@ export function handleMessage(
         principal,
       ));
       break;
+    case "run.attach":
+      task = Promise.resolve(handleRunAttach(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+      ));
+      break;
   }
 
   task
@@ -1687,6 +1710,43 @@ export function handleMessage(
       });
     })
     .finally(() => activeRequests.delete(request.id));
+}
+
+// ── Run attach handler ───────────────────────────────────────────────
+
+function handleRunAttach(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: { runId: string; afterSeq?: number },
+  controller: AbortController,
+): void {
+  const run = ctx.activeRunRegistry?.get(payload.runId);
+  if (!run) {
+    sendError(
+      socket,
+      requestId,
+      "not_found",
+      `No active run with id '${payload.runId}'`,
+    );
+    return;
+  }
+
+  send(socket, {
+    type: "run.attached",
+    id: requestId,
+    payload: {
+      runId: run.runId,
+      kind: run.kind,
+      startedAt: run.startedAt.toISOString(),
+    },
+  });
+
+  const unsub = run.buffer.subscribe(
+    createSocketSubscriber(socket, requestId),
+    payload.afterSeq ?? 0,
+  );
+  controller.signal.addEventListener("abort", unsub, { once: true });
 }
 
 // ── Data handlers ─────────────────────────────────────────────────────

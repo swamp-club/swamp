@@ -87,13 +87,17 @@ import {
   extractTraceContext,
   runWithParentTrace,
 } from "../../infrastructure/tracing/mod.ts";
+import { RunEventBuffer } from "../run_event_buffer.ts";
 import {
   authorizeOrReject,
   type ConnectionContext,
+  createSocketSubscriber,
   sanitizeErrorForClient,
   send,
   sendError,
 } from "./shared.ts";
+
+const DEFAULT_BUFFER_CAPACITY = 10_000;
 
 export async function handleWorkflowRun(
   socket: WebSocket,
@@ -111,64 +115,157 @@ export async function handleWorkflowRun(
     }, ctx)
   ) return;
 
-  let registeredRunId: string | undefined;
-  try {
-    await executeWorkflowWithLocks(
-      ctx.repoDir,
-      ctx.repoContext,
-      ctx.datastoreConfig,
-      {
-        workflowIdOrName: payload.workflowIdOrName,
-        inputs: payload.inputs,
-        lastEvaluated: payload.lastEvaluated,
-        verbose: payload.verbose,
-        runtimeTags: payload.runtimeTags,
-        skipAllReports: payload.skipAllReports,
-        skipReportNames: payload.skipReportNames,
-        skipReportLabels: payload.skipReportLabels,
-        reportNames: payload.reportNames,
-        reportLabels: payload.reportLabels,
-        skipAllChecks: payload.skipAllChecks,
-        skipCheckNames: payload.skipCheckNames,
-        skipCheckLabels: payload.skipCheckLabels,
-        traceparent: payload.traceparent,
-        tracestate: payload.tracestate,
-      },
-      controller.signal,
-      (event) => {
-        if (
-          event.kind === "started" && ctx.cancelRegistry
-        ) {
-          const startedEvent = event as { runId: string };
-          registeredRunId = startedEvent.runId;
-          ctx.cancelRegistry.register(
-            "workflow-run",
-            registeredRunId,
-            controller,
+  const registry = ctx.activeRunRegistry;
+  if (!registry) {
+    let registeredRunId: string | undefined;
+    try {
+      await executeWorkflowWithLocks(
+        ctx.repoDir,
+        ctx.repoContext,
+        ctx.datastoreConfig,
+        {
+          workflowIdOrName: payload.workflowIdOrName,
+          inputs: payload.inputs,
+          lastEvaluated: payload.lastEvaluated,
+          verbose: payload.verbose,
+          runtimeTags: payload.runtimeTags,
+          skipAllReports: payload.skipAllReports,
+          skipReportNames: payload.skipReportNames,
+          skipReportLabels: payload.skipReportLabels,
+          reportNames: payload.reportNames,
+          reportLabels: payload.reportLabels,
+          skipAllChecks: payload.skipAllChecks,
+          skipCheckNames: payload.skipCheckNames,
+          skipCheckLabels: payload.skipCheckLabels,
+          traceparent: payload.traceparent,
+          tracestate: payload.tracestate,
+        },
+        controller.signal,
+        (event) => {
+          if (
+            event.kind === "started" && ctx.cancelRegistry
+          ) {
+            const startedEvent = event as { runId: string };
+            registeredRunId = startedEvent.runId;
+            ctx.cancelRegistry.register(
+              "workflow-run",
+              registeredRunId,
+              controller,
+            );
+          }
+          if (socket.readyState !== WebSocket.OPEN) return;
+          const serialized = serializeEvent(
+            event as { kind: string; [key: string]: unknown },
           );
-        }
-        if (socket.readyState !== WebSocket.OPEN) return;
-        const serialized = serializeEvent(
-          event as { kind: string; [key: string]: unknown },
-        );
-        send(socket, { type: "event", id: requestId, event: serialized });
-      },
-      ctx.syncService,
-      ctx.runTracker,
-    );
-    send(socket, { type: "done", id: requestId });
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-    } else {
-      const message = sanitizeErrorForClient(error);
-      sendError(socket, requestId, "workflow_execution_failed", message);
+          send(socket, { type: "event", id: requestId, event: serialized });
+        },
+        ctx.syncService,
+        ctx.runTracker,
+      );
+      send(socket, { type: "done", id: requestId });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      } else {
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "workflow_execution_failed", message);
+      }
+    } finally {
+      if (registeredRunId && ctx.cancelRegistry) {
+        ctx.cancelRegistry.deregister("workflow-run", registeredRunId);
+      }
     }
-  } finally {
-    if (registeredRunId && ctx.cancelRegistry) {
-      ctx.cancelRegistry.deregister("workflow-run", registeredRunId);
-    }
+    return;
   }
+
+  const buffer = new RunEventBuffer(DEFAULT_BUFFER_CAPACITY);
+  const runController = new AbortController();
+  let runId: string = crypto.randomUUID();
+
+  const completion = (async () => {
+    try {
+      await executeWorkflowWithLocks(
+        ctx.repoDir,
+        ctx.repoContext,
+        ctx.datastoreConfig,
+        {
+          workflowIdOrName: payload.workflowIdOrName,
+          inputs: payload.inputs,
+          lastEvaluated: payload.lastEvaluated,
+          verbose: payload.verbose,
+          runtimeTags: payload.runtimeTags,
+          skipAllReports: payload.skipAllReports,
+          skipReportNames: payload.skipReportNames,
+          skipReportLabels: payload.skipReportLabels,
+          reportNames: payload.reportNames,
+          reportLabels: payload.reportLabels,
+          skipAllChecks: payload.skipAllChecks,
+          skipCheckNames: payload.skipCheckNames,
+          skipCheckLabels: payload.skipCheckLabels,
+          traceparent: payload.traceparent,
+          tracestate: payload.tracestate,
+        },
+        runController.signal,
+        (event) => {
+          if (event.kind === "started") {
+            const domainRunId = (event as { runId: string }).runId;
+            if (domainRunId && domainRunId !== runId) {
+              registry.rekey(runId, domainRunId);
+              runId = domainRunId;
+            }
+          }
+          const serialized = serializeEvent(
+            event as { kind: string; [key: string]: unknown },
+          );
+          buffer.push(serialized);
+        },
+        ctx.syncService,
+        ctx.runTracker,
+      );
+      buffer.finish({ kind: "done" });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        buffer.finish({
+          kind: "error",
+          code: "cancelled",
+          message: "Operation was cancelled",
+        });
+      } else {
+        buffer.finish({
+          kind: "error",
+          code: "workflow_execution_failed",
+          message: sanitizeErrorForClient(error),
+        });
+      }
+    } finally {
+      registry.deregister(runId);
+    }
+  })();
+
+  try {
+    registry.register({
+      runId,
+      kind: "workflow-run",
+      buffer,
+      controller: runController,
+      startedAt: new Date(),
+      completion,
+    });
+  } catch {
+    runController.abort();
+    sendError(
+      socket,
+      requestId,
+      "too_many_requests",
+      `Too many concurrent runs; wait for active runs to complete`,
+    );
+    return;
+  }
+
+  const unsub = buffer.subscribe(
+    createSocketSubscriber(socket, requestId),
+  );
+  controller.signal.addEventListener("abort", unsub, { once: true });
 }
 
 export async function handleWorkflowSearch(
@@ -803,11 +900,130 @@ export async function handleWorkflowResume(
     }, ctx)
   ) return;
 
-  try {
-    const workflowRepo = ctx.repoContext.workflowRepo;
-    const runRepo = ctx.repoContext.workflowRunRepo;
+  const registry = ctx.activeRunRegistry;
+  if (!registry) {
+    try {
+      const workflowRepo = ctx.repoContext.workflowRepo;
+      const runRepo = ctx.repoContext.workflowRunRepo;
 
-    const { run, workflowName } = payload.from
+      const { run, workflowName } = payload.from
+        ? await resolveResumableRun(
+          workflowRepo,
+          runRepo,
+          payload.workflowIdOrName,
+          payload.runId,
+        )
+        : await resolveSuspendedRun(
+          workflowRepo,
+          runRepo,
+          payload.workflowIdOrName,
+          payload.runId,
+        );
+
+      const stepLockHook: StepLockHook = async (modelType, modelId) => {
+        const lockResult = await acquireModelLocks(
+          ctx.datastoreConfig,
+          [{ modelType, modelId }],
+          ctx.repoDir,
+          ctx.syncService,
+          ctx.repoContext.catalogStore,
+        );
+        if (lockResult.synced) ctx.repoContext.catalogStore.invalidate();
+        return lockResult;
+      };
+
+      await createWorkflowRunDeps(
+        ctx.repoDir,
+        ctx.repoContext,
+        ctx.datastoreConfig,
+        stepLockHook,
+      );
+
+      const resumeInputs = payload.inputs ?? {};
+      const ephemeral = createEphemeralStore(
+        ctx.repoContext.unifiedDataRepo.namespace,
+        { isResume: true },
+      );
+
+      const resolver = new DefaultDatastorePathResolver(
+        ctx.repoDir,
+        ctx.datastoreConfig,
+      );
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        ctx.repoDir,
+        undefined,
+        resolver.resolvePath(SWAMP_SUBDIRS.data),
+        ctx.repoContext.catalogStore,
+        undefined,
+        ctx.repoContext.markDirty,
+        ctx.repoContext.unifiedDataRepo.namespace,
+        stepLockHook,
+        ctx.runTracker,
+        ephemeral.repo,
+        ephemeral.catalog,
+      );
+
+      const resumeGenerator = async function* (): AsyncGenerator<
+        WorkflowRunEvent
+      > {
+        for await (
+          const event of service.resume(workflowName, run.id, {
+            signal: controller.signal,
+            inputs: resumeInputs,
+            fromStep: payload.from,
+          })
+        ) {
+          yield mapWorkflowExecutionEvent(event, runRepo);
+        }
+      };
+
+      const run_ = async () => {
+        try {
+          for await (const event of resumeGenerator()) {
+            if (socket.readyState !== WebSocket.OPEN) break;
+            const serialized = serializeEvent(
+              event as { kind: string; [key: string]: unknown },
+            );
+            send(socket, { type: "event", id: requestId, event: serialized });
+          }
+        } finally {
+          ephemeral.dispose();
+        }
+        send(socket, { type: "done", id: requestId });
+      };
+
+      if (payload.traceparent) {
+        const headers: Record<string, string> = {
+          traceparent: payload.traceparent,
+        };
+        if (payload.tracestate) headers.tracestate = payload.tracestate;
+        const traceCtx = extractTraceContext(headers);
+        await runWithParentTrace(traceCtx, run_);
+      } else {
+        await run_();
+      }
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      } else {
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "workflow_resume_failed", message);
+      }
+    }
+    return;
+  }
+
+  // Resolve the run before spawning the detached task so we can fail
+  // fast with an error frame if the run doesn't exist.
+  const workflowRepo = ctx.repoContext.workflowRepo;
+  const runRepo = ctx.repoContext.workflowRunRepo;
+
+  let resolvedRun: WorkflowRun;
+  let workflowName: string;
+  try {
+    const result = payload.from
       ? await resolveResumableRun(
         workflowRepo,
         runRepo,
@@ -820,7 +1036,19 @@ export async function handleWorkflowResume(
         payload.workflowIdOrName,
         payload.runId,
       );
+    resolvedRun = result.run;
+    workflowName = result.workflowName;
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "workflow_resume_failed", message);
+    return;
+  }
 
+  const buffer = new RunEventBuffer(DEFAULT_BUFFER_CAPACITY);
+  const runController = new AbortController();
+  const runId: string = resolvedRun.id;
+
+  const completion = (async () => {
     const stepLockHook: StepLockHook = async (modelType, modelId) => {
       const lockResult = await acquireModelLocks(
         ctx.datastoreConfig,
@@ -833,86 +1061,110 @@ export async function handleWorkflowResume(
       return lockResult;
     };
 
-    // Ensure model/vault/report registries are loaded (mirrors
-    // createWorkflowRunDeps).
-    await createWorkflowRunDeps(
-      ctx.repoDir,
-      ctx.repoContext,
-      ctx.datastoreConfig,
-      stepLockHook,
-    );
+    let ephemeral: ReturnType<typeof createEphemeralStore> | null = null;
+    try {
+      await createWorkflowRunDeps(
+        ctx.repoDir,
+        ctx.repoContext,
+        ctx.datastoreConfig,
+        stepLockHook,
+      );
 
-    const resumeInputs = payload.inputs ?? {};
-    const ephemeral = createEphemeralStore(
-      ctx.repoContext.unifiedDataRepo.namespace,
-      { isResume: true },
-    );
+      ephemeral = createEphemeralStore(
+        ctx.repoContext.unifiedDataRepo.namespace,
+        { isResume: true },
+      );
 
-    const resolver = new DefaultDatastorePathResolver(
-      ctx.repoDir,
-      ctx.datastoreConfig,
-    );
-    const service = new WorkflowExecutionService(
-      workflowRepo,
-      runRepo,
-      ctx.repoDir,
-      undefined,
-      resolver.resolvePath(SWAMP_SUBDIRS.data),
-      ctx.repoContext.catalogStore,
-      undefined,
-      ctx.repoContext.markDirty,
-      ctx.repoContext.unifiedDataRepo.namespace,
-      stepLockHook,
-      ctx.runTracker,
-      ephemeral.repo,
-      ephemeral.catalog,
-    );
+      const resolver = new DefaultDatastorePathResolver(
+        ctx.repoDir,
+        ctx.datastoreConfig,
+      );
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        ctx.repoDir,
+        undefined,
+        resolver.resolvePath(SWAMP_SUBDIRS.data),
+        ctx.repoContext.catalogStore,
+        undefined,
+        ctx.repoContext.markDirty,
+        ctx.repoContext.unifiedDataRepo.namespace,
+        stepLockHook,
+        ctx.runTracker,
+        ephemeral.repo,
+        ephemeral.catalog,
+      );
 
-    const resumeGenerator = async function* (): AsyncGenerator<
-      WorkflowRunEvent
-    > {
-      for await (
-        const event of service.resume(workflowName, run.id, {
-          signal: controller.signal,
-          inputs: resumeInputs,
-          fromStep: payload.from,
-        })
-      ) {
-        yield mapWorkflowExecutionEvent(event, runRepo);
-      }
-    };
-
-    const run_ = async () => {
-      try {
-        for await (const event of resumeGenerator()) {
-          if (socket.readyState !== WebSocket.OPEN) break;
+      const doResume = async () => {
+        for await (
+          const event of service.resume(workflowName, resolvedRun.id, {
+            signal: runController.signal,
+            inputs: payload.inputs ?? {},
+            fromStep: payload.from,
+          })
+        ) {
+          const mapped = mapWorkflowExecutionEvent(event, runRepo);
           const serialized = serializeEvent(
-            event as { kind: string; [key: string]: unknown },
+            mapped as { kind: string; [key: string]: unknown },
           );
-          send(socket, { type: "event", id: requestId, event: serialized });
+          buffer.push(serialized);
         }
-      } finally {
-        ephemeral.dispose();
-      }
-      send(socket, { type: "done", id: requestId });
-    };
-
-    if (payload.traceparent) {
-      const headers: Record<string, string> = {
-        traceparent: payload.traceparent,
       };
-      if (payload.tracestate) headers.tracestate = payload.tracestate;
-      const traceCtx = extractTraceContext(headers);
-      await runWithParentTrace(traceCtx, run_);
-    } else {
-      await run_();
+
+      if (payload.traceparent) {
+        const headers: Record<string, string> = {
+          traceparent: payload.traceparent,
+        };
+        if (payload.tracestate) headers.tracestate = payload.tracestate;
+        const traceCtx = extractTraceContext(headers);
+        await runWithParentTrace(traceCtx, doResume);
+      } else {
+        await doResume();
+      }
+
+      buffer.finish({ kind: "done" });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        buffer.finish({
+          kind: "error",
+          code: "cancelled",
+          message: "Operation was cancelled",
+        });
+      } else {
+        buffer.finish({
+          kind: "error",
+          code: "workflow_resume_failed",
+          message: sanitizeErrorForClient(error),
+        });
+      }
+    } finally {
+      ephemeral?.dispose();
+      registry.deregister(runId);
     }
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-    } else {
-      const message = sanitizeErrorForClient(error);
-      sendError(socket, requestId, "workflow_resume_failed", message);
-    }
+  })();
+
+  try {
+    registry.register({
+      runId,
+      kind: "workflow-resume",
+      buffer,
+      controller: runController,
+      startedAt: new Date(),
+      completion,
+    });
+  } catch {
+    runController.abort();
+    sendError(
+      socket,
+      requestId,
+      "too_many_requests",
+      `Too many concurrent runs; wait for active runs to complete`,
+    );
+    return;
   }
+
+  const unsub = buffer.subscribe(
+    createSocketSubscriber(socket, requestId),
+  );
+  controller.signal.addEventListener("abort", unsub, { once: true });
 }
