@@ -645,6 +645,7 @@ export function createResourceWriter(
       ? redactor.redact(JSON.stringify(data))
       : JSON.stringify(data);
     const handle = await writer.writeText(serialized);
+    handle.attributes = { ...data };
     handles.push(handle);
     return handle;
   };

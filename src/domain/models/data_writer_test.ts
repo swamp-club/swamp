@@ -1904,3 +1904,37 @@ Deno.test("processSensitiveResourceData: falls back to vaultNames[0] when no def
 
   assertStringIncludes(data.secret as string, "'alpha-vault'");
 });
+
+// --- createResourceWriter attributes tests ---
+
+Deno.test("createResourceWriter: resource handle includes attributes from written data", async () => {
+  const repo = createMockRepo();
+
+  const { writeResource } = createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    testResources,
+  );
+
+  const handle = await writeResource("item", "test-item", {
+    value: "hello",
+  });
+  assertEquals(handle.attributes, { value: "hello" });
+});
+
+Deno.test("createResourceWriter: attributes is a shallow copy of the data", async () => {
+  const repo = createMockRepo();
+
+  const { writeResource } = createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    testResources,
+  );
+
+  const data = { value: "hello" };
+  const handle = await writeResource("item", "test-item", data);
+  data.value = "mutated";
+  assertEquals(handle.attributes, { value: "hello" });
+});
