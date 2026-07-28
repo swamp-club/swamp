@@ -75,12 +75,16 @@ export const dataPruneCommand = new Command()
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     };
-    const { repoDir, datastoreResolver } = options.dryRun
+    const { repoDir, repoContext, datastoreResolver } = options.dryRun
       ? await requireInitializedRepoReadOnly(repoOpts)
       : await requireInitializedRepo(repoOpts);
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createDataPruneDeps(repoDir, datastoreResolver);
+    const deps = createDataPruneDeps(
+      repoDir,
+      datastoreResolver,
+      repoContext.unifiedDataRepo,
+    );
 
     // Phase 1: Preview + Prompt (only in interactive mode without --force and not dry-run)
     if (

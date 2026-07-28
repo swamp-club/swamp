@@ -98,18 +98,20 @@ export interface DataPruneDeps {
 export function createDataPruneDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
+  injectedDataRepo?: FileSystemUnifiedDataRepository,
 ): DataPruneDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
   const catalogStore = createCatalogStore(repoDir, datastoreResolver);
-  const unifiedDataRepo = new FileSystemUnifiedDataRepository(
-    repoDir,
-    dsPath(SWAMP_SUBDIRS.data),
-    catalogStore,
-    undefined,
-    undefined,
-    namespaceFromResolver(datastoreResolver),
-  );
+  const unifiedDataRepo = injectedDataRepo ??
+    new FileSystemUnifiedDataRepository(
+      repoDir,
+      dsPath(SWAMP_SUBDIRS.data),
+      catalogStore,
+      undefined,
+      undefined,
+      namespaceFromResolver(datastoreResolver),
+    );
   const workflowRunRepo = new YamlWorkflowRunRepository(
     repoDir,
     undefined,

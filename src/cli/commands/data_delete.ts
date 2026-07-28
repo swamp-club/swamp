@@ -242,7 +242,11 @@ export const dataDeleteCommand = withRemoteOptions(
 
     try {
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = createDataDeleteDeps(repoDir, datastoreResolver);
+      const deps = createDataDeleteDeps(
+        repoDir,
+        datastoreResolver,
+        repoContext.unifiedDataRepo,
+      );
 
       if (isBatchMode) {
         const filter: BatchDeleteFilter = all

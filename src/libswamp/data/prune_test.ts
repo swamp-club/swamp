@@ -21,12 +21,15 @@ import { assertEquals } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
+  createDataPruneDeps,
   dataPrune,
   type DataPruneDeps,
   type DataPruneEvent,
   dataPrunePreview,
 } from "./prune.ts";
 import type { OrphanReclamationResult } from "../../domain/data/data_lifecycle_service.ts";
+import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
+import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 
 function emptyResult(
   overrides: Partial<OrphanReclamationResult> = {},
@@ -163,3 +166,26 @@ Deno.test("dataPrune: passes dryRun flag through to deleteOrphanedData", async (
 
   assertEquals(receivedDryRun, true);
 });
+
+Deno.test(
+  "createDataPruneDeps: accepts an injected data repo",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+    try {
+      const injected = new FileSystemUnifiedDataRepository(
+        dir,
+        undefined,
+        new CatalogStore(":memory:"),
+      );
+      const deps = createDataPruneDeps(dir, undefined, injected);
+      assertEquals(typeof deps.findOrphanedData, "function");
+      assertEquals(typeof deps.deleteOrphanedData, "function");
+    } finally {
+      if (Deno.build.os === "windows") {
+        await Deno.remove(dir, { recursive: true }).catch(() => {});
+      } else {
+        await Deno.remove(dir, { recursive: true });
+      }
+    }
+  },
+);
