@@ -240,9 +240,9 @@ export class CelModelNamespace {
  * registrations for extension use.
  *
  * Options: `{ unlistedVariablesAreDyn: true }` so callers can pass arbitrary
- * context maps without pre-registering every variable. Extensions can
- * `.clone({ homogeneousAggregateLiterals: false })` if they want mixed-type
- * literals.
+ * context maps without pre-registering every variable.
+ * `{ homogeneousAggregateLiterals: false }` so map/list literals can contain
+ * mixed value types (e.g. dyn context lookups alongside string literals).
  *
  * Registrations: bigint/double arithmetic operator overloads only. The
  * returned Environment does NOT carry swamp's internal namespace types
@@ -299,6 +299,7 @@ export function createExtensionCelEnvironment(): Environment {
   const env = new Environment({
     unlistedVariablesAreDyn: true,
     enableOptionalTypes: true,
+    homogeneousAggregateLiterals: false,
   });
   registerArithmeticOverloads(env);
   return env;
