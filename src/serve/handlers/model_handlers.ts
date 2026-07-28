@@ -104,56 +104,55 @@ export async function handleModelMethodRun(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  // Pre-lookup for per-model lock acquisition and authorization
-  const preResult = await findDefinitionByIdOrName(
-    ctx.repoContext.definitionRepo,
-    payload.modelIdOrName,
-  );
-
-  const modelFields: Record<string, unknown> = {};
-  if (preResult) {
-    modelFields.modelType = preResult.type.normalized;
-    modelFields.name = preResult.definition.name;
-    const tags = preResult.definition.tags;
-    if (tags && Object.keys(tags).length > 0) modelFields.tags = tags;
-  }
-
-  if (isAccessModelType(payload.typeArg, preResult?.type.normalized)) {
-    if (
-      !authorizeOrReject(socket, requestId, principal, "admin", {
-        kind: "access",
-        name: "*",
-        fields: modelFields,
-      }, ctx)
-    ) return;
-  } else {
-    if (
-      !authorizeOrReject(socket, requestId, principal, "run", {
-        kind: "model",
-        name: payload.modelIdOrName,
-        fields: modelFields,
-      }, ctx)
-    ) return;
-
-    if (payload.typeArg) {
-      const stripped = payload.typeArg.startsWith("@")
-        ? payload.typeArg.slice(1)
-        : payload.typeArg;
-      const executionTarget = ModelType.create(stripped).normalized;
-      if (
-        !authorizeOrReject(socket, requestId, principal, "run", {
-          kind: "model",
-          name: executionTarget,
-          fields: {},
-        }, ctx)
-      ) return;
-    }
-  }
-
   const registry = ctx.activeRunRegistry;
   if (!registry) {
     let flushLocks: (() => Promise<void>) | null = null;
     try {
+      const preResult = await findDefinitionByIdOrName(
+        ctx.repoContext.definitionRepo,
+        payload.modelIdOrName,
+      );
+
+      const modelFields: Record<string, unknown> = {};
+      if (preResult) {
+        modelFields.modelType = preResult.type.normalized;
+        modelFields.name = preResult.definition.name;
+        const tags = preResult.definition.tags;
+        if (tags && Object.keys(tags).length > 0) modelFields.tags = tags;
+      }
+
+      if (isAccessModelType(payload.typeArg, preResult?.type.normalized)) {
+        if (
+          !authorizeOrReject(socket, requestId, principal, "admin", {
+            kind: "access",
+            name: "*",
+            fields: modelFields,
+          }, ctx)
+        ) return;
+      } else {
+        if (
+          !authorizeOrReject(socket, requestId, principal, "run", {
+            kind: "model",
+            name: payload.modelIdOrName,
+            fields: modelFields,
+          }, ctx)
+        ) return;
+
+        if (payload.typeArg) {
+          const stripped = payload.typeArg.startsWith("@")
+            ? payload.typeArg.slice(1)
+            : payload.typeArg;
+          const executionTarget = ModelType.create(stripped).normalized;
+          if (
+            !authorizeOrReject(socket, requestId, principal, "run", {
+              kind: "model",
+              name: executionTarget,
+              fields: {},
+            }, ctx)
+          ) return;
+        }
+      }
+
       if (preResult) {
         const lockResult = await acquireModelLocks(
           ctx.datastoreConfig,
@@ -250,6 +249,61 @@ export async function handleModelMethodRun(
       }
     }
     return;
+  }
+
+  // Pre-lookup and authorization for the detached path
+  let preResult: Awaited<
+    ReturnType<typeof findDefinitionByIdOrName>
+  >;
+  try {
+    preResult = await findDefinitionByIdOrName(
+      ctx.repoContext.definitionRepo,
+      payload.modelIdOrName,
+    );
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "method_execution_failed", message);
+    return;
+  }
+
+  const modelFields: Record<string, unknown> = {};
+  if (preResult) {
+    modelFields.modelType = preResult.type.normalized;
+    modelFields.name = preResult.definition.name;
+    const tags = preResult.definition.tags;
+    if (tags && Object.keys(tags).length > 0) modelFields.tags = tags;
+  }
+
+  if (isAccessModelType(payload.typeArg, preResult?.type.normalized)) {
+    if (
+      !authorizeOrReject(socket, requestId, principal, "admin", {
+        kind: "access",
+        name: "*",
+        fields: modelFields,
+      }, ctx)
+    ) return;
+  } else {
+    if (
+      !authorizeOrReject(socket, requestId, principal, "run", {
+        kind: "model",
+        name: payload.modelIdOrName,
+        fields: modelFields,
+      }, ctx)
+    ) return;
+
+    if (payload.typeArg) {
+      const stripped = payload.typeArg.startsWith("@")
+        ? payload.typeArg.slice(1)
+        : payload.typeArg;
+      const executionTarget = ModelType.create(stripped).normalized;
+      if (
+        !authorizeOrReject(socket, requestId, principal, "run", {
+          kind: "model",
+          name: executionTarget,
+          fields: {},
+        }, ctx)
+      ) return;
+    }
   }
 
   const buffer = new RunEventBuffer(DEFAULT_BUFFER_CAPACITY);
