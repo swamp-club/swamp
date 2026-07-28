@@ -160,7 +160,7 @@ export interface DataRecord {
   ownerType: string;
   streaming: boolean;
   size: number;
-  content: string;
+  content: unknown;
   ownerRef: string;
   workflowRunId: string;
   workflowName: string;
