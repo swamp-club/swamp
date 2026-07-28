@@ -163,7 +163,11 @@ export const dataRenameCommand = withRemoteOptions(
 
     try {
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = createDataRenameDeps(repoDir, datastoreResolver);
+      const deps = createDataRenameDeps(
+        repoDir,
+        datastoreResolver,
+        repoContext.unifiedDataRepo,
+      );
       const renderer = createDataRenameRenderer(cliCtx.outputMode);
       await consumeStream(
         dataRename(ctx, deps, { modelIdOrName, oldName, newName }),
