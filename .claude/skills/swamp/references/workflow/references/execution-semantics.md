@@ -38,6 +38,16 @@ steps. Resume accepts `--input` to supply or override values that were not
 available at the original run time (e.g., elevated credentials issued during the
 gate).
 
+### Resume from a Failed Step
+
+`swamp workflow resume <workflow> --from <step>` re-enters a failed run's DAG at
+a specific step. The `--from` step and all its transitive downstream dependents
+are reset to pending; steps before it retain their terminal status. Guards on
+completed steps prevent re-execution of irreversible actions. Steps without
+guards always execute on resume. Only works on failed runs — use the
+gate-approval path for suspended runs. If multiple failed runs exist, add
+`--run <run-id>` to disambiguate.
+
 ## Concurrency Limits
 
 The `concurrency` field caps parallel execution at three levels:

@@ -23,6 +23,7 @@ import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
+import { TriggerCondition } from "./trigger_condition.ts";
 
 function createTestWorkflow(): Workflow {
   return Workflow.create({
@@ -886,4 +887,151 @@ Deno.test("StepRun: assertResult is undefined when not recorded", () => {
 
   assertEquals(step.assertResult, undefined);
   assertEquals(step.toData().assertResult, undefined);
+});
+
+// ── resetToPending / resumeFromFailed / resetForResumeFrom ──────────
+
+Deno.test("StepRun.resetToPending: clears all execution state", () => {
+  const step = StepRun.pending("s1");
+  step.start();
+  step.succeed({ result: 42 });
+  step.addDataArtifact({
+    dataId: "550e8400-e29b-41d4-a716-446655440000",
+    name: "test-artifact",
+    version: 1,
+    tags: {},
+  });
+
+  step.resetToPending();
+
+  assertEquals(step.status, "pending");
+  assertEquals(step.startedAt, undefined);
+  assertEquals(step.completedAt, undefined);
+  assertEquals(step.error, undefined);
+  assertEquals(step.output, undefined);
+  assertEquals(step.dataArtifacts.length, 0);
+  assertEquals(step.allowedFailure, false);
+  assertEquals(step.approvalDecision, undefined);
+  assertEquals(step.assertResult, undefined);
+});
+
+Deno.test("JobRun.resetToPending: resets job status but leaves steps untouched", () => {
+  const job = JobRun.pending("j1", ["s1", "s2"]);
+  job.start();
+  job.steps[0].start();
+  job.steps[0].succeed();
+
+  job.resetToPending();
+
+  assertEquals(job.status, "pending");
+  assertEquals(job.startedAt, undefined);
+  assertEquals(job.completedAt, undefined);
+  // Steps are not touched by job reset — caller is responsible
+  assertEquals(job.steps[0].status, "succeeded");
+});
+
+Deno.test("WorkflowRun.resumeFromFailed: transitions from failed to running", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.jobs[0].steps[0].fail("boom");
+  run.complete();
+
+  assertEquals(run.status, "failed");
+
+  run.resumeFromFailed();
+
+  assertEquals(run.status, "running");
+  assertEquals(run.completedAt, undefined);
+  // startedAt preserved (same as resumeFromSuspended)
+  assertEquals(run.startedAt !== undefined, true);
+});
+
+Deno.test("WorkflowRun.resetForResumeFrom: resets target steps and their containing jobs", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+  run.start();
+
+  // Simulate a run where step1 succeeded, step2 failed
+  const job = run.jobs[0];
+  job.start();
+  job.steps[0].start();
+  job.steps[0].succeed();
+  job.steps[1].start();
+  job.steps[1].fail("error");
+  job.fail();
+  run.complete();
+
+  assertEquals(run.status, "failed");
+  assertEquals(job.steps[0].status, "succeeded");
+  assertEquals(job.steps[1].status, "failed");
+
+  // Reset step2 only
+  run.resetForResumeFrom(new Set(["step2"]));
+
+  // step1 untouched
+  assertEquals(job.steps[0].status, "succeeded");
+  // step2 reset
+  assertEquals(job.steps[1].status, "pending");
+  assertEquals(job.steps[1].startedAt, undefined);
+  assertEquals(job.steps[1].completedAt, undefined);
+  assertEquals(job.steps[1].error, undefined);
+  // Job reset because it contained a reset step
+  assertEquals(job.status, "pending");
+});
+
+Deno.test("WorkflowRun.resetForResumeFrom: does not reset jobs without target steps", () => {
+  const wf = Workflow.create({
+    id: "550e8400-e29b-41d4-a716-446655440001",
+    name: "multi-job",
+    jobs: [
+      Job.create({
+        name: "jobA",
+        steps: [
+          Step.create({
+            name: "stepA",
+            task: StepTask.model("m", "run"),
+          }),
+        ],
+      }),
+      Job.create({
+        name: "jobB",
+        steps: [
+          Step.create({
+            name: "stepB",
+            task: StepTask.model("m", "run"),
+          }),
+        ],
+        dependsOn: [{ job: "jobA", condition: TriggerCondition.always() }],
+      }),
+    ],
+  });
+  const run = WorkflowRun.create(wf);
+  run.start();
+
+  // jobA succeeded
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.jobs[0].steps[0].succeed();
+  run.jobs[0].succeed();
+
+  // jobB failed
+  run.jobs[1].start();
+  run.jobs[1].steps[0].start();
+  run.jobs[1].steps[0].fail("error");
+  run.jobs[1].fail();
+  run.complete();
+
+  // Only reset stepB
+  run.resetForResumeFrom(new Set(["stepB"]));
+
+  // jobA untouched
+  assertEquals(run.jobs[0].status, "succeeded");
+  assertEquals(run.jobs[0].steps[0].status, "succeeded");
+
+  // jobB reset
+  assertEquals(run.jobs[1].status, "pending");
+  assertEquals(run.jobs[1].steps[0].status, "pending");
 });

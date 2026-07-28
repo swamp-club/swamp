@@ -183,6 +183,48 @@ datastore).
 creates N parallel approval gates, each independently approvable via its expanded
 step name.
 
+### Resume from Failed Step (`--from`)
+
+Re-enters a **failed** run's DAG at a named step. Combined with the `guard`
+field, this enables safe workflow recovery — guards decide which steps actually
+re-execute while `--from` controls where to re-enter.
+
+```
+$ swamp workflow resume <workflow> --from <step>
+$ swamp workflow resume <workflow> --from <step> --run <run-id>
+```
+
+If there is exactly one failed run for the workflow, `--run` can be omitted.
+
+**Semantics:**
+
+1. The `--from` step and all its transitive downstream dependents are reset to
+   `pending`.
+2. Steps before `--from` retain their terminal status (`succeeded`, `failed`,
+   `skipped`) and are skipped by the executor's existing resume-skip logic.
+3. Guards on reset steps are evaluated normally — a step with a truthy guard is
+   skipped even if reset.
+4. Steps without a guard always execute on resume. If you didn't write a guard,
+   you're saying "always run this step."
+
+**Step name resolution:** `--from` targets template step names as written in the
+workflow YAML, not forEach-expanded iteration names. For forEach steps, all
+expanded iterations are reset and re-evaluated — completed iterations with truthy
+guards are skipped; failed or unstarted iterations execute.
+
+**Status restriction:** `--from` only works on failed runs. It cannot be used
+with suspended runs (use the gate-approval resume path instead) or succeeded
+runs. When `--from` is omitted, resume behaves as before (gate-suspend only).
+
+**Cross-job propagation:** If the `--from` step is in job B, only job B and any
+downstream jobs containing transitive dependents are reset. Upstream jobs (job A)
+that completed successfully retain their terminal status.
+
+**Trigger conditions:** Trigger conditions on reset steps are still evaluated.
+If `--from` targets a step whose upstream dependency also failed, the trigger
+condition will see the upstream's `failed` status. Resume from the earlier step
+instead.
+
 ### Assert (`assert`)
 
 Evaluates a CEL predicate over prior step data, records a pass/fail result, and

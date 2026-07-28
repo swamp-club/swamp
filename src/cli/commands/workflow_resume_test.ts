@@ -49,3 +49,14 @@ Deno.test("workflowResumeCommand has --server option", async () => {
   const serverOpt = options.find((o) => o.name === "server");
   assertEquals(serverOpt !== undefined, true);
 });
+
+Deno.test("workflowResumeCommand has --from option", async () => {
+  const { workflowResumeCommand } = await import("./workflow_resume.ts");
+  const options = workflowResumeCommand.getOptions();
+  const fromOpt = options.find((o) => o.name === "from");
+  assertEquals(fromOpt !== undefined, true);
+  assertEquals(
+    fromOpt!.description,
+    "Re-enter the DAG at this step (failed runs only). Steps before this point are skipped; guards prevent re-execution of completed steps.",
+  );
+});

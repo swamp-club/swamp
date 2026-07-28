@@ -44,6 +44,7 @@ skill.
 | Approve step       | `swamp workflow approve <workflow> <step>`                    |
 | Reject step        | `swamp workflow reject <workflow> <step>`                     |
 | Resume workflow    | `swamp workflow resume <workflow> [--input k=v]`              |
+| Resume from step   | `swamp workflow resume <wf> --from <step>`                    |
 | List approvals     | `swamp workflow approvals`                                    |
 | Active runs        | `swamp run history --active`                                  |
 | Recent runs        | `swamp run history`                                           |

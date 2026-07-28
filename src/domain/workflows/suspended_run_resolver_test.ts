@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
-import { resolveSuspendedRun } from "./suspended_run_resolver.ts";
+import {
+  resolveResumableRun,
+  resolveSuspendedRun,
+} from "./suspended_run_resolver.ts";
 import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";
@@ -148,5 +151,81 @@ Deno.test("resolveSuspendedRun: --run rejects non-suspended run", async () => {
     () => resolveSuspendedRun(workflowRepo, runRepo, "test-wf", run.id),
     Error,
     "not suspended",
+  );
+});
+
+// ── resolveResumableRun ─────────────────────────────────────────────
+
+function createFailedRun(workflow: Workflow): WorkflowRun {
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.jobs[0].steps[0].fail("error");
+  run.jobs[0].fail();
+  run.complete();
+  return run;
+}
+
+Deno.test("resolveResumableRun: returns single failed run by name", async () => {
+  const wf = createWorkflow("test-wf");
+  const run = createFailedRun(wf);
+  const { workflowRepo, runRepo } = stubRepos(wf, [run]);
+
+  const result = await resolveResumableRun(workflowRepo, runRepo, "test-wf");
+  assertEquals(result.workflowName, "test-wf");
+  assertEquals(result.run.id, run.id);
+  assertEquals(result.run.status, "failed");
+});
+
+Deno.test("resolveResumableRun: throws when no failed runs", async () => {
+  const wf = createWorkflow("test-wf");
+  const run = createSuspendedRun(wf);
+  const { workflowRepo, runRepo } = stubRepos(wf, [run]);
+
+  await assertRejects(
+    () => resolveResumableRun(workflowRepo, runRepo, "test-wf"),
+    Error,
+    "No failed runs found",
+  );
+});
+
+Deno.test("resolveResumableRun: throws when multiple failed runs", async () => {
+  const wf = createWorkflow("test-wf");
+  const run1 = createFailedRun(wf);
+  const run2 = createFailedRun(wf);
+  const { workflowRepo, runRepo } = stubRepos(wf, [run1, run2]);
+
+  await assertRejects(
+    () => resolveResumableRun(workflowRepo, runRepo, "test-wf"),
+    Error,
+    "--run <run-id>",
+  );
+});
+
+Deno.test("resolveResumableRun: --run targets specific failed run", async () => {
+  const wf = createWorkflow("test-wf");
+  const run1 = createFailedRun(wf);
+  const run2 = createFailedRun(wf);
+  const { workflowRepo, runRepo } = stubRepos(wf, [run1, run2]);
+
+  const result = await resolveResumableRun(
+    workflowRepo,
+    runRepo,
+    "test-wf",
+    run2.id,
+  );
+  assertEquals(result.run.id, run2.id);
+});
+
+Deno.test("resolveResumableRun: --run rejects non-failed run", async () => {
+  const wf = createWorkflow("test-wf");
+  const run = createSuspendedRun(wf);
+  const { workflowRepo, runRepo } = stubRepos(wf, [run]);
+
+  await assertRejects(
+    () => resolveResumableRun(workflowRepo, runRepo, "test-wf", run.id),
+    Error,
+    "--from requires a failed run",
   );
 });

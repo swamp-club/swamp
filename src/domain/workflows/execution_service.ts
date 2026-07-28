@@ -2012,6 +2012,8 @@ export class WorkflowExecutionService {
       inputs?: Record<string, unknown>;
       /** Minimum assert severity that fails the run */
       assertFailOnSeverity?: AssertSeverity;
+      /** Re-enter the DAG at this step (template name from the workflow YAML). */
+      fromStep?: string;
     },
   ): AsyncGenerator<WorkflowExecutionEvent> {
     const workflow = await this.workflowRepo.findByName(workflowIdOrName) ??
@@ -2027,18 +2029,39 @@ export class WorkflowExecutionService {
     if (!existingRun) {
       throw new UserError(`Workflow run not found: ${runId}`);
     }
-    if (existingRun.status !== "suspended") {
-      throw new UserError(
-        `Run ${runId} is not suspended (status: ${existingRun.status})`,
-      );
+
+    const fromStep = options?.fromStep;
+
+    if (fromStep) {
+      if (existingRun.status !== "failed") {
+        throw new UserError(
+          `--from requires a failed run, but run ${runId} has status "${existingRun.status}"`,
+        );
+      }
+    } else {
+      if (existingRun.status !== "suspended") {
+        throw new UserError(
+          `Run ${runId} is not suspended (status: ${existingRun.status})`,
+        );
+      }
     }
 
-    const waiting = existingRun.findWaitingApprovalStep();
-    if (waiting) {
-      throw new UserError(
-        `Step "${waiting.stepName}" in job "${waiting.jobName}" is still awaiting approval. ` +
-          `Run "swamp workflow approve ${workflowIdOrName} ${waiting.stepName}" first.`,
-      );
+    if (!fromStep) {
+      const waiting = existingRun.findWaitingApprovalStep();
+      if (waiting) {
+        throw new UserError(
+          `Step "${waiting.stepName}" in job "${waiting.jobName}" is still awaiting approval. ` +
+            `Run "swamp workflow approve ${workflowIdOrName} ${waiting.stepName}" first.`,
+        );
+      }
+    }
+
+    if (fromStep) {
+      const stepsToReset = computeStepsToReset(workflow, existingRun, fromStep);
+      existingRun.resetForResumeFrom(stepsToReset);
+      existingRun.resumeFromFailed();
+    } else {
+      existingRun.resumeFromSuspended();
     }
 
     // Record the key names of any resume-time inputs for audit (never the
@@ -2048,8 +2071,6 @@ export class WorkflowExecutionService {
     if (Object.keys(resumeInputs).length > 0) {
       existingRun.recordResumeInputs(Object.keys(resumeInputs));
     }
-
-    existingRun.resumeFromSuspended();
     await this.saveRun(workflow.id, existingRun);
 
     const expressionContext = await this.modelResolver.buildContext();
@@ -3528,4 +3549,126 @@ function resolveEffectiveConcurrency(
   const g = global && global > 0 ? global : undefined;
   if (l && g) return Math.min(l, g);
   return l ?? g;
+}
+
+/**
+ * Computes the set of persisted step names (including forEach-expanded names)
+ * to reset for a --from resume. The result includes the fromStep itself and
+ * all its transitive downstream dependents across all jobs.
+ */
+function computeStepsToReset(
+  workflow: Workflow,
+  run: WorkflowRun,
+  fromStep: string,
+): Set<string> {
+  // Validate that fromStep is a template step name in the workflow definition.
+  let foundInJob: string | undefined;
+  for (const job of workflow.jobs) {
+    for (const step of job.steps) {
+      if (step.name === fromStep) {
+        foundInJob = job.name;
+        break;
+      }
+    }
+    if (foundInJob) break;
+  }
+  if (!foundInJob) {
+    const allStepNames = workflow.jobs
+      .flatMap((j) => j.steps.map((s) => s.name));
+    throw new UserError(
+      `Step "${fromStep}" not found in workflow "${workflow.name}". ` +
+        `Available steps: ${allStepNames.join(", ")}`,
+    );
+  }
+
+  // Build a combined dependency graph across all jobs and steps.
+  // Job-level dependencies create edges from every step in the upstream job
+  // to the dependent job's steps.
+  const downstreamOf = new Map<string, Set<string>>();
+  const allTemplateNames = new Set<string>();
+
+  for (const job of workflow.jobs) {
+    for (const step of job.steps) {
+      allTemplateNames.add(step.name);
+      if (!downstreamOf.has(step.name)) {
+        downstreamOf.set(step.name, new Set());
+      }
+      // Step-level dependencies (within a job)
+      for (const dep of step.getDependencyNames()) {
+        if (!downstreamOf.has(dep)) {
+          downstreamOf.set(dep, new Set());
+        }
+        downstreamOf.get(dep)!.add(step.name);
+      }
+    }
+    // Job-level dependencies: if job B depends on job A, then all steps in
+    // job A are upstream of all steps in job B (for the purpose of --from
+    // reset propagation).
+    for (const depJobName of job.getDependencyNames()) {
+      const depJob = workflow.jobs.find((j) => j.name === depJobName);
+      if (!depJob) continue;
+      for (const depStep of depJob.steps) {
+        for (const step of job.steps) {
+          if (!downstreamOf.has(depStep.name)) {
+            downstreamOf.set(depStep.name, new Set());
+          }
+          downstreamOf.get(depStep.name)!.add(step.name);
+        }
+      }
+    }
+  }
+
+  // BFS from fromStep to collect all transitive downstream template names.
+  const templateNamesToReset = new Set<string>();
+  const queue = [fromStep];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (templateNamesToReset.has(current)) continue;
+    templateNamesToReset.add(current);
+    for (const downstream of downstreamOf.get(current) ?? []) {
+      if (!templateNamesToReset.has(downstream)) {
+        queue.push(downstream);
+      }
+    }
+  }
+
+  // Map template names to persisted step names. For forEach steps, the
+  // template entry was replaced by expanded entries during the original run.
+  // We match by checking if a persisted step name equals the template name
+  // (non-forEach) or starts with the template name followed by a separator
+  // (forEach-expanded). We also check against the workflow definition to
+  // only apply prefix matching for steps that have forEach configured.
+  const forEachTemplates = new Set<string>();
+  for (const job of workflow.jobs) {
+    for (const step of job.steps) {
+      if (step.forEach) {
+        forEachTemplates.add(step.name);
+      }
+    }
+  }
+
+  const stepsToReset = new Set<string>();
+  for (const jobRun of run.jobs) {
+    for (const stepRun of jobRun.steps) {
+      const name = stepRun.stepName;
+      if (templateNamesToReset.has(name)) {
+        stepsToReset.add(name);
+      } else if (!allTemplateNames.has(name)) {
+        // Only prefix-match against steps that are NOT themselves template
+        // names. This prevents a forEach template "read" from matching a
+        // non-forEach step "read-plate".
+        for (const tmpl of templateNamesToReset) {
+          if (
+            forEachTemplates.has(tmpl) &&
+            name.startsWith(tmpl + "-")
+          ) {
+            stepsToReset.add(name);
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  return stepsToReset;
 }
