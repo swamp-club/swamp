@@ -42,6 +42,27 @@ Deno.test("createExtensionCelEnvironment: unlistedVariablesAreDyn allows ad-hoc 
   assertEquals(env.evaluate("foo + bar", { foo: 1.0, bar: 2.0 }), 3);
 });
 
+Deno.test("createExtensionCelEnvironment: mixed-type map literals evaluate correctly", () => {
+  const env = createExtensionCelEnvironment();
+  const ctx = { s: { name: "host1", address: "10.0.0.1" } };
+
+  assertEquals(
+    env.evaluate(
+      '{"name": s.name, "address": s.address, "user": "ansible"}',
+      ctx,
+    ),
+    { name: "host1", address: "10.0.0.1", user: "ansible" },
+  );
+});
+
+Deno.test("createExtensionCelEnvironment: mixed-type list literals evaluate correctly", () => {
+  const env = createExtensionCelEnvironment();
+  assertEquals(
+    env.evaluate('[1, "two", 3.0]', {}),
+    [1n, "two", 3.0],
+  );
+});
+
 Deno.test("createExtensionCelEnvironment: callers can register custom functions", () => {
   const env = createExtensionCelEnvironment();
   env.registerFunction(
@@ -1245,4 +1266,30 @@ Deno.test("evaluate: workers.connected() returns empty array when delegate missi
 
   const result = evaluator.evaluate("workers.connected()", context);
   assertEquals(result, []);
+});
+
+Deno.test("evaluate: mixed-type map literals with dyn and string values", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    s: { name: "host1", address: "10.0.0.1" },
+  };
+
+  const result = evaluator.evaluate(
+    '{"name": s.name, "address": s.address, "user": "ansible"}',
+    context,
+  );
+  assertEquals(result, { name: "host1", address: "10.0.0.1", user: "ansible" });
+});
+
+Deno.test("evaluateAsync: mixed-type map literals with dyn and string values", async () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    s: { name: "host1", address: "10.0.0.1" },
+  };
+
+  const result = await evaluator.evaluateAsync(
+    '{"name": s.name, "address": s.address, "user": "ansible"}',
+    context,
+  );
+  assertEquals(result, { name: "host1", address: "10.0.0.1", user: "ansible" });
 });

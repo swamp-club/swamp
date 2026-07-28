@@ -35,6 +35,7 @@ export function createExtensionCelEnvironment(): Environment {
   const env = new Environment({
     unlistedVariablesAreDyn: true,
     enableOptionalTypes: true,
+    homogeneousAggregateLiterals: false,
   });
 
   env.registerOperator(
