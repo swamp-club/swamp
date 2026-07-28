@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
+import { parse as parseYaml } from "@std/yaml";
+import { stringify as stringifyYaml } from "@std/yaml/unstable-stringify";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import type { SwampVersion } from "../../domain/repo/swamp_version.ts";
 import type { RepoPath } from "../../domain/repo/repo_path.ts";
@@ -156,7 +157,9 @@ export class RepoMarkerRepository {
     // Remove undefined values since YAML can't stringify them
     const cleanData = JSON.parse(JSON.stringify(data));
     delete cleanData.tool;
-    const content = stringifyYaml(cleanData as Record<string, unknown>);
+    const content = stringifyYaml(cleanData as Record<string, unknown>, {
+      quoteStyle: '"',
+    });
     await atomicWriteTextFile(path, content);
   }
 
