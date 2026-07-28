@@ -470,6 +470,88 @@ steps:
 - Downstream `dependsOn: succeeded` steps will skip; `dependsOn: completed`
   steps will run
 
+## Guard (Idempotent Step Execution)
+
+A step can declare a `guard` — a CEL expression evaluated before execution. When
+the guard evaluates truthy, the step is skipped (already done). When falsy or
+absent, the step executes normally.
+
+Guard is the workflow-level primitive for idempotent step execution, enabling
+safe workflow resume, re-run, and cron scheduling without re-executing completed
+steps.
+
+**Evaluation order:**
+
+1. Dependency conditions are checked (`dependsOn`)
+2. Expression context is built (including `self.*` for forEach steps)
+3. Guard expression is evaluated
+4. If truthy → step is skipped with reason `"guarded"`
+5. If falsy → step proceeds to execution
+
+**Guard patterns:**
+
+```yaml
+steps:
+  # Data truthiness — truthy scalar means done, null means not done
+  - name: read-plate
+    guard: ${{ data.latest("plate-reader", "scan-complete").attributes.id }}
+    task:
+      type: model_method
+      modelIdOrName: plate-reader
+      methodName: read-all
+
+  # Value comparison — same batch means skip, different batch means re-run
+  - name: dispense-reagent
+    guard: >-
+      ${{ data.latest("liquid-handler", "dispense-log").attributes.batchId
+          == inputs.batchId }}
+    task:
+      type: model_method
+      modelIdOrName: liquid-handler
+      methodName: dispense
+
+  # Method call — invoke a model method to check external state
+  - name: create-instance
+    guard: >-
+      ${{ model.method("infra", "check-exists",
+          {"name": inputs.instanceName}).stdout }}
+    task:
+      type: model_method
+      modelIdOrName: infra
+      methodName: create
+```
+
+**`model.method()` in guards:**
+
+`model.method(modelName, methodName)` or
+`model.method(modelName, methodName, inputs)` invokes a model method and returns
+the content of its first resource data output (parsed as JSON if possible). This
+lets guards check external state by running a lightweight probe method. For
+command/shell models the return value is `{exitCode, stdout, stderr, ...}`, so
+guard expressions typically access a specific field like `.stdout`.
+
+**forEach compatibility:** Guard expressions can reference `self.*`, so each
+expanded iteration evaluates its own guard independently:
+
+```yaml
+- name: read-plate
+  forEach:
+    item: well
+    in: ${{ range(1, 97) }}
+  guard: ${{ data.latest("plate-reader", self.well) }}
+  task:
+    type: model_method
+    modelIdOrName: plate-reader
+    methodName: read-single-well
+```
+
+**Error handling:** A CEL parse error or runtime error in a guard expression
+fails the step with a `step_failed` event containing the error message.
+
+**Events and rendering:** Guard-skipped steps emit a `step_skipped` event with
+`reason: "guarded"` (vs `"dependency"` for dependency skips). The console
+renderer shows `skipped (guarded)` to distinguish from dependency skips.
+
 ## Step Task Types
 
 Steps support four task types:
@@ -838,6 +920,11 @@ End-to-end workflow creation:
   [references/data-chaining.md](references/data-chaining.md) for `model.*` vs
   `data.latest()` expression guidance, delete/update workflow ordering, and
   command/shell chaining examples
+- **Idempotent execution with guards**: See
+  [references/scenarios.md](references/scenarios.md#scenario-6-idempotent-provisioning-with-guards)
+  for end-to-end examples of guard patterns — data truthiness, value comparison,
+  `model.method()` probes, forEach + guard for partial re-execution, and
+  scheduled workflow guards
 - **Remote execution**: See
   [references/remote-execution.md](references/remote-execution.md) for worker
   provisioning and step placement (target/labels/platform)

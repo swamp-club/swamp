@@ -284,6 +284,74 @@ The `vary` field lists input key names (matching keys in `task.inputs`). Their
 resolved values are appended to the data instance name with hyphens, producing
 names like `result-prod` or `result-dev-us-east-1`.
 
+## Guard Expressions for Idempotent Data Chaining
+
+Guards use the same data accessors as step inputs. A step can check whether its
+output data already exists before executing, making the workflow safe to re-run
+or resume without duplicating work.
+
+### Skip if data exists
+
+```yaml
+steps:
+  - name: lookup-ami
+    guard: ${{ data.latest("ami-lookup", "result") }}
+    task:
+      type: model_method
+      modelIdOrName: ami-lookup
+      methodName: execute
+  - name: create-instance
+    guard: ${{ data.latest("my-instance", "resource") }}
+    dependsOn:
+      - step: lookup-ami
+        condition:
+          type: completed
+    task:
+      type: model_method
+      modelIdOrName: my-instance
+      methodName: create
+```
+
+First run: both steps execute. Second run: both guards are truthy (data exists),
+both steps skip. If `lookup-ami` succeeded but `create-instance` failed, re-run
+skips the lookup and retries only the create.
+
+### Skip based on value comparison
+
+```yaml
+steps:
+  - name: deploy
+    guard: >-
+      ${{ data.latest("deploy-service", "result").attributes.version
+          == inputs.version }}
+    task:
+      type: model_method
+      modelIdOrName: deploy-service
+      methodName: deploy
+      inputs:
+        version: ${{ inputs.version }}
+```
+
+Skips if the deployed version matches the requested version. A new version
+triggers re-execution.
+
+### Probe external state with model.method()
+
+```yaml
+steps:
+  - name: create-vpc
+    guard: >-
+      ${{ model.method("vpc-lookup", "execute",
+          {"vpcName": inputs.vpcName}).stdout }}
+    task:
+      type: model_method
+      modelIdOrName: networking-vpc
+      methodName: create
+```
+
+Runs a lightweight probe method to check external state (e.g., does the VPC
+already exist in AWS?) before deciding whether to create it.
+
 ## Delete Workflow Ordering
 
 Delete workflows require **explicit `dependsOn`** in reverse dependency order.
