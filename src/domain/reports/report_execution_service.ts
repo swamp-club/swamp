@@ -460,7 +460,20 @@ export async function executeReports(
     try {
       const result = await report.execute(context);
 
-      // Persist results
+      // Empty markdown means the report is not applicable to this method.
+      // Skip persistence so the previous real version stays latest.
+      if (result.markdown.trim() === "") {
+        results.push({
+          name,
+          scope: report.scope,
+          success: true,
+          markdown: result.markdown,
+          json: result.json,
+          dataHandles: [],
+        });
+        continue;
+      }
+
       const dataHandles = await persistReportData(
         context.dataRepository,
         modelType,

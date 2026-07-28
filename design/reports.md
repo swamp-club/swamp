@@ -356,6 +356,12 @@ Both artifacts are written with:
 - **Garbage collection**: `5` (keep latest 5 versions)
 - **Tags**: `{ type: "report", reportName, reportScope }`
 
+**Empty results are not persisted.** When a report's `execute()` returns empty
+markdown (trimmed), persistence is skipped entirely — no version is created and
+the previous version stays `latest`. This prevents method-scoped reports that
+return empty for inapplicable methods from masking real content with 0-byte
+versions.
+
 Data handles are returned in the `ReportExecutionResult` and included in the
 final view.
 
