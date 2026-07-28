@@ -1013,7 +1013,7 @@ export class ModelResolver {
 
     const resolvedVersion = version ?? data.version;
     let attributes: Record<string, unknown> = {};
-    let textContent = "";
+    let textContent: unknown = "";
 
     if (isTextContentType(data.contentType)) {
       const rawBytes = this.dataRepo.getContentSync(
@@ -1028,6 +1028,7 @@ export class ModelResolver {
         if (data.contentType === "application/json") {
           try {
             attributes = JSON.parse(decoded) as Record<string, unknown>;
+            textContent = attributes;
           } catch {
             // Not valid JSON, use empty attributes
           }

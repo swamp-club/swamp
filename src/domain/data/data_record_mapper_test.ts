@@ -79,7 +79,7 @@ Deno.test("fromRow: parses JSON attributes when loadAttributes is true", () => {
   const record = fromRow(createRow(), repo, true, false);
 
   assertEquals(record.attributes, json);
-  assertEquals(record.content, "");
+  assertEquals(record.content, json);
 });
 
 Deno.test("fromRow: loads text content when loadContent is true", () => {
@@ -99,7 +99,7 @@ Deno.test("fromRow: loads both attributes and content together", () => {
   const record = fromRow(createRow(), repo, true, true);
 
   assertEquals(record.attributes, json);
-  assertEquals(record.content, JSON.stringify(json));
+  assertEquals(record.content, json);
 });
 
 Deno.test("fromRow: skips content loading when both flags are false", () => {
@@ -250,7 +250,7 @@ Deno.test("fromData: parses JSON content and resolves attributes", async () => {
   );
 
   assertEquals(record!.attributes, json);
-  assertEquals(record!.content, JSON.stringify(json));
+  assertEquals(record!.content, json);
   assertEquals(record!.name, "my-data");
   assertEquals(record!.modelType, "test/model");
   assertEquals(record!.specName, "my-spec");
@@ -460,4 +460,108 @@ Deno.test("fromResourceHandle: returns raw vault refs when vaultService is omitt
 
   assertEquals(record.attributes.apiKey, vaultRef);
   assertEquals(record.attributes.label, "test");
+});
+
+// ============================================================================
+// content — JSON content is parsed object, not raw string
+// ============================================================================
+
+Deno.test("fromRow: content is parsed object for JSON, enabling dot access", () => {
+  const json = { exitCode: 0, stdout: "12929", stderr: "" };
+  const repo = stubRepo(encoder.encode(JSON.stringify(json)));
+  const record = fromRow(createRow(), repo, true, true);
+
+  const content = record.content as Record<string, unknown>;
+  assertEquals(content.exitCode, 0);
+  assertEquals(content.stdout, "12929");
+  assertEquals(content.stderr, "");
+});
+
+Deno.test("fromRow: content remains raw string for text/plain", () => {
+  const text = "hello world";
+  const repo = stubRepo(encoder.encode(text));
+  const record = fromRow(
+    createRow({ content_type: "text/plain" }),
+    repo,
+    false,
+    true,
+  );
+
+  assertEquals(record.content, text);
+});
+
+Deno.test("fromRow: content is same reference as attributes for JSON", () => {
+  const json = { key: "value" };
+  const repo = stubRepo(encoder.encode(JSON.stringify(json)));
+  const record = fromRow(createRow(), repo, true, true);
+
+  assertEquals(record.content === record.attributes, true);
+});
+
+Deno.test("fromResourceHandle: content is parsed attributes for JSON", async () => {
+  const data = { exitCode: 0, stdout: "output" };
+  const repo = stubRepo(null, encoder.encode(JSON.stringify(data)));
+
+  const handle: DataHandle = {
+    name: "result",
+    specName: "result",
+    kind: "resource",
+    dataId: "data-id-1" as DataId,
+    version: 1,
+    size: 100,
+    tags: { type: "resource", modelName: "test-model" },
+    metadata: {
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      streaming: false,
+      tags: {},
+      ownerDefinition: { ownerType: "model-method", ownerRef: "ref-1" },
+    },
+  };
+
+  const record = await fromResourceHandle(
+    handle,
+    ModelType.create("test/model"),
+    "model-123",
+    "test-model",
+    repo,
+  );
+
+  const content = record.content as Record<string, unknown>;
+  assertEquals(content.exitCode, 0);
+  assertEquals(content.stdout, "output");
+  assertEquals(record.content === record.attributes, true);
+});
+
+Deno.test("fromResourceHandle: content is empty string for non-JSON", async () => {
+  const repo = stubRepo(null, encoder.encode("plain text"));
+
+  const handle: DataHandle = {
+    name: "result",
+    specName: "result",
+    kind: "resource",
+    dataId: "data-id-1" as DataId,
+    version: 1,
+    size: 100,
+    tags: { type: "resource", modelName: "test-model" },
+    metadata: {
+      contentType: "text/plain",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      streaming: false,
+      tags: {},
+      ownerDefinition: { ownerType: "model-method", ownerRef: "ref-1" },
+    },
+  };
+
+  const record = await fromResourceHandle(
+    handle,
+    ModelType.create("test/model"),
+    "model-123",
+    "test-model",
+    repo,
+  );
+
+  assertEquals(record.content, "");
 });

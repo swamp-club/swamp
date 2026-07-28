@@ -47,7 +47,7 @@ export interface DataRecord {
   ownerType: string;
   streaming: boolean;
   size: number;
-  content: string;
+  content: unknown;
 
   // Provenance fields — promoted from tags/ownerDefinition to first-class.
   // Empty string when the data was not produced inside a workflow.

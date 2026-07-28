@@ -1293,3 +1293,105 @@ Deno.test("evaluateAsync: mixed-type map literals with dyn and string values", a
   );
   assertEquals(result, { name: "host1", address: "10.0.0.1", user: "ansible" });
 });
+
+// --- .content.<key> access for JSON resources (swamp-club#1445) ---
+
+Deno.test("CelEvaluator: data.latest().content.<key> works for JSON resources", () => {
+  const evaluator = new CelEvaluator();
+  const parsed = { exitCode: 0, stdout: "12929", stderr: "" };
+  const context = {
+    data: {
+      latest: (modelName: string, dataName: string) => {
+        if (modelName === "shell-runner" && dataName === "result") {
+          return {
+            id: "data-1",
+            name: "result",
+            version: 1,
+            contentType: "application/json",
+            attributes: parsed,
+            content: parsed,
+          };
+        }
+        return null;
+      },
+    },
+  };
+
+  assertEquals(
+    evaluator.evaluate(
+      'data.latest("shell-runner", "result").content.stdout',
+      context,
+    ),
+    "12929",
+  );
+  assertEquals(
+    evaluator.evaluate(
+      'data.latest("shell-runner", "result").content.exitCode',
+      context,
+    ),
+    0,
+  );
+});
+
+Deno.test("CelEvaluator: content and attributes are interchangeable for JSON resources", () => {
+  const evaluator = new CelEvaluator();
+  const parsed = { exitCode: 0, stdout: "output" };
+  const context = {
+    data: {
+      latest: (_m: string, _d: string) => ({
+        attributes: parsed,
+        content: parsed,
+      }),
+    },
+  };
+
+  assertEquals(
+    evaluator.evaluate(
+      'data.latest("m", "r").content.stdout',
+      context,
+    ),
+    "output",
+  );
+  assertEquals(
+    evaluator.evaluate(
+      'data.latest("m", "r").attributes.stdout',
+      context,
+    ),
+    "output",
+  );
+});
+
+Deno.test("CelEvaluator: .?content.?key optional select works for JSON resources", async () => {
+  const evaluator = new CelEvaluator();
+  const parsed = { stdout: "hello" };
+  const context = {
+    data: {
+      latest: (_m: string, _d: string) =>
+        Promise.resolve({
+          attributes: parsed,
+          content: parsed,
+        }),
+    },
+  };
+
+  const result = await evaluator.evaluateAsync(
+    'data.latest("m", "r").?content.?stdout',
+    context,
+  );
+  assertEquals(result, "hello");
+});
+
+Deno.test("CelEvaluator: .?content.?key returns null when data doesn't exist", async () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      latest: (_m: string, _d: string) => Promise.resolve(null),
+    },
+  };
+
+  const result = await evaluator.evaluateAsync(
+    'data.latest("m", "r").?content.?stdout',
+    context,
+  );
+  assertEquals(result, null);
+});

@@ -42,9 +42,9 @@ function parseContent(
   contentType: string,
   loadAttributes: boolean,
   loadContent: boolean,
-): { attributes: Record<string, unknown>; textContent: string } {
+): { attributes: Record<string, unknown>; textContent: unknown } {
   let attributes: Record<string, unknown> = {};
-  let textContent = "";
+  let textContent: unknown = "";
 
   if (!rawBytes) return { attributes, textContent };
 
@@ -56,6 +56,7 @@ function parseContent(
   if (loadAttributes && contentType === "application/json") {
     try {
       attributes = JSON.parse(decoded) as Record<string, unknown>;
+      textContent = attributes;
     } catch {
       // Not valid JSON, use empty attributes
     }
@@ -248,8 +249,7 @@ export async function fromData(
  *   only — other content types yield empty attributes. Downstream
  *   CEL access patterns reference `attributes.<field>`; raw text
  *   content is intentionally not eagerly loaded into the record.
- * - `content` is always "" (parsing into attributes is sufficient
- *   for downstream CEL).
+ * - `content` is the parsed attributes object for JSON, otherwise "".
  * - `dataType` defaults to "resource" rather than "" because the
  *   caller already knows the handle is a resource.
  *
@@ -309,7 +309,9 @@ export async function fromResourceHandle(
     ownerType: handle.metadata.ownerDefinition.ownerType,
     streaming: handle.metadata.streaming,
     size: handle.size,
-    content: "",
+    content: handle.metadata.contentType === "application/json"
+      ? attributes
+      : "",
     ownerRef: handle.metadata.ownerDefinition.ownerRef,
     workflowRunId: handle.metadata.ownerDefinition.workflowRunId ?? "",
     workflowName: handle.metadata.ownerDefinition.workflowName ?? "",

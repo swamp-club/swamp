@@ -253,6 +253,19 @@ attributes:
   result: ${{ data.latest('my-model', 'output').attributes.value }}
 ```
 
+For `application/json` resources, `.content` is the same parsed object as
+`.attributes`, so both access patterns work:
+
+```yaml
+inputs:
+  # These are equivalent for JSON resources:
+  via_attributes: ${{ data.latest('shell-runner', 'result').attributes.stdout }}
+  via_content: ${{ data.latest('shell-runner', 'result').content.stdout }}
+```
+
+For non-JSON content types (e.g. `text/plain`), `.content` remains the raw text
+string.
+
 ### data.version(modelName, dataName, version)
 
 Returns a specific version of a data artifact:
