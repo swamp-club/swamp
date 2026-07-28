@@ -464,6 +464,26 @@ Deno.test("RepoMarkerRepository.write and read roundtrip with defaultVault", asy
   });
 });
 
+Deno.test("RepoMarkerRepository.write: uses double quotes for string values", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new RepoMarkerRepository();
+    const repoPath = RepoPath.create(dir);
+
+    const data = {
+      swampVersion: "1.0.0",
+      initializedAt: "2024-01-15T10:30:00.000Z",
+      upgradedAt: "2024-02-20T14:00:00.000Z",
+    };
+
+    await repo.write(repoPath, data);
+
+    const markerPath = join(dir, ".swamp.yaml");
+    const content = await Deno.readTextFile(markerPath);
+    assertStringIncludes(content, 'initializedAt: "2024-01-15T10:30:00.000Z"');
+    assertStringIncludes(content, 'upgradedAt: "2024-02-20T14:00:00.000Z"');
+  });
+});
+
 Deno.test("RepoMarkerRepository.read: missing defaultVault returns undefined", async () => {
   await withTempDir(async (dir) => {
     const repo = new RepoMarkerRepository();
