@@ -4179,3 +4179,423 @@ Deno.test("manual_approval suspension does not mark job span as ERROR", async ()
     otelApi.trace.disable();
   }
 });
+
+// guard tests
+
+Deno.test("guard: step without guard executes normally", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = Workflow.create({
+      name: "no-guard-wf",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "unguarded",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const run = await service.execute(workflow.name);
+    assertEquals(run.status, "succeeded");
+    assertEquals(executor.executedSteps, ["job1/unguarded"]);
+  });
+});
+
+Deno.test("guard: step with falsy guard expression executes", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = Workflow.create({
+      name: "falsy-guard-wf",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "guarded-falsy",
+              task: StepTask.model("test-model", "run"),
+              guard: "${{ false }}",
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const run = await service.execute(workflow.name);
+    assertEquals(run.status, "succeeded");
+    assertEquals(executor.executedSteps, ["job1/guarded-falsy"]);
+  });
+});
+
+Deno.test("guard: step with truthy guard expression is skipped", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = Workflow.create({
+      name: "truthy-guard-wf",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "guarded-truthy",
+              task: StepTask.model("test-model", "run"),
+              guard: "${{ true }}",
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const events: Array<{ kind: string; reason?: string }> = [];
+    for await (const event of service.run(workflow.name)) {
+      if (event.kind === "step_skipped") {
+        events.push({ kind: event.kind, reason: event.reason });
+      }
+    }
+
+    assertEquals(executor.executedSteps, []);
+    assertEquals(events.length, 1);
+    assertEquals(events[0].reason, "guarded");
+  });
+});
+
+Deno.test("guard: guarded-skip triggers downstream with skipped condition", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = Workflow.create({
+      name: "guard-downstream-wf",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "guarded-step",
+              task: StepTask.model("test-model", "run"),
+              guard: "${{ true }}",
+            }),
+            Step.create({
+              name: "downstream-on-skip",
+              task: StepTask.model("test-model", "run"),
+              dependsOn: [
+                {
+                  step: "guarded-step",
+                  condition: TriggerCondition.skipped(),
+                },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const run = await service.execute(workflow.name);
+    assertEquals(run.status, "succeeded");
+    assertEquals(executor.executedSteps, ["job1/downstream-on-skip"]);
+  });
+});
+
+Deno.test("guard: invalid guard expression (not wrapped in ${{ }}) fails the step", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = Workflow.create({
+      name: "invalid-guard-wf",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "bad-guard",
+              task: StepTask.model("test-model", "run"),
+              guard: "not a cel expression",
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    await assertRejects(
+      () => service.execute(workflow.name),
+      Error,
+      "guard must be a ${{ }} expression",
+    );
+  });
+});
+
+Deno.test("guard: CEL runtime error in guard fails the step", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = Workflow.create({
+      name: "runtime-error-guard-wf",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "error-guard",
+              task: StepTask.model("test-model", "run"),
+              guard: "${{ undefined_var.field }}",
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const events: Array<{ kind: string; error?: string }> = [];
+    for await (const event of service.run(workflow.name)) {
+      if (event.kind === "step_failed") {
+        events.push({ kind: event.kind, error: event.error });
+      }
+    }
+
+    assertEquals(executor.executedSteps, []);
+    assertEquals(events.length, 1);
+    assertStringIncludes(events[0].error!, "Guard expression failed");
+  });
+});
+
+Deno.test("guard: value comparison guard expression", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = Workflow.create({
+      name: "comparison-guard-wf",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "matching",
+              task: StepTask.model("test-model", "run"),
+              guard: "${{ 1 == 1 }}",
+            }),
+            Step.create({
+              name: "not-matching",
+              task: StepTask.model("test-model", "run"),
+              guard: "${{ 1 == 2 }}",
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const run = await service.execute(workflow.name);
+    assertEquals(run.status, "succeeded");
+    assertEquals(executor.executedSteps, ["job1/not-matching"]);
+  });
+});
+
+Deno.test("guard: model.method() guard skips step when method returns truthy", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    class TruthyMethodExecutor implements StepExecutor {
+      executedSteps: string[] = [];
+
+      execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        this.executedSteps.push(`${ctx.jobName}/${ctx.stepName}`);
+        if (ctx.stepName.startsWith("__guard_")) {
+          return Promise.resolve({ exists: true });
+        }
+        return Promise.resolve({ executed: true });
+      }
+    }
+    const executor = new TruthyMethodExecutor();
+
+    const workflow = Workflow.create({
+      name: "model-method-guard-wf",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "check-infra",
+              task: StepTask.model("infra", "create"),
+              guard: '${{ model.method("infra", "exists") }}',
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const events: Array<{ kind: string; reason?: string }> = [];
+    for await (const event of service.run(workflow.name)) {
+      if (event.kind === "step_skipped") {
+        events.push({ kind: event.kind, reason: event.reason });
+      }
+    }
+
+    assertEquals(
+      executor.executedSteps,
+      ["job1/__guard_check-infra"],
+    );
+    assertEquals(events.length, 1);
+    assertEquals(events[0].reason, "guarded");
+  });
+});
+
+Deno.test("guard: model.method() guard executes step when method returns falsy", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    class FalsyMethodExecutor implements StepExecutor {
+      executedSteps: string[] = [];
+
+      execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        this.executedSteps.push(`${ctx.jobName}/${ctx.stepName}`);
+        if (ctx.stepName.startsWith("__guard_")) {
+          return Promise.resolve(null);
+        }
+        return Promise.resolve({ executed: true });
+      }
+    }
+    const executor = new FalsyMethodExecutor();
+
+    const workflow = Workflow.create({
+      name: "model-method-guard-falsy-wf",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "create-infra",
+              task: StepTask.model("infra", "create"),
+              guard: '${{ model.method("infra", "exists") }}',
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const run = await service.execute(workflow.name);
+    assertEquals(run.status, "succeeded");
+    assertEquals(
+      executor.executedSteps,
+      ["job1/__guard_create-infra", "job1/create-infra"],
+    );
+  });
+});

@@ -23,6 +23,7 @@ import { Workflow as WorkflowClass } from "./workflow.ts";
 import {
   extractExpressions,
   isAssertMessagePath,
+  isGuardPath,
   isTaskInputsPath,
   isTriggerInputsPath,
   replaceExpressions,
@@ -113,6 +114,12 @@ export class WorkflowExpressionEvaluator {
       // workflow-body evaluation — leave them raw so a `webhook.*` reference
       // doesn't evaluate against a context that lacks the payload.
       if (isTriggerInputsPath(expr.path)) {
+        continue;
+      }
+      // Guard expressions are evaluated at step execution time — they check
+      // runtime state (data outputs, forEach variables) to decide idempotent
+      // skips.
+      if (isGuardPath(expr.path)) {
         continue;
       }
       // task.inputs and assert task.message that depend on step outputs

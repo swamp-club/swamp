@@ -74,6 +74,7 @@ export type WorkflowExecutionEvent =
     kind: "step_skipped";
     jobId: string;
     stepId: string;
+    reason?: "guarded" | "dependency";
     forEachTemplate?: string;
     forEachIndex?: number;
   }

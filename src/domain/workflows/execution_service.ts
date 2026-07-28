@@ -19,7 +19,8 @@
 
 import type { Workflow } from "./workflow.ts";
 import type { Job } from "./job.ts";
-import type { Step } from "./step.ts";
+import { Step } from "./step.ts";
+import { StepTask } from "./step_task.ts";
 import type { AssertSeverity } from "./step_task.ts";
 import { severityAtOrAbove } from "./assert_severity.ts";
 import {
@@ -2608,6 +2609,136 @@ export class WorkflowExecutionService {
           kind: "step_skipped",
           jobId: job.name,
           stepId: stepName,
+          reason: "dependency",
+          forEachTemplate,
+          forEachIndex,
+        };
+        return;
+      }
+    }
+
+    // Build expression context before guard evaluation so self.* is available
+    // for forEach-expanded steps.
+    let stepExprContext = expressionContext
+      ? { ...expressionContext }
+      : expressionContext;
+    if (stepExprContext && forEachVar && forEachVar.name) {
+      const baseSelf = stepExprContext.self ?? {
+        id: "",
+        name: "",
+        version: 1,
+        tags: {},
+        globalArguments: {},
+      };
+      stepExprContext = {
+        ...stepExprContext,
+        self: {
+          ...baseSelf,
+          [forEachVar.name]: forEachVar.value,
+        },
+      };
+    }
+
+    // Evaluate guard expression — truthy means the step is already done
+    if (step.guard) {
+      const guardCel = extractCelExpression(step.guard);
+      if (!guardCel) {
+        stepSpan.end();
+        throw new UserError(
+          `Step "${stepName}" guard must be a $\{{ }} expression, got: ${step.guard}`,
+        );
+      }
+      try {
+        const celEvaluator = new CelEvaluator();
+        const guardContext: Record<string, unknown> = {
+          ...(stepExprContext ?? {}),
+        };
+        guardContext["modelMethod"] = {
+          method: async (
+            modelName: string,
+            methodName: string,
+            inputs?: Record<string, unknown>,
+          ) => {
+            const guardStep = Step.create({
+              name: `__guard_${stepName}`,
+              task: StepTask.model(modelName, methodName, inputs),
+            });
+            const result = await this.executor.execute(guardStep, {
+              workflowId: workflow.id,
+              workflowRunId: run.id,
+              workflowName: workflow.name,
+              jobName: job.name,
+              stepName: `__guard_${stepName}`,
+              repoDir: this.repoDir,
+              signal: options.signal ?? AbortSignal.timeout(30_000),
+              expressionContext: stepExprContext,
+              catalogStore: this.catalogStore,
+              dataBaseDir: this.dataBaseDir,
+              runtimeTags: options.runtimeTags,
+              secretRedactor: options.secretRedactor,
+            });
+            const methodResult = result as {
+              dataHandles?: Array<{
+                specName: string;
+                kind: string;
+              }>;
+            };
+            if (methodResult?.dataHandles?.length) {
+              const resourceHandle = methodResult.dataHandles.find(
+                (h) => h.kind === "resource",
+              );
+              if (resourceHandle) {
+                const def = await findDefinitionByIdOrName(
+                  this.definitionRepo,
+                  modelName,
+                );
+                if (def) {
+                  const raw = await this.dataRepo.getContent(
+                    def.type,
+                    def.definition.id,
+                    resourceHandle.specName,
+                  );
+                  if (raw) {
+                    try {
+                      return JSON.parse(new TextDecoder().decode(raw));
+                    } catch {
+                      return new TextDecoder().decode(raw);
+                    }
+                  }
+                }
+              }
+            }
+            return result;
+          },
+        };
+        const guardResult = await celEvaluator.evaluateAsync(
+          guardCel,
+          guardContext,
+        );
+        if (guardResult) {
+          stepRun.skip();
+          stepSpan.setAttribute("step.status", "skipped");
+          stepSpan.setAttribute("step.skip.reason", "guarded");
+          stepSpan.end();
+          yield {
+            kind: "step_skipped",
+            jobId: job.name,
+            stepId: stepName,
+            reason: "guarded",
+            forEachTemplate,
+            forEachIndex,
+          };
+          return;
+        }
+      } catch (error) {
+        stepRun.fail(String(error));
+        stepSpan.setAttribute("step.status", "failed");
+        stepSpan.end();
+        yield {
+          kind: "step_failed",
+          jobId: job.name,
+          stepId: stepName,
+          error: `Guard expression failed: ${error}`,
           forEachTemplate,
           forEachIndex,
         };
@@ -2626,28 +2757,6 @@ export class WorkflowExecutionService {
     };
 
     try {
-      // Shallow-copy the expression context so parallel steps don't race on
-      // the mutable .self and .inputs properties.
-      let stepExprContext = expressionContext
-        ? { ...expressionContext }
-        : expressionContext;
-      if (stepExprContext && forEachVar && forEachVar.name) {
-        const baseSelf = stepExprContext.self ?? {
-          id: "",
-          name: "",
-          version: 1,
-          tags: {},
-          globalArguments: {},
-        };
-        stepExprContext = {
-          ...stepExprContext,
-          self: {
-            ...baseSelf,
-            [forEachVar.name]: forEachVar.value,
-          },
-        };
-      }
-
       const task = step.task.data;
 
       // Handle manual approval tasks — suspend the workflow

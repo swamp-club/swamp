@@ -560,6 +560,106 @@ steps:
       methodName: execute
 ```
 
+## Guard (Idempotent Step Execution)
+
+A step can declare a `guard` — a CEL expression evaluated before execution. When
+the guard evaluates truthy, the step is skipped (already done). When falsy or
+absent, the step executes normally.
+
+Guard is the workflow-level primitive for idempotent step execution, enabling safe
+workflow resume, re-run, and cron scheduling without re-executing completed
+steps.
+
+### Evaluation order
+
+1. Dependency conditions are checked (`dependsOn`)
+2. Expression context is built (including `self.*` for forEach steps)
+3. Guard expression is evaluated via `celEvaluator.evaluateAsync()`
+4. If truthy → step is skipped with reason `"guarded"`
+5. If falsy → step proceeds to execution
+
+### Expression context
+
+Guard expressions have access to the same context as other step expressions:
+
+- `inputs` — workflow inputs
+- `data` — data namespace (e.g., `data.latest()`)
+- `self` — for forEach steps, includes the iteration variable
+
+### Guard patterns
+
+```yaml
+steps:
+  # Data truthiness — truthy scalar means done, null means not done
+  - name: read-plate
+    guard: ${{ data.latest("plate-reader", "scan-complete").attributes.id }}
+    task:
+      modelName: plate-reader
+      method: read-all
+
+  # Value comparison — same batch means skip, different batch means re-run
+  - name: dispense-reagent
+    guard: >
+      ${{ data.latest("liquid-handler", "dispense-log").attributes.batchId
+          == inputs.batchId }}
+    task:
+      modelName: liquid-handler
+      method: dispense
+
+  # Method call — invoke a model method to check external state
+  - name: create-instance
+    guard: >
+      ${{ model.method("infra", "check-exists",
+          {"name": inputs.instanceName}).stdout }}
+    task:
+      modelName: infra
+      method: create
+```
+
+### model.method() in guards
+
+`model.method(modelName, methodName)` or
+`model.method(modelName, methodName, inputs)` invokes a model method and returns
+the content of its first resource data output (parsed as JSON if possible). This
+lets guards check external state by running a lightweight probe method.
+
+The method executes through the same step executor as regular workflow steps, so
+it has full access to vault secrets, expression context, and data storage. The
+return value is the parsed data output content — for command/shell models this is
+`{exitCode, stdout, stderr, ...}`, so guard expressions typically access a
+specific field like `.stdout`.
+
+### forEach compatibility
+
+Guard expressions can reference `self.*` (the forEach variable), so each
+expanded iteration evaluates its own guard independently:
+
+```yaml
+- name: read-plate
+  forEach:
+    item: well
+    in: ${{ range(1, 97) }}
+  guard: ${{ data.latest("plate-reader", self.well) }}
+  task:
+    modelName: plate-reader
+    method: read-single-well
+```
+
+On resume, each iteration's guard evaluates independently — completed wells are
+skipped, failed/unstarted wells execute.
+
+### Error handling
+
+A CEL parse error or runtime error in a guard expression fails the step. Guard
+errors are not silently swallowed — they produce a `step_failed` event with the
+error message.
+
+### Events and rendering
+
+Guard-skipped steps emit a `step_skipped` event with `reason: "guarded"` (vs
+`"dependency"` for dependency skips). The console renderer shows
+`skipped (guarded)` to distinguish from dependency skips.
+
 ## Data Output Overrides with Vary Dimensions
 
 Steps can declare `vary` on `dataOutputOverrides` to produce

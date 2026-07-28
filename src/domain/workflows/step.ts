@@ -93,6 +93,7 @@ const StepObjectSchema = z.object({
   labels: z.record(z.string(), z.string()).optional(),
   platform: z.string().optional(),
   queueTimeout: z.number().nonnegative().optional(),
+  guard: z.string().optional(),
 });
 
 /**
@@ -153,6 +154,7 @@ export interface CreateStepProps {
   labels?: Record<string, string>;
   platform?: string;
   queueTimeout?: number;
+  guard?: string;
 }
 
 /**
@@ -181,6 +183,7 @@ export class Step {
     readonly labels: Record<string, string> | undefined,
     readonly platform: string | undefined,
     readonly queueTimeout: number | undefined,
+    readonly guard: string | undefined,
   ) {}
 
   /**
@@ -204,6 +207,7 @@ export class Step {
       labels: props.labels,
       platform: props.platform,
       queueTimeout: props.queueTimeout,
+      guard: props.guard,
     });
 
     return Step.fromData(data);
@@ -249,6 +253,7 @@ export class Step {
       validated.labels,
       validated.platform,
       validated.queueTimeout,
+      validated.guard,
     );
   }
 
@@ -311,6 +316,7 @@ export class Step {
       labels: this.labels,
       platform: this.platform,
       queueTimeout: this.queueTimeout,
+      guard: this.guard,
     };
   }
 
