@@ -277,6 +277,8 @@ export {
   type WorkflowGetData,
   type WorkflowGetDeps,
   type WorkflowGetEvent,
+  type WorkflowGetJobDependency,
+  type WorkflowGetStepDependency,
 } from "./workflows/get.ts";
 export {
   createWorkflowHistoryGetDeps,

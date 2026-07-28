@@ -19,6 +19,7 @@
 
 import type { InputsSchema } from "../../domain/definitions/definition.ts";
 import type { ReportSelection } from "../../domain/reports/report_selection.ts";
+import type { TriggerConditionData } from "../../domain/workflows/trigger_condition.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import {
   createWorkflowId,
@@ -30,6 +31,17 @@ import type { SwampError } from "../errors.ts";
 import { notFound } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+
+export interface WorkflowGetJobDependency {
+  job: string;
+  condition: TriggerConditionData;
+}
+
+export interface WorkflowGetStepDependency {
+  step: string;
+  condition: TriggerConditionData;
+}
+
 /**
  * Data structure for the workflow get output.
  */
@@ -44,9 +56,11 @@ export interface WorkflowGetData {
   jobs: {
     name: string;
     description?: string;
+    dependsOn: WorkflowGetJobDependency[];
     steps: {
       name: string;
       description?: string;
+      dependsOn: WorkflowGetStepDependency[];
       task: {
         type: string;
         [key: string]: unknown;
@@ -118,9 +132,17 @@ export async function* workflowGet(
         jobs: workflow.jobs.map((job) => ({
           name: job.name,
           description: job.description,
+          dependsOn: job.dependsOn.map((d) => ({
+            job: d.job,
+            condition: d.condition.toData(),
+          })),
           steps: job.steps.map((step) => ({
             name: step.name,
             description: step.description,
+            dependsOn: step.dependsOn.map((d) => ({
+              step: d.step,
+              condition: d.condition.toData(),
+            })),
             task: step.task.toData(),
           })),
         })),

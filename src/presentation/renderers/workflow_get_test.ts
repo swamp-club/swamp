@@ -35,7 +35,19 @@ const testData: WorkflowGetData = {
   },
   tags: { team: "platform" },
   reports: undefined,
-  jobs: [],
+  jobs: [
+    {
+      name: "build",
+      dependsOn: [],
+      steps: [
+        {
+          name: "compile",
+          dependsOn: [],
+          task: { type: "model_method" },
+        },
+      ],
+    },
+  ],
   path: "/repo/workflows/my-workflow.yaml",
 };
 

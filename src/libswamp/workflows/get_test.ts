@@ -42,7 +42,12 @@ const testWorkflow = {
   reports: { require: ["junit"] },
   jobs: [{
     name: "job1",
-    steps: [{ name: "step1", task: { toData: () => ({ type: "model/run" }) } }],
+    dependsOn: [],
+    steps: [{
+      name: "step1",
+      dependsOn: [],
+      task: { toData: () => ({ type: "model/run" }) },
+    }],
   }],
 };
 
@@ -96,9 +101,11 @@ Deno.test("workflowGet yields resolving -> completed with workflow data on succe
         jobs: [{
           name: "job1",
           description: undefined,
+          dependsOn: [],
           steps: [{
             name: "step1",
             description: undefined,
+            dependsOn: [],
             task: { type: "model/run" },
           }],
         }],
