@@ -63,7 +63,10 @@ import type {
   WorkflowSearchPayload,
 } from "../protocol.ts";
 import { acquireModelLocks } from "../../cli/repo_context.ts";
-import { resolveSuspendedRun } from "../../domain/workflows/suspended_run_resolver.ts";
+import {
+  resolveResumableRun,
+  resolveSuspendedRun,
+} from "../../domain/workflows/suspended_run_resolver.ts";
 import {
   createWorkflowId,
   type WorkflowRunId,
@@ -804,12 +807,19 @@ export async function handleWorkflowResume(
     const workflowRepo = ctx.repoContext.workflowRepo;
     const runRepo = ctx.repoContext.workflowRunRepo;
 
-    const { run, workflowName } = await resolveSuspendedRun(
-      workflowRepo,
-      runRepo,
-      payload.workflowIdOrName,
-      payload.runId,
-    );
+    const { run, workflowName } = payload.from
+      ? await resolveResumableRun(
+        workflowRepo,
+        runRepo,
+        payload.workflowIdOrName,
+        payload.runId,
+      )
+      : await resolveSuspendedRun(
+        workflowRepo,
+        runRepo,
+        payload.workflowIdOrName,
+        payload.runId,
+      );
 
     const stepLockHook: StepLockHook = async (modelType, modelId) => {
       const lockResult = await acquireModelLocks(
@@ -865,6 +875,7 @@ export async function handleWorkflowResume(
         const event of service.resume(workflowName, run.id, {
           signal: controller.signal,
           inputs: resumeInputs,
+          fromStep: payload.from,
         })
       ) {
         yield mapWorkflowExecutionEvent(event, runRepo);

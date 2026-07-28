@@ -538,6 +538,23 @@ the input at run (e.g. a placeholder) and supply or override its value at
 resume. The run record records the resume input key names (not values) for
 audit.
 
+**Resume from a failed step (`--from`):** Re-enter a failed run's DAG at a named
+step. The `--from` step and all its downstream dependents are reset; steps
+before it retain their completed status. Guards on completed steps prevent
+re-execution.
+
+```
+swamp workflow resume <workflow-name> --from <step-name>
+swamp workflow resume <workflow-name> --from <step-name> --run <run-id>
+```
+
+If there is exactly one failed run, `--run` can be omitted. When multiple failed
+runs exist, the CLI prompts you to specify `--run`.
+
+`--from` targets template step names (not forEach-expanded names). For forEach
+steps, all iterations are re-evaluated — completed iterations with truthy guards
+are skipped; failed/unstarted iterations execute. Only works on failed runs.
+
 **`assert`** — A CEL predicate that evaluates over prior step data and records
 pass/fail. Use assert steps to validate that earlier steps produced the expected
 state before the workflow continues.

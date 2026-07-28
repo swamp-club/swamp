@@ -328,6 +328,7 @@ export interface WorkflowRejectPayload {
 export interface WorkflowResumePayload {
   workflowIdOrName: string;
   runId?: string;
+  from?: string;
   inputs?: Record<string, unknown>;
   traceparent?: string;
   tracestate?: string;

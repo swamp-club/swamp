@@ -30,7 +30,10 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
-import { resolveSuspendedRun } from "../../domain/workflows/suspended_run_resolver.ts";
+import {
+  resolveResumableRun,
+  resolveSuspendedRun,
+} from "../../domain/workflows/suspended_run_resolver.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import {
   type DirectTypeResolver,
@@ -83,7 +86,9 @@ type AnyOptions = any;
 export const workflowResumeCommand = withRemoteOptions(
   new Command()
     .name("resume")
-    .description("Resume a suspended workflow run after approval")
+    .description(
+      "Resume a suspended workflow run after approval, or re-enter a failed run at a specific step with --from",
+    )
     .example(
       "Resume by workflow name",
       "swamp workflow resume deploy-with-gate",
@@ -92,12 +97,20 @@ export const workflowResumeCommand = withRemoteOptions(
       "Resume with an override input minted during the gate",
       "swamp workflow resume deploy-with-gate --input authKey=tskey-abc123",
     )
+    .example(
+      "Resume a failed run from a specific step",
+      "swamp workflow resume plate-assay --from read-plate",
+    )
     .arguments("<workflow_id_or_name:string>")
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
     )
     .option("--run <run_id:string>", "Target a specific run ID")
+    .option(
+      "--from <step:string>",
+      "Re-enter the DAG at this step (failed runs only). Steps before this point are skipped; guards prevent re-execution of completed steps.",
+    )
     .option(
       "--input <value:string>",
       "Override/additional input for the resumed run (key=value or JSON); merged over the original run inputs",
@@ -192,6 +205,7 @@ export const workflowResumeCommand = withRemoteOptions(
             payload: {
               workflowIdOrName,
               runId: options.run as string | undefined,
+              from: options.from as string | undefined,
               inputs: Object.keys(resumeInputs).length > 0
                 ? resumeInputs
                 : undefined,
@@ -260,19 +274,29 @@ export const workflowResumeCommand = withRemoteOptions(
     const workflowRepo = repoContext.workflowRepo;
     const runRepo = repoContext.workflowRunRepo;
 
-    const { run, workflowName } = await resolveSuspendedRun(
-      workflowRepo,
-      runRepo,
-      workflowIdOrName,
-      options.run,
-    );
-
-    const waiting = run.findWaitingApprovalStep();
-    if (waiting) {
-      throw new UserError(
-        `Step "${waiting.stepName}" is still awaiting approval. ` +
-          `Run "swamp workflow approve ${workflowName} ${waiting.stepName}" first.`,
+    const fromStep = options.from as string | undefined;
+    const { run, workflowName } = fromStep
+      ? await resolveResumableRun(
+        workflowRepo,
+        runRepo,
+        workflowIdOrName,
+        options.run,
+      )
+      : await resolveSuspendedRun(
+        workflowRepo,
+        runRepo,
+        workflowIdOrName,
+        options.run,
       );
+
+    if (!fromStep) {
+      const waiting = run.findWaitingApprovalStep();
+      if (waiting) {
+        throw new UserError(
+          `Step "${waiting.stepName}" is still awaiting approval. ` +
+            `Run "swamp workflow approve ${workflowName} ${waiting.stepName}" first.`,
+        );
+      }
     }
 
     const stepLockHook: StepLockHook = async (modelType, modelId) => {
@@ -423,6 +447,7 @@ export const workflowResumeCommand = withRemoteOptions(
               signal: abort.signal,
               swampSha: GIT_SHA,
               inputs: resumeInputs,
+              fromStep,
             })
           ) {
             yield mapWorkflowExecutionEvent(event, runRepo);

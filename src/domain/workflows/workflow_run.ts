@@ -262,6 +262,18 @@ export class StepRun {
     this._dataArtifacts.push({ ...artifact });
   }
 
+  resetToPending(): void {
+    this._status = "pending";
+    this._startedAt = undefined;
+    this._completedAt = undefined;
+    this._error = undefined;
+    this._output = undefined;
+    this._dataArtifacts = [];
+    this._allowedFailure = false;
+    this._approvalDecision = undefined;
+    this._assertResult = undefined;
+  }
+
   /**
    * Marks the step as running.
    */
@@ -439,6 +451,12 @@ export class JobRun implements TriggerEvaluationContext {
       }
     }
     this._steps.splice(templateIndex, 1, ...insertions);
+  }
+
+  resetToPending(): void {
+    this._status = "pending";
+    this._startedAt = undefined;
+    this._completedAt = undefined;
   }
 
   /**
@@ -745,6 +763,34 @@ export class WorkflowRun implements TriggerEvaluationContext {
   resumeFromSuspended(): void {
     this._status = "running";
     this._completedAt = undefined;
+  }
+
+  resumeFromFailed(): void {
+    this._status = "running";
+    this._completedAt = undefined;
+  }
+
+  /**
+   * Resets steps for a --from resume. The `fromStep` is a template step name
+   * from the workflow YAML. `stepsToReset` is the set of persisted step names
+   * (including forEach-expanded names) that should be reset to pending — the
+   * fromStep itself plus all its transitive downstream dependents.
+   * The caller (execution service) computes this set using the workflow
+   * definition and the step dependency graph.
+   */
+  resetForResumeFrom(stepsToReset: ReadonlySet<string>): void {
+    for (const job of this._jobs) {
+      let jobNeedsReset = false;
+      for (const step of job.steps) {
+        if (stepsToReset.has(step.stepName)) {
+          step.resetToPending();
+          jobNeedsReset = true;
+        }
+      }
+      if (jobNeedsReset) {
+        job.resetToPending();
+      }
+    }
   }
 
   /**

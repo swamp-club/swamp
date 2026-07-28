@@ -89,3 +89,66 @@ export async function resolveSuspendedRun(
     run: suspendedRuns[0],
   };
 }
+
+export type ResumableRunInfo = SuspendedRunInfo;
+
+/**
+ * Resolves a failed run for --from resume. Accepts runs with status "failed".
+ * A runId is required since --from targets a specific failed run.
+ */
+export async function resolveResumableRun(
+  workflowRepo: WorkflowRepository,
+  runRepo: WorkflowRunRepository,
+  workflowIdOrName: string,
+  runId?: string,
+): Promise<ResumableRunInfo> {
+  const workflow = await workflowRepo.findByName(workflowIdOrName) ??
+    await workflowRepo.findById(createWorkflowId(workflowIdOrName));
+  if (!workflow) {
+    throw new UserError(`Workflow not found: ${workflowIdOrName}`);
+  }
+
+  if (runId) {
+    const run = await runRepo.findById(
+      workflow.id,
+      createWorkflowRunId(runId),
+    );
+    if (!run) {
+      throw new UserError(`Workflow run not found: ${runId}`);
+    }
+    if (run.status !== "failed") {
+      throw new UserError(
+        `--from requires a failed run, but run ${runId} has status "${run.status}"`,
+      );
+    }
+    return {
+      workflowName: workflow.name,
+      workflowId: workflow.id,
+      workflow,
+      run,
+    };
+  }
+
+  const allRuns = await runRepo.findAllByWorkflowId(workflow.id);
+  const failedRuns = allRuns.filter((r) => r.status === "failed");
+
+  if (failedRuns.length === 0) {
+    throw new UserError(
+      `No failed runs found for workflow "${workflow.name}"`,
+    );
+  }
+  if (failedRuns.length > 1) {
+    const ids = failedRuns.map((r) => r.id).join("\n  ");
+    throw new UserError(
+      `Multiple failed runs found for workflow "${workflow.name}":\n  ${ids}\n` +
+        `Use --run <run-id> to specify which run to resume with --from.`,
+    );
+  }
+
+  return {
+    workflowName: workflow.name,
+    workflowId: workflow.id,
+    workflow,
+    run: failedRuns[0],
+  };
+}
