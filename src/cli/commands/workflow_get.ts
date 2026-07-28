@@ -48,10 +48,15 @@ export const workflowGetCommand = withRemoteOptions(
     .name("get")
     .description("Show details of a workflow")
     .example("Show workflow details", "swamp workflow get deploy-pipeline")
+    .example("Show workflow DAG", "swamp workflow get deploy-pipeline --graph")
     .arguments("<workflow_id_or_name:workflow_name>")
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option(
+      "--graph",
+      "Render the workflow as a dependency graph",
     ),
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
 ).action(async function (options: AnyOptions, workflowIdOrName: string) {
@@ -70,7 +75,8 @@ export const workflowGetCommand = withRemoteOptions(
         payload: { workflowIdOrName },
       },
     );
-    const renderer = createWorkflowGetRenderer(cliCtx.outputMode);
+    const graph = Boolean(options.graph);
+    const renderer = createWorkflowGetRenderer(cliCtx.outputMode, { graph });
     await consumeStream(
       (async function* () {
         yield {
@@ -93,7 +99,8 @@ export const workflowGetCommand = withRemoteOptions(
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
   const deps = createWorkflowGetDeps(repoContext.workflowRepo);
 
-  const renderer = createWorkflowGetRenderer(cliCtx.outputMode);
+  const graph = Boolean(options.graph);
+  const renderer = createWorkflowGetRenderer(cliCtx.outputMode, { graph });
   await consumeStream(
     workflowGet(ctx, deps, workflowIdOrName),
     renderer.handlers(),

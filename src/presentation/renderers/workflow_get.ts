@@ -25,13 +25,24 @@ import type {
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
+import { renderWorkflowGraph } from "./workflow_graph.ts";
+
+export interface WorkflowGetRendererOptions {
+  graph?: boolean;
+}
 
 class LogWorkflowGetRenderer implements Renderer<WorkflowGetEvent> {
+  constructor(private readonly options: WorkflowGetRendererOptions) {}
+
   handlers(): EventHandlers<WorkflowGetEvent> {
     return {
       resolving: () => {},
       completed: (e) => {
-        console.log(JSON.stringify(e.data, null, 2));
+        if (this.options.graph) {
+          console.log(renderWorkflowGraph(e.data));
+        } else {
+          console.log(JSON.stringify(e.data, null, 2));
+        }
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -56,12 +67,13 @@ class JsonWorkflowGetRenderer implements Renderer<WorkflowGetEvent> {
 
 export function createWorkflowGetRenderer(
   mode: OutputMode,
+  options: WorkflowGetRendererOptions = {},
 ): Renderer<WorkflowGetEvent> {
   switch (mode) {
     case "json":
       return new JsonWorkflowGetRenderer();
     case "log":
-      return new LogWorkflowGetRenderer();
+      return new LogWorkflowGetRenderer(options);
   }
 }
 
