@@ -86,6 +86,8 @@ export interface DataHandle {
   tags: Record<string, string>;
   /** Metadata excluding auto-generated fields. */
   metadata: DataHandleMetadata;
+  /** Top-level resource attributes (resource kind only). */
+  attributes?: Record<string, unknown>;
 }
 
 /** Writer for binary or text file data. */

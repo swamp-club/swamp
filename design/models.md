@@ -630,6 +630,7 @@ Lightweight reference to data already persisted:
 | `size`     | Size of the written content in bytes      |
 | `tags`     | Tags from the writer options              |
 | `metadata` | Full metadata for the data artifact       |
+| `attributes` | Top-level resource attributes (resource kind only, optional) |
 
 ## Output
 

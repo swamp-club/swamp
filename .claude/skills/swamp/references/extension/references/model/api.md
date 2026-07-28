@@ -289,16 +289,17 @@ const handle = await streamWriter.finalize();
 
 Returned by `writeResource` and writer methods:
 
-| Field      | Description                                |
-| ---------- | ------------------------------------------ |
-| `name`     | Data artifact name                         |
-| `specName` | The declared spec name                     |
-| `kind`     | `"resource"` or `"file"`                   |
-| `dataId`   | Unique ID for this data                    |
-| `version`  | Version number of this write               |
-| `size`     | Size of the written content in bytes       |
-| `tags`     | Tags from the writer options               |
-| `metadata` | Metadata for the data artifact (see below) |
+| Field        | Description                                                  |
+| ------------ | ------------------------------------------------------------ |
+| `name`       | Data artifact name                                           |
+| `specName`   | The declared spec name                                       |
+| `kind`       | `"resource"` or `"file"`                                     |
+| `dataId`     | Unique ID for this data                                      |
+| `version`    | Version number of this write                                 |
+| `size`       | Size of the written content in bytes                         |
+| `tags`       | Tags from the writer options                                 |
+| `metadata`   | Metadata for the data artifact (see below)                   |
+| `attributes` | Top-level resource attributes (resource kind only, optional) |
 
 **`metadata` sub-fields:**
 

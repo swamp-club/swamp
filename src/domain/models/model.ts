@@ -549,6 +549,8 @@ export interface DataHandle {
     DataMetadata,
     "id" | "name" | "version" | "createdAt" | "size" | "checksum"
   >;
+  /** Top-level resource attributes (resource kind only). */
+  attributes?: Record<string, unknown>;
 }
 
 /**

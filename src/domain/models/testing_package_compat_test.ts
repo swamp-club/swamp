@@ -173,8 +173,9 @@ function _checkDataHandleFields(handle: TestingDataHandle) {
   // dataId: canonical uses branded DataId, testing uses plain string.
   // The brand is a compile-time fiction — extension authors never construct DataIds.
   const _dataId: string = handle.dataId;
+  const _attributes: CanonicalDataHandle["attributes"] = handle.attributes;
 
-  void [_name, _specName, _kind, _version, _size, _tags, _dataId];
+  void [_name, _specName, _kind, _version, _size, _tags, _dataId, _attributes];
 }
 
 // DataWriter: verify method parameter types match.
