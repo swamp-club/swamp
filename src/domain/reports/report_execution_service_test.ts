@@ -26,7 +26,10 @@ import {
 import type { ReportDefinition } from "./report.ts";
 import type { ReportContext } from "./report_context.ts";
 import type { ReportSelection } from "./report_selection.ts";
-import type { ReportFilterOptions } from "./report_execution_service.ts";
+import type {
+  ReportEventCallback,
+  ReportFilterOptions,
+} from "./report_execution_service.ts";
 import { ReportRegistry } from "./report_registry.ts";
 import type { MethodReportContext } from "./report_context.ts";
 import { ModelType } from "../models/model_type.ts";
@@ -1675,4 +1678,174 @@ Deno.test("executeReports: unresolvable require failure survives artifact persis
   assertEquals(summary.failures, 1);
   assertEquals(summary.results[0].success, false);
   assertEquals(summary.results[0].dataHandles, undefined);
+});
+
+// --- Empty report skip tests (issue #1443) ---
+
+function makeEmptyReport(
+  scope: "method" | "model" | "workflow" = "method",
+): ReportDefinition {
+  return {
+    description: `Empty ${scope} report`,
+    scope,
+    execute(_context: ReportContext) {
+      return Promise.resolve({ markdown: "", json: {} });
+    },
+  };
+}
+
+function makeWhitespaceReport(
+  scope: "method" | "model" | "workflow" = "method",
+): ReportDefinition {
+  return {
+    description: `Whitespace ${scope} report`,
+    scope,
+    execute(_context: ReportContext) {
+      return Promise.resolve({ markdown: "   \n\t  \n  ", json: {} });
+    },
+  };
+}
+
+Deno.test("executeReports: empty markdown report skips persistence", async () => {
+  const registry = new ReportRegistry();
+  registry.register("test-empty", makeEmptyReport("method"));
+
+  const { repo, saved } = createInMemoryDataRepo();
+  const modelType = ModelType.create("test/model");
+  const context = makeMethodContext(repo, modelType);
+
+  const summary = await executeReports(
+    registry,
+    context,
+    modelType,
+    "test-id",
+    { require: ["test-empty"] },
+    {},
+    undefined,
+    "run",
+    undefined,
+  );
+
+  assertEquals(summary.failures, 0);
+  assertEquals(summary.results.length, 1);
+  assertEquals(summary.results[0].success, true);
+  assertEquals(summary.results[0].dataHandles, []);
+  assertEquals(saved.length, 0);
+});
+
+Deno.test("executeReports: whitespace-only markdown report skips persistence", async () => {
+  const registry = new ReportRegistry();
+  registry.register("test-whitespace", makeWhitespaceReport("method"));
+
+  const { repo, saved } = createInMemoryDataRepo();
+  const modelType = ModelType.create("test/model");
+  const context = makeMethodContext(repo, modelType);
+
+  const summary = await executeReports(
+    registry,
+    context,
+    modelType,
+    "test-id",
+    { require: ["test-whitespace"] },
+    {},
+    undefined,
+    "run",
+    undefined,
+  );
+
+  assertEquals(summary.failures, 0);
+  assertEquals(summary.results.length, 1);
+  assertEquals(summary.results[0].success, true);
+  assertEquals(summary.results[0].dataHandles, []);
+  assertEquals(saved.length, 0);
+});
+
+Deno.test("executeReports: non-empty markdown report persists normally", async () => {
+  const registry = new ReportRegistry();
+  registry.register("test-content", makeReport("method"));
+
+  const { repo, saved } = createInMemoryDataRepo();
+  const modelType = ModelType.create("test/model");
+  const context = makeMethodContext(repo, modelType);
+
+  const summary = await executeReports(
+    registry,
+    context,
+    modelType,
+    "test-id",
+    { require: ["test-content"] },
+    {},
+    undefined,
+    "run",
+    undefined,
+  );
+
+  assertEquals(summary.failures, 0);
+  assertEquals(summary.results.length, 1);
+  assertEquals(summary.results[0].success, true);
+  assertEquals(summary.results[0].dataHandles?.length, 2);
+  assertEquals(saved.length, 2);
+});
+
+Deno.test("executeReports: empty markdown report does not fire onReportCompleted", async () => {
+  const registry = new ReportRegistry();
+  registry.register("test-empty", makeEmptyReport("method"));
+
+  const { repo } = createInMemoryDataRepo();
+  const modelType = ModelType.create("test/model");
+  const context = makeMethodContext(repo, modelType);
+
+  let completedCalled = false;
+  const events: ReportEventCallback = {
+    onReportStarted: () => {},
+    onReportCompleted: () => {
+      completedCalled = true;
+    },
+    onReportFailed: () => {},
+  };
+
+  await executeReports(
+    registry,
+    context,
+    modelType,
+    "test-id",
+    { require: ["test-empty"] },
+    {},
+    events,
+    "run",
+    undefined,
+  );
+
+  assertEquals(completedCalled, false);
+});
+
+Deno.test("executeReports: mixed empty and non-empty reports persist only non-empty", async () => {
+  const registry = new ReportRegistry();
+  registry.register("test-empty", makeEmptyReport("method"));
+  registry.register("test-content", makeReport("method"));
+
+  const { repo, saved } = createInMemoryDataRepo();
+  const modelType = ModelType.create("test/model");
+  const context = makeMethodContext(repo, modelType);
+
+  const summary = await executeReports(
+    registry,
+    context,
+    modelType,
+    "test-id",
+    { require: ["test-empty", "test-content"] },
+    {},
+    undefined,
+    "run",
+    undefined,
+  );
+
+  assertEquals(summary.failures, 0);
+  assertEquals(summary.results.length, 2);
+
+  const emptyResult = summary.results.find((r) => r.name === "test-empty");
+  const contentResult = summary.results.find((r) => r.name === "test-content");
+  assertEquals(emptyResult?.dataHandles, []);
+  assertEquals(contentResult?.dataHandles?.length, 2);
+  assertEquals(saved.length, 2);
 });
