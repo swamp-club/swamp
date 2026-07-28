@@ -526,7 +526,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   ): Promise<Data[]> {
     if (!isUuid(modelId)) {
       logger
-        .warn`findAllForModel called with model name ${modelId} instead of a UUID — use context.readModelData(${modelId}) for cross-model access by name`;
+        .debug`findAllForModel called with model name ${modelId} instead of a UUID — use context.readModelData(${modelId}) for cross-model access by name`;
     }
     type = coerceModelType(type);
     const dataDir = this.getModelDataDir(type, modelId);
@@ -743,7 +743,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   ): Promise<Uint8Array | null> {
     if (!isUuid(modelId)) {
       logger
-        .warn`getContent called with model name ${modelId} instead of a UUID — use context.readModelData(${modelId}) for cross-model access by name`;
+        .debug`getContent called with model name ${modelId} instead of a UUID — use context.readModelData(${modelId}) for cross-model access by name`;
     }
     type = coerceModelType(type);
     const versionToRead = version ??
