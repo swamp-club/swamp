@@ -875,10 +875,14 @@ export const serveCommand = new Command()
   )
   .option(
     "--detach-runs",
-    "Runs survive client disconnection. When enabled, a WebSocket close " +
-      "detaches the client from the run instead of cancelling it. " +
-      "Clients can re-attach to a running workflow by run ID via the run.attach protocol message. " +
-      "Without this flag, runs are cancelled when the client disconnects (the default, matching existing behavior)",
+    "Durable run mode. Enables two related behaviors:\n" +
+      "  1. Client disconnect: a WebSocket close detaches the client instead of cancelling the run; " +
+      "clients can re-attach by run ID.\n" +
+      "  2. Process restart: webhook and cron runs are queued to a local SQLite database before " +
+      "being acknowledged and replayed if the process dies before executing them; in-flight runs " +
+      "interrupted by shutdown or crash are marked failed with an interrupt_reason tag and can be " +
+      "resumed via 'swamp workflow resume --from <step>'.\n" +
+      "Without this flag, runs are cancelled on disconnect and lost on restart (the default).",
   )
   .option(
     "--hot-reload",

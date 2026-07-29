@@ -1035,3 +1035,102 @@ Deno.test("WorkflowRun.resetForResumeFrom: does not reset jobs without target st
   assertEquals(run.jobs[1].status, "pending");
   assertEquals(run.jobs[1].steps[0].status, "pending");
 });
+
+// interrupt() tests
+
+Deno.test("WorkflowRun.interrupt: marks running run as failed with interrupt tag", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+
+  run.interrupt("server_shutdown");
+
+  assertEquals(run.status, "failed");
+  assertEquals(run.tags["interrupt_reason"], "server_shutdown");
+  assertEquals(run.completedAt instanceof Date, true);
+});
+
+Deno.test("WorkflowRun.interrupt: resets running steps to failed", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+
+  run.interrupt("server_crash");
+
+  assertEquals(run.jobs[0].steps[0].status, "failed");
+  assertEquals(
+    run.jobs[0].steps[0].error,
+    "interrupted: server_crash",
+  );
+  assertEquals(run.jobs[0].status, "failed");
+});
+
+Deno.test("WorkflowRun.interrupt: leaves succeeded steps untouched", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.jobs[0].steps[0].succeed();
+  run.jobs[0].steps[1].start();
+
+  run.interrupt("server_shutdown");
+
+  assertEquals(run.jobs[0].steps[0].status, "succeeded");
+  assertEquals(run.jobs[0].steps[1].status, "failed");
+});
+
+Deno.test("WorkflowRun.interrupt: no-ops on succeeded run", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.jobs[0].steps[0].succeed();
+  run.jobs[0].steps[1].start();
+  run.jobs[0].steps[1].succeed();
+  run.jobs[0].succeed();
+  run.jobs[1].start();
+  run.jobs[1].steps[0].start();
+  run.jobs[1].steps[0].succeed();
+  run.jobs[1].succeed();
+  run.complete();
+
+  run.interrupt("server_shutdown");
+
+  assertEquals(run.status, "succeeded");
+});
+
+Deno.test("WorkflowRun.interrupt: no-ops on already failed run", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.jobs[0].steps[0].fail("original error");
+  run.jobs[0].fail();
+  run.complete();
+
+  run.interrupt("server_shutdown");
+
+  assertEquals(run.status, "failed");
+  assertEquals(run.tags["interrupt_reason"], undefined);
+});
+
+Deno.test("WorkflowRun.interrupt: converts cancelled run to failed", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.cancel("user cancelled");
+
+  run.interrupt("server_shutdown");
+
+  assertEquals(run.status, "failed");
+  assertEquals(run.tags["interrupt_reason"], "server_shutdown");
+});

@@ -194,28 +194,49 @@ export function replayPendingRuns(deps: ReplayPendingRunsDeps): number {
 
   let replayed = 0;
   for (const entry of pending) {
-    if (entry.source === "webhook" && deps.webhookService) {
-      deps.webhookService.enqueueForReplay({
-        pendingRunId: entry.id,
-        workflowIdOrName: entry.workflowIdOrName,
-        route: entry.route ?? "",
-        payload: entry.payload ? JSON.parse(entry.payload) : {},
-        traceparent: entry.traceparent,
-        tracestate: entry.tracestate,
+    try {
+      if (entry.source === "webhook" && deps.webhookService) {
+        let payload: unknown = {};
+        if (entry.payload) {
+          try {
+            payload = JSON.parse(entry.payload);
+          } catch {
+            logger
+              .warn`Discarding pending run ${entry.id}: corrupt payload`;
+            deps.runTracker.deletePendingRun(entry.id);
+            continue;
+          }
+        }
+        deps.webhookService.enqueueForReplay({
+          pendingRunId: entry.id,
+          workflowIdOrName: entry.workflowIdOrName,
+          route: entry.route ?? "",
+          payload: payload as Record<string, unknown>,
+          traceparent: entry.traceparent,
+          tracestate: entry.tracestate,
+        });
+        replayed++;
+        logger
+          .info`Replayed pending webhook run for ${entry.workflowIdOrName}`;
+      } else if (entry.source === "cron" && deps.scheduledExecution) {
+        deps.scheduledExecution.enqueueForReplay({
+          pendingRunId: entry.id,
+          workflowIdOrName: entry.workflowIdOrName,
+        });
+        replayed++;
+        logger
+          .info`Replayed pending cron run for ${entry.workflowIdOrName}`;
+      } else {
+        deps.runTracker.deletePendingRun(entry.id);
+        logger
+          .warn`Discarding pending run ${entry.id} (source: ${entry.source}, no matching service)`;
+      }
+    } catch (err) {
+      logger.warn("Failed to replay pending run {id}: {error}", {
+        id: entry.id,
+        error: err instanceof Error ? err.message : String(err),
       });
-      replayed++;
-      logger.info`Replayed pending webhook run for ${entry.workflowIdOrName}`;
-    } else if (entry.source === "cron" && deps.scheduledExecution) {
-      deps.scheduledExecution.enqueueForReplay({
-        pendingRunId: entry.id,
-        workflowIdOrName: entry.workflowIdOrName,
-      });
-      replayed++;
-      logger.info`Replayed pending cron run for ${entry.workflowIdOrName}`;
-    } else {
       deps.runTracker.deletePendingRun(entry.id);
-      logger
-        .warn`Discarding pending run ${entry.id} (source: ${entry.source}, no matching service)`;
     }
   }
 
