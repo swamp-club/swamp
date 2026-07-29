@@ -40,6 +40,7 @@ function createTestDeps(
     resolveKinds?: (source: SwampSource) => ExtensionKind[];
     /** Override the glob expansion for the next call. */
     expandSource?: (source: SwampSource) => SwampSource[];
+    defaultKindDirs?: string[];
   } = {},
 ): TestDeps {
   const state = { written: null as SwampSourcesConfig | null };
@@ -56,6 +57,7 @@ function createTestDeps(
     resolveSkills: () => Promise.resolve([]),
     copySkills: () => Promise.resolve([]),
     cleanupSkills: () => Promise.resolve(),
+    defaultKindDirs: options.defaultKindDirs ?? [],
     get written() {
       return state.written;
     },
@@ -150,6 +152,54 @@ Deno.test("sourceAdd: rejects empty path", async () => {
   const error = findError(events);
   assertEquals(error?.kind, "error");
   assertEquals(deps.written, null);
+});
+
+// ----------------------------------------------------------------
+// swamp-club#1419: reject sources that overlap default scan dirs.
+// ----------------------------------------------------------------
+
+Deno.test("sourceAdd: rejects path that matches a default kind dir", async () => {
+  const deps = createTestDeps({
+    defaultKindDirs: ["extensions/models", "extensions/vaults"],
+    resolveKinds: () => ["models"],
+  });
+  const events = await collectEvents(
+    sourceAdd(ctx, deps, "extensions/models"),
+  );
+
+  const error = findError(events);
+  assertEquals(error?.kind, "error");
+  if (error?.kind === "error") {
+    assertStringIncludes(error.error.message, "already scanned");
+  }
+  assertEquals(deps.written, null);
+});
+
+Deno.test("sourceAdd: rejects path with leading ./ that normalizes to default dir", async () => {
+  const deps = createTestDeps({
+    defaultKindDirs: ["extensions/models"],
+    resolveKinds: () => ["models"],
+  });
+  const events = await collectEvents(
+    sourceAdd(ctx, deps, "./extensions/models"),
+  );
+
+  const error = findError(events);
+  assertEquals(error?.kind, "error");
+  assertEquals(deps.written, null);
+});
+
+Deno.test("sourceAdd: allows path that does not overlap default dirs", async () => {
+  const deps = createTestDeps({
+    defaultKindDirs: ["extensions/models", "extensions/vaults"],
+    resolveKinds: () => ["models"],
+  });
+  const events = await collectEvents(
+    sourceAdd(ctx, deps, "/external/shared-extensions"),
+  );
+
+  const completed = findCompleted(events);
+  assertEquals(completed?.kind, "completed");
 });
 
 // ----------------------------------------------------------------
