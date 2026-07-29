@@ -31,16 +31,21 @@ import {
   buildAggregateState,
   consumeStream,
   createAuditTimelineDeps,
+  createDatastoreSetupDeps,
   createDatastoreStatusDeps,
   createDoctorSecretsDeps,
   createDoctorVaultsDeps,
   createExtensionInfoDeps,
   createExtensionListDeps,
+  createExtensionPullDeps,
   createExtensionRmDeps,
   createExtensionUpdateDeps,
+  createInstallContext,
   createLibSwampContext,
+  createVaultMigrateDeps,
   createWorkerListDeps,
   createWorkerQueueListDeps,
+  datastoreSetupExtension,
   datastoreStatus,
   doctorDatastores,
   type DoctorDatastoresDeps,
@@ -54,14 +59,20 @@ import {
   extensionInfo,
   extensionInstall,
   extensionList,
+  extensionPull,
   extensionRm,
   extensionSearch,
   type ExtensionSearchDeps,
   extensionUpdate,
   LockfileRepository,
+  parseExtensionRef,
   ReconcileFromDiskService,
   type ReconcileTransition,
   resolveServerUrl,
+  UpgradeExtensionService,
+  validateExtensionName,
+  vaultMigrate,
+  vaultMigratePreview,
   workerList,
   workerQueueList,
 } from "../../libswamp/mod.ts";
@@ -76,9 +87,13 @@ import { createExtensionInstallDeps } from "../../cli/create_extension_install_d
 import { resolveModelsDir } from "../../cli/resolve_models_dir.ts";
 import type {
   AuditTimelinePayload,
+  DatastoreSetupExtensionPayload,
   ExtensionInfoPayload,
+  ExtensionPullPayload,
   ExtensionRmPayload,
   ExtensionSearchPayload,
+  ExtensionUpdatePayload,
+  VaultMigratePayload,
   WorkerListPayload,
   WorkerProbeResult,
   WorkerVerifyPayload,
@@ -596,6 +611,111 @@ export async function handleExtensionInstall(
   }
 }
 
+export async function handleExtensionPull(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: ExtensionPullPayload,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "model",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  let catalog: ExtensionCatalogStore | undefined;
+  try {
+    const repoDir = ctx.repoDir;
+    const ref = parseExtensionRef(payload.extensionName);
+    validateExtensionName(ref.name);
+
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(RepoPath.create(repoDir));
+    const modelsDir = resolveModelsDir(marker);
+    const absoluteModelsDir = isAbsolute(modelsDir)
+      ? modelsDir
+      : resolve(repoDir, modelsDir);
+    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+
+    const tools = marker?.tools?.length ? marker.tools : ["claude"];
+    const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
+
+    const denoRuntime = new EmbeddedDenoRuntime();
+    catalog = new ExtensionCatalogStore(
+      swampPath(repoDir, "_extension_catalog.db"),
+    );
+
+    const serverUrl = resolveServerUrl();
+    const deps = await createExtensionPullDeps(
+      serverUrl,
+      lockfilePath,
+      skillsDirs,
+      repoDir,
+    );
+    const repository = new ExtensionRepository({
+      catalog,
+      lockfileRepository: deps.lockfileRepository,
+      repoRoot: repoDir,
+      localManifestIdentity: readLocalManifestIdentity(repoDir),
+    });
+
+    const libCtx = createLibSwampContext();
+    const pullDeps = {
+      getExtension: deps.getExtension,
+      getLatestVersion: deps.getLatestVersion,
+      downloadArchive: deps.downloadArchive,
+      getChecksum: deps.getChecksum,
+      lockfileRepository: deps.lockfileRepository,
+      skillsDirs,
+      repoDir,
+      alreadyPulled: new Set<string>(),
+      depth: 0,
+      denoRuntime,
+      repository,
+    };
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      extensionPull(libCtx, pullDeps, {
+        ref,
+        force: payload.force ?? false,
+        channel: payload.channel,
+      }),
+      {
+        installing: () => {},
+        deprecated_warning: () => {},
+        "orphans-pruned": () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "extension.pull",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "extension_pull_failed", message);
+  } finally {
+    catalog?.close();
+  }
+}
+
 export async function handleExtensionRm(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -723,6 +843,264 @@ export async function handleExtensionOutdated(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "extension_outdated_failed", message);
+  }
+}
+
+export async function handleExtensionUpdate(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  controller: AbortController,
+  principal: Principal | null,
+  payload?: ExtensionUpdatePayload,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "model",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  let catalog: ExtensionCatalogStore | undefined;
+  try {
+    const libCtx = createLibSwampContext();
+    const logger = getSwampLogger(["serve", "extension", "update"]);
+    const repoDir = ctx.repoDir;
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(RepoPath.create(repoDir));
+    const modelsDir = resolveModelsDir(marker);
+    const absoluteModelsDir = isAbsolute(modelsDir)
+      ? modelsDir
+      : resolve(repoDir, modelsDir);
+    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+
+    const tools = marker?.tools?.length ? marker.tools : ["claude"];
+    const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
+
+    const denoRuntime = new EmbeddedDenoRuntime();
+    catalog = new ExtensionCatalogStore(
+      swampPath(repoDir, "_extension_catalog.db"),
+    );
+
+    const serverUrl = resolveServerUrl();
+    const deps = await createExtensionUpdateDeps({
+      lockfilePath,
+      serverUrl,
+      installExtension: async (
+        name: string,
+        version: string,
+        channel?: string,
+      ) => {
+        const installCtx = await createInstallContext(serverUrl, {
+          logger,
+          lockfilePath,
+          skillsDirs,
+          repoDir,
+          force: true,
+          channel,
+        });
+        const repository = new ExtensionRepository({
+          catalog: catalog!,
+          lockfileRepository: installCtx.lockfileRepository,
+          repoRoot: repoDir,
+        });
+        return await new UpgradeExtensionService({
+          denoRuntime,
+          repository,
+        }).execute(name, version, installCtx);
+      },
+    });
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      extensionUpdate(libCtx, deps, {
+        extensionName: payload?.extensionName,
+        checkOnly: payload?.checkOnly ?? false,
+      }),
+      {
+        no_extensions: () => {},
+        extension_not_installed: () => {},
+        checking: () => {},
+        updating: () => {},
+        "orphans-pruned": () => {},
+        "shadowed-by-local": () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "extension.update",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "extension_update_failed", message);
+  } finally {
+    catalog?.close();
+  }
+}
+
+export async function handleDatastoreSetupExtension(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: DatastoreSetupExtensionPayload,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "model",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const repoDir = ctx.repoDir;
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(RepoPath.create(repoDir));
+    const deps = createDatastoreSetupDeps(repoDir);
+
+    const MAX_TIMEOUT_SECONDS = 21600;
+    const syncTimeoutMsOverride = payload.timeout != null
+      ? Math.min(payload.timeout, MAX_TIMEOUT_SECONDS) * 1000
+      : undefined;
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      datastoreSetupExtension(libCtx, deps, {
+        type: payload.type,
+        config: payload.config,
+        repoDir,
+        repoId: marker?.repoId,
+        skipMigration: payload.skipMigration ?? false,
+        hydrationStrategy: payload.hydrationStrategy as
+          | "full"
+          | "lazy"
+          | undefined,
+        namespace: payload.namespace,
+        syncTimeoutMsOverride,
+      }),
+      {
+        validating: () => {},
+        migrating: () => {},
+        hydrating: () => {},
+        warning: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "datastore.setup.extension",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const raw = error instanceof Error
+      ? error
+      : typeof error === "object" && error !== null && "message" in error
+      ? (error as { message: string }).message
+      : error;
+    const message = sanitizeErrorForClient(raw);
+    sendError(
+      socket,
+      requestId,
+      "datastore_setup_extension_failed",
+      message,
+    );
+  }
+}
+
+export async function handleVaultMigrate(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: VaultMigratePayload,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "model",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const repoDir = ctx.repoDir;
+    const deps = await createVaultMigrateDeps(repoDir);
+
+    await vaultMigratePreview(libCtx, deps, {
+      vaultName: payload.vaultName,
+      targetType: payload.targetType,
+      targetConfig: payload.targetConfig,
+      repoDir,
+    });
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      vaultMigrate(libCtx, deps, {
+        vaultName: payload.vaultName,
+        targetType: payload.targetType,
+        targetConfig: payload.targetConfig,
+        repoDir,
+      }),
+      {
+        copying_secret: () => {},
+        updating_config: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "vault.migrate",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const raw = error instanceof Error
+      ? error
+      : typeof error === "object" && error !== null && "message" in error
+      ? (error as { message: string }).message
+      : error;
+    const message = sanitizeErrorForClient(raw);
+    sendError(socket, requestId, "vault_migrate_failed", message);
   }
 }
 

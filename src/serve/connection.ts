@@ -92,6 +92,7 @@ import {
 } from "./handlers/report_handlers.ts";
 import {
   handleAuditTimeline,
+  handleDatastoreSetupExtension,
   handleDatastoreStatus,
   handleDoctorDatastores,
   handleDoctorExtensions,
@@ -102,10 +103,13 @@ import {
   handleExtensionInstall,
   handleExtensionList,
   handleExtensionOutdated,
+  handleExtensionPull,
   handleExtensionRm,
   handleExtensionSearch,
+  handleExtensionUpdate,
   handleRunDoctor,
   handleRunHistory,
+  handleVaultMigrate,
   handleWorkerList,
   handleWorkerQueueList,
   handleWorkerVerify,
@@ -710,6 +714,29 @@ const DatastoreStatusRequestSchema = z.object({
   id: z.string().min(1).max(256),
 });
 
+const DatastoreSetupExtensionRequestSchema = z.object({
+  type: z.literal("datastore.setup.extension"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    type: z.string(),
+    config: z.record(z.string(), z.unknown()),
+    skipMigration: z.boolean().optional(),
+    hydrationStrategy: z.string().optional(),
+    namespace: z.string().optional(),
+    timeout: z.number().optional(),
+  }),
+});
+
+const VaultMigrateRequestSchema = z.object({
+  type: z.literal("vault.migrate"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    vaultName: z.string(),
+    targetType: z.string(),
+    targetConfig: z.record(z.string(), z.unknown()).optional(),
+  }),
+});
+
 // ── Extension operation schemas ─────────────────────────────────────
 
 const ExtensionListRequestSchema = z.object({
@@ -748,6 +775,16 @@ const ExtensionInstallRequestSchema = z.object({
   id: z.string().min(1).max(256),
 });
 
+const ExtensionPullRequestSchema = z.object({
+  type: z.literal("extension.pull"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    extensionName: z.string(),
+    force: z.boolean().optional(),
+    channel: z.string().optional(),
+  }),
+});
+
 const ExtensionRmRequestSchema = z.object({
   type: z.literal("extension.rm"),
   id: z.string().min(1).max(256),
@@ -759,6 +796,15 @@ const ExtensionRmRequestSchema = z.object({
 const ExtensionOutdatedRequestSchema = z.object({
   type: z.literal("extension.outdated"),
   id: z.string().min(1).max(256),
+});
+
+const ExtensionUpdateRequestSchema = z.object({
+  type: z.literal("extension.update"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    extensionName: z.string().optional(),
+    checkOnly: z.boolean().optional(),
+  }).optional(),
 });
 
 // ── Doctor operation schemas ────────────────────────────────────────
@@ -858,12 +904,16 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   WorkerQueueListRequestSchema,
   WorkerVerifyRequestSchema,
   DatastoreStatusRequestSchema,
+  DatastoreSetupExtensionRequestSchema,
+  VaultMigrateRequestSchema,
   ExtensionListRequestSchema,
   ExtensionSearchRequestSchema,
   ExtensionInfoRequestSchema,
   ExtensionInstallRequestSchema,
+  ExtensionPullRequestSchema,
   ExtensionRmRequestSchema,
   ExtensionOutdatedRequestSchema,
+  ExtensionUpdateRequestSchema,
   DoctorVaultsRequestSchema,
   DoctorSecretsRequestSchema,
   DoctorWorkflowsRequestSchema,
@@ -1557,6 +1607,26 @@ export function handleMessage(
         principal,
       );
       break;
+    case "datastore.setup.extension":
+      task = handleDatastoreSetupExtension(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
+    case "vault.migrate":
+      task = handleVaultMigrate(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
     case "extension.list":
       task = handleExtensionList(
         socket,
@@ -1595,6 +1665,16 @@ export function handleMessage(
         principal,
       );
       break;
+    case "extension.pull":
+      task = handleExtensionPull(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
     case "extension.rm":
       task = handleExtensionRm(
         socket,
@@ -1612,6 +1692,16 @@ export function handleMessage(
         request.id,
         controller,
         principal,
+      );
+      break;
+    case "extension.update":
+      task = handleExtensionUpdate(
+        socket,
+        ctx,
+        request.id,
+        controller,
+        principal,
+        request.payload,
       );
       break;
     case "doctor.datastores":

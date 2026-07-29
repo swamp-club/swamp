@@ -44,6 +44,7 @@ import {
   extensionPull,
   type ExtensionPullDeps,
   type ExtensionRegistryInfo,
+  type InstallResult,
   type LockfileRepository,
   parseExtensionRef,
   resolveServerUrl,
@@ -55,6 +56,13 @@ import {
   renderExtensionPullCancelled,
 } from "../../presentation/renderers/extension_pull.ts";
 import { ReleaseChannel } from "../../domain/extensions/release_channel.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { ExtensionPullResponse } from "../../serve/protocol.ts";
 
 // Re-export types that other CLI commands depend on
 export {
@@ -186,108 +194,139 @@ export async function pullExtension(
   }
 }
 
-export const extensionPullCommand = new Command()
-  .name("pull")
-  .description("Pull an extension from the swamp registry")
-  .example("Pull an extension", "swamp extension pull @stack72/aws-ec2")
-  .example("Force re-pull", "swamp extension pull @stack72/aws-ec2 --force")
-  .arguments("<extension:string>")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option("-y, --yes", "Overwrite existing files without prompting")
-  .option(
-    "--force",
-    "Overwrite existing files without prompting (alias for --yes)",
-  )
-  .option(
-    "--channel <channel:string>",
-    "Release channel: 'beta', 'rc', or 'stable' (default: stable)",
-  )
-  .action(async function (options: AnyOptions, extension: string) {
-    let channel: string | undefined = options.channel;
-    if (
-      channel !== undefined && !ReleaseChannel.isValid(channel)
-    ) {
-      throw new UserError(
-        `Invalid channel: "${channel}". Must be one of: beta, rc, stable.`,
-      );
-    }
-    if (channel === "stable") {
-      channel = undefined;
-    }
-
-    const ctx = createContext(options as GlobalOptions, ["extension", "pull"]);
-    ctx.logger.debug`Starting extension pull`;
-
-    // 1. Validate repo (lightweight — no datastore resolution, so pulling
-    // the repo's own datastore extension doesn't circular-fail; see #445)
-    const { repoDir, marker } = await requireRepoMarker(
-      resolveRepoDir(options.repoDir),
+export const extensionPullCommand = withRemoteOptions(
+  new Command()
+    .name("pull")
+    .description("Pull an extension from the swamp registry")
+    .example("Pull an extension", "swamp extension pull @stack72/aws-ec2")
+    .example("Force re-pull", "swamp extension pull @stack72/aws-ec2 --force")
+    .arguments("<extension:string>")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option("-y, --yes", "Overwrite existing files without prompting")
+    .option(
+      "--force",
+      "Overwrite existing files without prompting (alias for --yes)",
+    )
+    .option(
+      "--channel <channel:string>",
+      "Release channel: 'beta', 'rc', or 'stable' (default: stable)",
+    ),
+).action(async function (options: AnyOptions, extension: string) {
+  let channel: string | undefined = options.channel;
+  if (
+    channel !== undefined && !ReleaseChannel.isValid(channel)
+  ) {
+    throw new UserError(
+      `Invalid channel: "${channel}". Must be one of: beta, rc, stable.`,
     );
+  }
+  if (channel === "stable") {
+    channel = undefined;
+  }
 
-    // 2. Parse extension reference
-    const ref = parseExtensionRef(extension);
+  const ctx = createContext(options as GlobalOptions, ["extension", "pull"]);
+  ctx.logger.debug`Starting extension pull`;
 
-    // 3. Validate name format
-    validateExtensionName(ref.name);
-    const modelsDir = resolveModelsDir(marker);
-    const absoluteModelsDir = resolve(repoDir, modelsDir);
-    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<ExtensionPullResponse>(
+      { server, token },
+      {
+        type: "extension.pull",
+        payload: {
+          extensionName: extension,
+          force: options.yes ?? options.force ?? false,
+          channel,
+        },
+      },
+    );
+    const renderer = createExtensionPullRenderer(ctx.outputMode);
+    await consumeStream(
+      (async function* () {
+        yield {
+          kind: "completed" as const,
+          data: response.data as unknown as InstallResult,
+        };
+      })(),
+      renderer.handlers(),
+    );
+    return;
+  }
 
-    const tools = marker?.tools?.length ? marker.tools : ["claude"];
-    const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
-    const primarySkillsDirRelative = relative(repoDir, skillsDirs[0]);
-    await warnLegacyExtensionLayout(
+  // 1. Validate repo (lightweight — no datastore resolution, so pulling
+  // the repo's own datastore extension doesn't circular-fail; see #445)
+  const { repoDir, marker } = await requireRepoMarker(
+    resolveRepoDir(options.repoDir),
+  );
+
+  // 2. Parse extension reference
+  const ref = parseExtensionRef(extension);
+
+  // 3. Validate name format
+  validateExtensionName(ref.name);
+  const modelsDir = resolveModelsDir(marker);
+  const absoluteModelsDir = resolve(repoDir, modelsDir);
+  const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+
+  const tools = marker?.tools?.length ? marker.tools : ["claude"];
+  const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
+  const primarySkillsDirRelative = relative(repoDir, skillsDirs[0]);
+  await warnLegacyExtensionLayout(
+    lockfilePath,
+    (msg) => ctx.logger.warn(msg),
+    primarySkillsDirRelative,
+  );
+
+  // 7. Construct W2 service deps (denoRuntime + ExtensionRepository)
+  // so phase 8 fires synchronously at install time. Both are required
+  // for `extensionPull` to route through {@link InstallExtensionService}
+  // — without them it falls back to the pre-W2 free-function path.
+  const denoRuntime = new EmbeddedDenoRuntime();
+  const catalog = new ExtensionCatalogStore(
+    swampPath(repoDir, "_extension_catalog.db"),
+  );
+  try {
+    const serverUrl = resolveServerUrl();
+    const identity = await loadIdentity();
+    const deps = await createExtensionPullDeps(
+      serverUrl,
       lockfilePath,
-      (msg) => ctx.logger.warn(msg),
-      primarySkillsDirRelative,
+      skillsDirs,
+      repoDir,
+      { identity },
     );
+    const repository = new ExtensionRepository({
+      catalog,
+      lockfileRepository: deps.lockfileRepository,
+      repoRoot: repoDir,
+      localManifestIdentity: readLocalManifestIdentity(repoDir),
+    });
 
-    // 7. Construct W2 service deps (denoRuntime + ExtensionRepository)
-    // so phase 8 fires synchronously at install time. Both are required
-    // for `extensionPull` to route through {@link InstallExtensionService}
-    // — without them it falls back to the pre-W2 free-function path.
-    const denoRuntime = new EmbeddedDenoRuntime();
-    const catalog = new ExtensionCatalogStore(
-      swampPath(repoDir, "_extension_catalog.db"),
-    );
-    try {
-      const serverUrl = resolveServerUrl();
-      const identity = await loadIdentity();
-      const deps = await createExtensionPullDeps(
-        serverUrl,
-        lockfilePath,
-        skillsDirs,
-        repoDir,
-        { identity },
-      );
-      const repository = new ExtensionRepository({
-        catalog,
-        lockfileRepository: deps.lockfileRepository,
-        repoRoot: repoDir,
-        localManifestIdentity: readLocalManifestIdentity(repoDir),
-      });
-
-      await pullExtension(ref, {
-        getExtension: deps.getExtension,
-        getLatestVersion: deps.getLatestVersion,
-        downloadArchive: deps.downloadArchive,
-        getChecksum: deps.getChecksum,
-        logger: ctx.logger,
-        lockfileRepository: deps.lockfileRepository,
-        skillsDirs,
-        repoDir,
-        force: options.yes ?? options.force ?? false,
-        outputMode: ctx.outputMode,
-        alreadyPulled: new Set(),
-        depth: 0,
-        channel,
-        denoRuntime,
-        repository,
-      });
-    } finally {
-      catalog.close();
-    }
-  });
+    await pullExtension(ref, {
+      getExtension: deps.getExtension,
+      getLatestVersion: deps.getLatestVersion,
+      downloadArchive: deps.downloadArchive,
+      getChecksum: deps.getChecksum,
+      logger: ctx.logger,
+      lockfileRepository: deps.lockfileRepository,
+      skillsDirs,
+      repoDir,
+      force: options.yes ?? options.force ?? false,
+      outputMode: ctx.outputMode,
+      alreadyPulled: new Set(),
+      depth: 0,
+      channel,
+      denoRuntime,
+      repository,
+    });
+  } finally {
+    catalog.close();
+  }
+});

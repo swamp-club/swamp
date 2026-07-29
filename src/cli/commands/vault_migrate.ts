@@ -23,6 +23,7 @@ import {
   createLibSwampContext,
   createVaultMigrateDeps,
   vaultMigrate,
+  type VaultMigrateData,
   vaultMigratePreview,
 } from "../../libswamp/mod.ts";
 import {
@@ -42,59 +43,69 @@ import {
   promptConfirmation,
   promptLine,
 } from "../prompt_helpers.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { VaultMigrateResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const vaultMigrateCommand = new Command()
-  .name("migrate")
-  .description(
-    `Migrate a vault to a different backend type.
+export const vaultMigrateCommand = withRemoteOptions(
+  new Command()
+    .name("migrate")
+    .description(
+      `Migrate a vault to a different backend type.
 
 Copies all secrets from the current backend to a new one, then updates
 the vault configuration. The vault name stays the same, so all existing
 vault references continue to work without modification.
 
 Both the source and target vaults must be different types.`,
-  )
-  .arguments("<vault_name:string>")
-  .option("--to-type <type:string>", "Target vault type")
-  .option(
-    "--config <config:string>",
-    'Provider-specific config as JSON (e.g. \'{"region":"us-east-1"}\')',
-  )
-  .option("-y, --yes", "Skip confirmation prompt")
-  .option("-f, --force", "Skip confirmation prompt (alias for --yes)")
-  .option("--dry-run", "Preview migration without making changes")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .example(
-    "Migrate to AWS Secrets Manager",
-    'swamp vault migrate my-vault --to-type @swamp/aws-sm --config \'{"region":"us-east-1"}\'',
-  )
-  .example(
-    "Interactive migration",
-    "swamp vault migrate my-vault",
-  )
-  .example(
-    "Preview migration (dry run)",
-    "swamp vault migrate my-vault --to-type @swamp/aws-sm --dry-run",
-  )
-  .action(async function (options: AnyOptions, vaultName: string) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "vault",
-      "migrate",
-    ]);
-    cliCtx.logger.debug`Migrating vault: ${vaultName}`;
+    )
+    .arguments("<vault_name:string>")
+    .option("--to-type <type:string>", "Target vault type")
+    .option(
+      "--config <config:string>",
+      'Provider-specific config as JSON (e.g. \'{"region":"us-east-1"}\')',
+    )
+    .option("-y, --yes", "Skip confirmation prompt")
+    .option("-f, --force", "Skip confirmation prompt (alias for --yes)")
+    .option("--dry-run", "Preview migration without making changes")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .example(
+      "Migrate to AWS Secrets Manager",
+      'swamp vault migrate my-vault --to-type @swamp/aws-sm --config \'{"region":"us-east-1"}\'',
+    )
+    .example(
+      "Interactive migration",
+      "swamp vault migrate my-vault",
+    )
+    .example(
+      "Preview migration (dry run)",
+      "swamp vault migrate my-vault --to-type @swamp/aws-sm --dry-run",
+    ),
+).action(async function (options: AnyOptions, vaultName: string) {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "vault",
+    "migrate",
+  ]);
+  cliCtx.logger.debug`Migrating vault: ${vaultName}`;
 
-    const { repoDir } = await requireInitializedRepoUnlocked({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    if (!options.toType) {
+      throw new UserError(
+        "--to-type is required when using --server (interactive mode is not available remotely)",
+      );
+    }
 
-    // Parse --config JSON if provided
     let targetConfig: Record<string, unknown> | undefined;
     if (options.config) {
       try {
@@ -106,209 +117,254 @@ Both the source and target vaults must be different types.`,
       }
     }
 
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = await createVaultMigrateDeps(repoDir);
-
-    // Resolve --to-type: use the provided value or prompt interactively
-    let toType: string = options.toType;
-    if (!toType) {
-      if (cliCtx.outputMode === "json") {
-        throw new UserError(
-          "Interactive vault migration is not available in JSON mode. Provide --to-type explicitly.",
-        );
-      }
-
-      // Look up the vault to show current type
-      const vaultConfig = await deps.findVaultConfig(vaultName);
-      if (!vaultConfig) {
-        throw new UserError(
-          `Vault '${vaultName}' not found. Use 'swamp vault search' to see available vaults.`,
-        );
-      }
-
-      const currentType = vaultConfig.type;
-      const logger = getSwampLogger(["vault", "migrate"]);
-      logger
-        .info`Vault ${vaultName} is currently using type ${currentType}.`;
-
-      const VAULT_CHOICES = [
-        "AWS Secrets Manager",
-        "Azure Key Vault",
-        "1Password",
-        "Other",
-      ];
-      const chosen = await promptChoice(
-        "Select the target vault provider:",
-        VAULT_CHOICES,
-      );
-
-      if (chosen === "AWS Secrets Manager") {
-        toType = "@swamp/aws-sm";
-        const region = await promptLine("AWS region (e.g. us-east-1): ");
-        if (region) {
-          targetConfig = { region };
-        }
-      } else if (chosen === "Azure Key Vault") {
-        toType = "@swamp/azure-kv";
-        const vaultUrl = await promptLine("Azure Key Vault URL: ");
-        if (vaultUrl) {
-          targetConfig = { vaultUrl };
-        }
-      } else if (chosen === "1Password") {
-        toType = "@swamp/1password";
-        const vault = await promptLine(
-          "1Password vault name (or Enter for default): ",
-        );
-        if (vault) {
-          targetConfig = { vault };
-        }
-      } else {
-        // Other: search for a vault extension by keyword
-        const query = await promptLine(
-          "Search for a vault extension (e.g. hashicorp, doppler): ",
-        );
-        if (!query) {
-          throw new UserError("No search query provided.");
-        }
-
-        const encoder = new TextEncoder();
-        await Deno.stdout.write(
-          encoder.encode(
-            `\nSearching for "${query}" vault extensions…\n`,
-          ),
-        );
-
-        const searchCmd = new Deno.Command(Deno.execPath(), {
-          args: [
-            "extension",
-            "search",
-            query,
-            "--content-type",
-            "vaults",
-            "--json",
-          ],
-          stdout: "piped",
-          stderr: "piped",
-          signal: AbortSignal.timeout(30_000),
-        });
-        const searchOutput = await searchCmd.output();
-        let searchResults: Array<{ type: string; description: string }> = [];
-        if (searchOutput.success) {
-          try {
-            const parsed = JSON.parse(
-              new TextDecoder().decode(searchOutput.stdout),
-            ) as {
-              extensions?: Array<{
-                name: string;
-                description: string;
-              }>;
-            };
-            searchResults = (parsed.extensions ?? []).map((r) => ({
-              type: r.name,
-              description: r.description,
-            }));
-          } catch {
-            // Treat parse failure as no results
-          }
-        }
-
-        if (searchResults.length === 0) {
-          throw new UserError(
-            `No vault extensions found for "${query}". ` +
-              `Browse available extensions at https://swamp-club.com/extensions`,
-          );
-        }
-
-        const typeChoices = searchResults.map((r) =>
-          `${r.type} — ${r.description}`
-        );
-        const chosenExt = await promptChoice(
-          "Which vault extension?",
-          typeChoices,
-        );
-        toType = chosenExt.split(" — ")[0];
-
-        const configJson = await promptLine(
-          `Config JSON for ${toType} (e.g. {}, or Enter to skip): `,
-        );
-        if (configJson) {
-          try {
-            targetConfig = JSON.parse(configJson);
-          } catch {
-            throw new UserError(`Invalid JSON: ${configJson}`);
-          }
-        }
-      }
-    }
-
-    // Phase 1: Preview
-    let preview;
-    try {
-      preview = await vaultMigratePreview(ctx, deps, {
-        vaultName,
-        targetType: toType,
-        targetConfig,
-        repoDir,
-      });
-    } catch (error) {
-      if ("code" in (error as Record<string, unknown>)) {
-        throw new UserError((error as { message: string }).message);
-      }
-      throw error;
-    }
-
-    const logger = getSwampLogger(["vault", "migrate"]);
-
-    if (cliCtx.outputMode === "log") {
-      logger
-        .info`Vault ${preview.vaultName} (${preview.currentType}) has ${preview.secretCount} secret(s).`;
-      logger
-        .info`Target: ${preview.targetTypeName} (${preview.targetType})`;
-    }
-
-    // Phase 2: Dry run or confirmation
-    if (options.dryRun) {
-      if (cliCtx.outputMode === "json") {
-        console.log(JSON.stringify(
-          {
-            dryRun: true,
-            vaultName: preview.vaultName,
-            currentType: preview.currentType,
-            currentTypeName: preview.currentTypeName,
-            targetType: preview.targetType,
-            targetTypeName: preview.targetTypeName,
-            secretCount: preview.secretCount,
-          },
-          null,
-          2,
-        ));
-      } else {
-        logger.info`Dry run — no changes made.`;
-      }
-      return;
-    }
-
-    if (cliCtx.outputMode === "log" && !options.yes && !options.force) {
-      const confirmed = await promptConfirmation(
-        `Migrate vault backend from ${preview.currentType} to ${preview.targetType}?`,
-      );
-      if (!confirmed) {
-        renderVaultMigrateCancelled(cliCtx.outputMode);
-        return;
-      }
-    }
-
-    // Phase 3: Execute migration
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<VaultMigrateResponse>(
+      { server, token },
+      {
+        type: "vault.migrate",
+        payload: {
+          vaultName,
+          targetType: options.toType,
+          targetConfig,
+        },
+      },
+    );
     const renderer = createVaultMigrateRenderer(cliCtx.outputMode);
     await consumeStream(
-      vaultMigrate(ctx, deps, {
-        vaultName,
-        targetType: toType,
-        targetConfig,
-        repoDir,
-      }),
+      (async function* () {
+        yield {
+          kind: "completed" as const,
+          data: response.data as unknown as VaultMigrateData,
+        };
+      })(),
       renderer.handlers(),
     );
+    return;
+  }
 
-    cliCtx.logger.debug("Vault migrate command completed");
+  const { repoDir } = await requireInitializedRepoUnlocked({
+    repoDir: resolveRepoDir(options.repoDir),
+    outputMode: cliCtx.outputMode,
   });
+
+  // Parse --config JSON if provided
+  let targetConfig: Record<string, unknown> | undefined;
+  if (options.config) {
+    try {
+      targetConfig = JSON.parse(options.config);
+    } catch {
+      throw new UserError(
+        `Invalid JSON in --config: ${options.config}`,
+      );
+    }
+  }
+
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = await createVaultMigrateDeps(repoDir);
+
+  // Resolve --to-type: use the provided value or prompt interactively
+  let toType: string = options.toType;
+  if (!toType) {
+    if (cliCtx.outputMode === "json") {
+      throw new UserError(
+        "Interactive vault migration is not available in JSON mode. Provide --to-type explicitly.",
+      );
+    }
+
+    // Look up the vault to show current type
+    const vaultConfig = await deps.findVaultConfig(vaultName);
+    if (!vaultConfig) {
+      throw new UserError(
+        `Vault '${vaultName}' not found. Use 'swamp vault search' to see available vaults.`,
+      );
+    }
+
+    const currentType = vaultConfig.type;
+    const logger = getSwampLogger(["vault", "migrate"]);
+    logger
+      .info`Vault ${vaultName} is currently using type ${currentType}.`;
+
+    const VAULT_CHOICES = [
+      "AWS Secrets Manager",
+      "Azure Key Vault",
+      "1Password",
+      "Other",
+    ];
+    const chosen = await promptChoice(
+      "Select the target vault provider:",
+      VAULT_CHOICES,
+    );
+
+    if (chosen === "AWS Secrets Manager") {
+      toType = "@swamp/aws-sm";
+      const region = await promptLine("AWS region (e.g. us-east-1): ");
+      if (region) {
+        targetConfig = { region };
+      }
+    } else if (chosen === "Azure Key Vault") {
+      toType = "@swamp/azure-kv";
+      const vaultUrl = await promptLine("Azure Key Vault URL: ");
+      if (vaultUrl) {
+        targetConfig = { vaultUrl };
+      }
+    } else if (chosen === "1Password") {
+      toType = "@swamp/1password";
+      const vault = await promptLine(
+        "1Password vault name (or Enter for default): ",
+      );
+      if (vault) {
+        targetConfig = { vault };
+      }
+    } else {
+      // Other: search for a vault extension by keyword
+      const query = await promptLine(
+        "Search for a vault extension (e.g. hashicorp, doppler): ",
+      );
+      if (!query) {
+        throw new UserError("No search query provided.");
+      }
+
+      const encoder = new TextEncoder();
+      await Deno.stdout.write(
+        encoder.encode(
+          `\nSearching for "${query}" vault extensions…\n`,
+        ),
+      );
+
+      const searchCmd = new Deno.Command(Deno.execPath(), {
+        args: [
+          "extension",
+          "search",
+          query,
+          "--content-type",
+          "vaults",
+          "--json",
+        ],
+        stdout: "piped",
+        stderr: "piped",
+        signal: AbortSignal.timeout(30_000),
+      });
+      const searchOutput = await searchCmd.output();
+      let searchResults: Array<{ type: string; description: string }> = [];
+      if (searchOutput.success) {
+        try {
+          const parsed = JSON.parse(
+            new TextDecoder().decode(searchOutput.stdout),
+          ) as {
+            extensions?: Array<{
+              name: string;
+              description: string;
+            }>;
+          };
+          searchResults = (parsed.extensions ?? []).map((r) => ({
+            type: r.name,
+            description: r.description,
+          }));
+        } catch {
+          // Treat parse failure as no results
+        }
+      }
+
+      if (searchResults.length === 0) {
+        throw new UserError(
+          `No vault extensions found for "${query}". ` +
+            `Browse available extensions at https://swamp-club.com/extensions`,
+        );
+      }
+
+      const typeChoices = searchResults.map((r) =>
+        `${r.type} — ${r.description}`
+      );
+      const chosenExt = await promptChoice(
+        "Which vault extension?",
+        typeChoices,
+      );
+      toType = chosenExt.split(" — ")[0];
+
+      const configJson = await promptLine(
+        `Config JSON for ${toType} (e.g. {}, or Enter to skip): `,
+      );
+      if (configJson) {
+        try {
+          targetConfig = JSON.parse(configJson);
+        } catch {
+          throw new UserError(`Invalid JSON: ${configJson}`);
+        }
+      }
+    }
+  }
+
+  // Phase 1: Preview
+  let preview;
+  try {
+    preview = await vaultMigratePreview(ctx, deps, {
+      vaultName,
+      targetType: toType,
+      targetConfig,
+      repoDir,
+    });
+  } catch (error) {
+    if ("code" in (error as Record<string, unknown>)) {
+      throw new UserError((error as { message: string }).message);
+    }
+    throw error;
+  }
+
+  const logger = getSwampLogger(["vault", "migrate"]);
+
+  if (cliCtx.outputMode === "log") {
+    logger
+      .info`Vault ${preview.vaultName} (${preview.currentType}) has ${preview.secretCount} secret(s).`;
+    logger
+      .info`Target: ${preview.targetTypeName} (${preview.targetType})`;
+  }
+
+  // Phase 2: Dry run or confirmation
+  if (options.dryRun) {
+    if (cliCtx.outputMode === "json") {
+      console.log(JSON.stringify(
+        {
+          dryRun: true,
+          vaultName: preview.vaultName,
+          currentType: preview.currentType,
+          currentTypeName: preview.currentTypeName,
+          targetType: preview.targetType,
+          targetTypeName: preview.targetTypeName,
+          secretCount: preview.secretCount,
+        },
+        null,
+        2,
+      ));
+    } else {
+      logger.info`Dry run — no changes made.`;
+    }
+    return;
+  }
+
+  if (cliCtx.outputMode === "log" && !options.yes && !options.force) {
+    const confirmed = await promptConfirmation(
+      `Migrate vault backend from ${preview.currentType} to ${preview.targetType}?`,
+    );
+    if (!confirmed) {
+      renderVaultMigrateCancelled(cliCtx.outputMode);
+      return;
+    }
+  }
+
+  // Phase 3: Execute migration
+  const renderer = createVaultMigrateRenderer(cliCtx.outputMode);
+  await consumeStream(
+    vaultMigrate(ctx, deps, {
+      vaultName,
+      targetType: toType,
+      targetConfig,
+      repoDir,
+    }),
+    renderer.handlers(),
+  );
+
+  cliCtx.logger.debug("Vault migrate command completed");
+});
