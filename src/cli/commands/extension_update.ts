@@ -86,7 +86,7 @@ export const extensionUpdateCommand = withRemoteOptions(
       options.token as string | undefined,
     );
     const response = await requestServerResponse<ExtensionUpdateResponse>(
-      { server, token },
+      { server, token, timeoutMs: 300_000 },
       {
         type: "extension.update",
         payload: {

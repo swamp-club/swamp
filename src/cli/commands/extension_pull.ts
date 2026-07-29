@@ -237,7 +237,7 @@ export const extensionPullCommand = withRemoteOptions(
       options.token as string | undefined,
     );
     const response = await requestServerResponse<ExtensionPullResponse>(
-      { server, token },
+      { server, token, timeoutMs: 300_000 },
       {
         type: "extension.pull",
         payload: {

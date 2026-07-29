@@ -127,7 +127,7 @@ Both the source and target vaults must be different types.`,
       options.token as string | undefined,
     );
     const response = await requestServerResponse<VaultMigrateResponse>(
-      { server, token },
+      { server, token, timeoutMs: 300_000 },
       {
         type: "vault.migrate",
         payload: {
