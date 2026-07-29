@@ -69,6 +69,26 @@ function createMockDataRepo(): UnifiedDataRepository {
       }),
     finalizeVersion: () =>
       Promise.resolve({ size: 0, checksum: "mock-checksum" }),
+    saveDeferred: () =>
+      Promise.resolve({
+        type: TEST_MODEL_TYPE,
+        modelId: "mock",
+        dataName: "mock",
+        version: 1,
+      }),
+    finalizeVersionDeferred: () =>
+      Promise.resolve({
+        receipt: {
+          type: TEST_MODEL_TYPE,
+          modelId: "mock",
+          dataName: "mock",
+          version: 1,
+        },
+        size: 0,
+        checksum: "mock-checksum",
+      }),
+    advanceLatestMarkers: () => Promise.resolve(),
+    rollbackVersions: () => Promise.resolve(),
     getLatestVersionSync: () => null,
     findByNameSync: () => null,
     listVersionsSync: () => [],

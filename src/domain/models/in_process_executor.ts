@@ -150,9 +150,12 @@ export class InProcessExecutor {
     const resources = this.modelDef.resources ?? {};
     const files = this.modelDef.files ?? {};
 
+    const deferred = this.method.rollbackOnFailure === true;
+
     const {
       writeResource,
       getHandles: getResourceHandles,
+      getDeferredReceipts: getResourceReceipts,
     } = createResourceWriter(
       this.context.dataRepository,
       this.context.modelType,
@@ -167,11 +170,13 @@ export class InProcessExecutor {
       this.methodName,
       this.context.onEvent,
       this.context.redactor,
+      deferred,
     );
 
     const {
       createFileWriter,
       getHandles: getFileHandles,
+      getDeferredReceipts: getFileReceipts,
     } = createFileWriterFactory(
       this.context.dataRepository,
       this.context.modelType,
@@ -183,6 +188,7 @@ export class InProcessExecutor {
       this.definition.tags,
       this.context.runtimeTags,
       this.definition.name,
+      deferred,
     );
 
     const readResource = createResourceReader(
@@ -273,6 +279,15 @@ export class InProcessExecutor {
       );
 
       const durationMs = performance.now() - start;
+
+      if (deferred) {
+        const receipts = [
+          ...getResourceReceipts(),
+          ...getFileReceipts(),
+        ];
+        await this.context.dataRepository.advanceLatestMarkers(receipts);
+      }
+
       const writerHandles = [
         ...getResourceHandles(),
         ...getFileHandles(),
@@ -293,10 +308,27 @@ export class InProcessExecutor {
         followUpActions: result.followUpActions,
       };
     } catch (error) {
+      const durationMs = performance.now() - start;
+
+      if (deferred) {
+        const receipts = [
+          ...getResourceReceipts(),
+          ...getFileReceipts(),
+        ];
+        await this.context.dataRepository.rollbackVersions(receipts);
+
+        return {
+          status: "error",
+          error: error instanceof Error ? error.message : String(error),
+          outputs: [],
+          logs,
+          durationMs,
+        };
+      }
+
       // Collect handles for data that was already written to disk before the
       // throw. Without this, data produced by a method that writes-then-throws
       // (e.g. code-review verdict=FAIL) would be invisible to workflow queries.
-      const durationMs = performance.now() - start;
       const writerHandles = [
         ...getResourceHandles(),
         ...getFileHandles(),

@@ -83,6 +83,7 @@ export interface MethodDefinition<
 > {
   description: string;
   kind?: "create" | "read" | "update" | "delete" | "list" | "action";
+  rollbackOnFailure?: boolean;
   arguments: TArgs;
   execute(
     args: z.infer<TArgs>,

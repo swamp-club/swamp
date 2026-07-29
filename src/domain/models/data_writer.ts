@@ -21,7 +21,10 @@ import { z } from "zod";
 import { getLogger } from "@logtape/logtape";
 import { Data, isReservedDataName } from "../data/mod.ts";
 import type { DataId, OwnerDefinition } from "../data/mod.ts";
-import type { UnifiedDataRepository } from "../data/repositories.ts";
+import type {
+  DeferredWriteReceipt,
+  UnifiedDataRepository,
+} from "../data/repositories.ts";
 import type { ModelType } from "./model_type.ts";
 import type { MethodExecutionEvent } from "./method_events.ts";
 import type {
@@ -68,6 +71,8 @@ export class DefaultDataWriter implements DataWriter {
   private data: Data | null = null;
   private lineBuffer: string[] | null = null;
   private finalized = false;
+  private readonly deferred: boolean;
+  private deferredReceipt: DeferredWriteReceipt | null = null;
 
   constructor(
     repo: UnifiedDataRepository,
@@ -75,19 +80,47 @@ export class DefaultDataWriter implements DataWriter {
     modelId: string,
     options: ResolvedDataWriterOptions,
     callbacks: DataWriterCallbacks = {},
+    deferred = false,
   ) {
     this.repo = repo;
     this.modelType = modelType;
     this.modelId = modelId;
     this.options = options;
     this.callbacks = callbacks;
+    this.deferred = deferred;
     this.dataId = repo.nextId();
     this.name = options.name;
+  }
+
+  getDeferredReceipt(): DeferredWriteReceipt | null {
+    return this.deferredReceipt;
+  }
+
+  getPendingDeferredReceipt(): DeferredWriteReceipt | null {
+    if (!this.deferred || this.finalized || !this.allocated) return null;
+    return {
+      type: this.modelType,
+      modelId: this.modelId,
+      dataName: this.name,
+      version: this.allocated.version,
+    };
   }
 
   async writeAll(content: Uint8Array): Promise<DataHandle> {
     this.ensureNotFinalized();
     const data = this.createDataEntity();
+
+    if (this.deferred) {
+      const receipt = await this.repo.saveDeferred(
+        this.modelType,
+        this.modelId,
+        data,
+        content,
+      );
+      this.deferredReceipt = receipt;
+      this.finalized = true;
+      return this.buildHandle(receipt.version, content.length);
+    }
 
     const saveResult = await this.repo.save(
       this.modelType,
@@ -221,6 +254,19 @@ export class DefaultDataWriter implements DataWriter {
       throw new Error(
         `DataWriter "${this.name}" has not been used — nothing to finalize`,
       );
+    }
+
+    if (this.deferred) {
+      const { receipt, size } = await this.repo.finalizeVersionDeferred(
+        this.modelType,
+        this.modelId,
+        this.data,
+        this.allocated.version,
+        this.allocated.priorVersions,
+      );
+      this.deferredReceipt = receipt;
+      this.finalized = true;
+      return this.buildHandle(this.allocated.version, size);
     }
 
     const { size, checksum: _checksum } = await this.repo.finalizeVersion(
@@ -456,6 +502,7 @@ export function createResourceWriter(
   methodName?: string,
   onEvent?: (event: MethodExecutionEvent) => void,
   redactor?: SecretRedactor,
+  deferred = false,
 ): {
   writeResource: (
     specName: string,
@@ -464,8 +511,10 @@ export function createResourceWriter(
     overrides?: ResourceWriteOverrides,
   ) => Promise<DataHandle>;
   getHandles: () => DataHandle[];
+  getDeferredReceipts: () => DeferredWriteReceipt[];
 } {
   const handles: DataHandle[] = [];
+  const deferredReceipts: DeferredWriteReceipt[] = [];
   const writerLogger = getLogger([
     "swamp",
     "data-writer",
@@ -639,6 +688,8 @@ export function createResourceWriter(
       modelType,
       modelId,
       resolvedOptions,
+      {},
+      deferred,
     );
 
     const serialized = redactor
@@ -647,10 +698,18 @@ export function createResourceWriter(
     const handle = await writer.writeText(serialized);
     handle.attributes = { ...data };
     handles.push(handle);
+    const receipt = writer.getDeferredReceipt();
+    if (receipt) {
+      deferredReceipts.push(receipt);
+    }
     return handle;
   };
 
-  return { writeResource, getHandles: () => [...handles] };
+  return {
+    writeResource,
+    getHandles: () => [...handles],
+    getDeferredReceipts: () => [...deferredReceipts],
+  };
 }
 
 /**
@@ -826,6 +885,7 @@ export function createFileWriterFactory(
   definitionTags?: Record<string, string>,
   runtimeTags?: Record<string, string>,
   definitionName?: string,
+  deferred = false,
 ): {
   createFileWriter: (
     specName: string,
@@ -833,9 +893,11 @@ export function createFileWriterFactory(
     overrides?: FileWriterOverrides,
   ) => DataWriter;
   getHandles: () => DataHandle[];
+  getDeferredReceipts: () => DeferredWriteReceipt[];
 } {
   const handles: DataHandle[] = [];
   const writers: DefaultDataWriter[] = [];
+  const deferredReceipts: DeferredWriteReceipt[] = [];
 
   const createFileWriter = (
     specName: string,
@@ -956,6 +1018,7 @@ export function createFileWriterFactory(
       modelId,
       resolvedOptions,
       callbacks,
+      deferred,
     );
     writers.push(writer);
 
@@ -969,17 +1032,36 @@ export function createFileWriterFactory(
     writer.writeAll = async (content: Uint8Array) => {
       const handle = await originalWriteAll(content);
       handles.push(handle);
+      const receipt = writer.getDeferredReceipt();
+      if (receipt) {
+        deferredReceipts.push(receipt);
+      }
       return handle;
     };
 
     writer.finalize = async () => {
       const handle = await originalFinalize();
       handles.push(handle);
+      const receipt = writer.getDeferredReceipt();
+      if (receipt) {
+        deferredReceipts.push(receipt);
+      }
       return handle;
     };
 
     return writer;
   };
 
-  return { createFileWriter, getHandles: () => [...handles] };
+  return {
+    createFileWriter,
+    getHandles: () => [...handles],
+    getDeferredReceipts: () => {
+      const receipts = [...deferredReceipts];
+      for (const writer of writers) {
+        const pending = writer.getPendingDeferredReceipt();
+        if (pending) receipts.push(pending);
+      }
+      return receipts;
+    },
+  };
 }
