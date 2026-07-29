@@ -744,6 +744,13 @@ export interface MethodDefinition<
   kind?: MethodKind;
 
   /**
+   * When true, writes use deferred-latest mode: data persists to disk but
+   * the latest marker is not advanced until the method succeeds. On failure,
+   * all written version directories are deleted.
+   */
+  rollbackOnFailure?: boolean;
+
+  /**
    * Zod schema for validating per-method arguments.
    * Arguments are validated before execute() is called.
    */

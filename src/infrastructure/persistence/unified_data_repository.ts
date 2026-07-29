@@ -45,6 +45,7 @@ import type {
 import type { CatalogStore } from "./catalog_store.ts";
 import { type Namespace, SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
 import {
+  type DeferredWriteReceipt,
   type GarbageCollectionResult,
   OwnershipValidationError,
   type UnifiedDataRepository,
@@ -642,6 +643,95 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return { version: newVersion };
   }
 
+  async saveDeferred(
+    type: ModelType,
+    modelId: string,
+    data: Data,
+    content: Uint8Array,
+  ): Promise<DeferredWriteReceipt> {
+    if (isReservedDataName(data.name)) {
+      throw new Error(
+        `Data name '${data.name}' is reserved for internal use. Use a different name.`,
+      );
+    }
+
+    await this.notifyDirty(this.getDataNameDir(type, modelId, data.name));
+
+    const existing = await this.findByName(type, modelId, data.name);
+    if (existing) {
+      if (!existing.isOwnedBy(data.ownerDefinition)) {
+        throw new OwnershipValidationError(
+          data.name,
+          existing.ownerDefinition,
+          data.ownerDefinition,
+        );
+      }
+    }
+
+    const { version: newVersion } = await this.atomicAllocateVersionDir(
+      type,
+      modelId,
+      data.name,
+    );
+
+    const dataToSave = data.withNewVersion({
+      version: newVersion,
+      size: content.length,
+      checksum: await this.computeChecksum(content),
+    });
+
+    const metadataPath = this.getMetadataPath(
+      type,
+      modelId,
+      data.name,
+      newVersion,
+    );
+    const boundary = this.baseDir;
+    await assertSafePath(metadataPath, boundary);
+    const metadata = dataToSave.toData();
+    const cleanData = JSON.parse(JSON.stringify(metadata));
+    const metadataContent = stringifyYaml(cleanData as Record<string, unknown>);
+    await atomicWriteTextFile(metadataPath, metadataContent);
+
+    const contentPath = this.getContentPath(
+      type,
+      modelId,
+      data.name,
+      newVersion,
+    );
+    await assertSafePath(contentPath, boundary);
+    await atomicWriteFile(contentPath, content);
+
+    // Catalog row with is_latest=0 — invisible to latest-based queries
+    this.catalogStore.upsert({
+      namespace: this.namespace,
+      type_normalized: type.normalized,
+      model_id: modelId,
+      data_name: data.name,
+      id: data.id,
+      version: newVersion,
+      is_latest: 0,
+      model_name: dataToSave.tags["modelName"] ?? "",
+      spec_name: dataToSave.tags["specName"] ?? "",
+      data_type: dataToSave.tags["type"] ?? "",
+      content_type: dataToSave.contentType,
+      lifetime: dataToSave.lifetime,
+      owner_type: dataToSave.ownerDefinition.ownerType,
+      streaming: dataToSave.streaming ? 1 : 0,
+      size: dataToSave.size ?? 0,
+      created_at: dataToSave.createdAt.toISOString(),
+      tags: JSON.stringify(dataToSave.tags),
+      owner_ref: dataToSave.ownerDefinition.ownerRef,
+      workflow_run_id: dataToSave.ownerDefinition.workflowRunId ?? "",
+      workflow_name: dataToSave.ownerDefinition.workflowName ?? "",
+      job_name: dataToSave.ownerDefinition.jobName ?? "",
+      step_name: dataToSave.ownerDefinition.stepName ?? "",
+      source: dataToSave.ownerDefinition.source ?? "",
+    });
+
+    return { type, modelId, dataName: data.name, version: newVersion };
+  }
+
   async append(
     type: ModelType,
     modelId: string,
@@ -1143,6 +1233,121 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     }
 
     return { size, checksum };
+  }
+
+  async finalizeVersionDeferred(
+    type: ModelType,
+    modelId: string,
+    data: Data,
+    version: number,
+    _priorVersions?: number[],
+  ): Promise<
+    { receipt: DeferredWriteReceipt; size: number; checksum: string }
+  > {
+    await this.notifyDirty(this.getPath(type, modelId, data.name, version));
+
+    const contentPath = this.getContentPath(type, modelId, data.name, version);
+    const content = await Deno.readFile(contentPath);
+    const size = content.length;
+    const checksum = await this.computeChecksum(content);
+
+    const dataToSave = data.withNewVersion({ version, size, checksum });
+
+    const metadataPath = this.getMetadataPath(
+      type,
+      modelId,
+      data.name,
+      version,
+    );
+    const metadata = dataToSave.toData();
+    const cleanData = JSON.parse(JSON.stringify(metadata));
+    const metadataContent = stringifyYaml(cleanData as Record<string, unknown>);
+    await atomicWriteTextFile(metadataPath, metadataContent);
+
+    this.catalogStore.upsert({
+      namespace: this.namespace,
+      type_normalized: type.normalized,
+      model_id: modelId,
+      data_name: data.name,
+      id: data.id,
+      version,
+      is_latest: 0,
+      model_name: dataToSave.tags["modelName"] ?? "",
+      spec_name: dataToSave.tags["specName"] ?? "",
+      data_type: dataToSave.tags["type"] ?? "",
+      content_type: dataToSave.contentType,
+      lifetime: dataToSave.lifetime,
+      owner_type: dataToSave.ownerDefinition.ownerType,
+      streaming: dataToSave.streaming ? 1 : 0,
+      size: dataToSave.size ?? 0,
+      created_at: dataToSave.createdAt.toISOString(),
+      tags: JSON.stringify(dataToSave.tags),
+      owner_ref: dataToSave.ownerDefinition.ownerRef,
+      workflow_run_id: dataToSave.ownerDefinition.workflowRunId ?? "",
+      workflow_name: dataToSave.ownerDefinition.workflowName ?? "",
+      job_name: dataToSave.ownerDefinition.jobName ?? "",
+      step_name: dataToSave.ownerDefinition.stepName ?? "",
+      source: dataToSave.ownerDefinition.source ?? "",
+    });
+
+    return {
+      receipt: { type, modelId, dataName: data.name, version },
+      size,
+      checksum,
+    };
+  }
+
+  async advanceLatestMarkers(
+    receipts: DeferredWriteReceipt[],
+  ): Promise<void> {
+    for (const receipt of receipts) {
+      try {
+        await this.updateLatestMarker(
+          receipt.type,
+          receipt.modelId,
+          receipt.dataName,
+          receipt.version,
+        );
+        const data = await this.findByName(
+          receipt.type,
+          receipt.modelId,
+          receipt.dataName,
+          receipt.version,
+        );
+        if (data) {
+          this.catalogUpsert(receipt.type, receipt.modelId, data);
+        }
+      } catch (error) {
+        logger
+          .warn`Failed to advance latest marker for ${receipt.dataName} v${receipt.version}: ${error}`;
+      }
+    }
+  }
+
+  async rollbackVersions(
+    receipts: DeferredWriteReceipt[],
+  ): Promise<void> {
+    for (const receipt of receipts) {
+      try {
+        const versionDir = this.getPath(
+          receipt.type,
+          receipt.modelId,
+          receipt.dataName,
+          receipt.version,
+        );
+        await Deno.remove(versionDir, { recursive: true });
+        this.catalogStore.removeVersion(
+          this.namespace,
+          receipt.type.normalized,
+          receipt.modelId,
+          receipt.dataName,
+          receipt.version,
+        );
+      } catch (error) {
+        logger
+          .warn`Failed to rollback version ${receipt.dataName} v${receipt.version}: ${error}`;
+      }
+    }
   }
 
   nextId(): DataId {

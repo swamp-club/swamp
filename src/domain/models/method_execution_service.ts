@@ -822,6 +822,18 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       let result: MethodResult;
       let executionContext: MethodContext = context;
 
+      if (
+        method.rollbackOnFailure &&
+        context.placement &&
+        hasPlacement(context.placement)
+      ) {
+        throw new Error(
+          `Method '${methodName}' declares rollbackOnFailure but has remote ` +
+            `placement — deferred-latest writes are not yet supported for ` +
+            `remote execution. Remove rollbackOnFailure or run locally.`,
+        );
+      }
+
       try {
         if (context.placement && hasPlacement(context.placement)) {
           // Remote placement: the method body runs on a matching worker; the

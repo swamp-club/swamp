@@ -632,6 +632,50 @@ Lightweight reference to data already persisted:
 | `metadata` | Full metadata for the data artifact       |
 | `attributes` | Top-level resource attributes (resource kind only, optional) |
 
+### Write Atomicity (rollbackOnFailure)
+
+By default, `writeResource()` and `createFileWriter()` commit each write
+immediately — the `latest` marker advances and the data is visible to
+`data.latest()` consumers. If a method fails midway, earlier writes persist.
+
+Methods can opt into all-or-nothing write semantics by setting
+`rollbackOnFailure: true` on the method definition:
+
+```typescript
+methods: {
+  readAll: {
+    description: "Read all 96 wells",
+    rollbackOnFailure: true,
+    arguments: z.object({}),
+    execute: async (args, ctx) => {
+      for (const well of wells) {
+        await ctx.writeResource("reading", well, await instrument.read(well));
+      }
+      return {};
+    },
+  },
+}
+```
+
+When `rollbackOnFailure` is true, writes use deferred-latest mode:
+
+1. **During execution**: Data persists to disk but the `latest` marker is not
+   advanced. The catalog row is written with `is_latest=0`. Concurrent readers
+   calling `data.latest()` see the previous version (or nothing).
+2. **On success**: All `latest` markers advance and catalog rows flip to
+   `is_latest=1`. Data becomes visible atomically.
+3. **On failure**: Version directories are deleted and catalog rows are removed.
+   No trace of the failed writes remains.
+
+The deferred-latest approach has no TOCTOU window — markers are never advanced
+during execution, so there is nothing to roll back on failure.
+
+**When NOT to use**: Methods that interact with external systems and write data
+reflecting real-world state should not set this flag. Their writes may be the
+most accurate picture of reality even if the method fails partway. Methods that
+deliberately write-then-throw (e.g. a code-review model that writes results
+then throws on verdict=FAIL) must also leave this flag unset.
+
 ## Output
 
 Each method invocation produces an output record, which gets tracked in the

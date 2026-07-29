@@ -276,6 +276,9 @@ function convertToModelDefinition(
     methods[name] = {
       description: method.description,
       ...(method.kind ? { kind: method.kind as MethodKind } : {}),
+      ...(method.rollbackOnFailure != null
+        ? { rollbackOnFailure: Boolean(method.rollbackOnFailure) }
+        : {}),
       arguments: method.arguments,
       execute: wrapUserExecute(method.execute),
     };
@@ -572,6 +575,9 @@ export const modelKindAdapter: KindAdapter = {
       methods[name] = {
         description: method.description,
         ...(method.kind ? { kind: method.kind as MethodKind } : {}),
+        ...(method.rollbackOnFailure != null
+          ? { rollbackOnFailure: Boolean(method.rollbackOnFailure) }
+          : {}),
         arguments: method.arguments,
         execute: wrapUserExecute(method.execute),
       };

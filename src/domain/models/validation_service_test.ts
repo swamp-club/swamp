@@ -1144,6 +1144,26 @@ function createMockDataRepo(): UnifiedDataRepository {
     rename: () => {
       throw new Error("not implemented");
     },
+    saveDeferred: () =>
+      Promise.resolve({
+        type: ModelType.create("test"),
+        modelId: "",
+        dataName: "",
+        version: 1,
+      }),
+    finalizeVersionDeferred: () =>
+      Promise.resolve({
+        receipt: {
+          type: ModelType.create("test"),
+          modelId: "",
+          dataName: "",
+          version: 1,
+        },
+        size: 0,
+        checksum: "",
+      }),
+    advanceLatestMarkers: () => Promise.resolve(),
+    rollbackVersions: () => Promise.resolve(),
   };
 }
 

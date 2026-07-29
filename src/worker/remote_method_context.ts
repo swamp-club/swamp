@@ -219,6 +219,12 @@ function createRemoteDataRepository(
       unsupported("dataRepository.findAllForModelSync"),
     findAllGlobalSync: () => unsupported("dataRepository.findAllGlobalSync"),
     findByTaggedName: () => unsupported("dataRepository.findByTaggedName"),
+    saveDeferred: () => unsupported("dataRepository.saveDeferred"),
+    finalizeVersionDeferred: () =>
+      unsupported("dataRepository.finalizeVersionDeferred"),
+    advanceLatestMarkers: () =>
+      unsupported("dataRepository.advanceLatestMarkers"),
+    rollbackVersions: () => unsupported("dataRepository.rollbackVersions"),
   } as UnifiedDataRepository;
 }
 

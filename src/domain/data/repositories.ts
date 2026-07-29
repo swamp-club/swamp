@@ -69,6 +69,16 @@ export interface GarbageCollectionResult {
 }
 
 /**
+ * Receipt for a deferred write — enough information to commit or roll back.
+ */
+export interface DeferredWriteReceipt {
+  readonly type: ModelType;
+  readonly modelId: string;
+  readonly dataName: string;
+  readonly version: number;
+}
+
+/**
  * Repository interface for unified Data storage with versioning.
  */
 export interface UnifiedDataRepository {
@@ -283,6 +293,49 @@ export interface UnifiedDataRepository {
     version: number,
     priorVersions?: number[],
   ): Promise<{ size: number; checksum: string }>;
+
+  /**
+   * Saves data without advancing the latest marker. Writes the version
+   * directory, content, and metadata to disk, and inserts a catalog row
+   * with is_latest=0. The data is invisible to latest-based reads until
+   * advanceLatestMarkers() is called.
+   *
+   * @returns A receipt that can be passed to advanceLatestMarkers or rollbackVersions
+   */
+  saveDeferred(
+    type: ModelType,
+    modelId: string,
+    data: Data,
+    content: Uint8Array,
+  ): Promise<DeferredWriteReceipt>;
+
+  /**
+   * Finalizes a previously allocated version without advancing the latest
+   * marker. Mirrors finalizeVersion but writes the catalog row with
+   * is_latest=0.
+   *
+   * @returns A receipt plus size and checksum
+   */
+  finalizeVersionDeferred(
+    type: ModelType,
+    modelId: string,
+    data: Data,
+    version: number,
+    priorVersions?: number[],
+  ): Promise<{ receipt: DeferredWriteReceipt; size: number; checksum: string }>;
+
+  /**
+   * Commits deferred writes by advancing the latest marker and flipping
+   * catalog is_latest to 1 for each receipt. Handles partial failure
+   * gracefully — logs and continues if one marker fails.
+   */
+  advanceLatestMarkers(receipts: DeferredWriteReceipt[]): Promise<void>;
+
+  /**
+   * Rolls back deferred writes by deleting version directories and removing
+   * catalog rows for each receipt.
+   */
+  rollbackVersions(receipts: DeferredWriteReceipt[]): Promise<void>;
 
   /**
    * Generates a new unique ID.

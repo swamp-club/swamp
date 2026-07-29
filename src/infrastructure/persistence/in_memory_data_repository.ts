@@ -28,6 +28,7 @@ import {
 import type { Namespace } from "../../domain/data/namespace.ts";
 import { SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
 import {
+  type DeferredWriteReceipt,
   EphemeralBudgetExceededError,
   type GarbageCollectionResult,
   OwnershipValidationError,
@@ -166,8 +167,11 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     modelId: string,
     dataName: string,
   ): number {
-    const current = this.getLatestVersionNumber(type, modelId, dataName);
-    return (current ?? 0) + 1;
+    const fromLatest = this.getLatestVersionNumber(type, modelId, dataName) ??
+      0;
+    const versions = this.listVersionsSync(type, modelId, dataName);
+    const fromMap = versions.length > 0 ? Math.max(...versions) : 0;
+    return Math.max(fromLatest, fromMap) + 1;
   }
 
   private pruneExcessVersions(
@@ -397,6 +401,134 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     }
 
     return { size, checksum };
+  }
+
+  async saveDeferred(
+    type: ModelType,
+    modelId: string,
+    data: Data,
+    content: Uint8Array,
+  ): Promise<DeferredWriteReceipt> {
+    this.ensureNotDisposed();
+
+    if (isReservedDataName(data.name)) {
+      throw new Error(
+        `Data name '${data.name}' is reserved for internal use. Use a different name.`,
+      );
+    }
+
+    const existing = this.findByNameSync(type, modelId, data.name);
+    if (existing) {
+      if (!existing.isOwnedBy(data.ownerDefinition)) {
+        throw new OwnershipValidationError(
+          data.name,
+          existing.ownerDefinition,
+          data.ownerDefinition,
+        );
+      }
+    }
+
+    const newVersion = this.nextVersion(type, modelId, data.name);
+    this.ensureBudget(content.length);
+
+    const dataToSave = data.withNewVersion({
+      version: newVersion,
+      size: content.length,
+      checksum: await this.computeChecksum(content),
+    });
+
+    const key = dataKey(type.normalized, modelId, data.name, newVersion);
+    this.dataMap.set(key, dataToSave);
+    this.contentMap.set(key, content);
+    this.totalBytes += content.length;
+    // Do NOT update latestVersionMap — deferred
+
+    return { type, modelId, dataName: data.name, version: newVersion };
+  }
+
+  async finalizeVersionDeferred(
+    type: ModelType,
+    modelId: string,
+    data: Data,
+    version: number,
+    _priorVersions?: number[],
+  ): Promise<
+    { receipt: DeferredWriteReceipt; size: number; checksum: string }
+  > {
+    this.ensureNotDisposed();
+
+    let tempPath: string | undefined;
+    for (const [path, alloc] of this.allocatedPaths) {
+      if (
+        alloc.typeNormalized === type.normalized &&
+        alloc.modelId === modelId &&
+        alloc.data.name === data.name &&
+        alloc.version === version
+      ) {
+        tempPath = path;
+        break;
+      }
+    }
+
+    let content: Uint8Array;
+    if (tempPath) {
+      content = await Deno.readFile(tempPath);
+      await Deno.remove(tempPath).catch(() => {});
+      this.allocatedPaths.delete(tempPath);
+    } else {
+      content = new Uint8Array(0);
+    }
+
+    this.ensureBudget(content.length);
+
+    const checksum = await this.computeChecksum(content);
+    const size = content.length;
+
+    const dataToSave = data.withNewVersion({ version, size, checksum });
+
+    const key = dataKey(type.normalized, modelId, data.name, version);
+    this.dataMap.set(key, dataToSave);
+    this.contentMap.set(key, content);
+    this.totalBytes += content.length;
+    // Do NOT update latestVersionMap — deferred
+
+    return {
+      receipt: { type, modelId, dataName: data.name, version },
+      size,
+      checksum,
+    };
+  }
+
+  advanceLatestMarkers(
+    receipts: DeferredWriteReceipt[],
+  ): Promise<void> {
+    for (const receipt of receipts) {
+      this.latestVersionMap.set(
+        latestKey(receipt.type.normalized, receipt.modelId, receipt.dataName),
+        receipt.version,
+      );
+    }
+    return Promise.resolve();
+  }
+
+  rollbackVersions(
+    receipts: DeferredWriteReceipt[],
+  ): Promise<void> {
+    for (const receipt of receipts) {
+      const key = dataKey(
+        receipt.type.normalized,
+        receipt.modelId,
+        receipt.dataName,
+        receipt.version,
+      );
+      const content = this.contentMap.get(key);
+      if (content) {
+        this.totalBytes -= content.length;
+      }
+      this.dataMap.delete(key);
+      this.contentMap.delete(key);
+    }
+    return Promise.resolve();
   }
 
   // --- Read Operations ---

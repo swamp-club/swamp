@@ -29,6 +29,7 @@ import {
   shellModel,
 } from "./shell_model.ts";
 import type { DataHandle, DataWriter, MethodContext } from "../../model.ts";
+import { ModelType } from "../../model_type.ts";
 import type { UnifiedDataRepository } from "../../../data/repositories.ts";
 import { SOLO_NAMESPACE } from "../../../data/namespace.ts";
 import type { DefinitionRepository } from "../../../definitions/repositories.ts";
@@ -250,6 +251,26 @@ function createMockDataRepo(): UnifiedDataRepository {
     rename: () => {
       throw new Error("not implemented");
     },
+    saveDeferred: () =>
+      Promise.resolve({
+        type: ModelType.create("test"),
+        modelId: "",
+        dataName: "",
+        version: 1,
+      }),
+    finalizeVersionDeferred: () =>
+      Promise.resolve({
+        receipt: {
+          type: ModelType.create("test"),
+          modelId: "",
+          dataName: "",
+          version: 1,
+        },
+        size: 0,
+        checksum: "",
+      }),
+    advanceLatestMarkers: () => Promise.resolve(),
+    rollbackVersions: () => Promise.resolve(),
   };
 }
 

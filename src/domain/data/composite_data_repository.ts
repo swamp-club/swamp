@@ -23,6 +23,7 @@ import type { ModelType, ModelTypeInput } from "../models/model_type.ts";
 import { coerceModelType } from "../models/model_type.ts";
 import type { Namespace } from "./namespace.ts";
 import type {
+  DeferredWriteReceipt,
   GarbageCollectionResult,
   UnifiedDataRepository,
 } from "./repositories.ts";
@@ -421,6 +422,45 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
       if (!seen.has(key)) merged.push(item);
     }
     return merged;
+  }
+
+  saveDeferred(
+    _type: ModelType,
+    _modelId: string,
+    _data: Data,
+    _content: Uint8Array,
+  ): Promise<DeferredWriteReceipt> {
+    throw new Error("saveDeferred is not supported in composite repository");
+  }
+
+  finalizeVersionDeferred(
+    _type: ModelType,
+    _modelId: string,
+    _data: Data,
+    _version: number,
+    _priorVersions?: number[],
+  ): Promise<
+    { receipt: DeferredWriteReceipt; size: number; checksum: string }
+  > {
+    throw new Error(
+      "finalizeVersionDeferred is not supported in composite repository",
+    );
+  }
+
+  advanceLatestMarkers(
+    _receipts: DeferredWriteReceipt[],
+  ): Promise<void> {
+    throw new Error(
+      "advanceLatestMarkers is not supported in composite repository",
+    );
+  }
+
+  rollbackVersions(
+    _receipts: DeferredWriteReceipt[],
+  ): Promise<void> {
+    throw new Error(
+      "rollbackVersions is not supported in composite repository",
+    );
   }
 
   async findByTaggedName(
