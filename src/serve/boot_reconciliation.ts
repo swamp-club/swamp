@@ -178,6 +178,80 @@ export async function sweepStaleRecords(
   return result;
 }
 
+export interface ReplayPendingRunsDeps {
+  runTracker:
+    import("../infrastructure/persistence/run_tracker_store.ts").RunTrackerStore;
+  webhookService?: import("./webhook.ts").WebhookService;
+  scheduledExecution?:
+    import("../libswamp/workflows/scheduled_execution.ts").ScheduledExecutionService;
+}
+
+export function replayPendingRuns(deps: ReplayPendingRunsDeps): number {
+  const pending = deps.runTracker.findAllPendingRuns();
+  if (pending.length === 0) return 0;
+
+  logger.info`Replaying ${pending.length} pending run(s) from previous process`;
+
+  let replayed = 0;
+  for (const entry of pending) {
+    try {
+      if (entry.source === "webhook" && deps.webhookService) {
+        let parsed: Record<string, unknown> = {};
+        if (entry.payload) {
+          try {
+            const raw = JSON.parse(entry.payload);
+            if (raw && typeof raw === "object") {
+              parsed = raw as Record<string, unknown>;
+            }
+          } catch {
+            logger
+              .warn`Discarding pending run ${entry.id}: corrupt payload`;
+            deps.runTracker.deletePendingRun(entry.id);
+            continue;
+          }
+        }
+        deps.webhookService.enqueueForReplay({
+          pendingRunId: entry.id,
+          workflowIdOrName: entry.workflowIdOrName,
+          route: entry.route ?? "",
+          payload: {
+            body: parsed.body ?? null,
+            headers: (parsed.headers ?? {}) as Record<string, string>,
+            route: typeof parsed.route === "string"
+              ? parsed.route
+              : (entry.route ?? ""),
+          },
+          traceparent: entry.traceparent,
+          tracestate: entry.tracestate,
+        });
+        replayed++;
+        logger
+          .info`Replayed pending webhook run for ${entry.workflowIdOrName}`;
+      } else if (entry.source === "cron" && deps.scheduledExecution) {
+        deps.scheduledExecution.enqueueForReplay({
+          pendingRunId: entry.id,
+          workflowIdOrName: entry.workflowIdOrName,
+        });
+        replayed++;
+        logger
+          .info`Replayed pending cron run for ${entry.workflowIdOrName}`;
+      } else {
+        deps.runTracker.deletePendingRun(entry.id);
+        logger
+          .warn`Discarding pending run ${entry.id} (source: ${entry.source}, no matching service)`;
+      }
+    } catch (err) {
+      logger.warn("Failed to replay pending run {id}: {error}", {
+        id: entry.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      deps.runTracker.deletePendingRun(entry.id);
+    }
+  }
+
+  return replayed;
+}
+
 async function loadAttrsForType(
   repo: FileSystemUnifiedDataRepository,
   modelType: ModelType,
