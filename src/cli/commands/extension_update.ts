@@ -32,6 +32,7 @@ import {
   createExtensionUpdateDeps,
   createLibSwampContext,
   extensionUpdate,
+  type ExtensionUpdateResult,
   UpgradeExtensionService,
   warnLegacyExtensionLayout,
 } from "../../libswamp/mod.ts";
@@ -43,6 +44,13 @@ import { createExtensionUpdateRenderer } from "../../presentation/renderers/exte
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 import { loadIdentity } from "../load_identity.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { ExtensionUpdateResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -51,122 +59,156 @@ function resolveServerUrl(): string {
   return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
 }
 
-export const extensionUpdateCommand = new Command()
-  .name("update")
-  .description("Update installed extensions to latest versions")
-  .example("Update all extensions", "swamp extension update")
-  .example("Update one extension", "swamp extension update @stack72/aws-ec2")
-  .example("Check for updates", "swamp extension update --check")
-  .arguments("[extension:string]")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option("--check", "Show what's outdated without pulling")
-  .action(async function (options: AnyOptions, extensionArg?: string) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "extension",
-      "update",
-    ]);
-    cliCtx.logger.debug`Starting extension update`;
+export const extensionUpdateCommand = withRemoteOptions(
+  new Command()
+    .name("update")
+    .description("Update installed extensions to latest versions")
+    .example("Update all extensions", "swamp extension update")
+    .example("Update one extension", "swamp extension update @stack72/aws-ec2")
+    .example("Check for updates", "swamp extension update --check")
+    .arguments("[extension:string]")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option("--check", "Show what's outdated without pulling"),
+).action(async function (options: AnyOptions, extensionArg?: string) {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "extension",
+    "update",
+  ]);
+  cliCtx.logger.debug`Starting extension update`;
 
-    // 1. Validate repo (lightweight — no datastore resolution, so updating
-    // the repo's own datastore extension doesn't circular-fail; see #445)
-    const { repoDir, marker } = await requireRepoMarker(
-      resolveRepoDir(options.repoDir),
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
     );
-    const modelsDir = resolveModelsDir(marker);
-    const absoluteModelsDir = resolve(repoDir, modelsDir);
-    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
-
-    // Per-extension models/workflows/vaults/drivers/datastores/reports
-    // destinations are derived inside installExtension from the
-    // extension's scoped name. Only skillsDir is tool-dependent.
-    const tools = marker?.tools?.length ? marker.tools : ["claude"];
-    const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
-
-    const primarySkillsDirRelative = relative(repoDir, skillsDirs[0]);
-    await warnLegacyExtensionLayout(
-      lockfilePath,
-      (msg) => cliCtx.logger.warn(msg),
-      primarySkillsDirRelative,
-    );
-
-    // 4. Parse extension name if given
-    let extensionName: string | undefined;
-    if (extensionArg) {
-      const ref = parseExtensionRef(extensionArg);
-      extensionName = ref.name;
-    }
-
-    // 4. Wire deps — inject installExtension from CLI layer
-    const serverUrl = resolveServerUrl();
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    // W2 (commit 3): construct shared denoRuntime + repository so each
-    // upgrade routes through InstallExtensionService and phase 8 fires
-    // (catalog populated synchronously, I-Repo-1 fires on collision,
-    // FS rollback). The catalog stays open for the duration of the
-    // bulk update — closed in the finally block.
-    const denoRuntime = new EmbeddedDenoRuntime();
-    const catalog = new ExtensionCatalogStore(
-      swampPath(repoDir, "_extension_catalog.db"),
-    );
-    try {
-      const identity = await loadIdentity();
-      const deps = await createExtensionUpdateDeps({
-        lockfilePath,
-        serverUrl,
-        identity,
-        installExtension: async (
-          name: string,
-          version: string,
-          channel?: string,
-        ) => {
-          // Construct a fresh InstallContext per upgrade — captures a
-          // current snapshot of the lockfile per the
-          // InstallContext.lockfileRepository single-use rule. Reusing one
-          // context across multiple installs would expose stale state.
-          const installCtx = await createInstallContext(serverUrl, {
-            logger: cliCtx.logger,
-            lockfilePath,
-            skillsDirs,
-            repoDir,
-            force: true,
-            identity,
-            channel,
-          });
-          // Build a fresh ExtensionRepository per upgrade so its lockfile
-          // snapshot lines up with the InstallContext's. Catalog is
-          // shared across the bulk run for atomicity-of-each-upgrade.
-          const repository = new ExtensionRepository({
-            catalog,
-            lockfileRepository: installCtx.lockfileRepository,
-            repoRoot: repoDir,
-          });
-          // W2 (commit 5): route through UpgradeExtensionService for
-          // explicit upgrade-intent at the call site. Internally this
-          // delegates to InstallExtensionService whose phase 8
-          // tombstones the prior version atomically (saveAll is one
-          // SQLite txn).
-          return await new UpgradeExtensionService({
-            denoRuntime,
-            repository,
-          })
-            .execute(name, version, installCtx);
-        },
-      });
-
-      // 5. Execute and render
-      const renderer = createExtensionUpdateRenderer(cliCtx.outputMode);
-      await consumeStream(
-        extensionUpdate(ctx, deps, {
-          extensionName,
+    const response = await requestServerResponse<ExtensionUpdateResponse>(
+      { server, token, timeoutMs: 300_000 },
+      {
+        type: "extension.update",
+        payload: {
+          extensionName: extensionArg
+            ? parseExtensionRef(extensionArg).name
+            : undefined,
           checkOnly: !!options.check,
-        }),
-        renderer.handlers(),
-      );
-    } finally {
-      catalog.close();
-    }
-  });
+        },
+      },
+    );
+    const renderer = createExtensionUpdateRenderer(cliCtx.outputMode);
+    const mode = options.check ? "check" : "update";
+    await consumeStream(
+      (async function* () {
+        yield {
+          kind: "completed" as const,
+          data: response.data as unknown as ExtensionUpdateResult,
+          mode: mode as "check" | "update",
+        };
+      })(),
+      renderer.handlers(),
+    );
+    return;
+  }
+
+  // 1. Validate repo (lightweight — no datastore resolution, so updating
+  // the repo's own datastore extension doesn't circular-fail; see #445)
+  const { repoDir, marker } = await requireRepoMarker(
+    resolveRepoDir(options.repoDir),
+  );
+  const modelsDir = resolveModelsDir(marker);
+  const absoluteModelsDir = resolve(repoDir, modelsDir);
+  const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+
+  // Per-extension models/workflows/vaults/drivers/datastores/reports
+  // destinations are derived inside installExtension from the
+  // extension's scoped name. Only skillsDir is tool-dependent.
+  const tools = marker?.tools?.length ? marker.tools : ["claude"];
+  const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
+
+  const primarySkillsDirRelative = relative(repoDir, skillsDirs[0]);
+  await warnLegacyExtensionLayout(
+    lockfilePath,
+    (msg) => cliCtx.logger.warn(msg),
+    primarySkillsDirRelative,
+  );
+
+  // 4. Parse extension name if given
+  let extensionName: string | undefined;
+  if (extensionArg) {
+    const ref = parseExtensionRef(extensionArg);
+    extensionName = ref.name;
+  }
+
+  // 4. Wire deps — inject installExtension from CLI layer
+  const serverUrl = resolveServerUrl();
+
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  // W2 (commit 3): construct shared denoRuntime + repository so each
+  // upgrade routes through InstallExtensionService and phase 8 fires
+  // (catalog populated synchronously, I-Repo-1 fires on collision,
+  // FS rollback). The catalog stays open for the duration of the
+  // bulk update — closed in the finally block.
+  const denoRuntime = new EmbeddedDenoRuntime();
+  const catalog = new ExtensionCatalogStore(
+    swampPath(repoDir, "_extension_catalog.db"),
+  );
+  try {
+    const identity = await loadIdentity();
+    const deps = await createExtensionUpdateDeps({
+      lockfilePath,
+      serverUrl,
+      identity,
+      installExtension: async (
+        name: string,
+        version: string,
+        channel?: string,
+      ) => {
+        // Construct a fresh InstallContext per upgrade — captures a
+        // current snapshot of the lockfile per the
+        // InstallContext.lockfileRepository single-use rule. Reusing one
+        // context across multiple installs would expose stale state.
+        const installCtx = await createInstallContext(serverUrl, {
+          logger: cliCtx.logger,
+          lockfilePath,
+          skillsDirs,
+          repoDir,
+          force: true,
+          identity,
+          channel,
+        });
+        // Build a fresh ExtensionRepository per upgrade so its lockfile
+        // snapshot lines up with the InstallContext's. Catalog is
+        // shared across the bulk run for atomicity-of-each-upgrade.
+        const repository = new ExtensionRepository({
+          catalog,
+          lockfileRepository: installCtx.lockfileRepository,
+          repoRoot: repoDir,
+        });
+        // W2 (commit 5): route through UpgradeExtensionService for
+        // explicit upgrade-intent at the call site. Internally this
+        // delegates to InstallExtensionService whose phase 8
+        // tombstones the prior version atomically (saveAll is one
+        // SQLite txn).
+        return await new UpgradeExtensionService({
+          denoRuntime,
+          repository,
+        })
+          .execute(name, version, installCtx);
+      },
+    });
+
+    // 5. Execute and render
+    const renderer = createExtensionUpdateRenderer(cliCtx.outputMode);
+    await consumeStream(
+      extensionUpdate(ctx, deps, {
+        extensionName,
+        checkOnly: !!options.check,
+      }),
+      renderer.handlers(),
+    );
+  } finally {
+    catalog.close();
+  }
+});

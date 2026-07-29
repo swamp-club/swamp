@@ -29,6 +29,7 @@ import {
   consumeStream,
   createDatastoreSetupDeps,
   createLibSwampContext,
+  type DatastoreSetupData,
   datastoreSetupExtension,
   datastoreSetupFilesystem,
 } from "../../libswamp/mod.ts";
@@ -49,6 +50,13 @@ import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { parseTimeoutFlag } from "./datastore_sync.ts";
 import { requireAuthenticated, requireScope } from "../auth_context.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { DatastoreSetupExtensionResponse } from "../../serve/protocol.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { dim, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
@@ -187,84 +195,56 @@ const datastoreSetupFilesystemCommand = new Command()
     );
   });
 
-const datastoreSetupExtensionCommand = new Command()
-  .description(
-    "Set up an extension-provided datastore (e.g., @swamp/s3-datastore)",
-  )
-  .example(
-    "Set up S3 datastore",
-    `swamp datastore setup extension @swamp/s3-datastore --config '{"bucket":"my-bucket","region":"us-east-1"}'`,
-  )
-  .example(
-    "Set up with namespace (shared prefix)",
-    `swamp datastore setup extension @swamp/s3-datastore --namespace my-project --config '{"bucket":"shared","prefix":"swamp","region":"us-east-1"}'`,
-  )
-  .arguments("<type:string>")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option(
-    "--config <config:string>",
-    'JSON config object for the extension (e.g., \'{"bucket":"name","region":"us-east-1"}\')',
-    { required: true },
-  )
-  .option(
-    "--namespace <slug:string>",
-    "Namespace to scope this datastore to (avoids absorbing foreign data from shared prefixes)",
-  )
-  .option(
-    "--skip-migration",
-    "Skip pushing local .swamp/ data to the remote (does not skip remote→local cache hydration, which always runs)",
-  )
-  .option(
-    "--hydration-strategy <strategy:string>",
-    'Content download strategy: "full" (default, download everything) or "lazy" (metadata only, download content on demand)',
-  )
-  .option(
-    "--timeout <seconds:integer>",
-    "Override the sync timeout for the initial push and hydration pull (seconds, " +
-      "max 21600). Wins over SWAMP_DATASTORE_SYNC_TIMEOUT_MS. " +
-      "Preferred escape hatch for large first-time setups.",
-  )
-  .action(async function (options: AnyOptions, type: string) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "datastore",
-      "setup",
-      "extension",
-    ]);
+const datastoreSetupExtensionCommand = withRemoteOptions(
+  new Command()
+    .description(
+      "Set up an extension-provided datastore (e.g., @swamp/s3-datastore)",
+    )
+    .example(
+      "Set up S3 datastore",
+      `swamp datastore setup extension @swamp/s3-datastore --config '{"bucket":"my-bucket","region":"us-east-1"}'`,
+    )
+    .example(
+      "Set up with namespace (shared prefix)",
+      `swamp datastore setup extension @swamp/s3-datastore --namespace my-project --config '{"bucket":"shared","prefix":"swamp","region":"us-east-1"}'`,
+    )
+    .arguments("<type:string>")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option(
+      "--config <config:string>",
+      'JSON config object for the extension (e.g., \'{"bucket":"name","region":"us-east-1"}\')',
+      { required: true },
+    )
+    .option(
+      "--namespace <slug:string>",
+      "Namespace to scope this datastore to (avoids absorbing foreign data from shared prefixes)",
+    )
+    .option(
+      "--skip-migration",
+      "Skip pushing local .swamp/ data to the remote (does not skip remote→local cache hydration, which always runs)",
+    )
+    .option(
+      "--hydration-strategy <strategy:string>",
+      'Content download strategy: "full" (default, download everything) or "lazy" (metadata only, download content on demand)',
+    )
+    .option(
+      "--timeout <seconds:integer>",
+      "Override the sync timeout for the initial push and hydration pull (seconds, " +
+        "max 21600). Wins over SWAMP_DATASTORE_SYNC_TIMEOUT_MS. " +
+        "Preferred escape hatch for large first-time setups.",
+    ),
+).action(async function (options: AnyOptions, type: string) {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "datastore",
+    "setup",
+    "extension",
+  ]);
 
-    // Remap legacy type names (e.g., "s3" → "@swamp/s3-datastore")
-    const renamedTo = RENAMED_DATASTORE_TYPES[type];
-    const resolvedType = renamedTo ?? type;
-
-    await datastoreTypeRegistry.ensureLoaded();
-
-    // Auto-resolve the extension if needed — catch network errors so
-    // the registry check below produces a clean UserError instead of
-    // an opaque stack trace.
-    if (resolvedType.startsWith("@")) {
-      try {
-        await resolveDatastoreType(resolvedType, getAutoResolver());
-      } catch {
-        // Fall through to the registry check which has a user-friendly error
-      }
-    }
-
-    if (!datastoreTypeRegistry.has(resolvedType)) {
-      throw new UserError(
-        `Datastore type "${resolvedType}" is not registered. ` +
-          `Install it with: swamp extension pull ${resolvedType}`,
-      );
-    }
-
-    requireAuthenticated(
-      "External datastores are a team feature",
-      "datastore:*",
-    );
-    requireScope("datastore:*");
-
-    // Parse config JSON and extract namespace before provider validation
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
     let config: Record<string, unknown>;
     try {
       config = JSON.parse(options.config) as Record<string, unknown>;
@@ -274,58 +254,134 @@ const datastoreSetupExtensionCommand = new Command()
       );
     }
 
-    const configNamespace = config.namespace;
-
-    const { repoDir, marker } = await resolveDatastoreForRepo(
-      resolveRepoDir(options.repoDir),
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
     );
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createDatastoreSetupDeps(repoDir);
+    const clientTimeoutMs = options.timeout
+      ? Math.min(options.timeout, 21600) * 1000
+      : 300_000;
+    const response = await requestServerResponse<
+      DatastoreSetupExtensionResponse
+    >(
+      { server, token, timeoutMs: clientTimeoutMs },
+      {
+        type: "datastore.setup.extension",
+        payload: {
+          type,
+          config,
+          skipMigration: !!options.skipMigration,
+          hydrationStrategy: options.hydrationStrategy,
+          namespace: options.namespace,
+          timeout: options.timeout,
+        },
+      },
+    );
     const renderer = createDatastoreSetupRenderer(cliCtx.outputMode);
-
-    const hydrationStrategy = options.hydrationStrategy as
-      | "full"
-      | "lazy"
-      | undefined;
-    if (
-      hydrationStrategy !== undefined && hydrationStrategy !== "full" &&
-      hydrationStrategy !== "lazy"
-    ) {
-      throw new UserError(
-        `Invalid --hydration-strategy: "${hydrationStrategy}". Must be "full" or "lazy".`,
-      );
-    }
-
-    const syncTimeoutMsOverride = options.timeout != null
-      ? parseTimeoutFlag(options.timeout)
-      : undefined;
-
-    // Resolve namespace: --namespace flag wins, then --config JSON, then
-    // existing .swamp.yaml value. The namespace MUST survive setup so the
-    // initial pullChanged is scoped and the written config preserves it.
-    const namespace = typeof options.namespace === "string"
-      ? options.namespace
-      : typeof configNamespace === "string"
-      ? configNamespace
-      : marker?.datastore?.namespace;
-
     await consumeStream(
-      datastoreSetupExtension(ctx, deps, {
-        type: resolvedType,
-        config,
-        repoDir,
-        repoId: marker?.repoId,
-        skipMigration: !!options.skipMigration,
-        hydrationStrategy,
-        namespace,
-        syncTimeoutMsOverride,
-      }),
+      (async function* () {
+        yield {
+          kind: "completed" as const,
+          data: response.data as unknown as DatastoreSetupData,
+        };
+      })(),
       renderer.handlers(),
     );
+    return;
+  }
 
-    await nudgeVaultMigration(repoDir);
-  });
+  // Remap legacy type names (e.g., "s3" → "@swamp/s3-datastore")
+  const renamedTo = RENAMED_DATASTORE_TYPES[type];
+  const resolvedType = renamedTo ?? type;
+
+  await datastoreTypeRegistry.ensureLoaded();
+
+  // Auto-resolve the extension if needed — catch network errors so
+  // the registry check below produces a clean UserError instead of
+  // an opaque stack trace.
+  if (resolvedType.startsWith("@")) {
+    try {
+      await resolveDatastoreType(resolvedType, getAutoResolver());
+    } catch {
+      // Fall through to the registry check which has a user-friendly error
+    }
+  }
+
+  if (!datastoreTypeRegistry.has(resolvedType)) {
+    throw new UserError(
+      `Datastore type "${resolvedType}" is not registered. ` +
+        `Install it with: swamp extension pull ${resolvedType}`,
+    );
+  }
+
+  requireAuthenticated(
+    "External datastores are a team feature",
+    "datastore:*",
+  );
+  requireScope("datastore:*");
+
+  // Parse config JSON and extract namespace before provider validation
+  let config: Record<string, unknown>;
+  try {
+    config = JSON.parse(options.config) as Record<string, unknown>;
+  } catch {
+    throw new UserError(
+      `Invalid JSON in --config: ${options.config}`,
+    );
+  }
+
+  const configNamespace = config.namespace;
+
+  const { repoDir, marker } = await resolveDatastoreForRepo(
+    resolveRepoDir(options.repoDir),
+  );
+
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = createDatastoreSetupDeps(repoDir);
+  const renderer = createDatastoreSetupRenderer(cliCtx.outputMode);
+
+  const hydrationStrategy = options.hydrationStrategy as
+    | "full"
+    | "lazy"
+    | undefined;
+  if (
+    hydrationStrategy !== undefined && hydrationStrategy !== "full" &&
+    hydrationStrategy !== "lazy"
+  ) {
+    throw new UserError(
+      `Invalid --hydration-strategy: "${hydrationStrategy}". Must be "full" or "lazy".`,
+    );
+  }
+
+  const syncTimeoutMsOverride = options.timeout != null
+    ? parseTimeoutFlag(options.timeout)
+    : undefined;
+
+  // Resolve namespace: --namespace flag wins, then --config JSON, then
+  // existing .swamp.yaml value. The namespace MUST survive setup so the
+  // initial pullChanged is scoped and the written config preserves it.
+  const namespace = typeof options.namespace === "string"
+    ? options.namespace
+    : typeof configNamespace === "string"
+    ? configNamespace
+    : marker?.datastore?.namespace;
+
+  await consumeStream(
+    datastoreSetupExtension(ctx, deps, {
+      type: resolvedType,
+      config,
+      repoDir,
+      repoId: marker?.repoId,
+      skipMigration: !!options.skipMigration,
+      hydrationStrategy,
+      namespace,
+      syncTimeoutMsOverride,
+    }),
+    renderer.handlers(),
+  );
+
+  await nudgeVaultMigration(repoDir);
+});
 
 const datastoreSetupS3DeprecatedCommand = new Command()
   .description(

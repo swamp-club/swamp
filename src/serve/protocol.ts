@@ -401,11 +401,41 @@ export interface ExtensionInfoPayload {
 
 export type ExtensionInstallPayload = Record<string, never>;
 
+export interface ExtensionPullPayload {
+  extensionName: string;
+  force?: boolean;
+  channel?: string;
+}
+
 export interface ExtensionRmPayload {
   extensionName: string;
 }
 
 export type ExtensionOutdatedPayload = Record<string, never>;
+
+export interface ExtensionUpdatePayload {
+  extensionName?: string;
+  checkOnly?: boolean;
+}
+
+// ── Datastore setup ─────────────────────────────────────────────────
+
+export interface DatastoreSetupExtensionPayload {
+  type: string;
+  config: Record<string, unknown>;
+  skipMigration?: boolean;
+  hydrationStrategy?: string;
+  namespace?: string;
+  timeout?: number;
+}
+
+// ── Vault migrate ───────────────────────────────────────────────────
+
+export interface VaultMigratePayload {
+  vaultName: string;
+  targetType: string;
+  targetConfig?: Record<string, unknown>;
+}
 
 // ── Doctor operations ────────────────────────────────────────────────
 
@@ -545,15 +575,27 @@ export type ServerRequest =
   }
   | { type: "worker.verify"; id: string; payload?: WorkerVerifyPayload }
   | { type: "datastore.status"; id: string; payload?: DatastoreStatusPayload }
+  | {
+    type: "datastore.setup.extension";
+    id: string;
+    payload: DatastoreSetupExtensionPayload;
+  }
+  | { type: "vault.migrate"; id: string; payload: VaultMigratePayload }
   | { type: "extension.list"; id: string; payload?: ExtensionListPayload }
   | { type: "extension.search"; id: string; payload?: ExtensionSearchPayload }
   | { type: "extension.info"; id: string; payload: ExtensionInfoPayload }
   | { type: "extension.install"; id: string; payload?: ExtensionInstallPayload }
+  | { type: "extension.pull"; id: string; payload: ExtensionPullPayload }
   | { type: "extension.rm"; id: string; payload: ExtensionRmPayload }
   | {
     type: "extension.outdated";
     id: string;
     payload?: ExtensionOutdatedPayload;
+  }
+  | {
+    type: "extension.update";
+    id: string;
+    payload?: ExtensionUpdatePayload;
   }
   | { type: "doctor.vaults"; id: string; payload?: DoctorVaultsPayload }
   | {
@@ -863,6 +905,14 @@ export interface DatastoreStatusResponse {
   data: Record<string, unknown>;
 }
 
+export interface DatastoreSetupExtensionResponse {
+  data: Record<string, unknown>;
+}
+
+export interface VaultMigrateResponse {
+  data: Record<string, unknown>;
+}
+
 export interface ExtensionListResponse {
   data: Record<string, unknown>;
 }
@@ -879,11 +929,19 @@ export interface ExtensionInstallResponse {
   data: Record<string, unknown>;
 }
 
+export interface ExtensionPullResponse {
+  data: Record<string, unknown>;
+}
+
 export interface ExtensionRmResponse {
   data: Record<string, unknown>;
 }
 
 export interface ExtensionOutdatedResponse {
+  data: Record<string, unknown>;
+}
+
+export interface ExtensionUpdateResponse {
   data: Record<string, unknown>;
 }
 
@@ -1057,15 +1115,27 @@ export type ServerMessage =
   }
   | { type: "worker.verify"; id: string; payload: WorkerVerifyResponse }
   | { type: "datastore.status"; id: string; payload: DatastoreStatusResponse }
+  | {
+    type: "datastore.setup.extension";
+    id: string;
+    payload: DatastoreSetupExtensionResponse;
+  }
+  | { type: "vault.migrate"; id: string; payload: VaultMigrateResponse }
   | { type: "extension.list"; id: string; payload: ExtensionListResponse }
   | { type: "extension.search"; id: string; payload: ExtensionSearchResponse }
   | { type: "extension.info"; id: string; payload: ExtensionInfoResponse }
   | { type: "extension.install"; id: string; payload: ExtensionInstallResponse }
+  | { type: "extension.pull"; id: string; payload: ExtensionPullResponse }
   | { type: "extension.rm"; id: string; payload: ExtensionRmResponse }
   | {
     type: "extension.outdated";
     id: string;
     payload: ExtensionOutdatedResponse;
+  }
+  | {
+    type: "extension.update";
+    id: string;
+    payload: ExtensionUpdateResponse;
   }
   | { type: "doctor.vaults"; id: string; payload: DoctorVaultsResponse }
   | {
