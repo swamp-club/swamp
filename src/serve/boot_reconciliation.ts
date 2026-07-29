@@ -196,10 +196,13 @@ export function replayPendingRuns(deps: ReplayPendingRunsDeps): number {
   for (const entry of pending) {
     try {
       if (entry.source === "webhook" && deps.webhookService) {
-        let payload: unknown = {};
+        let parsed: Record<string, unknown> = {};
         if (entry.payload) {
           try {
-            payload = JSON.parse(entry.payload);
+            const raw = JSON.parse(entry.payload);
+            if (raw && typeof raw === "object") {
+              parsed = raw as Record<string, unknown>;
+            }
           } catch {
             logger
               .warn`Discarding pending run ${entry.id}: corrupt payload`;
@@ -211,7 +214,13 @@ export function replayPendingRuns(deps: ReplayPendingRunsDeps): number {
           pendingRunId: entry.id,
           workflowIdOrName: entry.workflowIdOrName,
           route: entry.route ?? "",
-          payload: payload as Record<string, unknown>,
+          payload: {
+            body: parsed.body ?? null,
+            headers: (parsed.headers ?? {}) as Record<string, string>,
+            route: typeof parsed.route === "string"
+              ? parsed.route
+              : (entry.route ?? ""),
+          },
           traceparent: entry.traceparent,
           tracestate: entry.tracestate,
         });
