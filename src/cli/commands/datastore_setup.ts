@@ -258,10 +258,13 @@ const datastoreSetupExtensionCommand = withRemoteOptions(
       server,
       options.token as string | undefined,
     );
+    const clientTimeoutMs = options.timeout
+      ? Math.min(options.timeout, 21600) * 1000
+      : 300_000;
     const response = await requestServerResponse<
       DatastoreSetupExtensionResponse
     >(
-      { server, token },
+      { server, token, timeoutMs: clientTimeoutMs },
       {
         type: "datastore.setup.extension",
         payload: {

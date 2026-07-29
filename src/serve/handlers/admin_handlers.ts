@@ -709,7 +709,12 @@ export async function handleExtensionPull(
       payload: { data: result ?? {} },
     });
   } catch (error) {
-    const message = sanitizeErrorForClient(error);
+    const raw = error instanceof Error
+      ? error
+      : typeof error === "object" && error !== null && "message" in error
+      ? (error as { message: string }).message
+      : error;
+    const message = sanitizeErrorForClient(raw);
     sendError(socket, requestId, "extension_pull_failed", message);
   } finally {
     catalog?.close();
@@ -850,9 +855,9 @@ export async function handleExtensionUpdate(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
+  payload: ExtensionUpdatePayload | undefined,
   controller: AbortController,
   principal: Principal | null,
-  payload?: ExtensionUpdatePayload,
 ): Promise<void> {
   if (
     !authorizeOrReject(socket, requestId, principal, "admin", {
@@ -945,7 +950,12 @@ export async function handleExtensionUpdate(
       payload: { data: result ?? {} },
     });
   } catch (error) {
-    const message = sanitizeErrorForClient(error);
+    const raw = error instanceof Error
+      ? error
+      : typeof error === "object" && error !== null && "message" in error
+      ? (error as { message: string }).message
+      : error;
+    const message = sanitizeErrorForClient(raw);
     sendError(socket, requestId, "extension_update_failed", message);
   } finally {
     catalog?.close();

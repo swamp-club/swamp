@@ -721,9 +721,9 @@ const DatastoreSetupExtensionRequestSchema = z.object({
     type: z.string(),
     config: z.record(z.string(), z.unknown()),
     skipMigration: z.boolean().optional(),
-    hydrationStrategy: z.string().optional(),
+    hydrationStrategy: z.enum(["full", "lazy"]).optional(),
     namespace: z.string().optional(),
-    timeout: z.number().optional(),
+    timeout: z.number().int().positive().max(21600).optional(),
   }),
 });
 
@@ -1699,9 +1699,9 @@ export function handleMessage(
         socket,
         ctx,
         request.id,
+        request.payload,
         controller,
         principal,
-        request.payload,
       );
       break;
     case "doctor.datastores":

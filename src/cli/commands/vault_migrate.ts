@@ -105,6 +105,11 @@ Both the source and target vaults must be different types.`,
         "--to-type is required when using --server (interactive mode is not available remotely)",
       );
     }
+    if (options.dryRun) {
+      throw new UserError(
+        "--dry-run is not supported with --server",
+      );
+    }
 
     let targetConfig: Record<string, unknown> | undefined;
     if (options.config) {
