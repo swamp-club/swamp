@@ -49,7 +49,7 @@ const DEFAULT_DURATION = "30d";
 export const accessTokenMintCommand = new Command()
   .name("mint")
   .description(
-    "Mint a server token for user authentication; the plaintext is shown once",
+    "Mint a server token for user authentication; the plaintext is stored in a vault",
   )
   .example(
     "Mint a token for a user",

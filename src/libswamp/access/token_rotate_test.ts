@@ -75,12 +75,11 @@ function makeDeps(
         yield await Promise.resolve(event);
       }
     },
-    readSecret: () => Promise.resolve("new-plaintext-secret"),
     ...overrides,
   };
 }
 
-Deno.test("serverTokenRotate: rotates and yields the new plaintext", async () => {
+Deno.test("serverTokenRotate: rotates and yields vault ref without plaintext", async () => {
   const events = await collect<ServerTokenRotateEvent>(
     serverTokenRotate(createLibSwampContext(), makeDeps(), {
       name: "sarah-token",
@@ -95,7 +94,6 @@ Deno.test("serverTokenRotate: rotates and yields the new plaintext", async () =>
   assertEquals(completed.kind, "completed");
   assertEquals(completed.data, {
     name: "sarah-token",
-    token: "sarah-token.new-plaintext-secret",
     principalId: "user:sarah",
     expiresAt: EXPIRES_AT,
     vaultRef: {

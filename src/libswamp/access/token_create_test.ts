@@ -76,12 +76,11 @@ function makeDeps(
         yield await Promise.resolve(event);
       }
     },
-    readSecret: () => Promise.resolve("plaintext-secret"),
     ...overrides,
   };
 }
 
-Deno.test("serverTokenCreate: mints and yields the plaintext once", async () => {
+Deno.test("serverTokenCreate: mints and yields vault ref without plaintext", async () => {
   const events = await collect<ServerTokenCreateEvent>(
     serverTokenCreate(createLibSwampContext(), makeDeps(), {
       name: "adam-token",
@@ -103,7 +102,6 @@ Deno.test("serverTokenCreate: mints and yields the plaintext once", async () => 
   assertEquals(completed.kind, "completed");
   assertEquals(completed.data, {
     name: "adam-token",
-    token: "adam-token.plaintext-secret",
     principalId: "user:adam",
     expiresAt: EXPIRES_AT,
     vaultRef: {

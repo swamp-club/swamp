@@ -37,7 +37,6 @@ import { createServerTokenRunDeps } from "./run_deps.ts";
 
 export interface ServerTokenCreateData {
   name: string;
-  token: string;
   principalId: string;
   expiresAt: string;
   vaultRef: { vaultName: string; secretKey: string };
@@ -67,7 +66,6 @@ export interface ServerTokenCreateDeps {
       vaultName: string;
     },
   ) => AsyncIterable<ModelMethodRunEvent>;
-  readSecret: (vaultName: string, secretKey: string) => Promise<string>;
 }
 
 export async function createServerTokenCreateDeps(
@@ -93,8 +91,6 @@ export async function createServerTokenCreateDeps(
         typeArg: SERVER_TOKEN_MODEL_TYPE.normalized,
         definitionName: input.name,
       }),
-    readSecret: (vaultName, secretKey) =>
-      vaultService.get(vaultName, secretKey, "access:server-token-create"),
   };
 }
 
@@ -194,13 +190,11 @@ export async function* serverTokenCreate(
       }
 
       const secretKey = tokenRecord.secretKey;
-      const plaintext = await deps.readSecret(vaultName, secretKey);
 
       yield {
         kind: "completed" as const,
         data: {
           name: input.name,
-          token: `${input.name}.${plaintext}`,
           principalId: input.principalId,
           expiresAt: tokenRecord.expiresAt as string,
           vaultRef: { vaultName, secretKey },
