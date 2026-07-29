@@ -220,6 +220,17 @@ function isSafeIpv6(ip: string): boolean {
   return false;
 }
 
+function isLikelyTimestamp(s: string): boolean {
+  const parts = s.split(":");
+  if (parts.length !== 3) return false;
+  if (!parts.every((p) => /^\d{1,2}$/.test(p))) return false;
+  const [h, m, sec] = parts.map(Number);
+  return h <= 23 && m <= 59 && sec <= 59;
+}
+
+const SAFE_HEX_KEY_RE =
+  /(?:"|\\")?(?:checksum|sha256|sha1|sha512|digest|hash|contentHash|etag|md5)(?:"|\\")?[\s]*:[\s]*(?:"|\\")?$/i;
+
 // Common TLDs — used to distinguish real hostnames from dotted code
 // identifiers in the FQDN matcher. Code identifiers like "includes",
 // "get", "env", "length" are not TLDs so they get skipped.
@@ -618,6 +629,7 @@ function applyRedactions(
   // 12. IPv6 (before IPv4 to avoid partial matches on mapped addresses)
   result = result.replace(IPV6_RE, (match) => {
     if (isSafeIpv6(match)) return match;
+    if (isLikelyTimestamp(match)) return match;
     count("IP address");
     return placeholders.get("IP", match);
   });
@@ -652,10 +664,15 @@ function applyRedactions(
   );
 
   // 16. Long hex strings (likely tokens/hashes — after all specific patterns)
-  result = result.replace(LONG_HEX_RE, (match) => {
-    count("secret");
-    return placeholders.get("REDACTED-SECRET", match);
-  });
+  result = result.replace(
+    LONG_HEX_RE,
+    (match: string, offset: number, source: string) => {
+      const preceding = source.slice(Math.max(0, offset - 40), offset);
+      if (SAFE_HEX_KEY_RE.test(preceding)) return match;
+      count("secret");
+      return placeholders.get("REDACTED-SECRET", match);
+    },
+  );
 
   // 17. Long base64 strings
   result = result.replace(LONG_BASE64_RE, (match) => {
