@@ -46,6 +46,7 @@ import type { OutputRepository } from "../domain/models/repositories.ts";
 import type { DataQueryService } from "../domain/data/data_query_service.ts";
 import type { VaultService } from "../domain/vaults/vault_service.ts";
 import { resolveVaultRefsInData } from "../domain/models/data_writer.ts";
+import { wrapLoggerWithOutput } from "../domain/models/in_process_executor.ts";
 import { SecretRedactor } from "../domain/secrets/mod.ts";
 import { createExtensionCelEnvironment } from "../infrastructure/cel/cel_evaluator.ts";
 import type { RpcChannel } from "../domain/remote/rpc_channel.ts";
@@ -562,7 +563,7 @@ export function createRemoteMethodContext(
     globalArgs: execution.globalArgs,
     definition: execution.definitionMeta,
     methodName: execution.methodName,
-    logger,
+    logger: wrapLoggerWithOutput(logger, options.onEvent),
     dataRepository,
     definitionRepository,
     outputRepository,
