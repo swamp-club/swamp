@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { normalize } from "@std/path";
 import type { LibSwampContext } from "../context.ts";
 import { alreadyExists, validationFailed } from "../errors.ts";
 import type { SourceModifyEvent } from "./source_events.ts";
@@ -57,6 +58,11 @@ export interface SourceAddDeps {
   copySkills: (skills: ResolvedSkill[]) => Promise<string[]>;
   /** Removes named skill directories (used for cleanup on partial failure). */
   cleanupSkills: (skillNames: string[]) => Promise<void>;
+  /** Absolute paths of directories already scanned by default (e.g.
+   * `extensions/models`). Source paths that resolve to one of these are
+   * rejected — adding them would cause every file to be processed twice,
+   * producing nondeterministic BundleBuildFailed errors (swamp-club#1419). */
+  defaultKindDirs: readonly string[];
 }
 
 /** Wires real infrastructure into SourceAddDeps. */
@@ -64,6 +70,7 @@ export async function createSourceAddDeps(
   repoDir: string,
   tools?: string[],
   skillsDirs?: string[],
+  defaultKindDirs?: readonly string[],
 ): Promise<SourceAddDeps> {
   const resolvedTools = tools?.length ? tools : ["claude"];
   const dirs = skillsDirs?.length ? skillsDirs : [];
@@ -90,6 +97,7 @@ export async function createSourceAddDeps(
         await removeSourceSkills(skillNames, dir);
       }
     },
+    defaultKindDirs: defaultKindDirs ?? [],
   };
 }
 
@@ -120,6 +128,26 @@ export async function* sourceAdd(
       error: alreadyExists("Extension source", path),
     };
     return;
+  }
+
+  // Reject paths that overlap with a default extension scan directory.
+  // These are already scanned as the primary dir in buildIndex(); adding
+  // them as a source mount causes every file to be discovered twice.
+  if (!isGlobPattern(path) && deps.defaultKindDirs.length > 0) {
+    const normalizedPath = normalize(path);
+    for (const kindDir of deps.defaultKindDirs) {
+      if (normalize(kindDir) === normalizedPath) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            `'${path}' is already scanned as a default extension directory. ` +
+              `Source mounts are for external directories — local extensions ` +
+              `under this path are loaded automatically.`,
+          ),
+        };
+        return;
+      }
+    }
   }
 
   // Validate that the source actually contributes extensions. Concrete

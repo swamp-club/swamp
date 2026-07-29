@@ -36,6 +36,12 @@ import { UserError } from "../../domain/errors.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
+import {
+  resolveDatastoresDir,
+  resolveModelsDir,
+  resolveReportsDir,
+  resolveVaultsDir,
+} from "../mod.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -84,7 +90,20 @@ export const extensionSourceAddCommand = new Command()
     const marker = await markerRepo.read(RepoPath.create(repoDir));
     const tools = marker?.tools?.length ? marker.tools : ["claude"];
     const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
-    const deps = await createSourceAddDeps(repoDir, tools, skillsDirs);
+    const defaultKindDirs = [
+      resolveModelsDir(marker),
+      resolveVaultsDir(marker),
+      resolveDatastoresDir(marker),
+      resolveReportsDir(marker),
+      "extensions/drivers",
+      "extensions/workflows",
+    ];
+    const deps = await createSourceAddDeps(
+      repoDir,
+      tools,
+      skillsDirs,
+      defaultKindDirs,
+    );
 
     let only: ExtensionKind[] | undefined;
     if (options.only) {
