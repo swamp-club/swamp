@@ -711,6 +711,25 @@ export class WorkflowRun implements TriggerEvaluationContext {
     }
   }
 
+  interrupt(reason: string): void {
+    if (this._status === "succeeded" || this._status === "failed") {
+      return;
+    }
+    for (const job of this._jobs) {
+      for (const step of job.steps) {
+        if (step.status === "running") {
+          step.fail(`interrupted: ${reason}`);
+        }
+      }
+      if (job.status === "running") {
+        job.fail();
+      }
+    }
+    this._status = "failed";
+    this._completedAt = new Date();
+    this._tags["interrupt_reason"] = reason;
+  }
+
   /**
    * Records the effective workflow inputs on this run. Called at run
    * creation so every run persists its inputs, and again at suspend

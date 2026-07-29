@@ -20,7 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { ActiveRun } from "../../domain/models/active_run.ts";
-import { RunTrackerStore } from "./run_tracker_store.ts";
+import { type PendingRunEntry, RunTrackerStore } from "./run_tracker_store.ts";
 
 function makeTempDbPath(): string {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-run-tracker-test-" });
@@ -245,6 +245,150 @@ Deno.test("RunTrackerStore: concurrent stores on same DB file", () => {
     assertEquals(store2.findAllRunning().length, 2);
   } finally {
     store1.close();
+    store2.close();
+  }
+});
+
+// ── pending_runs tests ──────────────────────────────────────────────
+
+function makePendingRun(
+  overrides: Partial<PendingRunEntry> = {},
+): PendingRunEntry {
+  return {
+    id: overrides.id ?? crypto.randomUUID(),
+    source: overrides.source ?? "webhook",
+    workflowIdOrName: overrides.workflowIdOrName ?? "test-workflow",
+    payload: overrides.payload,
+    route: overrides.route,
+    traceparent: overrides.traceparent,
+    tracestate: overrides.tracestate,
+    createdAt: overrides.createdAt ?? new Date().toISOString(),
+  };
+}
+
+Deno.test("RunTrackerStore: enqueuePendingRun and findAllPendingRuns", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    const entry = makePendingRun({ id: "pr-1", route: "/hooks/deploy" });
+    store.enqueuePendingRun(entry);
+
+    const found = store.findAllPendingRuns();
+    assertEquals(found.length, 1);
+    assertEquals(found[0].id, "pr-1");
+    assertEquals(found[0].source, "webhook");
+    assertEquals(found[0].workflowIdOrName, "test-workflow");
+    assertEquals(found[0].route, "/hooks/deploy");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: deletePendingRun removes the entry", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    store.enqueuePendingRun(makePendingRun({ id: "pr-1" }));
+    assertEquals(store.findAllPendingRuns().length, 1);
+
+    store.deletePendingRun("pr-1");
+    assertEquals(store.findAllPendingRuns().length, 0);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: deletePendingRun is idempotent", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    store.deletePendingRun("nonexistent");
+    assertEquals(store.findAllPendingRuns().length, 0);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: findAllPendingRuns returns entries in creation order", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    store.enqueuePendingRun(
+      makePendingRun({ id: "pr-2", createdAt: "2026-01-01T00:00:02Z" }),
+    );
+    store.enqueuePendingRun(
+      makePendingRun({ id: "pr-1", createdAt: "2026-01-01T00:00:01Z" }),
+    );
+    store.enqueuePendingRun(
+      makePendingRun({ id: "pr-3", createdAt: "2026-01-01T00:00:03Z" }),
+    );
+
+    const found = store.findAllPendingRuns();
+    assertEquals(found.map((r) => r.id), ["pr-1", "pr-2", "pr-3"]);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: findAllPendingRuns returns empty array when no entries", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    assertEquals(store.findAllPendingRuns().length, 0);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: pending run preserves webhook payload and trace headers", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    const payload = JSON.stringify({ ref: "main", action: "push" });
+    store.enqueuePendingRun(makePendingRun({
+      id: "pr-1",
+      source: "webhook",
+      payload,
+      route: "/hooks/ci",
+      traceparent: "00-abc-def-01",
+      tracestate: "vendor=value",
+    }));
+
+    const found = store.findAllPendingRuns();
+    assertEquals(found[0].payload, payload);
+    assertEquals(found[0].route, "/hooks/ci");
+    assertEquals(found[0].traceparent, "00-abc-def-01");
+    assertEquals(found[0].tracestate, "vendor=value");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: cron pending run has no payload or route", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    store.enqueuePendingRun(makePendingRun({
+      id: "pr-1",
+      source: "cron",
+    }));
+
+    const found = store.findAllPendingRuns();
+    assertEquals(found[0].source, "cron");
+    assertEquals(found[0].payload, undefined);
+    assertEquals(found[0].route, undefined);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: schema v2 migration adds pending_runs to existing DB", () => {
+  const dbPath = makeTempDbPath();
+  // Create a v1 store (existing schema without pending_runs)
+  const store1 = new RunTrackerStore(dbPath);
+  store1.register(makeRun({ id: "existing-run" }));
+  store1.close();
+
+  // Reopen — migration should add pending_runs table
+  const store2 = new RunTrackerStore(dbPath);
+  try {
+    store2.enqueuePendingRun(makePendingRun({ id: "pr-1" }));
+    assertEquals(store2.findAllPendingRuns().length, 1);
+    assertEquals(store2.findAllRunning().length, 1);
+  } finally {
     store2.close();
   }
 });

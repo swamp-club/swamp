@@ -127,7 +127,10 @@ import {
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
-import { sweepStaleRecords } from "../../serve/boot_reconciliation.ts";
+import {
+  replayPendingRuns,
+  sweepStaleRecords,
+} from "../../serve/boot_reconciliation.ts";
 import { installUnhandledRejectionGuard } from "../../serve/unhandled_rejection_guard.ts";
 import {
   checkOpenFileLimit,
@@ -332,6 +335,7 @@ export async function reapOrphanedWorkflowRuns(
   save: (workflowId: WorkflowId, run: WorkflowRun) => Promise<void>,
   trackerLookup: (runId: string) => { status: string } | null,
   isDeadFn: (pid: number) => boolean = isProcessDead,
+  detachRuns = false,
 ): Promise<ReapResult> {
   let reaped = 0;
   let skipped = 0;
@@ -349,7 +353,6 @@ export async function reapOrphanedWorkflowRuns(
         skipped++;
         continue;
       }
-      // Tracker already reaped this run (heartbeat stale + PID dead)
       logger.warn(
         "Reaping orphaned workflow run {runId} (workflow: {workflowName}, reason: {reason})",
         {
@@ -358,7 +361,11 @@ export async function reapOrphanedWorkflowRuns(
           reason: "tracker confirmed stale",
         },
       );
-      run.cancel("daemon restarted (tracker confirmed stale)");
+      if (detachRuns) {
+        run.interrupt("server_crash");
+      } else {
+        run.cancel("daemon restarted (tracker confirmed stale)");
+      }
       await save(workflowId, run);
       reaped++;
       continue;
@@ -382,7 +389,11 @@ export async function reapOrphanedWorkflowRuns(
       "Reaping orphaned workflow run {runId} (workflow: {workflowName}, reason: {reason})",
       { runId: run.id, workflowName: run.workflowName, reason },
     );
-    run.cancel(reason);
+    if (detachRuns) {
+      run.interrupt("server_crash");
+    } else {
+      run.cancel(reason);
+    }
     await save(workflowId, run);
     reaped++;
   }
@@ -1458,6 +1469,14 @@ export const serveCommand = new Command()
         run.methodName ?? run.workflowName ?? "unknown"
       })`;
     }
+    if (detachRuns) {
+      const deadPidRuns = runTracker.reapDeadProcessRuns();
+      for (const run of deadPidRuns) {
+        logger.warn`Reaped dead-process ${run.runKind} run ${run.id} (${
+          run.methodName ?? run.workflowName ?? "unknown"
+        })`;
+      }
+    }
 
     // Reconcile YAML-persisted workflow run state with tracker verdicts.
     // The tracker is the liveness authority; the YAML entity is the run record.
@@ -1473,6 +1492,8 @@ export const serveCommand = new Command()
         const tracked = runTracker.findById(runId);
         return tracked ? { status: tracked.status } : null;
       },
+      isProcessDead,
+      detachRuns,
     );
 
     const swept = await sweepStaleRecords({
@@ -1532,6 +1553,12 @@ export const serveCommand = new Command()
             syncService,
             runTracker,
           ),
+        pendingRunHook: detachRuns
+          ? {
+            enqueue: (entry) => runTracker.enqueuePendingRun(entry),
+            delete: (id) => runTracker.deletePendingRun(id),
+          }
+          : undefined,
       });
 
       await scheduledExecution.start((event) => {
@@ -1756,6 +1783,7 @@ export const serveCommand = new Command()
         datastoreConfig,
         endpoints,
         syncService,
+        runTracker: detachRuns ? runTracker : undefined,
       });
 
       webhookService.setEventHandler((event) => {
@@ -2207,6 +2235,50 @@ export const serveCommand = new Command()
           logger.info`Draining ${activeCount} active run(s)...`;
           await activeRunRegistry.drainAll(30_000);
         }
+        const remaining = activeRunRegistry.list();
+        if (remaining.length > 0) {
+          logger.info`Aborting ${remaining.length} undrained run(s)...`;
+          for (const run of remaining) {
+            run.controller.abort(new Error("server shutdown"));
+          }
+          await activeRunRegistry.drainAll(5_000);
+
+          for (const run of remaining) {
+            if (
+              run.kind === "workflow-run" || run.kind === "workflow-resume"
+            ) {
+              try {
+                const reapCutoff = new Date(
+                  run.startedAt.getTime() - 60_000,
+                );
+                const runs = await repoContext.workflowRunRepo
+                  .findAllGlobalSince(reapCutoff);
+                const match = runs.find((r) => r.run.id === run.runId);
+                if (
+                  match &&
+                  (match.run.status === "running" ||
+                    match.run.status === "cancelled")
+                ) {
+                  match.run.interrupt("server_shutdown");
+                  await repoContext.workflowRunRepo.save(
+                    match.workflowId,
+                    match.run,
+                  );
+                  logger
+                    .info`Interrupted workflow run ${run.runId} (server shutdown)`;
+                }
+              } catch (err) {
+                logger.warn(
+                  "Failed to interrupt run {runId}: {error}",
+                  {
+                    runId: run.runId,
+                    error: err instanceof Error ? err.message : String(err),
+                  },
+                );
+              }
+            }
+          }
+        }
       }
       if (collectiveRefreshService) {
         await collectiveRefreshService.dispose();
@@ -2247,6 +2319,17 @@ export const serveCommand = new Command()
             })
           );
         });
+      }
+    }
+
+    if (detachRuns) {
+      const replayed = replayPendingRuns({
+        runTracker,
+        webhookService: webhookService ?? undefined,
+        scheduledExecution: scheduledExecution ?? undefined,
+      });
+      if (replayed > 0) {
+        logger.info`Replayed ${replayed} pending run(s) from previous process`;
       }
     }
 

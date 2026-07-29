@@ -39,7 +39,29 @@ const RUN_TRACKER_DB_NAME = "run_tracker.db";
 export const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
 export { STALE_TTL_MS as DEFAULT_STALE_TTL_MS } from "../../domain/models/active_run.ts";
 const RETENTION_DAYS = 7;
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
+
+export interface PendingRunEntry {
+  id: string;
+  source: "webhook" | "cron";
+  workflowIdOrName: string;
+  payload?: string;
+  route?: string;
+  traceparent?: string;
+  tracestate?: string;
+  createdAt: string;
+}
+
+interface PendingRunRow {
+  id: string;
+  source: string;
+  workflow_id_or_name: string;
+  payload: string | null;
+  route: string | null;
+  traceparent: string | null;
+  tracestate: string | null;
+  created_at: string;
+}
 
 interface ActiveRunRow {
   id: string;
@@ -137,6 +159,21 @@ export class RunTrackerStore implements RunTrackerRepository {
       }
     }
 
+    if (currentVersion < 2) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS pending_runs (
+          id                   TEXT PRIMARY KEY,
+          source               TEXT NOT NULL,
+          workflow_id_or_name  TEXT NOT NULL,
+          payload              TEXT,
+          route                TEXT,
+          traceparent          TEXT,
+          tracestate           TEXT,
+          created_at           TEXT NOT NULL
+        );
+      `);
+    }
+
     this.db.prepare(
       "INSERT OR REPLACE INTO run_tracker_meta (key, value) VALUES ('schema_version', ?)",
     ).run(String(SCHEMA_VERSION));
@@ -163,6 +200,17 @@ export class RunTrackerStore implements RunTrackerRepository {
         ON active_runs(status);
       CREATE INDEX IF NOT EXISTS idx_active_runs_heartbeat
         ON active_runs(heartbeat_at);
+
+      CREATE TABLE IF NOT EXISTS pending_runs (
+        id                   TEXT PRIMARY KEY,
+        source               TEXT NOT NULL,
+        workflow_id_or_name  TEXT NOT NULL,
+        payload              TEXT,
+        route                TEXT,
+        traceparent          TEXT,
+        tracestate           TEXT,
+        created_at           TEXT NOT NULL
+      );
     `);
   }
 
@@ -285,6 +333,59 @@ export class RunTrackerStore implements RunTrackerRepository {
     }
 
     return reaped;
+  }
+
+  reapDeadProcessRuns(): ActiveRun[] {
+    const currentHostname = hostname();
+    const running = this.findAllRunning();
+    const reaped: ActiveRun[] = [];
+
+    for (const run of running) {
+      if (run.hostname !== currentHostname) continue;
+      if (run.pid === Deno.pid) continue;
+      if (!isProcessDead(run.pid)) continue;
+
+      this.complete(run.id, "failed");
+      reaped.push(run);
+    }
+
+    return reaped;
+  }
+
+  enqueuePendingRun(entry: PendingRunEntry): void {
+    this.db.prepare(
+      `INSERT INTO pending_runs (id, source, workflow_id_or_name, payload, route, traceparent, tracestate, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      entry.id,
+      entry.source,
+      entry.workflowIdOrName,
+      entry.payload ?? null,
+      entry.route ?? null,
+      entry.traceparent ?? null,
+      entry.tracestate ?? null,
+      entry.createdAt,
+    );
+  }
+
+  deletePendingRun(id: string): void {
+    this.db.prepare("DELETE FROM pending_runs WHERE id = ?").run(id);
+  }
+
+  findAllPendingRuns(): PendingRunEntry[] {
+    const rows = this.db.prepare(
+      "SELECT * FROM pending_runs ORDER BY created_at ASC",
+    ).all() as unknown as PendingRunRow[];
+    return rows.map((r) => ({
+      id: r.id,
+      source: r.source as "webhook" | "cron",
+      workflowIdOrName: r.workflow_id_or_name,
+      payload: r.payload ?? undefined,
+      route: r.route ?? undefined,
+      traceparent: r.traceparent ?? undefined,
+      tracestate: r.tracestate ?? undefined,
+      createdAt: r.created_at,
+    }));
   }
 
   close(): void {

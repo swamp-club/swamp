@@ -287,6 +287,8 @@ export interface WebhookServiceDeps {
   endpoints: WebhookEndpoint[];
   /** Shared sync service; see `design/datastores.md` markDirty contract. */
   syncService?: DatastoreSyncService;
+  runTracker?:
+    import("../infrastructure/persistence/run_tracker_store.ts").RunTrackerStore;
 }
 
 /**
@@ -308,6 +310,7 @@ export interface WebhookEndpointInfo {
 
 export class WebhookService {
   private readonly runQueue: Array<{
+    pendingRunId?: string;
     workflowIdOrName: string;
     route: string;
     payload: WebhookPayload;
@@ -415,17 +418,37 @@ export class WebhookService {
       );
     }
 
+    const traceparent = req.headers.get("traceparent") ?? undefined;
+    const tracestate = req.headers.get("tracestate") ?? undefined;
+    const webhookPayload = buildWebhookPayload(
+      body,
+      req.headers,
+      endpoint.route,
+      verifier.signatureHeader,
+    );
+
+    let pendingRunId: string | undefined;
+    if (this.deps.runTracker) {
+      pendingRunId = crypto.randomUUID();
+      this.deps.runTracker.enqueuePendingRun({
+        id: pendingRunId,
+        source: "webhook",
+        workflowIdOrName: endpoint.workflowIdOrName,
+        payload: JSON.stringify(webhookPayload),
+        route: endpoint.route,
+        traceparent,
+        tracestate,
+        createdAt: new Date().toISOString(),
+      });
+    }
+
     this.runQueue.push({
+      pendingRunId,
       workflowIdOrName: endpoint.workflowIdOrName,
       route: endpoint.route,
-      payload: buildWebhookPayload(
-        body,
-        req.headers,
-        endpoint.route,
-        verifier.signatureHeader,
-      ),
-      traceparent: req.headers.get("traceparent") ?? undefined,
-      tracestate: req.headers.get("tracestate") ?? undefined,
+      payload: webhookPayload,
+      traceparent,
+      tracestate,
     });
 
     this.emit({
@@ -456,6 +479,26 @@ export class WebhookService {
     });
   }
 
+  enqueueForReplay(entry: {
+    pendingRunId: string;
+    workflowIdOrName: string;
+    route: string;
+    payload: WebhookPayload;
+    traceparent?: string;
+    tracestate?: string;
+  }): void {
+    this.runQueue.push(entry);
+    if (!this.processing) {
+      this.processingPromise = this.processQueue().catch(
+        (error: unknown) => {
+          logger.error("Webhook replay queue processing failed: {error}", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        },
+      );
+    }
+  }
+
   /**
    * Gracefully stop: abort in-flight runs and drain the processing promise.
    */
@@ -473,8 +516,17 @@ export class WebhookService {
 
     try {
       while (this.runQueue.length > 0) {
-        const { workflowIdOrName, route, payload, traceparent, tracestate } =
-          this.runQueue.shift()!;
+        const {
+          pendingRunId,
+          workflowIdOrName,
+          route,
+          payload,
+          traceparent,
+          tracestate,
+        } = this.runQueue.shift()!;
+        if (pendingRunId && this.deps.runTracker) {
+          this.deps.runTracker.deletePendingRun(pendingRunId);
+        }
         await this.executeWorkflow(
           workflowIdOrName,
           route,

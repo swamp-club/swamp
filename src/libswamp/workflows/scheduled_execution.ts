@@ -104,10 +104,21 @@ export type WorkflowExecutor = (
   onEvent: (event: WorkflowRunEvent) => void,
 ) => Promise<void>;
 
+export interface PendingRunHook {
+  enqueue(entry: {
+    id: string;
+    source: "cron";
+    workflowIdOrName: string;
+    createdAt: string;
+  }): void;
+  delete(id: string): void;
+}
+
 export interface ScheduledExecutionDeps {
   workflowRepo: WorkflowRepository;
   repoDir: string;
   executeWorkflow: WorkflowExecutor;
+  pendingRunHook?: PendingRunHook;
 }
 
 export class ScheduledExecutionService {
@@ -119,6 +130,7 @@ export class ScheduledExecutionService {
   >();
   private readonly workflowNames = new Map<WorkflowId, string>();
   private readonly runQueue: Array<{
+    pendingRunId?: string;
     workflowId: WorkflowId;
     workflowName: string;
   }> = [];
@@ -248,6 +260,20 @@ export class ScheduledExecutionService {
     return count;
   }
 
+  enqueueForReplay(entry: {
+    pendingRunId: string;
+    workflowIdOrName: string;
+  }): void {
+    this.runQueue.push({
+      pendingRunId: entry.pendingRunId,
+      workflowId: entry.workflowIdOrName as WorkflowId,
+      workflowName: entry.workflowIdOrName,
+    });
+    if (!this.processing) {
+      this.processingPromise = this.processQueue();
+    }
+  }
+
   private handleScheduleChange(
     workflowId: WorkflowId,
     schedule: string | null,
@@ -309,7 +335,17 @@ export class ScheduledExecutionService {
     // Queue the run — workflows execute one at a time to avoid lock
     // contention. Before scheduling, each workflow ran as a separate
     // process via systemd timers; serializing preserves that behavior.
-    this.runQueue.push({ workflowId, workflowName });
+    let pendingRunId: string | undefined;
+    if (this.deps.pendingRunHook) {
+      pendingRunId = crypto.randomUUID();
+      this.deps.pendingRunHook.enqueue({
+        id: pendingRunId,
+        source: "cron",
+        workflowIdOrName: workflowName,
+        createdAt: new Date().toISOString(),
+      });
+    }
+    this.runQueue.push({ pendingRunId, workflowId, workflowName });
     if (!this.processing) {
       this.processingPromise = this.processQueue();
     }
@@ -321,7 +357,11 @@ export class ScheduledExecutionService {
 
     try {
       while (this.runQueue.length > 0) {
-        const { workflowId, workflowName } = this.runQueue.shift()!;
+        const { pendingRunId, workflowId, workflowName } = this.runQueue
+          .shift()!;
+        if (pendingRunId && this.deps.pendingRunHook) {
+          this.deps.pendingRunHook.delete(pendingRunId);
+        }
         await this.executeWorkflow(workflowId, workflowName);
       }
     } finally {

@@ -178,6 +178,50 @@ export async function sweepStaleRecords(
   return result;
 }
 
+export interface ReplayPendingRunsDeps {
+  runTracker:
+    import("../infrastructure/persistence/run_tracker_store.ts").RunTrackerStore;
+  webhookService?: import("./webhook.ts").WebhookService;
+  scheduledExecution?:
+    import("../libswamp/workflows/scheduled_execution.ts").ScheduledExecutionService;
+}
+
+export function replayPendingRuns(deps: ReplayPendingRunsDeps): number {
+  const pending = deps.runTracker.findAllPendingRuns();
+  if (pending.length === 0) return 0;
+
+  logger.info`Replaying ${pending.length} pending run(s) from previous process`;
+
+  let replayed = 0;
+  for (const entry of pending) {
+    if (entry.source === "webhook" && deps.webhookService) {
+      deps.webhookService.enqueueForReplay({
+        pendingRunId: entry.id,
+        workflowIdOrName: entry.workflowIdOrName,
+        route: entry.route ?? "",
+        payload: entry.payload ? JSON.parse(entry.payload) : {},
+        traceparent: entry.traceparent,
+        tracestate: entry.tracestate,
+      });
+      replayed++;
+      logger.info`Replayed pending webhook run for ${entry.workflowIdOrName}`;
+    } else if (entry.source === "cron" && deps.scheduledExecution) {
+      deps.scheduledExecution.enqueueForReplay({
+        pendingRunId: entry.id,
+        workflowIdOrName: entry.workflowIdOrName,
+      });
+      replayed++;
+      logger.info`Replayed pending cron run for ${entry.workflowIdOrName}`;
+    } else {
+      deps.runTracker.deletePendingRun(entry.id);
+      logger
+        .warn`Discarding pending run ${entry.id} (source: ${entry.source}, no matching service)`;
+    }
+  }
+
+  return replayed;
+}
+
 async function loadAttrsForType(
   repo: FileSystemUnifiedDataRepository,
   modelType: ModelType,
