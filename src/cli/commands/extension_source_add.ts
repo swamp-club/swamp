@@ -38,9 +38,11 @@ import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import {
   resolveDatastoresDir,
+  resolveDriversDir,
   resolveModelsDir,
   resolveReportsDir,
   resolveVaultsDir,
+  resolveWorkflowsDir,
 } from "../mod.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -95,8 +97,8 @@ export const extensionSourceAddCommand = new Command()
       resolveVaultsDir(marker),
       resolveDatastoresDir(marker),
       resolveReportsDir(marker),
-      "extensions/drivers",
-      "extensions/workflows",
+      resolveDriversDir(marker),
+      resolveWorkflowsDir(marker),
     ];
     const deps = await createSourceAddDeps(
       repoDir,

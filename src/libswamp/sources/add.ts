@@ -58,7 +58,7 @@ export interface SourceAddDeps {
   copySkills: (skills: ResolvedSkill[]) => Promise<string[]>;
   /** Removes named skill directories (used for cleanup on partial failure). */
   cleanupSkills: (skillNames: string[]) => Promise<void>;
-  /** Absolute paths of directories already scanned by default (e.g.
+  /** Paths of directories already scanned by default (e.g.
    * `extensions/models`). Source paths that resolve to one of these are
    * rejected — adding them would cause every file to be processed twice,
    * producing nondeterministic BundleBuildFailed errors (swamp-club#1419). */
