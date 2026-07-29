@@ -369,6 +369,39 @@ Deno.test("redactIssueContent: long hex strings are redacted", () => {
   assertEquals(result.text, "Token was [REDACTED-SECRET-1] in header");
 });
 
+Deno.test("redactIssueContent: hex digest in JSON checksum field is not redacted", () => {
+  const sha256 =
+    "868f2f74abc123def456789012345678901234567890abcdef1234567817030a";
+  const input = `{ "checksum": "${sha256}", "isLatest": true }`;
+  const result = redactIssueContent(input);
+  assertEquals(result.text, input);
+  assertEquals(result.summary.totalRedactions, 0);
+});
+
+Deno.test("redactIssueContent: hex digest with various safe key names is not redacted", () => {
+  const hex = "a1b2c3d4e5f6".repeat(6); // 72 chars
+  for (const key of ["sha256", "sha1", "digest", "hash", "etag", "md5"]) {
+    const input = `"${key}": "${hex}"`;
+    const result = redactIssueContent(input);
+    assertEquals(result.text, input, `expected ${key} to be safe`);
+  }
+});
+
+Deno.test("redactIssueContent: hex digest with escaped JSON quotes is not redacted", () => {
+  const sha256 =
+    "868f2f74abc123def456789012345678901234567890abcdef1234567817030a";
+  const input = `\\"checksum\\": \\"${sha256}\\"`;
+  const result = redactIssueContent(input);
+  assertEquals(result.text, input);
+  assertEquals(result.summary.totalRedactions, 0);
+});
+
+Deno.test("redactIssueContent: standalone hex string without safe key is still redacted", () => {
+  const hex = "a".repeat(64);
+  const result = redactIssueContent(`The value ${hex} was found`);
+  assertEquals(result.text, "The value [REDACTED-SECRET-1] was found");
+});
+
 Deno.test("redactIssueContent: scheme URL without credentials does not swallow following lines", () => {
   const input = [
     "Steps:",
@@ -473,6 +506,34 @@ Deno.test("redactIssueContent: IPv6 localhost and link-local are not redacted", 
     "found fe80:0000:0000:0000:0000:0000:0000:0001 on interface",
   );
   assertStringIncludes(r2.text, "fe80:");
+});
+
+Deno.test("redactIssueContent: HH:MM:SS timestamps are not redacted as IPs", () => {
+  const input = "system │ Starting workflow remote-demo · 20:18:09 UTC\n" +
+    " build │ done echo-on-worker in 729ms · 14:30:45 UTC";
+  const result = redactIssueContent(input);
+  assertStringIncludes(result.text, "20:18:09");
+  assertStringIncludes(result.text, "14:30:45");
+  assertEquals(result.summary.totalRedactions, 0);
+});
+
+Deno.test("redactIssueContent: boundary timestamps are not redacted", () => {
+  const r1 = redactIssueContent("started at 00:00:00 UTC");
+  assertStringIncludes(r1.text, "00:00:00");
+
+  const r2 = redactIssueContent("ended at 23:59:59 UTC");
+  assertStringIncludes(r2.text, "23:59:59");
+});
+
+Deno.test("redactIssueContent: real IPv6 with 3+ groups is still redacted", () => {
+  const result = redactIssueContent(
+    "Listening on 2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+  );
+  assertStringIncludes(result.text, "[IP-");
+  assertEquals(
+    result.text.includes("2001:0db8:85a3:0000:0000:8a2e:0370:7334"),
+    false,
+  );
 });
 
 // --- Angle-bracket placeholder handling ---
