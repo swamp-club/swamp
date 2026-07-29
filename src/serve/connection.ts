@@ -115,10 +115,13 @@ import {
   handleWorkerVerify,
 } from "./handlers/admin_handlers.ts";
 import {
+  authorizeOrReject,
   type ConnectionContext,
   MAX_PREDICATE_LENGTH,
   MAX_QUERY_RESULTS,
+  send,
   sendError,
+  subscribeUntilDetach,
 } from "./handlers/shared.ts";
 
 export { sanitizeErrorForClient } from "./handlers/shared.ts";
@@ -846,6 +849,15 @@ const RunDoctorRequestSchema = z.object({
   }).optional(),
 });
 
+const RunAttachRequestSchema = z.object({
+  type: z.literal("run.attach"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    runId: z.string().min(1).max(256),
+    afterSeq: z.number().int().nonnegative().optional(),
+  }),
+});
+
 const ServerRequestSchema = z.discriminatedUnion("type", [
   WorkflowRunRequestSchema,
   ModelMethodRunRequestSchema,
@@ -920,6 +932,7 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   DoctorExtensionsRequestSchema,
   RunHistoryRequestSchema,
   RunDoctorRequestSchema,
+  RunAttachRequestSchema,
   CancelRequestSchema,
 ]);
 
@@ -1022,6 +1035,20 @@ export function handleMessage(
     const controller = activeRequests.get(request.id);
     if (controller) {
       controller.abort();
+      return;
+    }
+    const run = ctx.activeRunRegistry?.get(request.id);
+    if (run) {
+      const resourceKind = run.kind === "method-run" ? "model" : "workflow";
+      if (
+        authorizeOrReject(socket, request.id, principal, "run", {
+          kind: resourceKind,
+          name: run.resourceName,
+          fields: {},
+        }, ctx)
+      ) {
+        ctx.activeRunRegistry!.cancel(request.id);
+      }
     }
     return;
   }
@@ -1767,6 +1794,16 @@ export function handleMessage(
         principal,
       ));
       break;
+    case "run.attach":
+      task = handleRunAttach(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
   }
 
   task
@@ -1777,6 +1814,55 @@ export function handleMessage(
       });
     })
     .finally(() => activeRequests.delete(request.id));
+}
+
+// ── Run attach handler ───────────────────────────────────────────────
+
+async function handleRunAttach(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: { runId: string; afterSeq?: number },
+  controller: AbortController,
+  principal: import("../domain/access/principal.ts").Principal | null,
+): Promise<void> {
+  const run = ctx.activeRunRegistry?.get(payload.runId);
+  if (!run) {
+    sendError(
+      socket,
+      requestId,
+      "not_found",
+      `No active run with id '${payload.runId}'`,
+    );
+    return;
+  }
+
+  const resourceKind = run.kind === "method-run" ? "model" : "workflow";
+  if (
+    !authorizeOrReject(socket, requestId, principal, "run", {
+      kind: resourceKind,
+      name: run.resourceName,
+      fields: {},
+    }, ctx)
+  ) return;
+
+  send(socket, {
+    type: "run.attached",
+    id: requestId,
+    payload: {
+      runId: run.runId,
+      kind: run.kind,
+      startedAt: run.startedAt.toISOString(),
+    },
+  });
+
+  await subscribeUntilDetach(
+    run.buffer,
+    socket,
+    requestId,
+    controller,
+    payload.afterSeq ?? 0,
+  );
 }
 
 // ── Data handlers ─────────────────────────────────────────────────────

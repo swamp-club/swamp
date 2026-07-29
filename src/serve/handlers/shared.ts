@@ -93,6 +93,7 @@ export interface ConnectionContext {
   policySnapshotLoader?: PolicySnapshotLoader;
   authConfig: ServeAuthConfig;
   cancelRegistry?: RunCancelRegistry;
+  activeRunRegistry?: import("../active_run_registry.ts").ActiveRunRegistry;
   runTracker?: RunTrackerRepository;
   dispatchService?: import("../dispatch_service.ts").DispatchService;
   defaultVault?: string;
@@ -277,4 +278,48 @@ export function sendError(
   message: string,
 ): void {
   send(socket, { type: "error", id, error: { code, message } });
+}
+
+export function createSocketSubscriber(
+  socket: WebSocket,
+  requestId: string,
+  onDetachCallback?: () => void,
+): import("../run_event_buffer.ts").RunEventSubscriber {
+  return {
+    onEvent(seq, event) {
+      send(socket, {
+        type: "event",
+        id: requestId,
+        event: { ...event, seq },
+      });
+    },
+    onTerminal(terminal) {
+      if (terminal.kind === "done") {
+        send(socket, { type: "done", id: requestId });
+      } else {
+        sendError(socket, requestId, terminal.code, terminal.message);
+      }
+    },
+    onDetach() {
+      onDetachCallback?.();
+    },
+  };
+}
+
+export function subscribeUntilDetach(
+  buffer: import("../run_event_buffer.ts").RunEventBuffer,
+  socket: WebSocket,
+  requestId: string,
+  controller: AbortController,
+  afterSeq = 0,
+): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const unsub = buffer.subscribe(
+      createSocketSubscriber(socket, requestId, resolve),
+      afterSeq,
+    );
+    controller.signal.addEventListener("abort", () => {
+      unsub();
+    }, { once: true });
+  });
 }

@@ -75,6 +75,7 @@ import { ScheduledExecutionService } from "../../libswamp/mod.ts";
 import { parseWebhookFlag, WebhookService } from "../../serve/webhook.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
+import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
 import { RunCancelRegistry } from "../../serve/run_cancel_registry.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
@@ -862,6 +863,13 @@ export const serveCommand = new Command()
       "(env: SWAMP_TRUSTED_HOSTS)",
   )
   .option(
+    "--detach-runs",
+    "Runs survive client disconnection. When enabled, a WebSocket close " +
+      "detaches the client from the run instead of cancelling it. " +
+      "Clients can re-attach to a running workflow by run ID via the run.attach protocol message. " +
+      "Without this flag, runs are cancelled when the client disconnects (the default, matching existing behavior)",
+  )
+  .option(
     "--hot-reload",
     "Enable SIGHUP-based hot-reload for pulled extension bundles. " +
       "Writes a PID file to .swamp/serve.pid; use 'swamp serve reload' to trigger a reload",
@@ -1436,6 +1444,8 @@ export const serveCommand = new Command()
     });
 
     const cancelRegistry = new RunCancelRegistry();
+    const detachRuns = options.detachRuns === true;
+    const activeRunRegistry = detachRuns ? new ActiveRunRegistry() : undefined;
 
     // Reap stale runs via the SQLite tracker (heartbeat + PID liveness).
     // This handles both model-method and workflow runs registered with the tracker.
@@ -1495,6 +1505,7 @@ export const serveCommand = new Command()
         policySnapshotLoader,
         authConfig,
         cancelRegistry,
+        activeRunRegistry,
         runTracker,
         dispatchService,
         defaultVault: repoMarker?.defaultVault,
@@ -2002,6 +2013,10 @@ export const serveCommand = new Command()
             const executionId = cancelMatch[2];
             // Check cancel registry first (WebSocket ad-hoc and webhook runs)
             let found = cancelRegistry.cancel(executionType, executionId);
+            // Then check active run registry (detached runs)
+            if (!found && activeRunRegistry) {
+              found = activeRunRegistry.cancel(executionId);
+            }
             // For workflow runs, also check scheduled execution service
             if (
               !found && executionType === "workflow-run" && scheduledExecution
@@ -2185,6 +2200,13 @@ export const serveCommand = new Command()
       }
       if (scheduledExecution) {
         await scheduledExecution.stop();
+      }
+      if (activeRunRegistry) {
+        const activeCount = activeRunRegistry.size;
+        if (activeCount > 0) {
+          logger.info`Draining ${activeCount} active run(s)...`;
+          await activeRunRegistry.drainAll(30_000);
+        }
       }
       if (collectiveRefreshService) {
         await collectiveRefreshService.dispose();

@@ -81,6 +81,7 @@ import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { Principal } from "../../domain/access/principal.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
+import { RunEventBuffer } from "../run_event_buffer.ts";
 import {
   authorizeOrReject,
   type ConnectionContext,
@@ -88,9 +89,12 @@ import {
   sanitizeErrorForClient,
   send,
   sendError,
+  subscribeUntilDetach,
 } from "./shared.ts";
 
 const logger = getSwampLogger(["serve", "connection"]);
+
+const DEFAULT_BUFFER_CAPACITY = 10_000;
 
 export async function handleModelMethodRun(
   socket: WebSocket,
@@ -100,160 +104,339 @@ export async function handleModelMethodRun(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  let flushLocks: (() => Promise<void>) | null = null;
+  const registry = ctx.activeRunRegistry;
+  if (!registry) {
+    let flushLocks: (() => Promise<void>) | null = null;
+    try {
+      const preResult = await findDefinitionByIdOrName(
+        ctx.repoContext.definitionRepo,
+        payload.modelIdOrName,
+      );
 
-  try {
-    // Pre-lookup for per-model lock acquisition
-    const preResult = await findDefinitionByIdOrName(
-      ctx.repoContext.definitionRepo,
-      payload.modelIdOrName,
-    );
+      const modelFields: Record<string, unknown> = {};
+      if (preResult) {
+        modelFields.modelType = preResult.type.normalized;
+        modelFields.name = preResult.definition.name;
+        const tags = preResult.definition.tags;
+        if (tags && Object.keys(tags).length > 0) modelFields.tags = tags;
+      }
 
-    const modelFields: Record<string, unknown> = {};
-    if (preResult) {
-      modelFields.modelType = preResult.type.normalized;
-      modelFields.name = preResult.definition.name;
-      const tags = preResult.definition.tags;
-      if (tags && Object.keys(tags).length > 0) modelFields.tags = tags;
-    }
-
-    if (isAccessModelType(payload.typeArg, preResult?.type.normalized)) {
-      if (
-        !authorizeOrReject(socket, requestId, principal, "admin", {
-          kind: "access",
-          name: "*",
-          fields: modelFields,
-        }, ctx)
-      ) return;
-    } else {
-      if (
-        !authorizeOrReject(socket, requestId, principal, "run", {
-          kind: "model",
-          name: payload.modelIdOrName,
-          fields: modelFields,
-        }, ctx)
-      ) return;
-
-      // SECURITY: When typeArg is present, the execution path resolves the model
-      // from typeArg, not modelIdOrName. Authorize the execution target separately
-      // to prevent a mismatch bypass where a user authorized for one model supplies
-      // a different typeArg (e.g. command/shell) to execute an unauthorized model.
-      if (payload.typeArg) {
-        const stripped = payload.typeArg.startsWith("@")
-          ? payload.typeArg.slice(1)
-          : payload.typeArg;
-        const executionTarget = ModelType.create(stripped).normalized;
+      if (isAccessModelType(payload.typeArg, preResult?.type.normalized)) {
+        if (
+          !authorizeOrReject(socket, requestId, principal, "admin", {
+            kind: "access",
+            name: "*",
+            fields: modelFields,
+          }, ctx)
+        ) return;
+      } else {
         if (
           !authorizeOrReject(socket, requestId, principal, "run", {
             kind: "model",
-            name: executionTarget,
-            fields: {},
+            name: payload.modelIdOrName,
+            fields: modelFields,
           }, ctx)
         ) return;
+
+        if (payload.typeArg) {
+          const stripped = payload.typeArg.startsWith("@")
+            ? payload.typeArg.slice(1)
+            : payload.typeArg;
+          const executionTarget = ModelType.create(stripped).normalized;
+          if (
+            !authorizeOrReject(socket, requestId, principal, "run", {
+              kind: "model",
+              name: executionTarget,
+              fields: {},
+            }, ctx)
+          ) return;
+        }
       }
-    }
 
-    if (preResult) {
-      const lockResult = await acquireModelLocks(
-        ctx.datastoreConfig,
-        [{
-          modelType: preResult.type.normalized,
-          modelId: preResult.definition.id,
-        }],
-        ctx.repoDir,
-        ctx.syncService,
-        ctx.repoContext.catalogStore,
-      );
-      if (lockResult.synced) ctx.repoContext.catalogStore.invalidate();
-      flushLocks = lockResult.flush;
-    }
-
-    const isDirectExecution = payload.typeArg !== undefined;
-    const deps = await createModelMethodRunDeps(
-      ctx.repoDir,
-      ctx.repoContext,
-      {
-        directExecution: isDirectExecution,
-        runTracker: ctx.runTracker,
-        defaultVault: ctx.defaultVault,
-      },
-    );
-    const libCtx = createLibSwampContext({ signal: controller.signal });
-
-    // Register method run in cancel registry using the requestId as executionId
-    if (ctx.cancelRegistry) {
-      ctx.cancelRegistry.register("method-run", requestId, controller);
-    }
-
-    const runMethod = async () => {
-      for await (
-        const event of modelMethodRun(libCtx, deps, {
-          modelIdOrName: payload.modelIdOrName,
-          methodName: payload.methodName,
-          inputs: payload.inputs ?? {},
-          lastEvaluated: payload.lastEvaluated ?? false,
-          runtimeTags: payload.runtimeTags,
-          typeArg: payload.typeArg,
-          definitionName: payload.definitionName,
-          skipAllReports: payload.skipAllReports || isDirectExecution,
-          skipReportNames: payload.skipReportNames,
-          skipReportLabels: payload.skipReportLabels,
-          reportNames: payload.reportNames,
-          reportLabels: payload.reportLabels,
-          skipAllChecks: payload.skipAllChecks,
-          skipCheckNames: payload.skipCheckNames,
-          skipCheckLabels: payload.skipCheckLabels,
-          traceparent: payload.traceparent,
-          tracestate: payload.tracestate,
-        })
-      ) {
-        if (socket.readyState !== WebSocket.OPEN) break;
-        const serialized = serializeEvent(
-          event as { kind: string; [key: string]: unknown },
+      if (preResult) {
+        const lockResult = await acquireModelLocks(
+          ctx.datastoreConfig,
+          [{
+            modelType: preResult.type.normalized,
+            modelId: preResult.definition.id,
+          }],
+          ctx.repoDir,
+          ctx.syncService,
+          ctx.repoContext.catalogStore,
         );
-        send(socket, { type: "event", id: requestId, event: serialized });
+        if (lockResult.synced) ctx.repoContext.catalogStore.invalidate();
+        flushLocks = lockResult.flush;
       }
-      send(socket, { type: "done", id: requestId });
-    };
 
-    if (payload.traceparent) {
-      const headers: Record<string, string> = {
-        traceparent: payload.traceparent,
-      };
-      if (payload.tracestate) headers.tracestate = payload.tracestate;
-      const traceCtx = extractTraceContext(headers);
-      await runWithParentTrace(traceCtx, runMethod);
-    } else {
-      await runMethod();
-    }
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-    } else {
-      const message = sanitizeErrorForClient(error);
-      sendError(
-        socket,
-        requestId,
-        "method_execution_failed",
-        message,
+      const isDirectExecution = payload.typeArg !== undefined;
+      const deps = await createModelMethodRunDeps(
+        ctx.repoDir,
+        ctx.repoContext,
+        {
+          directExecution: isDirectExecution,
+          runTracker: ctx.runTracker,
+          defaultVault: ctx.defaultVault,
+        },
       );
-    }
-  } finally {
-    if (ctx.cancelRegistry) {
-      ctx.cancelRegistry.deregister("method-run", requestId);
-    }
-    if (flushLocks) {
-      try {
-        await flushLocks();
-      } catch (releaseError) {
-        logger.warn("Failed to release locks: {error}", {
-          error: releaseError instanceof Error
-            ? releaseError.message
-            : String(releaseError),
-        });
+      const libCtx = createLibSwampContext({ signal: controller.signal });
+
+      if (ctx.cancelRegistry) {
+        ctx.cancelRegistry.register("method-run", requestId, controller);
       }
+
+      const runMethod = async () => {
+        for await (
+          const event of modelMethodRun(libCtx, deps, {
+            modelIdOrName: payload.modelIdOrName,
+            methodName: payload.methodName,
+            inputs: payload.inputs ?? {},
+            lastEvaluated: payload.lastEvaluated ?? false,
+            runtimeTags: payload.runtimeTags,
+            typeArg: payload.typeArg,
+            definitionName: payload.definitionName,
+            skipAllReports: payload.skipAllReports || isDirectExecution,
+            skipReportNames: payload.skipReportNames,
+            skipReportLabels: payload.skipReportLabels,
+            reportNames: payload.reportNames,
+            reportLabels: payload.reportLabels,
+            skipAllChecks: payload.skipAllChecks,
+            skipCheckNames: payload.skipCheckNames,
+            skipCheckLabels: payload.skipCheckLabels,
+            traceparent: payload.traceparent,
+            tracestate: payload.tracestate,
+          })
+        ) {
+          if (socket.readyState !== WebSocket.OPEN) break;
+          const serialized = serializeEvent(
+            event as { kind: string; [key: string]: unknown },
+          );
+          send(socket, { type: "event", id: requestId, event: serialized });
+        }
+        send(socket, { type: "done", id: requestId });
+      };
+
+      if (payload.traceparent) {
+        const headers: Record<string, string> = {
+          traceparent: payload.traceparent,
+        };
+        if (payload.tracestate) headers.tracestate = payload.tracestate;
+        const traceCtx = extractTraceContext(headers);
+        await runWithParentTrace(traceCtx, runMethod);
+      } else {
+        await runMethod();
+      }
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      } else {
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "method_execution_failed", message);
+      }
+    } finally {
+      if (ctx.cancelRegistry) {
+        ctx.cancelRegistry.deregister("method-run", requestId);
+      }
+      if (flushLocks) {
+        try {
+          await flushLocks();
+        } catch (releaseError) {
+          logger.warn("Failed to release locks: {error}", {
+            error: releaseError instanceof Error
+              ? releaseError.message
+              : String(releaseError),
+          });
+        }
+      }
+    }
+    return;
+  }
+
+  // Pre-lookup and authorization for the detached path
+  let preResult: Awaited<
+    ReturnType<typeof findDefinitionByIdOrName>
+  >;
+  try {
+    preResult = await findDefinitionByIdOrName(
+      ctx.repoContext.definitionRepo,
+      payload.modelIdOrName,
+    );
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "method_execution_failed", message);
+    return;
+  }
+
+  const modelFields: Record<string, unknown> = {};
+  if (preResult) {
+    modelFields.modelType = preResult.type.normalized;
+    modelFields.name = preResult.definition.name;
+    const tags = preResult.definition.tags;
+    if (tags && Object.keys(tags).length > 0) modelFields.tags = tags;
+  }
+
+  if (isAccessModelType(payload.typeArg, preResult?.type.normalized)) {
+    if (
+      !authorizeOrReject(socket, requestId, principal, "admin", {
+        kind: "access",
+        name: "*",
+        fields: modelFields,
+      }, ctx)
+    ) return;
+  } else {
+    if (
+      !authorizeOrReject(socket, requestId, principal, "run", {
+        kind: "model",
+        name: payload.modelIdOrName,
+        fields: modelFields,
+      }, ctx)
+    ) return;
+
+    if (payload.typeArg) {
+      const stripped = payload.typeArg.startsWith("@")
+        ? payload.typeArg.slice(1)
+        : payload.typeArg;
+      const executionTarget = ModelType.create(stripped).normalized;
+      if (
+        !authorizeOrReject(socket, requestId, principal, "run", {
+          kind: "model",
+          name: executionTarget,
+          fields: {},
+        }, ctx)
+      ) return;
     }
   }
+
+  const buffer = new RunEventBuffer(DEFAULT_BUFFER_CAPACITY);
+  const runController = new AbortController();
+  const runId: string = crypto.randomUUID();
+
+  buffer.push({ kind: "run.accepted", runId });
+
+  const completion = (async () => {
+    let flushLocks: (() => Promise<void>) | null = null;
+    try {
+      if (preResult) {
+        const lockResult = await acquireModelLocks(
+          ctx.datastoreConfig,
+          [{
+            modelType: preResult.type.normalized,
+            modelId: preResult.definition.id,
+          }],
+          ctx.repoDir,
+          ctx.syncService,
+          ctx.repoContext.catalogStore,
+        );
+        if (lockResult.synced) ctx.repoContext.catalogStore.invalidate();
+        flushLocks = lockResult.flush;
+      }
+
+      const isDirectExecution = payload.typeArg !== undefined;
+      const deps = await createModelMethodRunDeps(
+        ctx.repoDir,
+        ctx.repoContext,
+        {
+          directExecution: isDirectExecution,
+          runTracker: ctx.runTracker,
+          defaultVault: ctx.defaultVault,
+        },
+      );
+      const libCtx = createLibSwampContext({
+        signal: runController.signal,
+      });
+
+      const doRun = async () => {
+        for await (
+          const event of modelMethodRun(libCtx, deps, {
+            modelIdOrName: payload.modelIdOrName,
+            methodName: payload.methodName,
+            inputs: payload.inputs ?? {},
+            lastEvaluated: payload.lastEvaluated ?? false,
+            runtimeTags: payload.runtimeTags,
+            typeArg: payload.typeArg,
+            definitionName: payload.definitionName,
+            skipAllReports: payload.skipAllReports || isDirectExecution,
+            skipReportNames: payload.skipReportNames,
+            skipReportLabels: payload.skipReportLabels,
+            reportNames: payload.reportNames,
+            reportLabels: payload.reportLabels,
+            skipAllChecks: payload.skipAllChecks,
+            skipCheckNames: payload.skipCheckNames,
+            skipCheckLabels: payload.skipCheckLabels,
+            traceparent: payload.traceparent,
+            tracestate: payload.tracestate,
+          })
+        ) {
+          const serialized = serializeEvent(
+            event as { kind: string; [key: string]: unknown },
+          );
+          buffer.push(serialized);
+        }
+      };
+
+      if (payload.traceparent) {
+        const headers: Record<string, string> = {
+          traceparent: payload.traceparent,
+        };
+        if (payload.tracestate) headers.tracestate = payload.tracestate;
+        const traceCtx = extractTraceContext(headers);
+        await runWithParentTrace(traceCtx, doRun);
+      } else {
+        await doRun();
+      }
+
+      buffer.finish({ kind: "done" });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        buffer.finish({
+          kind: "error",
+          code: "cancelled",
+          message: "Operation was cancelled",
+        });
+      } else {
+        buffer.finish({
+          kind: "error",
+          code: "method_execution_failed",
+          message: sanitizeErrorForClient(error),
+        });
+      }
+    } finally {
+      if (flushLocks) {
+        try {
+          await flushLocks();
+        } catch (releaseError) {
+          logger.warn("Failed to release locks: {error}", {
+            error: releaseError instanceof Error
+              ? releaseError.message
+              : String(releaseError),
+          });
+        }
+      }
+      registry.deregister(runId);
+    }
+  })();
+
+  try {
+    registry.register({
+      runId,
+      kind: "method-run",
+      resourceName: payload.modelIdOrName,
+      buffer,
+      controller: runController,
+      startedAt: new Date(),
+      completion,
+    });
+  } catch {
+    runController.abort();
+    sendError(
+      socket,
+      requestId,
+      "too_many_requests",
+      `Too many concurrent runs; wait for active runs to complete`,
+    );
+    return;
+  }
+
+  await subscribeUntilDetach(buffer, socket, requestId, controller);
 }
 
 export async function handleModelSearch(
