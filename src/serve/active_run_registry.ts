@@ -24,6 +24,7 @@ export type RunKind = "workflow-run" | "workflow-resume" | "method-run";
 export interface ActiveRun {
   readonly runId: string;
   readonly kind: RunKind;
+  readonly resourceName: string;
   readonly buffer: RunEventBuffer;
   readonly controller: AbortController;
   readonly startedAt: Date;

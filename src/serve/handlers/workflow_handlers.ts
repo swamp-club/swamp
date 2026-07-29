@@ -91,10 +91,10 @@ import { RunEventBuffer } from "../run_event_buffer.ts";
 import {
   authorizeOrReject,
   type ConnectionContext,
-  createSocketSubscriber,
   sanitizeErrorForClient,
   send,
   sendError,
+  subscribeUntilDetach,
 } from "./shared.ts";
 
 const DEFAULT_BUFFER_CAPACITY = 10_000;
@@ -210,8 +210,9 @@ export async function handleWorkflowRun(
           if (event.kind === "started") {
             const domainRunId = (event as { runId: string }).runId;
             if (domainRunId && domainRunId !== runId) {
-              registry.rekey(runId, domainRunId);
-              runId = domainRunId;
+              if (registry.rekey(runId, domainRunId)) {
+                runId = domainRunId;
+              }
             }
           }
           const serialized = serializeEvent(
@@ -246,6 +247,7 @@ export async function handleWorkflowRun(
     registry.register({
       runId,
       kind: "workflow-run",
+      resourceName: payload.workflowIdOrName,
       buffer,
       controller: runController,
       startedAt: new Date(),
@@ -262,10 +264,7 @@ export async function handleWorkflowRun(
     return;
   }
 
-  const unsub = buffer.subscribe(
-    createSocketSubscriber(socket, requestId),
-  );
-  controller.signal.addEventListener("abort", unsub, { once: true });
+  await subscribeUntilDetach(buffer, socket, requestId, controller);
 }
 
 export async function handleWorkflowSearch(
@@ -1147,6 +1146,7 @@ export async function handleWorkflowResume(
     registry.register({
       runId,
       kind: "workflow-resume",
+      resourceName: payload.workflowIdOrName,
       buffer,
       controller: runController,
       startedAt: new Date(),
@@ -1163,8 +1163,5 @@ export async function handleWorkflowResume(
     return;
   }
 
-  const unsub = buffer.subscribe(
-    createSocketSubscriber(socket, requestId),
-  );
-  controller.signal.addEventListener("abort", unsub, { once: true });
+  await subscribeUntilDetach(buffer, socket, requestId, controller);
 }

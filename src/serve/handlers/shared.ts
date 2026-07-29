@@ -283,6 +283,7 @@ export function sendError(
 export function createSocketSubscriber(
   socket: WebSocket,
   requestId: string,
+  onDetachCallback?: () => void,
 ): import("../run_event_buffer.ts").RunEventSubscriber {
   return {
     onEvent(seq, event) {
@@ -299,6 +300,26 @@ export function createSocketSubscriber(
         sendError(socket, requestId, terminal.code, terminal.message);
       }
     },
-    onDetach() {},
+    onDetach() {
+      onDetachCallback?.();
+    },
   };
+}
+
+export function subscribeUntilDetach(
+  buffer: import("../run_event_buffer.ts").RunEventBuffer,
+  socket: WebSocket,
+  requestId: string,
+  controller: AbortController,
+  afterSeq = 0,
+): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const unsub = buffer.subscribe(
+      createSocketSubscriber(socket, requestId, resolve),
+      afterSeq,
+    );
+    controller.signal.addEventListener("abort", () => {
+      unsub();
+    }, { once: true });
+  });
 }

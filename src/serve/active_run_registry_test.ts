@@ -39,6 +39,7 @@ function makeRun(
   return {
     runId,
     kind: "workflow-run",
+    resourceName: "test-workflow",
     buffer: new RunEventBuffer(100),
     controller: new AbortController(),
     startedAt: new Date(),
@@ -169,6 +170,31 @@ Deno.test("ActiveRunRegistry: size tracks registrations and deregistrations", ()
 
   reg.deregister("r2");
   assertEquals(reg.size, 0);
+});
+
+Deno.test("ActiveRunRegistry: rekey moves entry to new id", () => {
+  const reg = new ActiveRunRegistry();
+  reg.register(makeRun("r1"));
+
+  assertEquals(reg.rekey("r1", "r2"), true);
+  assertEquals(reg.get("r1"), undefined);
+  assertEquals(reg.get("r2")?.runId, "r2");
+  assertEquals(reg.size, 1);
+});
+
+Deno.test("ActiveRunRegistry: rekey returns false for unknown old id", () => {
+  const reg = new ActiveRunRegistry();
+  assertEquals(reg.rekey("unknown", "r2"), false);
+});
+
+Deno.test("ActiveRunRegistry: rekey returns false if new id already exists", () => {
+  const reg = new ActiveRunRegistry();
+  reg.register(makeRun("r1"));
+  reg.register(makeRun("r2"));
+
+  assertEquals(reg.rekey("r1", "r2"), false);
+  assertEquals(reg.get("r1")?.runId, "r1");
+  assertEquals(reg.get("r2")?.runId, "r2");
 });
 
 Deno.test("ActiveRunRegistry: rejects registration when at capacity", () => {

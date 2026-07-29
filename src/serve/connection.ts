@@ -113,11 +113,11 @@ import {
 import {
   authorizeOrReject,
   type ConnectionContext,
-  createSocketSubscriber,
   MAX_PREDICATE_LENGTH,
   MAX_QUERY_RESULTS,
   send,
   sendError,
+  subscribeUntilDetach,
 } from "./handlers/shared.ts";
 
 export { sanitizeErrorForClient } from "./handlers/shared.ts";
@@ -987,7 +987,19 @@ export function handleMessage(
       controller.abort();
       return;
     }
-    ctx.activeRunRegistry?.cancel(request.id);
+    const run = ctx.activeRunRegistry?.get(request.id);
+    if (run) {
+      const resourceKind = run.kind === "method-run" ? "model" : "workflow";
+      if (
+        authorizeOrReject(socket, request.id, principal, "run", {
+          kind: resourceKind,
+          name: run.resourceName,
+          fields: {},
+        }, ctx)
+      ) {
+        ctx.activeRunRegistry!.cancel(request.id);
+      }
+    }
     return;
   }
 
@@ -1693,14 +1705,14 @@ export function handleMessage(
       ));
       break;
     case "run.attach":
-      task = Promise.resolve(handleRunAttach(
+      task = handleRunAttach(
         socket,
         ctx,
         request.id,
         request.payload,
         controller,
         principal,
-      ));
+      );
       break;
   }
 
@@ -1716,14 +1728,14 @@ export function handleMessage(
 
 // ── Run attach handler ───────────────────────────────────────────────
 
-function handleRunAttach(
+async function handleRunAttach(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
   payload: { runId: string; afterSeq?: number },
   controller: AbortController,
   principal: import("../domain/access/principal.ts").Principal | null,
-): void {
+): Promise<void> {
   const run = ctx.activeRunRegistry?.get(payload.runId);
   if (!run) {
     sendError(
@@ -1739,7 +1751,7 @@ function handleRunAttach(
   if (
     !authorizeOrReject(socket, requestId, principal, "run", {
       kind: resourceKind,
-      name: "*",
+      name: run.resourceName,
       fields: {},
     }, ctx)
   ) return;
@@ -1754,11 +1766,13 @@ function handleRunAttach(
     },
   });
 
-  const unsub = run.buffer.subscribe(
-    createSocketSubscriber(socket, requestId),
+  await subscribeUntilDetach(
+    run.buffer,
+    socket,
+    requestId,
+    controller,
     payload.afterSeq ?? 0,
   );
-  controller.signal.addEventListener("abort", unsub, { once: true });
 }
 
 // ── Data handlers ─────────────────────────────────────────────────────

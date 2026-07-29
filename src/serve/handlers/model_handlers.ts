@@ -85,11 +85,11 @@ import { RunEventBuffer } from "../run_event_buffer.ts";
 import {
   authorizeOrReject,
   type ConnectionContext,
-  createSocketSubscriber,
   isAccessModelType,
   sanitizeErrorForClient,
   send,
   sendError,
+  subscribeUntilDetach,
 } from "./shared.ts";
 
 const logger = getSwampLogger(["serve", "connection"]);
@@ -419,6 +419,7 @@ export async function handleModelMethodRun(
     registry.register({
       runId,
       kind: "method-run",
+      resourceName: payload.modelIdOrName,
       buffer,
       controller: runController,
       startedAt: new Date(),
@@ -435,10 +436,7 @@ export async function handleModelMethodRun(
     return;
   }
 
-  const unsub = buffer.subscribe(
-    createSocketSubscriber(socket, requestId),
-  );
-  controller.signal.addEventListener("abort", unsub, { once: true });
+  await subscribeUntilDetach(buffer, socket, requestId, controller);
 }
 
 export async function handleModelSearch(
