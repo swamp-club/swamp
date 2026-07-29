@@ -38,7 +38,6 @@ import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import {
   resolveDatastoresDir,
-  resolveDriversDir,
   resolveModelsDir,
   resolveReportsDir,
   resolveVaultsDir,
@@ -97,7 +96,6 @@ export const extensionSourceAddCommand = new Command()
       resolveVaultsDir(marker),
       resolveDatastoresDir(marker),
       resolveReportsDir(marker),
-      resolveDriversDir(marker),
       resolveWorkflowsDir(marker),
     ];
     const deps = await createSourceAddDeps(

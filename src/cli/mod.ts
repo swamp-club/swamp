@@ -192,8 +192,6 @@ import "../domain/models/models.ts";
 // separate files to avoid circular imports through mod.ts.
 import { resolveModelsDir } from "./resolve_models_dir.ts";
 export { resolveModelsDir };
-import { resolveDriversDir } from "./resolve_drivers_dir.ts";
-export { resolveDriversDir };
 import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
 export { resolveWorkflowsDir };
 import { resolveVaultsDir } from "./resolve_vaults_dir.ts";
