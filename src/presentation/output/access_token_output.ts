@@ -23,7 +23,7 @@
  * terminal-output design system.
  */
 
-import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
+import { bold, cyan, dim, green, red } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type {
   ServerTokenCreateData,
@@ -89,11 +89,11 @@ export function renderServerTokenCreate(
       dim(`(key ${data.vaultRef.secretKey})`)
     }`,
     "",
-    `  ${bold(data.token)}`,
-    "",
-    yellow(
-      "This token is shown once and will not be displayed again — store it now.",
-    ),
+    `Retrieve the token with: ${
+      bold(
+        `swamp vault get ${data.vaultRef.vaultName} ${data.vaultRef.secretKey}`,
+      )
+    }`,
   ];
   writeOutput(lines.join("\n"));
 }
@@ -167,11 +167,11 @@ export function renderServerTokenRotate(
       dim(`(key ${data.vaultRef.secretKey})`)
     }`,
     "",
-    `  ${bold(data.token)}`,
-    "",
-    yellow(
-      "Previous token has been revoked. Store the new token now — it will not be shown again.",
-    ),
+    `Retrieve the new token with: ${
+      bold(
+        `swamp vault get ${data.vaultRef.vaultName} ${data.vaultRef.secretKey}`,
+      )
+    }`,
   ];
   writeOutput(lines.join("\n"));
 }

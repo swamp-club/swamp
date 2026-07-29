@@ -22,12 +22,10 @@ import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { modelMethodRun, type ModelMethodRunEvent } from "../models/run.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
-import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { createServerTokenRunDeps } from "./run_deps.ts";
 
 export interface ServerTokenRotateData {
   name: string;
-  token: string;
   principalId: string;
   expiresAt: string;
   vaultRef: { vaultName: string; secretKey: string };
@@ -47,7 +45,6 @@ export interface ServerTokenRotateDeps {
   runRotate: (
     input: { name: string; durationMs?: number },
   ) => AsyncIterable<ModelMethodRunEvent>;
-  readSecret: (vaultName: string, secretKey: string) => Promise<string>;
 }
 
 export async function createServerTokenRotateDeps(
@@ -56,7 +53,6 @@ export async function createServerTokenRotateDeps(
   repoContext: RepositoryContext,
 ): Promise<ServerTokenRotateDeps> {
   const runDeps = await createServerTokenRunDeps(repoDir, repoContext);
-  const vaultService = await VaultService.fromRepository(repoDir);
   return {
     runRotate: (input) =>
       modelMethodRun(ctx, runDeps, {
@@ -67,8 +63,6 @@ export async function createServerTokenRotateDeps(
           : {},
         lastEvaluated: false,
       }),
-    readSecret: (vaultName, secretKey) =>
-      vaultService.get(vaultName, secretKey, "access:server-token-rotate"),
   };
 }
 
@@ -127,16 +121,10 @@ export async function* serverTokenRotate(
         return;
       }
 
-      const plaintext = await deps.readSecret(
-        tokenRecord.vaultName,
-        tokenRecord.secretKey,
-      );
-
       yield {
         kind: "completed" as const,
         data: {
           name: input.name,
-          token: `${input.name}.${plaintext}`,
           principalId: typeof tokenRecord.principalId === "string"
             ? tokenRecord.principalId
             : "",
