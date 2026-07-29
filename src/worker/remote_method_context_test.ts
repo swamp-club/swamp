@@ -73,6 +73,7 @@ function harness(
   extensionFilesDir?: string,
   artifactContent?: Record<string, unknown>,
   overrideDispatch?: DispatchParams,
+  onEvent?: (event: Record<string, unknown>) => void,
 ) {
   const calls: StubCall[] = [];
   // The orchestrator side of the control socket, with stub verb handlers.
@@ -201,6 +202,7 @@ function harness(
     scratchDir,
     extensionFilesDir,
     signal: new AbortController().signal,
+    onEvent,
   });
   return { context, getHandles, calls, lines, contents };
 }
@@ -400,6 +402,44 @@ Deno.test("remote context: empty secretValues leaves redactor without secrets", 
   await withScratch((dir) => {
     const h = harness(dir);
     assertEquals(h.context.redactor!.hasSecrets, false);
+    return Promise.resolve();
+  });
+});
+
+Deno.test("remote context: logger.info fires onEvent with stdout output event", async () => {
+  await withScratch((dir) => {
+    const events: Record<string, unknown>[] = [];
+    const h = harness(
+      dir,
+      undefined,
+      undefined,
+      undefined,
+      (e) => events.push(e),
+    );
+    h.context.logger.info("hello from remote");
+    assertEquals(events.length, 1);
+    assertEquals(events[0].type, "output");
+    assertEquals(events[0].stream, "stdout");
+    assertEquals(events[0].line, "hello from remote");
+    return Promise.resolve();
+  });
+});
+
+Deno.test("remote context: logger.warn fires onEvent with stderr output event", async () => {
+  await withScratch((dir) => {
+    const events: Record<string, unknown>[] = [];
+    const h = harness(
+      dir,
+      undefined,
+      undefined,
+      undefined,
+      (e) => events.push(e),
+    );
+    h.context.logger.warn("something went wrong");
+    assertEquals(events.length, 1);
+    assertEquals(events[0].type, "output");
+    assertEquals(events[0].stream, "stderr");
+    assertEquals(events[0].line, "something went wrong");
     return Promise.resolve();
   });
 });

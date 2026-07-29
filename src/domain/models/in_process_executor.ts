@@ -42,7 +42,7 @@ import {
 import { DataAccessService } from "../data/data_access_service.ts";
 import { withConsoleGuard } from "./console_guard.ts";
 
-function wrapLoggerWithOutput(
+export function wrapLoggerWithOutput(
   logger: Logger,
   onEvent: ((event: MethodExecutionEvent) => void) | undefined,
 ): Logger {
