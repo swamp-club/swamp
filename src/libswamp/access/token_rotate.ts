@@ -18,10 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { LibSwampContext } from "../context.ts";
-import type { SwampError } from "../errors.ts";
+import { type SwampError, validationFailed } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { modelMethodRun, type ModelMethodRunEvent } from "../models/run.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
+import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { createServerTokenRunDeps } from "./run_deps.ts";
 
 export interface ServerTokenRotateData {
@@ -39,11 +40,13 @@ export type ServerTokenRotateEvent =
 export interface ServerTokenRotateInput {
   name: string;
   durationMs?: number;
+  vaultName?: string;
 }
 
 export interface ServerTokenRotateDeps {
+  listVaultNames: () => Promise<string[]>;
   runRotate: (
-    input: { name: string; durationMs?: number },
+    input: { name: string; durationMs?: number; vaultName?: string },
   ) => AsyncIterable<ModelMethodRunEvent>;
 }
 
@@ -53,16 +56,20 @@ export async function createServerTokenRotateDeps(
   repoContext: RepositoryContext,
 ): Promise<ServerTokenRotateDeps> {
   const runDeps = await createServerTokenRunDeps(repoDir, repoContext);
+  const vaultService = await VaultService.fromRepository(repoDir);
   return {
-    runRotate: (input) =>
-      modelMethodRun(ctx, runDeps, {
+    listVaultNames: () => Promise.resolve(vaultService.getVaultNames()),
+    runRotate: (input) => {
+      const inputs: Record<string, unknown> = {};
+      if (input.durationMs !== undefined) inputs.durationMs = input.durationMs;
+      if (input.vaultName !== undefined) inputs.vaultName = input.vaultName;
+      return modelMethodRun(ctx, runDeps, {
         modelIdOrName: input.name,
         methodName: "rotate",
-        inputs: input.durationMs !== undefined
-          ? { durationMs: input.durationMs }
-          : {},
+        inputs,
         lastEvaluated: false,
-      }),
+      });
+    },
   };
 }
 
@@ -77,6 +84,22 @@ export async function* serverTokenRotate(
     "swamp.access.token.rotate",
     { "token.name": input.name },
     (async function* () {
+      if (input.vaultName !== undefined) {
+        const available = await deps.listVaultNames();
+        if (!available.includes(input.vaultName)) {
+          const hint = available.length > 0
+            ? `Available vaults: ${available.join(", ")}`
+            : "No vaults are configured. Create one with: swamp vault create <type> <name>";
+          yield {
+            kind: "error" as const,
+            error: validationFailed(
+              `Vault '${input.vaultName}' is not configured. ${hint}`,
+            ),
+          };
+          return;
+        }
+      }
+
       yield { kind: "rotating" as const, name: input.name };
 
       let tokenRecord: Record<string, unknown> | undefined;
@@ -84,6 +107,7 @@ export async function* serverTokenRotate(
         const event of deps.runRotate({
           name: input.name,
           durationMs: input.durationMs,
+          vaultName: input.vaultName,
         })
       ) {
         if (event.kind === "error") {

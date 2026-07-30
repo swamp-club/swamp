@@ -70,6 +70,7 @@ function makeDeps(
   overrides?: Partial<ServerTokenRotateDeps>,
 ): ServerTokenRotateDeps {
   return {
+    listVaultNames: () => Promise.resolve(["main-vault", "backup-vault"]),
     runRotate: async function* (input) {
       for (const event of rotateEvents(input.name)) {
         yield await Promise.resolve(event);
@@ -199,4 +200,80 @@ Deno.test("serverTokenRotate: errors when token record is missing from result", 
   >;
   assertEquals(error.kind, "error");
   assertStringIncludes(error.error.message, "token-main");
+});
+
+Deno.test("serverTokenRotate: passes vaultName override to the model method", async () => {
+  let receivedVault: string | undefined;
+  const deps = makeDeps({
+    runRotate: async function* (input) {
+      receivedVault = input.vaultName;
+      for (
+        const event of rotateEvents(input.name, {
+          name: input.name,
+          state: "active",
+          principalId: "user:sarah",
+          principalEmail: "sarah@example.com",
+          createdAt: "2026-06-19T00:00:00.000Z",
+          expiresAt: EXPIRES_AT,
+          vaultName: "backup-vault",
+          secretKey: `server-token-${input.name}`,
+        })
+      ) {
+        yield await Promise.resolve(event);
+      }
+    },
+  });
+  const events = await collect<ServerTokenRotateEvent>(
+    serverTokenRotate(createLibSwampContext(), deps, {
+      name: "tok",
+      vaultName: "backup-vault",
+    }),
+  );
+  assertEquals(receivedVault, "backup-vault");
+  const completed = events[1] as Extract<
+    ServerTokenRotateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.vaultRef.vaultName, "backup-vault");
+});
+
+Deno.test("serverTokenRotate: uses existing vault when no override provided", async () => {
+  let receivedVault: string | undefined;
+  const deps = makeDeps({
+    runRotate: async function* (input) {
+      receivedVault = input.vaultName;
+      for (const event of rotateEvents(input.name)) {
+        yield await Promise.resolve(event);
+      }
+    },
+  });
+  const events = await collect<ServerTokenRotateEvent>(
+    serverTokenRotate(createLibSwampContext(), deps, {
+      name: "tok",
+    }),
+  );
+  assertEquals(receivedVault, undefined);
+  const completed = events[1] as Extract<
+    ServerTokenRotateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.vaultRef.vaultName, "main-vault");
+});
+
+Deno.test("serverTokenRotate: errors when requested vault does not exist", async () => {
+  const events = await collect<ServerTokenRotateEvent>(
+    serverTokenRotate(createLibSwampContext(), makeDeps(), {
+      name: "tok",
+      vaultName: "nonexistent-vault",
+    }),
+  );
+  assertEquals(events.length, 1);
+  const error = events[0] as Extract<
+    ServerTokenRotateEvent,
+    { kind: "error" }
+  >;
+  assertEquals(error.kind, "error");
+  assertStringIncludes(error.error.message, "Vault 'nonexistent-vault'");
+  assertStringIncludes(error.error.message, "not configured");
+  assertStringIncludes(error.error.message, "main-vault");
 });

@@ -180,10 +180,11 @@ swamp access can-i --action run --on workflow:@acme/deploy --server wss://...
 ## Token Management
 
 ```bash
-swamp access token mint <name> --principal user:<id>   # plaintext shown once
+swamp access token mint <name> --principal user:<id>   # plaintext stored in vault
 swamp access token list
 swamp access token revoke <name>
 swamp access token rotate <name>                       # revoke + mint replacement
+swamp access token rotate <name> --vault <vault>       # rotate into a different vault
 ```
 
 ## OAuth Login
