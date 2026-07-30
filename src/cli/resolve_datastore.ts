@@ -407,10 +407,22 @@ export async function checkUnmigratedNamespaceData(
   for (const subdir of DEFAULT_DATASTORE_SUBDIRS) {
     try {
       const stat = await Deno.stat(join(basePath, subdir));
-      if (stat.isDirectory) found.push(subdir);
+      if (stat.isDirectory && await dirHasFiles(join(basePath, subdir))) {
+        found.push(subdir);
+      }
     } catch {
       // Not found — expected when migrated
     }
   }
   return found;
+}
+
+async function dirHasFiles(dir: string): Promise<boolean> {
+  for await (const entry of Deno.readDir(dir)) {
+    if (entry.isFile || entry.isSymlink) return true;
+    if (entry.isDirectory && await dirHasFiles(join(dir, entry.name))) {
+      return true;
+    }
+  }
+  return false;
 }

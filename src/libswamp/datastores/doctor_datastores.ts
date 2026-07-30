@@ -19,6 +19,7 @@
 
 import {
   type DatastoreConfig,
+  DEFAULT_DATASTORE_SUBDIRS,
   isCustomDatastoreConfig,
 } from "../../domain/datastore/datastore_config.ts";
 import type { NamespaceContaminationSummary } from "../../domain/datastore/datastore_sync_service.ts";
@@ -356,6 +357,134 @@ export async function* repairDatastoreContamination(
           },
         };
       }
+    })(),
+  );
+}
+
+// ============================================================================
+// Repair: root-level unmigrated data cleanup
+// ============================================================================
+
+export interface UnmigratedDataRepairResult {
+  removedDirectories: string[];
+  removedFiles: number;
+}
+
+export type RepairUnmigratedDataEvent =
+  | { kind: "scanning" }
+  | {
+    kind: "preview";
+    directories: string[];
+    namespace: string;
+  }
+  | { kind: "step"; description: string }
+  | {
+    kind: "completed";
+    result: UnmigratedDataRepairResult;
+    namespace: string;
+  }
+  | { kind: "not_needed" }
+  | { kind: "error"; error: SwampError };
+
+export interface RepairUnmigratedDataDeps {
+  getBasePath: () => string;
+  getNamespace: () => string;
+  listFiles: (dir: string) => Promise<string[]>;
+  compareFiles: (a: string, b: string) => Promise<boolean>;
+  removeFile: (path: string) => Promise<void>;
+  removeEmptyDirs: (dir: string) => Promise<void>;
+  dirExists: (path: string) => Promise<boolean>;
+}
+
+export async function* repairUnmigratedData(
+  _ctx: LibSwampContext,
+  deps: RepairUnmigratedDataDeps,
+  options: { confirm: boolean },
+): AsyncGenerator<RepairUnmigratedDataEvent> {
+  yield* withGeneratorSpan(
+    "swamp.doctor.datastores.repair.unmigrated",
+    {},
+    (async function* () {
+      yield { kind: "scanning" };
+
+      const basePath = deps.getBasePath();
+      const namespace = deps.getNamespace();
+
+      const unmigratedDirs: string[] = [];
+      for (const subdir of DEFAULT_DATASTORE_SUBDIRS) {
+        const rootDir = `${basePath}/${subdir}`;
+        if (await deps.dirExists(rootDir)) {
+          const files = await deps.listFiles(rootDir);
+          if (files.length > 0) {
+            unmigratedDirs.push(subdir);
+          }
+        }
+      }
+
+      if (unmigratedDirs.length === 0) {
+        yield { kind: "not_needed" };
+        return;
+      }
+
+      if (!options.confirm) {
+        yield { kind: "preview", directories: unmigratedDirs, namespace };
+        return;
+      }
+
+      let totalRemoved = 0;
+      const cleaned: string[] = [];
+
+      for (const subdir of unmigratedDirs) {
+        yield {
+          kind: "step",
+          description:
+            `Checking ${subdir}/ for duplicates against ${namespace}/${subdir}/`,
+        };
+
+        const rootDir = `${basePath}/${subdir}`;
+        const nsDir = `${basePath}/${namespace}/${subdir}`;
+        const files = await deps.listFiles(rootDir);
+
+        let allIdentical = true;
+        for (const relPath of files) {
+          const rootFile = `${rootDir}/${relPath}`;
+          const nsFile = `${nsDir}/${relPath}`;
+          if (!await deps.compareFiles(rootFile, nsFile)) {
+            allIdentical = false;
+            break;
+          }
+        }
+
+        if (!allIdentical) {
+          yield {
+            kind: "error",
+            error: {
+              code: "non_identical_unmigrated_data",
+              message:
+                `Root-level "${subdir}/" contains files that differ from ` +
+                `"${namespace}/${subdir}/". Run 'swamp datastore namespace migrate' ` +
+                `to resolve manually.`,
+            },
+          };
+          return;
+        }
+
+        for (const relPath of files) {
+          await deps.removeFile(`${rootDir}/${relPath}`);
+          totalRemoved++;
+        }
+        await deps.removeEmptyDirs(rootDir);
+        cleaned.push(subdir);
+      }
+
+      yield {
+        kind: "completed",
+        result: {
+          removedDirectories: cleaned,
+          removedFiles: totalRemoved,
+        },
+        namespace,
+      };
     })(),
   );
 }

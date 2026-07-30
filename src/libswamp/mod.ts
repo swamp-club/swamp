@@ -239,6 +239,10 @@ export {
   type RepairDatastoresDeps,
   type RepairDatastoresEvent,
   type RepairDatastoresResult,
+  repairUnmigratedData,
+  type RepairUnmigratedDataDeps,
+  type RepairUnmigratedDataEvent,
+  type UnmigratedDataRepairResult,
   type VaultMismatchFinding,
 } from "./datastores/doctor_datastores.ts";
 export {

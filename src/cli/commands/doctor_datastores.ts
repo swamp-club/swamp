@@ -26,10 +26,13 @@ import {
   type DoctorDatastoresDeps,
   repairDatastoreContamination,
   type RepairDatastoresDeps,
+  repairUnmigratedData,
+  type RepairUnmigratedDataDeps,
 } from "../../libswamp/mod.ts";
 import {
   createDoctorDatastoresRenderer,
   createRepairDatastoresRenderer,
+  createUnmigratedDataRepairRenderer,
 } from "../../presentation/renderers/doctor_datastores.ts";
 import {
   createContext,
@@ -129,7 +132,9 @@ async function createDoctorDatastoresDeps(
       for (const subdir of DEFAULT_DATASTORE_SUBDIRS) {
         try {
           const stat = await Deno.stat(join(basePath, subdir));
-          if (stat.isDirectory) found.push(subdir);
+          if (stat.isDirectory && await dirHasFiles(join(basePath, subdir))) {
+            found.push(subdir);
+          }
         } catch {
           // Directory doesn't exist — expected when migrated
         }
@@ -259,6 +264,93 @@ async function createRepairDeps(
   };
 }
 
+async function dirHasFiles(dir: string): Promise<boolean> {
+  for await (const entry of Deno.readDir(dir)) {
+    if (entry.isFile || entry.isSymlink) return true;
+    if (entry.isDirectory && await dirHasFiles(join(dir, entry.name))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function listFilesRecursive(
+  dir: string,
+  prefix = "",
+): Promise<string[]> {
+  const files: string[] = [];
+  try {
+    for await (const entry of Deno.readDir(dir)) {
+      const relPath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory && !entry.isSymlink) {
+        files.push(...await listFilesRecursive(join(dir, entry.name), relPath));
+      } else {
+        files.push(relPath);
+      }
+    }
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  return files;
+}
+
+async function createUnmigratedRepairDeps(
+  repoDir: string,
+): Promise<RepairUnmigratedDataDeps> {
+  const markerRepo = new RepoMarkerRepository();
+  const marker = await markerRepo.read(RepoPath.create(repoDir));
+  const config = await resolveDatastoreConfig(marker, undefined, repoDir);
+
+  if (!config.namespace) {
+    throw new UserError(
+      "Unmigrated data repair is only available when a namespace is configured.",
+    );
+  }
+
+  const basePath = isCustomDatastoreConfig(config) && config.cachePath
+    ? config.cachePath
+    : isCustomDatastoreConfig(config)
+    ? config.datastorePath
+    : config.path;
+
+  return {
+    getBasePath: () => basePath,
+    getNamespace: () => config.namespace!,
+    listFiles: (dir: string) => listFilesRecursive(dir),
+    compareFiles: async (a: string, b: string) => {
+      try {
+        const [aBytes, bBytes] = await Promise.all([
+          Deno.readFile(a),
+          Deno.readFile(b),
+        ]);
+        if (aBytes.length !== bBytes.length) return false;
+        for (let i = 0; i < aBytes.length; i++) {
+          if (aBytes[i] !== bBytes[i]) return false;
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    removeFile: (path: string) => Deno.remove(path),
+    removeEmptyDirs: async (dir: string) => {
+      try {
+        await Deno.remove(dir, { recursive: true });
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      }
+    },
+    dirExists: async (path: string) => {
+      try {
+        const stat = await Deno.stat(path);
+        return stat.isDirectory;
+      } catch {
+        return false;
+      }
+    },
+  };
+}
+
 export const doctorDatastoresCommand = withRemoteOptions(
   new Command()
     .description(
@@ -332,6 +424,28 @@ export const doctorDatastoresCommand = withRemoteOptions(
   const libCtx = createLibSwampContext();
 
   if (options.repair) {
+    let exitCode = 0;
+
+    try {
+      const unmigratedDeps = await createUnmigratedRepairDeps(repoDir);
+      const unmigratedRenderer = createUnmigratedDataRepairRenderer(
+        cliCtx.outputMode,
+      );
+
+      await consumeStream(
+        repairUnmigratedData(libCtx, unmigratedDeps, {
+          confirm: Boolean(options.yes),
+        }),
+        unmigratedRenderer.handlers(),
+      );
+
+      if (unmigratedRenderer.overallStatus === "fail") {
+        exitCode = 1;
+      }
+    } catch {
+      // No namespace configured or other precondition not met — skip
+    }
+
     const deps = await createRepairDeps(repoDir);
     const renderer = createRepairDatastoresRenderer(cliCtx.outputMode);
 
@@ -344,7 +458,7 @@ export const doctorDatastoresCommand = withRemoteOptions(
 
     cliCtx.logger.debug("doctor datastores repair completed");
 
-    if (renderer.overallStatus === "fail") {
+    if (renderer.overallStatus === "fail" || exitCode !== 0) {
       Deno.exit(1);
     }
     return;

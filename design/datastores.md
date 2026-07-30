@@ -252,6 +252,12 @@ at the un-namespaced path `{base}/{subdir}/`, it moves it to
 `{base}/{namespace}/{subdir}/` via `Deno.rename()`. The catalog is invalidated
 after migration so backfill rebuilds from the new paths.
 
+When a file exists at both the source (root) and destination (namespace) paths,
+forward migration compares their contents byte-by-byte. Byte-identical
+duplicates (e.g. from a buggy pull that wrote namespace-stripped copies to the
+cache root) are auto-resolved by deleting the root-level copy. Non-identical
+collisions still error — the user must resolve them manually.
+
 The reverse (`--reverse`) flattens namespaced paths back to solo layout, with
 conflict detection — it refuses if the un-namespaced path already contains data.
 `swamp datastore namespace unset --migrate` combines unset + reverse migration.

@@ -137,6 +137,22 @@ function buildDeps(
       Deno.rename(source, destination),
     findFileCollisions: (source: string, destination: string) =>
       findFileCollisions(source, destination),
+    compareFiles: async (a: string, b: string) => {
+      try {
+        const [aBytes, bBytes] = await Promise.all([
+          Deno.readFile(a),
+          Deno.readFile(b),
+        ]);
+        if (aBytes.length !== bBytes.length) return false;
+        for (let i = 0; i < aBytes.length; i++) {
+          if (aBytes[i] !== bBytes[i]) return false;
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    removeFile: (path: string) => Deno.remove(path),
     mergeDirInto: (source: string, destination: string) =>
       mergeDirInto(source, destination),
     ensureDir: (path: string) => ensureDir(path),
