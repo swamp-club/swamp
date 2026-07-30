@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { UserError } from "../errors.ts";
+import { ModelType } from "../models/model_type.ts";
 import { parseSubject } from "./subject.ts";
 
 export type AuthMode = "none" | "token" | "oauth";
@@ -30,6 +31,7 @@ export interface ServeAuthConfig {
   oauthProvider: string;
   oauthClientId?: string;
   groupsField: string;
+  restrictedModelTypes: string[];
 }
 
 const VALID_AUTH_MODES: ReadonlySet<string> = new Set([
@@ -48,6 +50,7 @@ export interface ServeAuthConfigInput {
   oauthProvider?: string;
   oauthClientId?: string;
   groupsField?: string;
+  restrictedModelTypes?: string;
 }
 
 function parseCommaSeparated(value: string | undefined): string[] {
@@ -91,6 +94,9 @@ export function buildServeAuthConfig(
   const oauthProvider = input.oauthProvider ?? DEFAULT_OAUTH_PROVIDER;
   const oauthClientId = input.oauthClientId;
   const groupsField = input.groupsField ?? DEFAULT_GROUPS_FIELD;
+  const restrictedModelTypes = parseCommaSeparated(
+    input.restrictedModelTypes,
+  ).map((t) => ModelType.create(t).normalized);
 
   if (admins.length > 0) {
     validateAdmins(admins, mode);
@@ -143,5 +149,6 @@ export function buildServeAuthConfig(
     oauthProvider,
     oauthClientId,
     groupsField,
+    restrictedModelTypes,
   };
 }

@@ -114,6 +114,7 @@ async function withServeRepo(
         allowedUsers: [],
         oauthProvider: "https://swamp-club.com",
         groupsField: "collectives",
+        restrictedModelTypes: [],
       },
     };
 

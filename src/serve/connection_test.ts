@@ -411,6 +411,7 @@ const modeNoneConfig: ServeAuthConfig = {
   allowedUsers: [],
   oauthProvider: "",
   groupsField: "",
+  restrictedModelTypes: [],
 };
 
 const modeTokenConfig: ServeAuthConfig = {
@@ -420,6 +421,7 @@ const modeTokenConfig: ServeAuthConfig = {
   allowedUsers: [],
   oauthProvider: "",
   groupsField: "",
+  restrictedModelTypes: [],
 };
 
 const testPrincipal: Principal = { kind: "user", id: "adam" };
@@ -1056,6 +1058,154 @@ Deno.test("isAccessModelType: admin user can still run canonical swamp/grant", a
   await new Promise((r) => setTimeout(r, 50));
 
   // Should not get unauthorized — admin on access:* is sufficient
+  const unauthorizedErrors = mock.sent
+    .map((s) => JSON.parse(s))
+    .filter((m) =>
+      m.type === "error" &&
+      (m.error as Record<string, unknown>).code === "unauthorized"
+    );
+  assertEquals(unauthorizedErrors.length, 0);
+});
+
+// ── restrictedModelTypes: admin-only enforcement via config ───────────────
+
+const restrictedConfig: ServeAuthConfig = {
+  mode: "token",
+  admins: [],
+  allowedCollectives: [],
+  allowedUsers: [],
+  oauthProvider: "",
+  groupsField: "",
+  restrictedModelTypes: ["command/shell"],
+};
+
+Deno.test("restrictedModelTypes: non-admin denied run on restricted type", async () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(restrictedConfig, [lowPrivGrant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "model.method.run",
+      id: "restricted-1",
+      payload: {
+        modelIdOrName: "my-shell",
+        methodName: "run",
+        typeArg: "command/shell",
+        definitionName: "my-shell",
+      },
+    })),
+    testPrincipal,
+  );
+
+  await new Promise((r) => setTimeout(r, 50));
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  const errorMessage = String(
+    (msg.error as Record<string, unknown>).message,
+  );
+  assertStringIncludes(errorMessage, "admin");
+  assertStringIncludes(errorMessage, "access:*");
+});
+
+Deno.test("restrictedModelTypes: denormalized restricted type requires admin", async () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(restrictedConfig, [lowPrivGrant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "model.method.run",
+      id: "restricted-denorm",
+      payload: {
+        modelIdOrName: "my-shell",
+        methodName: "run",
+        typeArg: "Command::Shell",
+        definitionName: "my-shell",
+      },
+    })),
+    testPrincipal,
+  );
+
+  await new Promise((r) => setTimeout(r, 50));
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+});
+
+Deno.test("restrictedModelTypes: admin can run restricted type", async () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const adminGrant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    actions: ["admin"],
+    resource: { kind: "access", pattern: "*" },
+  });
+  const ctx = makeCtx(restrictedConfig, [adminGrant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "model.method.run",
+      id: "restricted-admin",
+      payload: {
+        modelIdOrName: "my-shell",
+        methodName: "run",
+        typeArg: "command/shell",
+        definitionName: "my-shell",
+      },
+    })),
+    testPrincipal,
+  );
+
+  await new Promise((r) => setTimeout(r, 50));
+
+  const unauthorizedErrors = mock.sent
+    .map((s) => JSON.parse(s))
+    .filter((m) =>
+      m.type === "error" &&
+      (m.error as Record<string, unknown>).code === "unauthorized"
+    );
+  assertEquals(unauthorizedErrors.length, 0);
+});
+
+Deno.test("restrictedModelTypes: non-restricted type still allowed for non-admin", async () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(restrictedConfig, [lowPrivGrant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "model.method.run",
+      id: "non-restricted",
+      payload: {
+        modelIdOrName: "my-terraform",
+        methodName: "apply",
+        typeArg: "terraform/aws",
+        definitionName: "my-terraform",
+      },
+    })),
+    testPrincipal,
+  );
+
+  await new Promise((r) => setTimeout(r, 50));
+
   const unauthorizedErrors = mock.sent
     .map((s) => JSON.parse(s))
     .filter((m) =>

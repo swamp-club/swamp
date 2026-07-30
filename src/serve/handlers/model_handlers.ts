@@ -85,7 +85,7 @@ import { RunEventBuffer } from "../run_event_buffer.ts";
 import {
   authorizeOrReject,
   type ConnectionContext,
-  isAccessModelType,
+  isAdminOnlyModelType,
   sanitizeErrorForClient,
   send,
   sendError,
@@ -121,7 +121,13 @@ export async function handleModelMethodRun(
         if (tags && Object.keys(tags).length > 0) modelFields.tags = tags;
       }
 
-      if (isAccessModelType(payload.typeArg, preResult?.type.normalized)) {
+      if (
+        isAdminOnlyModelType(
+          payload.typeArg,
+          preResult?.type.normalized,
+          ctx.authConfig.restrictedModelTypes,
+        )
+      ) {
         if (
           !authorizeOrReject(socket, requestId, principal, "admin", {
             kind: "access",
@@ -274,7 +280,13 @@ export async function handleModelMethodRun(
     if (tags && Object.keys(tags).length > 0) modelFields.tags = tags;
   }
 
-  if (isAccessModelType(payload.typeArg, preResult?.type.normalized)) {
+  if (
+    isAdminOnlyModelType(
+      payload.typeArg,
+      preResult?.type.normalized,
+      ctx.authConfig.restrictedModelTypes,
+    )
+  ) {
     if (
       !authorizeOrReject(socket, requestId, principal, "admin", {
         kind: "access",
@@ -615,7 +627,13 @@ export async function handleModelCreate(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  if (isAccessModelType(payload.typeArg, undefined)) {
+  if (
+    isAdminOnlyModelType(
+      payload.typeArg,
+      undefined,
+      ctx.authConfig.restrictedModelTypes,
+    )
+  ) {
     if (
       !authorizeOrReject(socket, requestId, principal, "admin", {
         kind: "access",

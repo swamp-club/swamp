@@ -301,6 +301,12 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   if (options.groupsField) {
     args.push("--groups-field", options.groupsField as string);
   }
+  if (options.restrictedModelTypes) {
+    args.push(
+      "--restricted-model-types",
+      options.restrictedModelTypes as string,
+    );
+  }
   if (options.groupRefreshInterval) {
     args.push(
       "--group-refresh-interval",
@@ -470,6 +476,10 @@ const daemonEnableCommand = new Command()
   .option(
     "--groups-field <field:string>",
     "Userinfo field name for group/collective memberships (default: collectives)",
+  )
+  .option(
+    "--restricted-model-types <types:string>",
+    "Comma-separated model types that require admin authority to create or run (e.g. command/shell)",
   )
   .option(
     "--group-refresh-interval <duration:string>",
@@ -851,6 +861,10 @@ export const serveCommand = new Command()
     "Userinfo field name for group/collective memberships (default: collectives)",
   )
   .option(
+    "--restricted-model-types <types:string>",
+    "Comma-separated model types that require admin authority to create or run (e.g. command/shell)",
+  )
+  .option(
     "--group-refresh-interval <duration:string>",
     "How often to re-fetch IdP group memberships for active server tokens (env: SWAMP_GROUP_REFRESH_INTERVAL). " +
       "Accepts seconds (14400), explicit units (4h, 30m), or 0 to disable. Default: 4h. Requires --auth-mode oauth.",
@@ -984,6 +998,7 @@ export const serveCommand = new Command()
       oauthProvider: options.oauthProvider as string | undefined,
       oauthClientId: options.oauthClientId as string | undefined,
       groupsField: options.groupsField as string | undefined,
+      restrictedModelTypes: options.restrictedModelTypes as string | undefined,
     });
 
     if (authConfig.mode === "none" && authConfig.admins.length > 0) {
