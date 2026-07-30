@@ -477,8 +477,14 @@ export class LocalEncryptionVaultProvider
       const keyFile = this.config.key_file || join(this.vaultDir, ".key");
 
       try {
-        // Try to read existing key
+        // Try to read existing key. The file may exist but be empty if
+        // another process just created it with O_CREAT|O_EXCL but hasn't
+        // written the key content yet — treat empty the same as NotFound
+        // so we fall through to the createNew path and its retry loop.
         const existingKey = await Deno.readTextFile(keyFile);
+        if (existingKey.length === 0) {
+          throw new Deno.errors.NotFound("Key file is empty");
+        }
         return await crypto.subtle.importKey(
           "raw",
           new TextEncoder().encode(existingKey),
@@ -490,7 +496,7 @@ export class LocalEncryptionVaultProvider
         if (!(error instanceof Deno.errors.NotFound)) {
           throw error;
         }
-        // Key file doesn't exist — generate a new one with exclusive creation
+        // Key file doesn't exist (or is empty) — generate a new one with exclusive creation
         await this.ensureVaultDirectory();
         const generatedKey = crypto.randomUUID() + crypto.randomUUID(); // 72 chars
 
