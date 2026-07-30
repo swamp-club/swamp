@@ -713,7 +713,8 @@ export async function installExtension(
   // lockfile snapshot was captured at InstallContext construction
   // (per createInstallContext / createExtensionPullDeps); callers MUST
   // construct a fresh context per install (see InstallContext JSDoc).
-  const oldFiles = ctx.lockfileRepository.getEntry(ref.name)?.files ?? [];
+  const oldEntry = ctx.lockfileRepository.getEntry(ref.name);
+  const oldFiles = oldEntry?.files ?? [];
 
   const extInfo = await ctx.getExtension(ref.name);
   if (!extInfo) {
@@ -1181,6 +1182,7 @@ export async function installExtension(
         filesChecksum: filesChecksum ?? undefined,
         serverUrl: resolveServerUrl(),
         channel: ctx.channel,
+        pulledAt: oldEntry?.version === version ? oldEntry.pulledAt : undefined,
       },
     );
 

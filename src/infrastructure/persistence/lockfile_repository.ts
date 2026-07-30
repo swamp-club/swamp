@@ -36,6 +36,8 @@ export interface WriteEntryOptions {
   filesChecksum?: string;
   serverUrl?: string;
   channel?: string;
+  /** Preserve the original pulledAt timestamp (e.g. lockfile-restore flows). */
+  pulledAt?: string;
 }
 
 /**
@@ -138,7 +140,7 @@ export class LockfileRepository {
       const current = await readUpstreamExtensions(this.lockfilePath);
       current[name] = {
         version,
-        pulledAt: new Date().toISOString(),
+        pulledAt: options?.pulledAt ?? new Date().toISOString(),
         files,
         ...(options?.include && options.include.length > 0
           ? { include: options.include }
