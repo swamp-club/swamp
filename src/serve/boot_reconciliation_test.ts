@@ -20,9 +20,12 @@
 import { assertEquals } from "@std/assert";
 import {
   type BootReconciliationDeps,
+  replayPendingRuns,
+  type ReplayPendingRunsDeps,
   sweepStaleRecords,
   type TransitionInput,
 } from "./boot_reconciliation.ts";
+import type { PendingRunEntry } from "../infrastructure/persistence/run_tracker_store.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { Data } from "../domain/data/data.ts";
 import { ModelType } from "../domain/models/model_type.ts";
@@ -351,6 +354,169 @@ Deno.test("sweepStaleRecords: skips records with missing worker name attribute",
 
   assertEquals(result.workers, 0);
   assertEquals(h.transitions.length, 0);
+});
+
+// ── replayPendingRuns tests ──────────────────────────────────────────
+
+interface ReplayedWebhook {
+  pendingRunId: string;
+  workflowIdOrName: string;
+  route: string;
+}
+
+interface ReplayedCron {
+  pendingRunId: string;
+  workflowIdOrName: string;
+}
+
+function createReplayHarness(
+  pending: PendingRunEntry[],
+  opts: { hasWebhook?: boolean; hasCron?: boolean } = {},
+) {
+  const deleted: string[] = [];
+  const webhookReplays: ReplayedWebhook[] = [];
+  const cronReplays: ReplayedCron[] = [];
+
+  const runTracker = {
+    findAllPendingRuns: () => pending,
+    deletePendingRun: (id: string) => deleted.push(id),
+  } as unknown as ReplayPendingRunsDeps["runTracker"];
+
+  const webhookService = opts.hasWebhook !== false
+    ? {
+      enqueueForReplay: (entry: ReplayedWebhook) => webhookReplays.push(entry),
+    } as unknown as ReplayPendingRunsDeps["webhookService"]
+    : undefined;
+
+  const scheduledExecution = opts.hasCron !== false
+    ? {
+      enqueueForReplay: (entry: ReplayedCron) => cronReplays.push(entry),
+    } as unknown as ReplayPendingRunsDeps["scheduledExecution"]
+    : undefined;
+
+  return {
+    deps: { runTracker, webhookService, scheduledExecution },
+    deleted,
+    webhookReplays,
+    cronReplays,
+  };
+}
+
+Deno.test("replayPendingRuns: returns 0 with no pending runs", () => {
+  const h = createReplayHarness([]);
+  assertEquals(replayPendingRuns(h.deps), 0);
+});
+
+Deno.test("replayPendingRuns: replays webhook run to webhook service", () => {
+  const h = createReplayHarness([{
+    id: "pr-1",
+    source: "webhook",
+    workflowIdOrName: "deploy-flow",
+    payload: JSON.stringify({
+      body: { ref: "main" },
+      headers: { "x-sig": "abc" },
+      route: "/hooks/deploy",
+    }),
+    route: "/hooks/deploy",
+    createdAt: "2026-01-01T00:00:00Z",
+  }]);
+
+  const count = replayPendingRuns(h.deps);
+
+  assertEquals(count, 1);
+  assertEquals(h.webhookReplays.length, 1);
+  assertEquals(h.webhookReplays[0].workflowIdOrName, "deploy-flow");
+  assertEquals(h.webhookReplays[0].pendingRunId, "pr-1");
+});
+
+Deno.test("replayPendingRuns: replays cron run to scheduled execution", () => {
+  const h = createReplayHarness([{
+    id: "pr-2",
+    source: "cron",
+    workflowIdOrName: "nightly-sync",
+    createdAt: "2026-01-01T00:00:00Z",
+  }]);
+
+  const count = replayPendingRuns(h.deps);
+
+  assertEquals(count, 1);
+  assertEquals(h.cronReplays.length, 1);
+  assertEquals(h.cronReplays[0].workflowIdOrName, "nightly-sync");
+  assertEquals(h.cronReplays[0].pendingRunId, "pr-2");
+});
+
+Deno.test("replayPendingRuns: discards webhook run with corrupt payload", () => {
+  const h = createReplayHarness([{
+    id: "pr-bad",
+    source: "webhook",
+    workflowIdOrName: "deploy-flow",
+    payload: "not-json{{{",
+    route: "/hooks/deploy",
+    createdAt: "2026-01-01T00:00:00Z",
+  }]);
+
+  const count = replayPendingRuns(h.deps);
+
+  assertEquals(count, 0);
+  assertEquals(h.webhookReplays.length, 0);
+  assertEquals(h.deleted, ["pr-bad"]);
+});
+
+Deno.test("replayPendingRuns: discards run when no matching service", () => {
+  const h = createReplayHarness(
+    [{
+      id: "pr-orphan",
+      source: "webhook",
+      workflowIdOrName: "some-flow",
+      createdAt: "2026-01-01T00:00:00Z",
+    }],
+    { hasWebhook: false },
+  );
+
+  const count = replayPendingRuns(h.deps);
+
+  assertEquals(count, 0);
+  assertEquals(h.deleted, ["pr-orphan"]);
+});
+
+Deno.test("replayPendingRuns: replays mixed webhook and cron runs", () => {
+  const h = createReplayHarness([
+    {
+      id: "pr-1",
+      source: "webhook",
+      workflowIdOrName: "deploy",
+      payload: JSON.stringify({ body: null, headers: {} }),
+      route: "/hooks/ci",
+      createdAt: "2026-01-01T00:00:01Z",
+    },
+    {
+      id: "pr-2",
+      source: "cron",
+      workflowIdOrName: "nightly",
+      createdAt: "2026-01-01T00:00:02Z",
+    },
+  ]);
+
+  const count = replayPendingRuns(h.deps);
+
+  assertEquals(count, 2);
+  assertEquals(h.webhookReplays.length, 1);
+  assertEquals(h.cronReplays.length, 1);
+});
+
+Deno.test("replayPendingRuns: webhook with no payload uses empty object", () => {
+  const h = createReplayHarness([{
+    id: "pr-empty",
+    source: "webhook",
+    workflowIdOrName: "deploy",
+    route: "/hooks/ci",
+    createdAt: "2026-01-01T00:00:00Z",
+  }]);
+
+  const count = replayPendingRuns(h.deps);
+
+  assertEquals(count, 1);
+  assertEquals(h.webhookReplays.length, 1);
 });
 
 Deno.test("sweepStaleRecords: sweeps all three model types together", async () => {

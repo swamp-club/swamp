@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
+import { hostname } from "node:os";
 import { ActiveRun } from "../../domain/models/active_run.ts";
 import { type PendingRunEntry, RunTrackerStore } from "./run_tracker_store.ts";
 
@@ -390,5 +391,112 @@ Deno.test("RunTrackerStore: schema v2 migration adds pending_runs to existing DB
     assertEquals(store2.findAllRunning().length, 1);
   } finally {
     store2.close();
+  }
+});
+
+// ── reapDeadProcessRuns tests ──────────────────────────────────────
+
+Deno.test("RunTrackerStore: reapDeadProcessRuns marks dead-PID runs as failed", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    const run = ActiveRun.fromData({
+      id: "dead-1",
+      runKind: "model_method",
+      modelType: "@test/model",
+      methodName: "start",
+      workflowName: null,
+      pid: 2147483647,
+      hostname: hostname(),
+      startedAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+      status: "running",
+    });
+    store.register(run);
+
+    const reaped = store.reapDeadProcessRuns();
+
+    assertEquals(reaped.length, 1);
+    assertEquals(reaped[0].id, "dead-1");
+    assertEquals(store.findById("dead-1")?.status, "failed");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: reapDeadProcessRuns skips runs from current process", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    const run = ActiveRun.fromData({
+      id: "self-1",
+      runKind: "model_method",
+      modelType: "@test/model",
+      methodName: "start",
+      workflowName: null,
+      pid: Deno.pid,
+      hostname: hostname(),
+      startedAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+      status: "running",
+    });
+    store.register(run);
+
+    const reaped = store.reapDeadProcessRuns();
+
+    assertEquals(reaped.length, 0);
+    assertEquals(store.findById("self-1")?.status, "running");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: reapDeadProcessRuns skips runs from different host", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    const run = ActiveRun.fromData({
+      id: "remote-1",
+      runKind: "model_method",
+      modelType: "@test/model",
+      methodName: "start",
+      workflowName: null,
+      pid: 2147483647,
+      hostname: "other-host",
+      startedAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+      status: "running",
+    });
+    store.register(run);
+
+    const reaped = store.reapDeadProcessRuns();
+
+    assertEquals(reaped.length, 0);
+    assertEquals(store.findById("remote-1")?.status, "running");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: reapDeadProcessRuns skips completed runs", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    const run = ActiveRun.fromData({
+      id: "done-1",
+      runKind: "model_method",
+      modelType: "@test/model",
+      methodName: "start",
+      workflowName: null,
+      pid: 2147483647,
+      hostname: hostname(),
+      startedAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+      status: "running",
+    });
+    store.register(run);
+    store.complete("done-1", "completed");
+
+    const reaped = store.reapDeadProcessRuns();
+
+    assertEquals(reaped.length, 0);
+  } finally {
+    store.close();
   }
 });
