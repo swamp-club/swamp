@@ -190,7 +190,7 @@ export function requestServerResponse<T>(
   const socket = (options.createSocket ?? defaultCreateSocket)(url, headers);
   const timeoutMs = options.timeoutMs ?? REQUEST_RESPONSE_TIMEOUT_MS;
 
-  return new Promise<T>((resolve, reject) => {
+  const raw = new Promise<T>((resolve, reject) => {
     let settled = false;
     const timer = setTimeout(() => {
       if (!settled) {
@@ -303,6 +303,18 @@ export function requestServerResponse<T>(
       } catch { /* not a protocol frame */ }
     };
   });
+
+  return raw.catch(async (err: unknown) => {
+    if (
+      err instanceof UserError &&
+      err.message.startsWith("Could not connect to")
+    ) {
+      throw new UserError(
+        await classifyConnectionError(baseUrl, err.message),
+      );
+    }
+    throw err;
+  });
 }
 
 // deno-lint-ignore no-explicit-any
@@ -323,6 +335,40 @@ export function withRemoteOptions<T extends AnyCommand>(command: T): T {
       "--token <token:string>",
       "Server token in <name>.<secret> format; only applies with --server (overrides stored credentials and SWAMP_SERVER_TOKEN)",
     ) as T;
+}
+
+/** Timeout for the health probe on connection failure (ms). */
+const HEALTH_PROBE_TIMEOUT_MS = 3_000;
+
+/**
+ * Probes the server's unauthenticated /health endpoint to check if the
+ * server is reachable and healthy. Used to disambiguate auth rejections
+ * (server is up but returned 401/403) from genuine transport errors.
+ */
+export async function probeServerHealth(wsUrl: string): Promise<boolean> {
+  const httpUrl = toHttpUrl(wsUrl);
+  try {
+    const healthUrl = new URL("/health", httpUrl);
+    const response = await fetch(healthUrl, {
+      signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
+    });
+    if (!response.ok) return false;
+    const body = await response.json();
+    return typeof body === "object" && body !== null &&
+      (body as Record<string, unknown>).status === "ok";
+  } catch {
+    return false;
+  }
+}
+
+async function classifyConnectionError(
+  wsUrl: string,
+  originalMessage: string,
+): Promise<string> {
+  if (await probeServerHealth(wsUrl)) {
+    return `Authentication failed — run: swamp auth server-login --server ${wsUrl}`;
+  }
+  return originalMessage;
 }
 
 // Force HTTP/1.1 ALPN for wss:// connections so WebSocket upgrades succeed
@@ -451,7 +497,21 @@ async function* streamServerRun(
   };
 
   try {
-    await opened;
+    try {
+      await opened;
+    } catch (err) {
+      if (
+        err instanceof UserError && (
+          err.message.startsWith("Could not connect to") ||
+          err.message.includes("closed before it opened")
+        )
+      ) {
+        throw new UserError(
+          await classifyConnectionError(baseUrl, err.message),
+        );
+      }
+      throw err;
+    }
     options.signal?.addEventListener("abort", onAbort, { once: true });
     if (options.signal?.aborted) {
       throw new DOMException("Run was aborted", "AbortError");
