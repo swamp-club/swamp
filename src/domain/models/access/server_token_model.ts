@@ -189,6 +189,7 @@ async function redeem(
 
 const RotateArgsSchema = z.object({
   durationMs: z.number().int().positive().optional(),
+  vaultName: z.string().min(1).optional(),
 });
 
 async function rotate(
@@ -202,7 +203,8 @@ async function rotate(
   const name = context.definition.name;
   const secretKey = serverTokenSecretKey(name);
   const plaintext = generateOpaqueToken();
-  await context.vaultService.put(existing.vaultName, secretKey, plaintext);
+  const vaultName = args.vaultName ?? existing.vaultName;
+  await context.vaultService.put(vaultName, secretKey, plaintext);
 
   const now = Date.now();
   const durationMs = args.durationMs ?? DEFAULT_DURATION_MS;
@@ -215,7 +217,7 @@ async function rotate(
     groups: existing.groups,
     createdAt: new Date(now).toISOString(),
     expiresAt: new Date(now + durationMs).toISOString(),
-    vaultName: existing.vaultName,
+    vaultName,
     secretKey,
   };
   const handle = await context.writeResource!("token", TOKEN_DATA_NAME, token);

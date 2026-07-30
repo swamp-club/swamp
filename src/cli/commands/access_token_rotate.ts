@@ -69,6 +69,10 @@ export const accessTokenRotateCommand = new Command()
     "Lifetime for the new token (e.g. 30m, 1h, 24h, 7d, 30d)",
     { default: DEFAULT_DURATION },
   )
+  .option(
+    "--vault <vault:string>",
+    "Vault that stores the token plaintext (defaults to the vault from the existing token)",
+  )
   .action(async function (options: AnyOptions, name: string) {
     const cliCtx = createContext(options as GlobalOptions, [
       "access",
@@ -130,6 +134,7 @@ export const accessTokenRotateCommand = new Command()
         serverTokenRotate(libCtx, deps, {
           name,
           durationMs,
+          vaultName: options.vault as string | undefined,
         }),
         withDefaults<ServerTokenRotateEvent>({
           completed: (event) => {
