@@ -442,8 +442,12 @@ export const doctorDatastoresCommand = withRemoteOptions(
       if (unmigratedRenderer.overallStatus === "fail") {
         exitCode = 1;
       }
-    } catch {
-      // No namespace configured or other precondition not met — skip
+    } catch (error) {
+      if (error instanceof UserError) {
+        cliCtx.logger.debug`Skipping unmigrated data repair: ${error.message}`;
+      } else {
+        throw error;
+      }
     }
 
     const deps = await createRepairDeps(repoDir);

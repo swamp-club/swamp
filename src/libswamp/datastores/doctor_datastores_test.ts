@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -27,6 +27,9 @@ import {
   repairDatastoreContamination,
   type RepairDatastoresDeps,
   type RepairDatastoresEvent,
+  repairUnmigratedData,
+  type RepairUnmigratedDataDeps,
+  type RepairUnmigratedDataEvent,
 } from "./doctor_datastores.ts";
 import type { DatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 
@@ -596,4 +599,189 @@ Deno.test("repairDatastoreContamination: yields error event on mid-repair failur
     );
   }
   assertEquals(events.find((e) => e.kind === "completed"), undefined);
+});
+
+// ============================================================================
+// Repair: root-level unmigrated data cleanup
+// ============================================================================
+
+function makeUnmigratedDeps(
+  overrides: Partial<RepairUnmigratedDataDeps> = {},
+): RepairUnmigratedDataDeps {
+  return {
+    getBasePath: () => "/tmp/cache",
+    getNamespace: () => "homelab",
+    listFiles: () => Promise.resolve([]),
+    compareFiles: () => Promise.resolve(true),
+    removeFile: () => Promise.resolve(),
+    removeEmptyDirs: () => Promise.resolve(),
+    dirExists: () => Promise.resolve(false),
+    ...overrides,
+  };
+}
+
+Deno.test("repairUnmigratedData: not needed when no root-level dirs have files", async () => {
+  const deps = makeUnmigratedDeps();
+
+  const events = await collect<RepairUnmigratedDataEvent>(
+    repairUnmigratedData(createLibSwampContext(), deps, { confirm: true }),
+  );
+
+  assertEquals(events[0].kind, "scanning");
+  assertEquals(events[1].kind, "not_needed");
+  assertEquals(events.length, 2);
+});
+
+Deno.test("repairUnmigratedData: preview mode shows dirs without modifying", async () => {
+  const removedFiles: string[] = [];
+  const deps = makeUnmigratedDeps({
+    dirExists: (path) =>
+      Promise.resolve(path.endsWith("/data") || path.endsWith("/outputs")),
+    listFiles: (dir) => {
+      if (dir.endsWith("/data")) {
+        return Promise.resolve(["model/raw", "model/metadata.yaml"]);
+      }
+      if (dir.endsWith("/outputs")) {
+        return Promise.resolve(["report.yaml"]);
+      }
+      return Promise.resolve([]);
+    },
+    removeFile: (path) => {
+      removedFiles.push(path);
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<RepairUnmigratedDataEvent>(
+    repairUnmigratedData(createLibSwampContext(), deps, { confirm: false }),
+  );
+
+  const preview = events.find((e) => e.kind === "preview");
+  assertEquals(preview?.kind, "preview");
+  if (preview?.kind === "preview") {
+    assertEquals(preview.namespace, "homelab");
+    assertEquals(preview.directories.includes("data"), true);
+    assertEquals(preview.directories.includes("outputs"), true);
+  }
+  assertEquals(removedFiles.length, 0);
+});
+
+Deno.test("repairUnmigratedData: confirm removes identical duplicates", async () => {
+  const removedFiles: string[] = [];
+  const removedDirs: string[] = [];
+
+  const deps = makeUnmigratedDeps({
+    dirExists: (path) => Promise.resolve(path.endsWith("/data")),
+    listFiles: () => Promise.resolve(["model/raw", "model/metadata.yaml"]),
+    compareFiles: () => Promise.resolve(true),
+    removeFile: (path) => {
+      removedFiles.push(path);
+      return Promise.resolve();
+    },
+    removeEmptyDirs: (dir) => {
+      removedDirs.push(dir);
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<RepairUnmigratedDataEvent>(
+    repairUnmigratedData(createLibSwampContext(), deps, { confirm: true }),
+  );
+
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    assertEquals(completed.result.removedFiles, 2);
+    assertEquals(completed.result.removedDirectories, ["data"]);
+    assertEquals(completed.namespace, "homelab");
+  }
+  assertEquals(removedFiles.length, 2);
+  assertEquals(removedFiles[0], "/tmp/cache/data/model/raw");
+  assertEquals(removedFiles[1], "/tmp/cache/data/model/metadata.yaml");
+  assertEquals(removedDirs.length, 1);
+  assertEquals(removedDirs[0], "/tmp/cache/data");
+});
+
+Deno.test("repairUnmigratedData: errors on non-identical files without deleting anything", async () => {
+  const removedFiles: string[] = [];
+
+  const deps = makeUnmigratedDeps({
+    dirExists: (path) => Promise.resolve(path.endsWith("/data")),
+    listFiles: () => Promise.resolve(["model/raw"]),
+    compareFiles: () => Promise.resolve(false),
+    removeFile: (path) => {
+      removedFiles.push(path);
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<RepairUnmigratedDataEvent>(
+    repairUnmigratedData(createLibSwampContext(), deps, { confirm: true }),
+  );
+
+  const errorEvent = events.find((e) => e.kind === "error");
+  assertEquals(errorEvent?.kind, "error");
+  if (errorEvent?.kind === "error") {
+    assertEquals(errorEvent.error.code, "non_identical_unmigrated_data");
+    assertStringIncludes(errorEvent.error.message, "differ from");
+    assertStringIncludes(errorEvent.error.message, "namespace migrate");
+  }
+  assertEquals(removedFiles.length, 0);
+});
+
+Deno.test("repairUnmigratedData: handles multiple dirs, stops on first non-identical", async () => {
+  const removedFiles: string[] = [];
+
+  const deps = makeUnmigratedDeps({
+    dirExists: (path) =>
+      Promise.resolve(path.endsWith("/data") || path.endsWith("/outputs")),
+    listFiles: (dir) => {
+      if (dir.endsWith("/data")) {
+        return Promise.resolve(["file1.yaml"]);
+      }
+      if (dir.endsWith("/outputs")) {
+        return Promise.resolve(["report.yaml"]);
+      }
+      return Promise.resolve([]);
+    },
+    compareFiles: (_a, b) => {
+      if (b.includes("/outputs/")) return Promise.resolve(false);
+      return Promise.resolve(true);
+    },
+    removeFile: (path) => {
+      removedFiles.push(path);
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<RepairUnmigratedDataEvent>(
+    repairUnmigratedData(createLibSwampContext(), deps, { confirm: true }),
+  );
+
+  const errorEvent = events.find((e) => e.kind === "error");
+  assertEquals(errorEvent?.kind, "error");
+  if (errorEvent?.kind === "error") {
+    assertStringIncludes(errorEvent.error.message, "outputs");
+  }
+});
+
+Deno.test("repairUnmigratedData: emits step events during confirm", async () => {
+  const deps = makeUnmigratedDeps({
+    dirExists: (path) =>
+      Promise.resolve(path.endsWith("/data") || path.endsWith("/outputs")),
+    listFiles: () => Promise.resolve(["file.yaml"]),
+    compareFiles: () => Promise.resolve(true),
+  });
+
+  const events = await collect<RepairUnmigratedDataEvent>(
+    repairUnmigratedData(createLibSwampContext(), deps, { confirm: true }),
+  );
+
+  const steps = events.filter(
+    (e): e is Extract<RepairUnmigratedDataEvent, { kind: "step" }> =>
+      e.kind === "step",
+  );
+  assertEquals(steps.length, 2);
+  assertStringIncludes(steps[0].description, "data/");
+  assertStringIncludes(steps[1].description, "outputs/");
 });
