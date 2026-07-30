@@ -27,6 +27,10 @@ import type { ServerRequest } from "./protocol.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { Principal } from "../domain/access/principal.ts";
 import {
+  GIT_SHA as SERVER_GIT_SHA,
+  VERSION as SERVER_VERSION,
+} from "../cli/commands/version.ts";
+import {
   handleDataDelete,
   handleDataGet,
   handleDataList,
@@ -858,7 +862,13 @@ const RunAttachRequestSchema = z.object({
   }),
 });
 
+const ServerVersionRequestSchema = z.object({
+  type: z.literal("server.version"),
+  id: z.string().min(1).max(256),
+});
+
 const ServerRequestSchema = z.discriminatedUnion("type", [
+  ServerVersionRequestSchema,
   WorkflowRunRequestSchema,
   ModelMethodRunRequestSchema,
   AccessGrantListRequestSchema,
@@ -1078,6 +1088,15 @@ export function handleMessage(
 
   let task: Promise<void>;
   switch (request.type) {
+    case "server.version":
+      task = Promise.resolve(
+        send(socket, {
+          type: "server.version",
+          id: request.id,
+          payload: { version: SERVER_VERSION, gitSha: SERVER_GIT_SHA },
+        }),
+      );
+      break;
     case "workflow.run":
       task = handleWorkflowRun(
         socket,
@@ -1804,6 +1823,18 @@ export function handleMessage(
         principal,
       );
       break;
+    default: {
+      const unhandled = request as { id: string; type: string };
+      task = Promise.resolve(
+        sendError(
+          socket,
+          unhandled.id,
+          "unsupported_operation",
+          `Operation '${unhandled.type}' is not supported by this server version`,
+        ),
+      );
+      break;
+    }
   }
 
   task

@@ -663,7 +663,9 @@ export async function handleExtensionPull(
       localManifestIdentity: readLocalManifestIdentity(repoDir),
     });
 
-    const libCtx = createLibSwampContext();
+    const libCtx = createLibSwampContext({
+      signal: controller.signal,
+    });
     const pullDeps = {
       getExtension: deps.getExtension,
       getLatestVersion: deps.getLatestVersion,
@@ -686,7 +688,9 @@ export async function handleExtensionPull(
         channel: payload.channel,
       }),
       {
-        installing: () => {},
+        installing: () => {
+          if (controller.signal.aborted) throw new Error("cancelled");
+        },
         deprecated_warning: () => {},
         "orphans-pruned": () => {},
         completed: (e) => {
@@ -869,7 +873,7 @@ export async function handleExtensionUpdate(
 
   let catalog: ExtensionCatalogStore | undefined;
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = createLibSwampContext({ signal: controller.signal });
     const logger = getSwampLogger(["serve", "extension", "update"]);
     const repoDir = ctx.repoDir;
     const markerRepo = new RepoMarkerRepository();

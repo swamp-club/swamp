@@ -27,6 +27,12 @@ import {
 } from "../../libswamp/mod.ts";
 import { createVersionRenderer } from "../../presentation/renderers/version.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
 
 // This gets replaced by the compile script during release builds
 export const VERSION = "20260206.200442.0-sha.";
@@ -41,21 +47,47 @@ export function getVersionData(): VersionData {
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const versionCommand = new Command()
-  .description("Display the version of swamp")
-  .action(async function (options: AnyOptions) {
-    const cliCtx = createContext(options as GlobalOptions, ["version"]);
-    cliCtx.logger.debug("Executing version command");
-    cliCtx.logger
-      .debug`Output mode: ${cliCtx.outputMode}, verbosity: ${cliCtx.verbosity}`;
+export const versionCommand = withRemoteOptions(
+  new Command()
+    .description("Display the version of swamp"),
+).action(async function (options: AnyOptions) {
+  const cliCtx = createContext(options as GlobalOptions, ["version"]);
+  cliCtx.logger.debug("Executing version command");
 
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createVersionDeps();
-    const renderer = createVersionRenderer(cliCtx.outputMode);
-    await consumeStream(
-      version(ctx, deps, { version: VERSION }),
-      renderer.handlers(),
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
     );
+    const response = await requestServerResponse<
+      { version: string; gitSha: string }
+    >(
+      { server, token },
+      { type: "server.version" },
+    );
+    if (cliCtx.outputMode === "json") {
+      console.log(JSON.stringify({
+        server: { version: response.version, gitSha: response.gitSha },
+        client: { version: VERSION, gitSha: GIT_SHA },
+      }));
+    } else {
+      console.log(`server: ${response.version} (${response.gitSha})`);
+      console.log(`client: ${VERSION} (${GIT_SHA})`);
+    }
+    return;
+  }
 
-    cliCtx.logger.debug("Version command completed");
-  });
+  cliCtx.logger
+    .debug`Output mode: ${cliCtx.outputMode}, verbosity: ${cliCtx.verbosity}`;
+
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = createVersionDeps();
+  const renderer = createVersionRenderer(cliCtx.outputMode);
+  await consumeStream(
+    version(ctx, deps, { version: VERSION }),
+    renderer.handlers(),
+  );
+
+  cliCtx.logger.debug("Version command completed");
+});
