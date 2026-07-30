@@ -479,7 +479,7 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--restricted-model-types <types:string>",
-    "Comma-separated model types that require admin authority to create or run (e.g. command/shell)",
+    "Comma-separated model types that require admin authority to create or run (e.g. command/shell). Requires --auth-mode token or oauth",
   )
   .option(
     "--group-refresh-interval <duration:string>",
@@ -862,7 +862,7 @@ export const serveCommand = new Command()
   )
   .option(
     "--restricted-model-types <types:string>",
-    "Comma-separated model types that require admin authority to create or run (e.g. command/shell)",
+    "Comma-separated model types that require admin authority to create or run (e.g. command/shell). Requires --auth-mode token or oauth",
   )
   .option(
     "--group-refresh-interval <duration:string>",
@@ -1004,6 +1004,16 @@ export const serveCommand = new Command()
     if (authConfig.mode === "none" && authConfig.admins.length > 0) {
       logger.warn(
         "--admins is set but --auth-mode is {mode} — admins will have no effect",
+        { mode: authConfig.mode },
+      );
+    }
+
+    if (
+      authConfig.mode === "none" &&
+      authConfig.restrictedModelTypes.length > 0
+    ) {
+      logger.warn(
+        "--restricted-model-types is set but --auth-mode is {mode} — type restrictions will have no effect",
         { mode: authConfig.mode },
       );
     }
