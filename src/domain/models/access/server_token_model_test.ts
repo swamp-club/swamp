@@ -71,8 +71,31 @@ Deno.test("serverTokenModel: caller reads plaintext from vault after mint", asyn
   assertEquals(plaintext.length, 64);
 });
 
-Deno.test("serverTokenModel: mint twice with the same name fails", async () => {
+Deno.test("serverTokenModel: mint twice with the same name fails when active", async () => {
   const { context } = await mintToken();
+  await assertRejects(
+    () => serverTokenModel.methods.mint.execute(mintArgs, context),
+    Error,
+    "already exists",
+  );
+});
+
+Deno.test("serverTokenModel: mint after revoke succeeds with fresh credentials", async () => {
+  const { context, store, vault, plaintext: oldPlaintext } = await mintToken();
+  await serverTokenModel.methods.revoke.execute({}, context);
+  assertEquals(store.get("token-main")!.state, "revoked");
+  await serverTokenModel.methods.mint.execute(mintArgs, context);
+  const token = store.get("token-main")!;
+  assertEquals(token.state, "active");
+  const newPlaintext = vault.get(
+    `local/${serverTokenSecretKey("user-token-1")}`,
+  )!;
+  assertNotEquals(newPlaintext, oldPlaintext);
+});
+
+Deno.test("serverTokenModel: mint after expire still fails", async () => {
+  const { context } = await mintToken();
+  await serverTokenModel.methods.expire.execute({}, context);
   await assertRejects(
     () => serverTokenModel.methods.mint.execute(mintArgs, context),
     Error,

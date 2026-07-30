@@ -103,9 +103,12 @@ async function mint(
   }
   const existing = await context.readResource!(TOKEN_DATA_NAME);
   if (existing !== null) {
-    throw new Error(
-      `Server token '${context.definition.name}' already exists — revoke it first`,
-    );
+    const parsed = ServerTokenSchema.parse(existing);
+    if (parsed.state !== "revoked") {
+      throw new Error(
+        `Server token '${context.definition.name}' already exists — revoke it first`,
+      );
+    }
   }
 
   const name = context.definition.name;
