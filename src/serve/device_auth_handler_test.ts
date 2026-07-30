@@ -37,6 +37,7 @@ function makeMockDeps(
       oauthProvider: "https://auth.example.com",
       oauthClientId: "test-client-id",
       groupsField: "collectives",
+      restrictedModelTypes: [],
     },
     repoDir: "/tmp/test-repo",
     repoContext: {} as RepositoryContext,

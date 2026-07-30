@@ -280,3 +280,18 @@ Deno.test("buildServeAuthConfig: mode none with admins succeeds with warning", (
   assertEquals(config.mode, "none");
   assertEquals(config.admins, ["user:oauth|user-123"]);
 });
+
+Deno.test("buildServeAuthConfig: restrictedModelTypes defaults to empty", () => {
+  const config = buildServeAuthConfig({});
+  assertEquals(config.restrictedModelTypes, []);
+});
+
+Deno.test("buildServeAuthConfig: restrictedModelTypes parses and normalizes types", () => {
+  const config = buildServeAuthConfig({
+    restrictedModelTypes: "command/shell, AWS::Lambda::Function",
+  });
+  assertEquals(config.restrictedModelTypes, [
+    "command/shell",
+    "aws/lambda/function",
+  ]);
+});

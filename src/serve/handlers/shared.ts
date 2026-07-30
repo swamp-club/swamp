@@ -127,6 +127,24 @@ export function isAccessModelType(
   return false;
 }
 
+export function isAdminOnlyModelType(
+  typeArg: string | undefined,
+  resolvedType: string | undefined,
+  restrictedModelTypes: readonly string[],
+): boolean {
+  if (isAccessModelType(typeArg, resolvedType)) return true;
+  if (restrictedModelTypes.length === 0) return false;
+  if (typeArg) {
+    const stripped = typeArg.startsWith("@") ? typeArg.slice(1) : typeArg;
+    const normalized = ModelType.create(stripped).normalized;
+    if (restrictedModelTypes.includes(normalized)) return true;
+  }
+  if (resolvedType) {
+    if (restrictedModelTypes.includes(resolvedType)) return true;
+  }
+  return false;
+}
+
 const connectionCollectives = new WeakMap<WebSocket, readonly string[]>();
 const connectionGroups = new WeakMap<WebSocket, readonly string[]>();
 const connectionPrincipalId = new WeakMap<WebSocket, string>();
