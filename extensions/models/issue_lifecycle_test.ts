@@ -319,8 +319,8 @@ Deno.test("model: exposes the new link_pr method definition", () => {
   );
 });
 
-Deno.test("model: version bumped to 2026.07.05.1", () => {
-  assertEquals(model.version, "2026.07.05.1");
+Deno.test("model: version is 2026.07.30.1", () => {
+  assertEquals(model.version, "2026.07.30.1");
 });
 
 // ---------------------------------------------------------------------------
@@ -946,7 +946,7 @@ Deno.test("start: succeeds even when PATCH fails", async () => {
 // notify
 // ---------------------------------------------------------------------------
 
-Deno.test("notify: transitions state to done and reads author from context", async () => {
+Deno.test("notify: transitions state to summarizing and reads author from context", async () => {
   const { context, writes, restore } = await buildTestContext(42, {
     resources: {
       "context-main": {
@@ -965,14 +965,14 @@ Deno.test("notify: transitions state to done and reads author from context", asy
 
     const stateWrite = writes.find((w) => w.specName === "state");
     assertEquals(stateWrite !== undefined, true);
-    assertEquals(stateWrite!.data.phase, "done");
+    assertEquals(stateWrite!.data.phase, "summarizing");
     assertEquals(stateWrite!.data.issueNumber, 42);
   } finally {
     await restore();
   }
 });
 
-Deno.test("notify: transitions to done even when author is missing from context", async () => {
+Deno.test("notify: transitions to summarizing even when author is missing from context", async () => {
   const { context, writes, restore } = await buildTestContext(42, {
     resources: {
       "context-main": {
@@ -990,7 +990,7 @@ Deno.test("notify: transitions to done even when author is missing from context"
 
     const stateWrite = writes.find((w) => w.specName === "state");
     assertEquals(stateWrite !== undefined, true);
-    assertEquals(stateWrite!.data.phase, "done");
+    assertEquals(stateWrite!.data.phase, "summarizing");
   } finally {
     await restore();
   }
@@ -1018,7 +1018,7 @@ Deno.test("notify: accepts custom message", async () => {
 
     const stateWrite = writes.find((w) => w.specName === "state");
     assertEquals(stateWrite !== undefined, true);
-    assertEquals(stateWrite!.data.phase, "done");
+    assertEquals(stateWrite!.data.phase, "summarizing");
   } finally {
     await restore();
   }
@@ -1028,14 +1028,14 @@ Deno.test("notify: accepts custom message", async () => {
 // skip_notify
 // ---------------------------------------------------------------------------
 
-Deno.test("skip_notify: transitions state to done", async () => {
+Deno.test("skip_notify: transitions state to summarizing", async () => {
   const { context, writes, restore } = await buildTestContext(42);
   try {
     await model.methods.skip_notify.execute({}, context);
 
     const stateWrite = writes.find((w) => w.specName === "state");
     assertEquals(stateWrite !== undefined, true);
-    assertEquals(stateWrite!.data.phase, "done");
+    assertEquals(stateWrite!.data.phase, "summarizing");
     assertEquals(stateWrite!.data.issueNumber, 42);
   } finally {
     await restore();
@@ -1381,4 +1381,187 @@ Deno.test("model: exposes justify_deviations method definition", () => {
 
 Deno.test("model: exposes code-conformance-clear check definition", () => {
   assertEquals("code-conformance-clear" in model.checks, true);
+});
+
+// ---------------------------------------------------------------------------
+// triage: regression verification
+// ---------------------------------------------------------------------------
+
+Deno.test("triage: rejects isRegression=true without adversarial evidence fields", async () => {
+  const { context, restore } = await buildTestContext(42);
+  try {
+    await assertRejects(
+      () =>
+        model.methods.triage.execute(
+          {
+            type: "bug",
+            confidence: "high",
+            reasoning: "It broke",
+            isRegression: true,
+          },
+          context,
+        ),
+      Error,
+      "Regression classification requires adversarial verification",
+    );
+  } finally {
+    await restore();
+  }
+});
+
+Deno.test("triage: accepts isRegression=true with all adversarial evidence fields (confirmed)", async () => {
+  const { context, writes, restore } = await buildTestContext(42);
+  try {
+    await model.methods.triage.execute(
+      {
+        type: "bug",
+        confidence: "high",
+        reasoning: "It broke",
+        isRegression: true,
+        regressionIntroducedIn: "2026.07.01.1",
+        regressionEvidence: "Commit abc123 shows it worked before",
+        regressionCounterEvidence: "Could be a test gap, not a regression",
+        regressionVerdict: "confirmed",
+        regressionVerdictReasoning:
+          "The feature demonstrably worked in the prior release",
+      },
+      context,
+    );
+
+    const classWrite = writes.find((w) => w.specName === "classification");
+    assertEquals(classWrite !== undefined, true);
+    assertEquals(classWrite!.data.isRegression, true);
+    assertEquals(classWrite!.data.regressionVerdict, "confirmed");
+    assertEquals(classWrite!.data.regressionIntroducedIn, "2026.07.01.1");
+  } finally {
+    await restore();
+  }
+});
+
+Deno.test("triage: downgrades regression to plain bug when verdict is downgraded", async () => {
+  const { context, writes, restore } = await buildTestContext(42);
+  try {
+    await model.methods.triage.execute(
+      {
+        type: "bug",
+        confidence: "high",
+        reasoning: "Reported as regression but never actually worked",
+        isRegression: true,
+        regressionIntroducedIn: "2026.07.01.1",
+        regressionEvidence: "User says it used to work",
+        regressionCounterEvidence:
+          "Git history shows this code path was never tested and the behavior was always incorrect",
+        regressionVerdict: "downgraded",
+        regressionVerdictReasoning:
+          "No evidence it ever worked — user was likely misremembering a different feature",
+      },
+      context,
+    );
+
+    const classWrite = writes.find((w) => w.specName === "classification");
+    assertEquals(classWrite !== undefined, true);
+    assertEquals(classWrite!.data.isRegression, false);
+    assertEquals(classWrite!.data.regressionVerdict, "downgraded");
+    assertEquals(
+      classWrite!.data.regressionIntroducedIn,
+      undefined,
+      "regressionIntroducedIn must be cleared on downgrade",
+    );
+  } finally {
+    await restore();
+  }
+});
+
+Deno.test("triage: non-regression classification does not require evidence fields", async () => {
+  const { context, writes, restore } = await buildTestContext(42);
+  try {
+    await model.methods.triage.execute(
+      {
+        type: "feature",
+        confidence: "high",
+        reasoning: "New feature request",
+      },
+      context,
+    );
+
+    const classWrite = writes.find((w) => w.specName === "classification");
+    assertEquals(classWrite !== undefined, true);
+    assertEquals(classWrite!.data.isRegression, undefined);
+  } finally {
+    await restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// summarize
+// ---------------------------------------------------------------------------
+
+Deno.test("summarize: writes summary-main and transitions to done", async () => {
+  const { context, writes, restore } = await buildTestContext(42);
+  try {
+    await model.methods.summarize.execute(
+      {
+        originalProblem:
+          "The CLI crashed when running `swamp model list` with no models defined",
+        deliveredOutcome:
+          "Added an empty-state check that returns a helpful message instead of crashing",
+        outcomeMet: true,
+      },
+      context,
+    );
+
+    const summaryWrite = writes.find((w) => w.specName === "summary");
+    assertEquals(summaryWrite !== undefined, true);
+    assertEquals(summaryWrite!.instanceName, "summary-main");
+    assertEquals(
+      summaryWrite!.data.originalProblem,
+      "The CLI crashed when running `swamp model list` with no models defined",
+    );
+    assertEquals(
+      summaryWrite!.data.deliveredOutcome,
+      "Added an empty-state check that returns a helpful message instead of crashing",
+    );
+    assertEquals(summaryWrite!.data.outcomeMet, true);
+    assertEquals(typeof summaryWrite!.data.summarizedAt, "string");
+
+    const stateWrite = writes.find((w) => w.specName === "state");
+    assertEquals(stateWrite !== undefined, true);
+    assertEquals(stateWrite!.data.phase, "done");
+    assertEquals(stateWrite!.data.issueNumber, 42);
+  } finally {
+    await restore();
+  }
+});
+
+Deno.test("summarize: records outcomeMet=false when outcome does not match", async () => {
+  const { context, writes, restore } = await buildTestContext(42);
+  try {
+    await model.methods.summarize.execute(
+      {
+        originalProblem: "Need OAuth support for SSO login",
+        deliveredOutcome:
+          "Added basic API key auth but OAuth was deferred to a follow-up",
+        outcomeMet: false,
+      },
+      context,
+    );
+
+    const summaryWrite = writes.find((w) => w.specName === "summary");
+    assertEquals(summaryWrite !== undefined, true);
+    assertEquals(summaryWrite!.data.outcomeMet, false);
+  } finally {
+    await restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Model registration smoke tests (new features)
+// ---------------------------------------------------------------------------
+
+Deno.test("model: exposes summary resource definition", () => {
+  assertEquals("summary" in model.resources, true);
+});
+
+Deno.test("model: exposes summarize method definition", () => {
+  assertEquals("summarize" in model.methods, true);
 });
