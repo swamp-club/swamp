@@ -734,7 +734,7 @@ Deno.test("repairUnmigratedData: errors on non-identical files without deleting 
   if (errorEvent?.kind === "error") {
     assertEquals(errorEvent.error.code, "non_identical_unmigrated_data");
     assertStringIncludes(errorEvent.error.message, "differ from");
-    assertStringIncludes(errorEvent.error.message, "namespace migrate");
+    assertStringIncludes(errorEvent.error.message, "namespace migrate --confirm");
   }
   assertEquals(removedFiles.length, 0);
 });

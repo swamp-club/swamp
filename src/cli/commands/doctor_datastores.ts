@@ -337,11 +337,11 @@ export const doctorDatastoresCommand = withRemoteOptions(
     .example("Check this repo's datastore", "swamp doctor datastores")
     .example("Machine-readable output for CI", "swamp doctor datastores --json")
     .example(
-      "Preview namespace contamination cleanup",
+      "Preview datastore repair",
       "swamp doctor datastores --repair",
     )
     .example(
-      "Execute namespace contamination cleanup",
+      "Execute datastore repair",
       "swamp doctor datastores --repair -y",
     )
     .option(

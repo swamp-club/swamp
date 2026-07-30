@@ -463,7 +463,7 @@ export async function* repairUnmigratedData(
               code: "non_identical_unmigrated_data",
               message:
                 `Root-level "${subdir}/" contains files that differ from ` +
-                `"${namespace}/${subdir}/". Run 'swamp datastore namespace migrate' ` +
+                `"${namespace}/${subdir}/". Run 'swamp datastore namespace migrate --confirm' ` +
                 `to resolve manually.`,
             },
           };
