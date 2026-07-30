@@ -322,6 +322,9 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   if (options.trustedHosts) {
     args.push("--trusted-hosts", options.trustedHosts as string);
   }
+  if (options.detachRuns) {
+    args.push("--detach-runs");
+  }
   return args;
 }
 
@@ -485,6 +488,10 @@ const daemonEnableCommand = new Command()
   .option(
     "--trusted-hosts <hosts:string>",
     "Comma-separated hostnames to trust for Host header validation (env: SWAMP_TRUSTED_HOSTS)",
+  )
+  .option(
+    "--detach-runs",
+    "Enable durable run mode — runs survive client disconnect and process restart",
   )
   .example("Enable daemon", "swamp serve daemon enable")
   .example(
@@ -1871,6 +1878,7 @@ export const serveCommand = new Command()
               port: listenPort,
               url: `${wsScheme}://${hostname}:${listenPort}`,
               schedulingEnabled: enableSchedule,
+              detachRuns,
             }));
           } else {
             logger.info("WebSocket API server listening on {url}", {
@@ -2241,44 +2249,76 @@ export const serveCommand = new Command()
         }
         const remaining = activeRunRegistry.list();
         if (remaining.length > 0) {
+          if (isJson) {
+            console.log(JSON.stringify({
+              status: "aborting",
+              undrained: remaining.length,
+            }));
+          }
           logger.info`Aborting ${remaining.length} undrained run(s)...`;
           for (const run of remaining) {
             run.controller.abort(new Error("server shutdown"));
           }
           await activeRunRegistry.drainAll(5_000);
 
-          for (const run of remaining) {
-            if (
-              run.kind === "workflow-run" || run.kind === "workflow-resume"
-            ) {
-              try {
-                const reapCutoff = new Date(
-                  run.startedAt.getTime() - 60_000,
-                );
-                const runs = await repoContext.workflowRunRepo
-                  .findAllGlobalSince(reapCutoff);
-                const match = runs.find((r) => r.run.id === run.runId);
-                if (
-                  match &&
-                  (match.run.status === "running" ||
-                    match.run.status === "cancelled")
-                ) {
-                  match.run.interrupt("server_shutdown");
-                  await repoContext.workflowRunRepo.save(
-                    match.workflowId,
-                    match.run,
+          const workflowRuns = remaining.filter((r) =>
+            r.kind === "workflow-run" || r.kind === "workflow-resume"
+          );
+          if (workflowRuns.length > 0) {
+            const earliestCutoff = new Date(
+              Math.min(...workflowRuns.map((r) => r.startedAt.getTime())) -
+                60_000,
+            );
+            let allRuns:
+              | Awaited<
+                ReturnType<
+                  typeof repoContext.workflowRunRepo.findAllGlobalSince
+                >
+              >
+              | undefined;
+            try {
+              allRuns = await repoContext.workflowRunRepo
+                .findAllGlobalSince(earliestCutoff);
+            } catch (err) {
+              logger.warn(
+                "Failed to load workflow runs for interrupt: {error}",
+                {
+                  error: err instanceof Error ? err.message : String(err),
+                },
+              );
+            }
+            if (allRuns) {
+              for (const run of workflowRuns) {
+                try {
+                  const match = allRuns.find((r) => r.run.id === run.runId);
+                  if (
+                    match &&
+                    (match.run.status === "running" ||
+                      match.run.status === "cancelled")
+                  ) {
+                    match.run.interrupt("server_shutdown");
+                    await repoContext.workflowRunRepo.save(
+                      match.workflowId,
+                      match.run,
+                    );
+                    if (isJson) {
+                      console.log(JSON.stringify({
+                        status: "interrupted",
+                        runId: run.runId,
+                      }));
+                    }
+                    logger
+                      .info`Interrupted workflow run ${run.runId} (server shutdown)`;
+                  }
+                } catch (err) {
+                  logger.warn(
+                    "Failed to interrupt run {runId}: {error}",
+                    {
+                      runId: run.runId,
+                      error: err instanceof Error ? err.message : String(err),
+                    },
                   );
-                  logger
-                    .info`Interrupted workflow run ${run.runId} (server shutdown)`;
                 }
-              } catch (err) {
-                logger.warn(
-                  "Failed to interrupt run {runId}: {error}",
-                  {
-                    runId: run.runId,
-                    error: err instanceof Error ? err.message : String(err),
-                  },
-                );
               }
             }
           }

@@ -308,8 +308,12 @@ export class ScheduledExecutionService {
   private handleFire(workflowId: WorkflowId): void {
     const workflowName = this.workflowNames.get(workflowId) ?? workflowId;
 
-    // Overlap prevention — skip if this specific workflow is already running
-    if (this.running.has(workflowId)) {
+    // Overlap prevention — skip if this specific workflow is already running.
+    // Replayed runs are keyed by name (not UUID), so check both.
+    if (
+      this.running.has(workflowId) ||
+      this.running.has(workflowName as WorkflowId)
+    ) {
       this.emit({
         kind: "schedule_skipped",
         workflowId,
