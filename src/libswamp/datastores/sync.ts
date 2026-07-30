@@ -26,11 +26,13 @@ import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_reg
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { PushPreviewSummary } from "../../domain/datastore/datastore_sync_service.ts";
 import { runBoundedSync } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
+import { dirHasFiles } from "../../infrastructure/persistence/directory_merge.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
 import { join } from "@std/path";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+
 /**
  * Data structure for the datastore sync output.
  */
@@ -206,7 +208,12 @@ export async function createDatastoreSyncDeps(
           for (const subdir of DEFAULT_DATASTORE_SUBDIRS) {
             try {
               const stat = await Deno.stat(join(config.cachePath!, subdir));
-              if (stat.isDirectory) found.push(subdir);
+              if (
+                stat.isDirectory &&
+                await dirHasFiles(join(config.cachePath!, subdir))
+              ) {
+                found.push(subdir);
+              }
             } catch {
               // Not found — expected when migrated
             }

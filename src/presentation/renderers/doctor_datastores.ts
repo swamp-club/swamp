@@ -22,6 +22,7 @@ import type {
   DoctorDatastoresEvent,
   EventHandlers,
   RepairDatastoresEvent,
+  RepairUnmigratedDataEvent,
 } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
@@ -315,5 +316,123 @@ export function createRepairDatastoresRenderer(
       return new JsonRepairDatastoresRenderer();
     case "log":
       return new LogRepairDatastoresRenderer();
+  }
+}
+
+// ============================================================================
+// Unmigrated data repair renderer
+// ============================================================================
+
+export type UnmigratedDataRepairStatus = "pass" | "fail" | "preview";
+
+export interface UnmigratedDataRepairRenderer {
+  handlers(): EventHandlers<RepairUnmigratedDataEvent>;
+  readonly overallStatus: UnmigratedDataRepairStatus;
+}
+
+class LogUnmigratedDataRepairRenderer implements UnmigratedDataRepairRenderer {
+  overallStatus: UnmigratedDataRepairStatus = "pass";
+
+  handlers(): EventHandlers<RepairUnmigratedDataEvent> {
+    return {
+      scanning: () => {
+        writeOutput(dim("Scanning for root-level unmigrated data…"));
+      },
+      preview: (e) => {
+        this.overallStatus = "preview";
+        writeOutput(`\n${bold("Root-level unmigrated data cleanup:")}`);
+        for (const dir of e.directories) {
+          writeOutput(
+            `  Remove ${dir}/ (duplicate of ${e.namespace}/${dir}/)`,
+          );
+        }
+        writeOutput(dim("\n  Run with -y to proceed."));
+      },
+      step: (e) => {
+        writeOutput(`  ${e.description}`);
+      },
+      completed: (e) => {
+        this.overallStatus = "pass";
+        const { result } = e;
+        writeOutput(
+          `\n${green("✓")} ${bold("Unmigrated data cleanup complete:")}`,
+        );
+        writeOutput(
+          `  Removed ${result.removedFiles} duplicate file(s) from ${
+            result.removedDirectories.join(", ")
+          }`,
+        );
+      },
+      not_needed: () => {
+        this.overallStatus = "pass";
+        writeOutput(
+          dim("No root-level unmigrated data found."),
+        );
+      },
+      error: (e) => {
+        this.overallStatus = "fail";
+        throw new UserError(e.error.message);
+      },
+    };
+  }
+}
+
+class JsonUnmigratedDataRepairRenderer implements UnmigratedDataRepairRenderer {
+  overallStatus: UnmigratedDataRepairStatus = "pass";
+
+  handlers(): EventHandlers<RepairUnmigratedDataEvent> {
+    return {
+      scanning: () => {},
+      preview: (e) => {
+        this.overallStatus = "preview";
+        console.log(
+          JSON.stringify(
+            {
+              status: "unmigrated_preview",
+              namespace: e.namespace,
+              directories: e.directories,
+            },
+            null,
+            2,
+          ),
+        );
+      },
+      step: () => {},
+      completed: (e) => {
+        this.overallStatus = "pass";
+        console.log(
+          JSON.stringify(
+            {
+              status: "unmigrated_completed",
+              namespace: e.namespace,
+              result: e.result,
+            },
+            null,
+            2,
+          ),
+        );
+      },
+      not_needed: () => {
+        this.overallStatus = "pass";
+        console.log(
+          JSON.stringify({ status: "unmigrated_not_needed" }, null, 2),
+        );
+      },
+      error: (e) => {
+        this.overallStatus = "fail";
+        throw new UserError(e.error.message);
+      },
+    };
+  }
+}
+
+export function createUnmigratedDataRepairRenderer(
+  mode: OutputMode,
+): UnmigratedDataRepairRenderer {
+  switch (mode) {
+    case "json":
+      return new JsonUnmigratedDataRepairRenderer();
+    case "log":
+      return new LogUnmigratedDataRepairRenderer();
   }
 }

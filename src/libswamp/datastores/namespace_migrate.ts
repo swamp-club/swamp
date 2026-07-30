@@ -122,6 +122,8 @@ export interface NamespaceMigrateDeps {
     source: string,
     destination: string,
   ) => Promise<string[]>;
+  compareFiles: (a: string, b: string) => Promise<boolean>;
+  removeFile: (path: string) => Promise<void>;
   ensureDir: (path: string) => Promise<void>;
   invalidateCatalog: () => void;
   markDirtyBulk: () => Promise<void>;
@@ -176,6 +178,12 @@ export async function* datastoreNamespaceMigrate(
 
       const directories: SubdirPreview[] = [];
       const allCollisions: Array<{ subdir: string; paths: string[] }> = [];
+      const identicalCollisions: Array<{
+        subdir: string;
+        source: string;
+        destination: string;
+        paths: string[];
+      }> = [];
 
       for (const subdir of DEFAULT_DATASTORE_SUBDIRS) {
         const source = input.reverse
@@ -211,7 +219,24 @@ export async function* datastoreNamespaceMigrate(
             destination,
           );
           if (collidingPaths.length > 0) {
-            allCollisions.push({ subdir, paths: collidingPaths });
+            const nonIdentical: string[] = [];
+            for (const relPath of collidingPaths) {
+              const srcFile = join(source, ...relPath.split("/"));
+              const dstFile = join(destination, ...relPath.split("/"));
+              if (!await deps.compareFiles(srcFile, dstFile)) {
+                nonIdentical.push(relPath);
+              }
+            }
+            if (nonIdentical.length > 0) {
+              allCollisions.push({ subdir, paths: nonIdentical });
+            } else {
+              identicalCollisions.push({
+                subdir,
+                source,
+                destination,
+                paths: collidingPaths,
+              });
+            }
           }
         }
 
@@ -299,6 +324,15 @@ export async function* datastoreNamespaceMigrate(
       }
 
       const succeeded: string[] = [];
+
+      for (const ic of identicalCollisions) {
+        for (const relPath of ic.paths) {
+          const srcFile = join(ic.source, ...relPath.split("/"));
+          await deps.removeFile(srcFile);
+        }
+        ctx.logger
+          .info`Removed ${ic.paths.length} identical duplicate(s) from ${ic.subdir}/`;
+      }
 
       for (const dir of directories) {
         try {

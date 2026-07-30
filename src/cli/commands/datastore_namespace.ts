@@ -65,6 +65,7 @@ import type { DatastoreProvider } from "../../domain/datastore/datastore_provide
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
+  compareFiles,
   findFileCollisions,
   mergeDirInto,
 } from "../../infrastructure/persistence/directory_merge.ts";
@@ -372,6 +373,8 @@ function buildMigrateDeps(
       Deno.rename(source, destination),
     findFileCollisions: (source: string, destination: string) =>
       findFileCollisions(source, destination),
+    compareFiles: (a: string, b: string) => compareFiles(a, b),
+    removeFile: (path: string) => Deno.remove(path),
     mergeDirInto: (source: string, destination: string) =>
       mergeDirInto(source, destination),
     ensureDir: (path: string) => ensureDir(path),

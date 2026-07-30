@@ -26,10 +26,13 @@ import {
   type DoctorDatastoresDeps,
   repairDatastoreContamination,
   type RepairDatastoresDeps,
+  repairUnmigratedData,
+  type RepairUnmigratedDataDeps,
 } from "../../libswamp/mod.ts";
 import {
   createDoctorDatastoresRenderer,
   createRepairDatastoresRenderer,
+  createUnmigratedDataRepairRenderer,
 } from "../../presentation/renderers/doctor_datastores.ts";
 import {
   createContext,
@@ -61,6 +64,11 @@ import { RUNS_INDEX_FILENAME } from "../../infrastructure/persistence/workflow_r
 import { catalogDbPath } from "../../infrastructure/persistence/repository_factory.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { join } from "@std/path";
+import {
+  compareFiles,
+  dirHasFiles,
+  removeEmptyDirs,
+} from "../../infrastructure/persistence/directory_merge.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -129,7 +137,9 @@ async function createDoctorDatastoresDeps(
       for (const subdir of DEFAULT_DATASTORE_SUBDIRS) {
         try {
           const stat = await Deno.stat(join(basePath, subdir));
-          if (stat.isDirectory) found.push(subdir);
+          if (stat.isDirectory && await dirHasFiles(join(basePath, subdir))) {
+            found.push(subdir);
+          }
         } catch {
           // Directory doesn't exist — expected when migrated
         }
@@ -259,6 +269,65 @@ async function createRepairDeps(
   };
 }
 
+async function listFilesRecursive(
+  dir: string,
+  prefix = "",
+): Promise<string[]> {
+  const files: string[] = [];
+  try {
+    for await (const entry of Deno.readDir(dir)) {
+      const relPath = prefix ? join(prefix, entry.name) : entry.name;
+      if (entry.isDirectory && !entry.isSymlink) {
+        files.push(
+          ...await listFilesRecursive(join(dir, entry.name), relPath),
+        );
+      } else {
+        files.push(relPath);
+      }
+    }
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  return files;
+}
+
+async function createUnmigratedRepairDeps(
+  repoDir: string,
+): Promise<RepairUnmigratedDataDeps> {
+  const markerRepo = new RepoMarkerRepository();
+  const marker = await markerRepo.read(RepoPath.create(repoDir));
+  const config = await resolveDatastoreConfig(marker, undefined, repoDir);
+
+  if (!config.namespace) {
+    throw new UserError(
+      "Unmigrated data repair is only available when a namespace is configured.",
+    );
+  }
+
+  const basePath = isCustomDatastoreConfig(config) && config.cachePath
+    ? config.cachePath
+    : isCustomDatastoreConfig(config)
+    ? config.datastorePath
+    : config.path;
+
+  return {
+    getBasePath: () => basePath,
+    getNamespace: () => config.namespace!,
+    listFiles: (dir: string) => listFilesRecursive(dir),
+    compareFiles: (a: string, b: string) => compareFiles(a, b),
+    removeFile: (path: string) => Deno.remove(path),
+    removeEmptyDirs: (dir: string) => removeEmptyDirs(dir).then(() => {}),
+    dirExists: async (path: string) => {
+      try {
+        const stat = await Deno.stat(path);
+        return stat.isDirectory;
+      } catch {
+        return false;
+      }
+    },
+  };
+}
+
 export const doctorDatastoresCommand = withRemoteOptions(
   new Command()
     .description(
@@ -268,11 +337,11 @@ export const doctorDatastoresCommand = withRemoteOptions(
     .example("Check this repo's datastore", "swamp doctor datastores")
     .example("Machine-readable output for CI", "swamp doctor datastores --json")
     .example(
-      "Preview namespace contamination cleanup",
+      "Preview datastore repair",
       "swamp doctor datastores --repair",
     )
     .example(
-      "Execute namespace contamination cleanup",
+      "Execute datastore repair",
       "swamp doctor datastores --repair -y",
     )
     .option(
@@ -281,7 +350,7 @@ export const doctorDatastoresCommand = withRemoteOptions(
     )
     .option(
       "--repair",
-      "Preview foreign namespace contamination cleanup (add -y to execute).",
+      "Preview and repair datastore issues: root-level unmigrated data and foreign namespace contamination (add -y to execute).",
     )
     .option(
       "-y, --yes",
@@ -332,6 +401,36 @@ export const doctorDatastoresCommand = withRemoteOptions(
   const libCtx = createLibSwampContext();
 
   if (options.repair) {
+    let exitCode = 0;
+
+    let unmigratedDeps: RepairUnmigratedDataDeps | null = null;
+    try {
+      unmigratedDeps = await createUnmigratedRepairDeps(repoDir);
+    } catch (error) {
+      if (error instanceof UserError) {
+        cliCtx.logger.debug`Skipping unmigrated data repair: ${error.message}`;
+      } else {
+        throw error;
+      }
+    }
+
+    if (unmigratedDeps) {
+      const unmigratedRenderer = createUnmigratedDataRepairRenderer(
+        cliCtx.outputMode,
+      );
+
+      await consumeStream(
+        repairUnmigratedData(libCtx, unmigratedDeps, {
+          confirm: Boolean(options.yes),
+        }),
+        unmigratedRenderer.handlers(),
+      );
+
+      if (unmigratedRenderer.overallStatus === "fail") {
+        exitCode = 1;
+      }
+    }
+
     const deps = await createRepairDeps(repoDir);
     const renderer = createRepairDatastoresRenderer(cliCtx.outputMode);
 
@@ -344,7 +443,7 @@ export const doctorDatastoresCommand = withRemoteOptions(
 
     cliCtx.logger.debug("doctor datastores repair completed");
 
-    if (renderer.overallStatus === "fail") {
+    if (renderer.overallStatus === "fail" || exitCode !== 0) {
       Deno.exit(1);
     }
     return;

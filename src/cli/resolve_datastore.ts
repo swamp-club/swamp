@@ -32,6 +32,7 @@
  */
 
 import { isAbsolute, join, resolve } from "@std/path";
+import { dirHasFiles } from "../infrastructure/persistence/directory_merge.ts";
 import { getLogger } from "@logtape/logtape";
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 import {
@@ -407,7 +408,9 @@ export async function checkUnmigratedNamespaceData(
   for (const subdir of DEFAULT_DATASTORE_SUBDIRS) {
     try {
       const stat = await Deno.stat(join(basePath, subdir));
-      if (stat.isDirectory) found.push(subdir);
+      if (stat.isDirectory && await dirHasFiles(join(basePath, subdir))) {
+        found.push(subdir);
+      }
     } catch {
       // Not found — expected when migrated
     }
