@@ -190,7 +190,8 @@ export function replayPendingRuns(deps: ReplayPendingRunsDeps): number {
   const pending = deps.runTracker.findAllPendingRuns();
   if (pending.length === 0) return 0;
 
-  logger.info`Replaying ${pending.length} pending run(s) from previous process`;
+  logger
+    .debug`Replaying ${pending.length} pending run(s) from previous process`;
 
   let replayed = 0;
   for (const entry of pending) {
