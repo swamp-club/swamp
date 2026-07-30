@@ -414,6 +414,9 @@ class JsonUnmigratedDataRepairRenderer implements UnmigratedDataRepairRenderer {
       },
       not_needed: () => {
         this.overallStatus = "pass";
+        console.log(
+          JSON.stringify({ status: "unmigrated_not_needed" }, null, 2),
+        );
       },
       error: (e) => {
         this.overallStatus = "fail";

@@ -67,6 +67,7 @@ import { join } from "@std/path";
 import {
   compareFiles,
   dirHasFiles,
+  removeEmptyDirs,
 } from "../../infrastructure/persistence/directory_merge.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -315,13 +316,7 @@ async function createUnmigratedRepairDeps(
     listFiles: (dir: string) => listFilesRecursive(dir),
     compareFiles: (a: string, b: string) => compareFiles(a, b),
     removeFile: (path: string) => Deno.remove(path),
-    removeEmptyDirs: async (dir: string) => {
-      try {
-        await Deno.remove(dir, { recursive: true });
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) throw error;
-      }
-    },
+    removeEmptyDirs: (dir: string) => removeEmptyDirs(dir).then(() => {}),
     dirExists: async (path: string) => {
       try {
         const stat = await Deno.stat(path);
