@@ -263,6 +263,25 @@ Deno.test("handleDeviceAuth: POST /auth/device/token returns 403 for access_deni
   assertEquals(body.error, "Authorization denied by user");
 });
 
+Deno.test("handleDeviceAuth: POST /auth/device/token returns 502 for unknown poll error", async () => {
+  const deps = makeMockDeps({
+    pollForToken: () =>
+      Promise.reject(
+        new DeviceGrantPollError(
+          "unknown",
+          "Token request failed: 400 invalid_grant",
+        ),
+      ),
+  });
+  const result = await handleDeviceAuth(
+    postRequest("/auth/device/token", { deviceCode: "dev-123" }),
+    deps,
+  );
+  assertEquals(result?.status, 502);
+  const body = await result!.json();
+  assertEquals(body.error, "Upstream provider returned an unexpected error");
+});
+
 // ── POST /auth/device/token — admission ───────────────────────────────
 
 Deno.test("handleDeviceAuth: POST /auth/device/token returns 403 when admission denied", async () => {
