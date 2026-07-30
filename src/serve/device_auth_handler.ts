@@ -261,6 +261,10 @@ async function handleDeviceToken(
           return jsonResponse(403, {
             error: "Authorization denied by user",
           });
+        case "unknown":
+          return jsonResponse(502, {
+            error: "Upstream provider returned an unexpected error",
+          });
       }
     }
     logger.error`Token exchange error: ${

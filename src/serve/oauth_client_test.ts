@@ -312,12 +312,12 @@ Deno.test("pollForToken: throws DeviceGrantPollError for access_denied", async (
   }
 });
 
-Deno.test("pollForToken: throws generic Error for unknown error code", async () => {
+Deno.test("pollForToken: throws DeviceGrantPollError with code 'unknown' for unrecognized error code", async () => {
   const mock = startMockServer(() =>
     Response.json({ error: "server_error" }, { status: 500 })
   );
   try {
-    await assertRejects(
+    const error = await assertRejects(
       () =>
         pollForToken(
           `http://localhost:${mock.port}`,
@@ -326,9 +326,33 @@ Deno.test("pollForToken: throws generic Error for unknown error code", async () 
           "d",
           AbortSignal.timeout(5000),
         ),
-      Error,
+      DeviceGrantPollError,
       "Token request failed: 500",
     );
+    assertEquals(error.code, "unknown");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("pollForToken: throws DeviceGrantPollError with code 'unknown' for invalid_grant", async () => {
+  const mock = startMockServer(() =>
+    Response.json({ error: "invalid_grant" }, { status: 400 })
+  );
+  try {
+    const error = await assertRejects(
+      () =>
+        pollForToken(
+          `http://localhost:${mock.port}`,
+          "c",
+          "s",
+          "d",
+          AbortSignal.timeout(5000),
+        ),
+      DeviceGrantPollError,
+      "Token request failed: 400",
+    );
+    assertEquals(error.code, "unknown");
   } finally {
     await mock.shutdown();
   }

@@ -50,7 +50,8 @@ export type DeviceGrantPollErrorCode =
   | "authorization_pending"
   | "slow_down"
   | "expired_token"
-  | "access_denied";
+  | "access_denied"
+  | "unknown";
 
 /**
  * Error thrown when polling the OAuth token endpoint during the device
@@ -135,7 +136,8 @@ export async function pollForToken(
         errorCode as DeviceGrantPollErrorCode,
       );
     }
-    throw new Error(
+    throw new DeviceGrantPollError(
+      "unknown",
       `Token request failed: ${resp.status} ${data.error ?? resp.statusText}`,
     );
   }

@@ -1161,113 +1161,130 @@ export const serveCommand = new Command()
         );
       }
       const vaultName = vaultService.getDefaultVaultName() ?? vaultNames[0];
-      const credentials = await resolveOAuthClientCredentials(
-        {
-          getVaultSecret: async (v, k) => {
-            try {
-              return await vaultService.get(v, k, "serve:oauth-resolve");
-            } catch {
-              return null;
-            }
-          },
-          putVaultSecret: (v, k, val) => vaultService.put(v, k, val),
-          registerClient: async (providerUrl, signal) => {
-            const { startDeviceGrant, pollForToken } = await import(
-              "../../serve/oauth_client.ts"
-            );
-            const { BOOTSTRAP_CLIENT_ID } = await import(
-              "../../serve/oauth_registration.ts"
-            );
-            const { DeviceGrantPollError } = await import(
-              "../../serve/oauth_client.ts"
-            );
-
-            const grant = await startDeviceGrant(
-              providerUrl,
-              BOOTSTRAP_CLIENT_ID,
-              signal,
-            );
-
-            const verifyUrl = grant.verificationUriComplete ||
-              grant.verificationUri;
-            logger.info(
-              "First-time OAuth setup — visit {uri} and verify code: {code}",
-              { uri: verifyUrl, code: grant.userCode },
-            );
-
-            let currentIntervalMs = (grant.interval || 5) * 1000;
-            const deadline = Date.now() + grant.expiresIn * 1000;
-            let tokenResponse;
-            while (Date.now() < deadline) {
+      let credentials;
+      try {
+        credentials = await resolveOAuthClientCredentials(
+          {
+            getVaultSecret: async (v, k) => {
               try {
-                tokenResponse = await pollForToken(
-                  providerUrl,
-                  BOOTSTRAP_CLIENT_ID,
-                  "",
-                  grant.deviceCode,
-                  signal,
-                );
-                break;
-              } catch (err) {
-                if (err instanceof DeviceGrantPollError) {
-                  if (err.code === "slow_down") {
-                    currentIntervalMs += 5000;
-                  }
-                  if (
-                    err.code === "authorization_pending" ||
-                    err.code === "slow_down"
-                  ) {
-                    await new Promise((resolve) =>
-                      setTimeout(resolve, currentIntervalMs)
-                    );
-                    continue;
-                  }
-                }
-                throw err;
+                return await vaultService.get(v, k, "serve:oauth-resolve");
+              } catch {
+                return null;
               }
-            }
-            if (!tokenResponse) {
-              throw new Error("Bootstrap device grant timed out");
-            }
-
-            const resp = await fetch(
-              `${providerUrl}/api/auth/oauth2/register`,
-              {
-                method: "POST",
-                headers: {
-                  "content-type": "application/json",
-                  "authorization": `Bearer ${tokenResponse.accessToken}`,
-                },
-                body: JSON.stringify({
-                  client_name: `swamp-serve-${crypto.randomUUID().slice(0, 8)}`,
-                  redirect_uris: ["http://localhost"],
-                  grant_types: ["authorization_code"],
-                  scope: "openid profile email collectives",
-                }),
-                signal,
-              },
-            );
-            if (!resp.ok) {
-              const body = await resp.text().catch(() => "");
-              throw new Error(
-                `OAuth client registration failed: ${resp.status} ${resp.statusText}${
-                  body ? ` — ${body}` : ""
-                }`,
+            },
+            putVaultSecret: (v, k, val) => vaultService.put(v, k, val),
+            registerClient: async (providerUrl, signal) => {
+              const { startDeviceGrant, pollForToken } = await import(
+                "../../serve/oauth_client.ts"
               );
-            }
-            const data = await resp.json();
-            return {
-              clientId: data.client_id as string,
-              clientSecret: data.client_secret as string,
-              accessToken: tokenResponse.accessToken,
-            };
+              const { BOOTSTRAP_CLIENT_ID } = await import(
+                "../../serve/oauth_registration.ts"
+              );
+              const { DeviceGrantPollError } = await import(
+                "../../serve/oauth_client.ts"
+              );
+
+              const grant = await startDeviceGrant(
+                providerUrl,
+                BOOTSTRAP_CLIENT_ID,
+                signal,
+              );
+
+              const verifyUrl = grant.verificationUriComplete ||
+                grant.verificationUri;
+              logger.info(
+                "First-time OAuth setup — visit {uri} and verify code: {code}",
+                { uri: verifyUrl, code: grant.userCode },
+              );
+
+              let currentIntervalMs = (grant.interval || 5) * 1000;
+              const deadline = Date.now() + grant.expiresIn * 1000;
+              let tokenResponse;
+              while (Date.now() < deadline) {
+                try {
+                  tokenResponse = await pollForToken(
+                    providerUrl,
+                    BOOTSTRAP_CLIENT_ID,
+                    "",
+                    grant.deviceCode,
+                    signal,
+                  );
+                  break;
+                } catch (err) {
+                  if (err instanceof DeviceGrantPollError) {
+                    if (err.code === "slow_down") {
+                      currentIntervalMs += 5000;
+                    }
+                    if (
+                      err.code === "authorization_pending" ||
+                      err.code === "slow_down"
+                    ) {
+                      await new Promise((resolve) =>
+                        setTimeout(resolve, currentIntervalMs)
+                      );
+                      continue;
+                    }
+                    throw new UserError(
+                      `OAuth bootstrap failed: ${err.message}`,
+                    );
+                  }
+                  throw err;
+                }
+              }
+              if (!tokenResponse) {
+                throw new UserError(
+                  "OAuth bootstrap failed: device grant timed out",
+                );
+              }
+
+              const resp = await fetch(
+                `${providerUrl}/api/auth/oauth2/register`,
+                {
+                  method: "POST",
+                  headers: {
+                    "content-type": "application/json",
+                    "authorization": `Bearer ${tokenResponse.accessToken}`,
+                  },
+                  body: JSON.stringify({
+                    client_name: `swamp-serve-${
+                      crypto.randomUUID().slice(0, 8)
+                    }`,
+                    redirect_uris: ["http://localhost"],
+                    grant_types: ["authorization_code"],
+                    scope: "openid profile email collectives",
+                  }),
+                  signal,
+                },
+              );
+              if (!resp.ok) {
+                const body = await resp.text().catch(() => "");
+                throw new Error(
+                  `OAuth client registration failed: ${resp.status} ${resp.statusText}${
+                    body ? ` — ${body}` : ""
+                  }`,
+                );
+              }
+              const data = await resp.json();
+              return {
+                clientId: data.client_id as string,
+                clientSecret: data.client_secret as string,
+                accessToken: tokenResponse.accessToken,
+              };
+            },
           },
-        },
-        authConfig.oauthProvider,
-        vaultName,
-        authConfig.oauthClientId,
-        AbortSignal.timeout(300_000),
-      );
+          authConfig.oauthProvider,
+          vaultName,
+          authConfig.oauthClientId,
+          AbortSignal.timeout(300_000),
+        );
+      } catch (err) {
+        if (err instanceof UserError) throw err;
+        throw new UserError(
+          `OAuth bootstrap failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
       authConfig.oauthClientId = credentials.clientId;
       oauthClientSecret = credentials.clientSecret;
       logger.info(
