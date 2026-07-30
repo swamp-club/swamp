@@ -46,6 +46,8 @@ export {
 
 export { type DatastorePathResolver } from "./datastore_path_resolver.ts";
 
+export { type ControlPlaneStore } from "./control_plane_store.ts";
+
 export {
   type CatalogExportEntry,
   type CatalogExportRow,

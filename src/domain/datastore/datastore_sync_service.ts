@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { ControlPlaneStore } from "./control_plane_store.ts";
 import { UserError } from "../errors.ts";
 
 /** Describes what a sync operation is about. */
@@ -63,6 +64,14 @@ export interface SyncCapabilities {
    * Core uses this to gate `sync --push` behind a confirmation prompt.
    */
   previewPush?: boolean;
+  /**
+   * When `true`, the extension supports
+   * {@link DatastoreSyncService.controlPlaneStore} — direct read/write
+   * access to small control-plane records that bypass the sync index and
+   * cache pipeline. Used for coordination state (instance heartbeats,
+   * pending run entries) in HA deployments.
+   */
+  controlPlane?: boolean;
 }
 
 /**
@@ -325,6 +334,20 @@ export interface DatastoreSyncService {
     manifest: PushManifest,
     options?: DatastoreSyncOptions,
   ): Promise<number | void>;
+
+  /**
+   * Return a {@link ControlPlaneStore} for direct read/write access to
+   * small control-plane records in the remote backend.
+   *
+   * Records bypass the sync index and cache pipeline entirely — they
+   * live under `_control/` in the remote datastore, scoped by namespace
+   * when configured.
+   *
+   * Optional — only implemented by extensions that advertise
+   * `controlPlane: true` in their capabilities. Core checks
+   * `caps?.controlPlane && syncService.controlPlaneStore` before calling.
+   */
+  controlPlaneStore?(): ControlPlaneStore;
 
   /**
    * Detect and optionally remove foreign namespace data under the
