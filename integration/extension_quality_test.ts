@@ -43,10 +43,7 @@ async function runCli(
 }
 
 /**
- * Parse the first top-level JSON object from a string. When the CLI
- * exits non-zero in JSON mode, it prints the score object followed by
- * an error object — tests care about the score and want to ignore the
- * trailing error.
+ * Parse the first top-level JSON object from a string.
  */
 // deno-lint-ignore no-explicit-any
 function parseFirstJson(stdout: string): any {
@@ -244,8 +241,7 @@ Deno.test(
         "--no-color",
       ]);
 
-      // Exit non-zero since factors missed.
-      assertEquals(code !== 0, true);
+      assertEquals(code, 0);
       const parsed = parseFirstJson(stdout);
       assertEquals(parsed.allPassed, false);
 
@@ -286,7 +282,7 @@ Deno.test(
         "--no-color",
       ]);
 
-      assertEquals(code !== 0, true);
+      assertEquals(code, 0);
       const parsed = parseFirstJson(stdout);
       const byId = new Map<string, { status: string }>(
         parsed.factors.map((f: { id: string; status: string }) => [f.id, f]),

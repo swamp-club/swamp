@@ -122,15 +122,6 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
         logger
           .info`Note: \`repository-verified\` earns here when the URL is well-formed on an allowlisted host; the registry does the final public-reachable check on publish.`;
         logger.info`Packaged archive: ${archiveSize} bytes`;
-        if (!score.allPassed) {
-          this._passed = false;
-          const missing = score.factors
-            .filter((f) => f.status !== "earned")
-            .map((f) => f.id)
-            .join(", ");
-          this._failureMessage =
-            `Quality rubric factors missing: ${missing}. See messages above for remediation.`;
-        }
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -186,14 +177,6 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
           null,
           2,
         ));
-        if (!score.allPassed) {
-          this._passed = false;
-          const missing = score.factors
-            .filter((f) => f.status !== "earned")
-            .map((f) => f.id)
-            .join(", ");
-          this._failureMessage = `Quality rubric factors missing: ${missing}.`;
-        }
       },
       error: (e) => {
         throw new UserError(e.error.message);
