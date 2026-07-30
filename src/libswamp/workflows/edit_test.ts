@@ -33,6 +33,7 @@ function makeDeps(
   return {
     findById: () => Promise.resolve(null),
     findByName: () => Promise.resolve(null),
+    findBrokenWorkflow: () => Promise.resolve(null),
     getPath: () => "/fake/path/workflow.yaml",
     resolveSymlink: () => Promise.resolve(null),
     fileExists: () => Promise.resolve(true),
@@ -194,4 +195,113 @@ Deno.test("workflowEdit: yields error for broken workflow with stdin", async () 
   const last = events[1] as Extract<WorkflowEditEvent, { kind: "error" }>;
   assertEquals(last.kind, "error");
   assertEquals(last.error.code, "validation_failed");
+});
+
+Deno.test("workflowEdit: opens broken workflow by name via findBrokenWorkflow fallback", async () => {
+  const deps = makeDeps({
+    findByName: () => Promise.resolve(null),
+    resolveSymlink: () => Promise.resolve(null),
+    findBrokenWorkflow: () =>
+      Promise.resolve({
+        file: "/repo/workflows/workflow-abc.yaml",
+        name: "broken-wf",
+        id: "abc",
+        error: "Unknown key 'ependssss'",
+      }),
+    openEditor: () => Promise.resolve({ editor: "Neovim" }),
+  });
+
+  const events = await collect<WorkflowEditEvent>(
+    workflowEdit(createLibSwampContext(), deps, {
+      workflowIdOrName: "broken-wf",
+    }),
+  );
+
+  assertEquals(events, [
+    { kind: "resolving" },
+    {
+      kind: "completed",
+      data: {
+        path: "/repo/workflows/workflow-abc.yaml",
+        editor: "Neovim",
+        status: "opened",
+        name: "broken-wf",
+        id: "unknown",
+      },
+    },
+  ]);
+});
+
+Deno.test("workflowEdit: opens broken workflow by UUID via findBrokenWorkflow fallback", async () => {
+  const brokenId = "550e8400-e29b-41d4-a716-446655440000";
+  const deps = makeDeps({
+    findById: () => {
+      throw new Error("Unknown key 'ependssss'");
+    },
+    findBrokenWorkflow: () =>
+      Promise.resolve({
+        file: `/repo/workflows/workflow-${brokenId}.yaml`,
+        name: "broken-wf",
+        id: brokenId,
+        error: "Unknown key 'ependssss'",
+      }),
+    openEditor: () => Promise.resolve({ editor: "Neovim" }),
+  });
+
+  const events = await collect<WorkflowEditEvent>(
+    workflowEdit(createLibSwampContext(), deps, {
+      workflowIdOrName: brokenId,
+    }),
+  );
+
+  assertEquals(events, [
+    { kind: "resolving" },
+    {
+      kind: "completed",
+      data: {
+        path: `/repo/workflows/workflow-${brokenId}.yaml`,
+        editor: "Neovim",
+        status: "opened",
+        name: brokenId,
+        id: "unknown",
+      },
+    },
+  ]);
+});
+
+Deno.test("workflowEdit: yields not_found when workflow genuinely missing (name)", async () => {
+  const deps = makeDeps({
+    findByName: () => Promise.resolve(null),
+    resolveSymlink: () => Promise.resolve(null),
+    findBrokenWorkflow: () => Promise.resolve(null),
+  });
+
+  const events = await collect<WorkflowEditEvent>(
+    workflowEdit(createLibSwampContext(), deps, {
+      workflowIdOrName: "totally-missing",
+    }),
+  );
+
+  assertEquals(events.length, 2);
+  const last = events[1] as Extract<WorkflowEditEvent, { kind: "error" }>;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "not_found");
+});
+
+Deno.test("workflowEdit: yields not_found when workflow genuinely missing (UUID)", async () => {
+  const deps = makeDeps({
+    findById: () => Promise.resolve(null),
+    findBrokenWorkflow: () => Promise.resolve(null),
+  });
+
+  const events = await collect<WorkflowEditEvent>(
+    workflowEdit(createLibSwampContext(), deps, {
+      workflowIdOrName: "550e8400-e29b-41d4-a716-446655440000",
+    }),
+  );
+
+  assertEquals(events.length, 2);
+  const last = events[1] as Extract<WorkflowEditEvent, { kind: "error" }>;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "not_found");
 });

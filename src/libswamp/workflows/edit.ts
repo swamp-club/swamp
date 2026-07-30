@@ -32,6 +32,11 @@ import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
+import {
+  type BrokenWorkflow,
+  findBrokenWorkflow,
+  workflowsDirFor,
+} from "./broken_workflow.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
@@ -70,6 +75,7 @@ export interface WorkflowEditInput {
 export interface WorkflowEditDeps {
   findById: (id: WorkflowId) => Promise<Workflow | null>;
   findByName: (name: string) => Promise<Workflow | null>;
+  findBrokenWorkflow: (idOrName: string) => Promise<BrokenWorkflow | null>;
   getPath: (id: WorkflowId) => string;
   resolveSymlink: (name: string) => Promise<string | null>;
   fileExists: (path: string) => Promise<boolean>;
@@ -86,9 +92,12 @@ export function createWorkflowEditDeps(
   workflowRepo: WorkflowRepository,
 ): WorkflowEditDeps {
   const editorService = new EditorService();
+  const workflowsDir = workflowsDirFor(repoDir);
   return {
     findById: (id) => workflowRepo.findById(id),
     findByName: (name) => workflowRepo.findByName(name),
+    findBrokenWorkflow: (idOrName) =>
+      findBrokenWorkflow(workflowsDir, idOrName),
     getPath: (id) => workflowRepo.getPath(id),
     resolveSymlink: async (name) => {
       const symlinkPath = join(repoDir, "workflows", name, "workflow.yaml");
@@ -151,11 +160,18 @@ export async function* workflowEdit(
         if (workflow) {
           filePath = deps.getPath(workflow.id);
         } else {
-          yield {
-            kind: "error",
-            error: notFound("Workflow", workflowIdOrName),
-          };
-          return;
+          const broken = await deps.findBrokenWorkflow(workflowIdOrName);
+          if (broken) {
+            ctx.logger
+              .debug`Found broken workflow by ID, opening file: ${broken.file}`;
+            filePath = broken.file;
+          } else {
+            yield {
+              kind: "error",
+              error: notFound("Workflow", workflowIdOrName),
+            };
+            return;
+          }
         }
       } else {
         ctx.logger.debug`Looking up by name: ${workflowIdOrName}`;
@@ -175,11 +191,18 @@ export async function* workflowEdit(
               .debug`Using symlink fallback for broken workflow: ${resolvedPath}`;
             filePath = resolvedPath;
           } else {
-            yield {
-              kind: "error",
-              error: notFound("Workflow", workflowIdOrName),
-            };
-            return;
+            const broken = await deps.findBrokenWorkflow(workflowIdOrName);
+            if (broken) {
+              ctx.logger
+                .debug`Found broken workflow by name, opening file: ${broken.file}`;
+              filePath = broken.file;
+            } else {
+              yield {
+                kind: "error",
+                error: notFound("Workflow", workflowIdOrName),
+              };
+              return;
+            }
           }
         }
       }
