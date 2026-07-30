@@ -17,8 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { FileSystemControlPlaneStore } from "./fs_control_plane_store.ts";
+import { PathTraversalError } from "./safe_path.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({
@@ -174,5 +175,62 @@ Deno.test("FileSystemControlPlaneStore: delete then put same key", async () => {
 
     const result = await store.get("key");
     assertEquals(decoder.decode(result!), "v2");
+  });
+});
+
+Deno.test("FileSystemControlPlaneStore: list with empty prefix returns all keys", async () => {
+  await withTempDir(async (dir) => {
+    const store = new FileSystemControlPlaneStore(dir);
+
+    await store.put("heartbeats/i-1", encoder.encode("h1"));
+    await store.put("pending-runs/r-1", encoder.encode("p1"));
+
+    const all = await store.list("");
+    assertEquals(all, ["heartbeats/i-1", "pending-runs/r-1"]);
+  });
+});
+
+Deno.test("FileSystemControlPlaneStore: rejects path traversal via ..", async () => {
+  await withTempDir(async (dir) => {
+    const store = new FileSystemControlPlaneStore(dir);
+
+    await assertRejects(
+      () => store.put("../../etc/passwd", encoder.encode("bad")),
+      PathTraversalError,
+    );
+    await assertRejects(
+      () => store.get("../secret"),
+      PathTraversalError,
+    );
+    await assertRejects(
+      () => store.delete("heartbeats/../../outside"),
+      PathTraversalError,
+    );
+    await assertRejects(
+      () => store.list(".."),
+      PathTraversalError,
+    );
+  });
+});
+
+Deno.test("FileSystemControlPlaneStore: rejects absolute path keys", async () => {
+  await withTempDir(async (dir) => {
+    const store = new FileSystemControlPlaneStore(dir);
+
+    await assertRejects(
+      () => store.put("/etc/passwd", encoder.encode("bad")),
+      PathTraversalError,
+    );
+  });
+});
+
+Deno.test("FileSystemControlPlaneStore: rejects empty key", async () => {
+  await withTempDir(async (dir) => {
+    const store = new FileSystemControlPlaneStore(dir);
+
+    await assertRejects(
+      () => store.put("", encoder.encode("bad")),
+      PathTraversalError,
+    );
   });
 });

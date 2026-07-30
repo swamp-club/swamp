@@ -20,6 +20,7 @@
 import { dirname, join } from "@std/path";
 import type { ControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
 import { atomicWriteFile } from "./atomic_write.ts";
+import { assertContainedPath } from "./safe_path.ts";
 
 /**
  * Filesystem-backed {@link ControlPlaneStore} used as a fallback when the
@@ -64,7 +65,7 @@ export class FileSystemControlPlaneStore implements ControlPlaneStore {
   }
 
   async list(prefix: string): Promise<string[]> {
-    const searchDir = this.#keyToPath(prefix);
+    const searchDir = prefix === "" ? this.#rootDir : this.#keyToPath(prefix);
     const keys: string[] = [];
     try {
       await this.#collectKeys(searchDir, this.#rootDir, keys);
@@ -83,6 +84,7 @@ export class FileSystemControlPlaneStore implements ControlPlaneStore {
     keys: string[],
   ): Promise<void> {
     for await (const entry of Deno.readDir(dir)) {
+      if (entry.isSymlink) continue;
       const fullPath = join(dir, entry.name);
       if (entry.isDirectory) {
         await this.#collectKeys(fullPath, rootDir, keys);
@@ -94,7 +96,7 @@ export class FileSystemControlPlaneStore implements ControlPlaneStore {
   }
 
   #keyToPath(key: string): string {
-    const segments = key.split("/");
-    return join(this.#rootDir, ...segments);
+    assertContainedPath(key, this.#rootDir);
+    return join(this.#rootDir, ...key.split("/"));
   }
 }
