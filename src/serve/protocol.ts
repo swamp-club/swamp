@@ -455,6 +455,7 @@ export interface RunAttachPayload {
 }
 
 export type ServerRequest =
+  | { type: "server.version"; id: string }
   | { type: "workflow.run"; id: string; payload: WorkflowRunPayload }
   | { type: "model.method.run"; id: string; payload: ModelMethodRunPayload }
   | { type: "access.grant.list"; id: string; payload?: AccessGrantListPayload }
@@ -1015,6 +1016,11 @@ export type ServerMessage =
    * that predate it ignore unknown frame types.
    */
   | { type: "done"; id: string }
+  | {
+    type: "server.version";
+    id: string;
+    payload: { version: string; gitSha: string };
+  }
   | { type: "access.grant.list"; id: string; payload: AccessGrantListResponse }
   | {
     type: "access.group.list";

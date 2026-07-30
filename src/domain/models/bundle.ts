@@ -24,6 +24,8 @@ import * as zodModule from "zod";
 
 const logger = getLogger(["swamp", "models", "bundle"]);
 
+const BUNDLE_TIMEOUT_MS = 120_000;
+
 declare global {
   var __swamp_zod: typeof zodModule | undefined;
 }
@@ -173,6 +175,12 @@ export interface BundleOptions {
    * (which triggers macOS TCC prompts).
    */
   env?: Record<string, string>;
+
+  /**
+   * Abort signal forwarded to the subprocess. When aborted the child
+   * process is killed and the returned promise rejects.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -511,10 +519,14 @@ export async function bundleExtension(
 
     args.push("--platform", "deno", "-o", tempFile, absolutePath);
 
+    const signal = options?.signal ??
+      AbortSignal.timeout(BUNDLE_TIMEOUT_MS);
+
     const command = new Deno.Command(denoPath, {
       args,
       stdout: "piped",
       stderr: "piped",
+      signal,
       // For package.json projects, set cwd so Deno auto-detects package.json
       // and resolves bare specifiers from node_modules/.
       ...(options?.packageJsonDir ? { cwd: options.packageJsonDir } : {}),
