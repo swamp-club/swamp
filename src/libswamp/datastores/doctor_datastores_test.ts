@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { join, SEPARATOR } from "@std/path";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -634,14 +635,18 @@ Deno.test("repairUnmigratedData: not needed when no root-level dirs have files",
 
 Deno.test("repairUnmigratedData: preview mode shows dirs without modifying", async () => {
   const removedFiles: string[] = [];
+  const dataSuffix = `${SEPARATOR}data`;
+  const outputsSuffix = `${SEPARATOR}outputs`;
   const deps = makeUnmigratedDeps({
     dirExists: (path) =>
-      Promise.resolve(path.endsWith("/data") || path.endsWith("/outputs")),
+      Promise.resolve(
+        path.endsWith(dataSuffix) || path.endsWith(outputsSuffix),
+      ),
     listFiles: (dir) => {
-      if (dir.endsWith("/data")) {
+      if (dir.endsWith(dataSuffix)) {
         return Promise.resolve(["model/raw", "model/metadata.yaml"]);
       }
-      if (dir.endsWith("/outputs")) {
+      if (dir.endsWith(outputsSuffix)) {
         return Promise.resolve(["report.yaml"]);
       }
       return Promise.resolve([]);
@@ -669,9 +674,10 @@ Deno.test("repairUnmigratedData: preview mode shows dirs without modifying", asy
 Deno.test("repairUnmigratedData: confirm removes identical duplicates", async () => {
   const removedFiles: string[] = [];
   const removedDirs: string[] = [];
+  const dataSuffix = `${SEPARATOR}data`;
 
   const deps = makeUnmigratedDeps({
-    dirExists: (path) => Promise.resolve(path.endsWith("/data")),
+    dirExists: (path) => Promise.resolve(path.endsWith(dataSuffix)),
     listFiles: () => Promise.resolve(["model/raw", "model/metadata.yaml"]),
     compareFiles: () => Promise.resolve(true),
     removeFile: (path) => {
@@ -696,17 +702,21 @@ Deno.test("repairUnmigratedData: confirm removes identical duplicates", async ()
     assertEquals(completed.namespace, "homelab");
   }
   assertEquals(removedFiles.length, 2);
-  assertEquals(removedFiles[0], "/tmp/cache/data/model/raw");
-  assertEquals(removedFiles[1], "/tmp/cache/data/model/metadata.yaml");
+  assertEquals(removedFiles[0], join("/tmp/cache", "data", "model/raw"));
+  assertEquals(
+    removedFiles[1],
+    join("/tmp/cache", "data", "model/metadata.yaml"),
+  );
   assertEquals(removedDirs.length, 1);
-  assertEquals(removedDirs[0], "/tmp/cache/data");
+  assertEquals(removedDirs[0], join("/tmp/cache", "data"));
 });
 
 Deno.test("repairUnmigratedData: errors on non-identical files without deleting anything", async () => {
   const removedFiles: string[] = [];
+  const dataSuffix = `${SEPARATOR}data`;
 
   const deps = makeUnmigratedDeps({
-    dirExists: (path) => Promise.resolve(path.endsWith("/data")),
+    dirExists: (path) => Promise.resolve(path.endsWith(dataSuffix)),
     listFiles: () => Promise.resolve(["model/raw"]),
     compareFiles: () => Promise.resolve(false),
     removeFile: (path) => {
@@ -731,21 +741,27 @@ Deno.test("repairUnmigratedData: errors on non-identical files without deleting 
 
 Deno.test("repairUnmigratedData: handles multiple dirs, stops on first non-identical", async () => {
   const removedFiles: string[] = [];
+  const dataSuffix = `${SEPARATOR}data`;
+  const outputsSuffix = `${SEPARATOR}outputs`;
 
   const deps = makeUnmigratedDeps({
     dirExists: (path) =>
-      Promise.resolve(path.endsWith("/data") || path.endsWith("/outputs")),
+      Promise.resolve(
+        path.endsWith(dataSuffix) || path.endsWith(outputsSuffix),
+      ),
     listFiles: (dir) => {
-      if (dir.endsWith("/data")) {
+      if (dir.endsWith(dataSuffix)) {
         return Promise.resolve(["file1.yaml"]);
       }
-      if (dir.endsWith("/outputs")) {
+      if (dir.endsWith(outputsSuffix)) {
         return Promise.resolve(["report.yaml"]);
       }
       return Promise.resolve([]);
     },
     compareFiles: (_a, b) => {
-      if (b.includes("/outputs/")) return Promise.resolve(false);
+      if (b.includes(`${SEPARATOR}outputs${SEPARATOR}`)) {
+        return Promise.resolve(false);
+      }
       return Promise.resolve(true);
     },
     removeFile: (path) => {
@@ -766,9 +782,13 @@ Deno.test("repairUnmigratedData: handles multiple dirs, stops on first non-ident
 });
 
 Deno.test("repairUnmigratedData: emits step events during confirm", async () => {
+  const dataSuffix = `${SEPARATOR}data`;
+  const outputsSuffix = `${SEPARATOR}outputs`;
   const deps = makeUnmigratedDeps({
     dirExists: (path) =>
-      Promise.resolve(path.endsWith("/data") || path.endsWith("/outputs")),
+      Promise.resolve(
+        path.endsWith(dataSuffix) || path.endsWith(outputsSuffix),
+      ),
     listFiles: () => Promise.resolve(["file.yaml"]),
     compareFiles: () => Promise.resolve(true),
   });
