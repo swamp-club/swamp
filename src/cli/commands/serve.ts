@@ -2269,38 +2269,57 @@ export const serveCommand = new Command()
               Math.min(...workflowRuns.map((r) => r.startedAt.getTime())) -
                 60_000,
             );
+            let allRuns:
+              | Awaited<
+                ReturnType<
+                  typeof repoContext.workflowRunRepo.findAllGlobalSince
+                >
+              >
+              | undefined;
             try {
-              const allRuns = await repoContext.workflowRunRepo
+              allRuns = await repoContext.workflowRunRepo
                 .findAllGlobalSince(earliestCutoff);
-              for (const run of workflowRuns) {
-                const match = allRuns.find((r) => r.run.id === run.runId);
-                if (
-                  match &&
-                  (match.run.status === "running" ||
-                    match.run.status === "cancelled")
-                ) {
-                  match.run.interrupt("server_shutdown");
-                  await repoContext.workflowRunRepo.save(
-                    match.workflowId,
-                    match.run,
-                  );
-                  if (isJson) {
-                    console.log(JSON.stringify({
-                      status: "interrupted",
-                      runId: run.runId,
-                    }));
-                  }
-                  logger
-                    .info`Interrupted workflow run ${run.runId} (server shutdown)`;
-                }
-              }
             } catch (err) {
               logger.warn(
-                "Failed to interrupt undrained workflow runs: {error}",
+                "Failed to load workflow runs for interrupt: {error}",
                 {
                   error: err instanceof Error ? err.message : String(err),
                 },
               );
+            }
+            if (allRuns) {
+              for (const run of workflowRuns) {
+                try {
+                  const match = allRuns.find((r) => r.run.id === run.runId);
+                  if (
+                    match &&
+                    (match.run.status === "running" ||
+                      match.run.status === "cancelled")
+                  ) {
+                    match.run.interrupt("server_shutdown");
+                    await repoContext.workflowRunRepo.save(
+                      match.workflowId,
+                      match.run,
+                    );
+                    if (isJson) {
+                      console.log(JSON.stringify({
+                        status: "interrupted",
+                        runId: run.runId,
+                      }));
+                    }
+                    logger
+                      .info`Interrupted workflow run ${run.runId} (server shutdown)`;
+                  }
+                } catch (err) {
+                  logger.warn(
+                    "Failed to interrupt run {runId}: {error}",
+                    {
+                      runId: run.runId,
+                      error: err instanceof Error ? err.message : String(err),
+                    },
+                  );
+                }
+              }
             }
           }
         }
