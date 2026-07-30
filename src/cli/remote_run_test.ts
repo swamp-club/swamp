@@ -27,6 +27,7 @@ import { UserError } from "../domain/errors.ts";
 import {
   appendTokenToUrl,
   normalizeServerUrl,
+  probeServerHealth,
   requestServerResponse,
   resolveServerToken,
   resolveServeUrl,
@@ -645,4 +646,145 @@ Deno.test("resolveServerToken: returns undefined when no credential", async () =
     emptyRepo,
   );
   assertEquals(result, undefined);
+});
+
+// ── auth error classification tests ──────────────────────────────────
+
+/**
+ * Server that rejects WebSocket upgrades with 401 but serves a healthy
+ * /health endpoint — simulates a swamp serve instance rejecting stale
+ * credentials.
+ */
+function authRejectingServer(
+  opts?: { healthBody?: unknown; healthStatus?: number },
+): {
+  url: string;
+  shutdown: () => Promise<void>;
+} {
+  const server = Deno.serve(
+    { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+    (req) => {
+      if (req.headers.get("upgrade") === "websocket") {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      const url = new URL(req.url);
+      if (url.pathname === "/health" || url.pathname === "/") {
+        return Response.json(
+          opts?.healthBody ?? { status: "ok" },
+          { status: opts?.healthStatus ?? 200 },
+        );
+      }
+      return new Response("Not found", { status: 404 });
+    },
+  );
+  return {
+    url: `ws://127.0.0.1:${server.addr.port}`,
+    shutdown: () => server.shutdown(),
+  };
+}
+
+Deno.test({
+  name: "probeServerHealth: returns true for healthy server",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = authRejectingServer();
+    try {
+      assertEquals(await probeServerHealth(server.url), true);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name: "probeServerHealth: returns false for unreachable server",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    assertEquals(await probeServerHealth("ws://127.0.0.1:1"), false);
+  },
+});
+
+Deno.test({
+  name:
+    "probeServerHealth: returns false when response body is not valid health JSON",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = authRejectingServer({ healthBody: { status: "degraded" } });
+    try {
+      assertEquals(await probeServerHealth(server.url), false);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "remote run: auth rejection shows authentication error when server is healthy",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = authRejectingServer();
+    try {
+      const error = await assertRejects(async () => {
+        for await (
+          const _ of runWorkflowOverServer({
+            server: server.url,
+            payload: { workflowIdOrName: "wf" },
+          })
+          // deno-lint-ignore no-empty
+        ) {}
+      }, UserError);
+      assertStringIncludes(error.message, "Authentication failed");
+      assertStringIncludes(error.message, "swamp auth server-login");
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "requestServerResponse: auth rejection shows authentication error when server is healthy",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = authRejectingServer();
+    try {
+      const error = await assertRejects(
+        () =>
+          requestServerResponse(
+            { server: server.url },
+            { type: "access.grant.list" },
+          ),
+        UserError,
+      );
+      assertStringIncludes(error.message, "Authentication failed");
+      assertStringIncludes(error.message, "swamp auth server-login");
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "remote run: connection refused preserves original error when server is unreachable",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const error = await assertRejects(async () => {
+      for await (
+        const _ of runWorkflowOverServer({
+          server: "ws://127.0.0.1:1",
+          payload: { workflowIdOrName: "wf" },
+        })
+        // deno-lint-ignore no-empty
+      ) {}
+    }, UserError);
+    assertStringIncludes(error.message, "Could not connect to");
+  },
 });
