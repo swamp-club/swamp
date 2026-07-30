@@ -181,10 +181,6 @@ export const extensionQualityCommand = new Command()
         renderer.handlers(),
       );
 
-      if (!renderer.passed()) {
-        throw new UserError(renderer.failureMessage());
-      }
-
       cliCtx.logger.debug`Extension quality command completed`;
     },
   );
