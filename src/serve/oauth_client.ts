@@ -85,8 +85,11 @@ export async function startDeviceGrant(
     signal,
   });
   if (!resp.ok) {
+    const data = await resp.json().catch(() => ({}));
     throw new Error(
-      `Device authorization request failed: ${resp.status} ${resp.statusText}`,
+      `Device authorization request failed: ${resp.status} ${
+        data.error ?? resp.statusText
+      }${data.error_description ? ` — ${data.error_description}` : ""}`,
     );
   }
   const data = await resp.json();

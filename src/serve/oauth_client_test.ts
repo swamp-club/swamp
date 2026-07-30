@@ -126,7 +126,33 @@ Deno.test("startDeviceGrant: sends client_id in JSON body", async () => {
   }
 });
 
-Deno.test("startDeviceGrant: throws on HTTP error", async () => {
+Deno.test("startDeviceGrant: surfaces OAuth error from JSON body", async () => {
+  const mock = startMockServer(() =>
+    new Response(
+      JSON.stringify({
+        error: "invalid_client",
+        error_description: "client not registered",
+      }),
+      { status: 400, headers: { "content-type": "application/json" } },
+    )
+  );
+  try {
+    await assertRejects(
+      () =>
+        startDeviceGrant(
+          `http://localhost:${mock.port}`,
+          "test-client",
+          AbortSignal.timeout(5000),
+        ),
+      Error,
+      "Device authorization request failed: 400 invalid_client — client not registered",
+    );
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("startDeviceGrant: falls back to statusText for non-JSON body", async () => {
   const mock = startMockServer(() =>
     new Response("Bad Request", { status: 400 })
   );
