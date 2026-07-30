@@ -101,6 +101,32 @@ export async function mergeDirInto(
   return { moved, skipped: skippedPaths.length, skippedPaths };
 }
 
+export async function dirHasFiles(dir: string): Promise<boolean> {
+  for await (const entry of Deno.readDir(dir)) {
+    if (entry.isFile || entry.isSymlink) return true;
+    if (entry.isDirectory && await dirHasFiles(join(dir, entry.name))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export async function compareFiles(a: string, b: string): Promise<boolean> {
+  try {
+    const [aBytes, bBytes] = await Promise.all([
+      Deno.readFile(a),
+      Deno.readFile(b),
+    ]);
+    if (aBytes.length !== bBytes.length) return false;
+    for (let i = 0; i < aBytes.length; i++) {
+      if (aBytes[i] !== bBytes[i]) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function removeEmptyDirs(dir: string): Promise<boolean> {
   const entries: Deno.DirEntry[] = [];
   for await (const entry of Deno.readDir(dir)) {

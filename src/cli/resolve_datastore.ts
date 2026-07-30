@@ -32,6 +32,7 @@
  */
 
 import { isAbsolute, join, resolve } from "@std/path";
+import { dirHasFiles } from "../infrastructure/persistence/directory_merge.ts";
 import { getLogger } from "@logtape/logtape";
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 import {
@@ -415,14 +416,4 @@ export async function checkUnmigratedNamespaceData(
     }
   }
   return found;
-}
-
-async function dirHasFiles(dir: string): Promise<boolean> {
-  for await (const entry of Deno.readDir(dir)) {
-    if (entry.isFile || entry.isSymlink) return true;
-    if (entry.isDirectory && await dirHasFiles(join(dir, entry.name))) {
-      return true;
-    }
-  }
-  return false;
 }

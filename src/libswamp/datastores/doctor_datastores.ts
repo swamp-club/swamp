@@ -27,6 +27,7 @@ import type { NamespaceContaminationSummary } from "../../domain/datastore/datas
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
+import { join } from "@std/path";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
 /** Result of a single health check within the datastore doctor scan. */
@@ -412,7 +413,7 @@ export async function* repairUnmigratedData(
 
       const unmigratedDirs: string[] = [];
       for (const subdir of DEFAULT_DATASTORE_SUBDIRS) {
-        const rootDir = `${basePath}/${subdir}`;
+        const rootDir = join(basePath, subdir);
         if (await deps.dirExists(rootDir)) {
           const files = await deps.listFiles(rootDir);
           if (files.length > 0) {
@@ -441,14 +442,14 @@ export async function* repairUnmigratedData(
             `Checking ${subdir}/ for duplicates against ${namespace}/${subdir}/`,
         };
 
-        const rootDir = `${basePath}/${subdir}`;
-        const nsDir = `${basePath}/${namespace}/${subdir}`;
+        const rootDir = join(basePath, subdir);
+        const nsDir = join(basePath, namespace, subdir);
         const files = await deps.listFiles(rootDir);
 
         let allIdentical = true;
         for (const relPath of files) {
-          const rootFile = `${rootDir}/${relPath}`;
-          const nsFile = `${nsDir}/${relPath}`;
+          const rootFile = join(rootDir, relPath);
+          const nsFile = join(nsDir, relPath);
           if (!await deps.compareFiles(rootFile, nsFile)) {
             allIdentical = false;
             break;
@@ -470,7 +471,7 @@ export async function* repairUnmigratedData(
         }
 
         for (const relPath of files) {
-          await deps.removeFile(`${rootDir}/${relPath}`);
+          await deps.removeFile(join(rootDir, relPath));
           totalRemoved++;
         }
         await deps.removeEmptyDirs(rootDir);

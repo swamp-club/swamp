@@ -365,6 +365,9 @@ class LogUnmigratedDataRepairRenderer implements UnmigratedDataRepairRenderer {
       },
       not_needed: () => {
         this.overallStatus = "pass";
+        writeOutput(
+          dim("No root-level unmigrated data found."),
+        );
       },
       error: (e) => {
         this.overallStatus = "fail";
@@ -400,7 +403,7 @@ class JsonUnmigratedDataRepairRenderer implements UnmigratedDataRepairRenderer {
         console.log(
           JSON.stringify(
             {
-              status: "unmigrated_repaired",
+              status: "unmigrated_completed",
               namespace: e.namespace,
               result: e.result,
             },

@@ -26,21 +26,12 @@ import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_reg
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { PushPreviewSummary } from "../../domain/datastore/datastore_sync_service.ts";
 import { runBoundedSync } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
+import { dirHasFiles } from "../../infrastructure/persistence/directory_merge.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
 import { join } from "@std/path";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-
-async function dirHasFiles(dir: string): Promise<boolean> {
-  for await (const entry of Deno.readDir(dir)) {
-    if (entry.isFile || entry.isSymlink) return true;
-    if (entry.isDirectory && await dirHasFiles(join(dir, entry.name))) {
-      return true;
-    }
-  }
-  return false;
-}
 
 /**
  * Data structure for the datastore sync output.

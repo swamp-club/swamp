@@ -64,6 +64,10 @@ import { RUNS_INDEX_FILENAME } from "../../infrastructure/persistence/workflow_r
 import { catalogDbPath } from "../../infrastructure/persistence/repository_factory.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { join } from "@std/path";
+import {
+  compareFiles,
+  dirHasFiles,
+} from "../../infrastructure/persistence/directory_merge.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -264,16 +268,6 @@ async function createRepairDeps(
   };
 }
 
-async function dirHasFiles(dir: string): Promise<boolean> {
-  for await (const entry of Deno.readDir(dir)) {
-    if (entry.isFile || entry.isSymlink) return true;
-    if (entry.isDirectory && await dirHasFiles(join(dir, entry.name))) {
-      return true;
-    }
-  }
-  return false;
-}
-
 async function listFilesRecursive(
   dir: string,
   prefix = "",
@@ -281,9 +275,11 @@ async function listFilesRecursive(
   const files: string[] = [];
   try {
     for await (const entry of Deno.readDir(dir)) {
-      const relPath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const relPath = prefix ? join(prefix, entry.name) : entry.name;
       if (entry.isDirectory && !entry.isSymlink) {
-        files.push(...await listFilesRecursive(join(dir, entry.name), relPath));
+        files.push(
+          ...await listFilesRecursive(join(dir, entry.name), relPath),
+        );
       } else {
         files.push(relPath);
       }
@@ -317,21 +313,7 @@ async function createUnmigratedRepairDeps(
     getBasePath: () => basePath,
     getNamespace: () => config.namespace!,
     listFiles: (dir: string) => listFilesRecursive(dir),
-    compareFiles: async (a: string, b: string) => {
-      try {
-        const [aBytes, bBytes] = await Promise.all([
-          Deno.readFile(a),
-          Deno.readFile(b),
-        ]);
-        if (aBytes.length !== bBytes.length) return false;
-        for (let i = 0; i < aBytes.length; i++) {
-          if (aBytes[i] !== bBytes[i]) return false;
-        }
-        return true;
-      } catch {
-        return false;
-      }
-    },
+    compareFiles: (a: string, b: string) => compareFiles(a, b),
     removeFile: (path: string) => Deno.remove(path),
     removeEmptyDirs: async (dir: string) => {
       try {
@@ -373,7 +355,7 @@ export const doctorDatastoresCommand = withRemoteOptions(
     )
     .option(
       "--repair",
-      "Preview foreign namespace contamination cleanup (add -y to execute).",
+      "Preview and repair datastore issues: root-level unmigrated data and foreign namespace contamination (add -y to execute).",
     )
     .option(
       "-y, --yes",
@@ -426,8 +408,18 @@ export const doctorDatastoresCommand = withRemoteOptions(
   if (options.repair) {
     let exitCode = 0;
 
+    let unmigratedDeps: RepairUnmigratedDataDeps | null = null;
     try {
-      const unmigratedDeps = await createUnmigratedRepairDeps(repoDir);
+      unmigratedDeps = await createUnmigratedRepairDeps(repoDir);
+    } catch (error) {
+      if (error instanceof UserError) {
+        cliCtx.logger.debug`Skipping unmigrated data repair: ${error.message}`;
+      } else {
+        throw error;
+      }
+    }
+
+    if (unmigratedDeps) {
       const unmigratedRenderer = createUnmigratedDataRepairRenderer(
         cliCtx.outputMode,
       );
@@ -441,12 +433,6 @@ export const doctorDatastoresCommand = withRemoteOptions(
 
       if (unmigratedRenderer.overallStatus === "fail") {
         exitCode = 1;
-      }
-    } catch (error) {
-      if (error instanceof UserError) {
-        cliCtx.logger.debug`Skipping unmigrated data repair: ${error.message}`;
-      } else {
-        throw error;
       }
     }
 
