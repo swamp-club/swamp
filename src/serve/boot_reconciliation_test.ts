@@ -402,12 +402,12 @@ function createReplayHarness(
   };
 }
 
-Deno.test("replayPendingRuns: returns 0 with no pending runs", () => {
+Deno.test("replayPendingRuns: returns 0 with no pending runs", async () => {
   const h = createReplayHarness([]);
-  assertEquals(replayPendingRuns(h.deps), 0);
+  assertEquals(await replayPendingRuns(h.deps), 0);
 });
 
-Deno.test("replayPendingRuns: replays webhook run to webhook service", () => {
+Deno.test("replayPendingRuns: replays webhook run to webhook service", async () => {
   const h = createReplayHarness([{
     id: "pr-1",
     source: "webhook",
@@ -421,7 +421,7 @@ Deno.test("replayPendingRuns: replays webhook run to webhook service", () => {
     createdAt: "2026-01-01T00:00:00Z",
   }]);
 
-  const count = replayPendingRuns(h.deps);
+  const count = await replayPendingRuns(h.deps);
 
   assertEquals(count, 1);
   assertEquals(h.webhookReplays.length, 1);
@@ -429,7 +429,7 @@ Deno.test("replayPendingRuns: replays webhook run to webhook service", () => {
   assertEquals(h.webhookReplays[0].pendingRunId, "pr-1");
 });
 
-Deno.test("replayPendingRuns: replays cron run to scheduled execution", () => {
+Deno.test("replayPendingRuns: replays cron run to scheduled execution", async () => {
   const h = createReplayHarness([{
     id: "pr-2",
     source: "cron",
@@ -437,7 +437,7 @@ Deno.test("replayPendingRuns: replays cron run to scheduled execution", () => {
     createdAt: "2026-01-01T00:00:00Z",
   }]);
 
-  const count = replayPendingRuns(h.deps);
+  const count = await replayPendingRuns(h.deps);
 
   assertEquals(count, 1);
   assertEquals(h.cronReplays.length, 1);
@@ -445,7 +445,7 @@ Deno.test("replayPendingRuns: replays cron run to scheduled execution", () => {
   assertEquals(h.cronReplays[0].pendingRunId, "pr-2");
 });
 
-Deno.test("replayPendingRuns: discards webhook run with corrupt payload", () => {
+Deno.test("replayPendingRuns: discards webhook run with corrupt payload", async () => {
   const h = createReplayHarness([{
     id: "pr-bad",
     source: "webhook",
@@ -455,14 +455,14 @@ Deno.test("replayPendingRuns: discards webhook run with corrupt payload", () => 
     createdAt: "2026-01-01T00:00:00Z",
   }]);
 
-  const count = replayPendingRuns(h.deps);
+  const count = await replayPendingRuns(h.deps);
 
   assertEquals(count, 0);
   assertEquals(h.webhookReplays.length, 0);
   assertEquals(h.deleted, ["pr-bad"]);
 });
 
-Deno.test("replayPendingRuns: discards run when no matching service", () => {
+Deno.test("replayPendingRuns: discards run when no matching service", async () => {
   const h = createReplayHarness(
     [{
       id: "pr-orphan",
@@ -473,13 +473,13 @@ Deno.test("replayPendingRuns: discards run when no matching service", () => {
     { hasWebhook: false },
   );
 
-  const count = replayPendingRuns(h.deps);
+  const count = await replayPendingRuns(h.deps);
 
   assertEquals(count, 0);
   assertEquals(h.deleted, ["pr-orphan"]);
 });
 
-Deno.test("replayPendingRuns: replays mixed webhook and cron runs", () => {
+Deno.test("replayPendingRuns: replays mixed webhook and cron runs", async () => {
   const h = createReplayHarness([
     {
       id: "pr-1",
@@ -497,14 +497,14 @@ Deno.test("replayPendingRuns: replays mixed webhook and cron runs", () => {
     },
   ]);
 
-  const count = replayPendingRuns(h.deps);
+  const count = await replayPendingRuns(h.deps);
 
   assertEquals(count, 2);
   assertEquals(h.webhookReplays.length, 1);
   assertEquals(h.cronReplays.length, 1);
 });
 
-Deno.test("replayPendingRuns: webhook with no payload uses empty object", () => {
+Deno.test("replayPendingRuns: webhook with no payload uses empty object", async () => {
   const h = createReplayHarness([{
     id: "pr-empty",
     source: "webhook",
@@ -513,7 +513,7 @@ Deno.test("replayPendingRuns: webhook with no payload uses empty object", () => 
     createdAt: "2026-01-01T00:00:00Z",
   }]);
 
-  const count = replayPendingRuns(h.deps);
+  const count = await replayPendingRuns(h.deps);
 
   assertEquals(count, 1);
   assertEquals(h.webhookReplays.length, 1);
