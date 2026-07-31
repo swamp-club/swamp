@@ -659,6 +659,7 @@ export async function* workflowRun(
               skipCheckLabels: resolvedInput.skipCheckLabels,
               skipAllChecks: resolvedInput.skipAllChecks,
               assertFailOnSeverity: resolvedInput.assertFailOnSeverity,
+              instanceId: resolvedInput.instanceId,
             })
           ) {
             if (event.kind === "report_completed") {

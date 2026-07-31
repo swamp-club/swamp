@@ -291,6 +291,7 @@ export interface WebhookServiceDeps {
     import("../infrastructure/persistence/run_tracker_store.ts").RunTrackerStore;
   controlPlaneStore?:
     import("../domain/datastore/control_plane_store.ts").ControlPlaneStore;
+  instanceId?: string;
 }
 
 /**
@@ -581,7 +582,13 @@ export class WebhookService {
         this.deps.repoDir,
         this.deps.repoContext,
         this.deps.datastoreConfig,
-        { workflowIdOrName, webhook: payload, traceparent, tracestate },
+        {
+          workflowIdOrName,
+          webhook: payload,
+          traceparent,
+          tracestate,
+          instanceId: this.deps.instanceId,
+        },
         controller.signal,
         (event) => {
           if (event.kind === "started") {

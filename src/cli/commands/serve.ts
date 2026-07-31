@@ -1914,6 +1914,7 @@ export const serveCommand = new Command()
         syncService,
         runTracker: detachRuns ? runTracker : undefined,
         controlPlaneStore,
+        instanceId,
       });
 
       webhookService.setEventHandler((event) => {

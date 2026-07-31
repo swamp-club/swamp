@@ -286,7 +286,15 @@ export async function replayPendingRuns(
       deps.runTracker.deletePendingRun(entry.id);
       if (deps.controlPlaneStore) {
         await deps.controlPlaneStore.delete(`pending-runs/${entry.id}`)
-          .catch(() => {});
+          .catch((err: unknown) => {
+            logger.warn(
+              "Failed to delete remote pending run {id}: {error}",
+              {
+                id: entry.id,
+                error: err instanceof Error ? err.message : String(err),
+              },
+            );
+          });
       }
     }
   }
