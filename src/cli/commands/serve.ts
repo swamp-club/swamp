@@ -1511,6 +1511,37 @@ export const serveCommand = new Command()
     const detachRuns = options.detachRuns === true;
     const activeRunRegistry = detachRuns ? new ActiveRunRegistry() : undefined;
 
+    const instanceId = detachRuns ? crypto.randomUUID() : undefined;
+
+    let controlPlaneStore:
+      | import("../../domain/datastore/control_plane_store.ts").ControlPlaneStore
+      | undefined;
+    if (detachRuns && syncService) {
+      try {
+        const caps = syncService.capabilities?.();
+        if (caps?.controlPlane && syncService.controlPlaneStore) {
+          controlPlaneStore = syncService.controlPlaneStore();
+          logger.info("Control-plane store available (remote datastore)");
+        }
+      } catch {
+        // Extension doesn't support control-plane — fall back
+      }
+    }
+    if (detachRuns && !controlPlaneStore) {
+      const { FileSystemControlPlaneStore } = await import(
+        "../../infrastructure/persistence/fs_control_plane_store.ts"
+      );
+      const datastorePath = new DefaultDatastorePathResolver(
+        resolvedRepoDir,
+        datastoreConfig,
+      ).datastorePath();
+      controlPlaneStore = new FileSystemControlPlaneStore(datastorePath);
+    }
+
+    let heartbeatService:
+      | import("../../serve/instance_heartbeat.ts").InstanceHeartbeatService
+      | undefined;
+
     // Reap stale runs via the SQLite tracker (heartbeat + PID liveness).
     // This handles both model-method and workflow runs registered with the tracker.
     const runTracker = RunTrackerStore.fromSwampDir(
@@ -1548,6 +1579,21 @@ export const serveCommand = new Command()
       isProcessDead,
       detachRuns,
     );
+
+    if (controlPlaneStore && instanceId) {
+      const { reconcileRemoteInterruptedRuns } = await import(
+        "../../serve/boot_reconciliation.ts"
+      );
+      const reconciled = await reconcileRemoteInterruptedRuns({
+        controlPlaneStore,
+        instanceId,
+        workflowRunRepo: repoContext.workflowRunRepo,
+      });
+      if (reconciled > 0) {
+        logger
+          .info`Reconciled ${reconciled} interrupted run(s) from dead instance(s)`;
+      }
+    }
 
     const swept = await sweepStaleRecords({
       repoDir: resolvedRepoDir,
@@ -1608,8 +1654,21 @@ export const serveCommand = new Command()
           ),
         pendingRunHook: detachRuns
           ? {
-            enqueue: (entry) => runTracker.enqueuePendingRun(entry),
-            delete: (id) => runTracker.deletePendingRun(id),
+            enqueue: (entry) => {
+              runTracker.enqueuePendingRun(entry);
+              if (controlPlaneStore) {
+                controlPlaneStore.put(
+                  `pending-runs/${entry.id}`,
+                  new TextEncoder().encode(JSON.stringify(entry)),
+                ).catch(() => {});
+              }
+            },
+            delete: (id) => {
+              runTracker.deletePendingRun(id);
+              if (controlPlaneStore) {
+                controlPlaneStore.delete(`pending-runs/${id}`).catch(() => {});
+              }
+            },
           }
           : undefined,
       });
@@ -1837,6 +1896,7 @@ export const serveCommand = new Command()
         endpoints,
         syncService,
         runTracker: detachRuns ? runTracker : undefined,
+        controlPlaneStore,
       });
 
       webhookService.setEventHandler((event) => {
@@ -2366,6 +2426,9 @@ export const serveCommand = new Command()
           }
         }
       }
+      if (heartbeatService) {
+        await heartbeatService.stop();
+      }
       if (collectiveRefreshService) {
         await collectiveRefreshService.dispose();
       }
@@ -2409,14 +2472,27 @@ export const serveCommand = new Command()
     }
 
     if (detachRuns) {
-      const replayed = replayPendingRuns({
+      const replayed = await replayPendingRuns({
         runTracker,
         webhookService: webhookService ?? undefined,
         scheduledExecution: scheduledExecution ?? undefined,
+        controlPlaneStore,
       });
       if (replayed > 0) {
         logger.info`Replayed ${replayed} pending run(s) from previous process`;
       }
+    }
+
+    if (controlPlaneStore && instanceId) {
+      const { InstanceHeartbeatService } = await import(
+        "../../serve/instance_heartbeat.ts"
+      );
+      heartbeatService = new InstanceHeartbeatService(
+        controlPlaneStore,
+        instanceId,
+      );
+      await heartbeatService.start();
+      logger.info`Instance heartbeat started (id: ${instanceId})`;
     }
 
     await server.finished;

@@ -289,6 +289,8 @@ export interface WebhookServiceDeps {
   syncService?: DatastoreSyncService;
   runTracker?:
     import("../infrastructure/persistence/run_tracker_store.ts").RunTrackerStore;
+  controlPlaneStore?:
+    import("../domain/datastore/control_plane_store.ts").ControlPlaneStore;
 }
 
 /**
@@ -430,16 +432,23 @@ export class WebhookService {
     let pendingRunId: string | undefined;
     if (this.deps.runTracker) {
       pendingRunId = crypto.randomUUID();
-      this.deps.runTracker.enqueuePendingRun({
+      const pendingEntry = {
         id: pendingRunId,
-        source: "webhook",
+        source: "webhook" as const,
         workflowIdOrName: endpoint.workflowIdOrName,
         payload: JSON.stringify(webhookPayload),
         route: endpoint.route,
         traceparent,
         tracestate,
         createdAt: new Date().toISOString(),
-      });
+      };
+      this.deps.runTracker.enqueuePendingRun(pendingEntry);
+      if (this.deps.controlPlaneStore) {
+        this.deps.controlPlaneStore.put(
+          `pending-runs/${pendingRunId}`,
+          new TextEncoder().encode(JSON.stringify(pendingEntry)),
+        ).catch(() => {});
+      }
     }
 
     this.runQueue.push({
@@ -526,6 +535,11 @@ export class WebhookService {
         } = this.runQueue.shift()!;
         if (pendingRunId && this.deps.runTracker) {
           this.deps.runTracker.deletePendingRun(pendingRunId);
+          if (this.deps.controlPlaneStore) {
+            this.deps.controlPlaneStore.delete(
+              `pending-runs/${pendingRunId}`,
+            ).catch(() => {});
+          }
         }
         await this.executeWorkflow(
           workflowIdOrName,

@@ -184,12 +184,46 @@ export interface ReplayPendingRunsDeps {
   webhookService?: import("./webhook.ts").WebhookService;
   scheduledExecution?:
     import("../libswamp/workflows/scheduled_execution.ts").ScheduledExecutionService;
+  controlPlaneStore?:
+    import("../domain/datastore/control_plane_store.ts").ControlPlaneStore;
 }
 
-export function replayPendingRuns(deps: ReplayPendingRunsDeps): number {
-  const pending = deps.runTracker.findAllPendingRuns();
+export async function replayPendingRuns(
+  deps: ReplayPendingRunsDeps,
+): Promise<number> {
+  const localPending = deps.runTracker.findAllPendingRuns();
+  const localIds = new Set(localPending.map((e) => e.id));
+
+  const remotePending:
+    import("../infrastructure/persistence/run_tracker_store.ts").PendingRunEntry[] =
+      [];
+  if (deps.controlPlaneStore) {
+    const keys = await deps.controlPlaneStore.list("pending-runs/");
+    for (const key of keys) {
+      const data = await deps.controlPlaneStore.get(key);
+      if (!data) continue;
+      try {
+        const parsed = JSON.parse(new TextDecoder().decode(data));
+        if (parsed.id && !localIds.has(parsed.id)) {
+          remotePending.push(parsed);
+        }
+      } catch {
+        const id = key.replace("pending-runs/", "");
+        logger
+          .warn`Discarding remote pending run ${id}: corrupt payload`;
+        await deps.controlPlaneStore.delete(key);
+      }
+    }
+  }
+
+  const pending = [...localPending, ...remotePending];
   if (pending.length === 0) return 0;
 
+  const remoteCount = remotePending.length;
+  if (remoteCount > 0) {
+    logger
+      .info`Found ${remoteCount} pending run(s) from remote control-plane store`;
+  }
   logger
     .debug`Replaying ${pending.length} pending run(s) from previous process`;
 
@@ -248,9 +282,97 @@ export function replayPendingRuns(deps: ReplayPendingRunsDeps): number {
       });
       deps.runTracker.deletePendingRun(entry.id);
     }
+
+    if (deps.controlPlaneStore) {
+      try {
+        await deps.controlPlaneStore.delete(`pending-runs/${entry.id}`);
+      } catch {
+        // Best-effort remote cleanup
+      }
+    }
   }
 
   return replayed;
+}
+
+export interface RemoteReconciliationDeps {
+  controlPlaneStore:
+    import("../domain/datastore/control_plane_store.ts").ControlPlaneStore;
+  instanceId: string;
+  workflowRunRepo: {
+    findAllGlobalSince(
+      since: Date,
+    ): Promise<
+      Array<{
+        run: import("../domain/workflows/workflow_run.ts").WorkflowRun;
+        workflowId: import("../domain/workflows/workflow_id.ts").WorkflowId;
+      }>
+    >;
+    save(
+      workflowId: import("../domain/workflows/workflow_id.ts").WorkflowId,
+      run: import("../domain/workflows/workflow_run.ts").WorkflowRun,
+    ): Promise<void>;
+  };
+}
+
+export async function reconcileRemoteInterruptedRuns(
+  deps: RemoteReconciliationDeps,
+): Promise<number> {
+  const { InstanceHeartbeatService } = await import("./instance_heartbeat.ts");
+
+  const heartbeatKeys = await deps.controlPlaneStore.list("heartbeats/");
+  if (heartbeatKeys.length === 0) return 0;
+
+  const staleInstanceIds: string[] = [];
+  for (const key of heartbeatKeys) {
+    const data = await deps.controlPlaneStore.get(key);
+    if (!data) continue;
+
+    const record = InstanceHeartbeatService.parseRecord(data);
+    if (!record) continue;
+    if (record.instanceId === deps.instanceId) continue;
+
+    if (InstanceHeartbeatService.isStale(record)) {
+      staleInstanceIds.push(record.instanceId);
+      logger.warn(
+        "Stale instance detected: {instanceId} (last heartbeat: {heartbeatAt})",
+        {
+          instanceId: record.instanceId,
+          heartbeatAt: record.heartbeatAt,
+        },
+      );
+    }
+  }
+
+  if (staleInstanceIds.length === 0) return 0;
+
+  const staleSet = new Set(staleInstanceIds);
+  const reapCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const runs = await deps.workflowRunRepo.findAllGlobalSince(reapCutoff);
+
+  let reconciled = 0;
+  for (const { run, workflowId } of runs) {
+    if (run.status !== "running") continue;
+    if (!run.instanceId || !staleSet.has(run.instanceId)) continue;
+
+    run.interrupt("server_crash");
+    await deps.workflowRunRepo.save(workflowId, run);
+    reconciled++;
+    logger.warn(
+      "Reconciled interrupted run {runId} (workflow: {workflowName}, stale instance: {instanceId})",
+      {
+        runId: run.id,
+        workflowName: run.workflowName,
+        instanceId: run.instanceId,
+      },
+    );
+  }
+
+  for (const instanceId of staleInstanceIds) {
+    await deps.controlPlaneStore.delete(`heartbeats/${instanceId}`);
+  }
+
+  return reconciled;
 }
 
 async function loadAttrsForType(

@@ -39,7 +39,7 @@ const RUN_TRACKER_DB_NAME = "run_tracker.db";
 export const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
 export { STALE_TTL_MS as DEFAULT_STALE_TTL_MS } from "../../domain/models/active_run.ts";
 const RETENTION_DAYS = 7;
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 export interface PendingRunEntry {
   id: string;
@@ -76,6 +76,7 @@ interface ActiveRunRow {
   status: string;
   completed_at: string | null;
   cancel_reason: string | null;
+  instance_id: string | null;
 }
 
 export class RunTrackerStore implements RunTrackerRepository {
@@ -174,6 +175,22 @@ export class RunTrackerStore implements RunTrackerRepository {
       `);
     }
 
+    if (currentVersion < 3) {
+      const tableExists = this.db.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='active_runs'",
+      ).get();
+      if (tableExists) {
+        const columns = this.db.prepare(
+          "PRAGMA table_info(active_runs)",
+        ).all() as unknown as { name: string }[];
+        if (!columns.some((c) => c.name === "instance_id")) {
+          this.db.exec(
+            "ALTER TABLE active_runs ADD COLUMN instance_id TEXT",
+          );
+        }
+      }
+    }
+
     this.db.prepare(
       "INSERT OR REPLACE INTO run_tracker_meta (key, value) VALUES ('schema_version', ?)",
     ).run(String(SCHEMA_VERSION));
@@ -193,7 +210,8 @@ export class RunTrackerStore implements RunTrackerRepository {
         heartbeat_at  TEXT NOT NULL,
         status        TEXT NOT NULL DEFAULT 'running',
         completed_at  TEXT,
-        cancel_reason TEXT
+        cancel_reason TEXT,
+        instance_id   TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_active_runs_status
@@ -232,8 +250,8 @@ export class RunTrackerStore implements RunTrackerRepository {
     this.db.prepare(`
       INSERT INTO active_runs
         (id, run_kind, model_type, method_name, workflow_name,
-         pid, hostname, started_at, heartbeat_at, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         pid, hostname, started_at, heartbeat_at, status, instance_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       data.id,
       data.runKind,
@@ -245,6 +263,7 @@ export class RunTrackerStore implements RunTrackerRepository {
       data.startedAt,
       data.heartbeatAt,
       data.status,
+      data.instanceId ?? null,
     );
   }
 
@@ -411,6 +430,7 @@ export class RunTrackerStore implements RunTrackerRepository {
       startedAt: row.started_at,
       heartbeatAt: row.heartbeat_at,
       status: row.status as ActiveRunStatus,
+      instanceId: row.instance_id ?? undefined,
     };
   }
 }

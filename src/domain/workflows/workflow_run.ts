@@ -122,6 +122,7 @@ export const WorkflowRunSchema = z.object({
   workflowDataArtifacts: z.array(DataArtifactRefSchema).optional(),
   logFile: z.string().optional(),
   pid: z.number().int().positive().optional(),
+  instanceId: z.string().optional(),
   tags: z.record(z.string(), z.string()).default({}),
   // Effective workflow inputs captured when a run suspends, so post-resume
   // steps can resolve `inputs.*`. Optional for backward compatibility with
@@ -535,6 +536,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
     private _inputs: Record<string, unknown> = {},
     private _resumeInputs: string[] = [],
     private _pid: number | undefined = undefined,
+    private _instanceId: string | undefined = undefined,
   ) {}
 
   /**
@@ -587,6 +589,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
       validated.inputs ?? {},
       validated.resumeInputs ?? [],
       validated.pid,
+      validated.instanceId,
     );
   }
 
@@ -610,6 +613,10 @@ export class WorkflowRun implements TriggerEvaluationContext {
 
   get pid(): number | undefined {
     return this._pid;
+  }
+
+  get instanceId(): string | undefined {
+    return this._instanceId;
   }
 
   get jobs(): ReadonlyArray<JobRun> {
@@ -669,10 +676,11 @@ export class WorkflowRun implements TriggerEvaluationContext {
   /**
    * Marks the workflow run as started and records the owning process ID.
    */
-  start(pid?: number): void {
+  start(pid?: number, instanceId?: string): void {
     this._status = "running";
     this._startedAt = new Date();
     this._pid = pid;
+    if (instanceId) this._instanceId = instanceId;
   }
 
   /**
@@ -842,6 +850,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
     };
     if (this._pid !== undefined) {
       data.pid = this._pid;
+    }
+    if (this._instanceId !== undefined) {
+      data.instanceId = this._instanceId;
     }
     if (this._logFile) {
       data.logFile = this._logFile;
