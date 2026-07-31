@@ -315,6 +315,8 @@ export interface WorkflowRunInput {
   tracestate?: string;
   /** Minimum assert severity that fails the run. */
   assertFailOnSeverity?: AssertSeverity;
+  /** Identity of the user who initiated this run (e.g. "user:paul"). */
+  initiatedBy?: string;
 }
 
 /**
@@ -445,6 +447,7 @@ export function toRunData(
         tags: a.tags,
       }))
       : undefined,
+    initiatedBy: run.initiatedBy,
   };
 }
 
@@ -657,6 +660,7 @@ export async function* workflowRun(
               skipCheckLabels: resolvedInput.skipCheckLabels,
               skipAllChecks: resolvedInput.skipAllChecks,
               assertFailOnSeverity: resolvedInput.assertFailOnSeverity,
+              initiatedBy: resolvedInput.initiatedBy,
             })
           ) {
             if (event.kind === "report_completed") {

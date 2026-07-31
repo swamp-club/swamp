@@ -70,6 +70,7 @@ function responseToActiveRuns(response: RunHistoryResponse): ActiveRun[] {
       startedAt: r.startedAt,
       heartbeatAt: r.heartbeatAt,
       status: r.status as ActiveRunStatus,
+      initiatedBy: r.initiatedBy,
     })
   );
 }

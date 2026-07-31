@@ -131,6 +131,7 @@ export const WorkflowRunSchema = z.object({
   // deliberately NOT persisted to avoid writing secrets (e.g. a freshly minted
   // auth key) to the plaintext run record.
   resumeInputs: z.array(z.string()).optional(),
+  initiatedBy: z.string().optional(),
 });
 
 /**
@@ -535,6 +536,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
     private _inputs: Record<string, unknown> = {},
     private _resumeInputs: string[] = [],
     private _pid: number | undefined = undefined,
+    private _initiatedBy: string | undefined = undefined,
   ) {}
 
   /**
@@ -543,6 +545,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
   static create(
     workflow: Workflow,
     tags?: Record<string, string>,
+    initiatedBy?: string,
   ): WorkflowRun {
     const id = crypto.randomUUID();
     const jobs = workflow.jobs.map((job) =>
@@ -563,6 +566,10 @@ export class WorkflowRun implements TriggerEvaluationContext {
       undefined,
       tags ?? {},
       [],
+      {},
+      [],
+      undefined,
+      initiatedBy,
     );
   }
 
@@ -587,6 +594,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
       validated.inputs ?? {},
       validated.resumeInputs ?? [],
       validated.pid,
+      validated.initiatedBy,
     );
   }
 
@@ -598,6 +606,10 @@ export class WorkflowRun implements TriggerEvaluationContext {
     | "failed"
     | "cancelled" {
     return this._status;
+  }
+
+  get initiatedBy(): string | undefined {
+    return this._initiatedBy;
   }
 
   get startedAt(): Date | undefined {
@@ -856,6 +868,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
     }
     if (this._resumeInputs.length > 0) {
       data.resumeInputs = [...this._resumeInputs];
+    }
+    if (this._initiatedBy !== undefined) {
+      data.initiatedBy = this._initiatedBy;
     }
     return data;
   }

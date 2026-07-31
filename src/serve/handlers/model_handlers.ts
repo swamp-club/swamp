@@ -79,7 +79,10 @@ import {
 } from "../../infrastructure/tracing/mod.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
-import type { Principal } from "../../domain/access/principal.ts";
+import {
+  type Principal,
+  principalToString,
+} from "../../domain/access/principal.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { RunEventBuffer } from "../run_event_buffer.ts";
 import {
@@ -190,6 +193,7 @@ export async function handleModelMethodRun(
         ctx.cancelRegistry.register("method-run", requestId, controller);
       }
 
+      const initiatedBy = principal ? principalToString(principal) : "ghost";
       const runMethod = async () => {
         for await (
           const event of modelMethodRun(libCtx, deps, {
@@ -210,6 +214,7 @@ export async function handleModelMethodRun(
             skipCheckLabels: payload.skipCheckLabels,
             traceparent: payload.traceparent,
             tracestate: payload.tracestate,
+            initiatedBy,
           })
         ) {
           if (socket.readyState !== WebSocket.OPEN) break;
@@ -318,6 +323,7 @@ export async function handleModelMethodRun(
     }
   }
 
+  const initiatedBy = principal ? principalToString(principal) : "ghost";
   const buffer = new RunEventBuffer(DEFAULT_BUFFER_CAPACITY);
   const runController = new AbortController();
   const runId: string = crypto.randomUUID();
@@ -376,6 +382,7 @@ export async function handleModelMethodRun(
             skipCheckLabels: payload.skipCheckLabels,
             traceparent: payload.traceparent,
             tracestate: payload.tracestate,
+            initiatedBy,
           })
         ) {
           const serialized = serializeEvent(

@@ -82,7 +82,7 @@ import {
 } from "../../libswamp/mod.ts";
 import { createWorkflowRunRenderer } from "../../presentation/renderers/workflow_run.ts";
 import { JUnitWorkflowRunRenderer } from "../../presentation/renderers/workflow_run_junit.ts";
-import { isAuthenticated } from "../auth_context.ts";
+import { isAuthenticated, resolveCliInitiatedBy } from "../auth_context.ts";
 import { getActiveTelemetryService } from "../telemetry_integration.ts";
 import {
   resolveServerToken,
@@ -451,6 +451,8 @@ export const workflowRunCommand = new Command()
         )
         : [cliInputs];
 
+      const initiatedBy = await resolveCliInitiatedBy();
+
       if (options.junit && inputSets.length > 1) {
         throw new UserError(
           "--junit cannot be combined with multiple input sets (--stdin with NDJSON). " +
@@ -499,6 +501,7 @@ export const workflowRunCommand = new Command()
             options.tracestate as string | undefined,
           ),
           assertFailOnSeverity: failOnSeverity,
+          initiatedBy,
         });
 
         const baseHandlers = renderer.handlers();

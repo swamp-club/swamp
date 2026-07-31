@@ -994,6 +994,7 @@ export interface RunHistoryResponse {
     startedAt: string;
     heartbeatAt: string;
     stale: boolean;
+    initiatedBy?: string | null;
   }>;
 }
 

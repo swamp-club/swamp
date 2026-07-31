@@ -79,7 +79,7 @@ import {
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { suppressSyncExitOnSignal } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { parseTimeout } from "../duration_parser.ts";
-import { isAuthenticated } from "../auth_context.ts";
+import { isAuthenticated, resolveCliInitiatedBy } from "../auth_context.ts";
 import {
   DEFAULT_STALE_TTL_MS,
   RunTrackerStore,
@@ -423,6 +423,8 @@ Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — 
           flushModelLocks = lockResult.flush;
         }
 
+        const initiatedBy = await resolveCliInitiatedBy();
+
         // Build the list of input sets to iterate over
         const inputSets: Record<string, unknown>[] = stdinItems
           ? stdinItems.map((item) =>
@@ -475,6 +477,7 @@ Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — 
                 tracestate: resolveTracestate(
                   options.tracestate as string | undefined,
                 ),
+                initiatedBy,
               }),
               renderer.handlers(),
             );

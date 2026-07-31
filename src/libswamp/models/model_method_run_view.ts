@@ -75,4 +75,5 @@ export interface ModelMethodRunView {
   reports?: Record<string, ReportResultView>;
   globalArguments?: Record<string, unknown>;
   methodArguments?: Record<string, unknown>;
+  initiatedBy?: string;
 }
