@@ -84,6 +84,7 @@ import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/fi
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { resolveDatastoreConfig } from "../../cli/resolve_datastore.ts";
 import { createExtensionInstallDeps } from "../../cli/create_extension_install_deps.ts";
+import { loadIdentity } from "../../cli/load_identity.ts";
 import { resolveModelsDir } from "../../cli/resolve_models_dir.ts";
 import type {
   AuditTimelinePayload,
@@ -428,11 +429,14 @@ export async function handleExtensionSearch(
   try {
     const libCtx = createLibSwampContext();
     const serverUrl = resolveServerUrl();
-    const client = new ExtensionApiClient(serverUrl);
+    const identity = await loadIdentity();
+    const client = new ExtensionApiClient(serverUrl, identity);
+    const apiKey = identity.bearerToken;
     const deps: ExtensionSearchDeps = {
       searchExtensions: (params) =>
         client.searchExtensions(
           params as Parameters<typeof client.searchExtensions>[0],
+          apiKey,
         ),
     };
 
@@ -510,10 +514,8 @@ export async function handleExtensionInfo(
 
   try {
     const libCtx = createLibSwampContext();
-    // TODO: createExtensionInfoDeps takes apiKey/identity for the
-    // swamp-club API. Pass undefined for now until auth forwarding is
-    // wired through the serve layer.
-    const deps = createExtensionInfoDeps();
+    const identity = await loadIdentity();
+    const deps = createExtensionInfoDeps(identity.bearerToken, identity);
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -650,11 +652,13 @@ export async function handleExtensionPull(
     );
 
     const serverUrl = resolveServerUrl();
+    const identity = await loadIdentity();
     const deps = await createExtensionPullDeps(
       serverUrl,
       lockfilePath,
       skillsDirs,
       repoDir,
+      { identity },
     );
     const repository = new ExtensionRepository({
       catalog,
@@ -813,8 +817,11 @@ export async function handleExtensionOutdated(
       : resolve(repoDir, modelsDir);
     const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
 
+    const identity = await loadIdentity();
     const deps = await createExtensionUpdateDeps({
       lockfilePath,
+      serverUrl: resolveServerUrl(),
+      identity,
       installExtension: () => {
         throw new Error("should not be called in checkOnly mode");
       },
@@ -893,9 +900,11 @@ export async function handleExtensionUpdate(
     );
 
     const serverUrl = resolveServerUrl();
+    const identity = await loadIdentity();
     const deps = await createExtensionUpdateDeps({
       lockfilePath,
       serverUrl,
+      identity,
       installExtension: async (
         name: string,
         version: string,
@@ -908,6 +917,7 @@ export async function handleExtensionUpdate(
           repoDir,
           force: true,
           channel,
+          identity,
         });
         const repository = new ExtensionRepository({
           catalog: catalog!,
