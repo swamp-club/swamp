@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { UserError } from "../domain/errors.ts";
+import { AuthRepository } from "../infrastructure/persistence/auth_repository.ts";
 
 const COLLECTIVE_TOKEN_PREFIX = "swamp_org_";
 
@@ -131,4 +132,11 @@ export function requireScope(scope: string): void {
       `includes the ${scope} scope and set SWAMP_API_KEY.\n`,
     "missing_scope",
   );
+}
+
+export async function resolveCliInitiatedBy(): Promise<string> {
+  if (!state().authenticated || state().collectiveToken) return "ghost";
+  const creds = await new AuthRepository().load();
+  if (creds?.username) return `user:${creds.username}`;
+  return "ghost";
 }

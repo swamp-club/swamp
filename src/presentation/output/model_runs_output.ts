@@ -62,7 +62,16 @@ export function writeModelRunsLog(runs: ActiveRun[]): void {
     return;
   }
 
-  const headers = ["STATUS", "KIND", "NAME", "ID", "AGE", "PID", "HOST"];
+  const headers = [
+    "STATUS",
+    "KIND",
+    "NAME",
+    "ID",
+    "AGE",
+    "INITIATED BY",
+    "PID",
+    "HOST",
+  ];
   const rows = runs.map((run) => {
     const stale = run.isStale(STALE_TTL_MS);
     const age = formatDuration(Date.now() - run.startedAt.getTime());
@@ -76,6 +85,7 @@ export function writeModelRunsLog(runs: ActiveRun[]): void {
       name,
       run.id.slice(0, 8),
       age,
+      run.initiatedBy ?? "-",
       String(run.pid),
       run.hostname,
     ];
@@ -93,7 +103,7 @@ export function writeModelRunsLog(runs: ActiveRun[]): void {
         return value.replace(trimmed, yellow(trimmed));
       }
     }
-    if (col === 3) return dim(value);
+    if (col === 3 || col === 5) return dim(value);
     return value;
   });
 
@@ -114,6 +124,7 @@ export function writeModelRunsJson(runs: ActiveRun[]): void {
       startedAt: r.startedAt.toISOString(),
       heartbeatAt: r.heartbeatAt.toISOString(),
       stale: r.isStale(STALE_TTL_MS),
+      initiatedBy: r.initiatedBy,
     })),
   }));
 }

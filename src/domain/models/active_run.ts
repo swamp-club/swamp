@@ -42,6 +42,7 @@ export interface ActiveRunData {
   readonly startedAt: string;
   readonly heartbeatAt: string;
   readonly status: ActiveRunStatus;
+  readonly initiatedBy?: string | null;
 }
 
 export class ActiveRun {
@@ -56,6 +57,7 @@ export class ActiveRun {
   readonly pid: number;
   readonly hostname: string;
   readonly startedAt: Date;
+  readonly initiatedBy: string | null;
 
   private constructor(data: ActiveRunData) {
     this.id = data.id;
@@ -68,6 +70,7 @@ export class ActiveRun {
     this.startedAt = new Date(data.startedAt);
     this._heartbeatAt = new Date(data.heartbeatAt);
     this._status = data.status;
+    this.initiatedBy = data.initiatedBy ?? null;
   }
 
   get status(): ActiveRunStatus {
@@ -84,6 +87,7 @@ export class ActiveRun {
     methodName: string;
     pid: number;
     hostname: string;
+    initiatedBy?: string;
   }): ActiveRun {
     const now = new Date().toISOString();
     return new ActiveRun({
@@ -97,6 +101,7 @@ export class ActiveRun {
       startedAt: now,
       heartbeatAt: now,
       status: "running",
+      initiatedBy: opts.initiatedBy ?? null,
     });
   }
 
@@ -105,6 +110,7 @@ export class ActiveRun {
     workflowName: string;
     pid: number;
     hostname: string;
+    initiatedBy?: string;
   }): ActiveRun {
     const now = new Date().toISOString();
     return new ActiveRun({
@@ -118,6 +124,7 @@ export class ActiveRun {
       startedAt: now,
       heartbeatAt: now,
       status: "running",
+      initiatedBy: opts.initiatedBy ?? null,
     });
   }
 
@@ -137,6 +144,7 @@ export class ActiveRun {
       startedAt: this.startedAt.toISOString(),
       heartbeatAt: this._heartbeatAt.toISOString(),
       status: this._status,
+      initiatedBy: this.initiatedBy,
     };
   }
 

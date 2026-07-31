@@ -247,6 +247,8 @@ export interface ModelMethodRunInput {
   traceparent?: string;
   /** W3C tracestate header for per-invocation trace context. */
   tracestate?: string;
+  /** Identity of the user who initiated this run (e.g. "user:paul"). */
+  initiatedBy?: string;
 }
 
 /**
@@ -645,6 +647,7 @@ export async function* modelMethodRun(
               definitionHash,
               modelVersion: modelDef.version,
               triggeredBy: "manual",
+              initiatedBy: input.initiatedBy,
             },
           });
           output.markRunning(Deno.pid);
@@ -660,6 +663,7 @@ export async function* modelMethodRun(
               methodName: input.methodName,
               pid: Deno.pid,
               hostname: hostname(),
+              initiatedBy: input.initiatedBy,
             });
             deps.runTracker.register(activeRun);
           }
@@ -743,6 +747,9 @@ export async function* modelMethodRun(
                       methodName: input.methodName,
                       logger: getRunLogger(definition.name, input.methodName),
                       runtimeTags: input.runtimeTags,
+                      tagOverrides: input.initiatedBy
+                        ? { initiatedBy: input.initiatedBy }
+                        : undefined,
                       dataOutputOverrides: evaluatedDefinition.resources
                         ? Object.entries(
                           evaluatedDefinition.resources,
@@ -1145,6 +1152,7 @@ export async function* modelMethodRun(
             reports: reportResults,
             globalArguments: reportGlobalArgs,
             methodArguments: reportMethodArgs,
+            initiatedBy: input.initiatedBy,
           };
           yield { kind: "completed", run: view };
 

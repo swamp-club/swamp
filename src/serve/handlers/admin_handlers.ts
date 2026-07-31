@@ -1557,6 +1557,7 @@ export function handleRunHistory(
         startedAt: r.startedAt.toISOString(),
         heartbeatAt: r.heartbeatAt.toISOString(),
         stale: r.isStale(STALE_TTL_MS),
+        initiatedBy: r.initiatedBy,
       })),
     },
   });
@@ -1604,6 +1605,7 @@ export function handleRunDoctor(
     startedAt: r.startedAt.toISOString(),
     heartbeatAt: r.heartbeatAt.toISOString(),
     stale: r.isStale(STALE_TTL_MS),
+    initiatedBy: r.initiatedBy,
   });
 
   send(socket, {

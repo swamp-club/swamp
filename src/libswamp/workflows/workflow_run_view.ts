@@ -109,6 +109,7 @@ export interface WorkflowRunView {
   reports?: ReportResultView[];
   /** Data artifacts produced at workflow scope (e.g. workflow-scope reports). */
   workflowDataArtifacts?: DataArtifactRefData[];
+  initiatedBy?: string;
 }
 
 export function extractFirstStepError(run: WorkflowRunView): string {

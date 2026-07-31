@@ -115,6 +115,7 @@ export async function handleWorkflowRun(
     }, ctx)
   ) return;
 
+  const initiatedBy = principal ? principalToString(principal) : "ghost";
   const registry = ctx.activeRunRegistry;
   if (!registry) {
     let registeredRunId: string | undefined;
@@ -139,6 +140,7 @@ export async function handleWorkflowRun(
           skipCheckLabels: payload.skipCheckLabels,
           traceparent: payload.traceparent,
           tracestate: payload.tracestate,
+          initiatedBy,
         },
         controller.signal,
         (event) => {
@@ -204,6 +206,7 @@ export async function handleWorkflowRun(
           skipCheckLabels: payload.skipCheckLabels,
           traceparent: payload.traceparent,
           tracestate: payload.tracestate,
+          initiatedBy,
         },
         runController.signal,
         (event) => {

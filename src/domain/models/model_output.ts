@@ -78,6 +78,7 @@ export const ExecutionProvenanceSchema = z.object({
   stepName: z.string().optional(),
   parentOutputId: z.string().uuid().optional(),
   callerExtension: z.string().optional(),
+  initiatedBy: z.string().optional(),
 });
 
 /**

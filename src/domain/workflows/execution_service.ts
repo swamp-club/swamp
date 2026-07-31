@@ -278,6 +278,8 @@ export interface StepExecutionContext {
   skipCheckLabels?: string[];
   /** Skip all pre-flight checks */
   skipAllChecks?: boolean;
+  /** Identity of the user who initiated this run */
+  initiatedBy?: string;
   /** Resolved base directory for data storage (S3 cache path) */
   dataBaseDir?: string;
   /** Catalog store for write-through indexing */
@@ -835,6 +837,7 @@ export class DefaultStepExecutor implements StepExecutor {
         methodName: task.methodName,
         pid: Deno.pid,
         hostname: hostname(),
+        initiatedBy: ctx.initiatedBy,
       });
       runTracker.register(activeRun);
     }
@@ -1015,6 +1018,7 @@ export class DefaultStepExecutor implements StepExecutor {
       workflowRunId: ctx.workflowRunId,
       job: ctx.jobName,
       step: ctx.stepName,
+      ...(ctx.initiatedBy ? { initiatedBy: ctx.initiatedBy } : {}),
     };
 
     // Resolve vary suffixes per output spec from current step inputs.
@@ -1470,6 +1474,8 @@ interface StepOptions {
   skipAllChecks?: boolean;
   /** Minimum assert severity that fails the run (default: all failures fail) */
   assertFailOnSeverity?: AssertSeverity;
+  /** Identity of the user who initiated this run */
+  initiatedBy?: string;
 }
 
 /**
@@ -1578,6 +1584,8 @@ export class WorkflowExecutionService {
       skipAllChecks?: boolean;
       /** Minimum assert severity that fails the run */
       assertFailOnSeverity?: AssertSeverity;
+      /** Identity of the user who initiated this run */
+      initiatedBy?: string;
     },
   ): AsyncGenerator<WorkflowExecutionEvent> {
     const tracer = getTracer();
@@ -1654,7 +1662,7 @@ export class WorkflowExecutionService {
           ...(workflow.tags ?? {}),
           ...(options?.runtimeTags ?? {}),
         };
-        run = WorkflowRun.create(workflow, mergedTags);
+        run = WorkflowRun.create(workflow, mergedTags, options?.initiatedBy);
         if (options?.inputs) {
           run.captureInputs(options.inputs);
         }
@@ -1696,6 +1704,7 @@ export class WorkflowExecutionService {
             workflowName: workflow.name,
             pid: Deno.pid,
             hostname: hostname(),
+            initiatedBy: options?.initiatedBy,
           });
           this.runTracker.register(wfActiveRun);
         }
@@ -1745,6 +1754,7 @@ export class WorkflowExecutionService {
         ancestorWorkflowIds: options?.ancestorWorkflowIds,
         workflowTags: workflow.tags,
         runtimeTags: options?.runtimeTags,
+        initiatedBy: options?.initiatedBy,
         secretRedactor,
         signal: options?.signal,
         // Default so per-step reports run even when the caller doesn't
@@ -2136,6 +2146,7 @@ export class WorkflowExecutionService {
       const stepOpts: StepOptions = {
         workflowTags: resolvedWorkflow.tags,
         runtimeTags: options?.runtimeTags,
+        initiatedBy: existingRun.initiatedBy,
         secretRedactor,
         signal: options?.signal,
         // workflow resume never receives CLI report flags — default so
@@ -2979,6 +2990,7 @@ export class WorkflowExecutionService {
           skipCheckNames: options.skipCheckNames,
           skipCheckLabels: options.skipCheckLabels,
           skipAllChecks: options.skipAllChecks,
+          initiatedBy: options.initiatedBy,
           dataBaseDir: this.dataBaseDir,
           catalogStore: this.catalogStore,
           namespace: this.namespace,
