@@ -275,6 +275,10 @@ Deno.test("FileSystemControlPlaneStore: rejects path traversal via ..", async ()
       PathTraversalError,
     );
     await assertRejects(
+      () => store.putIfAbsent!("../../etc/passwd", encoder.encode("bad")),
+      PathTraversalError,
+    );
+    await assertRejects(
       () => store.get("../secret"),
       PathTraversalError,
     );
