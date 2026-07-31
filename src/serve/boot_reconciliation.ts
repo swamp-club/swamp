@@ -204,7 +204,10 @@ export async function replayPendingRuns(
       if (!data) continue;
       try {
         const parsed = JSON.parse(new TextDecoder().decode(data));
-        if (parsed.id && !localIds.has(parsed.id)) {
+        if (
+          parsed.id && parsed.source && parsed.workflowIdOrName &&
+          !localIds.has(parsed.id)
+        ) {
           remotePending.push(parsed);
         }
       } catch {
@@ -281,13 +284,9 @@ export async function replayPendingRuns(
         error: err instanceof Error ? err.message : String(err),
       });
       deps.runTracker.deletePendingRun(entry.id);
-    }
-
-    if (deps.controlPlaneStore) {
-      try {
-        await deps.controlPlaneStore.delete(`pending-runs/${entry.id}`);
-      } catch {
-        // Best-effort remote cleanup
+      if (deps.controlPlaneStore) {
+        await deps.controlPlaneStore.delete(`pending-runs/${entry.id}`)
+          .catch(() => {});
       }
     }
   }

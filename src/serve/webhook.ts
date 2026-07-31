@@ -447,7 +447,11 @@ export class WebhookService {
         this.deps.controlPlaneStore.put(
           `pending-runs/${pendingRunId}`,
           new TextEncoder().encode(JSON.stringify(pendingEntry)),
-        ).catch(() => {});
+        ).catch((err: unknown) => {
+          logger.warn("Control-plane store write failed: {error}", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
       }
     }
 
@@ -538,7 +542,11 @@ export class WebhookService {
           if (this.deps.controlPlaneStore) {
             this.deps.controlPlaneStore.delete(
               `pending-runs/${pendingRunId}`,
-            ).catch(() => {});
+            ).catch((err: unknown) => {
+              logger.warn("Control-plane store write failed: {error}", {
+                error: err instanceof Error ? err.message : String(err),
+              });
+            });
           }
         }
         await this.executeWorkflow(

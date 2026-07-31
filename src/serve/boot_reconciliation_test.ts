@@ -20,11 +20,13 @@
 import { assertEquals } from "@std/assert";
 import {
   type BootReconciliationDeps,
+  reconcileRemoteInterruptedRuns,
   replayPendingRuns,
   type ReplayPendingRunsDeps,
   sweepStaleRecords,
   type TransitionInput,
 } from "./boot_reconciliation.ts";
+import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 import type { PendingRunEntry } from "../infrastructure/persistence/run_tracker_store.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { Data } from "../domain/data/data.ts";
@@ -553,4 +555,317 @@ Deno.test("sweepStaleRecords: sweeps all three model types together", async () =
 
   assertEquals(result, { leases: 1, pendingDispatches: 1, workers: 1 });
   assertEquals(h.transitions.length, 3);
+});
+
+// ── reconcileRemoteInterruptedRuns tests ────────────────────────────
+
+function createMockControlPlaneStore(): ControlPlaneStore & {
+  data: Map<string, Uint8Array>;
+} {
+  const data = new Map<string, Uint8Array>();
+  return {
+    data,
+    put(key: string, value: Uint8Array): Promise<void> {
+      data.set(key, value);
+      return Promise.resolve();
+    },
+    get(key: string): Promise<Uint8Array | null> {
+      return Promise.resolve(data.get(key) ?? null);
+    },
+    delete(key: string): Promise<void> {
+      data.delete(key);
+      return Promise.resolve();
+    },
+    list(prefix: string): Promise<string[]> {
+      return Promise.resolve(
+        [...data.keys()].filter((k) => k.startsWith(prefix)).sort(),
+      );
+    },
+  };
+}
+
+function makeHeartbeat(
+  instanceId: string,
+  stale: boolean,
+): Uint8Array {
+  const heartbeatAt = stale
+    ? new Date(Date.now() - 120_000).toISOString()
+    : new Date().toISOString();
+  return new TextEncoder().encode(JSON.stringify({
+    instanceId,
+    hostname: "test-host",
+    pid: 12345,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    heartbeatAt,
+  }));
+}
+
+interface MockRun {
+  id: string;
+  workflowName: string;
+  status: string;
+  instanceId?: string;
+  interrupted: boolean;
+  saved: boolean;
+}
+
+function createMockWorkflowRunRepo(
+  runs: MockRun[],
+): import("./boot_reconciliation.ts").RemoteReconciliationDeps[
+  "workflowRunRepo"
+] {
+  return {
+    findAllGlobalSince(_since: Date) {
+      return Promise.resolve(
+        runs.map((r) => ({
+          run: {
+            id: r.id,
+            workflowName: r.workflowName,
+            status: r.status,
+            instanceId: r.instanceId,
+            interrupt(_reason: string) {
+              r.interrupted = true;
+              r.status = "failed";
+            },
+          } as unknown as import("../domain/workflows/workflow_run.ts").WorkflowRun,
+          workflowId:
+            `wf-${r.id}` as unknown as import("../domain/workflows/workflow_id.ts").WorkflowId,
+        })),
+      );
+    },
+    save(_wid, _run) {
+      const run = _run as unknown as { id: string };
+      const match = runs.find((r) => r.id === run.id);
+      if (match) match.saved = true;
+      return Promise.resolve();
+    },
+  };
+}
+
+Deno.test("reconcileRemoteInterruptedRuns: no heartbeats returns 0", async () => {
+  const store = createMockControlPlaneStore();
+  const repo = createMockWorkflowRunRepo([]);
+
+  const count = await reconcileRemoteInterruptedRuns({
+    controlPlaneStore: store,
+    instanceId: "my-instance",
+    workflowRunRepo: repo,
+  });
+
+  assertEquals(count, 0);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: fresh heartbeat is skipped", async () => {
+  const store = createMockControlPlaneStore();
+  store.data.set("heartbeats/other", makeHeartbeat("other", false));
+
+  const runs: MockRun[] = [{
+    id: "r1",
+    workflowName: "wf1",
+    status: "running",
+    instanceId: "other",
+    interrupted: false,
+    saved: false,
+  }];
+
+  const count = await reconcileRemoteInterruptedRuns({
+    controlPlaneStore: store,
+    instanceId: "my-instance",
+    workflowRunRepo: createMockWorkflowRunRepo(runs),
+  });
+
+  assertEquals(count, 0);
+  assertEquals(runs[0].interrupted, false);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: stale heartbeat interrupts matching runs", async () => {
+  const store = createMockControlPlaneStore();
+  store.data.set("heartbeats/dead", makeHeartbeat("dead", true));
+
+  const runs: MockRun[] = [{
+    id: "r1",
+    workflowName: "wf1",
+    status: "running",
+    instanceId: "dead",
+    interrupted: false,
+    saved: false,
+  }];
+
+  const count = await reconcileRemoteInterruptedRuns({
+    controlPlaneStore: store,
+    instanceId: "my-instance",
+    workflowRunRepo: createMockWorkflowRunRepo(runs),
+  });
+
+  assertEquals(count, 1);
+  assertEquals(runs[0].interrupted, true);
+  assertEquals(runs[0].saved, true);
+  assertEquals(store.data.has("heartbeats/dead"), false);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: skips own heartbeat", async () => {
+  const store = createMockControlPlaneStore();
+  store.data.set("heartbeats/my-instance", makeHeartbeat("my-instance", true));
+
+  const runs: MockRun[] = [{
+    id: "r1",
+    workflowName: "wf1",
+    status: "running",
+    instanceId: "my-instance",
+    interrupted: false,
+    saved: false,
+  }];
+
+  const count = await reconcileRemoteInterruptedRuns({
+    controlPlaneStore: store,
+    instanceId: "my-instance",
+    workflowRunRepo: createMockWorkflowRunRepo(runs),
+  });
+
+  assertEquals(count, 0);
+  assertEquals(runs[0].interrupted, false);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: skips runs without instanceId", async () => {
+  const store = createMockControlPlaneStore();
+  store.data.set("heartbeats/dead", makeHeartbeat("dead", true));
+
+  const runs: MockRun[] = [{
+    id: "r1",
+    workflowName: "wf1",
+    status: "running",
+    instanceId: undefined,
+    interrupted: false,
+    saved: false,
+  }];
+
+  const count = await reconcileRemoteInterruptedRuns({
+    controlPlaneStore: store,
+    instanceId: "my-instance",
+    workflowRunRepo: createMockWorkflowRunRepo(runs),
+  });
+
+  assertEquals(count, 0);
+  assertEquals(runs[0].interrupted, false);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: skips non-running runs", async () => {
+  const store = createMockControlPlaneStore();
+  store.data.set("heartbeats/dead", makeHeartbeat("dead", true));
+
+  const runs: MockRun[] = [{
+    id: "r1",
+    workflowName: "wf1",
+    status: "succeeded",
+    instanceId: "dead",
+    interrupted: false,
+    saved: false,
+  }];
+
+  const count = await reconcileRemoteInterruptedRuns({
+    controlPlaneStore: store,
+    instanceId: "my-instance",
+    workflowRunRepo: createMockWorkflowRunRepo(runs),
+  });
+
+  assertEquals(count, 0);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: multiple stale instances", async () => {
+  const store = createMockControlPlaneStore();
+  store.data.set("heartbeats/dead-a", makeHeartbeat("dead-a", true));
+  store.data.set("heartbeats/dead-b", makeHeartbeat("dead-b", true));
+
+  const runs: MockRun[] = [
+    {
+      id: "r1",
+      workflowName: "wf1",
+      status: "running",
+      instanceId: "dead-a",
+      interrupted: false,
+      saved: false,
+    },
+    {
+      id: "r2",
+      workflowName: "wf2",
+      status: "running",
+      instanceId: "dead-b",
+      interrupted: false,
+      saved: false,
+    },
+  ];
+
+  const count = await reconcileRemoteInterruptedRuns({
+    controlPlaneStore: store,
+    instanceId: "my-instance",
+    workflowRunRepo: createMockWorkflowRunRepo(runs),
+  });
+
+  assertEquals(count, 2);
+  assertEquals(runs[0].interrupted, true);
+  assertEquals(runs[1].interrupted, true);
+  assertEquals(store.data.has("heartbeats/dead-a"), false);
+  assertEquals(store.data.has("heartbeats/dead-b"), false);
+});
+
+// ── replayPendingRuns remote merge tests ────────────────────────────
+
+Deno.test("replayPendingRuns: merges remote entries when local is empty", async () => {
+  const store = createMockControlPlaneStore();
+  const entry: PendingRunEntry = {
+    id: "remote-1",
+    source: "webhook",
+    workflowIdOrName: "deploy",
+    payload: '{"body":{},"headers":{},"route":"/hooks/test"}',
+    route: "/hooks/test",
+    createdAt: new Date().toISOString(),
+  };
+  store.data.set(
+    "pending-runs/remote-1",
+    new TextEncoder().encode(JSON.stringify(entry)),
+  );
+
+  const h = createReplayHarness([]);
+  (h.deps as ReplayPendingRunsDeps).controlPlaneStore = store;
+
+  const count = await replayPendingRuns(h.deps);
+  assertEquals(count, 1);
+  assertEquals(h.webhookReplays.length, 1);
+  assertEquals(h.webhookReplays[0].workflowIdOrName, "deploy");
+});
+
+Deno.test("replayPendingRuns: deduplicates remote entries against local", async () => {
+  const store = createMockControlPlaneStore();
+  const entry: PendingRunEntry = {
+    id: "dup-1",
+    source: "webhook",
+    workflowIdOrName: "deploy",
+    payload: '{"body":{},"headers":{},"route":"/hooks/test"}',
+    route: "/hooks/test",
+    createdAt: new Date().toISOString(),
+  };
+  store.data.set(
+    "pending-runs/dup-1",
+    new TextEncoder().encode(JSON.stringify(entry)),
+  );
+
+  const h = createReplayHarness([entry]);
+  (h.deps as ReplayPendingRunsDeps).controlPlaneStore = store;
+
+  const count = await replayPendingRuns(h.deps);
+  assertEquals(count, 1);
+});
+
+Deno.test("replayPendingRuns: discards invalid remote entries", async () => {
+  const store = createMockControlPlaneStore();
+  store.data.set(
+    "pending-runs/bad-1",
+    new TextEncoder().encode('{"id":"bad-1"}'),
+  );
+
+  const h = createReplayHarness([]);
+  (h.deps as ReplayPendingRunsDeps).controlPlaneStore = store;
+
+  const count = await replayPendingRuns(h.deps);
+  assertEquals(count, 0);
 });

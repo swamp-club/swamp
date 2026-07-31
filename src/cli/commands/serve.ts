@@ -1661,13 +1661,29 @@ export const serveCommand = new Command()
                 controlPlaneStore.put(
                   `pending-runs/${entry.id}`,
                   new TextEncoder().encode(JSON.stringify(entry)),
-                ).catch(() => {});
+                ).catch((err: unknown) => {
+                  logger.warn(
+                    "Control-plane pending run write failed: {error}",
+                    {
+                      error: err instanceof Error ? err.message : String(err),
+                    },
+                  );
+                });
               }
             },
             delete: (id) => {
               runTracker.deletePendingRun(id);
               if (controlPlaneStore) {
-                controlPlaneStore.delete(`pending-runs/${id}`).catch(() => {});
+                controlPlaneStore.delete(`pending-runs/${id}`).catch(
+                  (err: unknown) => {
+                    logger.warn(
+                      "Control-plane pending run delete failed: {error}",
+                      {
+                        error: err instanceof Error ? err.message : String(err),
+                      },
+                    );
+                  },
+                );
               }
             },
           }
