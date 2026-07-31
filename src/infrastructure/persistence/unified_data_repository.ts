@@ -1919,7 +1919,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         toRemove,
       );
       logger
-        .info`Pruned ${toRemove.length} excess version(s) of ${dataName} (cap: ${cap}, prior: ${priorVersions.length})`;
+        .debug`Pruned ${toRemove.length} excess version(s) of ${dataName} (cap: ${cap}, prior: ${priorVersions.length})`;
     }
   }
 
