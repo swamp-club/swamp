@@ -43,6 +43,7 @@ export interface ActiveRunData {
   readonly heartbeatAt: string;
   readonly status: ActiveRunStatus;
   readonly initiatedBy?: string | null;
+  readonly instanceId?: string;
 }
 
 export class ActiveRun {
@@ -58,6 +59,7 @@ export class ActiveRun {
   readonly hostname: string;
   readonly startedAt: Date;
   readonly initiatedBy: string | null;
+  readonly instanceId: string | undefined;
 
   private constructor(data: ActiveRunData) {
     this.id = data.id;
@@ -71,6 +73,7 @@ export class ActiveRun {
     this._heartbeatAt = new Date(data.heartbeatAt);
     this._status = data.status;
     this.initiatedBy = data.initiatedBy ?? null;
+    this.instanceId = data.instanceId;
   }
 
   get status(): ActiveRunStatus {
@@ -88,6 +91,7 @@ export class ActiveRun {
     pid: number;
     hostname: string;
     initiatedBy?: string;
+    instanceId?: string;
   }): ActiveRun {
     const now = new Date().toISOString();
     return new ActiveRun({
@@ -102,6 +106,7 @@ export class ActiveRun {
       heartbeatAt: now,
       status: "running",
       initiatedBy: opts.initiatedBy ?? null,
+      instanceId: opts.instanceId,
     });
   }
 
@@ -111,6 +116,7 @@ export class ActiveRun {
     pid: number;
     hostname: string;
     initiatedBy?: string;
+    instanceId?: string;
   }): ActiveRun {
     const now = new Date().toISOString();
     return new ActiveRun({
@@ -125,6 +131,7 @@ export class ActiveRun {
       heartbeatAt: now,
       status: "running",
       initiatedBy: opts.initiatedBy ?? null,
+      instanceId: opts.instanceId,
     });
   }
 
@@ -145,6 +152,7 @@ export class ActiveRun {
       heartbeatAt: this._heartbeatAt.toISOString(),
       status: this._status,
       initiatedBy: this.initiatedBy,
+      instanceId: this.instanceId,
     };
   }
 

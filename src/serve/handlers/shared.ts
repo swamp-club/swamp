@@ -97,6 +97,8 @@ export interface ConnectionContext {
   runTracker?: RunTrackerRepository;
   dispatchService?: import("../dispatch_service.ts").DispatchService;
   defaultVault?: string;
+  /** HA instance identifier — present when `--detach-runs` is active. */
+  instanceId?: string;
 }
 
 // SECURITY: Authorization must operate on canonical (normalized) model types,

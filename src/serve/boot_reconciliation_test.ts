@@ -20,6 +20,8 @@
 import { assertEquals } from "@std/assert";
 import {
   type BootReconciliationDeps,
+  reconcileRemoteInterruptedRuns,
+  type ReconcileRemoteInterruptedRunsDeps,
   replayPendingRuns,
   type ReplayPendingRunsDeps,
   sweepStaleRecords,
@@ -27,6 +29,9 @@ import {
 } from "./boot_reconciliation.ts";
 import type { PendingRunEntry } from "../infrastructure/persistence/run_tracker_store.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
+import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
+import type { HeartbeatRecord } from "./instance_heartbeat.ts";
+import { ActiveRun, type ActiveRunData } from "../domain/models/active_run.ts";
 import { Data } from "../domain/data/data.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
@@ -394,20 +399,26 @@ function createReplayHarness(
     } as unknown as ReplayPendingRunsDeps["scheduledExecution"]
     : undefined;
 
+  const deps: ReplayPendingRunsDeps = {
+    runTracker,
+    webhookService,
+    scheduledExecution,
+  };
+
   return {
-    deps: { runTracker, webhookService, scheduledExecution },
+    deps,
     deleted,
     webhookReplays,
     cronReplays,
   };
 }
 
-Deno.test("replayPendingRuns: returns 0 with no pending runs", () => {
+Deno.test("replayPendingRuns: returns 0 with no pending runs", async () => {
   const h = createReplayHarness([]);
-  assertEquals(replayPendingRuns(h.deps), 0);
+  assertEquals(await replayPendingRuns(h.deps), 0);
 });
 
-Deno.test("replayPendingRuns: replays webhook run to webhook service", () => {
+Deno.test("replayPendingRuns: replays webhook run to webhook service", async () => {
   const h = createReplayHarness([{
     id: "pr-1",
     source: "webhook",
@@ -421,7 +432,7 @@ Deno.test("replayPendingRuns: replays webhook run to webhook service", () => {
     createdAt: "2026-01-01T00:00:00Z",
   }]);
 
-  const count = replayPendingRuns(h.deps);
+  const count = await replayPendingRuns(h.deps);
 
   assertEquals(count, 1);
   assertEquals(h.webhookReplays.length, 1);
@@ -429,7 +440,7 @@ Deno.test("replayPendingRuns: replays webhook run to webhook service", () => {
   assertEquals(h.webhookReplays[0].pendingRunId, "pr-1");
 });
 
-Deno.test("replayPendingRuns: replays cron run to scheduled execution", () => {
+Deno.test("replayPendingRuns: replays cron run to scheduled execution", async () => {
   const h = createReplayHarness([{
     id: "pr-2",
     source: "cron",
@@ -437,7 +448,7 @@ Deno.test("replayPendingRuns: replays cron run to scheduled execution", () => {
     createdAt: "2026-01-01T00:00:00Z",
   }]);
 
-  const count = replayPendingRuns(h.deps);
+  const count = await replayPendingRuns(h.deps);
 
   assertEquals(count, 1);
   assertEquals(h.cronReplays.length, 1);
@@ -445,7 +456,7 @@ Deno.test("replayPendingRuns: replays cron run to scheduled execution", () => {
   assertEquals(h.cronReplays[0].pendingRunId, "pr-2");
 });
 
-Deno.test("replayPendingRuns: discards webhook run with corrupt payload", () => {
+Deno.test("replayPendingRuns: discards webhook run with corrupt payload", async () => {
   const h = createReplayHarness([{
     id: "pr-bad",
     source: "webhook",
@@ -455,14 +466,14 @@ Deno.test("replayPendingRuns: discards webhook run with corrupt payload", () => 
     createdAt: "2026-01-01T00:00:00Z",
   }]);
 
-  const count = replayPendingRuns(h.deps);
+  const count = await replayPendingRuns(h.deps);
 
   assertEquals(count, 0);
   assertEquals(h.webhookReplays.length, 0);
   assertEquals(h.deleted, ["pr-bad"]);
 });
 
-Deno.test("replayPendingRuns: discards run when no matching service", () => {
+Deno.test("replayPendingRuns: discards run when no matching service", async () => {
   const h = createReplayHarness(
     [{
       id: "pr-orphan",
@@ -473,13 +484,13 @@ Deno.test("replayPendingRuns: discards run when no matching service", () => {
     { hasWebhook: false },
   );
 
-  const count = replayPendingRuns(h.deps);
+  const count = await replayPendingRuns(h.deps);
 
   assertEquals(count, 0);
   assertEquals(h.deleted, ["pr-orphan"]);
 });
 
-Deno.test("replayPendingRuns: replays mixed webhook and cron runs", () => {
+Deno.test("replayPendingRuns: replays mixed webhook and cron runs", async () => {
   const h = createReplayHarness([
     {
       id: "pr-1",
@@ -497,14 +508,14 @@ Deno.test("replayPendingRuns: replays mixed webhook and cron runs", () => {
     },
   ]);
 
-  const count = replayPendingRuns(h.deps);
+  const count = await replayPendingRuns(h.deps);
 
   assertEquals(count, 2);
   assertEquals(h.webhookReplays.length, 1);
   assertEquals(h.cronReplays.length, 1);
 });
 
-Deno.test("replayPendingRuns: webhook with no payload uses empty object", () => {
+Deno.test("replayPendingRuns: webhook with no payload uses empty object", async () => {
   const h = createReplayHarness([{
     id: "pr-empty",
     source: "webhook",
@@ -513,7 +524,7 @@ Deno.test("replayPendingRuns: webhook with no payload uses empty object", () => 
     createdAt: "2026-01-01T00:00:00Z",
   }]);
 
-  const count = replayPendingRuns(h.deps);
+  const count = await replayPendingRuns(h.deps);
 
   assertEquals(count, 1);
   assertEquals(h.webhookReplays.length, 1);
@@ -553,4 +564,272 @@ Deno.test("sweepStaleRecords: sweeps all three model types together", async () =
 
   assertEquals(result, { leases: 1, pendingDispatches: 1, workers: 1 });
   assertEquals(h.transitions.length, 3);
+});
+
+// ── replayPendingRuns remote merge tests ──────────────────────────────
+
+const encoder2 = new TextEncoder();
+
+function createInMemoryControlPlaneStore(
+  entries: Record<string, unknown> = {},
+): ControlPlaneStore & { deleted: string[] } {
+  const store = new Map<string, Uint8Array>();
+  for (const [key, value] of Object.entries(entries)) {
+    store.set(key, encoder2.encode(JSON.stringify(value)));
+  }
+  const deleted: string[] = [];
+  return {
+    deleted,
+    put: (key: string, data: Uint8Array) => {
+      store.set(key, data);
+      return Promise.resolve();
+    },
+    get: (key: string) => Promise.resolve(store.get(key) ?? null),
+    delete: (key: string) => {
+      store.delete(key);
+      deleted.push(key);
+      return Promise.resolve();
+    },
+    list: (prefix: string) => {
+      const keys = [...store.keys()].filter((k) => k.startsWith(prefix));
+      return Promise.resolve(keys.sort());
+    },
+  };
+}
+
+Deno.test("replayPendingRuns: merges remote-only entries into replay", async () => {
+  const remoteEntry: PendingRunEntry = {
+    id: "remote-1",
+    source: "webhook",
+    workflowIdOrName: "remote-flow",
+    payload: JSON.stringify({ body: null, headers: {} }),
+    route: "/hooks/remote",
+    createdAt: "2026-01-01T00:00:00Z",
+  };
+  const controlPlaneStore = createInMemoryControlPlaneStore({
+    "pending-runs/remote-1": remoteEntry,
+  });
+  const h = createReplayHarness([]);
+  h.deps.controlPlaneStore = controlPlaneStore;
+
+  const count = await replayPendingRuns(h.deps);
+
+  assertEquals(count, 1);
+  assertEquals(h.webhookReplays.length, 1);
+  assertEquals(h.webhookReplays[0].workflowIdOrName, "remote-flow");
+});
+
+Deno.test("replayPendingRuns: deduplicates local and remote entries by id", async () => {
+  const sharedEntry: PendingRunEntry = {
+    id: "dup-1",
+    source: "cron",
+    workflowIdOrName: "shared-flow",
+    createdAt: "2026-01-01T00:00:00Z",
+  };
+  const controlPlaneStore = createInMemoryControlPlaneStore({
+    "pending-runs/dup-1": sharedEntry,
+  });
+  // Local also has the same entry
+  const h = createReplayHarness([sharedEntry]);
+  h.deps.controlPlaneStore = controlPlaneStore;
+
+  const count = await replayPendingRuns(h.deps);
+
+  assertEquals(count, 1);
+  assertEquals(h.cronReplays.length, 1);
+});
+
+Deno.test("replayPendingRuns: discards invalid remote entries", async () => {
+  const controlPlaneStore = createInMemoryControlPlaneStore({
+    "pending-runs/bad-1": { id: "bad-1" }, // missing source and workflowIdOrName
+  });
+  const h = createReplayHarness([]);
+  h.deps.controlPlaneStore = controlPlaneStore;
+
+  const count = await replayPendingRuns(h.deps);
+
+  assertEquals(count, 0);
+  assertEquals(controlPlaneStore.deleted, ["pending-runs/bad-1"]);
+});
+
+// ── reconcileRemoteInterruptedRuns tests ──────────────────────────────
+
+function makeHeartbeat(
+  instanceId: string,
+  opts?: { stale?: boolean },
+): HeartbeatRecord {
+  const now = Date.now();
+  const heartbeatAt = opts?.stale
+    ? new Date(now - 120_000).toISOString()
+    : new Date(now).toISOString();
+  return {
+    instanceId,
+    hostname: "test-host",
+    pid: 1234,
+    startedAt: new Date(now - 300_000).toISOString(),
+    heartbeatAt,
+  };
+}
+
+function makeActiveRunData(
+  overrides: Partial<ActiveRunData> = {},
+): ActiveRunData {
+  return {
+    id: crypto.randomUUID(),
+    runKind: "workflow",
+    modelType: null,
+    methodName: null,
+    workflowName: "test-wf",
+    pid: Deno.pid,
+    hostname: Deno.hostname(),
+    startedAt: new Date().toISOString(),
+    heartbeatAt: new Date().toISOString(),
+    status: "running",
+    ...overrides,
+  };
+}
+
+function createReconcileHarness(
+  heartbeats: Record<string, HeartbeatRecord>,
+  runs: ActiveRunData[],
+): {
+  deps: ReconcileRemoteInterruptedRunsDeps;
+  completed: Array<{ runId: string; status: string; reason?: string }>;
+  controlPlaneStore: ControlPlaneStore & { deleted: string[] };
+} {
+  const storeEntries: Record<string, unknown> = {};
+  for (const [key, hb] of Object.entries(heartbeats)) {
+    storeEntries[`heartbeats/${key}`] = hb;
+  }
+  const controlPlaneStore = createInMemoryControlPlaneStore(storeEntries);
+
+  const runMap = new Map<string, ActiveRun>();
+  for (const data of runs) {
+    runMap.set(data.id, ActiveRun.fromData(data));
+  }
+
+  const completed: Array<
+    { runId: string; status: string; reason?: string }
+  > = [];
+
+  const runTracker = {
+    findAllRunning: () => [...runMap.values()],
+    complete: (runId: string, status: string, reason?: string) => {
+      completed.push({ runId, status, reason });
+    },
+  } as unknown as ReconcileRemoteInterruptedRunsDeps["runTracker"];
+
+  return {
+    deps: {
+      controlPlaneStore,
+      instanceId: "self-instance",
+      runTracker,
+    },
+    completed,
+    controlPlaneStore,
+  };
+}
+
+Deno.test("reconcileRemoteInterruptedRuns: returns 0 when no heartbeats", async () => {
+  const h = createReconcileHarness({}, []);
+  const reaped = await reconcileRemoteInterruptedRuns(h.deps);
+  assertEquals(reaped, 0);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: skips fresh heartbeats", async () => {
+  const h = createReconcileHarness(
+    { "inst-a": makeHeartbeat("inst-a", { stale: false }) },
+    [makeActiveRunData({ instanceId: "inst-a" })],
+  );
+  const reaped = await reconcileRemoteInterruptedRuns(h.deps);
+  assertEquals(reaped, 0);
+  assertEquals(h.completed.length, 0);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: reaps runs from stale instances", async () => {
+  const run1 = makeActiveRunData({
+    id: "run-1",
+    instanceId: "dead-inst",
+    status: "running",
+  });
+  const h = createReconcileHarness(
+    { "dead-inst": makeHeartbeat("dead-inst", { stale: true }) },
+    [run1],
+  );
+  const reaped = await reconcileRemoteInterruptedRuns(h.deps);
+  assertEquals(reaped, 1);
+  assertEquals(h.completed.length, 1);
+  assertEquals(h.completed[0].runId, "run-1");
+  assertEquals(h.completed[0].status, "failed");
+  assertEquals(h.completed[0].reason, "remote_instance_dead");
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: skips self instance", async () => {
+  const run1 = makeActiveRunData({
+    id: "run-1",
+    instanceId: "self-instance",
+    status: "running",
+  });
+  const h = createReconcileHarness(
+    { "self-instance": makeHeartbeat("self-instance", { stale: true }) },
+    [run1],
+  );
+  const reaped = await reconcileRemoteInterruptedRuns(h.deps);
+  assertEquals(reaped, 0);
+  assertEquals(h.completed.length, 0);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: skips runs with no instanceId", async () => {
+  const run1 = makeActiveRunData({ id: "run-1", status: "running" });
+  const h = createReconcileHarness(
+    { "dead-inst": makeHeartbeat("dead-inst", { stale: true }) },
+    [run1],
+  );
+  const reaped = await reconcileRemoteInterruptedRuns(h.deps);
+  assertEquals(reaped, 0);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: skips non-running runs", async () => {
+  const run1 = makeActiveRunData({
+    id: "run-1",
+    instanceId: "dead-inst",
+    status: "completed",
+  });
+  const h = createReconcileHarness(
+    { "dead-inst": makeHeartbeat("dead-inst", { stale: true }) },
+    [run1],
+  );
+  const reaped = await reconcileRemoteInterruptedRuns(h.deps);
+  assertEquals(reaped, 0);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: reaps multiple stale instances", async () => {
+  const run1 = makeActiveRunData({
+    id: "run-1",
+    instanceId: "dead-a",
+    status: "running",
+  });
+  const run2 = makeActiveRunData({
+    id: "run-2",
+    instanceId: "dead-b",
+    status: "running",
+  });
+  const run3 = makeActiveRunData({
+    id: "run-3",
+    instanceId: "alive-c",
+    status: "running",
+  });
+  const h = createReconcileHarness(
+    {
+      "dead-a": makeHeartbeat("dead-a", { stale: true }),
+      "dead-b": makeHeartbeat("dead-b", { stale: true }),
+      "alive-c": makeHeartbeat("alive-c", { stale: false }),
+    },
+    [run1, run2, run3],
+  );
+  const reaped = await reconcileRemoteInterruptedRuns(h.deps);
+  assertEquals(reaped, 2);
+  assertEquals(h.completed.length, 2);
+  const reapedIds = h.completed.map((c) => c.runId).sort();
+  assertEquals(reapedIds, ["run-1", "run-2"]);
 });
