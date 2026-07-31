@@ -317,6 +317,7 @@ export interface WorkflowRunInput {
   assertFailOnSeverity?: AssertSeverity;
   /** Identity of the user who initiated this run (e.g. "user:paul"). */
   initiatedBy?: string;
+  instanceId?: string;
 }
 
 /**
@@ -661,6 +662,7 @@ export async function* workflowRun(
               skipAllChecks: resolvedInput.skipAllChecks,
               assertFailOnSeverity: resolvedInput.assertFailOnSeverity,
               initiatedBy: resolvedInput.initiatedBy,
+              instanceId: resolvedInput.instanceId,
             })
           ) {
             if (event.kind === "report_completed") {

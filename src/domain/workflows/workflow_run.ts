@@ -132,6 +132,7 @@ export const WorkflowRunSchema = z.object({
   // auth key) to the plaintext run record.
   resumeInputs: z.array(z.string()).optional(),
   initiatedBy: z.string().optional(),
+  instanceId: z.string().optional(),
 });
 
 /**
@@ -537,6 +538,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
     private _resumeInputs: string[] = [],
     private _pid: number | undefined = undefined,
     private _initiatedBy: string | undefined = undefined,
+    private _instanceId: string | undefined = undefined,
   ) {}
 
   /**
@@ -595,6 +597,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
       validated.resumeInputs ?? [],
       validated.pid,
       validated.initiatedBy,
+      validated.instanceId,
     );
   }
 
@@ -618,6 +621,10 @@ export class WorkflowRun implements TriggerEvaluationContext {
 
   get completedAt(): Date | undefined {
     return this._completedAt;
+  }
+
+  get instanceId(): string | undefined {
+    return this._instanceId;
   }
 
   get pid(): number | undefined {
@@ -681,10 +688,11 @@ export class WorkflowRun implements TriggerEvaluationContext {
   /**
    * Marks the workflow run as started and records the owning process ID.
    */
-  start(pid?: number): void {
+  start(pid?: number, instanceId?: string): void {
     this._status = "running";
     this._startedAt = new Date();
     this._pid = pid;
+    if (instanceId) this._instanceId = instanceId;
   }
 
   /**
@@ -871,6 +879,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
     }
     if (this._initiatedBy !== undefined) {
       data.initiatedBy = this._initiatedBy;
+    }
+    if (this._instanceId !== undefined) {
+      data.instanceId = this._instanceId;
     }
     return data;
   }

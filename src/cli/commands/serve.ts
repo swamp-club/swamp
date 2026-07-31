@@ -128,9 +128,13 @@ import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import {
+  reconcileRemoteInterruptedRuns,
   replayPendingRuns,
   sweepStaleRecords,
 } from "../../serve/boot_reconciliation.ts";
+import { InstanceHeartbeatService } from "../../serve/instance_heartbeat.ts";
+import { FileSystemControlPlaneStore } from "../../infrastructure/persistence/fs_control_plane_store.ts";
+import type { ControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
 import { installUnhandledRejectionGuard } from "../../serve/unhandled_rejection_guard.ts";
 import {
   checkOpenFileLimit,
@@ -1511,6 +1515,29 @@ export const serveCommand = new Command()
     const detachRuns = options.detachRuns === true;
     const activeRunRegistry = detachRuns ? new ActiveRunRegistry() : undefined;
 
+    // HA instance identity — generated only when detach-runs is active so
+    // each process gets a unique ID that survives across reconnects.
+    const instanceId = detachRuns ? crypto.randomUUID() : undefined;
+
+    // Probe the sync service for control-plane capability and create a
+    // control-plane store. Falls back to a filesystem-based store when the
+    // datastore extension doesn't advertise controlPlane.
+    let controlPlaneStore: ControlPlaneStore | undefined;
+    if (detachRuns) {
+      const caps = syncService?.capabilities?.();
+      if (caps?.controlPlane && syncService?.controlPlaneStore) {
+        controlPlaneStore = syncService.controlPlaneStore();
+        logger.info("Control-plane store: remote datastore");
+      } else {
+        controlPlaneStore = new FileSystemControlPlaneStore(
+          swampPath(resolvedRepoDir),
+        );
+        logger.info("Control-plane store: local filesystem fallback");
+      }
+    }
+
+    let heartbeatService: InstanceHeartbeatService | undefined;
+
     // Reap stale runs via the SQLite tracker (heartbeat + PID liveness).
     // This handles both model-method and workflow runs registered with the tracker.
     const runTracker = RunTrackerStore.fromSwampDir(
@@ -1583,6 +1610,7 @@ export const serveCommand = new Command()
         runTracker,
         dispatchService,
         defaultVault: repoMarker?.defaultVault,
+        instanceId,
       };
 
     const ac = new AbortController();
@@ -1600,7 +1628,7 @@ export const serveCommand = new Command()
             resolvedRepoDir,
             repoContext,
             datastoreConfig,
-            input,
+            { ...input, instanceId },
             signal,
             onEvent,
             syncService,
@@ -1608,8 +1636,39 @@ export const serveCommand = new Command()
           ),
         pendingRunHook: detachRuns
           ? {
-            enqueue: (entry) => runTracker.enqueuePendingRun(entry),
-            delete: (id) => runTracker.deletePendingRun(id),
+            enqueue: (entry) => {
+              runTracker.enqueuePendingRun(entry);
+              if (controlPlaneStore) {
+                controlPlaneStore.put(
+                  `pending-runs/${entry.id}`,
+                  new TextEncoder().encode(JSON.stringify(entry)),
+                ).catch((err: unknown) => {
+                  logger.warn(
+                    "Control-plane dual-write failed for cron pending run {id}: {error}",
+                    {
+                      id: entry.id,
+                      error: err instanceof Error ? err.message : String(err),
+                    },
+                  );
+                });
+              }
+            },
+            delete: (id) => {
+              runTracker.deletePendingRun(id);
+              if (controlPlaneStore) {
+                controlPlaneStore.delete(
+                  `pending-runs/${id}`,
+                ).catch((err: unknown) => {
+                  logger.warn(
+                    "Control-plane delete failed for cron pending run {id}: {error}",
+                    {
+                      id,
+                      error: err instanceof Error ? err.message : String(err),
+                    },
+                  );
+                });
+              }
+            },
           }
           : undefined,
       });
@@ -1837,6 +1896,8 @@ export const serveCommand = new Command()
         endpoints,
         syncService,
         runTracker: detachRuns ? runTracker : undefined,
+        instanceId,
+        controlPlaneStore,
       });
 
       webhookService.setEventHandler((event) => {
@@ -2366,6 +2427,9 @@ export const serveCommand = new Command()
           }
         }
       }
+      if (heartbeatService) {
+        await heartbeatService.stop();
+      }
       if (collectiveRefreshService) {
         await collectiveRefreshService.dispose();
       }
@@ -2409,13 +2473,46 @@ export const serveCommand = new Command()
     }
 
     if (detachRuns) {
-      const replayed = replayPendingRuns({
+      // Reconcile runs from dead remote instances before replaying local
+      // pending entries, so that any stale tracker rows are cleaned up first.
+      if (controlPlaneStore && instanceId) {
+        const remoteReaped = await reconcileRemoteInterruptedRuns({
+          controlPlaneStore,
+          instanceId,
+          runTracker,
+        });
+        if (remoteReaped > 0) {
+          logger
+            .info`Reaped ${remoteReaped} run(s) from dead remote instance(s)`;
+        }
+
+        const deadPidRunsRemote = runTracker.reapDeadProcessRuns();
+        for (const run of deadPidRunsRemote) {
+          logger.warn`Reaped dead-process ${run.runKind} run ${run.id} (${
+            run.methodName ?? run.workflowName ?? "unknown"
+          })`;
+        }
+      }
+
+      const replayed = await replayPendingRuns({
         runTracker,
         webhookService: webhookService ?? undefined,
         scheduledExecution: scheduledExecution ?? undefined,
+        controlPlaneStore,
       });
       if (replayed > 0) {
         logger.info`Replayed ${replayed} pending run(s) from previous process`;
+      }
+
+      // Start heartbeat AFTER replay so that remote peers don't see us
+      // as alive until we've finished reconciliation.
+      if (controlPlaneStore && instanceId) {
+        heartbeatService = new InstanceHeartbeatService(
+          controlPlaneStore,
+          instanceId,
+        );
+        await heartbeatService.start();
+        logger.info`Instance heartbeat started (id: ${instanceId})`;
       }
     }
 

@@ -289,6 +289,11 @@ export interface WebhookServiceDeps {
   syncService?: DatastoreSyncService;
   runTracker?:
     import("../infrastructure/persistence/run_tracker_store.ts").RunTrackerStore;
+  /** HA instance identifier — present when `--detach-runs` is active. */
+  instanceId?: string;
+  /** Remote control-plane store for HA dual-write of pending runs. */
+  controlPlaneStore?:
+    import("../domain/datastore/control_plane_store.ts").ControlPlaneStore;
 }
 
 /**
@@ -430,16 +435,31 @@ export class WebhookService {
     let pendingRunId: string | undefined;
     if (this.deps.runTracker) {
       pendingRunId = crypto.randomUUID();
-      this.deps.runTracker.enqueuePendingRun({
+      const pendingEntry = {
         id: pendingRunId,
-        source: "webhook",
+        source: "webhook" as const,
         workflowIdOrName: endpoint.workflowIdOrName,
         payload: JSON.stringify(webhookPayload),
         route: endpoint.route,
         traceparent,
         tracestate,
         createdAt: new Date().toISOString(),
-      });
+      };
+      this.deps.runTracker.enqueuePendingRun(pendingEntry);
+      if (this.deps.controlPlaneStore) {
+        this.deps.controlPlaneStore.put(
+          `pending-runs/${pendingRunId}`,
+          new TextEncoder().encode(JSON.stringify(pendingEntry)),
+        ).catch((err: unknown) => {
+          logger.warn(
+            "Control-plane dual-write failed for pending run {id}: {error}",
+            {
+              id: pendingRunId!,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          );
+        });
+      }
     }
 
     this.runQueue.push({
@@ -526,6 +546,19 @@ export class WebhookService {
         } = this.runQueue.shift()!;
         if (pendingRunId && this.deps.runTracker) {
           this.deps.runTracker.deletePendingRun(pendingRunId);
+          if (this.deps.controlPlaneStore) {
+            this.deps.controlPlaneStore.delete(
+              `pending-runs/${pendingRunId}`,
+            ).catch((err: unknown) => {
+              logger.warn(
+                "Control-plane delete failed for pending run {id}: {error}",
+                {
+                  id: pendingRunId!,
+                  error: err instanceof Error ? err.message : String(err),
+                },
+              );
+            });
+          }
         }
         await this.executeWorkflow(
           workflowIdOrName,
@@ -559,7 +592,13 @@ export class WebhookService {
         this.deps.repoDir,
         this.deps.repoContext,
         this.deps.datastoreConfig,
-        { workflowIdOrName, webhook: payload, traceparent, tracestate },
+        {
+          workflowIdOrName,
+          webhook: payload,
+          traceparent,
+          tracestate,
+          instanceId: this.deps.instanceId,
+        },
         controller.signal,
         (event) => {
           if (event.kind === "started") {

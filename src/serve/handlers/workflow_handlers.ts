@@ -141,6 +141,7 @@ export async function handleWorkflowRun(
           traceparent: payload.traceparent,
           tracestate: payload.tracestate,
           initiatedBy,
+          instanceId: ctx.instanceId,
         },
         controller.signal,
         (event) => {
@@ -207,6 +208,7 @@ export async function handleWorkflowRun(
           traceparent: payload.traceparent,
           tracestate: payload.tracestate,
           initiatedBy,
+          instanceId: ctx.instanceId,
         },
         runController.signal,
         (event) => {
