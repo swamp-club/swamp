@@ -209,6 +209,10 @@ export async function replayPendingRuns(
           !localIds.has(parsed.id)
         ) {
           remotePending.push(parsed);
+        } else if (parsed.id && !localIds.has(parsed.id)) {
+          logger
+            .warn`Discarding invalid remote pending run ${key}: missing required fields`;
+          await deps.controlPlaneStore.delete(key).catch(() => {});
         }
       } catch {
         const id = key.replace("pending-runs/", "");
@@ -245,6 +249,11 @@ export async function replayPendingRuns(
             logger
               .warn`Discarding pending run ${entry.id}: corrupt payload`;
             deps.runTracker.deletePendingRun(entry.id);
+            if (deps.controlPlaneStore) {
+              await deps.controlPlaneStore.delete(
+                `pending-runs/${entry.id}`,
+              ).catch(() => {});
+            }
             continue;
           }
         }
@@ -275,6 +284,11 @@ export async function replayPendingRuns(
           .info`Replayed pending cron run for ${entry.workflowIdOrName}`;
       } else {
         deps.runTracker.deletePendingRun(entry.id);
+        if (deps.controlPlaneStore) {
+          await deps.controlPlaneStore.delete(
+            `pending-runs/${entry.id}`,
+          ).catch(() => {});
+        }
         logger
           .warn`Discarding pending run ${entry.id} (source: ${entry.source}, no matching service)`;
       }
