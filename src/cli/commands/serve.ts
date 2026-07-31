@@ -1647,7 +1647,7 @@ export const serveCommand = new Command()
             resolvedRepoDir,
             repoContext,
             datastoreConfig,
-            input,
+            instanceId ? { ...input, instanceId } : input,
             signal,
             onEvent,
             syncService,
