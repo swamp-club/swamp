@@ -20,6 +20,7 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { resolveServeUrl } from "../remote_run.ts";
 import { FileServerCredentialRepository } from "../../infrastructure/persistence/server_credential_repository.ts";
 import { normalizeServerUrl } from "../../domain/auth/server_url.ts";
 import { splitServerToken } from "../../serve/token_auth.ts";
@@ -46,8 +47,7 @@ export const authServerLoginCommand = new Command()
   )
   .option(
     "--server <url:string>",
-    "Server URL to associate the token with",
-    { required: true },
+    "Server URL to authenticate with (env: SWAMP_SERVE_URL)",
   )
   .option(
     "--token <token:string>",
@@ -59,21 +59,26 @@ export const authServerLoginCommand = new Command()
       "server-login",
     ]);
 
+    const server = resolveServeUrl(options.server as string | undefined);
+    if (!server) {
+      throw new UserError(
+        "--server is required (or set SWAMP_SERVE_URL)",
+      );
+    }
+
     const token = options.token as string | undefined;
 
     if (token) {
-      // Static token flow (unchanged)
-      await handleStaticToken(options, cliCtx, token);
+      await handleStaticToken(server, cliCtx, token);
     } else {
-      // OAuth device flow
-      await handleOAuthFlow(options, cliCtx);
+      await handleOAuthFlow(server, cliCtx);
     }
 
     cliCtx.logger.debug("Server login command completed");
   });
 
 async function handleStaticToken(
-  options: AnyOptions,
+  rawUrl: string,
   cliCtx: { outputMode: string },
   token: string,
 ): Promise<void> {
@@ -84,7 +89,6 @@ async function handleStaticToken(
     );
   }
 
-  let rawUrl = options.server as string;
   try {
     const parsed = new URL(rawUrl);
     if (parsed.protocol === "ws:") parsed.protocol = "http:";
@@ -92,7 +96,7 @@ async function handleStaticToken(
     rawUrl = parsed.href;
   } catch {
     throw new UserError(
-      `Invalid --server URL "${options.server}": expected ws://, wss://, http://, or https:// URL`,
+      `Invalid --server URL "${rawUrl}": expected ws://, wss://, http://, or https:// URL`,
     );
   }
   let serverUrl: string;
@@ -100,7 +104,7 @@ async function handleStaticToken(
     serverUrl = normalizeServerUrl(rawUrl);
   } catch {
     throw new UserError(
-      `Invalid --server URL "${options.server}": expected ws://, wss://, http://, or https:// URL`,
+      `Invalid --server URL "${rawUrl}": expected ws://, wss://, http://, or https:// URL`,
     );
   }
 
@@ -127,10 +131,9 @@ async function handleStaticToken(
 }
 
 async function handleOAuthFlow(
-  options: AnyOptions,
+  rawUrl: string,
   cliCtx: { outputMode: string },
 ): Promise<void> {
-  let rawUrl = options.server as string;
   try {
     const parsed = new URL(rawUrl);
     if (parsed.protocol === "ws:") parsed.protocol = "http:";
@@ -138,7 +141,7 @@ async function handleOAuthFlow(
     rawUrl = parsed.href;
   } catch {
     throw new UserError(
-      `Invalid --server URL "${options.server}": expected ws://, wss://, http://, or https:// URL`,
+      `Invalid --server URL "${rawUrl}": expected ws://, wss://, http://, or https:// URL`,
     );
   }
   const normalizedUrl = normalizeServerUrl(rawUrl);
