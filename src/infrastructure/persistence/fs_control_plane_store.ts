@@ -42,6 +42,28 @@ export class FileSystemControlPlaneStore implements ControlPlaneStore {
     await atomicWriteFile(path, data);
   }
 
+  async putIfAbsent(key: string, data: Uint8Array): Promise<boolean> {
+    const path = this.#keyToPath(key);
+    await Deno.mkdir(dirname(path), { recursive: true });
+    try {
+      const file = await Deno.open(path, { createNew: true, write: true });
+      try {
+        let written = 0;
+        while (written < data.length) {
+          written += await file.write(data.subarray(written));
+        }
+      } finally {
+        file.close();
+      }
+      return true;
+    } catch (error) {
+      if (error instanceof Deno.errors.AlreadyExists) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
   async get(key: string): Promise<Uint8Array | null> {
     try {
       return await Deno.readFile(this.#keyToPath(key));

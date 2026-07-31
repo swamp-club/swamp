@@ -190,6 +190,74 @@ Deno.test("FileSystemControlPlaneStore: list with empty prefix returns all keys"
   });
 });
 
+Deno.test("FileSystemControlPlaneStore: putIfAbsent on new key returns true", async () => {
+  await withTempDir(async (dir) => {
+    const store = new FileSystemControlPlaneStore(dir);
+    const data = encoder.encode("claimed");
+
+    const result = await store.putIfAbsent("locks/job-1", data);
+
+    assertEquals(result, true);
+    assertEquals(decoder.decode((await store.get("locks/job-1"))!), "claimed");
+  });
+});
+
+Deno.test("FileSystemControlPlaneStore: putIfAbsent on existing key returns false and preserves data", async () => {
+  await withTempDir(async (dir) => {
+    const store = new FileSystemControlPlaneStore(dir);
+
+    await store.put("locks/job-1", encoder.encode("first"));
+    const result = await store.putIfAbsent(
+      "locks/job-1",
+      encoder.encode("second"),
+    );
+
+    assertEquals(result, false);
+    assertEquals(decoder.decode((await store.get("locks/job-1"))!), "first");
+  });
+});
+
+Deno.test("FileSystemControlPlaneStore: putIfAbsent after delete returns true", async () => {
+  await withTempDir(async (dir) => {
+    const store = new FileSystemControlPlaneStore(dir);
+
+    await store.put("locks/job-1", encoder.encode("original"));
+    await store.delete("locks/job-1");
+    const result = await store.putIfAbsent(
+      "locks/job-1",
+      encoder.encode("reclaimed"),
+    );
+
+    assertEquals(result, true);
+    assertEquals(
+      decoder.decode((await store.get("locks/job-1"))!),
+      "reclaimed",
+    );
+  });
+});
+
+Deno.test("FileSystemControlPlaneStore: two rapid putIfAbsent calls — one wins", async () => {
+  await withTempDir(async (dir) => {
+    const store = new FileSystemControlPlaneStore(dir);
+
+    const [a, b] = await Promise.all([
+      store.putIfAbsent("locks/race", encoder.encode("instance-a")),
+      store.putIfAbsent("locks/race", encoder.encode("instance-b")),
+    ]);
+
+    assertEquals(
+      [a, b].filter(Boolean).length,
+      1,
+      "exactly one call should succeed",
+    );
+    assertEquals(
+      [a, b].filter((x) => !x).length,
+      1,
+      "exactly one call should fail",
+    );
+  });
+});
+
 Deno.test("FileSystemControlPlaneStore: rejects path traversal via ..", async () => {
   await withTempDir(async (dir) => {
     const store = new FileSystemControlPlaneStore(dir);

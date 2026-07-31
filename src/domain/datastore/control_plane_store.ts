@@ -29,6 +29,7 @@
  */
 export interface ControlPlaneStore {
   put(key: string, data: Uint8Array): Promise<void>;
+  putIfAbsent(key: string, data: Uint8Array): Promise<boolean>;
   get(key: string): Promise<Uint8Array | null>;
   delete(key: string): Promise<void>;
   list(prefix: string): Promise<string[]>;
