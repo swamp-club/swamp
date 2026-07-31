@@ -904,7 +904,11 @@ export const serveCommand = new Command()
       "  1. Client disconnect: a WebSocket close detaches the client instead of cancelling the run; " +
       "clients can re-attach by run ID.\n" +
       "  2. Process restart: webhook and cron runs are queued to a local SQLite database before " +
-      "being acknowledged and replayed if the process dies before executing them; in-flight runs " +
+      "being acknowledged and replayed if the process dies before executing them. " +
+      "When the datastore supports control-plane operations (e.g. @swamp/s3-datastore), " +
+      "pending runs and instance identity are also written to the remote store, enabling " +
+      "recovery after machine failure — not just process restart. " +
+      "In-flight runs " +
       "interrupted by shutdown or crash are marked failed with an interrupt_reason tag and can be " +
       "resumed via 'swamp workflow resume --from <step>'.\n" +
       "Without this flag, runs are cancelled on disconnect and lost on restart (the default).",
