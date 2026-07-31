@@ -1134,3 +1134,41 @@ Deno.test("WorkflowRun.interrupt: converts cancelled run to failed", () => {
   assertEquals(run.status, "failed");
   assertEquals(run.tags["interrupt_reason"], "server_shutdown");
 });
+
+Deno.test("WorkflowRun.create: sets initiatedBy when provided", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf, {}, "user:paul");
+
+  assertEquals(run.initiatedBy, "user:paul");
+});
+
+Deno.test("WorkflowRun.create: initiatedBy defaults to undefined", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+
+  assertEquals(run.initiatedBy, undefined);
+});
+
+Deno.test("WorkflowRun: initiatedBy round-trips through serialization", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf, {}, "user:paul");
+  run.start();
+
+  const data = run.toData();
+  assertEquals(data.initiatedBy, "user:paul");
+
+  const restored = WorkflowRun.fromData(data);
+  assertEquals(restored.initiatedBy, "user:paul");
+});
+
+Deno.test("WorkflowRun: absent initiatedBy deserializes as undefined", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+  run.start();
+
+  const data = run.toData();
+  assertEquals(data.initiatedBy, undefined);
+
+  const restored = WorkflowRun.fromData(data);
+  assertEquals(restored.initiatedBy, undefined);
+});

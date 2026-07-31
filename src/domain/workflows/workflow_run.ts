@@ -869,7 +869,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
     if (this._resumeInputs.length > 0) {
       data.resumeInputs = [...this._resumeInputs];
     }
-    if (this._initiatedBy) {
+    if (this._initiatedBy !== undefined) {
       data.initiatedBy = this._initiatedBy;
     }
     return data;

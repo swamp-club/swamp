@@ -500,3 +500,58 @@ Deno.test("RunTrackerStore: reapDeadProcessRuns skips completed runs", () => {
     store.close();
   }
 });
+
+Deno.test("RunTrackerStore: schema v3 migration adds initiated_by column", () => {
+  const dbPath = makeTempDbPath();
+  const store1 = new RunTrackerStore(dbPath);
+  store1.register(makeRun({ id: "pre-migration-run" }));
+  store1.close();
+
+  const store2 = new RunTrackerStore(dbPath);
+  try {
+    const found = store2.findById("pre-migration-run");
+    assertEquals(found?.id, "pre-migration-run");
+    assertEquals(found?.initiatedBy, null);
+  } finally {
+    store2.close();
+  }
+});
+
+Deno.test("RunTrackerStore: register stores initiatedBy", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    const run = ActiveRun.createModelMethodRun({
+      id: "with-user",
+      modelType: "@test/model",
+      methodName: "start",
+      pid: Deno.pid,
+      hostname: "test-host",
+      initiatedBy: "user:paul",
+    });
+    store.register(run);
+
+    const found = store.findById("with-user");
+    assertEquals(found?.initiatedBy, "user:paul");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: register stores null initiatedBy for ghost runs", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    const run = ActiveRun.createModelMethodRun({
+      id: "ghost-run",
+      modelType: "@test/model",
+      methodName: "start",
+      pid: Deno.pid,
+      hostname: "test-host",
+    });
+    store.register(run);
+
+    const found = store.findById("ghost-run");
+    assertEquals(found?.initiatedBy, null);
+  } finally {
+    store.close();
+  }
+});

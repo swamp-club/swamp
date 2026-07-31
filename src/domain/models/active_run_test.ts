@@ -208,3 +208,58 @@ Deno.test("ActiveRun.toData: roundtrips through fromData", () => {
   assertEquals(restored.hostname, run.hostname);
   assertEquals(restored.status, run.status);
 });
+
+Deno.test("ActiveRun.createModelMethodRun: sets initiatedBy when provided", () => {
+  const run = ActiveRun.createModelMethodRun({
+    id: "test-id",
+    modelType: "@test/model",
+    methodName: "start",
+    pid: 1234,
+    hostname: "test-host",
+    initiatedBy: "user:paul",
+  });
+
+  assertEquals(run.initiatedBy, "user:paul");
+  assertEquals(run.toData().initiatedBy, "user:paul");
+});
+
+Deno.test("ActiveRun.createModelMethodRun: initiatedBy defaults to null", () => {
+  const run = ActiveRun.createModelMethodRun({
+    id: "test-id",
+    modelType: "@test/model",
+    methodName: "start",
+    pid: 1234,
+    hostname: "test-host",
+  });
+
+  assertEquals(run.initiatedBy, null);
+});
+
+Deno.test("ActiveRun.createWorkflowRun: sets initiatedBy when provided", () => {
+  const run = ActiveRun.createWorkflowRun({
+    id: "test-id",
+    workflowName: "test-workflow",
+    pid: 1234,
+    hostname: "test-host",
+    initiatedBy: "user:paul",
+  });
+
+  assertEquals(run.initiatedBy, "user:paul");
+});
+
+Deno.test("ActiveRun.fromData: initiatedBy absent defaults to null", () => {
+  const run = ActiveRun.fromData({
+    id: "test-id",
+    runKind: "model_method",
+    modelType: "@test/model",
+    methodName: "start",
+    workflowName: null,
+    pid: 1234,
+    hostname: "test-host",
+    startedAt: new Date().toISOString(),
+    heartbeatAt: new Date().toISOString(),
+    status: "running",
+  });
+
+  assertEquals(run.initiatedBy, null);
+});
