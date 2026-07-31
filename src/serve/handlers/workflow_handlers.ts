@@ -139,6 +139,7 @@ export async function handleWorkflowRun(
           skipCheckLabels: payload.skipCheckLabels,
           traceparent: payload.traceparent,
           tracestate: payload.tracestate,
+          instanceId: ctx.instanceId,
         },
         controller.signal,
         (event) => {
@@ -204,6 +205,7 @@ export async function handleWorkflowRun(
           skipCheckLabels: payload.skipCheckLabels,
           traceparent: payload.traceparent,
           tracestate: payload.tracestate,
+          instanceId: ctx.instanceId,
         },
         runController.signal,
         (event) => {

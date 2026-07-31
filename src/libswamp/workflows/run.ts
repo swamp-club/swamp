@@ -315,6 +315,8 @@ export interface WorkflowRunInput {
   tracestate?: string;
   /** Minimum assert severity that fails the run. */
   assertFailOnSeverity?: AssertSeverity;
+  /** Serve instance identity for cross-machine reconciliation. */
+  instanceId?: string;
 }
 
 /**

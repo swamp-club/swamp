@@ -1629,6 +1629,7 @@ export const serveCommand = new Command()
         runTracker,
         dispatchService,
         defaultVault: repoMarker?.defaultVault,
+        instanceId,
       };
 
     const ac = new AbortController();

@@ -97,6 +97,7 @@ export interface ConnectionContext {
   runTracker?: RunTrackerRepository;
   dispatchService?: import("../dispatch_service.ts").DispatchService;
   defaultVault?: string;
+  instanceId?: string;
 }
 
 // SECURITY: Authorization must operate on canonical (normalized) model types,

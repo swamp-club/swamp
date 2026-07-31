@@ -1578,6 +1578,8 @@ export class WorkflowExecutionService {
       skipAllChecks?: boolean;
       /** Minimum assert severity that fails the run */
       assertFailOnSeverity?: AssertSeverity;
+      /** Serve instance identity for cross-machine reconciliation */
+      instanceId?: string;
     },
   ): AsyncGenerator<WorkflowExecutionEvent> {
     const tracer = getTracer();
@@ -1687,7 +1689,7 @@ export class WorkflowExecutionService {
         runSpan.setAttribute("workflow.run_id", run.id);
 
         // Start execution
-        run.start(Deno.pid);
+        run.start(Deno.pid, options?.instanceId);
 
         // Register workflow run with the tracker
         if (this.runTracker) {
@@ -1696,6 +1698,7 @@ export class WorkflowExecutionService {
             workflowName: workflow.name,
             pid: Deno.pid,
             hostname: hostname(),
+            instanceId: options?.instanceId,
           });
           this.runTracker.register(wfActiveRun);
         }

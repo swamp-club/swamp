@@ -104,6 +104,7 @@ export class InstanceHeartbeatService {
     ttlMs = DEFAULT_STALE_TTL_MS,
   ): boolean {
     const heartbeatTime = new Date(record.heartbeatAt).getTime();
+    if (isNaN(heartbeatTime)) return true;
     return Date.now() - heartbeatTime > ttlMs;
   }
 
