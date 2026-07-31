@@ -60,6 +60,7 @@ export class InstanceHeartbeatService {
   }
 
   async start(): Promise<void> {
+    if (this.#timer !== null) return;
     await this.#write();
     this.#timer = setInterval(() => {
       this.#write().catch((err) => {

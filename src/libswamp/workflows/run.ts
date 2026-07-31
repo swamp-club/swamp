@@ -317,6 +317,7 @@ export interface WorkflowRunInput {
   assertFailOnSeverity?: AssertSeverity;
   /** Identity of the user who initiated this run (e.g. "user:paul"). */
   initiatedBy?: string;
+  /** Serve instance identity for cross-machine run reconciliation. */
   instanceId?: string;
 }
 
