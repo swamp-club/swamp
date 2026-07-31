@@ -52,9 +52,14 @@ export class FileSystemControlPlaneStore implements ControlPlaneStore {
         while (written < data.length) {
           written += await file.write(data.subarray(written));
         }
-      } finally {
+      } catch (writeError) {
         file.close();
+        try {
+          await Deno.remove(path);
+        } catch { /* best-effort cleanup */ }
+        throw writeError;
       }
+      file.close();
       return true;
     } catch (error) {
       if (error instanceof Deno.errors.AlreadyExists) {

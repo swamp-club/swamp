@@ -255,6 +255,14 @@ Deno.test("FileSystemControlPlaneStore: two rapid putIfAbsent calls — one wins
       1,
       "exactly one call should fail",
     );
+
+    const stored = decoder.decode((await store.get("locks/race"))!);
+    const validPayloads = ["instance-a", "instance-b"];
+    assertEquals(
+      validPayloads.includes(stored),
+      true,
+      `stored data should match the winner's payload, got: ${stored}`,
+    );
   });
 });
 
