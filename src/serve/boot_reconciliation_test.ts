@@ -20,6 +20,8 @@
 import { assertEquals } from "@std/assert";
 import {
   type BootReconciliationDeps,
+  hydrateLocalCache,
+  type HydrateLocalCacheDeps,
   reconcileRemoteInterruptedRuns,
   type ReconcileRemoteInterruptedRunsDeps,
   replayPendingRuns,
@@ -27,6 +29,7 @@ import {
   sweepStaleRecords,
   type TransitionInput,
 } from "./boot_reconciliation.ts";
+import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import type { PendingRunEntry } from "../infrastructure/persistence/run_tracker_store.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
@@ -832,4 +835,60 @@ Deno.test("reconcileRemoteInterruptedRuns: reaps multiple stale instances", asyn
   assertEquals(h.completed.length, 2);
   const reapedIds = h.completed.map((c) => c.runId).sort();
   assertEquals(reapedIds, ["run-1", "run-2"]);
+});
+
+// ── hydrateLocalCache tests ─────────────────────────────────────────
+
+function createHydrateDeps(
+  opts: {
+    pullResult?: number | void;
+    pullError?: Error;
+  } = {},
+): { deps: HydrateLocalCacheDeps; invalidated: boolean[] } {
+  const invalidated: boolean[] = [];
+  const syncService = {
+    pullChanged: () => {
+      if (opts.pullError) return Promise.reject(opts.pullError);
+      return Promise.resolve(opts.pullResult);
+    },
+  } as unknown as DatastoreSyncService;
+
+  return {
+    deps: {
+      syncService,
+      catalogInvalidate: () => invalidated.push(true),
+    },
+    invalidated,
+  };
+}
+
+Deno.test("hydrateLocalCache: calls pullChanged and returns file count", async () => {
+  const h = createHydrateDeps({ pullResult: 42 });
+  const result = await hydrateLocalCache(h.deps);
+  assertEquals(result.pulled, 42);
+});
+
+Deno.test("hydrateLocalCache: invalidates catalog after successful pull", async () => {
+  const h = createHydrateDeps({ pullResult: 5 });
+  await hydrateLocalCache(h.deps);
+  assertEquals(h.invalidated.length, 1);
+});
+
+Deno.test("hydrateLocalCache: handles void return from pullChanged", async () => {
+  const h = createHydrateDeps({ pullResult: undefined });
+  const result = await hydrateLocalCache(h.deps);
+  assertEquals(result.pulled, 0);
+  assertEquals(h.invalidated.length, 1);
+});
+
+Deno.test("hydrateLocalCache: catches pull failure and returns zero", async () => {
+  const h = createHydrateDeps({ pullError: new Error("S3 timeout") });
+  const result = await hydrateLocalCache(h.deps);
+  assertEquals(result.pulled, 0);
+});
+
+Deno.test("hydrateLocalCache: does not invalidate catalog on failure", async () => {
+  const h = createHydrateDeps({ pullError: new Error("network error") });
+  await hydrateLocalCache(h.deps);
+  assertEquals(h.invalidated.length, 0);
 });

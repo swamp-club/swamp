@@ -34,6 +34,7 @@ import type { ModelType } from "../domain/models/model_type.ts";
 import type { Data } from "../domain/data/data.ts";
 import type { FileSystemUnifiedDataRepository } from "../infrastructure/persistence/unified_data_repository.ts";
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
+import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import { InstanceHeartbeatService } from "./instance_heartbeat.ts";
 import type { PendingRunEntry } from "../infrastructure/persistence/run_tracker_store.ts";
 
@@ -56,6 +57,39 @@ export interface SweepResult {
   leases: number;
   pendingDispatches: number;
   workers: number;
+}
+
+// ── Startup Cache Hydration ─────────────────────────────────────────
+
+export interface HydrateLocalCacheDeps {
+  syncService: DatastoreSyncService;
+  catalogInvalidate: () => void;
+  signal?: AbortSignal;
+}
+
+export interface HydrateResult {
+  pulled: number;
+}
+
+export async function hydrateLocalCache(
+  deps: HydrateLocalCacheDeps,
+): Promise<HydrateResult> {
+  logger.info("Hydrating local cache from remote datastore");
+  try {
+    const pulled = await deps.syncService.pullChanged({ signal: deps.signal });
+    const count = typeof pulled === "number" ? pulled : 0;
+    if (count > 0) {
+      logger.info`Pulled ${count} file(s) from remote datastore`;
+    }
+    deps.catalogInvalidate();
+    return { pulled: count };
+  } catch (err: unknown) {
+    logger.warn(
+      "Startup cache hydration failed: {error}",
+      { error: err instanceof Error ? err.message : String(err) },
+    );
+    return { pulled: 0 };
+  }
 }
 
 async function defaultRunTransition(
