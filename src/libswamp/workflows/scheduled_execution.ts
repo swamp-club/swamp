@@ -356,10 +356,6 @@ export class ScheduledExecutionService {
             workflowName,
             reason: "Claimed by another instance",
           });
-          logger.info(
-            "Skipping scheduled run for {name}: claimed by another instance",
-            { name: workflowName },
-          );
           return;
         }
       } catch (err: unknown) {
@@ -530,8 +526,10 @@ export class ScheduledExecutionService {
 /**
  * Normalizes a fire time to a deterministic key component shared
  * across all instances. Truncates to the second and formats as
- * ISO 8601 UTC without milliseconds (e.g. "2026-08-01T00:00:00Z").
+ * ISO 8601 UTC without milliseconds, with colons replaced by
+ * hyphens for Windows filesystem compatibility
+ * (e.g. "2026-08-01T00-00-00Z").
  */
 export function normalizeFireTime(date: Date): string {
-  return date.toISOString().replace(/\.\d{3}Z$/, "Z");
+  return date.toISOString().replace(/\.\d{3}Z$/, "Z").replaceAll(":", "-");
 }

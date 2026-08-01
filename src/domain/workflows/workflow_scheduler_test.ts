@@ -146,3 +146,14 @@ Deno.test("canonicalFireTime: handles per-second cron", () => {
 
   cron.stop();
 });
+
+Deno.test("canonicalFireTime: snaps forward when timer fires early", () => {
+  const cron = new Cron("0 * * * *", { paused: true });
+
+  // Timer fires 2ms before the scheduled hour boundary
+  const earlyFire = new Date("2026-08-01T14:59:59.998Z");
+  const result = canonicalFireTime(cron, earlyFire);
+  assertEquals(result.toISOString(), "2026-08-01T15:00:00.000Z");
+
+  cron.stop();
+});

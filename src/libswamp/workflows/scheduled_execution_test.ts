@@ -356,17 +356,17 @@ Deno.test("ScheduledExecutionService: cronFireDedup error falls through to execu
   assertEquals(skipped.length, 0);
 });
 
-Deno.test("normalizeFireTime: truncates milliseconds and formats as UTC", () => {
+Deno.test("normalizeFireTime: truncates milliseconds and replaces colons for Windows compat", () => {
   assertEquals(
     normalizeFireTime(new Date("2026-08-01T12:30:45.123Z")),
-    "2026-08-01T12:30:45Z",
+    "2026-08-01T12-30-45Z",
   );
   assertEquals(
     normalizeFireTime(new Date("2026-08-01T00:00:00.000Z")),
-    "2026-08-01T00:00:00Z",
+    "2026-08-01T00-00-00Z",
   );
   assertEquals(
     normalizeFireTime(new Date("2026-12-31T23:59:59.999Z")),
-    "2026-12-31T23:59:59Z",
+    "2026-12-31T23-59-59Z",
   );
 });

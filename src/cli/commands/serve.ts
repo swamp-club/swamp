@@ -1718,10 +1718,19 @@ export const serveCommand = new Command()
               );
               break;
             case "schedule_skipped":
-              logger.warn(
-                "Skipped scheduled workflow {name}: {reason}",
-                { name: event.workflowName, reason: event.reason },
-              );
+              if (
+                event.reason === "Claimed by another instance"
+              ) {
+                logger.info(
+                  "Skipped scheduled workflow {name}: {reason}",
+                  { name: event.workflowName, reason: event.reason },
+                );
+              } else {
+                logger.warn(
+                  "Skipped scheduled workflow {name}: {reason}",
+                  { name: event.workflowName, reason: event.reason },
+                );
+              }
               break;
             case "schedule_completed":
               logger.info(
@@ -2541,16 +2550,22 @@ export const serveCommand = new Command()
       if (controlPlaneStore) {
         const FIRE_RECORD_REAP_INTERVAL_MS = 10 * 60 * 1000;
         const FIRE_RECORD_TTL_MS = 4 * 60 * 60 * 1000;
-        const reaperTimer = setInterval(async () => {
+        const reapFireRecords = async () => {
           try {
             const keys = await controlPlaneStore!.list("fire-records/");
             const cutoff = Date.now() - FIRE_RECORD_TTL_MS;
-            // Key format: fire-records/{workflowId}/{isoFireTime}
+            // Key format: fire-records/{workflowId}/{normalizedFireTime}
+            // normalizedFireTime uses hyphens instead of colons for
+            // Windows compat; restore colons for Date parsing.
             for (const key of keys) {
               const segments = key.split("/");
               if (segments.length < 3) continue;
               const timePart = segments.slice(2).join("/");
-              const ts = new Date(timePart).getTime();
+              const isoTime = timePart.replace(
+                /T(\d{2})-(\d{2})-(\d{2})Z/,
+                "T$1:$2:$3Z",
+              );
+              const ts = new Date(isoTime).getTime();
               if (Number.isNaN(ts) || ts < cutoff) {
                 await controlPlaneStore!.delete(key);
               }
@@ -2561,7 +2576,11 @@ export const serveCommand = new Command()
               { error: err instanceof Error ? err.message : String(err) },
             );
           }
-        }, FIRE_RECORD_REAP_INTERVAL_MS);
+        };
+        const reaperTimer = setInterval(
+          () => reapFireRecords().catch(() => {}),
+          FIRE_RECORD_REAP_INTERVAL_MS,
+        );
         Deno.unrefTimer(reaperTimer);
       }
     }
