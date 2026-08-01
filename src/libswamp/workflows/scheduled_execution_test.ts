@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  normalizeFireTime,
   type ScheduledExecutionEvent,
   ScheduledExecutionService,
 } from "./scheduled_execution.ts";
@@ -269,4 +270,103 @@ Deno.test("ScheduledExecutionService: stop clears schedules", async () => {
 
   await service.stop();
   assertEquals(service.listSchedules().length, 0);
+});
+
+Deno.test("ScheduledExecutionService: cronFireDedup returning true allows execution", async () => {
+  const wf = createTestWorkflow("dedup-wf", "* * * * * *");
+  const events: ScheduledExecutionEvent[] = [];
+
+  const mockRepo = createMockWorkflowRepo([wf]);
+  const service = new ScheduledExecutionService({
+    workflowRepo: mockRepo,
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => Promise.resolve(),
+    cronFireDedup: () => Promise.resolve(true),
+  });
+
+  await service.start((e) => events.push(e));
+
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await service.stop();
+
+  const fired = events.filter((e) => e.kind === "schedule_fired");
+  assertEquals(fired.length >= 1, true);
+  const skipped = events.filter((e) =>
+    e.kind === "schedule_skipped" &&
+    (e as { reason: string }).reason === "Claimed by another instance"
+  );
+  assertEquals(skipped.length, 0);
+});
+
+Deno.test("ScheduledExecutionService: cronFireDedup returning false skips execution", async () => {
+  const wf = createTestWorkflow("dedup-skip-wf", "* * * * * *");
+  const events: ScheduledExecutionEvent[] = [];
+
+  const mockRepo = createMockWorkflowRepo([wf]);
+  let executionCount = 0;
+  const service = new ScheduledExecutionService({
+    workflowRepo: mockRepo,
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => {
+      executionCount++;
+      return Promise.resolve();
+    },
+    cronFireDedup: () => Promise.resolve(false),
+  });
+
+  await service.start((e) => events.push(e));
+
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await service.stop();
+
+  const skipped = events.filter((e) =>
+    e.kind === "schedule_skipped" &&
+    (e as { reason: string }).reason === "Claimed by another instance"
+  );
+  assertEquals(skipped.length >= 1, true);
+
+  const fired = events.filter((e) => e.kind === "schedule_fired");
+  assertEquals(fired.length, 0);
+  assertEquals(executionCount, 0);
+});
+
+Deno.test("ScheduledExecutionService: cronFireDedup error falls through to execution", async () => {
+  const wf = createTestWorkflow("dedup-error-wf", "* * * * * *");
+  const events: ScheduledExecutionEvent[] = [];
+
+  const mockRepo = createMockWorkflowRepo([wf]);
+  const service = new ScheduledExecutionService({
+    workflowRepo: mockRepo,
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => Promise.resolve(),
+    cronFireDedup: () => Promise.reject(new Error("S3 unreachable")),
+  });
+
+  await service.start((e) => events.push(e));
+
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await service.stop();
+
+  const fired = events.filter((e) => e.kind === "schedule_fired");
+  assertEquals(fired.length >= 1, true);
+  const skipped = events.filter((e) =>
+    e.kind === "schedule_skipped" &&
+    (e as { reason: string }).reason === "Claimed by another instance"
+  );
+  assertEquals(skipped.length, 0);
+});
+
+Deno.test("normalizeFireTime: truncates milliseconds and formats as UTC", () => {
+  assertEquals(
+    normalizeFireTime(new Date("2026-08-01T12:30:45.123Z")),
+    "2026-08-01T12:30:45Z",
+  );
+  assertEquals(
+    normalizeFireTime(new Date("2026-08-01T00:00:00.000Z")),
+    "2026-08-01T00:00:00Z",
+  );
+  assertEquals(
+    normalizeFireTime(new Date("2026-12-31T23:59:59.999Z")),
+    "2026-12-31T23:59:59Z",
+  );
 });

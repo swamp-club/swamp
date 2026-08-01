@@ -18,7 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { WorkflowScheduler } from "./workflow_scheduler.ts";
+import { canonicalFireTime, WorkflowScheduler } from "./workflow_scheduler.ts";
+import { Cron } from "croner";
 import type { WorkflowId } from "./workflow_id.ts";
 
 const TEST_ID_1 = "aaaaaaaa-1111-1111-1111-111111111111" as WorkflowId;
@@ -91,7 +92,9 @@ Deno.test("WorkflowScheduler: start fires callback on cron match", async () => {
 
   // Use per-second cron: fires every second
   scheduler.register(TEST_ID_1, "* * * * * *");
-  scheduler.start((id) => fired.push(id));
+  scheduler.start((id) => {
+    fired.push(id);
+  });
 
   // Wait for at least one fire
   await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -99,4 +102,47 @@ Deno.test("WorkflowScheduler: start fires callback on cron match", async () => {
 
   assertEquals(fired.length > 0, true);
   assertEquals(fired[0], TEST_ID_1);
+});
+
+Deno.test("canonicalFireTime: snaps to cron grid regardless of sub-second offset", () => {
+  // Pattern fires at :00, :10, :20, :30, :40, :50 of each minute
+  const cron = new Cron("*/10 * * * * *", { paused: true });
+
+  // Simulate wall-clock at :30.123 — should snap to :30.000
+  const base = new Date("2026-08-01T12:00:30.000Z");
+  const skewed = new Date(base.getTime() + 123);
+  const result = canonicalFireTime(cron, skewed);
+  assertEquals(result.getTime(), base.getTime());
+
+  // Simulate wall-clock at :30.999 — still snaps to :30.000
+  const lateSkew = new Date(base.getTime() + 999);
+  assertEquals(canonicalFireTime(cron, lateSkew).getTime(), base.getTime());
+
+  cron.stop();
+});
+
+Deno.test("canonicalFireTime: two instances with 500ms clock skew produce the same time", () => {
+  const cron = new Cron("0 * * * *", { paused: true });
+
+  // Instance A fires at exactly the top of the hour
+  const instanceA = new Date("2026-08-01T15:00:00.050Z");
+  // Instance B's clock is 500ms behind
+  const instanceB = new Date("2026-08-01T15:00:00.550Z");
+
+  const timeA = canonicalFireTime(cron, instanceA);
+  const timeB = canonicalFireTime(cron, instanceB);
+  assertEquals(timeA.getTime(), timeB.getTime());
+  assertEquals(timeA.toISOString(), "2026-08-01T15:00:00.000Z");
+
+  cron.stop();
+});
+
+Deno.test("canonicalFireTime: handles per-second cron", () => {
+  const cron = new Cron("* * * * * *", { paused: true });
+
+  const now = new Date("2026-08-01T12:00:45.789Z");
+  const result = canonicalFireTime(cron, now);
+  assertEquals(result.toISOString(), "2026-08-01T12:00:45.000Z");
+
+  cron.stop();
 });

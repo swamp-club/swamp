@@ -29,8 +29,14 @@ import type { WorkflowId } from "./workflow_id.ts";
 
 /**
  * Callback invoked when a scheduled workflow should fire.
+ * Receives the canonical fire time — the cron-pattern-matched
+ * time, not the wall-clock time — so callers can derive a
+ * deterministic key for cross-instance dedup.
  */
-export type ScheduleFireCallback = (workflowId: WorkflowId) => void;
+export type ScheduleFireCallback = (
+  workflowId: WorkflowId,
+  fireTime: Date,
+) => void | Promise<void>;
 
 /**
  * Information about a registered schedule.
@@ -55,7 +61,11 @@ export class WorkflowScheduler {
     const cron = new Cron(
       cronExpression,
       { paused: this.onFire === null },
-      () => this.onFire?.(workflowId),
+      () =>
+        this.onFire?.(
+          workflowId,
+          canonicalFireTime(this.entries.get(workflowId)!),
+        ),
     );
 
     this.entries.set(workflowId, cron);
@@ -115,4 +125,27 @@ export class WorkflowScheduler {
   get size(): number {
     return this.entries.size;
   }
+}
+
+/**
+ * Computes the canonical fire time for a cron callback by snapping
+ * the current wall-clock time back to the cron pattern grid.
+ *
+ * croner's `currentRun()` returns wall-clock `new Date()`, NOT the
+ * deterministic scheduled time. Two instances with slight clock skew
+ * could get different values and both claim a fire slot. This function
+ * enumerates recent pattern matches and picks the latest one at or
+ * before `now`, which is deterministic across instances regardless of
+ * sub-second clock differences.
+ */
+export function canonicalFireTime(cron: Cron, now?: Date): Date {
+  const ref = now ?? new Date();
+  const lookback = new Date(ref.getTime() - 120_000);
+  const runs = cron.nextRuns(200, lookback);
+  for (let i = runs.length - 1; i >= 0; i--) {
+    if (runs[i].getTime() <= ref.getTime()) {
+      return runs[i];
+    }
+  }
+  return ref;
 }
