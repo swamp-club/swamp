@@ -699,8 +699,24 @@ error message.
 ### Events and rendering
 
 Guard-skipped steps emit a `step_skipped` event with `reason: "guarded"` (vs
-`"dependency"` for dependency skips). The console renderer shows
-`skipped (guarded)` to distinguish from dependency skips.
+`"dependency"` for dependency skips). The event includes `guardExpression` (the
+raw CEL expression string) and `guardResult` (the evaluated value) so consumers
+can display why the step was skipped.
+
+Console output shows the guard expression inline:
+
+```
+   main │ skipped (guarded) · guard: data.latest("checker", "result").attributes.exitCode == 0
+```
+
+JSON output includes both fields:
+
+```json
+{"step":"do-work","job":"main","status":"skipped","reason":"guarded","guardExpression":"data.latest(\"checker\", \"result\").attributes.exitCode == 0","guardResult":true}
+```
+
+Debug-level logging (`--log-level debug`) emits guard evaluation results for both
+skipped and non-skipped steps, showing the expression and its result.
 
 ## Data Output Overrides with Vary Dimensions
 

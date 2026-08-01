@@ -106,6 +106,8 @@ export type WorkflowRunEvent =
     jobId: string;
     stepId: string;
     reason?: "guarded" | "dependency";
+    guardExpression?: string;
+    guardResult?: unknown;
     forEachTemplate?: string;
     forEachIndex?: number;
   }

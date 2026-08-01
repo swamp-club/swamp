@@ -152,9 +152,16 @@ export class PipeWriter {
     return this.line(name, `${red("failed")} ${dim(`· ${timestamp}`)}`);
   }
 
-  skippedLine(name: string, reason?: string): string {
+  skippedLine(
+    name: string,
+    reason?: string,
+    guardExpression?: string,
+  ): string {
     const extra = reason ? ` (${reason})` : "";
-    return this.line(name, `${dim(`skipped${extra}`)}`);
+    const guard = guardExpression
+      ? ` ${dim(`· guard: ${guardExpression}`)}`
+      : "";
+    return this.line(name, `${dim(`skipped${extra}`)}${guard}`);
   }
 
   stepLine(
