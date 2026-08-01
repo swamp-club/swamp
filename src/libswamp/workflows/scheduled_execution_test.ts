@@ -293,7 +293,7 @@ Deno.test("ScheduledExecutionService: cronFireDedup returning true allows execut
   assertEquals(fired.length >= 1, true);
   const skipped = events.filter((e) =>
     e.kind === "schedule_skipped" &&
-    (e as { reason: string }).reason === "Claimed by another instance"
+    (e as { dedupSkip?: boolean }).dedupSkip === true
   );
   assertEquals(skipped.length, 0);
 });
@@ -321,7 +321,7 @@ Deno.test("ScheduledExecutionService: cronFireDedup returning false skips execut
 
   const skipped = events.filter((e) =>
     e.kind === "schedule_skipped" &&
-    (e as { reason: string }).reason === "Claimed by another instance"
+    (e as { dedupSkip?: boolean }).dedupSkip === true
   );
   assertEquals(skipped.length >= 1, true);
 
@@ -351,7 +351,7 @@ Deno.test("ScheduledExecutionService: cronFireDedup error falls through to execu
   assertEquals(fired.length >= 1, true);
   const skipped = events.filter((e) =>
     e.kind === "schedule_skipped" &&
-    (e as { reason: string }).reason === "Claimed by another instance"
+    (e as { dedupSkip?: boolean }).dedupSkip === true
   );
   assertEquals(skipped.length, 0);
 });

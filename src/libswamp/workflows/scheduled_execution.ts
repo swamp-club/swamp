@@ -69,6 +69,7 @@ export type ScheduledExecutionEvent =
     workflowId: WorkflowId;
     workflowName: string;
     reason: string;
+    dedupSkip?: boolean;
   }
   | {
     kind: "schedule_completed";
@@ -355,6 +356,7 @@ export class ScheduledExecutionService {
             workflowId,
             workflowName,
             reason: "Claimed by another instance",
+            dedupSkip: true,
           });
           return;
         }
