@@ -206,6 +206,12 @@ const IMPORT_SPECIFIER_RE =
   /(?:import|export)\s+[^;()]*?from\s+["']([^"']+)["']/g;
 
 function isBareSpecifier(specifier: string): boolean {
+  // A specifier carrying a `${...}` placeholder is interpolated at runtime, not
+  // a package name. stripSourceComments already removes the common source of
+  // these (generated code inside template literals), but `import x from
+  // "${pkg}"` is valid TypeScript at the top level — double quotes do not
+  // interpolate — so the classifier guards itself rather than trusting callers.
+  if (specifier.includes("${")) return false;
   if (specifier.startsWith(".")) return false;
   if (specifier.startsWith("npm:")) return false;
   if (specifier.startsWith("jsr:")) return false;
@@ -217,8 +223,18 @@ function isBareSpecifier(specifier: string): boolean {
 
 // See also: stripComments in extension_dependency_extractor.ts (import-line
 // only) and stripCommentsAndStrings in extension_quality_checker.ts (strips
-// both). This variant strips all comments while preserving string literals
-// so the import-specifier regex can still match real import strings.
+// both). This variant blanks comments and template literals while preserving
+// ' and " string contents, so the import-specifier regex can still match real
+// import strings — a specifier always lives in one of those two quote styles.
+//
+// Template literals are blanked because a static import specifier can never be
+// one (`import x from `y`` is a SyntaxError), so an import statement between
+// backticks is always generated code, not part of this module's own graph
+// (swamp-club#1490 — the same false-positive lineage as #602 and #657). When a
+// backtick has no closing partner — a regex literal, say, which this scanner
+// cannot recognise — the span is re-emitted verbatim rather than blanked, so an
+// unbalanced backtick degrades to a no-op instead of erasing the rest of the
+// file from the caller's view.
 function stripSourceComments(source: string): string {
   const result: string[] = [];
   let i = 0;
@@ -295,24 +311,18 @@ function stripSourceComments(source: string): string {
       continue;
     }
 
-    // Template literal — preserve content
+    // Template literal — blank content
     if (source[i] === "`") {
-      result.push(source[i]);
-      i++;
-      while (i < source.length && source[i] !== "`") {
-        if (source[i] === "\\") {
-          result.push(source[i]);
-          i++;
-        }
-        if (i < source.length) {
-          result.push(source[i]);
-          i++;
-        }
+      const span: string[] = [];
+      const next = skipTemplateLiteral(source, i, span);
+      if (next === null) {
+        // Unterminated: the backtick was not a template after all. Keep the
+        // remainder verbatim — byte-identical to leaving it unscanned.
+        result.push(source.slice(i));
+        break;
       }
-      if (i < source.length && source[i] === "`") {
-        result.push(source[i]);
-        i++;
-      }
+      result.push(span.join(""));
+      i = next;
       continue;
     }
 
@@ -321,6 +331,122 @@ function stripSourceComments(source: string): string {
   }
 
   return result.join("");
+}
+
+/** Blanks a character, keeping newlines so line positions do not drift. */
+function blank(ch: string): string {
+  return ch === "\n" ? "\n" : " ";
+}
+
+/**
+ * Consumes the template literal opening at `start`, appending its blanked span
+ * to `out`. Returns the index just past the closing backtick, or null when the
+ * source ends first — the caller re-emits the span verbatim in that case.
+ */
+function skipTemplateLiteral(
+  source: string,
+  start: number,
+  out: string[],
+): number | null {
+  out.push(" ");
+  let i = start + 1;
+  while (i < source.length) {
+    const ch = source[i];
+    if (ch === "\\") {
+      out.push(" ");
+      i++;
+      if (i < source.length) {
+        out.push(blank(source[i]));
+        i++;
+      }
+      continue;
+    }
+    if (ch === "`") {
+      out.push(" ");
+      return i + 1;
+    }
+    if (ch === "$" && source[i + 1] === "{") {
+      out.push(" ", " ");
+      i = skipInterpolation(source, i + 2, out);
+      continue;
+    }
+    out.push(blank(ch));
+    i++;
+  }
+  return null;
+}
+
+/**
+ * Consumes a `${...}` interpolation body starting just past the `${`. Counts
+ * every brace so an object literal cannot close the interpolation early, and
+ * delegates quotes and nested templates so their contents cannot either.
+ */
+function skipInterpolation(
+  source: string,
+  start: number,
+  out: string[],
+): number {
+  let depth = 1;
+  let i = start;
+  while (i < source.length) {
+    const ch = source[i];
+    if (ch === "{") {
+      depth++;
+      out.push(" ");
+      i++;
+      continue;
+    }
+    if (ch === "}") {
+      depth--;
+      out.push(" ");
+      i++;
+      if (depth === 0) return i;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      i = skipQuoted(source, i, ch, out);
+      continue;
+    }
+    if (ch === "`") {
+      const next = skipTemplateLiteral(source, i, out);
+      // A nested template that never closes means the enclosing one does not
+      // either — hand the whole span back to the caller's verbatim fallback.
+      if (next === null) return source.length;
+      i = next;
+      continue;
+    }
+    out.push(blank(ch));
+    i++;
+  }
+  return i;
+}
+
+/**
+ * Consumes a ' or " string inside an interpolation, blanking it so braces in
+ * its content are not counted against the interpolation depth.
+ */
+function skipQuoted(
+  source: string,
+  start: number,
+  quote: string,
+  out: string[],
+): number {
+  out.push(" ");
+  let i = start + 1;
+  while (i < source.length && source[i] !== quote && source[i] !== "\n") {
+    if (source[i] === "\\") {
+      out.push(" ");
+      i++;
+      if (i >= source.length) break;
+    }
+    out.push(blank(source[i]));
+    i++;
+  }
+  if (i < source.length && source[i] === quote) {
+    out.push(" ");
+    i++;
+  }
+  return i;
 }
 
 export function sourceHasBareSpecifiers(source: string): boolean {

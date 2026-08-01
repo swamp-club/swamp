@@ -779,6 +779,118 @@ export function check() {
   assertEquals(sourceHasBareSpecifiers(source), false);
 });
 
+// --- generated-code false-positive regression tests (swamp-club#1490) ---
+
+Deno.test("extractBareSpecifierNames: ignores an interpolated specifier in generated code", () => {
+  // The reported shape: an eval script built as a template literal, whose
+  // second import resolves to a valid npm: specifier only at runtime.
+  const source = `export function buildScript(pkg: string): string {
+  return \`
+import * as modeling from "npm:@jscad/modeling@2.12.0";
+import * as serializer from "\${pkg}";
+console.log(serializer, modeling);
+\`;
+}
+`;
+  assertEquals(extractBareSpecifierNames(source), []);
+});
+
+Deno.test("extractBareSpecifierNames: ignores a static bare specifier in generated code", () => {
+  // No interpolation at all — the specifier is bare in the generated script,
+  // which is the generated module's problem, not this module's.
+  const source = `export function buildScript(): string {
+  return \`import { z } from "zod";\`;
+}
+`;
+  assertEquals(extractBareSpecifierNames(source), []);
+});
+
+Deno.test("extractBareSpecifierNames: detects a real bare import alongside generated code", () => {
+  const source = `import { helper } from "my-helpers";
+
+export function buildScript(pkg: string): string {
+  return \`import * as s from "\${pkg}";\`;
+}
+
+export const h = helper;
+`;
+  assertEquals(extractBareSpecifierNames(source), ["my-helpers"]);
+});
+
+Deno.test("extractBareSpecifierNames: handles a nested template inside an interpolation", () => {
+  const source = `export function buildScript(names: string[]): string {
+  return \`\${names.map((n) => \`import "\${n}";\`).join("\\n")}\`;
+}
+
+import { z } from "zod";
+`;
+  assertEquals(extractBareSpecifierNames(source), ["zod"]);
+});
+
+Deno.test("extractBareSpecifierNames: handles object-literal braces inside an interpolation", () => {
+  const source = `export function buildScript(): string {
+  return \`config = \${JSON.stringify({ mode: "full" })};
+import { x } from "generated";\`;
+}
+
+import { z } from "zod";
+`;
+  assertEquals(extractBareSpecifierNames(source), ["zod"]);
+});
+
+Deno.test("extractBareSpecifierNames: handles an unbalanced brace quoted inside an interpolation", () => {
+  const source = `export function buildScript(): string {
+  return \`\${"}"} import { x } from "generated";\`;
+}
+
+import { z } from "zod";
+`;
+  assertEquals(extractBareSpecifierNames(source), ["zod"]);
+});
+
+Deno.test("extractBareSpecifierNames: handles an escaped backtick inside a template", () => {
+  const source = `export function buildScript(): string {
+  return \`echo \\\` import { x } from "generated";\`;
+}
+
+import { z } from "zod";
+`;
+  assertEquals(extractBareSpecifierNames(source), ["zod"]);
+});
+
+Deno.test("extractBareSpecifierNames: still detects imports after a backtick in a regex literal", () => {
+  // The scanner cannot recognise regex literals, so this backtick has no
+  // closing partner. The span must be preserved verbatim rather than blanked,
+  // or the real import below it would go unreported.
+  const source = `const BACKTICK = /\`/;
+import { z } from "zod";
+`;
+  assertEquals(extractBareSpecifierNames(source), ["zod"]);
+});
+
+Deno.test("extractBareSpecifierNames: preserves the tail after an unterminated template", () => {
+  const source = `const broken = \`unterminated
+import { z } from "zod";
+`;
+  // Degrades to the pre-fix reading rather than blanking the rest of the file.
+  assertEquals(extractBareSpecifierNames(source), ["zod"]);
+});
+
+Deno.test("sourceHasBareSpecifiers: ignores an interpolated specifier in generated code", () => {
+  const source = `export function buildScript(pkg: string): string {
+  return \`import * as s from "\${pkg}";\`;
+}
+`;
+  assertEquals(sourceHasBareSpecifiers(source), false);
+});
+
+Deno.test("extractBareSpecifierNames: ignores an interpolated specifier outside a template", () => {
+  // Valid TypeScript — double quotes do not interpolate — so isBareSpecifier
+  // must reject it on its own, without help from the template stripping.
+  const source = `import * as s from "\${pkg}";`;
+  assertEquals(extractBareSpecifierNames(source), []);
+});
+
 Deno.test("uint8ArrayToBase64 handles large input without stack overflow", () => {
   // 1MB of data — would blow the stack with String.fromCharCode(...bytes)
   const size = 1_000_000;
@@ -854,6 +966,24 @@ Deno.test("isExpectedBundleFailure: returns false for npm-only imports without d
     const filePath = extDir + "/model.ts";
     await Deno.writeTextFile(filePath, source);
     // No bare specifiers — failure is unexpected regardless of deno.json
+    assertEquals(isExpectedBundleFailure(filePath, repoDir), false);
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+  }
+});
+
+Deno.test("isExpectedBundleFailure: returns false for generated imports without deno.json", async () => {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_expected_test_" });
+  const extDir = repoDir + "/extensions/models/myext";
+  await Deno.mkdir(extDir, { recursive: true });
+  try {
+    // Codegen only — the module itself has no bare specifiers, so a rebundle
+    // failure here is a real failure and must not be silenced by the cache
+    // (swamp-club#1490).
+    const source =
+      `export const script = \`import * as s from "\${pkg}";\`;\nexport const x = 1;`;
+    const filePath = extDir + "/model.ts";
+    await Deno.writeTextFile(filePath, source);
     assertEquals(isExpectedBundleFailure(filePath, repoDir), false);
   } finally {
     await Deno.remove(repoDir, { recursive: true });

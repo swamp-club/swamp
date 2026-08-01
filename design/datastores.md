@@ -98,7 +98,8 @@ unreliable under atomic-rename saves, mtime-preserving sync tools, and
 sub-millisecond edits (issue #125). If the source contains
 bare specifiers (e.g., `from "zod"` instead of `from "npm:zod@4"`) and a cached
 bundle exists, the cached bundle is used since re-bundling would fail without
-the project's `deno.json` import map.
+the project's `deno.json` import map. Only the module's own static imports count
+— import statements inside template literals are generated code and are ignored.
 
 ### Custom Type Configuration
 
