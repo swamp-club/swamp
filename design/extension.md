@@ -509,6 +509,11 @@ actually contains bare specifiers (e.g., `from "zod"` instead of
 containing `@anthropic-ai/claude-code` for tooling) from being mistakenly
 treated as the extension's project config.
 
+Specifiers are read from the module's own static imports only. Import statements
+that appear inside template literals are generated code — the specifier belongs
+to the script the extension emits at runtime, not to the extension's own module
+graph — so they are ignored by every bare-specifier check.
+
 #### Bundling permutations
 
 | Scenario                                  | `deno bundle` flags                                      | Quality check flags    | Notes                                                                                                                                                              |
@@ -554,7 +559,9 @@ require a project config to resolve, and a cached bundle exists, the loader uses
 the cached bundle rather than attempting a re-bundle that would fail without the
 config. This supports pulled extensions that were built with a `deno.json` or
 `package.json` project — the archive includes pre-built bundles but not the
-project config.
+project config. Imports inside template literals do not count here either: an
+extension that only generates code re-bundles normally rather than being pinned
+to its cached bundle.
 
 When a non-filesystem datastore is configured (e.g. `@swamp/s3-datastore`),
 bundle paths are resolved through the `DatastorePathResolver` instead of the
