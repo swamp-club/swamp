@@ -29,8 +29,14 @@ import type { WorkflowId } from "./workflow_id.ts";
 
 /**
  * Callback invoked when a scheduled workflow should fire.
+ * Receives the canonical fire time — the cron-pattern-matched
+ * time, not the wall-clock time — so callers can derive a
+ * deterministic key for cross-instance dedup.
  */
-export type ScheduleFireCallback = (workflowId: WorkflowId) => void;
+export type ScheduleFireCallback = (
+  workflowId: WorkflowId,
+  fireTime: Date,
+) => void | Promise<void>;
 
 /**
  * Information about a registered schedule.
@@ -55,7 +61,14 @@ export class WorkflowScheduler {
     const cron = new Cron(
       cronExpression,
       { paused: this.onFire === null },
-      () => this.onFire?.(workflowId),
+      () => {
+        const entry = this.entries.get(workflowId);
+        if (!entry) return;
+        const result = this.onFire?.(workflowId, canonicalFireTime(entry));
+        if (result instanceof Promise) {
+          result.catch(() => {});
+        }
+      },
     );
 
     this.entries.set(workflowId, cron);
@@ -115,4 +128,35 @@ export class WorkflowScheduler {
   get size(): number {
     return this.entries.size;
   }
+}
+
+/**
+ * Computes the canonical fire time for a cron callback by snapping
+ * the current wall-clock time to the nearest cron pattern grid point.
+ *
+ * croner's `currentRun()` returns wall-clock `new Date()`, NOT the
+ * deterministic scheduled time. Two instances with slight clock skew
+ * could get different values and both claim a fire slot. This function
+ * enumerates recent pattern matches and picks the latest one at or
+ * before `now`. If the timer fires slightly early (before the
+ * scheduled second boundary), it snaps forward to the imminent match.
+ */
+export function canonicalFireTime(cron: Cron, now?: Date): Date {
+  const ref = now ?? new Date();
+  const lookback = new Date(ref.getTime() - 120_000);
+  const runs = cron.nextRuns(200, lookback);
+  for (let i = runs.length - 1; i >= 0; i--) {
+    if (runs[i].getTime() <= ref.getTime()) {
+      return runs[i];
+    }
+  }
+  // Timer fired slightly before the scheduled second — snap forward
+  // to the imminent match if it's within 2 seconds.
+  const EARLY_TOLERANCE_MS = 2_000;
+  for (const run of runs) {
+    if (run.getTime() - ref.getTime() <= EARLY_TOLERANCE_MS) {
+      return run;
+    }
+  }
+  return ref;
 }

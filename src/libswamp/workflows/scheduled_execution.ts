@@ -114,11 +114,23 @@ export interface PendingRunHook {
   delete(id: string): void;
 }
 
+/**
+ * Callback for cross-instance cron fire dedup. Returns true if this
+ * instance should execute, false if another instance already claimed
+ * the fire slot. When not provided (single-instance mode), all fires
+ * proceed unconditionally.
+ */
+export type CronFireDedupCallback = (
+  workflowId: string,
+  fireTime: Date,
+) => Promise<boolean>;
+
 export interface ScheduledExecutionDeps {
   workflowRepo: WorkflowRepository;
   repoDir: string;
   executeWorkflow: WorkflowExecutor;
   pendingRunHook?: PendingRunHook;
+  cronFireDedup?: CronFireDedupCallback;
 }
 
 export class ScheduledExecutionService {
@@ -163,7 +175,9 @@ export class ScheduledExecutionService {
     await this.watcher.scanExisting();
 
     // Start the scheduler — cron jobs begin firing
-    this.scheduler.start((workflowId) => this.handleFire(workflowId));
+    this.scheduler.start((workflowId, fireTime) =>
+      this.handleFire(workflowId, fireTime)
+    );
 
     // Start watching for changes
     await this.watcher.start();
@@ -305,7 +319,10 @@ export class ScheduledExecutionService {
     }
   }
 
-  private handleFire(workflowId: WorkflowId): void {
+  private async handleFire(
+    workflowId: WorkflowId,
+    fireTime: Date,
+  ): Promise<void> {
     const workflowName = this.workflowNames.get(workflowId) ?? workflowId;
 
     // Overlap prevention — skip if this specific workflow is already running.
@@ -325,6 +342,31 @@ export class ScheduledExecutionService {
         { name: workflowName },
       );
       return;
+    }
+
+    // Cross-instance dedup — race to claim this fire slot via the
+    // control-plane store. If another instance won, skip silently.
+    if (this.deps.cronFireDedup) {
+      try {
+        const claimed = await this.deps.cronFireDedup(workflowId, fireTime);
+        if (!claimed) {
+          this.emit({
+            kind: "schedule_skipped",
+            workflowId,
+            workflowName,
+            reason: "Claimed by another instance",
+          });
+          return;
+        }
+      } catch (err: unknown) {
+        logger.warn(
+          "Cron fire dedup failed for {name}, proceeding with execution: {error}",
+          {
+            name: workflowName,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        );
+      }
     }
 
     this.emit({
@@ -479,4 +521,15 @@ export class ScheduledExecutionService {
   private emit(event: ScheduledExecutionEvent): void {
     this.eventHandler?.(event);
   }
+}
+
+/**
+ * Normalizes a fire time to a deterministic key component shared
+ * across all instances. Truncates to the second and formats as
+ * ISO 8601 UTC without milliseconds, with colons replaced by
+ * hyphens for Windows filesystem compatibility
+ * (e.g. "2026-08-01T00-00-00Z").
+ */
+export function normalizeFireTime(date: Date): string {
+  return date.toISOString().replace(/\.\d{3}Z$/, "Z").replaceAll(":", "-");
 }

@@ -101,6 +101,8 @@ export { severityAtOrAbove } from "../domain/workflows/assert_severity.ts";
 
 // Scheduled execution
 export {
+  type CronFireDedupCallback,
+  normalizeFireTime,
   type ScheduledExecutionDeps,
   type ScheduledExecutionEvent,
   type ScheduledExecutionEventHandler,

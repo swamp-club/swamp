@@ -71,7 +71,10 @@ import {
   toServiceMode,
 } from "../../presentation/output/serve_daemon_output.ts";
 import { groupCommandAction } from "../group_action.ts";
-import { ScheduledExecutionService } from "../../libswamp/mod.ts";
+import {
+  normalizeFireTime,
+  ScheduledExecutionService,
+} from "../../libswamp/mod.ts";
 import { parseWebhookFlag, WebhookService } from "../../serve/webhook.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
@@ -1675,6 +1678,20 @@ export const serveCommand = new Command()
             },
           }
           : undefined,
+        cronFireDedup: controlPlaneStore?.putIfAbsent
+          ? async (workflowId, fireTime) => {
+            const key = `fire-records/${workflowId}/${
+              normalizeFireTime(fireTime)
+            }`;
+            const data = new TextEncoder().encode(
+              JSON.stringify({
+                instanceId,
+                claimedAt: new Date().toISOString(),
+              }),
+            );
+            return await controlPlaneStore!.putIfAbsent!(key, data);
+          }
+          : undefined,
       });
 
       await scheduledExecution.start((event) => {
@@ -1701,10 +1718,19 @@ export const serveCommand = new Command()
               );
               break;
             case "schedule_skipped":
-              logger.warn(
-                "Skipped scheduled workflow {name}: {reason}",
-                { name: event.workflowName, reason: event.reason },
-              );
+              if (
+                event.reason === "Claimed by another instance"
+              ) {
+                logger.info(
+                  "Skipped scheduled workflow {name}: {reason}",
+                  { name: event.workflowName, reason: event.reason },
+                );
+              } else {
+                logger.warn(
+                  "Skipped scheduled workflow {name}: {reason}",
+                  { name: event.workflowName, reason: event.reason },
+                );
+              }
               break;
             case "schedule_completed":
               logger.info(
@@ -2517,6 +2543,45 @@ export const serveCommand = new Command()
         );
         await heartbeatService.start();
         logger.info`Instance heartbeat started (id: ${instanceId})`;
+      }
+
+      // Periodically reap stale fire-records so they don't accumulate
+      // unboundedly. Runs every 10 minutes; deletes records older than 4 hours.
+      if (controlPlaneStore) {
+        const FIRE_RECORD_REAP_INTERVAL_MS = 10 * 60 * 1000;
+        const FIRE_RECORD_TTL_MS = 4 * 60 * 60 * 1000;
+        const reapFireRecords = async () => {
+          try {
+            const keys = await controlPlaneStore!.list("fire-records/");
+            const cutoff = Date.now() - FIRE_RECORD_TTL_MS;
+            // Key format: fire-records/{workflowId}/{normalizedFireTime}
+            // normalizedFireTime uses hyphens instead of colons for
+            // Windows compat; restore colons for Date parsing.
+            for (const key of keys) {
+              const segments = key.split("/");
+              if (segments.length < 3) continue;
+              const timePart = segments.slice(2).join("/");
+              const isoTime = timePart.replace(
+                /T(\d{2})-(\d{2})-(\d{2})Z/,
+                "T$1:$2:$3Z",
+              );
+              const ts = new Date(isoTime).getTime();
+              if (Number.isNaN(ts) || ts < cutoff) {
+                await controlPlaneStore!.delete(key);
+              }
+            }
+          } catch (err: unknown) {
+            logger.warn(
+              "Fire record reaper failed: {error}",
+              { error: err instanceof Error ? err.message : String(err) },
+            );
+          }
+        };
+        const reaperTimer = setInterval(
+          () => reapFireRecords().catch(() => {}),
+          FIRE_RECORD_REAP_INTERVAL_MS,
+        );
+        Deno.unrefTimer(reaperTimer);
       }
     }
 
