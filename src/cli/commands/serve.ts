@@ -1718,9 +1718,7 @@ export const serveCommand = new Command()
               );
               break;
             case "schedule_skipped":
-              if (
-                event.reason === "Claimed by another instance"
-              ) {
+              if (event.dedupSkip) {
                 logger.info(
                   "Skipped scheduled workflow {name}: {reason}",
                   { name: event.workflowName, reason: event.reason },
@@ -2547,7 +2545,8 @@ export const serveCommand = new Command()
 
       // Periodically reap stale fire-records so they don't accumulate
       // unboundedly. Runs every 10 minutes; deletes records older than 4 hours.
-      if (controlPlaneStore) {
+      // Only needed when dedup is active (putIfAbsent available).
+      if (controlPlaneStore?.putIfAbsent) {
         const FIRE_RECORD_REAP_INTERVAL_MS = 10 * 60 * 1000;
         const FIRE_RECORD_TTL_MS = 4 * 60 * 60 * 1000;
         const reapFireRecords = async () => {
