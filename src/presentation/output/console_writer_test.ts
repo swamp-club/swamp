@@ -177,6 +177,29 @@ Deno.test("PipeWriter.skippedLine: formats skip with reason", () => {
   });
 });
 
+Deno.test("PipeWriter.skippedLine: includes guard expression when provided", () => {
+  noColor(() => {
+    const pipe = new PipeWriter(["load"]);
+    const line = pipe.skippedLine(
+      "load",
+      "guarded",
+      'data.latest("checker", "result").attributes.exitCode == 0',
+    );
+    assertEquals(
+      line,
+      ' load │ skipped (guarded) · guard: data.latest("checker", "result").attributes.exitCode == 0',
+    );
+  });
+});
+
+Deno.test("PipeWriter.skippedLine: omits guard when not provided", () => {
+  noColor(() => {
+    const pipe = new PipeWriter(["load"]);
+    const line = pipe.skippedLine("load", "guarded");
+    assertEquals(line, " load │ skipped (guarded)");
+  });
+});
+
 Deno.test("PipeWriter.stepLine: formats step with model and method", () => {
   noColor(() => {
     const pipe = new PipeWriter(["extract"]);

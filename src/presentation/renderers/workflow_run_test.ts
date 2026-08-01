@@ -532,6 +532,61 @@ Deno.test("JsonWorkflowRunRenderer: completed serializes WorkflowRunView", async
   }
 });
 
+Deno.test("JsonWorkflowRunRenderer: step_skipped guarded includes guard fields", () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createWorkflowRunRenderer("json", {
+      workflowName: "test-pipeline",
+    });
+    const handler = renderer.handlers().step_skipped;
+    handler({
+      kind: "step_skipped",
+      jobId: "main",
+      stepId: "do-work",
+      reason: "guarded",
+      guardExpression:
+        'data.latest("checker", "result").attributes.exitCode == 0',
+      guardResult: true,
+    });
+    assertEquals(logs.length, 1);
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.step, "do-work");
+    assertEquals(parsed.reason, "guarded");
+    assertEquals(
+      parsed.guardExpression,
+      'data.latest("checker", "result").attributes.exitCode == 0',
+    );
+    assertEquals(parsed.guardResult, true);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("JsonWorkflowRunRenderer: step_skipped dependency emits no output", () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createWorkflowRunRenderer("json", {
+      workflowName: "test-pipeline",
+    });
+    const handler = renderer.handlers().step_skipped;
+    handler({
+      kind: "step_skipped",
+      jobId: "main",
+      stepId: "cleanup",
+      reason: "dependency",
+    });
+    assertEquals(logs.length, 0);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
 Deno.test("JsonWorkflowRunRenderer: error event throws UserError", () => {
   const renderer = createWorkflowRunRenderer("json", {
     workflowName: "test-pipeline",

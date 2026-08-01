@@ -2683,6 +2683,7 @@ export class WorkflowExecutionService {
           `Step "${stepName}" guard must be a $\{{ }} expression, got: ${step.guard}`,
         );
       }
+      const guardLogger = getWorkflowRunLogger(workflow.name);
       try {
         const celEvaluator = new CelEvaluator();
         const guardContext: Record<string, unknown> = {
@@ -2751,6 +2752,8 @@ export class WorkflowExecutionService {
           guardContext,
         );
         if (guardResult) {
+          guardLogger
+            .debug`Step ${stepName} guard skipped: ${guardCel} → ${guardResult}`;
           stepRun.skip();
           stepSpan.setAttribute("step.status", "skipped");
           stepSpan.setAttribute("step.skip.reason", "guarded");
@@ -2760,11 +2763,15 @@ export class WorkflowExecutionService {
             jobId: job.name,
             stepId: stepName,
             reason: "guarded",
+            guardExpression: guardCel,
+            guardResult,
             forEachTemplate,
             forEachIndex,
           };
           return;
         }
+        guardLogger
+          .debug`Step ${stepName} guard passed: ${guardCel} → ${guardResult}`;
       } catch (error) {
         stepRun.fail(String(error));
         stepSpan.setAttribute("step.status", "failed");
