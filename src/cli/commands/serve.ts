@@ -131,6 +131,7 @@ import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import {
+  hydrateLocalCache,
   reconcileRemoteInterruptedRuns,
   replayPendingRuns,
   sweepStaleRecords,
@@ -1544,6 +1545,14 @@ export const serveCommand = new Command()
     }
 
     let heartbeatService: InstanceHeartbeatService | undefined;
+
+    if (detachRuns && syncService) {
+      await hydrateLocalCache({
+        syncService,
+        catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+        signal: AbortSignal.timeout(60_000),
+      });
+    }
 
     // Reap stale runs via the SQLite tracker (heartbeat + PID liveness).
     // This handles both model-method and workflow runs registered with the tracker.
