@@ -1048,20 +1048,20 @@ export const serveCommand = new Command()
 
     const heartbeatIntervalRaw =
       (options.heartbeatInterval as string | undefined) ??
-        Deno.env.get("SWAMP_HEARTBEAT_INTERVAL") ?? undefined;
+        Deno.env.get("SWAMP_HEARTBEAT_INTERVAL");
     const heartbeatIntervalMs = heartbeatIntervalRaw !== undefined
       ? parseTimeout(heartbeatIntervalRaw, "--heartbeat-interval")
       : undefined;
 
     const staleTtlRaw = (options.staleTtl as string | undefined) ??
-      Deno.env.get("SWAMP_STALE_TTL") ?? undefined;
+      Deno.env.get("SWAMP_STALE_TTL");
     const staleTtlMs = staleTtlRaw !== undefined
       ? parseTimeout(staleTtlRaw, "--stale-ttl")
       : undefined;
 
     const reconciliationIntervalRaw =
       (options.reconciliationInterval as string | undefined) ??
-        Deno.env.get("SWAMP_RECONCILIATION_INTERVAL") ?? undefined;
+        Deno.env.get("SWAMP_RECONCILIATION_INTERVAL");
     const reconciliationIntervalMs = reconciliationIntervalRaw !== undefined
       ? parseTimeout(reconciliationIntervalRaw, "--reconciliation-interval")
       : undefined;
@@ -1586,6 +1586,34 @@ export const serveCommand = new Command()
     const cancelRegistry = new RunCancelRegistry();
     const detachRuns = options.detachRuns === true;
     const activeRunRegistry = detachRuns ? new ActiveRunRegistry() : undefined;
+
+    if (!detachRuns) {
+      if (heartbeatIntervalMs !== undefined) {
+        logger.warn(
+          "--heartbeat-interval is set but --detach-runs is not active — setting will have no effect",
+        );
+      }
+      if (staleTtlMs !== undefined) {
+        logger.warn(
+          "--stale-ttl is set but --detach-runs is not active — setting will have no effect",
+        );
+      }
+      if (reconciliationIntervalMs !== undefined) {
+        logger.warn(
+          "--reconciliation-interval is set but --detach-runs is not active — setting will have no effect",
+        );
+      }
+    }
+
+    if (
+      staleTtlMs !== undefined && heartbeatIntervalMs !== undefined &&
+      staleTtlMs < heartbeatIntervalMs * 2
+    ) {
+      throw new UserError(
+        `--stale-ttl (${staleTtlRaw}) must be at least 2x --heartbeat-interval (${heartbeatIntervalRaw}), ` +
+          "otherwise live instances will appear stale",
+      );
+    }
 
     // HA instance identity — generated only when detach-runs is active so
     // each process gets a unique ID that survives across reconnects.
@@ -2619,40 +2647,46 @@ export const serveCommand = new Command()
 
         const RECONCILIATION_INTERVAL_MS = reconciliationIntervalMs ?? 60_000;
         const RECONCILIATION_JITTER_MS = 500;
+        const runReconciliationTick = async () => {
+          try {
+            const reaped = await reconcileRemoteInterruptedRuns({
+              controlPlaneStore: controlPlaneStore!,
+              instanceId: instanceId!,
+              runTracker,
+              staleTtlMs,
+            });
+            if (reaped > 0) {
+              logger
+                .info`Continuous reconciliation reaped ${reaped} run(s)`;
+            }
+          } catch (err: unknown) {
+            logger.warn(
+              "Continuous reconciliation failed: {error}",
+              { error: err instanceof Error ? err.message : String(err) },
+            );
+          }
+          try {
+            await cleanupExpiredClaims({
+              controlPlaneStore: controlPlaneStore!,
+            });
+          } catch (err: unknown) {
+            logger.warn(
+              "Reconciliation claim cleanup failed: {error}",
+              { error: err instanceof Error ? err.message : String(err) },
+            );
+          }
+        };
         const scheduleReconciliation = () => {
           const jitter = new Uint32Array(1);
           crypto.getRandomValues(jitter);
           const jitterMs = (jitter[0] / 0xFFFFFFFF) * RECONCILIATION_JITTER_MS;
-          const timer = setTimeout(async () => {
-            try {
-              const reaped = await reconcileRemoteInterruptedRuns({
-                controlPlaneStore: controlPlaneStore!,
-                instanceId: instanceId!,
-                runTracker,
-                staleTtlMs,
-              });
-              if (reaped > 0) {
-                logger
-                  .info`Continuous reconciliation reaped ${reaped} run(s)`;
-              }
-            } catch (err: unknown) {
-              logger.warn(
-                "Continuous reconciliation failed: {error}",
-                { error: err instanceof Error ? err.message : String(err) },
-              );
-            }
-            try {
-              await cleanupExpiredClaims({
-                controlPlaneStore: controlPlaneStore!,
-              });
-            } catch (err: unknown) {
-              logger.warn(
-                "Reconciliation claim cleanup failed: {error}",
-                { error: err instanceof Error ? err.message : String(err) },
-              );
-            }
-            scheduleReconciliation();
-          }, RECONCILIATION_INTERVAL_MS + jitterMs);
+          const timer = setTimeout(
+            () =>
+              runReconciliationTick().catch(() => {}).finally(
+                scheduleReconciliation,
+              ),
+            RECONCILIATION_INTERVAL_MS + jitterMs,
+          );
           Deno.unrefTimer(timer);
         };
         scheduleReconciliation();
