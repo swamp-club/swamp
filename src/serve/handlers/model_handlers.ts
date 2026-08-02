@@ -85,6 +85,7 @@ import {
 } from "../../domain/access/principal.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { RunEventBuffer } from "../run_event_buffer.ts";
+import { deleteActiveRun, writeActiveRun } from "../active_run_tracker.ts";
 import {
   authorizeOrReject,
   type ConnectionContext,
@@ -431,9 +432,13 @@ export async function handleModelMethodRun(
         }
       }
       registry.deregister(runId);
+      if (ctx.controlPlaneStore && ctx.instanceId) {
+        deleteActiveRun(ctx.controlPlaneStore, ctx.instanceId, runId);
+      }
     }
   })();
 
+  const startedAt = new Date();
   try {
     registry.register({
       runId,
@@ -441,7 +446,7 @@ export async function handleModelMethodRun(
       resourceName: payload.modelIdOrName,
       buffer,
       controller: runController,
-      startedAt: new Date(),
+      startedAt,
       completion,
     });
   } catch {
@@ -453,6 +458,14 @@ export async function handleModelMethodRun(
       `Too many concurrent runs; wait for active runs to complete`,
     );
     return;
+  }
+
+  if (ctx.controlPlaneStore && ctx.instanceId) {
+    writeActiveRun(ctx.controlPlaneStore, ctx.instanceId, runId, {
+      resourceName: payload.modelIdOrName,
+      runKind: "method-run",
+      startedAt: startedAt.toISOString(),
+    });
   }
 
   await subscribeUntilDetach(buffer, socket, requestId, controller);

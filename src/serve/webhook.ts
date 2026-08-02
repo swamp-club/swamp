@@ -29,6 +29,7 @@ import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_se
 import type { WebhookPayload } from "../domain/expressions/model_resolver.ts";
 import { UserError } from "../domain/errors.ts";
 import { executeWorkflowWithLocks } from "./deps.ts";
+import { deleteActiveRun, writeActiveRun } from "./active_run_tracker.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
   extractFirstStepError,
@@ -583,9 +584,9 @@ export class WebhookService {
     const controller = new AbortController();
     const execId = crypto.randomUUID();
     this.running.set(execId, controller);
+    let runId = "";
 
     try {
-      let runId = "";
       let completedRun: WorkflowRunView | undefined;
 
       await executeWorkflowWithLocks(
@@ -603,6 +604,18 @@ export class WebhookService {
         (event) => {
           if (event.kind === "started") {
             runId = event.runId;
+            if (this.deps.controlPlaneStore && this.deps.instanceId) {
+              writeActiveRun(
+                this.deps.controlPlaneStore,
+                this.deps.instanceId,
+                runId,
+                {
+                  resourceName: workflowIdOrName,
+                  runKind: "workflow-run",
+                  startedAt: new Date().toISOString(),
+                },
+              );
+            }
           }
           if (event.kind === "completed") {
             completedRun = event.run;
@@ -656,6 +669,13 @@ export class WebhookService {
       );
     } finally {
       this.running.delete(execId);
+      if (runId && this.deps.controlPlaneStore && this.deps.instanceId) {
+        deleteActiveRun(
+          this.deps.controlPlaneStore,
+          this.deps.instanceId,
+          runId,
+        );
+      }
     }
   }
 
