@@ -102,16 +102,19 @@ export async function cleanupActiveRunsForInstance(
   const keys = await store.list(`active-runs/${instanceId}/`);
   let cleaned = 0;
   for (const key of keys) {
-    await store.delete(key).catch((err: unknown) => {
-      logger.warn(
-        "Failed to delete stale active-run record {key}: {error}",
-        {
-          key,
-          error: err instanceof Error ? err.message : String(err),
-        },
-      );
-    });
-    cleaned++;
+    const deleted = await store.delete(key).then(() => true).catch(
+      (err: unknown) => {
+        logger.warn(
+          "Failed to delete stale active-run record {key}: {error}",
+          {
+            key,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        );
+        return false;
+      },
+    );
+    if (deleted) cleaned++;
   }
   return cleaned;
 }

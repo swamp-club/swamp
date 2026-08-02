@@ -189,6 +189,7 @@ export async function handleWorkflowRun(
   const buffer = new RunEventBuffer(DEFAULT_BUFFER_CAPACITY);
   const runController = new AbortController();
   let runId: string = crypto.randomUUID();
+  const startedAt = new Date();
 
   const completion = (async () => {
     try {
@@ -270,7 +271,6 @@ export async function handleWorkflowRun(
     }
   })();
 
-  const startedAt = new Date();
   try {
     registry.register({
       runId,
