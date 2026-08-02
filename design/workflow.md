@@ -346,6 +346,21 @@ model **instance** which does not exist locally (`model_not_found`) produces a
 it could also be a typo. The warning surfaces the reference without failing
 validation.
 
+### GlobalArgument Input References
+
+When a model definition's `globalArguments` or method-level argument defaults
+contain `${{ inputs.* }}` expressions, the validator checks that each referenced
+input is supplied by the calling step's `inputs:` block. This catches cases where
+a model definition expects an input (e.g. `host: ${{ inputs.ip }}`) that the
+workflow step never provides, which would fail at runtime with an unresolved
+expression. The check resolves against the step's inputs — not the workflow's
+top-level inputs — because `${{ inputs.* }}` in a model definition refers to the
+model's own input namespace, populated by the step at runtime.
+
+Steps with dynamic inputs (a single `${{ ... }}` expression as the entire
+`inputs` value) are skipped, as are steps with dynamic model references, since
+neither can be statically analysed.
+
 ### Unknown Keys Are Rejected
 
 The workflow, job, and step schemas reject unknown keys at parse time with an
