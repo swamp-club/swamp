@@ -20,6 +20,8 @@
 import { assertEquals } from "@std/assert";
 import {
   type BootReconciliationDeps,
+  CLAIM_TTL_MS,
+  cleanupExpiredClaims,
   hydrateLocalCache,
   type HydrateLocalCacheDeps,
   reconcileRemoteInterruptedRuns,
@@ -575,7 +577,7 @@ const encoder2 = new TextEncoder();
 
 function createInMemoryControlPlaneStore(
   entries: Record<string, unknown> = {},
-): ControlPlaneStore & { deleted: string[] } {
+): ControlPlaneStore & { deleted: string[]; data: Map<string, Uint8Array> } {
   const store = new Map<string, Uint8Array>();
   for (const [key, value] of Object.entries(entries)) {
     store.set(key, encoder2.encode(JSON.stringify(value)));
@@ -583,9 +585,15 @@ function createInMemoryControlPlaneStore(
   const deleted: string[] = [];
   return {
     deleted,
+    data: store,
     put: (key: string, data: Uint8Array) => {
       store.set(key, data);
       return Promise.resolve();
+    },
+    putIfAbsent: (key: string, data: Uint8Array) => {
+      if (store.has(key)) return Promise.resolve(false);
+      store.set(key, data);
+      return Promise.resolve(true);
     },
     get: (key: string) => Promise.resolve(store.get(key) ?? null),
     delete: (key: string) => {
@@ -835,6 +843,243 @@ Deno.test("reconcileRemoteInterruptedRuns: reaps multiple stale instances", asyn
   assertEquals(h.completed.length, 2);
   const reapedIds = h.completed.map((c) => c.runId).sort();
   assertEquals(reapedIds, ["run-1", "run-2"]);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: creates claim before reaping when putIfAbsent available", async () => {
+  const run1 = makeActiveRunData({
+    id: "run-1",
+    instanceId: "dead-inst",
+    status: "running",
+  });
+  const h = createReconcileHarness(
+    { "dead-inst": makeHeartbeat("dead-inst", { stale: true }) },
+    [run1],
+  );
+  const reaped = await reconcileRemoteInterruptedRuns(h.deps);
+  assertEquals(reaped, 1);
+  assertEquals(h.completed.length, 1);
+  const claimData = await h.controlPlaneStore.get(
+    "claims/reconcile-instance/dead-inst",
+  );
+  assertEquals(claimData !== null, true);
+  const claim = JSON.parse(new TextDecoder().decode(claimData!));
+  assertEquals(claim.claimedBy, "self-instance");
+  assertEquals(typeof claim.claimedAt, "string");
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: skips instance when claim fails", async () => {
+  const run1 = makeActiveRunData({
+    id: "run-1",
+    instanceId: "dead-inst",
+    status: "running",
+  });
+  const h = createReconcileHarness(
+    { "dead-inst": makeHeartbeat("dead-inst", { stale: true }) },
+    [run1],
+  );
+  // Pre-populate a claim to simulate another instance having claimed it
+  await h.controlPlaneStore.put(
+    "claims/reconcile-instance/dead-inst",
+    encoder2.encode(
+      JSON.stringify({
+        claimedBy: "other-instance",
+        claimedAt: new Date().toISOString(),
+      }),
+    ),
+  );
+  const reaped = await reconcileRemoteInterruptedRuns(h.deps);
+  assertEquals(reaped, 0);
+  assertEquals(h.completed.length, 0);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: defers heartbeat deletion until after reaping", async () => {
+  const run1 = makeActiveRunData({
+    id: "run-1",
+    instanceId: "dead-inst",
+    status: "running",
+  });
+  const h = createReconcileHarness(
+    { "dead-inst": makeHeartbeat("dead-inst", { stale: true }) },
+    [run1],
+  );
+  const reaped = await reconcileRemoteInterruptedRuns(h.deps);
+  assertEquals(reaped, 1);
+  assertEquals(h.completed.length, 1);
+  assertEquals(h.completed[0].runId, "run-1");
+  // Heartbeat should be deleted after reaping
+  assertEquals(
+    h.controlPlaneStore.deleted.includes("heartbeats/dead-inst"),
+    true,
+  );
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: does not delete heartbeat when claim fails", async () => {
+  const run1 = makeActiveRunData({
+    id: "run-1",
+    instanceId: "dead-inst",
+    status: "running",
+  });
+  const h = createReconcileHarness(
+    { "dead-inst": makeHeartbeat("dead-inst", { stale: true }) },
+    [run1],
+  );
+  await h.controlPlaneStore.put(
+    "claims/reconcile-instance/dead-inst",
+    encoder2.encode(
+      JSON.stringify({
+        claimedBy: "other-instance",
+        claimedAt: new Date().toISOString(),
+      }),
+    ),
+  );
+  await reconcileRemoteInterruptedRuns(h.deps);
+  assertEquals(
+    h.controlPlaneStore.deleted.includes("heartbeats/dead-inst"),
+    false,
+  );
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: works without putIfAbsent (graceful degradation)", async () => {
+  const storeEntries: Record<string, unknown> = {
+    "heartbeats/dead-inst": makeHeartbeat("dead-inst", { stale: true }),
+  };
+  // Create a store without putIfAbsent
+  const store = new Map<string, Uint8Array>();
+  for (const [key, value] of Object.entries(storeEntries)) {
+    store.set(key, encoder2.encode(JSON.stringify(value)));
+  }
+  const deleted: string[] = [];
+  const controlPlaneStore: ControlPlaneStore = {
+    put: (key: string, data: Uint8Array) => {
+      store.set(key, data);
+      return Promise.resolve();
+    },
+    get: (key: string) => Promise.resolve(store.get(key) ?? null),
+    delete: (key: string) => {
+      store.delete(key);
+      deleted.push(key);
+      return Promise.resolve();
+    },
+    list: (prefix: string) => {
+      const keys = [...store.keys()].filter((k) => k.startsWith(prefix));
+      return Promise.resolve(keys.sort());
+    },
+  };
+
+  const completed: Array<{ runId: string; status: string; reason?: string }> =
+    [];
+  const runMap = new Map<string, ActiveRun>();
+  const data = makeActiveRunData({
+    id: "run-1",
+    instanceId: "dead-inst",
+    status: "running",
+  });
+  runMap.set(data.id, ActiveRun.fromData(data));
+
+  const runTracker = {
+    findAllRunning: () => [...runMap.values()],
+    complete: (runId: string, status: string, reason?: string) => {
+      completed.push({ runId, status, reason });
+    },
+  } as unknown as ReconcileRemoteInterruptedRunsDeps["runTracker"];
+
+  const reaped = await reconcileRemoteInterruptedRuns({
+    controlPlaneStore,
+    instanceId: "self-instance",
+    runTracker,
+  });
+  assertEquals(reaped, 1);
+  assertEquals(completed.length, 1);
+  assertEquals(completed[0].reason, "remote_instance_dead");
+  assertEquals(deleted.includes("heartbeats/dead-inst"), true);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: putIfAbsent error propagates", async () => {
+  const run1 = makeActiveRunData({
+    id: "run-1",
+    instanceId: "dead-inst",
+    status: "running",
+  });
+  const storeEntries: Record<string, unknown> = {
+    "heartbeats/dead-inst": makeHeartbeat("dead-inst", { stale: true }),
+  };
+  const baseStore = createInMemoryControlPlaneStore(storeEntries);
+  const controlPlaneStore: ControlPlaneStore = {
+    ...baseStore,
+    putIfAbsent: () => Promise.reject(new Error("S3 network timeout")),
+  };
+
+  const completed: Array<{ runId: string; status: string; reason?: string }> =
+    [];
+  const runMap = new Map<string, ActiveRun>();
+  runMap.set(run1.id, ActiveRun.fromData(run1));
+  const runTracker = {
+    findAllRunning: () => [...runMap.values()],
+    complete: (runId: string, status: string, reason?: string) => {
+      completed.push({ runId, status, reason });
+    },
+  } as unknown as ReconcileRemoteInterruptedRunsDeps["runTracker"];
+
+  let caught = false;
+  try {
+    await reconcileRemoteInterruptedRuns({
+      controlPlaneStore,
+      instanceId: "self-instance",
+      runTracker,
+    });
+  } catch (err) {
+    caught = true;
+    assertEquals((err as Error).message, "S3 network timeout");
+  }
+  assertEquals(caught, true);
+  assertEquals(completed.length, 0);
+});
+
+// ── cleanupExpiredClaims tests ─────────────────────────────────────────
+
+Deno.test("cleanupExpiredClaims: deletes expired claims", async () => {
+  const expiredClaim = {
+    claimedBy: "inst-a",
+    claimedAt: new Date(Date.now() - CLAIM_TTL_MS - 1000).toISOString(),
+  };
+  const store = createInMemoryControlPlaneStore({
+    "claims/reconcile-instance/dead-1": expiredClaim,
+  });
+  const cleaned = await cleanupExpiredClaims({ controlPlaneStore: store });
+  assertEquals(cleaned, 1);
+  assertEquals(
+    store.deleted.includes("claims/reconcile-instance/dead-1"),
+    true,
+  );
+});
+
+Deno.test("cleanupExpiredClaims: keeps fresh claims", async () => {
+  const freshClaim = {
+    claimedBy: "inst-a",
+    claimedAt: new Date().toISOString(),
+  };
+  const store = createInMemoryControlPlaneStore({
+    "claims/reconcile-instance/dead-1": freshClaim,
+  });
+  const cleaned = await cleanupExpiredClaims({ controlPlaneStore: store });
+  assertEquals(cleaned, 0);
+  assertEquals(store.deleted.length, 0);
+});
+
+Deno.test("cleanupExpiredClaims: deletes corrupt claim records", async () => {
+  const store = createInMemoryControlPlaneStore();
+  store.data.set(
+    "claims/reconcile-instance/bad-1",
+    encoder2.encode("not-valid-json{{{"),
+  );
+  const cleaned = await cleanupExpiredClaims({ controlPlaneStore: store });
+  assertEquals(cleaned, 1);
+});
+
+Deno.test("cleanupExpiredClaims: no-op with empty claims list", async () => {
+  const store = createInMemoryControlPlaneStore({});
+  const cleaned = await cleanupExpiredClaims({ controlPlaneStore: store });
+  assertEquals(cleaned, 0);
 });
 
 // ── hydrateLocalCache tests ─────────────────────────────────────────
