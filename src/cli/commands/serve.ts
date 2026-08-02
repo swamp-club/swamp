@@ -131,6 +131,7 @@ import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import {
+  cleanupExpiredClaims,
   hydrateLocalCache,
   reconcileRemoteInterruptedRuns,
   replayPendingRuns,
@@ -339,6 +340,18 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   if (options.detachRuns) {
     args.push("--detach-runs");
   }
+  if (options.heartbeatInterval) {
+    args.push("--heartbeat-interval", options.heartbeatInterval as string);
+  }
+  if (options.staleTtl) {
+    args.push("--stale-ttl", options.staleTtl as string);
+  }
+  if (options.reconciliationInterval) {
+    args.push(
+      "--reconciliation-interval",
+      options.reconciliationInterval as string,
+    );
+  }
   return args;
 }
 
@@ -510,6 +523,18 @@ const daemonEnableCommand = new Command()
   .option(
     "--detach-runs",
     "Enable durable run mode — runs survive client disconnect and process restart",
+  )
+  .option(
+    "--heartbeat-interval <duration:string>",
+    "Instance heartbeat interval (default: 30s, env: SWAMP_HEARTBEAT_INTERVAL)",
+  )
+  .option(
+    "--stale-ttl <duration:string>",
+    "Heartbeat stale TTL — instance considered dead after this (default: 90s, env: SWAMP_STALE_TTL)",
+  )
+  .option(
+    "--reconciliation-interval <duration:string>",
+    "Peer reconciliation scan interval (default: 60s, env: SWAMP_RECONCILIATION_INTERVAL)",
   )
   .example("Enable daemon", "swamp serve daemon enable")
   .example(
@@ -918,6 +943,25 @@ export const serveCommand = new Command()
       "Without this flag, runs are cancelled on disconnect and lost on restart (the default).",
   )
   .option(
+    "--heartbeat-interval <duration:string>",
+    "How often to write an instance heartbeat to the control-plane store. " +
+      "Accepts seconds (30), explicit units (30s, 1m). Default: 30s. " +
+      "Only used with --detach-runs (env: SWAMP_HEARTBEAT_INTERVAL)",
+  )
+  .option(
+    "--stale-ttl <duration:string>",
+    "How long a heartbeat can go without update before the instance is considered dead. " +
+      "Should be at least 2-3x --heartbeat-interval. " +
+      "Accepts seconds (90), explicit units (90s, 2m). Default: 90s. " +
+      "Only used with --detach-runs (env: SWAMP_STALE_TTL)",
+  )
+  .option(
+    "--reconciliation-interval <duration:string>",
+    "How often to scan for dead peer instances and reconcile their orphaned runs. " +
+      "Accepts seconds (60), explicit units (60s, 2m). Default: 60s. " +
+      "Only used with --detach-runs (env: SWAMP_RECONCILIATION_INTERVAL)",
+  )
+  .option(
     "--hot-reload",
     "Enable SIGHUP-based hot-reload for pulled extension bundles. " +
       "Writes a PID file to .swamp/serve.pid; use 'swamp serve reload' to trigger a reload",
@@ -1001,6 +1045,26 @@ export const serveCommand = new Command()
         ? 0
         : parseTimeout(queueTimeoutRaw, "--queue-timeout");
     }
+
+    const heartbeatIntervalRaw =
+      (options.heartbeatInterval as string | undefined) ??
+        Deno.env.get("SWAMP_HEARTBEAT_INTERVAL") ?? undefined;
+    const heartbeatIntervalMs = heartbeatIntervalRaw !== undefined
+      ? parseTimeout(heartbeatIntervalRaw, "--heartbeat-interval")
+      : undefined;
+
+    const staleTtlRaw = (options.staleTtl as string | undefined) ??
+      Deno.env.get("SWAMP_STALE_TTL") ?? undefined;
+    const staleTtlMs = staleTtlRaw !== undefined
+      ? parseTimeout(staleTtlRaw, "--stale-ttl")
+      : undefined;
+
+    const reconciliationIntervalRaw =
+      (options.reconciliationInterval as string | undefined) ??
+        Deno.env.get("SWAMP_RECONCILIATION_INTERVAL") ?? undefined;
+    const reconciliationIntervalMs = reconciliationIntervalRaw !== undefined
+      ? parseTimeout(reconciliationIntervalRaw, "--reconciliation-interval")
+      : undefined;
 
     const authConfig = buildServeAuthConfig({
       authMode: options.authMode as string | undefined,
@@ -2517,6 +2581,7 @@ export const serveCommand = new Command()
           controlPlaneStore,
           instanceId,
           runTracker,
+          staleTtlMs,
         });
         if (remoteReaped > 0) {
           logger
@@ -2547,9 +2612,51 @@ export const serveCommand = new Command()
         heartbeatService = new InstanceHeartbeatService(
           controlPlaneStore,
           instanceId,
+          heartbeatIntervalMs ? { intervalMs: heartbeatIntervalMs } : undefined,
         );
         await heartbeatService.start();
         logger.info`Instance heartbeat started (id: ${instanceId})`;
+
+        const RECONCILIATION_INTERVAL_MS = reconciliationIntervalMs ?? 60_000;
+        const RECONCILIATION_JITTER_MS = 500;
+        const scheduleReconciliation = () => {
+          const jitter = new Uint32Array(1);
+          crypto.getRandomValues(jitter);
+          const jitterMs = (jitter[0] / 0xFFFFFFFF) * RECONCILIATION_JITTER_MS;
+          const timer = setTimeout(async () => {
+            try {
+              const reaped = await reconcileRemoteInterruptedRuns({
+                controlPlaneStore: controlPlaneStore!,
+                instanceId: instanceId!,
+                runTracker,
+                staleTtlMs,
+              });
+              if (reaped > 0) {
+                logger
+                  .info`Continuous reconciliation reaped ${reaped} run(s)`;
+              }
+            } catch (err: unknown) {
+              logger.warn(
+                "Continuous reconciliation failed: {error}",
+                { error: err instanceof Error ? err.message : String(err) },
+              );
+            }
+            try {
+              await cleanupExpiredClaims({
+                controlPlaneStore: controlPlaneStore!,
+              });
+            } catch (err: unknown) {
+              logger.warn(
+                "Reconciliation claim cleanup failed: {error}",
+                { error: err instanceof Error ? err.message : String(err) },
+              );
+            }
+            scheduleReconciliation();
+          }, RECONCILIATION_INTERVAL_MS + jitterMs);
+          Deno.unrefTimer(timer);
+        };
+        scheduleReconciliation();
+        logger.info("Continuous reconciliation timer started");
       }
 
       // Periodically reap stale fire-records so they don't accumulate

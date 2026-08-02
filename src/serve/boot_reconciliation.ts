@@ -400,6 +400,8 @@ export async function replayPendingRuns(
 
 // ── Remote Interrupted Run Reconciliation ─────────────────────────────
 
+export const CLAIM_TTL_MS = 5 * 60 * 1000;
+
 export interface ReconcileRemoteInterruptedRunsDeps {
   controlPlaneStore: ControlPlaneStore;
   instanceId: string;
@@ -412,6 +414,12 @@ export interface ReconcileRemoteInterruptedRunsDeps {
  * Scan heartbeats from the control-plane store and interrupt runs
  * belonging to instances that have gone stale (crashed / lost network).
  *
+ * When putIfAbsent is available, claims each stale instance before
+ * reaping to prevent multiple instances from reconciling the same peer.
+ * Heartbeat deletion is deferred until after runs are reaped so that
+ * a crash mid-reconciliation leaves the heartbeat for another instance
+ * to pick up once the claim expires.
+ *
  * Returns the number of runs reaped.
  */
 export async function reconcileRemoteInterruptedRuns(
@@ -420,39 +428,56 @@ export async function reconcileRemoteInterruptedRuns(
   const heartbeatKeys = await deps.controlPlaneStore.list("heartbeats/");
   if (heartbeatKeys.length === 0) return 0;
 
-  const staleInstanceIds: string[] = [];
+  const staleInstances: Array<{ instanceId: string; heartbeatKey: string }> =
+    [];
   for (const key of heartbeatKeys) {
     const data = await deps.controlPlaneStore.get(key);
     if (!data) continue;
     const record = InstanceHeartbeatService.parseRecord(data);
     if (!record) continue;
-    // Skip our own instance
     if (record.instanceId === deps.instanceId) continue;
     if (InstanceHeartbeatService.isStale(record, deps.staleTtlMs)) {
-      staleInstanceIds.push(record.instanceId);
-      // Clean up the stale heartbeat
-      await deps.controlPlaneStore.delete(key).catch((err: unknown) => {
-        logger.warn(
-          "Failed to delete stale heartbeat for instance {instanceId}: {error}",
-          {
-            instanceId: record.instanceId,
-            error: err instanceof Error ? err.message : String(err),
-          },
-        );
-      });
+      staleInstances.push({ instanceId: record.instanceId, heartbeatKey: key });
     }
   }
 
-  if (staleInstanceIds.length === 0) return 0;
+  if (staleInstances.length === 0) return 0;
 
-  const staleSet = new Set(staleInstanceIds);
+  const claimedInstanceIds: string[] = [];
+  const claimedHeartbeatKeys: string[] = [];
+  for (const { instanceId, heartbeatKey } of staleInstances) {
+    if (deps.controlPlaneStore.putIfAbsent) {
+      const claimKey = `claims/reconcile-instance/${instanceId}`;
+      const claimData = new TextEncoder().encode(JSON.stringify({
+        claimedBy: deps.instanceId,
+        claimedAt: new Date().toISOString(),
+      }));
+      const claimed = await deps.controlPlaneStore.putIfAbsent(
+        claimKey,
+        claimData,
+      );
+      if (!claimed) {
+        logger.debug(
+          "Skipping stale instance {instanceId}: already claimed by another instance",
+          { instanceId },
+        );
+        continue;
+      }
+    }
+    claimedInstanceIds.push(instanceId);
+    claimedHeartbeatKeys.push(heartbeatKey);
+  }
+
+  if (claimedInstanceIds.length === 0) return 0;
+
+  const claimedSet = new Set(claimedInstanceIds);
   const allRunning = deps.runTracker.findAllRunning();
   let reaped = 0;
 
   for (const run of allRunning) {
     if (!run.instanceId) continue;
     if (run.status !== "running") continue;
-    if (!staleSet.has(run.instanceId)) continue;
+    if (!claimedSet.has(run.instanceId)) continue;
     deps.runTracker.complete(run.id, "failed", "remote_instance_dead");
     reaped++;
     logger.warn(
@@ -461,7 +486,52 @@ export async function reconcileRemoteInterruptedRuns(
     );
   }
 
+  for (const key of claimedHeartbeatKeys) {
+    await deps.controlPlaneStore.delete(key).catch((err: unknown) => {
+      logger.warn(
+        "Failed to delete stale heartbeat {key}: {error}",
+        {
+          key,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      );
+    });
+  }
+
   return reaped;
+}
+
+// ── Reconciliation Claim Cleanup ────────────────────────────────────
+
+export interface CleanupExpiredClaimsDeps {
+  controlPlaneStore: ControlPlaneStore;
+}
+
+export async function cleanupExpiredClaims(
+  deps: CleanupExpiredClaimsDeps,
+): Promise<number> {
+  const claimKeys = await deps.controlPlaneStore.list(
+    "claims/reconcile-instance/",
+  );
+  let cleaned = 0;
+  for (const key of claimKeys) {
+    const data = await deps.controlPlaneStore.get(key);
+    if (!data) continue;
+    try {
+      const claim = JSON.parse(new TextDecoder().decode(data)) as {
+        claimedAt: string;
+      };
+      const age = Date.now() - new Date(claim.claimedAt).getTime();
+      if (Number.isNaN(age) || age > CLAIM_TTL_MS) {
+        await deps.controlPlaneStore.delete(key);
+        cleaned++;
+      }
+    } catch {
+      await deps.controlPlaneStore.delete(key).catch(() => {});
+      cleaned++;
+    }
+  }
+  return cleaned;
 }
 
 async function loadAttrsForType(

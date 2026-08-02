@@ -108,6 +108,26 @@ Deno.test("collectServeExtraArgs: skips --ws-idle-timeout when not set", () => {
   assertEquals(args, []);
 });
 
+Deno.test("collectServeExtraArgs: includes --heartbeat-interval", () => {
+  const args = collectServeExtraArgs({ heartbeatInterval: "15s" });
+  assertEquals(args, ["--heartbeat-interval", "15s"]);
+});
+
+Deno.test("collectServeExtraArgs: includes --stale-ttl", () => {
+  const args = collectServeExtraArgs({ staleTtl: "2m" });
+  assertEquals(args, ["--stale-ttl", "2m"]);
+});
+
+Deno.test("collectServeExtraArgs: includes --reconciliation-interval", () => {
+  const args = collectServeExtraArgs({ reconciliationInterval: "30s" });
+  assertEquals(args, ["--reconciliation-interval", "30s"]);
+});
+
+Deno.test("collectServeExtraArgs: skips reconciliation flags when not set", () => {
+  const args = collectServeExtraArgs({ detachRuns: true });
+  assertEquals(args, ["--detach-runs"]);
+});
+
 Deno.test("collectServeExtraArgs: combines multiple flags", () => {
   const args = collectServeExtraArgs({
     schedule: false,
