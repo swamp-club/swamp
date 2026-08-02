@@ -36,6 +36,7 @@ import type { FileSystemUnifiedDataRepository } from "../infrastructure/persiste
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import { InstanceHeartbeatService } from "./instance_heartbeat.ts";
+import { cleanupActiveRunsForInstance } from "./active_run_tracker.ts";
 import type { PendingRunEntry } from "../infrastructure/persistence/run_tracker_store.ts";
 
 const logger = getSwampLogger(["serve", "boot-reconciliation"]);
@@ -484,6 +485,19 @@ export async function reconcileRemoteInterruptedRuns(
       "Reaped run {runId} from dead remote instance {instanceId}",
       { runId: run.id, instanceId: run.instanceId },
     );
+  }
+
+  for (const claimedId of claimedInstanceIds) {
+    const activeRunsCleaned = await cleanupActiveRunsForInstance(
+      deps.controlPlaneStore,
+      claimedId,
+    );
+    if (activeRunsCleaned > 0) {
+      logger.info(
+        "Cleaned up {count} stale active-run records for instance {instanceId}",
+        { count: activeRunsCleaned, instanceId: claimedId },
+      );
+    }
   }
 
   for (const key of claimedHeartbeatKeys) {

@@ -89,6 +89,11 @@ import {
 } from "../../infrastructure/tracing/mod.ts";
 import { RunEventBuffer } from "../run_event_buffer.ts";
 import {
+  deleteActiveRun,
+  rekeyActiveRun,
+  writeActiveRun,
+} from "../active_run_tracker.ts";
+import {
   authorizeOrReject,
   type ConnectionContext,
   sanitizeErrorForClient,
@@ -216,7 +221,21 @@ export async function handleWorkflowRun(
             const domainRunId = (event as { runId: string }).runId;
             if (domainRunId && domainRunId !== runId) {
               if (registry.rekey(runId, domainRunId)) {
+                const oldRunId = runId;
                 runId = domainRunId;
+                if (ctx.controlPlaneStore && ctx.instanceId) {
+                  rekeyActiveRun(
+                    ctx.controlPlaneStore,
+                    ctx.instanceId,
+                    oldRunId,
+                    domainRunId,
+                    {
+                      resourceName: payload.workflowIdOrName,
+                      runKind: "workflow-run",
+                      startedAt: startedAt.toISOString(),
+                    },
+                  );
+                }
               }
             }
           }
@@ -245,9 +264,13 @@ export async function handleWorkflowRun(
       }
     } finally {
       registry.deregister(runId);
+      if (ctx.controlPlaneStore && ctx.instanceId) {
+        deleteActiveRun(ctx.controlPlaneStore, ctx.instanceId, runId);
+      }
     }
   })();
 
+  const startedAt = new Date();
   try {
     registry.register({
       runId,
@@ -255,7 +278,7 @@ export async function handleWorkflowRun(
       resourceName: payload.workflowIdOrName,
       buffer,
       controller: runController,
-      startedAt: new Date(),
+      startedAt,
       completion,
     });
   } catch {
@@ -267,6 +290,14 @@ export async function handleWorkflowRun(
       `Too many concurrent runs; wait for active runs to complete`,
     );
     return;
+  }
+
+  if (ctx.controlPlaneStore && ctx.instanceId) {
+    writeActiveRun(ctx.controlPlaneStore, ctx.instanceId, runId, {
+      resourceName: payload.workflowIdOrName,
+      runKind: "workflow-run",
+      startedAt: startedAt.toISOString(),
+    });
   }
 
   await subscribeUntilDetach(buffer, socket, requestId, controller);
@@ -1144,9 +1175,13 @@ export async function handleWorkflowResume(
     } finally {
       ephemeral?.dispose();
       registry.deregister(runId);
+      if (ctx.controlPlaneStore && ctx.instanceId) {
+        deleteActiveRun(ctx.controlPlaneStore, ctx.instanceId, runId);
+      }
     }
   })();
 
+  const startedAt = new Date();
   try {
     registry.register({
       runId,
@@ -1154,7 +1189,7 @@ export async function handleWorkflowResume(
       resourceName: payload.workflowIdOrName,
       buffer,
       controller: runController,
-      startedAt: new Date(),
+      startedAt,
       completion,
     });
   } catch {
@@ -1166,6 +1201,14 @@ export async function handleWorkflowResume(
       `Too many concurrent runs; wait for active runs to complete`,
     );
     return;
+  }
+
+  if (ctx.controlPlaneStore && ctx.instanceId) {
+    writeActiveRun(ctx.controlPlaneStore, ctx.instanceId, runId, {
+      resourceName: payload.workflowIdOrName,
+      runKind: "workflow-resume",
+      startedAt: startedAt.toISOString(),
+    });
   }
 
   await subscribeUntilDetach(buffer, socket, requestId, controller);

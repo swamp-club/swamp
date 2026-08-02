@@ -25,6 +25,7 @@ import type { RepositoryContext } from "../../infrastructure/persistence/reposit
 import type { DatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { DatastoreSyncService } from "../../domain/datastore/datastore_sync_service.ts";
+import type { ControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
 import type { RunCancelRegistry } from "../run_cancel_registry.ts";
 import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
 import type { ServerMessage } from "../protocol.ts";
@@ -96,6 +97,7 @@ export interface ConnectionContext {
   activeRunRegistry?: import("../active_run_registry.ts").ActiveRunRegistry;
   runTracker?: RunTrackerRepository;
   dispatchService?: import("../dispatch_service.ts").DispatchService;
+  controlPlaneStore?: ControlPlaneStore;
   defaultVault?: string;
   /** HA instance identifier — present when `--detach-runs` is active. */
   instanceId?: string;

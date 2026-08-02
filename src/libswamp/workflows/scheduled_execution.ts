@@ -115,6 +115,11 @@ export interface PendingRunHook {
   delete(id: string): void;
 }
 
+export interface ActiveRunHook {
+  write(runId: string, resourceName: string, runKind: string): void;
+  delete(runId: string): void;
+}
+
 /**
  * Callback for cross-instance cron fire dedup. Returns true if this
  * instance should execute, false if another instance already claimed
@@ -131,6 +136,7 @@ export interface ScheduledExecutionDeps {
   repoDir: string;
   executeWorkflow: WorkflowExecutor;
   pendingRunHook?: PendingRunHook;
+  activeRunHook?: ActiveRunHook;
   cronFireDedup?: CronFireDedupCallback;
 }
 
@@ -426,9 +432,9 @@ export class ScheduledExecutionService {
     // During this narrow window cancelByRunId() cannot match this run;
     // the window closes as soon as executeWorkflow emits "started".
     this.running.set(workflowId, { controller, runId: "" });
+    let runId = "";
 
     try {
-      let runId = "";
       let completedRun: WorkflowRunView | undefined;
       let streamError: string | undefined;
 
@@ -443,6 +449,11 @@ export class ScheduledExecutionService {
               if (event.kind === "started") {
                 runId = event.runId;
                 this.running.set(workflowId, { controller, runId });
+                this.deps.activeRunHook?.write(
+                  runId,
+                  workflowName,
+                  "workflow-run",
+                );
               }
               if (event.kind === "completed") {
                 completedRun = event.run;
@@ -517,6 +528,9 @@ export class ScheduledExecutionService {
       );
     } finally {
       this.running.delete(workflowId);
+      if (runId) {
+        this.deps.activeRunHook?.delete(runId);
+      }
     }
   }
 

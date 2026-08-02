@@ -79,6 +79,10 @@ import { parseWebhookFlag, WebhookService } from "../../serve/webhook.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
+import {
+  deleteActiveRun,
+  writeActiveRun,
+} from "../../serve/active_run_tracker.ts";
 import { RunCancelRegistry } from "../../serve/run_cancel_registry.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
@@ -1718,6 +1722,7 @@ export const serveCommand = new Command()
         activeRunRegistry,
         runTracker,
         dispatchService,
+        controlPlaneStore,
         defaultVault: repoMarker?.defaultVault,
         instanceId,
       };
@@ -1777,6 +1782,23 @@ export const serveCommand = new Command()
                   );
                 });
               }
+            },
+          }
+          : undefined,
+        activeRunHook: controlPlaneStore && instanceId
+          ? {
+            write: (runId: string, resourceName: string, runKind: string) => {
+              writeActiveRun(controlPlaneStore, instanceId, runId, {
+                resourceName,
+                runKind: runKind as
+                  | "workflow-run"
+                  | "workflow-resume"
+                  | "method-run",
+                startedAt: new Date().toISOString(),
+              });
+            },
+            delete: (runId: string) => {
+              deleteActiveRun(controlPlaneStore, instanceId, runId);
             },
           }
           : undefined,
