@@ -108,7 +108,7 @@ export interface ModelMethodResolver {
  * 6. No cyclic dependencies between jobs
  * 7. No cyclic dependencies between steps within jobs
  * 8. Step inputs match method/workflow required arguments
- * 9. GlobalArgument expressions reference declared workflow inputs
+ * 9. GlobalArgument expressions reference inputs supplied by the step
  */
 export interface WorkflowValidationService {
   /**
@@ -161,7 +161,7 @@ export class DefaultWorkflowValidationService
       results.push(...await this.validateStepInputs(workflow));
     }
 
-    // 9. GlobalArgument expressions reference declared workflow inputs
+    // 9. GlobalArgument expressions reference inputs supplied by the step
     if (this.methodResolver) {
       results.push(
         ...await this.validateGlobalArgInputRefs(workflow),
@@ -602,9 +602,6 @@ export class DefaultWorkflowValidationService
     workflow: Workflow,
   ): Promise<WorkflowValidationResult[]> {
     const results: WorkflowValidationResult[] = [];
-    const declaredInputs = new Set(
-      Object.keys(workflow.inputs?.properties ?? {}),
-    );
 
     for (const job of workflow.jobs) {
       for (const step of job.steps) {
@@ -618,6 +615,9 @@ export class DefaultWorkflowValidationService
         if (!modelRef) continue;
         if (modelRef.includes("${{")) continue;
         if (taskData.modelType?.includes("${{")) continue;
+
+        // Dynamic step inputs cannot be statically analysed
+        if (typeof taskData.inputs === "string") continue;
 
         const checkName =
           `GlobalArgument input references for '${step.name}' in job '${job.name}' (${modelRef}.${taskData.methodName})`;
@@ -644,15 +644,18 @@ export class DefaultWorkflowValidationService
           continue;
         }
 
+        const stepInputs = new Set(
+          Object.keys(taskData.inputs ?? {}),
+        );
         const missing = [...referencedInputs].filter(
-          (name) => !declaredInputs.has(name),
+          (name) => !stepInputs.has(name),
         );
 
         if (missing.length > 0) {
           results.push(
             WorkflowValidationResult.fail(
               checkName,
-              `Model definition references undeclared workflow input(s): ${
+              `Model definition references input(s) not supplied by step: ${
                 missing.join(", ")
               }`,
             ),
