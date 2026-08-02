@@ -732,3 +732,59 @@ Deno.test("installAndLoad: emits noStableVersion when latestVersion is null", as
   );
   assertEquals(installer.installCalls.length, 0);
 });
+
+Deno.test("updateAllowedCollectives: allows previously untrusted collective", async () => {
+  const output = createMockOutput();
+  const installer = createMockInstaller();
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup(),
+    extensionInstaller: installer,
+    output,
+  });
+
+  const result1 = await resolver.resolve("@acme/widgets/foo");
+  assertEquals(result1, false);
+  assertEquals(
+    output.calls.filter((c) => c.startsWith("collectiveNotTrusted")).length,
+    1,
+  );
+
+  resolver.updateAllowedCollectives(["swamp", "acme"]);
+
+  const result2 = await resolver.resolve("@acme/widgets/foo");
+  assertEquals(result2, false);
+  assertEquals(output.calls.filter((c) => c.startsWith("notFound")).length, 1);
+});
+
+Deno.test("updateAllowedCollectives: clears warned-untrusted set", async () => {
+  const output = createMockOutput();
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup(),
+    extensionInstaller: createMockInstaller(),
+    output,
+  });
+
+  await resolver.resolve("@acme/widgets/foo");
+  assertEquals(
+    output.calls.filter((c) => c.startsWith("collectiveNotTrusted")).length,
+    1,
+  );
+
+  await resolver.resolve("@acme/widgets/bar");
+  assertEquals(
+    output.calls.filter((c) => c.startsWith("collectiveNotTrusted")).length,
+    1,
+    "second resolve should not re-warn for same collective",
+  );
+
+  resolver.updateAllowedCollectives(["swamp"]);
+
+  await resolver.resolve("@acme/widgets/baz");
+  assertEquals(
+    output.calls.filter((c) => c.startsWith("collectiveNotTrusted")).length,
+    2,
+    "after updateAllowedCollectives, warn hint should fire again",
+  );
+});
