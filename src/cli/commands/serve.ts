@@ -951,7 +951,7 @@ export const serveCommand = new Command()
   .option(
     "--stale-ttl <duration:string>",
     "How long a heartbeat can go without update before the instance is considered dead. " +
-      "Should be at least 2-3x --heartbeat-interval. " +
+      "Must be at least 2x --heartbeat-interval (values below this are rejected). " +
       "Accepts seconds (90), explicit units (90s, 2m). Default: 90s. " +
       "Only used with --detach-runs (env: SWAMP_STALE_TTL)",
   )
@@ -1590,22 +1590,23 @@ export const serveCommand = new Command()
     if (!detachRuns) {
       if (heartbeatIntervalMs !== undefined) {
         logger.warn(
-          "--heartbeat-interval is set but --detach-runs is not active — setting will have no effect",
+          "--heartbeat-interval is set but --detach-runs is not active — heartbeat-interval will have no effect",
         );
       }
       if (staleTtlMs !== undefined) {
         logger.warn(
-          "--stale-ttl is set but --detach-runs is not active — setting will have no effect",
+          "--stale-ttl is set but --detach-runs is not active — stale-ttl will have no effect",
         );
       }
       if (reconciliationIntervalMs !== undefined) {
         logger.warn(
-          "--reconciliation-interval is set but --detach-runs is not active — setting will have no effect",
+          "--reconciliation-interval is set but --detach-runs is not active — reconciliation-interval will have no effect",
         );
       }
     }
 
     if (
+      detachRuns &&
       staleTtlMs !== undefined && heartbeatIntervalMs !== undefined &&
       staleTtlMs < heartbeatIntervalMs * 2
     ) {
