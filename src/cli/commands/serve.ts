@@ -73,6 +73,7 @@ import {
 import { groupCommandAction } from "../group_action.ts";
 import {
   normalizeFireTime,
+  resolveTrustedCollectives,
   ScheduledExecutionService,
 } from "../../libswamp/mod.ts";
 import { parseWebhookFlag, WebhookService } from "../../serve/webhook.ts";
@@ -148,6 +149,8 @@ import {
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { requireAuthenticated, requireScope } from "../auth_context.ts";
+import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
+import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -767,10 +770,32 @@ async function reloadPulledExtensions(
   }
 }
 
+async function reloadTrustedCollectives(
+  repoDir: string,
+): Promise<void> {
+  const markerRepo = new RepoMarkerRepository();
+  const marker = await markerRepo.read(RepoPath.create(repoDir));
+
+  let authCollectives: string[] | undefined;
+  try {
+    const authRepo = new AuthRepository();
+    const creds = await authRepo.load();
+    authCollectives = creds?.collectives;
+  } catch {
+    // Auth file unreadable — continue without membership collectives
+  }
+
+  const collectives = resolveTrustedCollectives(marker, authCollectives);
+  const resolver = getAutoResolver();
+  if (resolver) {
+    resolver.updateAllowedCollectives(collectives);
+  }
+}
+
 const reloadCommand = new Command()
   .name("reload")
   .description(
-    "Reload pulled extension bundles on a running serve process.\n\n" +
+    "Reload pulled extension bundles and refresh the trust list on a running serve process.\n\n" +
       "Reads .swamp/serve.pid and sends SIGHUP to trigger hot-reload. " +
       "Requires the serve process to be running with --hot-reload.",
   )
@@ -2413,8 +2438,19 @@ export const serveCommand = new Command()
         reloading = true;
         logger.info("SIGHUP received, reloading pulled extensions...");
         reloadPulledExtensions(resolvedRepoDir, extensionLockfilePath)
-          .then((count) => {
+          .then(async (count) => {
             logger.info`Hot-reloaded ${count} type(s)`;
+            try {
+              await reloadTrustedCollectives(resolvedRepoDir);
+              logger.info("Trust list refreshed from .swamp.yaml");
+            } catch (err) {
+              logger.warn(
+                "Failed to refresh trust list, keeping current config: {error}",
+                {
+                  error: err instanceof Error ? err.message : String(err),
+                },
+              );
+            }
           })
           .catch((err) => {
             logger.error(

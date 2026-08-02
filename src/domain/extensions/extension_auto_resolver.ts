@@ -182,6 +182,11 @@ export class ExtensionAutoResolver {
     this.config = config;
   }
 
+  updateAllowedCollectives(collectives: string[]): void {
+    this.config.allowedCollectives = collectives;
+    this.warnedUntrusted.clear();
+  }
+
   /**
    * Attempts to resolve an unknown type by finding and installing
    * the extension that provides it.
