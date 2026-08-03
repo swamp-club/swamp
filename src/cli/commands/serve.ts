@@ -1303,8 +1303,10 @@ export const serveCommand = new Command()
           ? { kind: "remote", type: remoteVault.type }
           : { kind: "local" };
       }
-    } catch {
-      // No vaults directory or unreadable — treat as "none"
+    } catch (e: unknown) {
+      logger.warn("Could not probe vault configuration: {error}", {
+        error: e instanceof Error ? e.message : String(e),
+      });
     }
 
     const deploymentMode = resolveDeploymentMode(datastoreClass, vaultClass);
@@ -2520,7 +2522,7 @@ export const serveCommand = new Command()
         // Readiness endpoint — returns 200 only after full startup
         if (req.method === "GET" && new URL(req.url).pathname === "/ready") {
           if (!isReady) {
-            return new Response("Service Unavailable", { status: 503 });
+            return Response.json({ status: "not_ready" }, { status: 503 });
           }
           return Response.json({ status: "ready", mode: deploymentMode.mode });
         }
