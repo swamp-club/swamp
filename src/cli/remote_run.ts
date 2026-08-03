@@ -638,7 +638,7 @@ async function* streamServerRun(
     type: "run.attach";
     payload: { runId: string; afterSeq: number };
   } = request;
-  const logger = getReconnectLogger(options);
+  const logger = getReconnectLogger();
 
   while (true) {
     let outcome: StreamOutcome;
@@ -657,7 +657,14 @@ async function* streamServerRun(
     } catch (err) {
       if (
         !state.runId || err instanceof DOMException ||
-        err instanceof UserError
+        err instanceof UserError || !(err instanceof Error)
+      ) {
+        throw err;
+      }
+      const msg = err.message ?? "";
+      if (
+        !msg.includes("connect") && !msg.includes("closed") &&
+        !msg.includes("Connection")
       ) {
         throw err;
       }
@@ -721,12 +728,12 @@ async function* streamServerRun(
   }
 }
 
-function getReconnectLogger(
-  _options: ServerRunOptions,
-): (msg: string) => void {
+function getReconnectLogger(): (msg: string) => void {
+  const isTty = Deno.stderr.isTerminal();
   return (msg: string) => {
     try {
-      Deno.stderr.writeSync(new TextEncoder().encode(`\r\x1b[K${msg}\n`));
+      const prefix = isTty ? "\r\x1b[K" : "";
+      Deno.stderr.writeSync(new TextEncoder().encode(`${prefix}${msg}\n`));
     } catch {
       // Ignore write errors (piped, closed, etc.)
     }
@@ -736,10 +743,14 @@ function getReconnectLogger(
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) return Promise.reject(signal.reason);
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener("abort", () => {
+    const onAbort = () => {
       clearTimeout(timer);
-      reject(signal.reason);
-    }, { once: true });
+      reject(signal!.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
