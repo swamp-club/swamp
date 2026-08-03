@@ -160,6 +160,13 @@ import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { requireAuthenticated, requireScope } from "../auth_context.ts";
 import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
+import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
+import {
+  type DatastoreClassification,
+  resolveDeploymentMode,
+  type VaultClassification,
+} from "../../domain/serve/deployment_mode.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -1276,6 +1283,58 @@ export const serveCommand = new Command()
       reportRegistry.ensureLoaded(),
     ]);
 
+    // Probe deployment stack and resolve durability mode.
+    const datastoreClass: DatastoreClassification =
+      isCustomDatastoreConfig(datastoreConfig)
+        ? {
+          kind: "remote",
+          type: datastoreConfig.type,
+          hasControlPlane: !!syncService?.capabilities?.().controlPlane,
+        }
+        : { kind: "filesystem" };
+
+    let vaultClass: VaultClassification = { kind: "none" };
+    try {
+      const vaultRepo = new YamlVaultConfigRepository(resolvedRepoDir);
+      const vaults = await vaultRepo.findAll();
+      if (vaults.length > 0) {
+        const remoteVault = vaults.find((v) => v.type !== "local_encryption");
+        vaultClass = remoteVault
+          ? { kind: "remote", type: remoteVault.type }
+          : { kind: "local" };
+      }
+    } catch {
+      // No vaults directory or unreadable — treat as "none"
+    }
+
+    const deploymentMode = resolveDeploymentMode(datastoreClass, vaultClass);
+
+    if (datastoreClass.kind === "remote") {
+      const cpLabel = datastoreClass.hasControlPlane
+        ? "available"
+        : "not available";
+      logger.info(
+        `Datastore: ${datastoreClass.type} (control-plane: ${cpLabel})`,
+      );
+    } else {
+      logger.info("Datastore: filesystem");
+    }
+    if (vaultClass.kind === "remote") {
+      logger.info(`Vault: ${vaultClass.type}`);
+    }
+    for (const warning of deploymentMode.warnings) {
+      logger.warn(warning);
+    }
+    if (deploymentMode.mode === "durable") {
+      logger.info("Mode: durable — runs survive instance replacement");
+    } else if (deploymentMode.mode === "durable (limited)") {
+      logger.info(
+        "Mode: durable (limited) — runs survive but secret-dependent workflows may fail",
+      );
+    } else {
+      logger.info("Mode: local — runs survive process restart");
+    }
+
     const grantReloadMode = merged.grantReload;
     if (grantReloadMode !== "manual" && grantReloadMode !== "auto") {
       throw new UserError(
@@ -2166,6 +2225,8 @@ export const serveCommand = new Command()
       wsUpgradeOpts.idleTimeout = wsIdleTimeoutSeconds;
     }
 
+    let isReady = !detachRuns;
+
     const wsScheme = tlsEnabled ? "wss" : "ws";
     const server = Deno.serve(
       {
@@ -2183,6 +2244,7 @@ export const serveCommand = new Command()
               url: `${wsScheme}://${hostname}:${listenPort}`,
               schedulingEnabled: enableSchedule,
               detachRuns,
+              mode: deploymentMode.mode,
             }));
           } else {
             logger.info("WebSocket API server listening on {url}", {
@@ -2453,6 +2515,14 @@ export const serveCommand = new Command()
           return new Response(JSON.stringify(authInfo), {
             headers: { "content-type": "application/json" },
           });
+        }
+
+        // Readiness endpoint — returns 200 only after full startup
+        if (req.method === "GET" && new URL(req.url).pathname === "/ready") {
+          if (!isReady) {
+            return new Response("Service Unavailable", { status: 503 });
+          }
+          return Response.json({ status: "ready", mode: deploymentMode.mode });
         }
 
         // Health check endpoint
@@ -2815,6 +2885,9 @@ export const serveCommand = new Command()
         );
         Deno.unrefTimer(reaperTimer);
       }
+
+      isReady = true;
+      logger.info("Startup complete — /ready is now serving 200");
     }
 
     await server.finished;
