@@ -195,6 +195,39 @@ Deno.test("loadServeConfig: array config file produces error", () => {
   });
 });
 
+Deno.test("loadServeConfig: non-string grant-reload produces error", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { "grant-reload": 42 });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "Invalid grant-reload",
+    );
+  });
+});
+
+Deno.test("loadServeConfig: non-string auth.mode produces error", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { auth: { mode: true } });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "Invalid auth.mode",
+    );
+  });
+});
+
+Deno.test("loadServeConfig: non-string tls.cert-file produces error", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { tls: { "cert-file": 123 } });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "Invalid tls.cert-file",
+    );
+  });
+});
+
 Deno.test("loadServeConfig: webhook missing route produces error", () => {
   withTempDir((dir) => {
     writeConfig(dir, {
