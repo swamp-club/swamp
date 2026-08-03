@@ -648,6 +648,7 @@ export async function* modelMethodRun(
               modelVersion: modelDef.version,
               triggeredBy: "manual",
               initiatedBy: input.initiatedBy,
+              bundleFingerprint: modelDef.sourceFingerprint,
             },
           });
           output.markRunning(Deno.pid);

@@ -79,6 +79,7 @@ export const ExecutionProvenanceSchema = z.object({
   parentOutputId: z.string().uuid().optional(),
   callerExtension: z.string().optional(),
   initiatedBy: z.string().optional(),
+  bundleFingerprint: z.string().optional(),
 });
 
 /**

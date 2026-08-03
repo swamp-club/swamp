@@ -308,6 +308,13 @@ export class ExtensionLoader {
           continue;
         }
 
+        let fingerprint: string | undefined;
+        try {
+          fingerprint = await computeSourceFingerprint(absolutePath, baseDir);
+        } catch {
+          // Non-fatal — fingerprint is best-effort on cold load
+        }
+
         this.adapter.register(
           typeNormalized,
           validated,
@@ -319,6 +326,7 @@ export class ExtensionLoader {
               absolutePath,
               this.repoDir,
             ),
+            sourceFingerprint: fingerprint,
           },
         );
         result.loaded.push(file);
@@ -764,6 +772,7 @@ export class ExtensionLoader {
           entry.source_path,
           this.repoDir,
         ),
+        sourceFingerprint: entry.source_fingerprint || undefined,
       },
     );
   }
@@ -1022,7 +1031,13 @@ export class ExtensionLoader {
               absolutePath,
               this.repoDir,
             ),
+            sourceFingerprint: effectiveFingerprint,
           },
+        );
+      } else if (this.adapter.updateSourceFingerprint) {
+        this.adapter.updateSourceFingerprint(
+          typeNormalized,
+          effectiveFingerprint,
         );
       }
 

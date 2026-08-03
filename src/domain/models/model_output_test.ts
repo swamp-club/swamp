@@ -573,3 +573,48 @@ Deno.test("ModelOutput.isComplete: returns true for cancelled", () => {
 
   assertEquals(output.isComplete, true);
 });
+
+// bundleFingerprint provenance round-trip tests
+
+Deno.test("ModelOutput toData/fromData round-trips bundleFingerprint", () => {
+  const provenance: ExecutionProvenance = {
+    definitionHash: "hash123",
+    modelVersion: "2026.02.09.3",
+    triggeredBy: "manual",
+    bundleFingerprint: "sha256:deadbeef",
+  };
+  const output = ModelOutput.create({
+    definitionId: createDefinitionId(crypto.randomUUID()),
+    methodName: "create",
+    status: "running",
+    provenance,
+  });
+  output.markSucceeded();
+
+  const data = output.toData();
+  const restored = ModelOutput.fromData(data);
+
+  assertEquals(restored.provenance.bundleFingerprint, "sha256:deadbeef");
+});
+
+Deno.test("ModelOutput fromData: missing bundleFingerprint defaults to undefined", () => {
+  const data = {
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    definitionId: "660e8400-e29b-41d4-a716-446655440000",
+    methodName: "create",
+    status: "succeeded" as const,
+    startedAt: "2023-01-01T00:00:00.000Z",
+    completedAt: "2023-01-01T00:00:05.000Z",
+    durationMs: 5000,
+    retryCount: 0,
+    provenance: {
+      definitionHash: "hash",
+      modelVersion: "2026.02.09.1",
+      triggeredBy: "manual" as const,
+    },
+  };
+
+  const output = ModelOutput.fromData(data);
+
+  assertEquals(output.provenance.bundleFingerprint, undefined);
+});

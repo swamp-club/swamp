@@ -458,6 +458,7 @@ export const modelKindAdapter: KindAdapter = {
       context.repoDir,
     );
     modelDef.extensionName = context.extensionName;
+    modelDef.sourceFingerprint = context.sourceFingerprint;
 
     let bundlePromise: Promise<string> | undefined;
     modelDef.bundleSourceFactory = () => {
@@ -490,6 +491,13 @@ export const modelKindAdapter: KindAdapter = {
     });
   },
 
+  updateSourceFingerprint(typeNormalized: string, fingerprint: string): void {
+    const modelDef = modelRegistry.get(typeNormalized);
+    if (modelDef) {
+      modelDef.sourceFingerprint = fingerprint;
+    }
+  },
+
   promoteFromLazy(
     _typeNormalized: string,
     validated: Record<string, unknown>,
@@ -503,6 +511,7 @@ export const modelKindAdapter: KindAdapter = {
       context.repoDir,
     );
     modelDef.extensionName = context.extensionName;
+    modelDef.sourceFingerprint = context.sourceFingerprint;
 
     let bundlePromise: Promise<string> | undefined;
     modelDef.bundleSourceFactory = () => {
