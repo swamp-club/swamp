@@ -40,3 +40,14 @@ export {
   type WebhookEventHandler,
   WebhookService,
 } from "./webhook.ts";
+export {
+  type EnvLookup,
+  loadServeConfig,
+  type MergedServeOptions,
+  mergeServeOptions,
+  parseExplicitFlags,
+  parseWebhookConfig,
+  SERVE_ENV_MAP,
+  type ServeConfigFile,
+  type WebhookConfigEntry,
+} from "./serve_config.ts";

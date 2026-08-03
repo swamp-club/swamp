@@ -77,6 +77,11 @@ import {
   ScheduledExecutionService,
 } from "../../libswamp/mod.ts";
 import { parseWebhookFlag, WebhookService } from "../../serve/webhook.ts";
+import {
+  loadServeConfig,
+  mergeServeOptions,
+  parseExplicitFlags,
+} from "../../serve/serve_config.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
@@ -284,6 +289,9 @@ export function validateWebSocketOrigin(
 
 export function collectServeExtraArgs(options: AnyOptions): string[] {
   const args: string[] = [];
+  if (options.config) {
+    args.push("--config", options.config as string);
+  }
   if (options.schedule === false) {
     args.push("--no-schedule");
   }
@@ -448,6 +456,10 @@ const daemonEnableCommand = new Command()
   .option(
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
+  )
+  .option(
+    "--config <path:string>",
+    "Path to serve config file (default: .swamp/serve.yaml)",
   )
   .option("--port <port:number>", "Port for the daemon to listen on", {
     default: 9090,
@@ -868,6 +880,10 @@ export const serveCommand = new Command()
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
+  .option(
+    "--config <path:string>",
+    "Path to serve config file (default: .swamp/serve.yaml)",
+  )
   .option("--port <port:number>", "Port to listen on", { default: 9090 })
   .option("--host <host:string>", "Host to bind to", { default: "127.0.0.1" })
   .option("--no-schedule", "Disable scheduled workflow execution")
@@ -1028,14 +1044,21 @@ export const serveCommand = new Command()
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["serve"]);
     const repoDir = resolveRepoDir(options.repoDir as string | undefined);
-    const port = options.port as number;
-    const host = options.host as string;
     const isJson = ctx.outputMode === "json";
 
-    const certFile = (options.certFile as string | undefined) ??
-      Deno.env.get("SWAMP_SERVE_CERT_FILE") ?? undefined;
-    const keyFile = (options.keyFile as string | undefined) ??
-      Deno.env.get("SWAMP_SERVE_KEY_FILE") ?? undefined;
+    // Load config file and merge with CLI flags (four-level priority:
+    // CLI flag > env var > config file > default)
+    const configFile = loadServeConfig(
+      options.config as string | undefined,
+      repoDir,
+    );
+    const explicitFlags = parseExplicitFlags(Deno.args);
+    const merged = mergeServeOptions(configFile, options, explicitFlags);
+
+    const port = merged.port;
+    const host = merged.host;
+    const certFile = merged.certFile;
+    const keyFile = merged.keyFile;
 
     if ((certFile && !keyFile) || (!certFile && keyFile)) {
       throw new Error(
@@ -1050,10 +1073,9 @@ export const serveCommand = new Command()
       key = await Deno.readTextFile(keyFile);
     }
     const tlsEnabled = cert !== undefined;
-    const trustProxy = options.trustProxy === true;
+    const trustProxy = merged.trustProxy;
 
-    const wsIdleTimeoutRaw = (options.wsIdleTimeout as string | undefined) ??
-      Deno.env.get("SWAMP_WS_IDLE_TIMEOUT") ?? undefined;
+    const wsIdleTimeoutRaw = merged.wsIdleTimeout;
     let wsIdleTimeoutSeconds: number | undefined;
     if (wsIdleTimeoutRaw !== undefined) {
       if (wsIdleTimeoutRaw === "0") {
@@ -1065,8 +1087,7 @@ export const serveCommand = new Command()
       }
     }
 
-    const queueTimeoutRaw = (options.queueTimeout as string | undefined) ??
-      Deno.env.get("SWAMP_QUEUE_TIMEOUT") ?? undefined;
+    const queueTimeoutRaw = merged.queueTimeout;
     let queueTimeoutMs: number | undefined;
     if (queueTimeoutRaw !== undefined) {
       const normalized = queueTimeoutRaw.trim().replace(/^0[smhdw].*$/i, "0");
@@ -1075,35 +1096,30 @@ export const serveCommand = new Command()
         : parseTimeout(queueTimeoutRaw, "--queue-timeout");
     }
 
-    const heartbeatIntervalRaw =
-      (options.heartbeatInterval as string | undefined) ??
-        Deno.env.get("SWAMP_HEARTBEAT_INTERVAL");
+    const heartbeatIntervalRaw = merged.heartbeatInterval;
     const heartbeatIntervalMs = heartbeatIntervalRaw !== undefined
       ? parseTimeout(heartbeatIntervalRaw, "--heartbeat-interval")
       : undefined;
 
-    const staleTtlRaw = (options.staleTtl as string | undefined) ??
-      Deno.env.get("SWAMP_STALE_TTL");
+    const staleTtlRaw = merged.staleTtl;
     const staleTtlMs = staleTtlRaw !== undefined
       ? parseTimeout(staleTtlRaw, "--stale-ttl")
       : undefined;
 
-    const reconciliationIntervalRaw =
-      (options.reconciliationInterval as string | undefined) ??
-        Deno.env.get("SWAMP_RECONCILIATION_INTERVAL");
+    const reconciliationIntervalRaw = merged.reconciliationInterval;
     const reconciliationIntervalMs = reconciliationIntervalRaw !== undefined
       ? parseTimeout(reconciliationIntervalRaw, "--reconciliation-interval")
       : undefined;
 
     const authConfig = buildServeAuthConfig({
-      authMode: options.authMode as string | undefined,
-      admins: options.admins as string | undefined,
-      allowedCollectives: options.allowedCollectives as string | undefined,
-      allowedUsers: options.allowedUsers as string | undefined,
-      oauthProvider: options.oauthProvider as string | undefined,
-      oauthClientId: options.oauthClientId as string | undefined,
-      groupsField: options.groupsField as string | undefined,
-      restrictedModelTypes: options.restrictedModelTypes as string | undefined,
+      authMode: merged.authMode,
+      admins: merged.admins,
+      allowedCollectives: merged.allowedCollectives,
+      allowedUsers: merged.allowedUsers,
+      oauthProvider: merged.oauthProvider,
+      oauthClientId: merged.oauthClientId,
+      groupsField: merged.groupsField,
+      restrictedModelTypes: merged.restrictedModelTypes,
     });
 
     if (authConfig.mode === "none" && authConfig.admins.length > 0) {
@@ -1138,8 +1154,7 @@ export const serveCommand = new Command()
 
     assertOffLoopbackSecurity(host, tlsEnabled, authConfig.mode);
 
-    const trustedHostsRaw = (options.trustedHosts as string | undefined) ??
-      Deno.env.get("SWAMP_TRUSTED_HOSTS") ?? undefined;
+    const trustedHostsRaw = merged.trustedHosts;
     const trustedHosts = trustedHostsRaw
       ? trustedHostsRaw.split(",").map((h) => h.trim()).filter((h) =>
         h.length > 0
@@ -1197,8 +1212,7 @@ export const serveCommand = new Command()
       bundles: bundleRegistry,
       queueTimeoutMs,
     });
-    const verifyOnEnroll = options.verifyOnEnroll === true ||
-      Deno.env.get("SWAMP_VERIFY_ON_ENROLL") === "true";
+    const verifyOnEnroll = merged.verifyOnEnroll;
     const workerGateway = new WorkerGateway({
       repoDir: resolvedRepoDir,
       repoContext,
@@ -1254,7 +1268,7 @@ export const serveCommand = new Command()
       reportRegistry.ensureLoaded(),
     ]);
 
-    const grantReloadMode = options.grantReload as string;
+    const grantReloadMode = merged.grantReload;
     if (grantReloadMode !== "manual" && grantReloadMode !== "auto") {
       throw new UserError(
         `Invalid --grant-reload value "${grantReloadMode}": must be "manual" or "auto"`,
@@ -1613,7 +1627,7 @@ export const serveCommand = new Command()
     });
 
     const cancelRegistry = new RunCancelRegistry();
-    const detachRuns = options.detachRuns === true;
+    const detachRuns = merged.detachRuns;
     const activeRunRegistry = detachRuns ? new ActiveRunRegistry() : undefined;
 
     if (!detachRuns) {
@@ -1754,8 +1768,8 @@ export const serveCommand = new Command()
       };
 
     const ac = new AbortController();
-    const enableSchedule = options.schedule !== false;
-    const webhookFlags: string[] = options.webhook ?? [];
+    const enableSchedule = merged.schedule;
+    const webhookFlags: string[] = merged.webhook ?? [];
 
     // Start scheduled execution service if enabled
     let scheduledExecution: ScheduledExecutionService | null = null;
@@ -1901,9 +1915,7 @@ export const serveCommand = new Command()
     let collectiveRefreshService:
       | import("../../serve/collective_refresh_service.ts").CollectiveRefreshService
       | null = null;
-    const groupRefreshRaw =
-      (options.groupRefreshInterval as string | undefined) ??
-        Deno.env.get("SWAMP_GROUP_REFRESH_INTERVAL") ?? undefined;
+    const groupRefreshRaw = merged.groupRefreshInterval;
 
     const DEFAULT_GROUP_REFRESH_MS = 4 * 60 * 60 * 1000;
     let groupRefreshMs = DEFAULT_GROUP_REFRESH_MS;
@@ -2065,8 +2077,11 @@ export const serveCommand = new Command()
 
     // Parse and initialize webhook endpoints
     let webhookService: WebhookService | null = null;
-    if (webhookFlags.length > 0) {
-      const endpoints = webhookFlags.map(parseWebhookFlag);
+    const webhookEndpoints = webhookFlags.length > 0
+      ? webhookFlags.map(parseWebhookFlag)
+      : merged.webhookEndpoints ?? [];
+    if (webhookEndpoints.length > 0) {
+      const endpoints = webhookEndpoints;
       webhookService = new WebhookService({
         repoDir: resolvedRepoDir,
         repoContext,
@@ -2468,7 +2483,7 @@ export const serveCommand = new Command()
     );
 
     // Hot-reload: PID file + SIGHUP handler
-    const hotReload = options.hotReload === true;
+    const hotReload = merged.hotReload;
     const pidPath = hotReload ? swampPath(resolvedRepoDir, "serve.pid") : null;
 
     if (hotReload && pidPath) {
