@@ -864,7 +864,7 @@ Deno.test({
   sanitizeResources: false,
   fn: async () => {
     let elsewhereCount = 0;
-    const server = scriptedServer((request, reply) => {
+    const server = scriptedServer((request, reply, socket) => {
       if (request.type === "workflow.run") {
         reply({
           type: "event",
@@ -876,12 +876,7 @@ Deno.test({
             seq: 1,
           },
         });
-        reply({
-          type: "event",
-          id: request.id,
-          event: { kind: "completed", status: "succeeded", seq: 2 },
-        });
-        reply({ type: "done", id: request.id });
+        setTimeout(() => socket.close(), 20);
         return;
       }
       if (request.type === "run.attach") {
@@ -922,6 +917,11 @@ Deno.test({
         events.push(event.kind);
       }
       assertEquals(events, ["started", "completed"]);
+      assertEquals(elsewhereCount, 3);
+      const attachRequests = server.received.filter(
+        (r) => (r as { type: string }).type === "run.attach",
+      );
+      assertEquals(attachRequests.length, 3);
     } finally {
       await server.shutdown();
     }

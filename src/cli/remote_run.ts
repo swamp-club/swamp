@@ -638,9 +638,11 @@ async function* streamServerRun(
     type: "run.attach";
     payload: { runId: string; afterSeq: number };
   } = request;
+  const logger = getReconnectLogger(options);
 
   while (true) {
     let outcome: StreamOutcome;
+    let receivedEvents = false;
     try {
       const stream = singleConnectionStream(options, currentRequest, state);
       while (true) {
@@ -649,12 +651,22 @@ async function* streamServerRun(
           outcome = result.value;
           break;
         }
+        receivedEvents = true;
         yield result.value;
       }
     } catch (err) {
-      if (!state.runId || err instanceof DOMException) throw err;
-      // Connection failure during reconnection — treat as disconnected
+      if (
+        !state.runId || err instanceof DOMException ||
+        err instanceof UserError
+      ) {
+        throw err;
+      }
       outcome = { kind: "disconnected" };
+    }
+
+    if (receivedEvents) {
+      reconnectRetries = 0;
+      elsewhereRetries = 0;
     }
 
     if (outcome.kind === "done") {
@@ -664,8 +676,8 @@ async function* streamServerRun(
     if (outcome.kind === "interrupted") {
       throw new UserError(
         `Run was interrupted — the instance running it (${outcome.instanceId}) ` +
-          `is no longer reachable (${outcome.reason}). ` +
-          `Check the run's final status with: swamp run history`,
+          "is no longer active. " +
+          "Check the run's final status with: swamp run history",
       );
     }
 
@@ -674,10 +686,14 @@ async function* streamServerRun(
       if (elsewhereRetries > MAX_ELSEWHERE_RETRIES) {
         throw new UserError(
           "Run is on another instance but could not reach it after " +
-            `${MAX_ELSEWHERE_RETRIES} retries`,
+            `${MAX_ELSEWHERE_RETRIES} retries. ` +
+            "Check the run's final status with: swamp run history",
         );
       }
-      await delay(ELSEWHERE_RETRY_DELAY_MS);
+      logger(
+        `Run is on another instance, retrying (${elsewhereRetries}/${MAX_ELSEWHERE_RETRIES})...`,
+      );
+      await delay(ELSEWHERE_RETRY_DELAY_MS, options.signal);
       currentRequest = {
         type: "run.attach",
         payload: { runId: state.runId!, afterSeq: state.lastSeq },
@@ -690,10 +706,14 @@ async function* streamServerRun(
     if (reconnectRetries > MAX_RECONNECT_RETRIES) {
       throw new UserError(
         "Connection lost and could not reconnect after " +
-          `${MAX_RECONNECT_RETRIES} retries`,
+          `${MAX_RECONNECT_RETRIES} retries. ` +
+          "Check the run's final status with: swamp run history",
       );
     }
-    await delay(1_000 * reconnectRetries);
+    logger(
+      `Connection dropped, reconnecting (${reconnectRetries}/${MAX_RECONNECT_RETRIES})...`,
+    );
+    await delay(1_000 * reconnectRetries, options.signal);
     currentRequest = {
       type: "run.attach",
       payload: { runId: state.runId!, afterSeq: state.lastSeq },
@@ -701,6 +721,25 @@ async function* streamServerRun(
   }
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function getReconnectLogger(
+  options: ServerRunOptions,
+): (msg: string) => void {
+  return (msg: string) => {
+    try {
+      Deno.stderr.writeSync(new TextEncoder().encode(`\r\x1b[K${msg}\n`));
+    } catch {
+      // Ignore write errors (piped, closed, etc.)
+    }
+  };
+}
+
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    }, { once: true });
+  });
 }
