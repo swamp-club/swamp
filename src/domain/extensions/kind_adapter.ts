@@ -57,6 +57,7 @@ export interface RegistrationContext {
   denoRuntime: DenoRuntime;
   repoDir: string | null;
   extensionName?: string;
+  sourceFingerprint?: string;
 }
 
 export interface KindAdapter {
@@ -112,6 +113,11 @@ export interface KindAdapter {
   // lazy entries. Use for "should I skip the import?" checks (e.g.,
   // importAndRegisterBundle's early-return guard).
   isFullyLoaded(typeNormalized: string): boolean;
+
+  updateSourceFingerprint?(
+    typeNormalized: string,
+    fingerprint: string,
+  ): void;
 
   validateNamespace?(rawType: string): string | undefined;
 

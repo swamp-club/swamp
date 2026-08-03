@@ -816,6 +816,7 @@ export class DefaultStepExecutor implements StepExecutor {
         workflowId: ctx.workflowId,
         workflowRunId: ctx.workflowRunId,
         stepName: ctx.stepName,
+        bundleFingerprint: modelDef.sourceFingerprint,
       },
     });
 

@@ -802,11 +802,13 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             triggeredBy: context._invocationProvenance.triggeredBy,
             parentOutputId: context._invocationProvenance.parentOutputId,
             callerExtension: context._invocationProvenance.callerExtension,
+            bundleFingerprint: modelDef.sourceFingerprint,
           }
           : {
             definitionHash,
             modelVersion: modelDef.version,
             triggeredBy: "manual" as const,
+            bundleFingerprint: modelDef.sourceFingerprint,
           };
         output = ModelOutput.create({
           definitionId: currentDefinition.id,

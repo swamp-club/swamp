@@ -876,6 +876,14 @@ export interface ModelDefinition<
    * authorization.
    */
   extensionName?: string;
+
+  /**
+   * SHA-256 fingerprint of the extension source that was bundled for this
+   * model type. Populated by the extension loader at registration time.
+   * Undefined for built-in types. Recorded in ExecutionProvenance so
+   * lifecycle consumers can verify which code bundle produced an output.
+   */
+  sourceFingerprint?: string;
 }
 
 /**

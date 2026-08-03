@@ -309,6 +309,19 @@ workflow for orchestration.
 `triggeredBy: "model"`, `parentOutputId` pointing to the caller's output, and
 `callerExtension` for provenance tracking.
 
+### Execution Identity
+
+Every method execution records `bundleFingerprint` on `ExecutionProvenance` —
+the SHA-256 source fingerprint of the extension bundle that produced the output.
+This is the one piece of execution identity that only core can provide:
+`definitionHash` and `modelVersion` already cover the definition content and
+type version, but neither proves which _code_ actually ran.
+
+The field is optional — old outputs without it parse correctly, and built-in
+model types (which have no extension bundle) leave it undefined. A lifecycle
+consumer can persist the fingerprint alongside evidence and compare against the
+current invocation to determine whether an interrupted run can safely resume.
+
 ### Workflow Gate Control (`context.approveWorkflowGate`, `context.rejectWorkflowGate`)
 
 `context.approveWorkflowGate(options)` and `context.rejectWorkflowGate(options)`

@@ -46,6 +46,7 @@ export interface ProvenanceData {
   workflowId?: string;
   workflowRunId?: string;
   stepName?: string;
+  bundleFingerprint?: string;
 }
 
 /**
