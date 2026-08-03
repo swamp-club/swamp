@@ -722,7 +722,7 @@ async function* streamServerRun(
 }
 
 function getReconnectLogger(
-  options: ServerRunOptions,
+  _options: ServerRunOptions,
 ): (msg: string) => void {
   return (msg: string) => {
     try {
