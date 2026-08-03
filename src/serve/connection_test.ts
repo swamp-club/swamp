@@ -2031,6 +2031,287 @@ Deno.test("typeArg authz: @ prefix on typeArg is stripped before authorization",
   );
 });
 
+// ── handleRunAttach cross-instance fallback tests ───────────────────────
+
+function createMockControlPlaneStore():
+  & import("../domain/datastore/control_plane_store.ts").ControlPlaneStore
+  & {
+    data: Map<string, Uint8Array>;
+  } {
+  const data = new Map<string, Uint8Array>();
+  return {
+    data,
+    put(key: string, value: Uint8Array): Promise<void> {
+      data.set(key, value);
+      return Promise.resolve();
+    },
+    get(key: string): Promise<Uint8Array | null> {
+      return Promise.resolve(data.get(key) ?? null);
+    },
+    delete(key: string): Promise<void> {
+      data.delete(key);
+      return Promise.resolve();
+    },
+    list(prefix: string): Promise<string[]> {
+      return Promise.resolve(
+        [...data.keys()].filter((k) => k.startsWith(prefix)),
+      );
+    },
+  };
+}
+
+const encoder = new TextEncoder();
+
+function seedActiveRun(
+  store: ReturnType<typeof createMockControlPlaneStore>,
+  instanceId: string,
+  runId: string,
+  opts: { resourceName: string; runKind: string },
+): void {
+  store.data.set(
+    `active-runs/${instanceId}/${runId}`,
+    encoder.encode(JSON.stringify({
+      instanceId,
+      resourceName: opts.resourceName,
+      runKind: opts.runKind,
+      startedAt: "2026-08-01T12:00:00Z",
+    })),
+  );
+}
+
+function seedHeartbeat(
+  store: ReturnType<typeof createMockControlPlaneStore>,
+  instanceId: string,
+  heartbeatAt: string,
+): void {
+  store.data.set(
+    `heartbeats/${instanceId}`,
+    encoder.encode(JSON.stringify({
+      instanceId,
+      hostname: "host-1",
+      pid: 1234,
+      startedAt: "2026-08-01T11:00:00Z",
+      heartbeatAt,
+    })),
+  );
+}
+
+const runAttachGrant = makeGrant({
+  subject: { kind: "user", name: "adam" },
+  actions: ["run"],
+  resource: { kind: "workflow", pattern: "*" },
+});
+
+Deno.test("handleRunAttach: miss + active-runs record + fresh heartbeat returns run.elsewhere", async () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const cpStore = createMockControlPlaneStore();
+  seedActiveRun(cpStore, "instance-remote", "run-xyz", {
+    resourceName: "deploy-pipeline",
+    runKind: "workflow-run",
+  });
+  seedHeartbeat(cpStore, "instance-remote", new Date().toISOString());
+
+  const ctx = makeCtx(modeTokenConfig, [runAttachGrant]);
+  (ctx as unknown as Record<string, unknown>).controlPlaneStore = cpStore;
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "run.attach",
+      id: "attach-1",
+      payload: { runId: "run-xyz" },
+    })),
+    testPrincipal,
+  );
+
+  await new Promise((r) => setTimeout(r, 50));
+
+  const response = parseSent(mock);
+  assertEquals(response.type, "run.elsewhere");
+  assertEquals(response.id, "attach-1");
+  assertEquals(
+    (response.payload as Record<string, unknown>).runId,
+    "run-xyz",
+  );
+  assertEquals(
+    (response.payload as Record<string, unknown>).instanceId,
+    "instance-remote",
+  );
+});
+
+Deno.test("handleRunAttach: miss + active-runs record + stale heartbeat returns run.interrupted", async () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const cpStore = createMockControlPlaneStore();
+  seedActiveRun(cpStore, "instance-dead", "run-abc", {
+    resourceName: "build-model",
+    runKind: "workflow-run",
+  });
+  seedHeartbeat(cpStore, "instance-dead", "2026-07-01T00:00:00Z");
+
+  const ctx = makeCtx(modeTokenConfig, [runAttachGrant]);
+  (ctx as unknown as Record<string, unknown>).controlPlaneStore = cpStore;
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "run.attach",
+      id: "attach-2",
+      payload: { runId: "run-abc" },
+    })),
+    testPrincipal,
+  );
+
+  await new Promise((r) => setTimeout(r, 50));
+
+  const response = parseSent(mock);
+  assertEquals(response.type, "run.interrupted");
+  assertEquals(response.id, "attach-2");
+  assertEquals(
+    (response.payload as Record<string, unknown>).reason,
+    "instance_dead",
+  );
+});
+
+Deno.test("handleRunAttach: miss + no active-runs record returns not_found", async () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const cpStore = createMockControlPlaneStore();
+
+  const ctx = makeCtx(modeTokenConfig, [runAttachGrant]);
+  (ctx as unknown as Record<string, unknown>).controlPlaneStore = cpStore;
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "run.attach",
+      id: "attach-3",
+      payload: { runId: "run-nonexistent" },
+    })),
+    testPrincipal,
+  );
+
+  await new Promise((r) => setTimeout(r, 50));
+
+  const response = parseSent(mock);
+  assertEquals(response.type, "error");
+  assertEquals(
+    (response.error as Record<string, unknown>).code,
+    "not_found",
+  );
+});
+
+Deno.test("handleRunAttach: miss + active-runs record + no heartbeat returns run.interrupted", async () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const cpStore = createMockControlPlaneStore();
+  seedActiveRun(cpStore, "instance-orphaned", "run-orphan", {
+    resourceName: "deploy-pipeline",
+    runKind: "workflow-run",
+  });
+
+  const ctx = makeCtx(modeTokenConfig, [runAttachGrant]);
+  (ctx as unknown as Record<string, unknown>).controlPlaneStore = cpStore;
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "run.attach",
+      id: "attach-4",
+      payload: { runId: "run-orphan" },
+    })),
+    testPrincipal,
+  );
+
+  await new Promise((r) => setTimeout(r, 50));
+
+  const response = parseSent(mock);
+  assertEquals(response.type, "run.interrupted");
+  assertEquals(
+    (response.payload as Record<string, unknown>).reason,
+    "instance_dead",
+  );
+});
+
+Deno.test("handleRunAttach: miss + no control-plane store returns not_found", async () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(modeTokenConfig, [runAttachGrant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "run.attach",
+      id: "attach-5",
+      payload: { runId: "run-anywhere" },
+    })),
+    testPrincipal,
+  );
+
+  await new Promise((r) => setTimeout(r, 50));
+
+  const response = parseSent(mock);
+  assertEquals(response.type, "error");
+  assertEquals(
+    (response.error as Record<string, unknown>).code,
+    "not_found",
+  );
+});
+
+Deno.test("handleRunAttach: miss + active-runs record + unauthorized principal returns error without leaking existence", async () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const cpStore = createMockControlPlaneStore();
+  seedActiveRun(cpStore, "instance-remote", "run-secret", {
+    resourceName: "secret-workflow",
+    runKind: "workflow-run",
+  });
+  seedHeartbeat(cpStore, "instance-remote", new Date().toISOString());
+
+  const noRunGrant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    actions: ["read"],
+    resource: { kind: "workflow", pattern: "*" },
+  });
+  const ctx = makeCtx(modeTokenConfig, [noRunGrant]);
+  (ctx as unknown as Record<string, unknown>).controlPlaneStore = cpStore;
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "run.attach",
+      id: "attach-6",
+      payload: { runId: "run-secret" },
+    })),
+    testPrincipal,
+  );
+
+  await new Promise((r) => setTimeout(r, 50));
+
+  const response = parseSent(mock);
+  assertEquals(response.type, "error");
+  assertEquals(
+    (response.error as Record<string, unknown>).code,
+    "unauthorized",
+  );
+  const allTypes = mock.sent.map((s) => JSON.parse(s).type);
+  assertEquals(allTypes.includes("run.elsewhere"), false);
+  assertEquals(allTypes.includes("run.interrupted"), false);
+});
+
 // ── sanitizeErrorForClient tests ────────────────────────────────────────
 
 Deno.test("sanitizeErrorForClient: redacts absolute Unix paths", () => {

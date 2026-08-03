@@ -1169,4 +1169,14 @@ export type ServerMessage =
     type: "run.attached";
     id: string;
     payload: { runId: string; kind: string; startedAt: string };
+  }
+  | {
+    type: "run.elsewhere";
+    id: string;
+    payload: { runId: string; instanceId: string };
+  }
+  | {
+    type: "run.interrupted";
+    id: string;
+    payload: { runId: string; instanceId: string; reason: "instance_dead" };
   };

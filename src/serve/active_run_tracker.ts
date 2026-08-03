@@ -95,6 +95,29 @@ export function rekeyActiveRun(
   });
 }
 
+const decoder = new TextDecoder();
+
+export async function findActiveRunByRunId(
+  store: ControlPlaneStore,
+  runId: string,
+): Promise<{ record: ActiveRunRecord; instanceId: string } | null> {
+  const keys = await store.list("active-runs/");
+  const suffix = `/${runId}`;
+  for (const key of keys) {
+    if (key.endsWith(suffix)) {
+      const data = await store.get(key);
+      if (!data) continue;
+      try {
+        const record = JSON.parse(decoder.decode(data)) as ActiveRunRecord;
+        return { record, instanceId: record.instanceId };
+      } catch {
+        continue;
+      }
+    }
+  }
+  return null;
+}
+
 export async function cleanupActiveRunsForInstance(
   store: ControlPlaneStore,
   instanceId: string,
