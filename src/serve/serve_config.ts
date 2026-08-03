@@ -198,6 +198,8 @@ export function loadServeConfig(
 
   validateConfigValues(raw, path);
 
+  logger.info`Loaded serve config from ${path}`;
+
   return raw as unknown as ServeConfigFile;
 }
 
@@ -288,6 +290,55 @@ function validateConfigValues(
         "verify-on-enroll"
       ]}`,
     );
+  }
+
+  const stringFields: [string, unknown][] = [
+    ["grant-reload", raw["grant-reload"]],
+    ["ws-idle-timeout", raw["ws-idle-timeout"]],
+    ["queue-timeout", raw["queue-timeout"]],
+    ["heartbeat-interval", raw["heartbeat-interval"]],
+    ["stale-ttl", raw["stale-ttl"]],
+    ["reconciliation-interval", raw["reconciliation-interval"]],
+  ];
+  for (const [name, value] of stringFields) {
+    if (value !== undefined && typeof value !== "string") {
+      throw new UserError(
+        `Invalid ${name} in ${path}: expected string, got ${typeof value}`,
+      );
+    }
+  }
+
+  if (raw.auth && typeof raw.auth === "object" && !Array.isArray(raw.auth)) {
+    const authObj = raw.auth as Record<string, unknown>;
+    const authStringFields: [string, unknown][] = [
+      ["auth.mode", authObj.mode],
+      ["auth.oauth-provider", authObj["oauth-provider"]],
+      ["auth.oauth-client-id", authObj["oauth-client-id"]],
+      ["auth.groups-field", authObj["groups-field"]],
+      ["auth.group-refresh-interval", authObj["group-refresh-interval"]],
+    ];
+    for (const [name, value] of authStringFields) {
+      if (value !== undefined && typeof value !== "string") {
+        throw new UserError(
+          `Invalid ${name} in ${path}: expected string, got ${typeof value}`,
+        );
+      }
+    }
+  }
+
+  if (raw.tls && typeof raw.tls === "object" && !Array.isArray(raw.tls)) {
+    const tlsObj = raw.tls as Record<string, unknown>;
+    const tlsStringFields: [string, unknown][] = [
+      ["tls.cert-file", tlsObj["cert-file"]],
+      ["tls.key-file", tlsObj["key-file"]],
+    ];
+    for (const [name, value] of tlsStringFields) {
+      if (value !== undefined && typeof value !== "string") {
+        throw new UserError(
+          `Invalid ${name} in ${path}: expected string, got ${typeof value}`,
+        );
+      }
+    }
   }
 
   if (raw.webhooks !== undefined) {
@@ -458,12 +509,12 @@ export function mergeServeOptions(
   explicitFlags: ReadonlySet<string>,
   envLookup: EnvLookup = (name) => Deno.env.get(name),
 ): MergedServeOptions {
-  function resolve<T>(
+  function resolveString(
     flagName: string,
-    cliValue: T,
-    configValue: T | undefined,
-    defaultValue: T,
-  ): T {
+    cliValue: string | undefined,
+    configValue: string | undefined,
+    defaultValue: string | undefined,
+  ): string | undefined {
     if (explicitFlags.has(flagName)) {
       return cliValue;
     }
@@ -472,8 +523,25 @@ export function mergeServeOptions(
     if (envVarName) {
       const envValue = envLookup(envVarName);
       if (envValue !== undefined) {
-        return envValue as unknown as T;
+        return envValue;
       }
+    }
+
+    if (configValue !== undefined) {
+      return configValue;
+    }
+
+    return defaultValue;
+  }
+
+  function resolveNumber(
+    flagName: string,
+    cliValue: number,
+    configValue: number | undefined,
+    defaultValue: number,
+  ): number {
+    if (explicitFlags.has(flagName)) {
+      return cliValue;
     }
 
     if (configValue !== undefined) {
@@ -508,19 +576,19 @@ export function mergeServeOptions(
     return defaultValue;
   }
 
-  const port = resolve<number>(
+  const port = resolveNumber(
     "port",
     cliOptions.port as number,
     config?.port,
     9090,
   );
 
-  const host = resolve<string>(
+  const host = resolveString(
     "host",
-    cliOptions.host as string,
+    cliOptions.host as string | undefined,
     config?.host,
     "127.0.0.1",
-  );
+  ) ?? "127.0.0.1";
 
   const schedule = resolveBoolean(
     "schedule",
@@ -529,84 +597,84 @@ export function mergeServeOptions(
     true,
   );
 
-  const certFile = resolve<string | undefined>(
+  const certFile = resolveString(
     "cert-file",
     cliOptions.certFile as string | undefined,
     config?.tls?.["cert-file"],
     undefined,
   );
 
-  const keyFile = resolve<string | undefined>(
+  const keyFile = resolveString(
     "key-file",
     cliOptions.keyFile as string | undefined,
     config?.tls?.["key-file"],
     undefined,
   );
 
-  const grantReload = resolve<string>(
+  const grantReload = resolveString(
     "grant-reload",
-    cliOptions.grantReload as string,
+    cliOptions.grantReload as string | undefined,
     config?.["grant-reload"],
     "manual",
-  );
+  ) ?? "manual";
 
-  const authMode = resolve<string>(
+  const authMode = resolveString(
     "auth-mode",
-    cliOptions.authMode as string,
+    cliOptions.authMode as string | undefined,
     config?.auth?.mode,
     "none",
-  );
+  ) ?? "none";
 
-  const admins = resolve<string | undefined>(
+  const admins = resolveString(
     "admins",
     cliOptions.admins as string | undefined,
     config?.auth?.admins?.join(","),
     undefined,
   );
 
-  const allowedCollectives = resolve<string | undefined>(
+  const allowedCollectives = resolveString(
     "allowed-collectives",
     cliOptions.allowedCollectives as string | undefined,
     config?.auth?.["allowed-collectives"]?.join(","),
     undefined,
   );
 
-  const allowedUsers = resolve<string | undefined>(
+  const allowedUsers = resolveString(
     "allowed-users",
     cliOptions.allowedUsers as string | undefined,
     config?.auth?.["allowed-users"]?.join(","),
     undefined,
   );
 
-  const oauthProvider = resolve<string | undefined>(
+  const oauthProvider = resolveString(
     "oauth-provider",
     cliOptions.oauthProvider as string | undefined,
     config?.auth?.["oauth-provider"],
     undefined,
   );
 
-  const oauthClientId = resolve<string | undefined>(
+  const oauthClientId = resolveString(
     "oauth-client-id",
     cliOptions.oauthClientId as string | undefined,
     config?.auth?.["oauth-client-id"],
     undefined,
   );
 
-  const groupsField = resolve<string | undefined>(
+  const groupsField = resolveString(
     "groups-field",
     cliOptions.groupsField as string | undefined,
     config?.auth?.["groups-field"],
     undefined,
   );
 
-  const restrictedModelTypes = resolve<string | undefined>(
+  const restrictedModelTypes = resolveString(
     "restricted-model-types",
     cliOptions.restrictedModelTypes as string | undefined,
     config?.auth?.["restricted-model-types"]?.join(","),
     undefined,
   );
 
-  const groupRefreshInterval = resolve<string | undefined>(
+  const groupRefreshInterval = resolveString(
     "group-refresh-interval",
     cliOptions.groupRefreshInterval as string | undefined,
     config?.auth?.["group-refresh-interval"],
@@ -620,14 +688,14 @@ export function mergeServeOptions(
     false,
   );
 
-  const wsIdleTimeout = resolve<string | undefined>(
+  const wsIdleTimeout = resolveString(
     "ws-idle-timeout",
     cliOptions.wsIdleTimeout as string | undefined,
     config?.["ws-idle-timeout"],
     undefined,
   );
 
-  const queueTimeout = resolve<string | undefined>(
+  const queueTimeout = resolveString(
     "queue-timeout",
     cliOptions.queueTimeout as string | undefined,
     config?.["queue-timeout"],
@@ -641,7 +709,7 @@ export function mergeServeOptions(
     false,
   );
 
-  const trustedHosts = resolve<string | undefined>(
+  const trustedHosts = resolveString(
     "trusted-hosts",
     cliOptions.trustedHosts as string | undefined,
     config?.["trusted-hosts"]?.join(","),
@@ -655,21 +723,21 @@ export function mergeServeOptions(
     false,
   );
 
-  const heartbeatInterval = resolve<string | undefined>(
+  const heartbeatInterval = resolveString(
     "heartbeat-interval",
     cliOptions.heartbeatInterval as string | undefined,
     config?.["heartbeat-interval"],
     undefined,
   );
 
-  const staleTtl = resolve<string | undefined>(
+  const staleTtl = resolveString(
     "stale-ttl",
     cliOptions.staleTtl as string | undefined,
     config?.["stale-ttl"],
     undefined,
   );
 
-  const reconciliationInterval = resolve<string | undefined>(
+  const reconciliationInterval = resolveString(
     "reconciliation-interval",
     cliOptions.reconciliationInterval as string | undefined,
     config?.["reconciliation-interval"],

@@ -564,6 +564,10 @@ const daemonEnableCommand = new Command()
     "Enable with TLS and auth",
     "swamp serve daemon enable --cert-file cert.pem --key-file key.pem --auth-mode token",
   )
+  .example(
+    "Enable with config file",
+    "swamp serve daemon enable --config /etc/swamp/serve.yaml",
+  )
   .action(async function (options: AnyOptions) {
     const authMode = (options.authMode as string | undefined) ?? "none";
     if (authMode === "oauth" || authMode === "token") {
@@ -872,6 +876,10 @@ export const serveCommand = new Command()
   )
   .example("Start server", "swamp serve")
   .example("Custom port", "swamp serve --port 8080")
+  .example(
+    "Config file",
+    "swamp serve --config /etc/swamp/serve.yaml",
+  )
   .example(
     "Bind to all interfaces (TLS + auth required)",
     "swamp serve --host 0.0.0.0 --port 3000 --cert-file server.crt --key-file server.key --auth-mode token",
