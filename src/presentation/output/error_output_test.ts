@@ -24,6 +24,7 @@ import {
   buildErrorJson,
   exitCodeForError,
   renderError,
+  tlsErrorHint,
 } from "./error_output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
@@ -483,4 +484,86 @@ Deno.test("buildErrorJson: LockTimeoutError includes code field", () => {
   const result = buildErrorJson(err);
   assertEquals(result.code, "lock_timeout");
   assertStringIncludes(result.error as string, "timed out after 60000ms");
+});
+
+// ============================================================================
+// tlsErrorHint tests (issue #1518)
+// ============================================================================
+
+Deno.test("tlsErrorHint: returns hint for UnknownIssuer error", () => {
+  const hint = tlsErrorHint(
+    "error sending request for url (https://fw.example.com/api/): client error (Connect): invalid peer certificate: UnknownIssuer",
+  );
+  assertEquals(hint !== undefined, true);
+  assertStringIncludes(hint!, "SSL_CERT_FILE");
+  assertStringIncludes(hint!, "root CA");
+});
+
+Deno.test("tlsErrorHint: returns hint for invalid peer certificate error", () => {
+  const hint = tlsErrorHint("invalid peer certificate: something");
+  assertEquals(hint !== undefined, true);
+  assertStringIncludes(hint!, "SSL_CERT_FILE");
+});
+
+Deno.test("tlsErrorHint: returns undefined for unrelated errors", () => {
+  assertEquals(tlsErrorHint("connection refused"), undefined);
+  assertEquals(tlsErrorHint("Model not found"), undefined);
+  assertEquals(tlsErrorHint("timeout"), undefined);
+});
+
+Deno.test("renderError: log mode appends TLS hint for UnknownIssuer", () => {
+  const logs: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => logs.push(args.join(" "));
+
+  try {
+    renderError(
+      new UserError(
+        "error sending request: invalid peer certificate: UnknownIssuer",
+      ),
+    );
+
+    assertEquals(logs.length, 2);
+    assertStringIncludes(logs[0], "UnknownIssuer");
+    assertStringIncludes(logs[1], "Hint:");
+    assertStringIncludes(logs[1], "SSL_CERT_FILE");
+  } finally {
+    console.error = originalError;
+  }
+});
+
+Deno.test("renderError: json mode includes hint field for UnknownIssuer", () => {
+  const stderrLogs: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => stderrLogs.push(args.join(" "));
+
+  try {
+    renderError(
+      new UserError(
+        "error sending request: invalid peer certificate: UnknownIssuer",
+      ),
+      "json",
+    );
+
+    assertEquals(stderrLogs.length, 1);
+    const parsed = JSON.parse(stderrLogs[0]);
+    assertStringIncludes(parsed.hint, "SSL_CERT_FILE");
+    assertStringIncludes(parsed.hint, "root CA");
+  } finally {
+    console.error = originalError;
+  }
+});
+
+Deno.test("renderError: no TLS hint for non-TLS errors", () => {
+  const logs: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => logs.push(args.join(" "));
+
+  try {
+    renderError(new UserError("Model not found"));
+    assertEquals(logs.length, 1);
+    assertEquals(logs[0].includes("Hint:"), false);
+  } finally {
+    console.error = originalError;
+  }
 });

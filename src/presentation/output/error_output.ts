@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { ValidationError } from "@cliffy/command";
-import { bold, red } from "@std/fmt/colors";
+import { bold, dim, red, yellow } from "@std/fmt/colors";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
@@ -95,6 +95,34 @@ export function exitCodeForError(error: unknown): number {
 }
 
 /**
+ * Returns a TLS diagnostic hint if the error message indicates an
+ * `UnknownIssuer` TLS failure, or `undefined` otherwise. Compiled Deno
+ * binaries use `rustls-native-certs` / `deno_native_certs` which read
+ * static keychain entries on macOS — they do not use the OS's full trust
+ * evaluation (`SecTrustEvaluateWithError`), so roots distributed via
+ * Apple's OTA trust updates are invisible. This hint guides users to the
+ * existing `SSL_CERT_FILE` workaround.
+ */
+export function tlsErrorHint(message: string): string | undefined {
+  if (
+    !message.includes("UnknownIssuer") &&
+    !message.includes("invalid peer certificate")
+  ) {
+    return undefined;
+  }
+  return [
+    "The TLS certificate was rejected because its root CA is not in Deno's trust store.",
+    "On macOS, Deno does not use the operating system's full certificate trust",
+    "evaluation, so some certificates trusted by curl and browsers are not recognized.",
+    "",
+    "Workaround: set SSL_CERT_FILE to a PEM file containing the missing root CA:",
+    "  export SSL_CERT_FILE=/path/to/root-ca.pem",
+    "",
+    "This is a known Deno limitation — see https://github.com/denoland/deno/issues/36402",
+  ].join("\n");
+}
+
+/**
  * Renders an error to the user.
  *
  * In JSON mode this is the SINGLE emitter for fatal output: it writes
@@ -107,8 +135,13 @@ export function renderError(error: unknown, outputMode?: OutputMode): void {
   const err = error instanceof Error ? error : new Error(String(error));
 
   if (outputMode === "json") {
+    const json = buildErrorJson(err);
+    const hint = tlsErrorHint(err.message);
+    if (hint) {
+      json.hint = hint;
+    }
     // deno-lint-ignore no-console
-    console.error(JSON.stringify(buildErrorJson(err), null, 2));
+    console.error(JSON.stringify(json, null, 2));
     return;
   }
 
@@ -118,5 +151,10 @@ export function renderError(error: unknown, outputMode?: OutputMode): void {
     logger.fatal("Error: {message}", { message: err.message });
   } else {
     logger.fatal("{error}", { error: err });
+  }
+
+  const hint = tlsErrorHint(err.message);
+  if (hint) {
+    console.error(`\n${yellow(bold("Hint:"))} ${dim(hint)}`);
   }
 }
