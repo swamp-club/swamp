@@ -94,7 +94,7 @@ Deno.test({
         cwd: repoDir,
         stdin: "null",
         stdout: "piped",
-        stderr: "piped",
+        stderr: "null",
       });
       const child = cmd.spawn();
 
@@ -170,7 +170,7 @@ Deno.test({
         cwd: repoDir,
         stdin: "null",
         stdout: "piped",
-        stderr: "piped",
+        stderr: "null",
       });
       const child = cmd.spawn();
 
