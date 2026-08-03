@@ -788,3 +788,216 @@ Deno.test({
     assertStringIncludes(error.message, "Could not connect to");
   },
 });
+
+// ── cross-instance reconnection tests ─────────────────────────────────
+
+Deno.test({
+  name:
+    "remote run: reconnects and sends run.attach after socket drop with known runId",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    let connectionCount = 0;
+    const server = scriptedServer((request, reply, socket) => {
+      connectionCount++;
+      if (request.type === "workflow.run") {
+        reply({
+          type: "event",
+          id: request.id,
+          event: {
+            kind: "started",
+            runId: "run-123",
+            workflowName: "wf",
+            seq: 1,
+          },
+        });
+        reply({
+          type: "event",
+          id: request.id,
+          event: { kind: "job_started", jobName: "job1", seq: 2 },
+        });
+        setTimeout(() => socket.close(), 20);
+      } else if (request.type === "run.attach") {
+        reply({
+          type: "run.attached",
+          id: request.id,
+          payload: {
+            runId: "run-123",
+            kind: "workflow-run",
+            startedAt: "2026-08-01T00:00:00Z",
+          },
+        });
+        reply({
+          type: "event",
+          id: request.id,
+          event: { kind: "completed", status: "succeeded", seq: 3 },
+        });
+        reply({ type: "done", id: request.id });
+      }
+    });
+    try {
+      const events: string[] = [];
+      for await (
+        const event of runWorkflowOverServer({
+          server: server.url,
+          payload: { workflowIdOrName: "wf" },
+        })
+      ) {
+        events.push(event.kind);
+      }
+      assertEquals(events, ["started", "job_started", "completed"]);
+      assertEquals(connectionCount >= 2, true);
+      const attachReq = server.received.find(
+        (r) => (r as { type: string }).type === "run.attach",
+      ) as { type: string; payload: { runId: string; afterSeq: number } };
+      assertEquals(attachReq.payload.runId, "run-123");
+      assertEquals(attachReq.payload.afterSeq, 2);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name: "remote run: handles run.elsewhere by retrying through load balancer",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    let elsewhereCount = 0;
+    const server = scriptedServer((request, reply, socket) => {
+      if (request.type === "workflow.run") {
+        reply({
+          type: "event",
+          id: request.id,
+          event: {
+            kind: "started",
+            runId: "run-456",
+            workflowName: "wf",
+            seq: 1,
+          },
+        });
+        setTimeout(() => socket.close(), 20);
+        return;
+      }
+      if (request.type === "run.attach") {
+        elsewhereCount++;
+        if (elsewhereCount <= 2) {
+          reply({
+            type: "run.elsewhere",
+            id: request.id,
+            payload: { runId: "run-456", instanceId: "instance-other" },
+          });
+          return;
+        }
+        reply({
+          type: "run.attached",
+          id: request.id,
+          payload: {
+            runId: "run-456",
+            kind: "workflow-run",
+            startedAt: "2026-08-01T00:00:00Z",
+          },
+        });
+        reply({
+          type: "event",
+          id: request.id,
+          event: { kind: "completed", status: "succeeded", seq: 3 },
+        });
+        reply({ type: "done", id: request.id });
+      }
+    });
+    try {
+      const events: string[] = [];
+      for await (
+        const event of runWorkflowOverServer({
+          server: server.url,
+          payload: { workflowIdOrName: "wf" },
+        })
+      ) {
+        events.push(event.kind);
+      }
+      assertEquals(events, ["started", "completed"]);
+      assertEquals(elsewhereCount, 3);
+      const attachRequests = server.received.filter(
+        (r) => (r as { type: string }).type === "run.attach",
+      );
+      assertEquals(attachRequests.length, 3);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name: "remote run: run.interrupted throws UserError with instance details",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = scriptedServer((request, reply, socket) => {
+      if (request.type === "workflow.run") {
+        reply({
+          type: "event",
+          id: request.id,
+          event: {
+            kind: "started",
+            runId: "run-dead",
+            workflowName: "wf",
+            seq: 1,
+          },
+        });
+        setTimeout(() => socket.close(), 20);
+      } else if (request.type === "run.attach") {
+        reply({
+          type: "run.interrupted",
+          id: request.id,
+          payload: {
+            runId: "run-dead",
+            instanceId: "dead-instance",
+            reason: "instance_dead",
+          },
+        });
+      }
+    });
+    try {
+      const error = await assertRejects(async () => {
+        for await (
+          const _ of runWorkflowOverServer({
+            server: server.url,
+            payload: { workflowIdOrName: "wf" },
+          })
+          // deno-lint-ignore no-empty
+        ) {}
+      }, UserError);
+      assertStringIncludes(error.message, "interrupted");
+      assertStringIncludes(error.message, "dead-instance");
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "remote run: does not attempt reconnect when socket drops before runId is known",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = scriptedServer((_request, _reply, socket) => {
+      socket.close();
+    });
+    try {
+      const error = await assertRejects(async () => {
+        for await (
+          const _ of runWorkflowOverServer({
+            server: server.url,
+            payload: { workflowIdOrName: "wf" },
+          })
+          // deno-lint-ignore no-empty
+        ) {}
+      }, UserError);
+      assertStringIncludes(error.message, "closed before the run completed");
+    } finally {
+      await server.shutdown();
+    }
+  },
+});

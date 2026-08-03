@@ -127,6 +127,8 @@ import {
   sendError,
   subscribeUntilDetach,
 } from "./handlers/shared.ts";
+import { findActiveRunByRunId } from "./active_run_tracker.ts";
+import { InstanceHeartbeatService } from "./instance_heartbeat.ts";
 
 export { sanitizeErrorForClient } from "./handlers/shared.ts";
 export type { ConnectionContext } from "./handlers/shared.ts";
@@ -1859,6 +1861,52 @@ async function handleRunAttach(
 ): Promise<void> {
   const run = ctx.activeRunRegistry?.get(payload.runId);
   if (!run) {
+    if (ctx.controlPlaneStore) {
+      const result = await findActiveRunByRunId(
+        ctx.controlPlaneStore,
+        payload.runId,
+      );
+      if (result) {
+        const resourceKind = result.record.runKind === "method-run"
+          ? "model"
+          : "workflow";
+        if (
+          !authorizeOrReject(socket, requestId, principal, "run", {
+            kind: resourceKind,
+            name: result.record.resourceName,
+            fields: {},
+          }, ctx)
+        ) return;
+
+        const heartbeatData = await ctx.controlPlaneStore.get(
+          `heartbeats/${result.instanceId}`,
+        );
+        if (heartbeatData) {
+          const hb = InstanceHeartbeatService.parseRecord(heartbeatData);
+          if (hb && !InstanceHeartbeatService.isStale(hb, ctx.staleTtlMs)) {
+            send(socket, {
+              type: "run.elsewhere",
+              id: requestId,
+              payload: {
+                runId: payload.runId,
+                instanceId: result.instanceId,
+              },
+            });
+            return;
+          }
+        }
+        send(socket, {
+          type: "run.interrupted",
+          id: requestId,
+          payload: {
+            runId: payload.runId,
+            instanceId: result.instanceId,
+            reason: "instance_dead",
+          },
+        });
+        return;
+      }
+    }
     sendError(
       socket,
       requestId,

@@ -22,6 +22,7 @@ import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.
 import {
   cleanupActiveRunsForInstance,
   deleteActiveRun,
+  findActiveRunByRunId,
   rekeyActiveRun,
   writeActiveRun,
 } from "./active_run_tracker.ts";
@@ -148,6 +149,56 @@ Deno.test("cleanupActiveRunsForInstance: deletes all records for an instance", a
   assertEquals(store.data.has("active-runs/stale-instance/run-1"), false);
   assertEquals(store.data.has("active-runs/stale-instance/run-2"), false);
   assertEquals(store.data.has("active-runs/healthy-instance/run-3"), true);
+});
+
+Deno.test("findActiveRunByRunId: finds run across instances", async () => {
+  const store = createMockStore();
+  writeActiveRun(store, "instance-a", "run-1", {
+    resourceName: "deploy-pipeline",
+    runKind: "workflow-run",
+    startedAt: "2026-08-01T12:00:00Z",
+  });
+  writeActiveRun(store, "instance-b", "run-2", {
+    resourceName: "build-model",
+    runKind: "method-run",
+    startedAt: "2026-08-01T12:01:00Z",
+  });
+  await new Promise((r) => setTimeout(r, 10));
+
+  const result = await findActiveRunByRunId(store, "run-2");
+  assertEquals(result?.instanceId, "instance-b");
+  assertEquals(result?.record.resourceName, "build-model");
+  assertEquals(result?.record.runKind, "method-run");
+});
+
+Deno.test("findActiveRunByRunId: returns null when run not found", async () => {
+  const store = createMockStore();
+  writeActiveRun(store, "instance-a", "run-1", {
+    resourceName: "deploy-pipeline",
+    runKind: "workflow-run",
+    startedAt: "2026-08-01T12:00:00Z",
+  });
+  await new Promise((r) => setTimeout(r, 10));
+
+  const result = await findActiveRunByRunId(store, "run-nonexistent");
+  assertEquals(result, null);
+});
+
+Deno.test("findActiveRunByRunId: returns null on empty store", async () => {
+  const store = createMockStore();
+  const result = await findActiveRunByRunId(store, "run-1");
+  assertEquals(result, null);
+});
+
+Deno.test("findActiveRunByRunId: handles corrupted record gracefully", async () => {
+  const store = createMockStore();
+  store.data.set(
+    "active-runs/instance-a/run-bad",
+    new TextEncoder().encode("not-json"),
+  );
+
+  const result = await findActiveRunByRunId(store, "run-bad");
+  assertEquals(result, null);
 });
 
 Deno.test("writeActiveRun: does not throw on store failure", async () => {

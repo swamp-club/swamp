@@ -101,6 +101,8 @@ export interface ConnectionContext {
   defaultVault?: string;
   /** HA instance identifier — present when `--detach-runs` is active. */
   instanceId?: string;
+  /** Heartbeat stale TTL in ms — used by cross-instance run.attach fallback. */
+  staleTtlMs?: number;
 }
 
 // SECURITY: Authorization must operate on canonical (normalized) model types,

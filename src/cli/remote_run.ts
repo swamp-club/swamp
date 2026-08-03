@@ -61,6 +61,15 @@ const CANCEL_DRAIN_MS = 10_000;
 /** How long to wait for the WebSocket to open. */
 const CONNECT_TIMEOUT_MS = 15_000;
 
+/** Max reconnection attempts after a WebSocket drop with a known runId. */
+const MAX_RECONNECT_RETRIES = 5;
+
+/** Max retries when the server responds with run.elsewhere. */
+const MAX_ELSEWHERE_RETRIES = 10;
+
+/** Base delay (ms) between run.elsewhere retries. */
+const ELSEWHERE_RETRY_DELAY_MS = 1_500;
+
 export interface ServerRunOptions {
   /** Server URL: ws://, wss://, http://, or https://. */
   server: string;
@@ -394,22 +403,34 @@ interface OutboundRequest {
   payload: WorkflowRunPayload | ModelMethodRunPayload | WorkflowResumePayload;
 }
 
+type StreamOutcome =
+  | { kind: "done" }
+  | { kind: "disconnected" }
+  | { kind: "elsewhere"; instanceId: string }
+  | { kind: "interrupted"; instanceId: string; reason: string };
+
 /**
- * One request, one event stream. The generator completes on `done`, throws
- * UserError on an `error` frame, and treats a premature socket close as a
- * failure — a run whose end we never saw is not a success.
+ * Single-connection event stream. Yields deserialized run events and returns
+ * an outcome indicating why the connection ended. The `state` object tracks
+ * the runId and last seen seq across reconnections.
  */
-async function* streamServerRun(
+async function* singleConnectionStream(
   options: ServerRunOptions,
-  request: OutboundRequest,
-): AsyncIterable<{ kind: string; [key: string]: unknown }> {
+  request: OutboundRequest | {
+    type: "run.attach";
+    payload: { runId: string; afterSeq: number };
+  },
+  state: { runId: string | undefined; lastSeq: number },
+): AsyncGenerator<
+  { kind: string; [key: string]: unknown },
+  StreamOutcome
+> {
   const baseUrl = normalizeServerUrl(options.server);
   const url = appendTokenToUrl(baseUrl, options.token);
   const headers = options.headers ?? resolveExtraHeaders();
   const requestId = crypto.randomUUID();
   const socket = (options.createSocket ?? defaultCreateSocket)(url, headers);
 
-  // Push-queue bridging socket callbacks to the generator.
   const queue: ServerMessage[] = [];
   let wake: (() => void) | null = null;
   let socketClosed = false;
@@ -522,7 +543,7 @@ async function* streamServerRun(
       const message = queue.shift();
       if (message !== undefined) {
         if (message.type === "done") {
-          return;
+          return { kind: "done" as const };
         }
         if (message.type === "error") {
           if (cancelSent || message.error.code === "cancelled") {
@@ -532,12 +553,48 @@ async function* streamServerRun(
             `Server reported ${message.error.code}: ${message.error.message}`,
           );
         }
+        if (message.type === "run.elsewhere") {
+          return {
+            kind: "elsewhere" as const,
+            instanceId: message.payload.instanceId,
+          };
+        }
+        if (message.type === "run.interrupted") {
+          return {
+            kind: "interrupted" as const,
+            instanceId: message.payload.instanceId,
+            reason: message.payload.reason,
+          };
+        }
         if (message.type === "event") {
-          yield deserializeEvent(message.event);
+          const event = deserializeEvent(message.event);
+          if (
+            typeof event === "object" && event !== null && "kind" in event &&
+            "runId" in event
+          ) {
+            state.runId = event.runId as string;
+          }
+          if (
+            typeof message.event === "object" && message.event !== null &&
+            "seq" in message.event &&
+            typeof message.event.seq === "number"
+          ) {
+            state.lastSeq = message.event.seq;
+          }
+          if (
+            typeof event === "object" && event !== null && "kind" in event &&
+            event.kind === "run.accepted"
+          ) {
+            continue;
+          }
+          yield event;
         }
         continue;
       }
       if (socketClosed) {
+        if (state.runId) {
+          return { kind: "disconnected" as const };
+        }
         throw new UserError(
           "Connection to the server closed before the run completed",
         );
@@ -548,7 +605,6 @@ async function* streamServerRun(
           "AbortError",
         );
       }
-      // Wait for the next frame, close, or cancel-drain tick.
       await new Promise<void>((resolve) => {
         wake = resolve;
         if (cancelSent) {
@@ -564,4 +620,126 @@ async function* streamServerRun(
       // Already closed.
     }
   }
+}
+
+/**
+ * One request, one event stream with automatic reconnection. The generator
+ * completes on `done`, throws UserError on an `error` frame, and reconnects
+ * transparently when the socket drops mid-run (if a runId is known).
+ */
+async function* streamServerRun(
+  options: ServerRunOptions,
+  request: OutboundRequest,
+): AsyncIterable<{ kind: string; [key: string]: unknown }> {
+  const state = { runId: undefined as string | undefined, lastSeq: 0 };
+  let reconnectRetries = 0;
+  let elsewhereRetries = 0;
+  let currentRequest: OutboundRequest | {
+    type: "run.attach";
+    payload: { runId: string; afterSeq: number };
+  } = request;
+  const logger = getReconnectLogger(options);
+
+  while (true) {
+    let outcome: StreamOutcome;
+    let receivedEvents = false;
+    try {
+      const stream = singleConnectionStream(options, currentRequest, state);
+      while (true) {
+        const result = await stream.next();
+        if (result.done) {
+          outcome = result.value;
+          break;
+        }
+        receivedEvents = true;
+        yield result.value;
+      }
+    } catch (err) {
+      if (
+        !state.runId || err instanceof DOMException ||
+        err instanceof UserError
+      ) {
+        throw err;
+      }
+      outcome = { kind: "disconnected" };
+    }
+
+    if (receivedEvents) {
+      reconnectRetries = 0;
+      elsewhereRetries = 0;
+    }
+
+    if (outcome.kind === "done") {
+      return;
+    }
+
+    if (outcome.kind === "interrupted") {
+      throw new UserError(
+        `Run was interrupted — the instance running it (${outcome.instanceId}) ` +
+          "is no longer active. " +
+          "Check the run's final status with: swamp run history",
+      );
+    }
+
+    if (outcome.kind === "elsewhere") {
+      elsewhereRetries++;
+      if (elsewhereRetries > MAX_ELSEWHERE_RETRIES) {
+        throw new UserError(
+          "Run is on another instance but could not reach it after " +
+            `${MAX_ELSEWHERE_RETRIES} retries. ` +
+            "Check the run's final status with: swamp run history",
+        );
+      }
+      logger(
+        `Run is on another instance, retrying (${elsewhereRetries}/${MAX_ELSEWHERE_RETRIES})...`,
+      );
+      await delay(ELSEWHERE_RETRY_DELAY_MS, options.signal);
+      currentRequest = {
+        type: "run.attach",
+        payload: { runId: state.runId!, afterSeq: state.lastSeq },
+      };
+      continue;
+    }
+
+    // disconnected — attempt reconnection
+    reconnectRetries++;
+    if (reconnectRetries > MAX_RECONNECT_RETRIES) {
+      throw new UserError(
+        "Connection lost and could not reconnect after " +
+          `${MAX_RECONNECT_RETRIES} retries. ` +
+          "Check the run's final status with: swamp run history",
+      );
+    }
+    logger(
+      `Connection dropped, reconnecting (${reconnectRetries}/${MAX_RECONNECT_RETRIES})...`,
+    );
+    await delay(1_000 * reconnectRetries, options.signal);
+    currentRequest = {
+      type: "run.attach",
+      payload: { runId: state.runId!, afterSeq: state.lastSeq },
+    };
+  }
+}
+
+function getReconnectLogger(
+  _options: ServerRunOptions,
+): (msg: string) => void {
+  return (msg: string) => {
+    try {
+      Deno.stderr.writeSync(new TextEncoder().encode(`\r\x1b[K${msg}\n`));
+    } catch {
+      // Ignore write errors (piped, closed, etc.)
+    }
+  };
+}
+
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    }, { once: true });
+  });
 }

@@ -1750,6 +1750,7 @@ export const serveCommand = new Command()
         controlPlaneStore,
         defaultVault: repoMarker?.defaultVault,
         instanceId,
+        staleTtlMs,
       };
 
     const ac = new AbortController();
