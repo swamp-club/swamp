@@ -102,9 +102,9 @@ export async function findActiveRunByRunId(
   runId: string,
 ): Promise<{ record: ActiveRunRecord; instanceId: string } | null> {
   const keys = await store.list("active-runs/");
-  const suffix = `/${runId}`;
   for (const key of keys) {
-    if (key.endsWith(suffix)) {
+    const segments = key.split("/");
+    if (segments.length >= 3 && segments[segments.length - 1] === runId) {
       const data = await store.get(key);
       if (!data) continue;
       try {
