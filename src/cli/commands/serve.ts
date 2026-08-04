@@ -1341,7 +1341,9 @@ export const serveCommand = new Command()
         { defaultVaultName: repoMarker?.defaultVault },
       );
       const userVaultName = oauthVaultService.getDefaultVaultName() ??
-        oauthVaultService.getVaultNames()[0];
+        oauthVaultService.getVaultNames().find((n) =>
+          n !== TOKEN_SECRETS_VAULT_NAME
+        );
       let credentials;
       try {
         credentials = await resolveOAuthClientCredentials(
@@ -1591,8 +1593,7 @@ export const serveCommand = new Command()
       } else {
         throw new UserError(
           "Cannot resolve usernames — no access token and no cached resolutions. " +
-            "Clear stored credentials to re-register: " +
-            `swamp vault delete ${TOKEN_SECRETS_VAULT_NAME} oauth-client-id`,
+            "Restart serve without --oauth-client-id to re-register",
         );
       }
     }
@@ -1805,6 +1806,13 @@ export const serveCommand = new Command()
               key,
               value,
             );
+            if (
+              typeof migrationVaultService.supportsDelete === "function" &&
+              migrationVaultService.supportsDelete(userVaultForMigration)
+            ) {
+              await migrationVaultService.delete(userVaultForMigration, key)
+                .catch(() => {});
+            }
             logger.info(
               "Migrated OAuth secret {key} from vault to control-plane store",
               { key },

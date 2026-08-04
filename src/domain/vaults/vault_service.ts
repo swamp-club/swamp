@@ -70,10 +70,6 @@ export class VaultService {
     VaultService.#globalProviders.set(name, { type, provider });
   }
 
-  static clearGlobalProviders(): void {
-    VaultService.#globalProviders.clear();
-  }
-
   private readonly providers = new Map<string, VaultProvider>();
   private readonly vaultTypes = new Map<string, string>();
   private readonly auditFlags = new Map<string, boolean>();
@@ -214,18 +210,6 @@ export class VaultService {
     if (config.auditReads) {
       this.auditFlags.set(config.name, true);
     }
-  }
-
-  /**
-   * Registers a pre-built vault provider instance directly.
-   */
-  registerProvider(
-    name: string,
-    type: string,
-    provider: VaultProvider,
-  ): void {
-    this.providers.set(name, provider);
-    this.vaultTypes.set(name, type);
   }
 
   /**

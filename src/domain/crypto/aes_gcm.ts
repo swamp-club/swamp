@@ -75,7 +75,10 @@ export async function exportAesKey(key: CryptoKey): Promise<Uint8Array> {
 export async function importAesKey(raw: Uint8Array): Promise<CryptoKey> {
   return await crypto.subtle.importKey(
     "raw",
-    raw.buffer as ArrayBuffer,
+    raw.buffer.slice(
+      raw.byteOffset,
+      raw.byteOffset + raw.byteLength,
+    ) as ArrayBuffer,
     { name: "AES-GCM", length: 256 },
     true,
     ["encrypt", "decrypt"],

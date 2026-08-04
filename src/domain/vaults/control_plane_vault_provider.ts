@@ -116,6 +116,9 @@ export class ControlPlaneVaultProvider
       return await importAesKey(new Uint8Array(theirs));
     }
 
+    // Fallback for stores without putIfAbsent. Safe for single-instance
+    // deployments. Multi-instance deployments MUST use a store that
+    // implements putIfAbsent (FileSystemControlPlaneStore and S3 both do).
     await this.#store.put(ENCRYPTION_KEY_PATH, exported);
     const readBack = await this.#store.get(ENCRYPTION_KEY_PATH);
     if (!readBack) {
