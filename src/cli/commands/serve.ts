@@ -1801,7 +1801,11 @@ export const serveCommand = new Command()
             SERVER_TOKEN_MODEL_TYPE,
             tokenName,
           );
-          if (!def) return;
+          if (!def) {
+            throw new Error(
+              `Definition not found for token '${tokenName}' — skipping migration`,
+            );
+          }
           const updated = {
             ...currentAttrs,
             vaultName: newVaultName,

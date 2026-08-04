@@ -47,6 +47,9 @@ export async function aesGcmDecrypt(
   blob: EncryptedBlob,
   key: CryptoKey,
 ): Promise<string> {
+  if (blob.version !== 1) {
+    throw new Error(`Unsupported EncryptedBlob version: ${blob.version}`);
+  }
   const iv = base64ToArrayBuffer(blob.iv);
   const data = base64ToArrayBuffer(blob.data);
 
