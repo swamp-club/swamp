@@ -43,6 +43,7 @@ import {
 import type { WorkflowApprovalsResponse } from "../../serve/protocol.ts";
 import type { WorkflowRunId } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -120,15 +121,15 @@ export const workflowApprovalsCommand = withRemoteOptions(
     return;
   }
 
-  const { repoContext, datastoreConfig } = await requireInitializedRepoUnlocked(
-    {
+  const { repoDir, repoContext, datastoreConfig } =
+    await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
-    },
-  );
+    });
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
   const runRepo = repoContext.workflowRunRepo;
+  const evaluatedRepo = new YamlEvaluatedWorkflowRepository(repoDir);
   const deps = createWorkflowApprovalsDeps(
     repoContext.workflowRepo,
     runRepo,
@@ -142,6 +143,7 @@ export const workflowApprovalsCommand = withRemoteOptions(
       );
       return runs.filter((r): r is WorkflowRun => r !== null);
     },
+    (workflowId) => evaluatedRepo.findById(workflowId),
   );
 
   let pending: PendingApproval[] = [];

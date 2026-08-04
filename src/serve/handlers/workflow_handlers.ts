@@ -87,6 +87,7 @@ import {
   extractTraceContext,
   runWithParentTrace,
 } from "../../infrastructure/tracing/mod.ts";
+import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { RunEventBuffer } from "../run_event_buffer.ts";
 import {
   deleteActiveRun,
@@ -373,6 +374,7 @@ export async function handleWorkflowApprovals(
   try {
     const libCtx = createLibSwampContext();
     const runRepo = ctx.repoContext.workflowRunRepo;
+    const evaluatedRepo = new YamlEvaluatedWorkflowRepository(ctx.repoDir);
     const deps = createWorkflowApprovalsDeps(
       ctx.repoContext.workflowRepo,
       runRepo,
@@ -386,6 +388,7 @@ export async function handleWorkflowApprovals(
         );
         return runs.filter((r): r is WorkflowRun => r !== null);
       },
+      (workflowId) => evaluatedRepo.findById(workflowId),
     );
 
     let result: Record<string, unknown> | undefined;
