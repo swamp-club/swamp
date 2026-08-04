@@ -291,6 +291,11 @@ export interface ExtensionPushPrepareDeps {
     name: string,
     apiKey: string,
   ) => Promise<{ version: string } | null>;
+  getLatestVersionDetail: (
+    serverUrl: string,
+    name: string,
+    apiKey: string,
+  ) => Promise<LatestVersionDetail | null>;
 }
 
 /** Metadata sent during push phases. */
@@ -341,7 +346,10 @@ import {
   getCollectives,
   SwampClubClient,
 } from "../../infrastructure/http/swamp_club_client.ts";
-import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
+import {
+  ExtensionApiClient,
+  type LatestVersionDetail,
+} from "../../infrastructure/http/extension_api_client.ts";
 import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
 import { analyzeExtensionSafety } from "../../domain/extensions/extension_safety_analyzer.ts";
 import {
@@ -396,6 +404,10 @@ export function createExtensionPushPrepareDeps(
       const result = await client.getLatestVersion(name, apiKey);
       if (!result) return null;
       return { version: result.version };
+    },
+    getLatestVersionDetail: async (serverUrl, name, apiKey) => {
+      const client = new ExtensionApiClient(serverUrl, identity);
+      return await client.getLatestVersionDetail(name, apiKey);
     },
   };
 }

@@ -95,6 +95,7 @@ function makePrepareDeps(
     ensureDenoPath: () => Promise.resolve("/usr/bin/deno"),
     getDenoEnv: () => Deno.env.toObject(),
     getLatestVersion: () => Promise.resolve(null),
+    getLatestVersionDetail: () => Promise.resolve(null),
     ...overrides,
   };
 }

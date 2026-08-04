@@ -356,6 +356,32 @@ change invalidates the entry by construction. The cache is a pure optimization:
 a cache miss falls back to fresh packaging. The cache is never load-bearing for
 correctness and can be deleted safely at any time.
 
+## Version-Drift Check
+
+An advisory (non-blocking) check that runs during `swamp extension push` and
+`--dry-run`. It compares current model versions against the last-published
+version in the registry to catch a common mistake:
+
+- **Model version bumped, manifest not** — one or more model `version` fields
+  changed compared to the published version but the manifest `version` did not.
+  The manifest version must be bumped whenever a model version changes so the
+  registry reflects that a new release is available.
+
+The check fetches the last-published version's metadata from the registry. This
+works on any machine with registry credentials — no local state is required.
+
+When the extension has never been published (first publish), the check reports
+that it cannot verify version drift rather than silently skipping. This is
+informational, not an error.
+
+The version-drift check is **not** run during `swamp extension fmt` — it
+requires registry access that the fmt command does not use.
+
+Manifest and model versions are independent — a multi-model extension can have
+each model at a different version. The check never requires model versions to
+match the manifest version. It only checks directionality: if a model version
+moved, the manifest version must also move.
+
 ## Push Workflow
 
 > **Before you push:** Your extension directory must be an initialized swamp
@@ -409,9 +435,14 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo --json
 9. **Bundle TypeScript** — compiles each entry point (models, vaults, drivers,
    datastores) to standalone JS. Include files are not bundled. If a `deno.json`
    is present, the import map governs dependency resolution.
-10. **Version check** — verifies version doesn't already exist (offers to bump)
-11. **Build archive** — creates tar.gz with all content types and their bundles
-12. **Upload** — three-phase push: initiate, upload archive, confirm
+10. **Version-drift check** — advisory check comparing current model versions
+    against the last-published version in the registry. Warns when a model
+    version was bumped but the manifest `version` was not. If the extension has
+    never been published, reports that the check could not run rather than
+    silently skipping. See "Version-Drift Check" below.
+11. **Version check** — verifies version doesn't already exist (offers to bump)
+12. **Build archive** — creates tar.gz with all content types and their bundles
+13. **Upload** — three-phase push: initiate, upload archive, confirm
 
 ## Extension Formatting
 

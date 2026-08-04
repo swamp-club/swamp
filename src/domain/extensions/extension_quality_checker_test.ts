@@ -23,6 +23,7 @@ import {
   checkExtensionQuality,
   checkUpgradeChainConsistency,
   checkVersionConsistency,
+  type PublishedExtensionState,
   stripCommentsAndStrings,
 } from "./extension_quality_checker.ts";
 
@@ -408,75 +409,155 @@ Deno.test("stripCommentsAndStrings blanks template literal text", () => {
 
 // ── checkVersionConsistency tests ────────────────────────────────────
 
-Deno.test("checkVersionConsistency: matching versions produce no issues", async () => {
+Deno.test("checkVersionConsistency: informs user when no published state", async () => {
   await withTempFiles(
     {
       "model.ts":
         'export const model = {\n  version: "2026.05.22.1",\n  type: "test",\n};\n',
     },
     async (_dir, paths) => {
-      const issues = await checkVersionConsistency("2026.05.22.1", paths);
-      assertEquals(issues, []);
+      const issues = await checkVersionConsistency(
+        "2026.05.22.1",
+        paths,
+      );
+      assertEquals(issues.length, 1);
+      assertEquals(issues[0].check, "version-drift");
+      assertStringIncludes(issues[0].output, "unable to check");
+      assertStringIncludes(issues[0].output, "no previously published");
     },
   );
 });
 
-Deno.test("checkVersionConsistency: earlier version literal does not cause false positive", async () => {
-  await withTempFiles(
-    {
-      "card.ts":
-        'const SCHEMA_TEMPLATE = { version: "1.0.0" };\n\nexport const model = {\n  version: "2026.05.22.1",\n  type: "test",\n};\n',
-    },
-    async (_dir, paths) => {
-      const issues = await checkVersionConsistency("2026.05.22.1", paths);
-      assertEquals(issues, []);
-    },
-  );
-});
-
-Deno.test("checkVersionConsistency: mismatched version reports drift", async () => {
+Deno.test("checkVersionConsistency: no warning when versions match published", async () => {
   await withTempFiles(
     {
       "model.ts":
-        'export const model = {\n  version: "2026.03.01.1",\n  type: "test",\n};\n',
+        'export const model = {\n  version: "2026.05.22.1",\n  type: "test",\n};\n',
     },
     async (_dir, paths) => {
-      const issues = await checkVersionConsistency("2026.05.22.1", paths);
-      assertEquals(issues.length, 1);
-      assertEquals(issues[0].check, "version-drift");
-      assertStringIncludes(issues[0].output, "2026.03.01.1");
-      assertStringIncludes(issues[0].output, "2026.05.22.1");
+      const published: PublishedExtensionState = {
+        manifestVersion: "2026.05.22.1",
+        models: [{ fileName: "model.ts", version: "2026.05.22.1" }],
+      };
+      const issues = await checkVersionConsistency(
+        "2026.05.22.1",
+        paths,
+        published,
+      );
+      assertEquals(issues, []);
     },
   );
 });
 
-Deno.test("checkVersionConsistency: multiple models with mixed versions", async () => {
+Deno.test("checkVersionConsistency: warns when model version bumped but manifest not", async () => {
+  await withTempFiles(
+    {
+      "model.ts":
+        'export const model = {\n  version: "2026.06.01.1",\n  type: "test",\n};\n',
+    },
+    async (_dir, paths) => {
+      const published: PublishedExtensionState = {
+        manifestVersion: "2026.05.22.1",
+        models: [{ fileName: "model.ts", version: "2026.05.22.1" }],
+      };
+      const issues = await checkVersionConsistency(
+        "2026.05.22.1",
+        paths,
+        published,
+      );
+      assertEquals(issues.length, 1);
+      assertStringIncludes(issues[0].output, "manifest version");
+      assertStringIncludes(issues[0].output, "was not bumped");
+    },
+  );
+});
+
+Deno.test("checkVersionConsistency: no warning when both model and manifest bumped", async () => {
+  await withTempFiles(
+    {
+      "model.ts":
+        'export const model = {\n  version: "2026.06.01.1",\n  type: "test",\n};\n',
+    },
+    async (_dir, paths) => {
+      const published: PublishedExtensionState = {
+        manifestVersion: "2026.05.22.1",
+        models: [{ fileName: "model.ts", version: "2026.05.22.1" }],
+      };
+      const issues = await checkVersionConsistency(
+        "2026.06.01.1",
+        paths,
+        published,
+      );
+      assertEquals(issues, []);
+    },
+  );
+});
+
+Deno.test("checkVersionConsistency: multi-model only detects drift on bumped model", async () => {
   await withTempFiles(
     {
       "model_a.ts":
         'export const model = {\n  version: "2026.05.22.1",\n  type: "a",\n};\n',
       "model_b.ts":
-        'export const model = {\n  version: "2026.04.10.2",\n  type: "b",\n};\n',
-      "model_c.ts":
-        'export const model = {\n  version: "2026.05.22.1",\n  type: "c",\n};\n',
+        'export const model = {\n  version: "2026.06.01.1",\n  type: "b",\n};\n',
     },
     async (_dir, paths) => {
-      const issues = await checkVersionConsistency("2026.05.22.1", paths);
+      const published: PublishedExtensionState = {
+        manifestVersion: "2026.05.22.1",
+        models: [
+          { fileName: "model_a.ts", version: "2026.05.22.1" },
+          { fileName: "model_b.ts", version: "2026.04.10.2" },
+        ],
+      };
+      const issues = await checkVersionConsistency(
+        "2026.05.22.1",
+        paths,
+        published,
+      );
       assertEquals(issues.length, 1);
-      assertEquals(issues[0].check, "version-drift");
-      assertStringIncludes(issues[0].output, "model_b.ts");
+      assertStringIncludes(issues[0].output, "manifest version");
+      assertStringIncludes(issues[0].output, "was not bumped");
     },
   );
 });
 
-Deno.test("checkVersionConsistency: files without version export are skipped", async () => {
+Deno.test("checkVersionConsistency: metadata-only release produces no warnings", async () => {
   await withTempFiles(
     {
-      "helpers.ts":
-        "export function add(a: number, b: number): number {\n  return a + b;\n}\n",
+      "model.ts":
+        'export const model = {\n  version: "2026.05.22.1",\n  type: "test",\n};\n',
     },
     async (_dir, paths) => {
-      const issues = await checkVersionConsistency("2026.05.22.1", paths);
+      const published: PublishedExtensionState = {
+        manifestVersion: "2026.05.22.1",
+        models: [{ fileName: "model.ts", version: "2026.05.22.1" }],
+      };
+      const issues = await checkVersionConsistency(
+        "2026.06.01.1",
+        paths,
+        published,
+      );
+      assertEquals(issues, []);
+    },
+  );
+});
+
+Deno.test("checkVersionConsistency: new model not in published state is ignored", async () => {
+  await withTempFiles(
+    {
+      "model.ts":
+        'export const model = {\n  version: "2026.06.01.1",\n  type: "test",\n};\n',
+    },
+    async (_dir, paths) => {
+      const published: PublishedExtensionState = {
+        manifestVersion: "2026.05.22.1",
+        models: [],
+      };
+      const issues = await checkVersionConsistency(
+        "2026.05.22.1",
+        paths,
+        published,
+      );
       assertEquals(issues, []);
     },
   );
@@ -488,10 +569,35 @@ Deno.test("checkVersionConsistency: empty file list produces no issues", async (
 });
 
 Deno.test("checkVersionConsistency: nonexistent files are skipped", async () => {
-  const issues = await checkVersionConsistency("2026.05.22.1", [
-    "/tmp/does-not-exist-12345.ts",
-  ]);
+  const issues = await checkVersionConsistency(
+    "2026.05.22.1",
+    ["/tmp/does-not-exist-12345.ts"],
+    {
+      manifestVersion: "2026.05.22.1",
+      models: [],
+    },
+  );
   assertEquals(issues, []);
+});
+
+Deno.test("checkVersionConsistency: files without version export are skipped", async () => {
+  await withTempFiles(
+    {
+      "helpers.ts":
+        "export function add(a: number, b: number): number {\n  return a + b;\n}\n",
+    },
+    async (_dir, paths) => {
+      const issues = await checkVersionConsistency(
+        "2026.05.22.1",
+        paths,
+        {
+          manifestVersion: "2026.05.22.1",
+          models: [],
+        },
+      );
+      assertEquals(issues, []);
+    },
+  );
 });
 
 // ── checkUpgradeChainConsistency tests ─────────────────────────────
