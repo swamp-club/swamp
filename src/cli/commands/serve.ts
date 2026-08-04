@@ -76,7 +76,11 @@ import {
   resolveTrustedCollectives,
   ScheduledExecutionService,
 } from "../../libswamp/mod.ts";
-import { parseWebhookFlag, WebhookService } from "../../serve/webhook.ts";
+import {
+  isSensitiveHeader,
+  parseWebhookFlag,
+  WebhookService,
+} from "../../serve/webhook.ts";
 import {
   loadServeConfig,
   mergeServeOptions,
@@ -384,6 +388,7 @@ export async function reapOrphanedWorkflowRuns(
   save: (workflowId: WorkflowId, run: WorkflowRun) => Promise<void>,
   trackerLookup: (runId: string) => { status: string } | null,
   isDeadFn: (pid: number) => boolean = isProcessDead,
+  localInstanceId?: string,
 ): Promise<ReapResult> {
   let reaped = 0;
   let skipped = 0;
@@ -415,7 +420,26 @@ export async function reapOrphanedWorkflowRuns(
       continue;
     }
 
-    // Not in tracker (legacy run) — fall back to PID check
+    // Not in tracker — check instanceId before falling back to PID check.
+    // A run with a foreign instanceId belongs to another instance and must
+    // not be PID-checked against the local process table.
+    if (
+      localInstanceId && run.instanceId &&
+      run.instanceId !== localInstanceId
+    ) {
+      logger.info(
+        "Skipping workflow run {runId} (workflow: {workflowName}) — belongs to remote instance {instanceId}",
+        {
+          runId: run.id,
+          workflowName: run.workflowName,
+          instanceId: run.instanceId,
+        },
+      );
+      skipped++;
+      continue;
+    }
+
+    // Legacy run or same-instance run — fall back to PID check
     const pid = run.pid;
     if (pid !== undefined && !isDeadFn(pid)) {
       logger.info(
@@ -1339,20 +1363,7 @@ export const serveCommand = new Command()
       );
     }
 
-    // Create the control-plane store — used for both the encrypted token
-    // secrets vault and downstream HA coordination (heartbeats, pending
-    // runs, etc). Created once and shared across all consumers.
     const caps = syncService?.capabilities?.();
-    let controlPlaneStore: ControlPlaneStore;
-    if (caps?.controlPlane && syncService?.controlPlaneStore) {
-      controlPlaneStore = syncService.controlPlaneStore();
-      logger.info("Control-plane store: remote datastore");
-    } else {
-      controlPlaneStore = new FileSystemControlPlaneStore(
-        swampPath(resolvedRepoDir),
-      );
-      logger.info("Control-plane store: local filesystem fallback");
-    }
     const hasRemoteControlPlane = !!(caps?.controlPlane &&
       syncService?.controlPlaneStore);
 
@@ -1393,6 +1404,98 @@ export const serveCommand = new Command()
       logger.info(
         "HA: detached runs, pending-run durability (no remote control-plane — heartbeat and reconciliation disabled)",
       );
+    }
+
+    // Bind namespace and migrate control-plane records before creating the
+    // store that all downstream consumers share. The S3/GCS extensions
+    // capture controlPrefixPath at controlPlaneStore() construction time
+    // for list(), so the store must be created after namespace binding.
+    const serveNamespace = isCustomDatastoreConfig(datastoreConfig)
+      ? datastoreConfig.namespace
+      : undefined;
+    const MIGRATION_SENTINEL = "migration/root-import-complete";
+    if (hasRemoteControlPlane && syncService) {
+      // Migration: if a namespace is configured, read root control-plane
+      // records before binding so the pre-namespace path is addressable.
+      // After binding, the extension's get/put/delete resolve to the
+      // namespaced path — root keys are no longer addressable — so we
+      // use a sentinel to skip re-migration on subsequent boots.
+      const rootRecords = new Map<string, Uint8Array>();
+      if (serveNamespace) {
+        const rootStore = syncService.controlPlaneStore!();
+        for (
+          const prefix of [
+            "token-secrets/",
+            "pending-runs/",
+            "heartbeats/",
+            "active-runs/",
+            "fire-records/",
+            "claims/",
+          ]
+        ) {
+          try {
+            const keys = await rootStore.list(prefix);
+            for (const key of keys) {
+              const data = await rootStore.get(key);
+              if (data) rootRecords.set(key, new Uint8Array(data));
+            }
+          } catch (err) {
+            logger.warn(
+              "Failed to read root control-plane records under {prefix}: {error}",
+              {
+                prefix,
+                error: err instanceof Error ? err.message : String(err),
+              },
+            );
+            throw err;
+          }
+        }
+      }
+
+      await hydrateLocalCache({
+        syncService,
+        catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+        signal: AbortSignal.timeout(60_000),
+        namespace: serveNamespace,
+      });
+
+      if (serveNamespace && rootRecords.size > 0) {
+        const namespacedStore = syncService.controlPlaneStore!();
+        const sentinel = await namespacedStore.get(MIGRATION_SENTINEL);
+        if (!sentinel) {
+          let migrated = 0;
+          for (const [key, data] of rootRecords) {
+            const existing = await namespacedStore.get(key);
+            if (!existing) {
+              await namespacedStore.put(key, data);
+              migrated++;
+            }
+          }
+          await namespacedStore.put(
+            MIGRATION_SENTINEL,
+            new TextEncoder().encode(new Date().toISOString()),
+          );
+          if (migrated > 0) {
+            logger.info(
+              "Migrated {count} control-plane record(s) from root to namespace {namespace}",
+              { count: migrated, namespace: serveNamespace },
+            );
+          }
+        }
+      }
+    }
+
+    // Create the control-plane store AFTER namespace binding so the S3/GCS
+    // extension's list() prefix is correctly scoped.
+    let controlPlaneStore: ControlPlaneStore;
+    if (hasRemoteControlPlane && syncService?.controlPlaneStore) {
+      controlPlaneStore = syncService.controlPlaneStore();
+      logger.info("Control-plane store: remote datastore");
+    } else {
+      controlPlaneStore = new FileSystemControlPlaneStore(
+        swampPath(resolvedRepoDir),
+      );
+      logger.info("Control-plane store: local filesystem fallback");
     }
 
     // Initialize the encrypted control-plane vault provider for serve-internal
@@ -1883,19 +1986,20 @@ export const serveCommand = new Command()
 
     let heartbeatService: InstanceHeartbeatService | undefined;
 
-    if (hasRemoteControlPlane && syncService) {
-      await hydrateLocalCache({
-        syncService,
-        catalogInvalidate: () => repoContext.catalogStore.invalidate(),
-        signal: AbortSignal.timeout(60_000),
-      });
-    }
-
     // Reap stale runs via the SQLite tracker (heartbeat + PID liveness).
     // This handles both model-method and workflow runs registered with the tracker.
     const runTracker = RunTrackerStore.fromSwampDir(
       swampPath(resolvedRepoDir),
     );
+    const scrubbedHeaders = runTracker.scrubPendingRunHeaders(
+      isSensitiveHeader,
+    );
+    if (scrubbedHeaders > 0) {
+      logger.info(
+        "Scrubbed sensitive headers from {count} existing pending run(s)",
+        { count: scrubbedHeaders },
+      );
+    }
     const reapedRuns = runTracker.reapStaleRuns(DEFAULT_STALE_TTL_MS);
     for (const run of reapedRuns) {
       logger.warn`Reaped stale ${run.runKind} run ${run.id} (${
@@ -1924,6 +2028,7 @@ export const serveCommand = new Command()
         return tracked ? { status: tracked.status } : null;
       },
       isProcessDead,
+      instanceId,
     );
 
     const swept = await sweepStaleRecords({
@@ -2918,11 +3023,24 @@ export const serveCommand = new Command()
       }
     }
 
+    const configuredWebhookWorkflows = new Set(
+      webhookEndpoints.map((e) => e.workflowIdOrName),
+    );
+    const configuredWebhookRoutes = new Set(
+      webhookEndpoints.map((e) => e.route),
+    );
+    const allWorkflows = await repoContext.workflowRepo.findAll();
+    const configuredCronWorkflows = new Set(
+      allWorkflows.filter((w) => w.schedule).map((w) => w.name),
+    );
     const replayed = await replayPendingRuns({
       runTracker,
       webhookService: webhookService ?? undefined,
       scheduledExecution: scheduledExecution ?? undefined,
       controlPlaneStore,
+      configuredWebhookWorkflows,
+      configuredWebhookRoutes,
+      configuredCronWorkflows,
     });
     if (replayed > 0) {
       logger.info`Replayed ${replayed} pending run(s) from previous process`;

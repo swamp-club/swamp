@@ -381,7 +381,13 @@ interface ReplayedCron {
 
 function createReplayHarness(
   pending: PendingRunEntry[],
-  opts: { hasWebhook?: boolean; hasCron?: boolean } = {},
+  opts: {
+    hasWebhook?: boolean;
+    hasCron?: boolean;
+    configuredWebhookWorkflows?: ReadonlySet<string>;
+    configuredWebhookRoutes?: ReadonlySet<string>;
+    configuredCronWorkflows?: ReadonlySet<string>;
+  } = {},
 ) {
   const deleted: string[] = [];
   const webhookReplays: ReplayedWebhook[] = [];
@@ -404,10 +410,32 @@ function createReplayHarness(
     } as unknown as ReplayPendingRunsDeps["scheduledExecution"]
     : undefined;
 
+  // Default to permissive sets that accept anything — individual tests
+  // override when they need to exercise the filter logic.
+  const configuredWebhookWorkflows = opts.configuredWebhookWorkflows ??
+    new Set(
+      pending.filter((e) => e.source === "webhook").map((e) =>
+        e.workflowIdOrName
+      ),
+    );
+  const configuredWebhookRoutes = opts.configuredWebhookRoutes ??
+    new Set(
+      pending.filter((e) => e.source === "webhook" && e.route).map((e) =>
+        e.route!
+      ),
+    );
+  const configuredCronWorkflows = opts.configuredCronWorkflows ??
+    new Set(
+      pending.filter((e) => e.source === "cron").map((e) => e.workflowIdOrName),
+    );
+
   const deps: ReplayPendingRunsDeps = {
     runTracker,
     webhookService,
     scheduledExecution,
+    configuredWebhookWorkflows,
+    configuredWebhookRoutes,
+    configuredCronWorkflows,
   };
 
   return {
@@ -535,6 +563,117 @@ Deno.test("replayPendingRuns: webhook with no payload uses empty object", async 
   assertEquals(h.webhookReplays.length, 1);
 });
 
+Deno.test("replayPendingRuns: discards webhook entry with unconfigured workflow", async () => {
+  const h = createReplayHarness(
+    [{
+      id: "pr-unconfigured-wf",
+      source: "webhook",
+      workflowIdOrName: "unknown-workflow",
+      payload: JSON.stringify({ body: null, headers: {} }),
+      route: "/hooks/deploy",
+      createdAt: "2026-01-01T00:00:00Z",
+    }],
+    {
+      configuredWebhookWorkflows: new Set(["my-workflow"]),
+      configuredWebhookRoutes: new Set(["/hooks/deploy"]),
+    },
+  );
+
+  const count = await replayPendingRuns(h.deps);
+
+  assertEquals(count, 0);
+  assertEquals(h.webhookReplays.length, 0);
+  assertEquals(h.deleted, ["pr-unconfigured-wf"]);
+});
+
+Deno.test("replayPendingRuns: discards webhook entry with unconfigured route", async () => {
+  const h = createReplayHarness(
+    [{
+      id: "pr-unconfigured-route",
+      source: "webhook",
+      workflowIdOrName: "deploy-flow",
+      payload: JSON.stringify({ body: null, headers: {} }),
+      route: "/unknown",
+      createdAt: "2026-01-01T00:00:00Z",
+    }],
+    {
+      configuredWebhookWorkflows: new Set(["deploy-flow"]),
+      configuredWebhookRoutes: new Set(["/hooks/github"]),
+    },
+  );
+
+  const count = await replayPendingRuns(h.deps);
+
+  assertEquals(count, 0);
+  assertEquals(h.webhookReplays.length, 0);
+  assertEquals(h.deleted, ["pr-unconfigured-route"]);
+});
+
+Deno.test("replayPendingRuns: discards cron entry with unconfigured workflow", async () => {
+  const h = createReplayHarness(
+    [{
+      id: "pr-unconfigured-cron",
+      source: "cron",
+      workflowIdOrName: "unknown",
+      createdAt: "2026-01-01T00:00:00Z",
+    }],
+    {
+      configuredCronWorkflows: new Set(["my-scheduled"]),
+    },
+  );
+
+  const count = await replayPendingRuns(h.deps);
+
+  assertEquals(count, 0);
+  assertEquals(h.cronReplays.length, 0);
+  assertEquals(h.deleted, ["pr-unconfigured-cron"]);
+});
+
+Deno.test("replayPendingRuns: replays valid webhook entry when workflow is configured", async () => {
+  const h = createReplayHarness(
+    [{
+      id: "pr-valid-wh",
+      source: "webhook",
+      workflowIdOrName: "deploy-flow",
+      payload: JSON.stringify({ body: { ref: "main" }, headers: {} }),
+      route: "/hooks/deploy",
+      createdAt: "2026-01-01T00:00:00Z",
+    }],
+    {
+      configuredWebhookWorkflows: new Set(["deploy-flow"]),
+      configuredWebhookRoutes: new Set(["/hooks/deploy"]),
+    },
+  );
+
+  const count = await replayPendingRuns(h.deps);
+
+  assertEquals(count, 1);
+  assertEquals(h.webhookReplays.length, 1);
+  assertEquals(h.webhookReplays[0].workflowIdOrName, "deploy-flow");
+  assertEquals(h.webhookReplays[0].pendingRunId, "pr-valid-wh");
+});
+
+Deno.test("replayPendingRuns: replays valid cron entry when workflow is configured", async () => {
+  const h = createReplayHarness(
+    [{
+      id: "pr-valid-cron",
+      source: "cron",
+      workflowIdOrName: "nightly-sync",
+      createdAt: "2026-01-01T00:00:00Z",
+    }],
+    {
+      configuredCronWorkflows: new Set(["nightly-sync"]),
+    },
+  );
+
+  const count = await replayPendingRuns(h.deps);
+
+  assertEquals(count, 1);
+  assertEquals(h.cronReplays.length, 1);
+  assertEquals(h.cronReplays[0].workflowIdOrName, "nightly-sync");
+  assertEquals(h.cronReplays[0].pendingRunId, "pr-valid-cron");
+});
+
 Deno.test("sweepStaleRecords: sweeps all three model types together", async () => {
   const h = createHarness(
     new Map([
@@ -620,7 +759,10 @@ Deno.test("replayPendingRuns: merges remote-only entries into replay", async () 
   const controlPlaneStore = createInMemoryControlPlaneStore({
     "pending-runs/remote-1": remoteEntry,
   });
-  const h = createReplayHarness([]);
+  const h = createReplayHarness([], {
+    configuredWebhookWorkflows: new Set(["remote-flow"]),
+    configuredWebhookRoutes: new Set(["/hooks/remote"]),
+  });
   h.deps.controlPlaneStore = controlPlaneStore;
 
   const count = await replayPendingRuns(h.deps);
@@ -641,7 +783,9 @@ Deno.test("replayPendingRuns: deduplicates local and remote entries by id", asyn
     "pending-runs/dup-1": sharedEntry,
   });
   // Local also has the same entry
-  const h = createReplayHarness([sharedEntry]);
+  const h = createReplayHarness([sharedEntry], {
+    configuredCronWorkflows: new Set(["shared-flow"]),
+  });
   h.deps.controlPlaneStore = controlPlaneStore;
 
   const count = await replayPendingRuns(h.deps);

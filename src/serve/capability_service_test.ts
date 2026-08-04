@@ -551,3 +551,59 @@ Deno.test("putSecret: passes without dispatch registry (no scoping)", async () =
   });
   assertEquals(result.ok, true);
 });
+
+// ── reserved vault name tests (hoisted guards) ──────────────────────────
+
+Deno.test("resolveSecret: rejects _token-secrets vault name", async () => {
+  const service = createService(undefined);
+  await assertRejects(
+    () =>
+      service.resolveSecret("worker-1", {
+        vaultName: "_token-secrets",
+        secretKey: "some-key",
+      }),
+    Error,
+    "reserved vault",
+  );
+});
+
+Deno.test("putSecret: rejects _token-secrets vault name", async () => {
+  const service = createService(undefined);
+  await assertRejects(
+    () =>
+      service.putSecret("worker-1", {
+        vaultName: "_token-secrets",
+        secretKey: "some-key",
+        secretValue: "val",
+      }),
+    Error,
+    "reserved vault",
+  );
+});
+
+Deno.test("resolveSecret: rejects oauth-access-token- prefixed keys", async () => {
+  const service = createService(undefined);
+  await assertRejects(
+    () =>
+      service.resolveSecret("worker-1", {
+        vaultName: "default",
+        secretKey: "oauth-access-token-github",
+      }),
+    Error,
+    "infrastructure secrets",
+  );
+});
+
+Deno.test("putSecret: rejects oauth-client-secret key", async () => {
+  const service = createService(undefined);
+  await assertRejects(
+    () =>
+      service.putSecret("worker-1", {
+        vaultName: "default",
+        secretKey: "oauth-client-secret",
+        secretValue: "evil",
+      }),
+    Error,
+    "infrastructure secrets",
+  );
+});

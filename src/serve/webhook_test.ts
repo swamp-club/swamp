@@ -20,6 +20,7 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import {
   buildWebhookPayload,
+  isSensitiveHeader,
   parseWebhookFlag,
   resolveSecret,
   WebhookService,
@@ -371,4 +372,178 @@ Deno.test("listEndpoints: includes scheme from each endpoint verifier", () => {
   assertEquals(infos[0].scheme, "github");
   assertEquals(infos[1].scheme, "stripe");
   assertEquals(infos[2].scheme, "generic");
+});
+
+// ── buildWebhookPayload header redaction ─────────────────────────────
+
+Deno.test("buildWebhookPayload: strips authorization header", () => {
+  const headers = new Headers({
+    "Authorization": "Bearer secret-token",
+    "Content-Type": "application/json",
+  });
+  const payload = buildWebhookPayload(
+    new TextEncoder().encode("{}"),
+    headers,
+    "/test",
+  );
+  assertEquals("authorization" in payload.headers, false);
+  assertEquals(payload.headers["content-type"], "application/json");
+});
+
+Deno.test("buildWebhookPayload: strips proxy-authorization header", () => {
+  const headers = new Headers({
+    "Proxy-Authorization": "Basic dXNlcjpwYXNz",
+    "Content-Type": "application/json",
+  });
+  const payload = buildWebhookPayload(
+    new TextEncoder().encode("{}"),
+    headers,
+    "/test",
+  );
+  assertEquals("proxy-authorization" in payload.headers, false);
+  assertEquals(payload.headers["content-type"], "application/json");
+});
+
+Deno.test("buildWebhookPayload: strips cookie header", () => {
+  const headers = new Headers({
+    "Cookie": "session=abc123",
+    "Content-Type": "application/json",
+  });
+  const payload = buildWebhookPayload(
+    new TextEncoder().encode("{}"),
+    headers,
+    "/test",
+  );
+  assertEquals("cookie" in payload.headers, false);
+  assertEquals(payload.headers["content-type"], "application/json");
+});
+
+Deno.test("buildWebhookPayload: strips x-api-key header", () => {
+  const headers = new Headers({
+    "X-Api-Key": "key-12345",
+    "Content-Type": "application/json",
+  });
+  const payload = buildWebhookPayload(
+    new TextEncoder().encode("{}"),
+    headers,
+    "/test",
+  );
+  assertEquals("x-api-key" in payload.headers, false);
+  assertEquals(payload.headers["content-type"], "application/json");
+});
+
+Deno.test("buildWebhookPayload: strips x-amzn-oidc-accesstoken header", () => {
+  const headers = new Headers({
+    "X-Amzn-Oidc-Accesstoken": "eyJhbGciOi...",
+    "Content-Type": "application/json",
+  });
+  const payload = buildWebhookPayload(
+    new TextEncoder().encode("{}"),
+    headers,
+    "/test",
+  );
+  assertEquals("x-amzn-oidc-accesstoken" in payload.headers, false);
+  assertEquals(payload.headers["content-type"], "application/json");
+});
+
+Deno.test("buildWebhookPayload: strips headers with -token suffix", () => {
+  const headers = new Headers({
+    "X-Custom-Token": "tok_abc",
+    "Content-Type": "application/json",
+  });
+  const payload = buildWebhookPayload(
+    new TextEncoder().encode("{}"),
+    headers,
+    "/test",
+  );
+  assertEquals("x-custom-token" in payload.headers, false);
+  assertEquals(payload.headers["content-type"], "application/json");
+});
+
+Deno.test("buildWebhookPayload: strips headers with -secret suffix", () => {
+  const headers = new Headers({
+    "X-Custom-Secret": "s3cret",
+    "Content-Type": "application/json",
+  });
+  const payload = buildWebhookPayload(
+    new TextEncoder().encode("{}"),
+    headers,
+    "/test",
+  );
+  assertEquals("x-custom-secret" in payload.headers, false);
+  assertEquals(payload.headers["content-type"], "application/json");
+});
+
+Deno.test("buildWebhookPayload: preserves standard event headers", () => {
+  const headers = new Headers({
+    "X-GitHub-Event": "push",
+    "Content-Type": "application/json",
+    "X-GitHub-Delivery": "72d3162e-cc78-11e3-81ab-4c9367dc0958",
+  });
+  const payload = buildWebhookPayload(
+    new TextEncoder().encode("{}"),
+    headers,
+    "/test",
+  );
+  assertEquals(payload.headers["x-github-event"], "push");
+  assertEquals(payload.headers["content-type"], "application/json");
+  assertEquals(
+    payload.headers["x-github-delivery"],
+    "72d3162e-cc78-11e3-81ab-4c9367dc0958",
+  );
+});
+
+Deno.test("buildWebhookPayload: preserves idempotency-key header", () => {
+  const headers = new Headers({
+    "Idempotency-Key": "unique-key-123",
+    "Content-Type": "application/json",
+  });
+  const payload = buildWebhookPayload(
+    new TextEncoder().encode("{}"),
+    headers,
+    "/test",
+  );
+  assertEquals(payload.headers["idempotency-key"], "unique-key-123");
+});
+
+// ── isSensitiveHeader ────────────────────────────────────────────────
+
+Deno.test("isSensitiveHeader: returns true for known sensitive headers", () => {
+  const sensitiveHeaders = [
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+    "x-api-key",
+    "x-auth-token",
+    "x-hub-signature",
+    "x-shopify-hmac-sha256",
+    "x-amzn-oidc-accesstoken",
+    "x-amzn-oidc-data",
+    "x-goog-iap-jwt-assertion",
+    "cf-access-jwt-assertion",
+    "x-forwarded-client-cert",
+  ];
+  for (const header of sensitiveHeaders) {
+    assertEquals(
+      isSensitiveHeader(header),
+      true,
+      `expected ${header} to be sensitive`,
+    );
+  }
+});
+
+Deno.test("isSensitiveHeader: returns false for safe headers", () => {
+  const safeHeaders = [
+    "content-type",
+    "x-github-event",
+    "idempotency-key",
+  ];
+  for (const header of safeHeaders) {
+    assertEquals(
+      isSensitiveHeader(header),
+      false,
+      `expected ${header} to be safe`,
+    );
+  }
 });

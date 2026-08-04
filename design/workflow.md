@@ -523,8 +523,12 @@ The `webhook` namespace exposes:
 - `webhook.body` — the request body, parsed as JSON when the payload is valid
   JSON, otherwise the raw string.
 - `webhook.headers` — request headers as a map of lowercased names to values.
-  The active scheme's signature header is excluded (e.g. `x-hub-signature-256`
-  for github, `stripe-signature` for stripe — see schemes below).
+  The active scheme's signature header and sensitive credential headers are
+  excluded. Redacted headers include authentication (`authorization`,
+  `proxy-authorization`, `cookie`), proxy credentials
+  (`x-amzn-oidc-accesstoken`, `x-goog-iap-jwt-assertion`,
+  `cf-access-jwt-assertion`, `x-forwarded-client-cert`), and any header
+  ending in `-token` or `-secret`.
 - `webhook.route` — the matched webhook route (e.g. `/hooks/linear`).
 
 The signature scheme is selected per endpoint on the `--webhook` flag:
@@ -556,10 +560,10 @@ and the run does not start. The `webhook` namespace is available only inside
 `trigger.inputs`; the rest of the workflow reads the extracted values as normal
 inputs (`${{ inputs.identifier }}`).
 
-**Security:** `webhook.headers` values are not redacted (the same caveat as the
-`env` namespace). If a workflow maps one into a model attribute it is stored in
-`.swamp/data/` and visible in `swamp data get` output — avoid forwarding
-sensitive headers.
+**Security:** Sensitive headers (authentication, proxy credentials, and headers
+ending in `-token` or `-secret`) are redacted before the payload is persisted or
+exposed to workflow expressions. Provider event headers (e.g. `x-github-event`,
+`content-type`) are preserved.
 
 ## Jobs
 

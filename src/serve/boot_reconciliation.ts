@@ -38,6 +38,7 @@ import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_se
 import { InstanceHeartbeatService } from "./instance_heartbeat.ts";
 import { cleanupActiveRunsForInstance } from "./active_run_tracker.ts";
 import type { PendingRunEntry } from "../infrastructure/persistence/run_tracker_store.ts";
+import { isSensitiveHeader } from "./webhook.ts";
 
 const logger = getSwampLogger(["serve", "boot-reconciliation"]);
 
@@ -66,6 +67,7 @@ export interface HydrateLocalCacheDeps {
   syncService: DatastoreSyncService;
   catalogInvalidate: () => void;
   signal?: AbortSignal;
+  namespace?: string;
 }
 
 export interface HydrateResult {
@@ -77,7 +79,10 @@ export async function hydrateLocalCache(
 ): Promise<HydrateResult> {
   logger.info("Hydrating local cache from remote datastore");
   try {
-    const pulled = await deps.syncService.pullChanged({ signal: deps.signal });
+    const pulled = await deps.syncService.pullChanged({
+      signal: deps.signal,
+      ...(deps.namespace ? { namespace: deps.namespace } : {}),
+    });
     const count = typeof pulled === "number" ? pulled : 0;
     if (count > 0) {
       logger.info`Pulled ${count} file(s) from remote datastore`;
@@ -223,6 +228,9 @@ export interface ReplayPendingRunsDeps {
   scheduledExecution?:
     import("../libswamp/workflows/scheduled_execution.ts").ScheduledExecutionService;
   controlPlaneStore?: ControlPlaneStore;
+  configuredWebhookWorkflows: ReadonlySet<string>;
+  configuredWebhookRoutes: ReadonlySet<string>;
+  configuredCronWorkflows: ReadonlySet<string>;
 }
 
 export async function replayPendingRuns(
@@ -232,7 +240,10 @@ export async function replayPendingRuns(
 
   // Merge remote entries from the control-plane store when available.
   // Remote entries that already exist locally (by id) are skipped.
+  // Track the source key for remote entries so discard deletes the
+  // actual key, not a key reconstructed from the entry's own id.
   const pending: PendingRunEntry[] = [...localPending];
+  const remoteSourceKeys = new Map<string, string>();
   if (deps.controlPlaneStore) {
     try {
       const remoteKeys = await deps.controlPlaneStore.list("pending-runs/");
@@ -281,6 +292,7 @@ export async function replayPendingRuns(
         }
         if (!localIds.has(entry.id)) {
           pending.push(entry);
+          remoteSourceKeys.set(entry.id, key);
           logger
             .debug`Merged remote pending run ${entry.id} for ${entry.workflowIdOrName}`;
         }
@@ -298,10 +310,47 @@ export async function replayPendingRuns(
   logger
     .debug`Replaying ${pending.length} pending run(s) from previous process`;
 
+  const discardEntry = async (
+    id: string,
+    reason: string,
+  ): Promise<void> => {
+    logger.warn`Discarding pending run ${id}: ${reason}`;
+    deps.runTracker.deletePendingRun(id);
+    if (deps.controlPlaneStore) {
+      const cpKey = remoteSourceKeys.get(id) ?? `pending-runs/${id}`;
+      await deps.controlPlaneStore.delete(cpKey).catch(
+        (err: unknown) => {
+          logger.warn(
+            "Control-plane delete failed for discarded entry {id}: {error}",
+            {
+              id,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          );
+        },
+      );
+    }
+  };
+
   let replayed = 0;
   for (const entry of pending) {
     try {
       if (entry.source === "webhook" && deps.webhookService) {
+        if (!deps.configuredWebhookWorkflows.has(entry.workflowIdOrName)) {
+          await discardEntry(
+            entry.id,
+            `workflow '${entry.workflowIdOrName}' is not a configured webhook endpoint`,
+          );
+          continue;
+        }
+        const entryRoute = entry.route ?? "";
+        if (entryRoute && !deps.configuredWebhookRoutes.has(entryRoute)) {
+          await discardEntry(
+            entry.id,
+            `route '${entryRoute}' is not a configured webhook endpoint`,
+          );
+          continue;
+        }
         let parsed: Record<string, unknown> = {};
         if (entry.payload) {
           try {
@@ -310,35 +359,25 @@ export async function replayPendingRuns(
               parsed = raw as Record<string, unknown>;
             }
           } catch {
-            logger
-              .warn`Discarding pending run ${entry.id}: corrupt payload`;
-            deps.runTracker.deletePendingRun(entry.id);
-            if (deps.controlPlaneStore) {
-              await deps.controlPlaneStore.delete(
-                `pending-runs/${entry.id}`,
-              ).catch((err: unknown) => {
-                logger.warn(
-                  "Control-plane delete failed for discarded entry {id}: {error}",
-                  {
-                    id: entry.id,
-                    error: err instanceof Error ? err.message : String(err),
-                  },
-                );
-              });
-            }
+            await discardEntry(entry.id, "corrupt payload");
             continue;
+          }
+        }
+        const rawHeaders = (parsed.headers ?? {}) as Record<string, string>;
+        const redactedHeaders: Record<string, string> = {};
+        for (const [name, value] of Object.entries(rawHeaders)) {
+          if (!isSensitiveHeader(name)) {
+            redactedHeaders[name] = value;
           }
         }
         deps.webhookService.enqueueForReplay({
           pendingRunId: entry.id,
           workflowIdOrName: entry.workflowIdOrName,
-          route: entry.route ?? "",
+          route: entryRoute,
           payload: {
             body: parsed.body ?? null,
-            headers: (parsed.headers ?? {}) as Record<string, string>,
-            route: typeof parsed.route === "string"
-              ? parsed.route
-              : (entry.route ?? ""),
+            headers: redactedHeaders,
+            route: typeof parsed.route === "string" ? parsed.route : entryRoute,
           },
           traceparent: entry.traceparent,
           tracestate: entry.tracestate,
@@ -347,6 +386,13 @@ export async function replayPendingRuns(
         logger
           .info`Replayed pending webhook run for ${entry.workflowIdOrName}`;
       } else if (entry.source === "cron" && deps.scheduledExecution) {
+        if (!deps.configuredCronWorkflows.has(entry.workflowIdOrName)) {
+          await discardEntry(
+            entry.id,
+            `workflow '${entry.workflowIdOrName}' is not a configured scheduled workflow`,
+          );
+          continue;
+        }
         deps.scheduledExecution.enqueueForReplay({
           pendingRunId: entry.id,
           workflowIdOrName: entry.workflowIdOrName,

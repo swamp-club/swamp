@@ -402,6 +402,7 @@ function makeRun(
     status?: RunStatus;
     pid?: number;
     id?: string;
+    instanceId?: string;
   } = {},
 ): WorkflowRun {
   return WorkflowRun.fromData({
@@ -411,6 +412,7 @@ function makeRun(
     status: overrides.status ?? "running",
     startedAt: "2026-07-20T20:00:00.000Z",
     pid: overrides.pid,
+    instanceId: overrides.instanceId,
     jobs: [{
       jobName: "main",
       status: "running",
@@ -577,4 +579,84 @@ Deno.test("reapOrphanedWorkflowRuns: mixed scenario with tracker and legacy runs
   assertEquals(legacyNoPid.status, "failed");
   assertEquals(succeededRun.status, "succeeded");
   assertEquals(saved.length, 3);
+});
+
+Deno.test("reapOrphanedWorkflowRuns: skips run with foreign instanceId when tracker miss", async () => {
+  const run = makeRun({ pid: 42, instanceId: "remote-1" });
+  const saved: string[] = [];
+  const result = await reapOrphanedWorkflowRuns(
+    [{ run, workflowId: WORKFLOW_ID }],
+    (_wid, r) => {
+      saved.push(r.id);
+      return Promise.resolve();
+    },
+    noTracker,
+    () => {
+      throw new Error("should not check PID for foreign instance");
+    },
+    "local-1",
+  );
+  assertEquals(result.reaped, 0);
+  assertEquals(result.skipped, 1);
+  assertEquals(run.status, "running");
+  assertEquals(saved.length, 0);
+});
+
+Deno.test("reapOrphanedWorkflowRuns: reaps run with matching instanceId when tracker miss and PID dead", async () => {
+  const run = makeRun({ pid: 42, instanceId: "local-1" });
+  const saved: string[] = [];
+  const result = await reapOrphanedWorkflowRuns(
+    [{ run, workflowId: WORKFLOW_ID }],
+    (_wid, r) => {
+      saved.push(r.id);
+      return Promise.resolve();
+    },
+    noTracker,
+    (_pid) => true, // PID is dead
+    "local-1",
+  );
+  assertEquals(result.reaped, 1);
+  assertEquals(result.skipped, 0);
+  assertEquals(run.status, "failed");
+  assertEquals(saved.length, 1);
+});
+
+Deno.test("reapOrphanedWorkflowRuns: reaps run with no instanceId when tracker miss and PID dead", async () => {
+  const run = makeRun({ pid: 42 }); // no instanceId — legacy run
+  const saved: string[] = [];
+  const result = await reapOrphanedWorkflowRuns(
+    [{ run, workflowId: WORKFLOW_ID }],
+    (_wid, r) => {
+      saved.push(r.id);
+      return Promise.resolve();
+    },
+    noTracker,
+    (_pid) => true, // PID is dead
+    "local-1",
+  );
+  assertEquals(result.reaped, 1);
+  assertEquals(result.skipped, 0);
+  assertEquals(run.status, "failed");
+  assertEquals(saved.length, 1);
+});
+
+Deno.test("reapOrphanedWorkflowRuns: reaps run with foreign instanceId when tracker reports stale", async () => {
+  const run = makeRun({ pid: 42, instanceId: "remote-1" });
+  const saved: string[] = [];
+  const result = await reapOrphanedWorkflowRuns(
+    [{ run, workflowId: WORKFLOW_ID }],
+    (_wid, r) => {
+      saved.push(r.id);
+      return Promise.resolve();
+    },
+    trackerReaped, // tracker says stale — overrides instanceId check
+    () => {
+      throw new Error("should not check PID when tracker confirms stale");
+    },
+    "local-1",
+  );
+  assertEquals(result.reaped, 1);
+  assertEquals(result.skipped, 0);
+  assertEquals(run.status, "failed");
+  assertEquals(saved.length, 1);
 });
