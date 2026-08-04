@@ -536,7 +536,8 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--detach-runs",
-    "Deprecated — HA mode is now detected automatically. Accepted for backwards compatibility.",
+    "Deprecated — HA mode is now detected automatically based on your datastore configuration. " +
+      "This flag is accepted for backwards compatibility but has no effect.",
   )
   .option(
     "--heartbeat-interval <duration:string>",
