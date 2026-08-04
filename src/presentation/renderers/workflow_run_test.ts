@@ -382,6 +382,72 @@ Deno.test("ConsoleWorkflowRunRenderer: suspended workflow shows step ID and appr
   assertStringIncludes(output, "swamp workflow resume test-pipeline");
 });
 
+Deno.test("ConsoleWorkflowRunRenderer: nested workflow started event does not corrupt parent name in suspend hints", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "parent-workflow",
+  });
+  const events: WorkflowRunEvent[] = [
+    { kind: "validating_inputs" },
+    { kind: "evaluating_workflow" },
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "parent-workflow",
+      jobs: [
+        { id: "run-child", stepCount: 1, dependsOn: [] },
+        {
+          id: "gate-after-child",
+          stepCount: 1,
+          dependsOn: ["run-child"],
+        },
+      ],
+    },
+    { kind: "job_started", jobId: "run-child" },
+    {
+      kind: "started",
+      runId: "child-run-1",
+      workflowName: "child-workflow",
+      jobs: [{ id: "child-job", stepCount: 1, dependsOn: [] }],
+    },
+    {
+      kind: "completed",
+      run: makeRunView("succeeded"),
+    },
+    { kind: "job_started", jobId: "gate-after-child" },
+    {
+      kind: "approval_requested",
+      runId: "run-1",
+      jobId: "gate-after-child",
+      stepId: "approve-the-thing",
+      prompt: "PARENT gate",
+    },
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "gate-after-child",
+      stepId: "approve-the-thing",
+      prompt: "PARENT gate",
+    },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(
+    output,
+    "swamp workflow approve parent-workflow approve-the-thing",
+  );
+  assertStringIncludes(
+    output,
+    "swamp workflow reject parent-workflow approve-the-thing",
+  );
+  assertStringIncludes(output, "swamp workflow resume parent-workflow");
+  assertStringIncludes(
+    output,
+    "awaiting approval on step approve-the-thing",
+  );
+});
+
 Deno.test("ConsoleWorkflowRunRenderer: cancelled run sets workflowFailed()", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",

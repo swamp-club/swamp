@@ -224,7 +224,9 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
       validating_inputs: () => {},
       evaluating_workflow: () => {},
       started: (e) => {
-        this.workflowName = e.workflowName;
+        if (!this.pipe) {
+          this.workflowName = e.workflowName;
+        }
         const jobNames = [...e.jobs.map((j) => j.id), "system"];
         this.pipe = new PipeWriter(jobNames);
         setSystemPipeWidth(this.pipe.maxWidth);
