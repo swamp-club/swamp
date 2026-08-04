@@ -36,11 +36,12 @@ function makeWorkflow(overrides?: {
   name?: string;
   stepType?: string;
   timeout?: number;
+  prompt?: string;
 }): Workflow {
   const stepTask = overrides?.stepType === "manual_approval"
     ? {
       type: "manual_approval" as const,
-      prompt: "Approve deployment",
+      prompt: overrides?.prompt ?? "Approve deployment",
       timeout: overrides?.timeout,
     }
     : { type: "model_method" as const, modelIdOrName: "m", methodName: "run" };
@@ -98,6 +99,7 @@ function makeRun(overrides?: {
 function makeDeps(
   workflows: Workflow[],
   runsByWorkflow: Map<string, WorkflowRun[]>,
+  evaluatedWorkflows?: Map<string, Workflow>,
 ): WorkflowApprovalsDeps {
   return {
     workflowRepo: {
@@ -107,6 +109,10 @@ function makeDeps(
       findAllByWorkflowId: (id: WorkflowId) =>
         Promise.resolve(runsByWorkflow.get(id as string) ?? []),
     } as WorkflowApprovalsDeps["runRepo"],
+    findEvaluatedWorkflow: evaluatedWorkflows
+      ? (id: WorkflowId) =>
+        Promise.resolve(evaluatedWorkflows.get(id as string) ?? null)
+      : undefined,
   };
 }
 
@@ -212,5 +218,66 @@ Deno.test("workflowApprovals: filters out expired approval timeouts", async () =
   const completed = events.find((e) => e.kind === "completed");
   if (completed?.kind === "completed") {
     assertEquals(completed.data.approvals.length, 0);
+  }
+});
+
+Deno.test("workflowApprovals: returns evaluated prompt when evaluated workflow exists", async () => {
+  const wf = makeWorkflow({ stepType: "manual_approval" });
+  const evaluatedWf = makeWorkflow({
+    stepType: "manual_approval",
+    prompt: "Approve deployment to production v2.0",
+  });
+  const run = makeRun({ id: "run-eval" });
+  const evaluatedWorkflows = new Map([[WF_ID as string, evaluatedWf]]);
+  const deps = makeDeps(
+    [wf],
+    new Map([[WF_ID as string, [run]]]),
+    evaluatedWorkflows,
+  );
+  const events = await collect<WorkflowApprovalsEvent>(
+    workflowApprovals(ctx, deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind === "completed") {
+    assertEquals(completed.data.approvals.length, 1);
+    assertEquals(
+      completed.data.approvals[0].prompt,
+      "Approve deployment to production v2.0",
+    );
+  }
+});
+
+Deno.test("workflowApprovals: falls back to raw prompt when no evaluated workflow exists", async () => {
+  const wf = makeWorkflow({ stepType: "manual_approval" });
+  const run = makeRun({ id: "run-fallback" });
+  const evaluatedWorkflows = new Map<string, Workflow>();
+  const deps = makeDeps(
+    [wf],
+    new Map([[WF_ID as string, [run]]]),
+    evaluatedWorkflows,
+  );
+  const events = await collect<WorkflowApprovalsEvent>(
+    workflowApprovals(ctx, deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind === "completed") {
+    assertEquals(completed.data.approvals.length, 1);
+    assertEquals(completed.data.approvals[0].prompt, "Approve deployment");
+  }
+});
+
+Deno.test("workflowApprovals: falls back to raw prompt when findEvaluatedWorkflow throws", async () => {
+  const wf = makeWorkflow({ stepType: "manual_approval" });
+  const run = makeRun({ id: "run-error" });
+  const deps = makeDeps([wf], new Map([[WF_ID as string, [run]]]));
+  deps.findEvaluatedWorkflow = () =>
+    Promise.reject(new Error("Corrupted YAML"));
+  const events = await collect<WorkflowApprovalsEvent>(
+    workflowApprovals(ctx, deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind === "completed") {
+    assertEquals(completed.data.approvals.length, 1);
+    assertEquals(completed.data.approvals[0].prompt, "Approve deployment");
   }
 });

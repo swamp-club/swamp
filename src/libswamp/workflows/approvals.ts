@@ -21,11 +21,13 @@ import type {
   WorkflowRepository,
   WorkflowRunRepository,
 } from "../../domain/workflows/repositories.ts";
+import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { evaluateApprovalTimeout } from "../../domain/workflows/approval_timeout.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
+import { getLogger } from "@logtape/logtape";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
 export interface PendingApproval {
@@ -52,6 +54,9 @@ export interface WorkflowApprovalsDeps {
   findSuspendedRuns?: (
     workflowId: WorkflowId,
   ) => Promise<WorkflowRun[]>;
+  findEvaluatedWorkflow?: (
+    workflowId: WorkflowId,
+  ) => Promise<Workflow | null>;
 }
 
 export function createWorkflowApprovalsDeps(
@@ -60,8 +65,11 @@ export function createWorkflowApprovalsDeps(
   findSuspendedRuns?: (
     workflowId: WorkflowId,
   ) => Promise<WorkflowRun[]>,
+  findEvaluatedWorkflow?: (
+    workflowId: WorkflowId,
+  ) => Promise<Workflow | null>,
 ): WorkflowApprovalsDeps {
-  return { workflowRepo, runRepo, findSuspendedRuns };
+  return { workflowRepo, runRepo, findSuspendedRuns, findEvaluatedWorkflow };
 }
 
 export async function* workflowApprovals(
@@ -74,6 +82,7 @@ export async function* workflowApprovals(
     (async function* () {
       yield { kind: "resolving" };
 
+      const logger = getLogger(["swamp", "workflow", "approvals"]);
       const workflows = await deps.workflowRepo.findAll();
       const pending: PendingApproval[] = [];
 
@@ -81,6 +90,9 @@ export async function* workflowApprovals(
         const runs = deps.findSuspendedRuns
           ? await deps.findSuspendedRuns(workflow.id)
           : await deps.runRepo.findAllByWorkflowId(workflow.id);
+
+        let evaluatedWorkflow: Workflow | null | undefined;
+
         for (const run of runs) {
           if (run.status !== "suspended") continue;
           const waiting = run.findWaitingApprovalStep();
@@ -99,9 +111,32 @@ export async function* workflowApprovals(
           );
           if (timeout?.expired) continue;
 
-          const prompt = taskData && taskData.type === "manual_approval"
-            ? taskData.prompt
-            : undefined;
+          if (evaluatedWorkflow === undefined && deps.findEvaluatedWorkflow) {
+            try {
+              evaluatedWorkflow = await deps.findEvaluatedWorkflow(
+                workflow.id,
+              );
+            } catch {
+              logger
+                .warn`Failed to load evaluated workflow for ${workflow.name}, using raw definition`;
+              evaluatedWorkflow = null;
+            }
+          }
+
+          let prompt: string | undefined;
+          if (evaluatedWorkflow) {
+            const evalTaskData = evaluatedWorkflow.jobs
+              .find((j) => j.name === waiting.jobName)?.steps
+              .find((s) => s.name === waiting.stepName)?.task.data;
+            prompt = evalTaskData?.type === "manual_approval"
+              ? evalTaskData.prompt
+              : undefined;
+          }
+          if (!prompt) {
+            prompt = taskData?.type === "manual_approval"
+              ? taskData.prompt
+              : undefined;
+          }
 
           pending.push({
             workflowName: workflow.name,
