@@ -40,6 +40,7 @@ import {
 } from "../domain/models/access/server_token_model.ts";
 import { createResourceWriter } from "../domain/models/data_writer.ts";
 import { VaultService } from "../domain/vaults/vault_service.ts";
+import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
 
 const logger = getSwampLogger(["serve", "device-auth"]);
 
@@ -300,14 +301,7 @@ async function mintServerTokenImpl(
     repoDir,
     { defaultVaultName: defaultVault },
   );
-  const vaultNames = vaultService.getVaultNames();
-  if (vaultNames.length === 0) {
-    throw new Error(
-      "No vaults configured — create one with: swamp vault create local_encryption default",
-    );
-  }
-  const vaultName = vaultService.getDefaultVaultName() ?? vaultNames[0];
-
+  const vaultName = TOKEN_SECRETS_VAULT_NAME;
   await vaultService.put(vaultName, secretKey, plaintext);
 
   const defRepo = repoContext.definitionRepo;
@@ -401,10 +395,8 @@ export function createDeviceAuthDeps(
         repoDir,
         { defaultVaultName: defaultVault },
       );
-      const vaultNames = vaultService.getVaultNames();
-      if (vaultNames.length === 0) return;
       await vaultService.put(
-        vaultService.getDefaultVaultName() ?? vaultNames[0],
+        TOKEN_SECRETS_VAULT_NAME,
         oauthAccessTokenKey(tokenName),
         accessToken,
       );

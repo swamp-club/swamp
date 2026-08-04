@@ -268,3 +268,60 @@ Deno.test("CollectiveRefreshService: keeps collectives and groups separate", asy
   assertEquals(storedCollectives, ["coll-a", "coll-b"]);
   assertEquals(storedGroups, ["group-x", "group-y"]);
 });
+
+Deno.test("CollectiveRefreshService: works with fallback getAccessToken (simulates _token-secrets → user vault fallback)", async () => {
+  let accessTokenCalls = 0;
+  const deps = makeMockDeps({
+    listActiveTokens: () =>
+      Promise.resolve([
+        {
+          name: "tok-migrated",
+          principalId: "user:u1",
+          collectives: ["old"],
+          groups: [],
+        },
+      ]),
+    getAccessToken: (_tokenName: string): Promise<string | null> => {
+      accessTokenCalls++;
+      return Promise.resolve("fallback-access-token");
+    },
+    getUserInfo: () =>
+      Promise.resolve({
+        sub: "u1",
+        email: "u1@example.com",
+        collectives: ["new"],
+        groups: [],
+      }),
+  });
+
+  const svc = new CollectiveRefreshService(deps);
+  svc.start();
+  await new Promise((r) => setTimeout(r, 200));
+  await svc.dispose();
+
+  assertEquals(accessTokenCalls, 1);
+  assertEquals(deps.updatedTokens.get("tok-migrated"), ["new"]);
+});
+
+Deno.test("CollectiveRefreshService: skips token when getAccessToken returns null", async () => {
+  const deps = makeMockDeps({
+    listActiveTokens: () =>
+      Promise.resolve([
+        {
+          name: "tok-no-access",
+          principalId: "user:u1",
+          collectives: ["existing"],
+          groups: [],
+        },
+      ]),
+    getAccessToken: (): Promise<string | null> => Promise.resolve(null),
+  });
+
+  const svc = new CollectiveRefreshService(deps);
+  svc.start();
+  await new Promise((r) => setTimeout(r, 200));
+  await svc.dispose();
+
+  assertEquals(deps.updatedTokens.size, 0);
+  assertEquals(deps.revokedTokens.length, 0);
+});

@@ -1361,31 +1361,78 @@ export const serveCommand = new Command()
       );
     }
 
+    // Create the control-plane store — used for both the encrypted token
+    // secrets vault and downstream HA coordination (heartbeats, pending
+    // runs, etc). Created once and shared across all consumers.
+    const caps = syncService?.capabilities?.();
+    let controlPlaneStore: ControlPlaneStore;
+    if (caps?.controlPlane && syncService?.controlPlaneStore) {
+      controlPlaneStore = syncService.controlPlaneStore();
+      logger.info("Control-plane store: remote datastore");
+    } else {
+      controlPlaneStore = new FileSystemControlPlaneStore(
+        swampPath(resolvedRepoDir),
+      );
+      logger.info("Control-plane store: local filesystem fallback");
+    }
+
+    // Initialize the encrypted control-plane vault provider for serve-internal
+    // secrets (OAuth credentials, per-login token secrets). This replaces
+    // secrets in the user's vault (which is a poor fit for external backends
+    // like AWS SM) with an encrypted control-plane store that supports
+    // immediate deletion and has no per-secret cost.
+    const { ControlPlaneVaultProvider, TOKEN_SECRETS_VAULT_NAME } =
+      await import(
+        "../../domain/vaults/control_plane_vault_provider.ts"
+      );
+    const tokenSecretsProvider = new ControlPlaneVaultProvider(
+      controlPlaneStore,
+    );
+    await tokenSecretsProvider.initialize();
+    VaultService.registerGlobalProvider(
+      TOKEN_SECRETS_VAULT_NAME,
+      "control_plane",
+      tokenSecretsProvider,
+    );
+
     let oauthClientSecret = "";
     if (authConfig.mode === "oauth") {
-      const vaultService = await VaultService.fromRepository(
+      const oauthVaultService = await VaultService.fromRepository(
         resolvedRepoDir,
         { defaultVaultName: repoMarker?.defaultVault },
       );
-      const vaultNames = vaultService.getVaultNames();
-      if (vaultNames.length === 0) {
-        throw new UserError(
-          "oauth mode requires a vault — run 'swamp vault create local_encryption default' first",
+      const userVaultName = oauthVaultService.getDefaultVaultName() ??
+        oauthVaultService.getVaultNames().find((n) =>
+          n !== TOKEN_SECRETS_VAULT_NAME
         );
-      }
-      const vaultName = vaultService.getDefaultVaultName() ?? vaultNames[0];
       let credentials;
       try {
         credentials = await resolveOAuthClientCredentials(
           {
-            getVaultSecret: async (v, k) => {
+            getVaultSecret: async (_v, k) => {
               try {
-                return await vaultService.get(v, k, "serve:oauth-resolve");
+                return await oauthVaultService.get(
+                  TOKEN_SECRETS_VAULT_NAME,
+                  k,
+                  "serve:oauth-resolve",
+                );
               } catch {
+                if (userVaultName) {
+                  try {
+                    return await oauthVaultService.get(
+                      userVaultName,
+                      k,
+                      "serve:oauth-resolve",
+                    );
+                  } catch {
+                    return null;
+                  }
+                }
                 return null;
               }
             },
-            putVaultSecret: (v, k, val) => vaultService.put(v, k, val),
+            putVaultSecret: (_v, k, val) =>
+              oauthVaultService.put(TOKEN_SECRETS_VAULT_NAME, k, val),
             registerClient: async (providerUrl, signal) => {
               const { startDeviceGrant, pollForToken } = await import(
                 "../../serve/oauth_client.ts"
@@ -1486,7 +1533,7 @@ export const serveCommand = new Command()
             },
           },
           authConfig.oauthProvider,
-          vaultName,
+          TOKEN_SECRETS_VAULT_NAME,
           authConfig.oauthClientId,
           AbortSignal.timeout(300_000),
         );
@@ -1562,8 +1609,11 @@ export const serveCommand = new Command()
           }
         }
         await storeResolvedAdmins(
-          { putVaultSecret: (v, k, val) => vaultService.put(v, k, val) },
-          vaultName,
+          {
+            putVaultSecret: (_v, k, val) =>
+              oauthVaultService.put(TOKEN_SECRETS_VAULT_NAME, k, val),
+          },
+          TOKEN_SECRETS_VAULT_NAME,
           resolvedMap,
         );
       } else if (credentials.resolvedAdmins) {
@@ -1580,8 +1630,7 @@ export const serveCommand = new Command()
           } else {
             throw new UserError(
               `Admin '${admin}' not found in cached resolutions. ` +
-                "Clear stored credentials to re-register: " +
-                `swamp vault delete ${vaultName} oauth-client-id`,
+                "Restart serve without --oauth-client-id to re-register",
             );
           }
         }
@@ -1598,16 +1647,14 @@ export const serveCommand = new Command()
           } else {
             throw new UserError(
               `Allowed-user '${entry}' not found in cached resolutions. ` +
-                "Clear stored credentials to re-register: " +
-                `swamp vault delete ${vaultName} oauth-client-id`,
+                "Restart serve without --oauth-client-id to re-register",
             );
           }
         }
       } else {
         throw new UserError(
           "Cannot resolve usernames — no access token and no cached resolutions. " +
-            "Clear stored credentials to re-register: " +
-            `swamp vault delete ${vaultName} oauth-client-id`,
+            "Restart serve without --oauth-client-id to re-register",
         );
       }
     }
@@ -1732,20 +1779,107 @@ export const serveCommand = new Command()
     // each process gets a unique ID that survives across reconnects.
     const instanceId = detachRuns ? crypto.randomUUID() : undefined;
 
-    // Probe the sync service for control-plane capability and create a
-    // control-plane store. Falls back to a filesystem-based store when the
-    // datastore extension doesn't advertise controlPlane.
-    let controlPlaneStore: ControlPlaneStore | undefined;
-    if (detachRuns) {
-      const caps = syncService?.capabilities?.();
-      if (caps?.controlPlane && syncService?.controlPlaneStore) {
-        controlPlaneStore = syncService.controlPlaneStore();
-        logger.info("Control-plane store: remote datastore");
-      } else {
-        controlPlaneStore = new FileSystemControlPlaneStore(
-          swampPath(resolvedRepoDir),
-        );
-        logger.info("Control-plane store: local filesystem fallback");
+    // Migrate existing vault-backed token secrets to the encrypted
+    // control-plane store. Runs before auth middleware accepts tokens.
+    if (authConfig.mode === "oauth") {
+      const { migrateTokenSecrets } = await import(
+        "../../serve/token_secret_migration.ts"
+      );
+      const { createResourceWriter } = await import(
+        "../../domain/models/data_writer.ts"
+      );
+      const migrationVaultService = await VaultService.fromRepository(
+        resolvedRepoDir,
+        { defaultVaultName: repoMarker?.defaultVault },
+      );
+      await migrateTokenSecrets({
+        tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,
+        vaultService: migrationVaultService,
+        dataQueryService: repoContext.dataQueryService,
+        updateTokenVaultName: async (tokenName, newVaultName, currentAttrs) => {
+          const def = await repoContext.definitionRepo.findByName(
+            SERVER_TOKEN_MODEL_TYPE,
+            tokenName,
+          );
+          if (!def) return;
+          const updated = {
+            ...currentAttrs,
+            vaultName: newVaultName,
+          };
+          const { writeResource } = createResourceWriter(
+            repoContext.unifiedDataRepo,
+            SERVER_TOKEN_MODEL_TYPE,
+            def.id,
+            serverTokenModel.resources!,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            tokenName,
+          );
+          await writeResource(
+            "token",
+            "token-main",
+            updated as Record<string, unknown>,
+          );
+        },
+      });
+
+      // Migrate OAuth bootstrap secrets from the user's vault to
+      // _token-secrets. These are fixed-name keys that were previously
+      // stored in the user's vault during first-time OAuth setup.
+      const {
+        OAUTH_CLIENT_ID_KEY,
+        OAUTH_CLIENT_SECRET_KEY,
+        OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY,
+        OAUTH_RESOLVED_ADMINS_KEY,
+      } = await import("../../serve/oauth_registration.ts");
+      const userVaultForMigration =
+        migrationVaultService.getDefaultVaultName() ??
+          migrationVaultService.getVaultNames().find((n) =>
+            n !== TOKEN_SECRETS_VAULT_NAME
+          );
+      if (userVaultForMigration) {
+        for (
+          const key of [
+            OAUTH_CLIENT_ID_KEY,
+            OAUTH_CLIENT_SECRET_KEY,
+            OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY,
+            OAUTH_RESOLVED_ADMINS_KEY,
+          ]
+        ) {
+          try {
+            const existing = await migrationVaultService.get(
+              TOKEN_SECRETS_VAULT_NAME,
+              key,
+              "serve:oauth-migration",
+            );
+            if (existing) continue;
+          } catch { /* not in _token-secrets yet */ }
+          try {
+            const value = await migrationVaultService.get(
+              userVaultForMigration,
+              key,
+              "serve:oauth-migration",
+            );
+            await migrationVaultService.put(
+              TOKEN_SECRETS_VAULT_NAME,
+              key,
+              value,
+            );
+            if (
+              typeof migrationVaultService.supportsDelete === "function" &&
+              migrationVaultService.supportsDelete(userVaultForMigration)
+            ) {
+              await migrationVaultService.delete(userVaultForMigration, key)
+                .catch(() => {});
+            }
+            logger.info(
+              "Migrated OAuth secret {key} from vault to control-plane store",
+              { key },
+            );
+          } catch { /* key doesn't exist in old vault — skip */ }
+        }
       }
     }
 
@@ -2011,13 +2145,10 @@ export const serveCommand = new Command()
         resolvedRepoDir,
         { defaultVaultName: repoMarker?.defaultVault },
       );
-      const vaultNames = vaultService.getVaultNames();
-      if (vaultNames.length === 0) {
-        throw new UserError(
-          "group refresh requires a vault — run 'swamp vault create local_encryption default' first",
+      const userVaultName = vaultService.getDefaultVaultName() ??
+        vaultService.getVaultNames().find((n) =>
+          n !== TOKEN_SECRETS_VAULT_NAME
         );
-      }
-      const vaultName = vaultService.getDefaultVaultName() ?? vaultNames[0];
 
       const {
         CollectiveRefreshService,
@@ -2058,11 +2189,22 @@ export const serveCommand = new Command()
         getAccessToken: async (tokenName) => {
           try {
             return await vaultService.get(
-              vaultName,
+              TOKEN_SECRETS_VAULT_NAME,
               oauthAccessTokenKey(tokenName),
               "serve:group-refresh",
             );
           } catch {
+            if (userVaultName) {
+              try {
+                return await vaultService.get(
+                  userVaultName,
+                  oauthAccessTokenKey(tokenName),
+                  "serve:group-refresh",
+                );
+              } catch {
+                return null;
+              }
+            }
             return null;
           }
         },
