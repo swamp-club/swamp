@@ -123,9 +123,9 @@ Deno.test("collectServeExtraArgs: includes --reconciliation-interval", () => {
   assertEquals(args, ["--reconciliation-interval", "30s"]);
 });
 
-Deno.test("collectServeExtraArgs: skips reconciliation flags when not set", () => {
+Deno.test("collectServeExtraArgs: deprecated --detach-runs is not forwarded", () => {
   const args = collectServeExtraArgs({ detachRuns: true });
-  assertEquals(args, ["--detach-runs"]);
+  assertEquals(args, []);
 });
 
 Deno.test("collectServeExtraArgs: combines multiple flags", () => {

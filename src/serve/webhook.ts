@@ -290,7 +290,7 @@ export interface WebhookServiceDeps {
   syncService?: DatastoreSyncService;
   runTracker?:
     import("../infrastructure/persistence/run_tracker_store.ts").RunTrackerStore;
-  /** HA instance identifier — present when `--detach-runs` is active. */
+  /** HA instance identifier — always generated at startup. */
   instanceId?: string;
   /** Remote control-plane store for HA dual-write of pending runs. */
   controlPlaneStore?:
