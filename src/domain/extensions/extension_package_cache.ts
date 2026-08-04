@@ -174,11 +174,15 @@ function normalizeToForwardSlash(p: string): string {
   return SEPARATOR === "\\" ? p.replaceAll("\\", "/") : p;
 }
 
+export async function computeFileContentHash(path: string): Promise<string> {
+  const bytes = await Deno.readFile(path);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return `sha256:${encodeHex(new Uint8Array(digest))}`;
+}
+
 async function readFileIfExists(path: string): Promise<string> {
   try {
-    const bytes = await Deno.readFile(path);
-    const digest = await crypto.subtle.digest("SHA-256", bytes);
-    return `sha256:${encodeHex(new Uint8Array(digest))}`;
+    return await computeFileContentHash(path);
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {
       return "missing";

@@ -320,12 +320,50 @@ export async function checkExtensionQuality(
   };
 }
 
-/** Advisory check — warns on manifest/model version mismatch but never blocks. */
+/** Published model metadata from the registry. */
+export interface PublishedModelVersion {
+  fileName: string;
+  version: string;
+}
+
+/** Published extension state from the registry. */
+export interface PublishedExtensionState {
+  manifestVersion: string;
+  models: PublishedModelVersion[];
+}
+
+/**
+ * Advisory check — warns on version drift but never blocks.
+ *
+ * Compares current model versions against the registry's last-published
+ * version. Warns when a model version moved but the manifest version
+ * did not.
+ *
+ * When no published state is available (first publish), tells the user
+ * rather than silently skipping.
+ */
 export async function checkVersionConsistency(
   manifestVersion: string,
   modelFiles: string[],
+  published?: PublishedExtensionState,
 ): Promise<QualityIssue[]> {
+  if (modelFiles.length === 0) return [];
+
+  if (!published) {
+    return [{
+      check: "version-drift",
+      output: "unable to check for version drift — no previously published " +
+        "version found in the registry (this is expected on first publish)",
+    }];
+  }
+
+  const publishedByFile = new Map<string, string>();
+  for (const m of published.models) {
+    publishedByFile.set(m.fileName, m.version);
+  }
+
   const issues: QualityIssue[] = [];
+  let anyModelVersionBumped = false;
 
   for (const file of modelFiles) {
     let content: string;
@@ -344,15 +382,24 @@ export async function checkVersionConsistency(
     const modelVersion = extractModelVersion(content);
     if (!modelVersion) continue;
 
-    if (modelVersion !== manifestVersion) {
-      issues.push({
-        check: "version-drift",
-        output:
-          `${basename(file)}: model version "${modelVersion}" differs from ` +
-          `manifest version "${manifestVersion}" ` +
-          `(update the model's version field to align)`,
-      });
+    const publishedVersion = publishedByFile.get(basename(file));
+    if (!publishedVersion) continue;
+
+    if (modelVersion !== publishedVersion) {
+      anyModelVersionBumped = true;
     }
+  }
+
+  if (
+    anyModelVersionBumped &&
+    manifestVersion === published.manifestVersion
+  ) {
+    issues.push({
+      check: "version-drift",
+      output:
+        `manifest version "${manifestVersion}" was not bumped but one or ` +
+        `more model versions changed (bump the manifest version)`,
+    });
   }
 
   return issues;

@@ -49,6 +49,7 @@ import {
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
 import {
   checkVersionConsistency,
+  type PublishedExtensionState,
   type QualityIssue,
 } from "../../domain/extensions/extension_quality_checker.ts";
 import type { DependencyTrustIssue } from "../../domain/extensions/extension_dependency_trust_checker.ts";
@@ -538,10 +539,38 @@ export const extensionPushCommand = new Command()
       }
     }
 
-    // 6c. Version-drift check (advisory warning only)
+    // 6d. Version-drift check (advisory warning only)
+    // Fetch the last-published version from the registry to compare
+    // model versions. Best-effort — if credentials are unavailable or
+    // the extension has never been published, we tell the user.
+    let published: PublishedExtensionState | undefined;
+    try {
+      const creds = await prepareDeps.loadCredentials();
+      if (creds) {
+        const latestDetail = await prepareDeps.getLatestVersionDetail(
+          creds.serverUrl,
+          manifest.name,
+          creds.apiKey,
+        );
+        if (latestDetail) {
+          published = {
+            manifestVersion: latestDetail.version,
+            models: (latestDetail.contentMetadata?.models ?? []).map((m) => ({
+              fileName: m.fileName,
+              version: m.version,
+            })),
+          };
+        }
+      }
+    } catch {
+      cliCtx.logger
+        .debug`Failed to fetch published version for drift check (continuing)`;
+    }
+
     const versionIssues = await checkVersionConsistency(
       prepared.manifest.version,
       allModelFiles,
+      published,
     );
     if (versionIssues.length > 0) {
       renderer.renderVersionDriftWarnings(versionIssues);
