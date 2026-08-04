@@ -99,7 +99,7 @@ export interface ConnectionContext {
   dispatchService?: import("../dispatch_service.ts").DispatchService;
   controlPlaneStore?: ControlPlaneStore;
   defaultVault?: string;
-  /** HA instance identifier — present when `--detach-runs` is active. */
+  /** HA instance identifier — always generated at startup. */
   instanceId?: string;
   /** Heartbeat stale TTL in ms — used by cross-instance run.attach fallback. */
   staleTtlMs?: number;

@@ -359,9 +359,6 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   if (options.trustedHosts) {
     args.push("--trusted-hosts", options.trustedHosts as string);
   }
-  if (options.detachRuns) {
-    args.push("--detach-runs");
-  }
   if (options.heartbeatInterval) {
     args.push("--heartbeat-interval", options.heartbeatInterval as string);
   }
@@ -387,7 +384,6 @@ export async function reapOrphanedWorkflowRuns(
   save: (workflowId: WorkflowId, run: WorkflowRun) => Promise<void>,
   trackerLookup: (runId: string) => { status: string } | null,
   isDeadFn: (pid: number) => boolean = isProcessDead,
-  detachRuns = false,
 ): Promise<ReapResult> {
   let reaped = 0;
   let skipped = 0;
@@ -413,11 +409,7 @@ export async function reapOrphanedWorkflowRuns(
           reason: "tracker confirmed stale",
         },
       );
-      if (detachRuns) {
-        run.interrupt("server_crash");
-      } else {
-        run.cancel("daemon restarted (tracker confirmed stale)");
-      }
+      run.interrupt("server_crash");
       await save(workflowId, run);
       reaped++;
       continue;
@@ -441,11 +433,7 @@ export async function reapOrphanedWorkflowRuns(
       "Reaping orphaned workflow run {runId} (workflow: {workflowName}, reason: {reason})",
       { runId: run.id, workflowName: run.workflowName, reason },
     );
-    if (detachRuns) {
-      run.interrupt("server_crash");
-    } else {
-      run.cancel(reason);
-    }
+    run.interrupt("server_crash");
     await save(workflowId, run);
     reaped++;
   }
@@ -548,7 +536,7 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--detach-runs",
-    "Enable durable run mode — runs survive client disconnect and process restart",
+    "Deprecated — HA mode is now detected automatically. Accepted for backwards compatibility.",
   )
   .option(
     "--heartbeat-interval <duration:string>",
@@ -989,37 +977,27 @@ export const serveCommand = new Command()
   )
   .option(
     "--detach-runs",
-    "Durable run mode. Enables two related behaviors:\n" +
-      "  1. Client disconnect: a WebSocket close detaches the client instead of cancelling the run; " +
-      "clients can re-attach by run ID.\n" +
-      "  2. Process restart: webhook and cron runs are queued to a local SQLite database before " +
-      "being acknowledged and replayed if the process dies before executing them. " +
-      "When the datastore supports control-plane operations (e.g. @swamp/s3-datastore), " +
-      "pending runs and instance identity are also written to the remote store, enabling " +
-      "recovery after machine failure — not just process restart. " +
-      "In-flight runs " +
-      "interrupted by shutdown or crash are marked failed with an interrupt_reason tag and can be " +
-      "resumed via 'swamp workflow resume --from <step>'.\n" +
-      "Without this flag, runs are cancelled on disconnect and lost on restart (the default).",
+    "Deprecated — HA mode is now detected automatically based on your datastore configuration. " +
+      "This flag is accepted for backwards compatibility but has no effect.",
   )
   .option(
     "--heartbeat-interval <duration:string>",
     "How often to write an instance heartbeat to the control-plane store. " +
       "Accepts seconds (30), explicit units (30s, 1m). Default: 30s. " +
-      "Only used with --detach-runs (env: SWAMP_HEARTBEAT_INTERVAL)",
+      "Only effective with a control-plane-capable datastore (env: SWAMP_HEARTBEAT_INTERVAL)",
   )
   .option(
     "--stale-ttl <duration:string>",
     "How long a heartbeat can go without update before the instance is considered dead. " +
       "Must be at least 2x --heartbeat-interval (values below this are rejected). " +
       "Accepts seconds (90), explicit units (90s, 2m). Default: 90s. " +
-      "Only used with --detach-runs (env: SWAMP_STALE_TTL)",
+      "Only effective with a control-plane-capable datastore (env: SWAMP_STALE_TTL)",
   )
   .option(
     "--reconciliation-interval <duration:string>",
     "How often to scan for dead peer instances and reconcile their orphaned runs. " +
       "Accepts seconds (60), explicit units (60s, 2m). Default: 60s. " +
-      "Only used with --detach-runs (env: SWAMP_RECONCILIATION_INTERVAL)",
+      "Only effective with a control-plane-capable datastore (env: SWAMP_RECONCILIATION_INTERVAL)",
   )
   .option(
     "--hot-reload",
@@ -1374,6 +1352,47 @@ export const serveCommand = new Command()
         swampPath(resolvedRepoDir),
       );
       logger.info("Control-plane store: local filesystem fallback");
+    }
+    const hasRemoteControlPlane = !!(caps?.controlPlane &&
+      syncService?.controlPlaneStore);
+
+    if (!hasRemoteControlPlane) {
+      if (heartbeatIntervalMs !== undefined) {
+        logger.warn(
+          "--heartbeat-interval has no effect without a control-plane-capable datastore",
+        );
+      }
+      if (staleTtlMs !== undefined) {
+        logger.warn(
+          "--stale-ttl has no effect without a control-plane-capable datastore",
+        );
+      }
+      if (reconciliationIntervalMs !== undefined) {
+        logger.warn(
+          "--reconciliation-interval has no effect without a control-plane-capable datastore",
+        );
+      }
+    }
+
+    if (
+      hasRemoteControlPlane &&
+      staleTtlMs !== undefined && heartbeatIntervalMs !== undefined &&
+      staleTtlMs < heartbeatIntervalMs * 2
+    ) {
+      throw new UserError(
+        `--stale-ttl (${staleTtlRaw}) must be at least 2x --heartbeat-interval (${heartbeatIntervalRaw}), ` +
+          "otherwise live instances will appear stale",
+      );
+    }
+
+    if (hasRemoteControlPlane) {
+      logger.info(
+        "HA: detached runs, pending-run durability, instance heartbeat, continuous reconciliation",
+      );
+    } else {
+      logger.info(
+        "HA: detached runs, pending-run durability (no remote control-plane — heartbeat and reconciliation disabled)",
+      );
     }
 
     // Initialize the encrypted control-plane vault provider for serve-internal
@@ -1744,40 +1763,15 @@ export const serveCommand = new Command()
 
     const cancelRegistry = new RunCancelRegistry();
     const detachRuns = merged.detachRuns;
-    const activeRunRegistry = detachRuns ? new ActiveRunRegistry() : undefined;
+    const activeRunRegistry = new ActiveRunRegistry();
 
-    if (!detachRuns) {
-      if (heartbeatIntervalMs !== undefined) {
-        logger.warn(
-          "--heartbeat-interval is set but --detach-runs is not active — heartbeat-interval will have no effect",
-        );
-      }
-      if (staleTtlMs !== undefined) {
-        logger.warn(
-          "--stale-ttl is set but --detach-runs is not active — stale-ttl will have no effect",
-        );
-      }
-      if (reconciliationIntervalMs !== undefined) {
-        logger.warn(
-          "--reconciliation-interval is set but --detach-runs is not active — reconciliation-interval will have no effect",
-        );
-      }
-    }
-
-    if (
-      detachRuns &&
-      staleTtlMs !== undefined && heartbeatIntervalMs !== undefined &&
-      staleTtlMs < heartbeatIntervalMs * 2
-    ) {
-      throw new UserError(
-        `--stale-ttl (${staleTtlRaw}) must be at least 2x --heartbeat-interval (${heartbeatIntervalRaw}), ` +
-          "otherwise live instances will appear stale",
+    if (detachRuns) {
+      logger.warn(
+        "The --detach-runs flag is deprecated and has no effect — HA mode is determined automatically by your datastore configuration; see startup mode log for details",
       );
     }
 
-    // HA instance identity — generated only when detach-runs is active so
-    // each process gets a unique ID that survives across reconnects.
-    const instanceId = detachRuns ? crypto.randomUUID() : undefined;
+    const instanceId = crypto.randomUUID();
 
     // Migrate existing vault-backed token secrets to the encrypted
     // control-plane store. Runs before auth middleware accepts tokens.
@@ -1889,7 +1883,7 @@ export const serveCommand = new Command()
 
     let heartbeatService: InstanceHeartbeatService | undefined;
 
-    if (detachRuns && syncService) {
+    if (hasRemoteControlPlane && syncService) {
       await hydrateLocalCache({
         syncService,
         catalogInvalidate: () => repoContext.catalogStore.invalidate(),
@@ -1908,13 +1902,11 @@ export const serveCommand = new Command()
         run.methodName ?? run.workflowName ?? "unknown"
       })`;
     }
-    if (detachRuns) {
-      const deadPidRuns = runTracker.reapDeadProcessRuns();
-      for (const run of deadPidRuns) {
-        logger.warn`Reaped dead-process ${run.runKind} run ${run.id} (${
-          run.methodName ?? run.workflowName ?? "unknown"
-        })`;
-      }
+    const deadPidRuns = runTracker.reapDeadProcessRuns();
+    for (const run of deadPidRuns) {
+      logger.warn`Reaped dead-process ${run.runKind} run ${run.id} (${
+        run.methodName ?? run.workflowName ?? "unknown"
+      })`;
     }
 
     // Reconcile YAML-persisted workflow run state with tracker verdicts.
@@ -1932,7 +1924,6 @@ export const serveCommand = new Command()
         return tracked ? { status: tracked.status } : null;
       },
       isProcessDead,
-      detachRuns,
     );
 
     const swept = await sweepStaleRecords({
@@ -1995,43 +1986,41 @@ export const serveCommand = new Command()
             syncService,
             runTracker,
           ),
-        pendingRunHook: detachRuns
-          ? {
-            enqueue: (entry) => {
-              runTracker.enqueuePendingRun(entry);
-              if (controlPlaneStore) {
-                controlPlaneStore.put(
-                  `pending-runs/${entry.id}`,
-                  new TextEncoder().encode(JSON.stringify(entry)),
-                ).catch((err: unknown) => {
-                  logger.warn(
-                    "Control-plane dual-write failed for cron pending run {id}: {error}",
-                    {
-                      id: entry.id,
-                      error: err instanceof Error ? err.message : String(err),
-                    },
-                  );
-                });
-              }
-            },
-            delete: (id) => {
-              runTracker.deletePendingRun(id);
-              if (controlPlaneStore) {
-                controlPlaneStore.delete(
-                  `pending-runs/${id}`,
-                ).catch((err: unknown) => {
-                  logger.warn(
-                    "Control-plane delete failed for cron pending run {id}: {error}",
-                    {
-                      id,
-                      error: err instanceof Error ? err.message : String(err),
-                    },
-                  );
-                });
-              }
-            },
-          }
-          : undefined,
+        pendingRunHook: {
+          enqueue: (entry) => {
+            runTracker.enqueuePendingRun(entry);
+            if (controlPlaneStore) {
+              controlPlaneStore.put(
+                `pending-runs/${entry.id}`,
+                new TextEncoder().encode(JSON.stringify(entry)),
+              ).catch((err: unknown) => {
+                logger.warn(
+                  "Control-plane dual-write failed for cron pending run {id}: {error}",
+                  {
+                    id: entry.id,
+                    error: err instanceof Error ? err.message : String(err),
+                  },
+                );
+              });
+            }
+          },
+          delete: (id) => {
+            runTracker.deletePendingRun(id);
+            if (controlPlaneStore) {
+              controlPlaneStore.delete(
+                `pending-runs/${id}`,
+              ).catch((err: unknown) => {
+                logger.warn(
+                  "Control-plane delete failed for cron pending run {id}: {error}",
+                  {
+                    id,
+                    error: err instanceof Error ? err.message : String(err),
+                  },
+                );
+              });
+            }
+          },
+        },
         activeRunHook: controlPlaneStore && instanceId
           ? {
             write: (runId: string, resourceName: string, runKind: string) => {
@@ -2303,7 +2292,7 @@ export const serveCommand = new Command()
         datastoreConfig,
         endpoints,
         syncService,
-        runTracker: detachRuns ? runTracker : undefined,
+        runTracker,
         instanceId,
         controlPlaneStore,
       });
@@ -2373,7 +2362,7 @@ export const serveCommand = new Command()
       wsUpgradeOpts.idleTimeout = wsIdleTimeoutSeconds;
     }
 
-    let isReady = !detachRuns;
+    let isReady = false;
 
     const wsScheme = tlsEnabled ? "wss" : "ws";
     const server = Deno.serve(
@@ -2391,7 +2380,7 @@ export const serveCommand = new Command()
               port: listenPort,
               url: `${wsScheme}://${hostname}:${listenPort}`,
               schedulingEnabled: enableSchedule,
-              detachRuns,
+              detachRuns: true,
               mode: deploymentMode.mode,
             }));
           } else {
@@ -2668,9 +2657,16 @@ export const serveCommand = new Command()
         // Readiness endpoint — returns 200 only after full startup
         if (req.method === "GET" && new URL(req.url).pathname === "/ready") {
           if (!isReady) {
-            return Response.json({ status: "not_ready" }, { status: 503 });
+            return Response.json(
+              { status: "not_ready", instanceId },
+              { status: 503 },
+            );
           }
-          return Response.json({ status: "ready", mode: deploymentMode.mode });
+          return Response.json({
+            status: "ready",
+            mode: deploymentMode.mode,
+            instanceId,
+          });
         }
 
         // Health check endpoint
@@ -2902,141 +2898,129 @@ export const serveCommand = new Command()
       }
     }
 
-    if (detachRuns) {
-      // Reconcile runs from dead remote instances before replaying local
-      // pending entries, so that any stale tracker rows are cleaned up first.
-      if (controlPlaneStore && instanceId) {
-        const remoteReaped = await reconcileRemoteInterruptedRuns({
-          controlPlaneStore,
-          instanceId,
-          runTracker,
-          staleTtlMs,
-        });
-        if (remoteReaped > 0) {
-          logger
-            .info`Reaped ${remoteReaped} run(s) from dead remote instance(s)`;
-        }
-
-        const deadPidRunsRemote = runTracker.reapDeadProcessRuns();
-        for (const run of deadPidRunsRemote) {
-          logger.warn`Reaped dead-process ${run.runKind} run ${run.id} (${
-            run.methodName ?? run.workflowName ?? "unknown"
-          })`;
-        }
-      }
-
-      const replayed = await replayPendingRuns({
-        runTracker,
-        webhookService: webhookService ?? undefined,
-        scheduledExecution: scheduledExecution ?? undefined,
+    if (hasRemoteControlPlane) {
+      const remoteReaped = await reconcileRemoteInterruptedRuns({
         controlPlaneStore,
+        instanceId,
+        runTracker,
+        staleTtlMs,
       });
-      if (replayed > 0) {
-        logger.info`Replayed ${replayed} pending run(s) from previous process`;
+      if (remoteReaped > 0) {
+        logger
+          .info`Reaped ${remoteReaped} run(s) from dead remote instance(s)`;
       }
 
-      // Start heartbeat AFTER replay so that remote peers don't see us
-      // as alive until we've finished reconciliation.
-      if (controlPlaneStore && instanceId) {
-        heartbeatService = new InstanceHeartbeatService(
-          controlPlaneStore,
-          instanceId,
-          heartbeatIntervalMs ? { intervalMs: heartbeatIntervalMs } : undefined,
-        );
-        await heartbeatService.start();
-        logger.info`Instance heartbeat started (id: ${instanceId})`;
-
-        const RECONCILIATION_INTERVAL_MS = reconciliationIntervalMs ?? 60_000;
-        const RECONCILIATION_JITTER_MS = 500;
-        const runReconciliationTick = async () => {
-          try {
-            const reaped = await reconcileRemoteInterruptedRuns({
-              controlPlaneStore: controlPlaneStore!,
-              instanceId: instanceId!,
-              runTracker,
-              staleTtlMs,
-            });
-            if (reaped > 0) {
-              logger
-                .info`Continuous reconciliation reaped ${reaped} run(s)`;
-            }
-          } catch (err: unknown) {
-            logger.warn(
-              "Continuous reconciliation failed: {error}",
-              { error: err instanceof Error ? err.message : String(err) },
-            );
-          }
-          try {
-            await cleanupExpiredClaims({
-              controlPlaneStore: controlPlaneStore!,
-            });
-          } catch (err: unknown) {
-            logger.warn(
-              "Reconciliation claim cleanup failed: {error}",
-              { error: err instanceof Error ? err.message : String(err) },
-            );
-          }
-        };
-        const scheduleReconciliation = () => {
-          const jitter = new Uint32Array(1);
-          crypto.getRandomValues(jitter);
-          const jitterMs = (jitter[0] / 0xFFFFFFFF) * RECONCILIATION_JITTER_MS;
-          const timer = setTimeout(
-            () =>
-              runReconciliationTick().catch(() => {}).finally(
-                scheduleReconciliation,
-              ),
-            RECONCILIATION_INTERVAL_MS + jitterMs,
-          );
-          Deno.unrefTimer(timer);
-        };
-        scheduleReconciliation();
-        logger.info("Continuous reconciliation timer started");
+      const deadPidRunsRemote = runTracker.reapDeadProcessRuns();
+      for (const run of deadPidRunsRemote) {
+        logger.warn`Reaped dead-process ${run.runKind} run ${run.id} (${
+          run.methodName ?? run.workflowName ?? "unknown"
+        })`;
       }
-
-      // Periodically reap stale fire-records so they don't accumulate
-      // unboundedly. Runs every 10 minutes; deletes records older than 4 hours.
-      // Only needed when dedup is active (putIfAbsent available).
-      if (controlPlaneStore?.putIfAbsent) {
-        const FIRE_RECORD_REAP_INTERVAL_MS = 10 * 60 * 1000;
-        const FIRE_RECORD_TTL_MS = 4 * 60 * 60 * 1000;
-        const reapFireRecords = async () => {
-          try {
-            const keys = await controlPlaneStore!.list("fire-records/");
-            const cutoff = Date.now() - FIRE_RECORD_TTL_MS;
-            // Key format: fire-records/{workflowId}/{normalizedFireTime}
-            // normalizedFireTime uses hyphens instead of colons for
-            // Windows compat; restore colons for Date parsing.
-            for (const key of keys) {
-              const segments = key.split("/");
-              if (segments.length < 3) continue;
-              const timePart = segments.slice(2).join("/");
-              const isoTime = timePart.replace(
-                /T(\d{2})-(\d{2})-(\d{2})Z/,
-                "T$1:$2:$3Z",
-              );
-              const ts = new Date(isoTime).getTime();
-              if (Number.isNaN(ts) || ts < cutoff) {
-                await controlPlaneStore!.delete(key);
-              }
-            }
-          } catch (err: unknown) {
-            logger.warn(
-              "Fire record reaper failed: {error}",
-              { error: err instanceof Error ? err.message : String(err) },
-            );
-          }
-        };
-        const reaperTimer = setInterval(
-          () => reapFireRecords().catch(() => {}),
-          FIRE_RECORD_REAP_INTERVAL_MS,
-        );
-        Deno.unrefTimer(reaperTimer);
-      }
-
-      isReady = true;
-      logger.info("Startup complete — /ready is now serving 200");
     }
+
+    const replayed = await replayPendingRuns({
+      runTracker,
+      webhookService: webhookService ?? undefined,
+      scheduledExecution: scheduledExecution ?? undefined,
+      controlPlaneStore,
+    });
+    if (replayed > 0) {
+      logger.info`Replayed ${replayed} pending run(s) from previous process`;
+    }
+
+    if (hasRemoteControlPlane) {
+      heartbeatService = new InstanceHeartbeatService(
+        controlPlaneStore,
+        instanceId,
+        heartbeatIntervalMs ? { intervalMs: heartbeatIntervalMs } : undefined,
+      );
+      await heartbeatService.start();
+      logger.info`Instance heartbeat started (id: ${instanceId})`;
+
+      const RECONCILIATION_INTERVAL_MS = reconciliationIntervalMs ?? 60_000;
+      const RECONCILIATION_JITTER_MS = 500;
+      const runReconciliationTick = async () => {
+        try {
+          const reaped = await reconcileRemoteInterruptedRuns({
+            controlPlaneStore,
+            instanceId,
+            runTracker,
+            staleTtlMs,
+          });
+          if (reaped > 0) {
+            logger
+              .info`Continuous reconciliation reaped ${reaped} run(s)`;
+          }
+        } catch (err: unknown) {
+          logger.warn(
+            "Continuous reconciliation failed: {error}",
+            { error: err instanceof Error ? err.message : String(err) },
+          );
+        }
+        try {
+          await cleanupExpiredClaims({
+            controlPlaneStore,
+          });
+        } catch (err: unknown) {
+          logger.warn(
+            "Reconciliation claim cleanup failed: {error}",
+            { error: err instanceof Error ? err.message : String(err) },
+          );
+        }
+      };
+      const scheduleReconciliation = () => {
+        const jitter = new Uint32Array(1);
+        crypto.getRandomValues(jitter);
+        const jitterMs = (jitter[0] / 0xFFFFFFFF) * RECONCILIATION_JITTER_MS;
+        const timer = setTimeout(
+          () =>
+            runReconciliationTick().catch(() => {}).finally(
+              scheduleReconciliation,
+            ),
+          RECONCILIATION_INTERVAL_MS + jitterMs,
+        );
+        Deno.unrefTimer(timer);
+      };
+      scheduleReconciliation();
+      logger.info("Continuous reconciliation timer started");
+    }
+
+    if (controlPlaneStore?.putIfAbsent) {
+      const FIRE_RECORD_REAP_INTERVAL_MS = 10 * 60 * 1000;
+      const FIRE_RECORD_TTL_MS = 4 * 60 * 60 * 1000;
+      const reapFireRecords = async () => {
+        try {
+          const keys = await controlPlaneStore!.list("fire-records/");
+          const cutoff = Date.now() - FIRE_RECORD_TTL_MS;
+          for (const key of keys) {
+            const segments = key.split("/");
+            if (segments.length < 3) continue;
+            const timePart = segments.slice(2).join("/");
+            const isoTime = timePart.replace(
+              /T(\d{2})-(\d{2})-(\d{2})Z/,
+              "T$1:$2:$3Z",
+            );
+            const ts = new Date(isoTime).getTime();
+            if (Number.isNaN(ts) || ts < cutoff) {
+              await controlPlaneStore!.delete(key);
+            }
+          }
+        } catch (err: unknown) {
+          logger.warn(
+            "Fire record reaper failed: {error}",
+            { error: err instanceof Error ? err.message : String(err) },
+          );
+        }
+      };
+      const reaperTimer = setInterval(
+        () => reapFireRecords().catch(() => {}),
+        FIRE_RECORD_REAP_INTERVAL_MS,
+      );
+      Deno.unrefTimer(reaperTimer);
+    }
+
+    isReady = true;
+    logger.info("Startup complete — /ready is now serving 200");
 
     await server.finished;
 

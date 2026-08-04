@@ -451,7 +451,7 @@ Deno.test("reapOrphanedWorkflowRuns: skips run when tracker reports still runnin
   assertEquals(saved.length, 0);
 });
 
-Deno.test("reapOrphanedWorkflowRuns: cancels run when tracker confirmed stale", async () => {
+Deno.test("reapOrphanedWorkflowRuns: interrupts run when tracker confirmed stale", async () => {
   const run = makeRun({ pid: 99999 });
   const saved: string[] = [];
   const result = await reapOrphanedWorkflowRuns(
@@ -464,7 +464,7 @@ Deno.test("reapOrphanedWorkflowRuns: cancels run when tracker confirmed stale", 
   );
   assertEquals(result.reaped, 1);
   assertEquals(result.skipped, 0);
-  assertEquals(run.status, "cancelled");
+  assertEquals(run.status, "failed");
   assertEquals(saved.length, 1);
 });
 
@@ -486,7 +486,7 @@ Deno.test("reapOrphanedWorkflowRuns: legacy run with live PID is skipped", async
   assertEquals(saved.length, 0);
 });
 
-Deno.test("reapOrphanedWorkflowRuns: legacy run with dead PID is cancelled", async () => {
+Deno.test("reapOrphanedWorkflowRuns: legacy run with dead PID is interrupted", async () => {
   const run = makeRun({ pid: 99999 });
   const saved: string[] = [];
   const result = await reapOrphanedWorkflowRuns(
@@ -500,11 +500,11 @@ Deno.test("reapOrphanedWorkflowRuns: legacy run with dead PID is cancelled", asy
   );
   assertEquals(result.reaped, 1);
   assertEquals(result.skipped, 0);
-  assertEquals(run.status, "cancelled");
+  assertEquals(run.status, "failed");
   assertEquals(saved.length, 1);
 });
 
-Deno.test("reapOrphanedWorkflowRuns: legacy run with no PID is cancelled", async () => {
+Deno.test("reapOrphanedWorkflowRuns: legacy run with no PID is interrupted", async () => {
   const run = makeRun(); // no pid
   const saved: string[] = [];
   const result = await reapOrphanedWorkflowRuns(
@@ -520,7 +520,7 @@ Deno.test("reapOrphanedWorkflowRuns: legacy run with no PID is cancelled", async
   );
   assertEquals(result.reaped, 1);
   assertEquals(result.skipped, 0);
-  assertEquals(run.status, "cancelled");
+  assertEquals(run.status, "failed");
 });
 
 Deno.test("reapOrphanedWorkflowRuns: skips run in terminal state", async () => {
@@ -572,9 +572,9 @@ Deno.test("reapOrphanedWorkflowRuns: mixed scenario with tracker and legacy runs
   assertEquals(result.reaped, 3); // tracker-stale + legacy dead PID + legacy no PID
   assertEquals(result.skipped, 1); // tracker-live
   assertEquals(trackedLive.status, "running");
-  assertEquals(trackedStale.status, "cancelled");
-  assertEquals(legacyDeadPid.status, "cancelled");
-  assertEquals(legacyNoPid.status, "cancelled");
+  assertEquals(trackedStale.status, "failed");
+  assertEquals(legacyDeadPid.status, "failed");
+  assertEquals(legacyNoPid.status, "failed");
   assertEquals(succeededRun.status, "succeeded");
   assertEquals(saved.length, 3);
 });
