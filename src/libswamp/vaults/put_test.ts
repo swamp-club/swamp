@@ -39,9 +39,6 @@ function makeDeps(overrides: Partial<VaultPutDeps> = {}): VaultPutDeps {
     putRefreshHook: () => Promise.resolve(),
     deleteRefreshHook: () => Promise.resolve(),
     supportsRefreshHooks: () => Promise.resolve(false),
-    supportsAnnotations: () => Promise.resolve(false),
-    getAnnotation: () => Promise.resolve(null),
-    putAnnotation: () => Promise.resolve(),
     ...overrides,
   };
 }
@@ -262,29 +259,6 @@ Deno.test("vaultPut: passes tags to putSecret and reports labels in completed ev
     { kind: "completed" }
   >;
   assertEquals(completed.data.labels, { owner: "platform-team", env: "prod" });
-});
-
-Deno.test("vaultPut: does not call putAnnotation when tags are provided", async () => {
-  let annotationCalled = false;
-  const deps = makeDeps({
-    supportsAnnotations: () => Promise.resolve(true),
-    putAnnotation: () => {
-      annotationCalled = true;
-      return Promise.resolve();
-    },
-  });
-
-  await collect<VaultPutEvent>(
-    vaultPut(createLibSwampContext(), deps, {
-      vaultName: "my-vault",
-      key: "API_KEY",
-      value: "secret123",
-      overwritten: false,
-      tags: { owner: "team" },
-    }),
-  );
-
-  assertEquals(annotationCalled, false);
 });
 
 Deno.test("vaultPut: does not pass tags to putSecret when tags is empty", async () => {

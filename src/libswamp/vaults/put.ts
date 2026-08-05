@@ -25,7 +25,6 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound } from "../errors.ts";
 import { RefreshHook } from "../../domain/vaults/refresh_hook.ts";
-import type { VaultAnnotation } from "../../domain/vaults/vault_annotation.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Minimal vault config shape needed by the generator. */
@@ -50,7 +49,7 @@ export interface VaultPutData {
   vaultType: string;
   overwritten: boolean;
   timestamp: string;
-  labels?: Record<string, string> | null;
+  labels?: Record<string, string>;
 }
 
 export type VaultPutEvent =
@@ -95,16 +94,6 @@ export interface VaultPutDeps {
   ) => Promise<void>;
   deleteRefreshHook: (vaultName: string, key: string) => Promise<void>;
   supportsRefreshHooks: (vaultName: string) => Promise<boolean>;
-  supportsAnnotations: (vaultName: string) => Promise<boolean>;
-  getAnnotation: (
-    vaultName: string,
-    key: string,
-  ) => Promise<VaultAnnotation | null>;
-  putAnnotation: (
-    vaultName: string,
-    key: string,
-    annotation: VaultAnnotation,
-  ) => Promise<void>;
 }
 
 /** Wires real infrastructure into VaultPutDeps. */
@@ -157,18 +146,6 @@ export function createVaultPutDeps(
     supportsRefreshHooks: async (vaultName) => {
       const svc = await getVaultService();
       return svc.supportsRefreshHooks(vaultName);
-    },
-    supportsAnnotations: async (vaultName) => {
-      const svc = await getVaultService();
-      return svc.supportsAnnotations(vaultName);
-    },
-    getAnnotation: async (vaultName, key) => {
-      const svc = await getVaultService();
-      return svc.getAnnotation(vaultName, key);
-    },
-    putAnnotation: async (vaultName, key, annotation) => {
-      const svc = await getVaultService();
-      await svc.putAnnotation(vaultName, key, annotation);
     },
   };
 }

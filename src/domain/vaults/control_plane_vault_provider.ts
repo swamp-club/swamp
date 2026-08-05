@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { ControlPlaneStore } from "../datastore/control_plane_store.ts";
-import type { VaultDeleteProvider, VaultProvider } from "./vault_provider.ts";
+import type {
+  VaultDeleteProvider,
+  VaultProvider,
+  VaultPutOptions,
+} from "./vault_provider.ts";
 import {
   aesGcmDecrypt,
   aesGcmEncrypt,
@@ -68,7 +72,7 @@ export class ControlPlaneVaultProvider
   async put(
     secretKey: string,
     secretValue: string,
-    _options?: import("./vault_provider.ts").VaultPutOptions,
+    _options?: VaultPutOptions,
   ): Promise<void> {
     const key = this.#requireKey();
     const blob = await aesGcmEncrypt(secretValue, key);

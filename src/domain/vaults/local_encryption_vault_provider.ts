@@ -19,7 +19,11 @@
 
 import { join } from "@std/path";
 import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
-import type { VaultDeleteProvider, VaultProvider } from "./vault_provider.ts";
+import type {
+  VaultDeleteProvider,
+  VaultProvider,
+  VaultPutOptions,
+} from "./vault_provider.ts";
 import type { VaultAnnotationProvider } from "./vault_annotation.ts";
 import { VaultAnnotation } from "./vault_annotation.ts";
 import type { VaultRefreshHookProvider } from "./refresh_hook.ts";
@@ -121,7 +125,7 @@ export class LocalEncryptionVaultProvider
   async put(
     secretKey: string,
     secretValue: string,
-    _options?: import("./vault_provider.ts").VaultPutOptions,
+    options?: VaultPutOptions,
   ): Promise<void> {
     this.validateSecretKey(secretKey);
     await this.ensureVaultDirectory();
@@ -137,6 +141,14 @@ export class LocalEncryptionVaultProvider
       JSON.stringify(encryptedData, null, 2),
       { mode: 0o600 },
     );
+
+    if (options?.tags && Object.keys(options.tags).length > 0) {
+      const existing = await this.getAnnotation(secretKey);
+      const annotation = existing
+        ? existing.merge({ labels: options.tags })
+        : VaultAnnotation.create({ labels: options.tags });
+      await this.putAnnotation(secretKey, annotation);
+    }
   }
 
   getName(): string {
