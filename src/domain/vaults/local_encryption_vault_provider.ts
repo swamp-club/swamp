@@ -118,7 +118,11 @@ export class LocalEncryptionVaultProvider
     }
   }
 
-  async put(secretKey: string, secretValue: string): Promise<void> {
+  async put(
+    secretKey: string,
+    secretValue: string,
+    _options?: import("./vault_provider.ts").VaultPutOptions,
+  ): Promise<void> {
     this.validateSecretKey(secretKey);
     await this.ensureVaultDirectory();
 

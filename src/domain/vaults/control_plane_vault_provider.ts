@@ -65,7 +65,11 @@ export class ControlPlaneVaultProvider
     return await aesGcmDecrypt(blob, key);
   }
 
-  async put(secretKey: string, secretValue: string): Promise<void> {
+  async put(
+    secretKey: string,
+    secretValue: string,
+    _options?: import("./vault_provider.ts").VaultPutOptions,
+  ): Promise<void> {
     const key = this.#requireKey();
     const blob = await aesGcmEncrypt(secretValue, key);
     const encoded = new TextEncoder().encode(JSON.stringify(blob));

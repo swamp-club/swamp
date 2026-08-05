@@ -122,11 +122,43 @@ Deno.test("assertVaultConformance: passes for conforming in-memory vault", async
   await assertVaultConformance(vault, { cleanup: false });
 });
 
+Deno.test("assertVaultConformance: passes with testTags enabled", async () => {
+  const { vault, getStoredTags } = createVaultTestContext();
+  await assertVaultConformance(vault, {
+    cleanup: false,
+    testTags: true,
+    getStoredTags,
+  });
+});
+
 Deno.test("assertVaultConformance: passes with pre-seeded vault", async () => {
   const { vault } = createVaultTestContext({
     secrets: { "existing-key": "existing-value" },
   });
   await assertVaultConformance(vault, { cleanup: false });
+});
+
+Deno.test("createVaultTestContext: put stores tags and getStoredTags retrieves them", async () => {
+  const { vault, getStoredTags } = createVaultTestContext();
+  await vault.put("my-key", "my-value", {
+    tags: { env: "prod", team: "platform" },
+  });
+  const stored = getStoredTags("my-key");
+  assertEquals(stored, { env: "prod", team: "platform" });
+});
+
+Deno.test("createVaultTestContext: put without tags yields undefined from getStoredTags", async () => {
+  const { vault, getStoredTags } = createVaultTestContext();
+  await vault.put("my-key", "my-value");
+  assertEquals(getStoredTags("my-key"), undefined);
+});
+
+Deno.test("createVaultTestContext: getStoredTags returns copy not reference", async () => {
+  const { vault, getStoredTags } = createVaultTestContext();
+  await vault.put("my-key", "my-value", { tags: { env: "prod" } });
+  const stored = getStoredTags("my-key")!;
+  stored["env"] = "mutated";
+  assertEquals(getStoredTags("my-key")!["env"], "prod");
 });
 
 Deno.test("assertVaultConformance: detects broken get (returns wrong value)", async () => {
