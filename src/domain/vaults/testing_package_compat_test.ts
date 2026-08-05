@@ -47,11 +47,23 @@ function _checkVaultProviderFields(vault: TestingVaultProvider) {
     "key",
     "value",
   );
+  const _putWithTagsResult: ReturnType<CanonicalVaultProvider["put"]> = vault
+    .put(
+      "key",
+      "value",
+      { tags: { env: "test" } },
+    );
   const _listResult: ReturnType<CanonicalVaultProvider["list"]> = vault.list();
   const _getNameResult: ReturnType<CanonicalVaultProvider["getName"]> = vault
     .getName();
 
-  void [_getResult, _putResult, _listResult, _getNameResult];
+  void [
+    _getResult,
+    _putResult,
+    _putWithTagsResult,
+    _listResult,
+    _getNameResult,
+  ];
 }
 
 // VaultAnnotationProvider: verify the testing type's methods match the canonical type.

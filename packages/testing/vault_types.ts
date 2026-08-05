@@ -26,6 +26,14 @@
  */
 
 /**
+ * Options for the VaultProvider.put() method.
+ */
+export interface VaultPutOptions {
+  /** Provider-native tags to attach to the secret at creation time. */
+  tags?: Record<string, string>;
+}
+
+/**
  * Interface for vault providers that securely store and retrieve secrets.
  *
  * Extension authors implement this interface to create custom vault backends.
@@ -34,7 +42,11 @@ export interface VaultProvider {
   /** Retrieves a secret value from the vault. */
   get(secretKey: string): Promise<string>;
   /** Stores a secret value in the vault. */
-  put(secretKey: string, secretValue: string): Promise<void>;
+  put(
+    secretKey: string,
+    secretValue: string,
+    options?: VaultPutOptions,
+  ): Promise<void>;
   /** Lists all secret keys in the vault (names only, not values). */
   list(): Promise<string[]>;
   /** Gets the name/type of this vault provider. */

@@ -18,6 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
+ * Options for the VaultProvider.put() method.
+ */
+export interface VaultPutOptions {
+  /** Provider-native tags to attach to the secret at creation time. */
+  tags?: Record<string, string>;
+}
+
+/**
  * Interface for vault providers that can securely store and retrieve secrets.
  */
 export interface VaultProvider {
@@ -35,9 +43,14 @@ export interface VaultProvider {
    *
    * @param secretKey - The key identifier for the secret
    * @param secretValue - The secret value to store
+   * @param options - Optional settings including provider-native tags
    * @throws Error if the secret cannot be stored
    */
-  put(secretKey: string, secretValue: string): Promise<void>;
+  put(
+    secretKey: string,
+    secretValue: string,
+    options?: VaultPutOptions,
+  ): Promise<void>;
 
   /**
    * Lists all secret keys in the vault.

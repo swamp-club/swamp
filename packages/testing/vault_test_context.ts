@@ -21,6 +21,7 @@ import type {
   VaultAnnotation,
   VaultAnnotationProvider,
   VaultProvider,
+  VaultPutOptions,
 } from "./vault_types.ts";
 
 /** A recorded vault operation for inspection. */
@@ -62,6 +63,8 @@ export interface VaultTestContextResult {
   annotationProvider: VaultAnnotationProvider | undefined;
   /** Returns all secrets currently stored in the vault. */
   getStoredSecrets(): Record<string, string>;
+  /** Returns tags stored for a given secret key, or undefined if none. */
+  getStoredTags(secretKey: string): Record<string, string> | undefined;
   /** Returns all vault operations recorded during the test. */
   getOperations(): VaultOperation[];
   /** Returns operations filtered by method name. */
@@ -94,6 +97,7 @@ export function createVaultTestContext(
   const secrets = new Map<string, string>(
     Object.entries(options?.secrets ?? {}),
   );
+  const tags = new Map<string, Record<string, string>>();
   const annotations = new Map<string, VaultAnnotation>();
   const operations: VaultOperation[] = [];
   const name = options?.name ?? "test-vault";
@@ -125,9 +129,16 @@ export function createVaultTestContext(
       return Promise.resolve(secret);
     },
 
-    put(secretKey: string, secretValue: string): Promise<void> {
+    put(
+      secretKey: string,
+      secretValue: string,
+      putOptions?: VaultPutOptions,
+    ): Promise<void> {
       record("put", secretKey, secretValue);
       secrets.set(secretKey, secretValue);
+      if (putOptions?.tags && Object.keys(putOptions.tags).length > 0) {
+        tags.set(secretKey, { ...putOptions.tags });
+      }
       return Promise.resolve();
     },
 
@@ -176,6 +187,10 @@ export function createVaultTestContext(
     vault,
     annotationProvider,
     getStoredSecrets: () => Object.fromEntries(secrets),
+    getStoredTags: (secretKey: string) => {
+      const stored = tags.get(secretKey);
+      return stored ? { ...stored } : undefined;
+    },
     getOperations: () => [...operations],
     getOperationsByMethod: (method) =>
       operations.filter((op) => op.method === method),

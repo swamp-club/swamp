@@ -51,7 +51,11 @@ export class MockVaultProvider implements VaultProvider, VaultDeleteProvider {
     return Promise.resolve(secret);
   }
 
-  put(secretKey: string, secretValue: string): Promise<void> {
+  put(
+    secretKey: string,
+    secretValue: string,
+    _options?: import("./vault_provider.ts").VaultPutOptions,
+  ): Promise<void> {
     this.secrets.set(secretKey, secretValue);
     return Promise.resolve();
   }

@@ -89,6 +89,7 @@ export {
   type VaultAnnotationData,
   type VaultAnnotationProvider,
   type VaultProvider,
+  type VaultPutOptions,
 } from "./vault_types.ts";
 
 export {

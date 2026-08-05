@@ -155,6 +155,17 @@ export interface VaultConformanceOptions {
   keyPrefix?: string;
   /** Delete test keys after the test (default: true). */
   cleanup?: boolean;
+  /**
+   * When true, tests that put() forwards tags to the provider.
+   * Only enable for providers that support provider-native tags.
+   * Requires a getStoredTags callback to verify tag storage.
+   */
+  testTags?: boolean;
+  /**
+   * Callback to retrieve tags stored for a secret key.
+   * Required when testTags is true.
+   */
+  getStoredTags?: (secretKey: string) => Record<string, string> | undefined;
 }
 
 /**
@@ -256,6 +267,45 @@ export async function assertVaultConformance(
       true,
       "get() must reject for a key that was never put()",
     );
+
+    // tag pass-through (opt-in)
+    if (options?.testTags) {
+      assertExists(
+        options.getStoredTags,
+        "getStoredTags callback is required when testTags is true",
+      );
+      const tagKey = `${prefix}tagged-${crypto.randomUUID().slice(0, 8)}`;
+      const testTags = { env: "test", team: "platform" };
+      await provider.put(tagKey, "tagged-value", { tags: testTags });
+      createdKeys.push(tagKey);
+
+      const storedTags = options.getStoredTags(tagKey);
+      assertExists(
+        storedTags,
+        "getStoredTags() must return tags for a key that was put() with tags",
+      );
+      assertEquals(
+        storedTags["env"],
+        "test",
+        "stored tags must include the tags passed to put()",
+      );
+      assertEquals(
+        storedTags["team"],
+        "platform",
+        "stored tags must include the tags passed to put()",
+      );
+
+      // put without tags should not create tags
+      const noTagKey = `${prefix}no-tags-${crypto.randomUUID().slice(0, 8)}`;
+      await provider.put(noTagKey, "untagged-value");
+      createdKeys.push(noTagKey);
+      const noTags = options.getStoredTags(noTagKey);
+      assertEquals(
+        noTags,
+        undefined,
+        "getStoredTags() must return undefined for a key put() without tags",
+      );
+    }
   } finally {
     if (cleanup) {
       // Best-effort cleanup — don't fail the test if cleanup fails.
