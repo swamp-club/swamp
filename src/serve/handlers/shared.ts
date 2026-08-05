@@ -155,6 +155,14 @@ export function isAdminOnlyModelType(
   return false;
 }
 
+export function isRestrictedCommand(
+  command: string,
+  restrictedCommands: readonly string[],
+): boolean {
+  if (restrictedCommands.length === 0) return false;
+  return restrictedCommands.includes(command);
+}
+
 const connectionCollectives = new WeakMap<WebSocket, readonly string[]>();
 const connectionGroups = new WeakMap<WebSocket, readonly string[]>();
 const connectionPrincipalId = new WeakMap<WebSocket, string>();

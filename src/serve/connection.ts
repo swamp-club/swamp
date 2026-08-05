@@ -145,6 +145,7 @@ import {
 import {
   authorizeOrReject,
   type ConnectionContext,
+  isRestrictedCommand,
   MAX_PREDICATE_LENGTH,
   MAX_QUERY_RESULTS,
   send,
@@ -1344,6 +1345,21 @@ export function handleMessage(
 
   const controller = new AbortController();
   activeRequests.set(request.id, controller);
+
+  if (
+    isRestrictedCommand(request.type, ctx.authConfig.restrictedCommands)
+  ) {
+    if (
+      !authorizeOrReject(socket, request.id, principal, "admin", {
+        kind: "access",
+        name: request.type,
+        fields: {},
+      }, ctx)
+    ) {
+      activeRequests.delete(request.id);
+      return;
+    }
+  }
 
   let task: Promise<void>;
   switch (request.type) {

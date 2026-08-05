@@ -443,6 +443,7 @@ Deno.test("mergeServeOptions: auth config arrays converted to comma-separated st
       "allowed-collectives": ["eng", "ops"],
       "allowed-users": ["carol"],
       "restricted-model-types": ["command/shell", "command/exec"],
+      "restricted-commands": ["extension.install", "vault.put"],
     },
   };
   const cliOptions = {};
@@ -460,6 +461,7 @@ Deno.test("mergeServeOptions: auth config arrays converted to comma-separated st
   assertEquals(merged.allowedCollectives, "eng,ops");
   assertEquals(merged.allowedUsers, "carol");
   assertEquals(merged.restrictedModelTypes, "command/shell,command/exec");
+  assertEquals(merged.restrictedCommands, "extension.install,vault.put");
 });
 
 Deno.test("mergeServeOptions: CLI webhooks replace config webhooks", () => {
