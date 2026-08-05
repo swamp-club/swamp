@@ -119,6 +119,7 @@ import {
 } from "../../domain/access/admin_materializer.ts";
 import {
   collectErrors,
+  parseGrantFile,
   readGrantFiles,
 } from "../../domain/access/grant_file.ts";
 import { validateGrantCondition } from "../../infrastructure/cel/grant_condition_environment.ts";
@@ -300,6 +301,9 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   }
   if (options.schedule === false) {
     args.push("--no-schedule");
+  }
+  if (options.grantsFile) {
+    args.push("--grants-file", options.grantsFile as string);
   }
   if (options.grantReload && options.grantReload !== "manual") {
     args.push("--grant-reload", options.grantReload as string);
@@ -489,6 +493,10 @@ const daemonEnableCommand = new Command()
   .option(
     "--key-file <path:string>",
     "Path to PEM-encoded TLS private key",
+  )
+  .option(
+    "--grants-file <path:string>",
+    "Path to an external grants YAML file loaded at startup",
   )
   .option(
     "--grant-reload <mode:string>",
@@ -801,6 +809,10 @@ export const serveCommand = new Command()
   .option(
     "--key-file <path:string>",
     "Path to PEM-encoded TLS private key (env: SWAMP_SERVE_KEY_FILE)",
+  )
+  .option(
+    "--grants-file <path:string>",
+    "Path to an external grants YAML file loaded at startup (env: SWAMP_GRANTS_FILE)",
   )
   .option(
     "--grant-reload <mode:string>",
@@ -1733,6 +1745,54 @@ export const serveCommand = new Command()
       validEntries.set(filename, result.entries);
     }
 
+    const externalGrantsFilePath = merged.grantsFile
+      ? (isAbsolute(merged.grantsFile)
+        ? merged.grantsFile
+        : resolve(merged.grantsFile))
+      : undefined;
+    if (externalGrantsFilePath) {
+      let content: string;
+      try {
+        content = await Deno.readTextFile(externalGrantsFilePath);
+      } catch (cause) {
+        if (cause instanceof Deno.errors.NotFound) {
+          throw new UserError(
+            `External grants file not found: ${externalGrantsFilePath}`,
+          );
+        }
+        throw new UserError(
+          `Failed to read external grants file ${externalGrantsFilePath}: ${cause}`,
+        );
+      }
+
+      if (content.trim().length > 0) {
+        const externalResult = parseGrantFile(
+          externalGrantsFilePath,
+          content,
+          validateGrantCondition,
+        );
+        if (externalResult.errors.length > 0) {
+          const errorMessages = externalResult.errors.map((e) => {
+            const loc = e.entryIndex !== undefined
+              ? `${e.filename} entry ${e.entryIndex + 1}`
+              : e.filename;
+            return `  ${loc}: ${e.message}`;
+          });
+          throw new UserError(
+            `External grants file validation failed — refusing to start:\n${
+              errorMessages.join("\n")
+            }`,
+          );
+        }
+        validEntries.set(externalGrantsFilePath, externalResult.entries);
+        logger
+          .info`Loaded ${externalResult.entries.length} grant(s) from external file ${externalGrantsFilePath}`;
+      } else {
+        logger
+          .info`External grants file ${externalGrantsFilePath} is empty — no external grants added`;
+      }
+    }
+
     const fileGrantStore = createFileGrantStore(
       repoContext.definitionRepo,
       autoDefRepo,
@@ -1967,6 +2027,7 @@ export const serveCommand = new Command()
         defaultVault: repoMarker?.defaultVault,
         instanceId,
         staleTtlMs,
+        grantsFile: externalGrantsFilePath,
         hotReload: merged.hotReload,
       };
 

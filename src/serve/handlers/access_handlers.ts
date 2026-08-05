@@ -32,6 +32,7 @@ import type {
 import {
   collectErrors,
   type GrantFileError,
+  parseGrantFile,
   readGrantFiles,
 } from "../../domain/access/grant_file.ts";
 import {
@@ -446,6 +447,48 @@ export async function handleAccessReload(
       validEntries.set(filename, result.entries);
     }
 
+    if (ctx.grantsFile) {
+      try {
+        const content = await Deno.readTextFile(ctx.grantsFile);
+        if (content.trim().length > 0) {
+          const externalResult = parseGrantFile(
+            ctx.grantsFile,
+            content,
+            validateGrantCondition,
+          );
+          if (externalResult.errors.length > 0) {
+            allErrors.push(...externalResult.errors.map((e) => ({
+              ...e,
+              filename: "external-grants-file",
+            })));
+          } else {
+            validEntries.set(ctx.grantsFile, externalResult.entries);
+          }
+        }
+      } catch (error) {
+        logger
+          .error`Failed to read external grants file ${ctx.grantsFile}: ${error}`;
+        allErrors.push({
+          filename: "external-grants-file",
+          message: "Failed to read external grants file",
+        });
+      }
+
+      if (allErrors.length > 0) {
+        send(socket, {
+          type: "access.reload",
+          id: requestId,
+          payload: {
+            success: false,
+            grantCount: 0,
+            groupCount: 0,
+            errors: formatGrantFileErrors(allErrors),
+          },
+        });
+        return;
+      }
+    }
+
     const autoDefDir = join(ctx.repoDir, ".swamp", "auto-definitions");
     const autoDefRepo = new YamlDefinitionRepository(
       ctx.repoDir,
@@ -466,10 +509,10 @@ export async function handleAccessReload(
 
     const fileResultList: AccessReloadFileResult[] = [];
     for (const [filename, perFile] of reconcileResult.perFile) {
-      const parsed = fileResults.get(filename);
+      const entries = validEntries.get(filename);
       fileResultList.push({
         filename,
-        entryCount: parsed?.entries.length ?? 0,
+        entryCount: entries?.length ?? 0,
         created: perFile.created,
         revoked: perFile.revoked,
         reactivated: perFile.reactivated,

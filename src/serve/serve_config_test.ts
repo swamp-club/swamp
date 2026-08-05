@@ -554,3 +554,80 @@ Deno.test("mergeServeOptions: trusted-hosts config array joined to comma string"
     "host.docker.internal,host.minikube.internal",
   );
 });
+
+// ── grants-file merge ─────────────────────────────────────────────────
+
+Deno.test("mergeServeOptions: grants-file CLI flag wins over config and env", () => {
+  const config: ServeConfigFile = { "grants-file": "/from/config.yaml" };
+  const cliOptions = { grantsFile: "/from/cli.yaml" };
+  const explicitFlags = new Set(["grants-file"]);
+  const envLookup = () => undefined;
+
+  const merged = mergeServeOptions(
+    config,
+    cliOptions,
+    explicitFlags,
+    envLookup,
+  );
+  assertEquals(merged.grantsFile, "/from/cli.yaml");
+});
+
+Deno.test("mergeServeOptions: grants-file env var wins over config when CLI not explicit", () => {
+  const config: ServeConfigFile = { "grants-file": "/from/config.yaml" };
+  const cliOptions = {};
+  const explicitFlags = new Set<string>();
+  const envLookup = (name: string) =>
+    name === "SWAMP_GRANTS_FILE" ? "/from/env.yaml" : undefined;
+
+  const merged = mergeServeOptions(
+    config,
+    cliOptions,
+    explicitFlags,
+    envLookup,
+  );
+  assertEquals(merged.grantsFile, "/from/env.yaml");
+});
+
+Deno.test("mergeServeOptions: grants-file from config when no CLI or env", () => {
+  const config: ServeConfigFile = { "grants-file": "/from/config.yaml" };
+  const cliOptions = {};
+  const explicitFlags = new Set<string>();
+  const envLookup = () => undefined;
+
+  const merged = mergeServeOptions(
+    config,
+    cliOptions,
+    explicitFlags,
+    envLookup,
+  );
+  assertEquals(merged.grantsFile, "/from/config.yaml");
+});
+
+Deno.test("mergeServeOptions: grants-file undefined when not specified anywhere", () => {
+  const cliOptions = {};
+  const explicitFlags = new Set<string>();
+  const envLookup = () => undefined;
+
+  const merged = mergeServeOptions(null, cliOptions, explicitFlags, envLookup);
+  assertEquals(merged.grantsFile, undefined);
+});
+
+Deno.test("loadServeConfig: grants-file field is parsed", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { "grants-file": "/etc/swamp/grants.yaml" });
+    const config = loadServeConfig(undefined, dir);
+    assertNotEquals(config, null);
+    assertEquals(config!["grants-file"], "/etc/swamp/grants.yaml");
+  });
+});
+
+Deno.test("loadServeConfig: non-string grants-file produces error", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { "grants-file": 42 });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "expected string",
+    );
+  });
+});

@@ -128,6 +128,22 @@ Deno.test("collectServeExtraArgs: deprecated --detach-runs is not forwarded", ()
   assertEquals(args, []);
 });
 
+Deno.test("collectServeExtraArgs: includes --grants-file", () => {
+  const args = collectServeExtraArgs({
+    grantsFile: "/etc/swamp/grants.yaml",
+  });
+  assertEquals(args, ["--grants-file", "/etc/swamp/grants.yaml"]);
+});
+
+Deno.test("collectServeExtraArgs: skips --grants-file when not set", () => {
+  const args = collectServeExtraArgs({
+    schedule: true,
+    grantReload: "manual",
+    authMode: "none",
+  });
+  assertEquals(args, []);
+});
+
 Deno.test("collectServeExtraArgs: combines multiple flags", () => {
   const args = collectServeExtraArgs({
     schedule: false,
