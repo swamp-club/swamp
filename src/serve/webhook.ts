@@ -46,12 +46,39 @@ const logger = getSwampLogger(["serve", "webhook"]);
 /** Default signature header — used by the github scheme. */
 const SIGNATURE_HEADER = "x-hub-signature-256";
 
+const REDACTED_HEADERS: ReadonlySet<string> = new Set([
+  "authorization",
+  "proxy-authorization",
+  "cookie",
+  "set-cookie",
+  "x-api-key",
+  "x-auth-token",
+  "x-hub-signature",
+  "x-shopify-hmac-sha256",
+  "x-amzn-oidc-accesstoken",
+  "x-amzn-oidc-data",
+  "x-goog-iap-jwt-assertion",
+  "cf-access-jwt-assertion",
+  "x-forwarded-client-cert",
+]);
+
+const REDACTED_HEADER_SUFFIXES: readonly string[] = [
+  "-token",
+  "-secret",
+];
+
+export function isSensitiveHeader(name: string): boolean {
+  const lower = name.toLowerCase();
+  if (REDACTED_HEADERS.has(lower)) return true;
+  return REDACTED_HEADER_SUFFIXES.some((suffix) => lower.endsWith(suffix));
+}
+
 /**
  * Builds the {@link WebhookPayload} exposed to a workflow's `trigger.inputs`
  * CEL expressions from a verified request. The body is JSON-parsed when
  * possible, falling back to the raw UTF-8 string for non-JSON payloads. Header
- * names are lowercased and the signature header is dropped so it can never leak
- * into workflow inputs.
+ * names are lowercased; the signature header and sensitive credential headers
+ * are dropped so they can never leak into workflow inputs or persistent storage.
  */
 export function buildWebhookPayload(
   body: Uint8Array,
@@ -72,6 +99,7 @@ export function buildWebhookPayload(
   for (const [name, value] of headers) {
     const lower = name.toLowerCase();
     if (lower === excluded) continue;
+    if (isSensitiveHeader(lower)) continue;
     exposedHeaders[lower] = value;
   }
 

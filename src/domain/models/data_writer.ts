@@ -430,9 +430,18 @@ export async function processSensitiveResourceData(
     );
   }
 
+  const userVaultNames = vaultNames.filter((n) => !n.startsWith("_"));
+
   for (const { field, originalValue } of fieldsWithValues) {
     const targetVault = field.vaultName ?? spec.vaultName ??
-      vaultService.getDefaultVaultName() ?? vaultNames[0];
+      vaultService.getDefaultVaultName() ?? userVaultNames[0] ?? vaultNames[0];
+
+    if (targetVault.startsWith("_")) {
+      throw new Error(
+        `Cannot store sensitive field '${field.path}': vault '${targetVault}' is reserved for internal use`,
+      );
+    }
+
     const vaultKey = field.vaultKey ??
       sanitizeVaultKey(
         `${modelType.normalized}/${modelId}/${methodName}/${specName}/${instanceName}/${field.path}`,

@@ -410,6 +410,42 @@ export class RunTrackerStore implements RunTrackerRepository {
     this.db.prepare("DELETE FROM pending_runs WHERE id = ?").run(id);
   }
 
+  scrubPendingRunHeaders(
+    isSensitive: (header: string) => boolean,
+  ): number {
+    const rows = this.db.prepare(
+      "SELECT id, payload FROM pending_runs WHERE payload IS NOT NULL",
+    ).all() as unknown as { id: string; payload: string }[];
+    let scrubbed = 0;
+    const update = this.db.prepare(
+      "UPDATE pending_runs SET payload = ? WHERE id = ?",
+    );
+    for (const row of rows) {
+      try {
+        const parsed = JSON.parse(row.payload);
+        if (
+          !parsed || typeof parsed !== "object" ||
+          typeof parsed.headers !== "object" || parsed.headers === null
+        ) continue;
+        const headers = parsed.headers as Record<string, string>;
+        let changed = false;
+        for (const name of Object.keys(headers)) {
+          if (isSensitive(name)) {
+            delete headers[name];
+            changed = true;
+          }
+        }
+        if (changed) {
+          update.run(JSON.stringify(parsed), row.id);
+          scrubbed++;
+        }
+      } catch {
+        // Corrupt payload — leave it for replay to discard
+      }
+    }
+    return scrubbed;
+  }
+
   findAllPendingRuns(): PendingRunEntry[] {
     const rows = this.db.prepare(
       "SELECT * FROM pending_runs ORDER BY created_at ASC",

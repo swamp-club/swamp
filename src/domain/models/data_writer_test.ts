@@ -1925,6 +1925,48 @@ Deno.test("processSensitiveResourceData: falls back to vaultNames[0] when no def
   assertStringIncludes(data.secret as string, "'alpha-vault'");
 });
 
+Deno.test("processSensitiveResourceData: throws when target vault name starts with underscore", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      secret: z.string().meta({
+        sensitive: true,
+        vaultName: "_token-secrets",
+      }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+
+  const data: Record<string, unknown> = { secret: "my-secret" };
+  const vaultService = new VaultService();
+  vaultService.registerVault({
+    name: "_token-secrets",
+    type: "mock",
+    config: {},
+  });
+  vaultService.registerVault({
+    name: "user-vault",
+    type: "mock",
+    config: {},
+  });
+
+  await assertRejects(
+    () =>
+      processSensitiveResourceData(
+        data,
+        spec,
+        vaultService,
+        modelType,
+        modelId,
+        "create",
+        "creds",
+        "main",
+      ),
+    Error,
+    "reserved for internal use",
+  );
+});
+
 // --- createResourceWriter attributes tests ---
 
 Deno.test("createResourceWriter: resource handle includes attributes from written data", async () => {

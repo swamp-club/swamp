@@ -73,10 +73,19 @@ import {
 } from "../domain/models/worker/enrollment_token_model.ts";
 import { WORKER_MODEL_TYPE } from "../domain/models/worker/worker_model.ts";
 import { STEP_LEASE_MODEL_TYPE } from "../domain/models/worker/step_lease_model.ts";
+import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
+
+const DENIED_VAULT_NAMES: ReadonlySet<string> = new Set([
+  TOKEN_SECRETS_VAULT_NAME,
+]);
 
 const DENIED_SECRET_KEY_PREFIXES: readonly string[] = [
   SERVER_TOKEN_SECRET_KEY_PREFIX,
   WORKER_TOKEN_SECRET_KEY_PREFIX,
+  "oauth-client-secret",
+  "oauth-access-token-",
+  "oauth-bootstrap-access-token",
+  "oauth-resolved-admins",
 ];
 
 const DENIED_QUERY_MODEL_TYPES: readonly string[] = [
@@ -347,6 +356,14 @@ export class CapabilityService {
     return { deleted: true };
   }
 
+  #assertVaultNotDenied(vaultName: string, verb: string): void {
+    if (DENIED_VAULT_NAMES.has(vaultName)) {
+      throw new Error(
+        `${verb}: access denied — reserved vault '${vaultName}' is not accessible from dispatched methods`,
+      );
+    }
+  }
+
   #assertSecretKeyNotDenied(secretKey: string, verb: string): void {
     const normalized = secretKey.toLowerCase();
     if (DENIED_SECRET_KEY_PREFIXES.some((p) => normalized.startsWith(p))) {
@@ -379,6 +396,8 @@ export class CapabilityService {
     workerName: string,
     params: ResolveSecretParams & { dispatchId?: string },
   ): Promise<{ value: unknown }> {
+    this.#assertVaultNotDenied(params.vaultName, "resolveSecret");
+    this.#assertSecretKeyNotDenied(params.secretKey, "resolveSecret");
     if (this.#dispatches) {
       const dispatch = this.#resolveDispatch(
         workerName,
@@ -390,7 +409,6 @@ export class CapabilityService {
           `resolveSecret: worker '${workerName}' has no active dispatch`,
         );
       }
-      this.#assertSecretKeyNotDenied(params.secretKey, "resolveSecret");
       this.#assertSecretInAllowlist(
         dispatch,
         params.vaultName,
@@ -418,6 +436,8 @@ export class CapabilityService {
     workerName: string,
     params: PutSecretParams & { dispatchId?: string },
   ): Promise<{ ok: boolean }> {
+    this.#assertVaultNotDenied(params.vaultName, "putSecret");
+    this.#assertSecretKeyNotDenied(params.secretKey, "putSecret");
     if (this.#dispatches) {
       const dispatch = this.#resolveDispatch(
         workerName,
@@ -429,7 +449,6 @@ export class CapabilityService {
           `putSecret: worker '${workerName}' has no active dispatch`,
         );
       }
-      this.#assertSecretKeyNotDenied(params.secretKey, "putSecret");
     }
     const vault = await this.#vault();
     if (params.deleteAnnotation) {

@@ -63,6 +63,27 @@ import {
   sendError,
 } from "./shared.ts";
 
+export function isReservedVaultName(name: string): boolean {
+  return name.startsWith("_");
+}
+
+function rejectReservedVault(
+  socket: WebSocket,
+  requestId: string,
+  vaultName: string,
+): boolean {
+  if (isReservedVaultName(vaultName)) {
+    sendError(
+      socket,
+      requestId,
+      "forbidden",
+      `Vault '${vaultName}' is reserved for internal use`,
+    );
+    return true;
+  }
+  return false;
+}
+
 export async function handleVaultGet(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -126,6 +147,8 @@ export async function handleVaultPut(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  if (rejectReservedVault(socket, requestId, payload.vaultName)) return;
+
   if (payload.refreshFrom !== undefined || payload.clearRefresh) {
     if (
       !authorizeOrReject(socket, requestId, principal, "admin", {
@@ -236,6 +259,8 @@ export async function handleVaultDelete(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  if (rejectReservedVault(socket, requestId, payload.vaultName)) return;
+
   if (
     !authorizeOrReject(socket, requestId, principal, "write", {
       kind: "data",
@@ -412,6 +437,8 @@ export async function handleVaultInspect(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  if (rejectReservedVault(socket, requestId, payload.vaultName)) return;
+
   if (
     !authorizeOrReject(socket, requestId, principal, "read", {
       kind: "data",
@@ -467,6 +494,11 @@ export async function handleVaultListKeys(
   principal: Principal | null,
   payload?: VaultListKeysPayload,
 ): Promise<void> {
+  if (
+    payload?.vaultName &&
+    rejectReservedVault(socket, requestId, payload.vaultName)
+  ) return;
+
   if (
     !authorizeOrReject(socket, requestId, principal, "read", {
       kind: "data",
@@ -571,6 +603,8 @@ export async function handleVaultAnnotate(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  if (rejectReservedVault(socket, requestId, payload.vaultName)) return;
+
   if (
     !authorizeOrReject(socket, requestId, principal, "write", {
       kind: "data",

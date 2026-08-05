@@ -129,6 +129,7 @@ import {
   send,
   sendError,
 } from "./shared.ts";
+import { isReservedVaultName } from "./vault_handlers.ts";
 
 export async function handleWorkerList(
   socket: WebSocket,
@@ -1067,6 +1068,16 @@ export async function handleVaultMigrate(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  if (isReservedVaultName(payload.vaultName)) {
+    sendError(
+      socket,
+      requestId,
+      "forbidden",
+      `Vault '${payload.vaultName}' is reserved for internal use`,
+    );
+    return;
+  }
+
   if (
     !authorizeOrReject(socket, requestId, principal, "admin", {
       kind: "model",
