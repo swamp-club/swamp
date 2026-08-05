@@ -23,6 +23,7 @@ import {
   createDataGcDeps,
   createLibSwampContext,
   dataGc,
+  type DataGcData,
   dataGcPreview,
 } from "../../libswamp/mod.ts";
 import {
@@ -40,71 +41,100 @@ import {
   requireInitializedRepoReadOnly,
 } from "../repo_context.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { DataGcResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const dataGcCommand = new Command()
-  .name("gc")
-  .description("Run garbage collection on data (lifecycle and versions)")
-  .example("Preview what would be collected", "swamp data gc --dry-run")
-  .example("Run garbage collection", "swamp data gc --force")
-  .example(
-    "Run non-interactively in JSON mode (no prompt, structured output)",
-    "swamp data gc --json",
-  )
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option("--dry-run", "Show what would be deleted without deleting")
-  .option("-y, --yes", "Skip confirmation prompt")
-  .option("-f, --force", "Skip confirmation prompt (alias for --yes)")
-  .action(async function (options: AnyOptions) {
-    const cliCtx = createContext(options as GlobalOptions, ["data", "gc"]);
+export const dataGcCommand = withRemoteOptions(
+  new Command()
+    .name("gc")
+    .description("Run garbage collection on data (lifecycle and versions)")
+    .example("Preview what would be collected", "swamp data gc --dry-run")
+    .example("Run garbage collection", "swamp data gc --force")
+    .example(
+      "Run non-interactively in JSON mode (no prompt, structured output)",
+      "swamp data gc --json",
+    )
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option("--dry-run", "Show what would be deleted without deleting")
+    .option("-y, --yes", "Skip confirmation prompt")
+    .option("-f, --force", "Skip confirmation prompt (alias for --yes)"),
+).action(async function (options: AnyOptions) {
+  const cliCtx = createContext(options as GlobalOptions, ["data", "gc"]);
 
-    const repoOpts = {
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    };
-    const { repoDir, repoContext, datastoreResolver } = options.dryRun
-      ? await requireInitializedRepoReadOnly(repoOpts)
-      : await requireInitializedRepo(repoOpts);
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createDataGcDeps(
-      repoDir,
-      datastoreResolver,
-      repoContext.markDirty,
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
     );
+    const response = await requestServerResponse<DataGcResponse>(
+      { server, token },
+      {
+        type: "data.gc",
+        payload: { dryRun: !!options.dryRun },
+      },
+    );
+    const renderer = createDataGcRenderer(cliCtx.outputMode);
+    renderer.handlers().completed({
+      kind: "completed",
+      data: response.data as unknown as DataGcData,
+    });
+    return;
+  }
 
-    // Phase 1: Preview + Prompt (only in interactive mode without --force and not dry-run)
+  const repoOpts = {
+    repoDir: resolveRepoDir(options.repoDir),
+    outputMode: cliCtx.outputMode,
+  };
+  const { repoDir, repoContext, datastoreResolver } = options.dryRun
+    ? await requireInitializedRepoReadOnly(repoOpts)
+    : await requireInitializedRepo(repoOpts);
+
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = createDataGcDeps(
+    repoDir,
+    datastoreResolver,
+    repoContext.markDirty,
+  );
+
+  // Phase 1: Preview + Prompt (only in interactive mode without --force and not dry-run)
+  if (
+    cliCtx.outputMode === "log" && !options.yes && !options.force &&
+    !options.dryRun
+  ) {
+    const preview = await dataGcPreview(ctx, deps);
     if (
-      cliCtx.outputMode === "log" && !options.yes && !options.force &&
-      !options.dryRun
+      preview.items.length === 0 && preview.versionGcItems.length === 0
     ) {
-      const preview = await dataGcPreview(ctx, deps);
-      if (
-        preview.items.length === 0 && preview.versionGcItems.length === 0
-      ) {
-        console.log("Nothing to clean up.");
-        return;
-      }
-
-      renderDataGcPreview(preview, cliCtx.outputMode);
-      const confirmed = await promptConfirmation(
-        "Proceed with garbage collection?",
-      );
-      if (!confirmed) {
-        renderDataGcCancelled(cliCtx.outputMode);
-        return;
-      }
+      console.log("Nothing to clean up.");
+      return;
     }
 
-    // Phase 2: Execute GC
-    const renderer = createDataGcRenderer(cliCtx.outputMode);
-    await consumeStream(
-      dataGc(ctx, deps, { dryRun: !!options.dryRun }),
-      renderer.handlers(),
+    renderDataGcPreview(preview, cliCtx.outputMode);
+    const confirmed = await promptConfirmation(
+      "Proceed with garbage collection?",
     );
-  });
+    if (!confirmed) {
+      renderDataGcCancelled(cliCtx.outputMode);
+      return;
+    }
+  }
+
+  // Phase 2: Execute GC
+  const renderer = createDataGcRenderer(cliCtx.outputMode);
+  await consumeStream(
+    dataGc(ctx, deps, { dryRun: !!options.dryRun }),
+    renderer.handlers(),
+  );
+});

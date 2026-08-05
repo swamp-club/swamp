@@ -25,6 +25,7 @@ import {
   typeDescribe,
   type TypeDescribeData,
   typeSearch,
+  type TypeSearchData,
   type TypeSearchDeps,
   type TypeSearchItem,
 } from "../../libswamp/mod.ts";
@@ -37,6 +38,13 @@ import {
 } from "../context.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { ModelTypeSearchResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -80,6 +88,24 @@ export async function typeSearchAction(
   const libCtx = createLibSwampContext();
   ctx.logger.debug`Searching types with query: ${query ?? "(none)"}`;
 
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<ModelTypeSearchResponse>(
+      { server, token },
+      { type: "model.type.search", payload: { query } },
+    );
+    const renderer = createTypeSearchRenderer(effectiveMode);
+    renderer.handlers().completed({
+      kind: "completed",
+      data: response.data as unknown as TypeSearchData,
+    });
+    return;
+  }
+
   await modelRegistry.ensureLoaded();
   const deps: TypeSearchDeps = {
     getRegisteredTypes: () => modelRegistry.publicTypes(),
@@ -117,14 +143,15 @@ export async function typeSearchAction(
   ctx.logger.debug("Type search command completed");
 }
 
-export const typeSearchCommand = new Command()
-  .name("search")
-  .description("Search for model types")
-  .example("Browse all types", "swamp type search")
-  .example("Search by keyword", "swamp type search aws")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR; not required for type search)",
-  )
-  .arguments("[query:string]")
-  .action(typeSearchAction);
+export const typeSearchCommand = withRemoteOptions(
+  new Command()
+    .name("search")
+    .description("Search for model types")
+    .example("Browse all types", "swamp type search")
+    .example("Search by keyword", "swamp type search aws")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR; not required for type search)",
+    )
+    .arguments("[query:string]"),
+).action(typeSearchAction);

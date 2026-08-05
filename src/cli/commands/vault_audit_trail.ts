@@ -23,6 +23,7 @@ import {
   createLibSwampContext,
   createVaultAuditTrailDeps,
   vaultAuditTrail,
+  type VaultAuditTrailData,
 } from "../../libswamp/mod.ts";
 import { createVaultAuditTrailRenderer } from "../../presentation/renderers/vault_audit_trail.ts";
 import {
@@ -32,74 +33,111 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { VaultAuditTrailResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const vaultAuditTrailCommand = new Command()
-  .name("audit-trail")
-  .description("View the secret-read audit trail for vaults.")
-  .example(
-    "Show recent reads",
-    "swamp vault audit-trail",
-  )
-  .example(
-    "Filter by vault",
-    "swamp vault audit-trail --vault my-vault",
-  )
-  .example(
-    "Filter by key and time range",
-    "swamp vault audit-trail --vault my-vault --key API_KEY --since 2026-07-01",
-  )
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option("--vault <name:string>", "Filter by vault name")
-  .option("--key <key:string>", "Filter by secret key")
-  .option(
-    "--since <date:string>",
-    "Start date, e.g. 2026-07-01 or 2026-07-01T00:00:00Z [default: 7 days ago]",
-  )
-  .option(
-    "--until <date:string>",
-    "End date, e.g. 2026-07-01 or 2026-07-01T00:00:00Z [default: now]",
-  )
-  .option(
-    "--limit <count:integer>",
-    "Maximum number of entries to return [default: 100]",
-  )
-  .action(async function (options: AnyOptions) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "vault",
-      "audit-trail",
-    ]);
+export const vaultAuditTrailCommand = withRemoteOptions(
+  new Command()
+    .name("audit-trail")
+    .description("View the secret-read audit trail for vaults.")
+    .example(
+      "Show recent reads",
+      "swamp vault audit-trail",
+    )
+    .example(
+      "Filter by vault",
+      "swamp vault audit-trail --vault my-vault",
+    )
+    .example(
+      "Filter by key and time range",
+      "swamp vault audit-trail --vault my-vault --key API_KEY --since 2026-07-01",
+    )
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option("--vault <name:string>", "Filter by vault name")
+    .option("--key <key:string>", "Filter by secret key")
+    .option(
+      "--since <date:string>",
+      "Start date, e.g. 2026-07-01 or 2026-07-01T00:00:00Z [default: 7 days ago]",
+    )
+    .option(
+      "--until <date:string>",
+      "End date, e.g. 2026-07-01 or 2026-07-01T00:00:00Z [default: now]",
+    )
+    .option(
+      "--limit <count:integer>",
+      "Maximum number of entries to return [default: 100]",
+    ),
+).action(async function (options: AnyOptions) {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "vault",
+    "audit-trail",
+  ]);
 
-    const { repoDir } = await requireInitializedRepoUnlocked({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
-
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
     const since = options.since ? parseDate(options.since) : undefined;
     const until = options.until ? parseDate(options.until) : undefined;
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createVaultAuditTrailDeps(repoDir);
-    const renderer = createVaultAuditTrailRenderer(cliCtx.outputMode);
-
-    await consumeStream(
-      vaultAuditTrail(ctx, deps, {
-        vaultName: options.vault,
-        secretKey: options.key,
-        since,
-        until,
-        limit: options.limit,
-      }),
-      renderer.handlers(),
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
     );
+    const response = await requestServerResponse<VaultAuditTrailResponse>(
+      { server, token },
+      {
+        type: "vault.audit-trail",
+        payload: {
+          vaultName: options.vault as string | undefined,
+          secretKey: options.key as string | undefined,
+          since: since?.toISOString(),
+          until: until?.toISOString(),
+          limit: options.limit as number | undefined,
+        },
+      },
+    );
+    const renderer = createVaultAuditTrailRenderer(cliCtx.outputMode);
+    renderer.handlers().completed({
+      kind: "completed",
+      data: response.data as unknown as VaultAuditTrailData,
+    });
+    return;
+  }
 
-    cliCtx.logger.debug("Vault audit-trail command completed");
+  const { repoDir } = await requireInitializedRepoUnlocked({
+    repoDir: resolveRepoDir(options.repoDir),
+    outputMode: cliCtx.outputMode,
   });
+
+  const since = options.since ? parseDate(options.since) : undefined;
+  const until = options.until ? parseDate(options.until) : undefined;
+
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = createVaultAuditTrailDeps(repoDir);
+  const renderer = createVaultAuditTrailRenderer(cliCtx.outputMode);
+
+  await consumeStream(
+    vaultAuditTrail(ctx, deps, {
+      vaultName: options.vault,
+      secretKey: options.key,
+      since,
+      until,
+      limit: options.limit,
+    }),
+    renderer.handlers(),
+  );
+
+  cliCtx.logger.debug("Vault audit-trail command completed");
+});
 
 function parseDate(value: string): Date {
   const date = new Date(value);

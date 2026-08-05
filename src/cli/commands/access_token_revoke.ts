@@ -39,98 +39,123 @@ import {
   withDefaults,
 } from "../../libswamp/mod.ts";
 import { renderServerTokenRevoke } from "../../presentation/output/access_token_output.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { AccessTokenRevokeResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const accessTokenRevokeCommand = new Command()
-  .name("revoke")
-  .description("Invalidate a server token before it expires")
-  .example("Revoke a token", "swamp access token revoke adam-token")
-  .arguments("<name:string>")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .action(async function (options: AnyOptions, name: string) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "access",
-      "token",
-      "revoke",
-    ]);
+export const accessTokenRevokeCommand = withRemoteOptions(
+  new Command()
+    .name("revoke")
+    .description("Invalidate a server token before it expires")
+    .example("Revoke a token", "swamp access token revoke adam-token")
+    .arguments("<name:string>")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(async function (options: AnyOptions, name: string) {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "access",
+    "token",
+    "revoke",
+  ]);
 
-    const { repoDir, repoContext, datastoreConfig, syncService } =
-      await requireInitializedRepoUnlocked({
-        repoDir: resolveRepoDir(options.repoDir),
-        outputMode: cliCtx.outputMode,
-      });
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<AccessTokenRevokeResponse>(
+      { server, token },
+      { type: "access.token.revoke", payload: { name } },
+    );
+    renderServerTokenRevoke(
+      response.data as unknown as ServerTokenRevokeData,
+      cliCtx.outputMode,
+    );
+    return;
+  }
 
-    cliCtx.logger.debug`Revoking server token ${name}`;
+  const { repoDir, repoContext, datastoreConfig, syncService } =
+    await requireInitializedRepoUnlocked({
+      repoDir: resolveRepoDir(options.repoDir),
+      outputMode: cliCtx.outputMode,
+    });
 
-    const libCtx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = await createServerTokenRevokeDeps(
-      libCtx,
+  cliCtx.logger.debug`Revoking server token ${name}`;
+
+  const libCtx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = await createServerTokenRevokeDeps(
+    libCtx,
+    repoDir,
+    repoContext,
+  );
+
+  const preResult = await findDefinitionByIdOrName(
+    repoContext.definitionRepo,
+    name,
+  );
+  let flushModelLocks: (() => Promise<void>) | null = null;
+  if (preResult) {
+    const lockResult = await acquireModelLocks(
+      datastoreConfig,
+      [
+        {
+          modelType: preResult.type.normalized,
+          modelId: preResult.definition.id,
+        },
+      ],
       repoDir,
-      repoContext,
+      syncService,
+      repoContext.catalogStore,
     );
+    if (lockResult.synced) repoContext.catalogStore.invalidate();
+    flushModelLocks = lockResult.flush;
+  }
 
-    const preResult = await findDefinitionByIdOrName(
-      repoContext.definitionRepo,
-      name,
+  try {
+    let data: ServerTokenRevokeData | undefined;
+    await consumeStream(
+      serverTokenRevoke(libCtx, deps, { name }),
+      withDefaults<ServerTokenRevokeEvent>({
+        completed: (event) => {
+          data = event.data;
+        },
+        error: (event) => {
+          throw new UserError(event.error.message);
+        },
+      }),
     );
-    let flushModelLocks: (() => Promise<void>) | null = null;
-    if (preResult) {
-      const lockResult = await acquireModelLocks(
-        datastoreConfig,
-        [
-          {
-            modelType: preResult.type.normalized,
-            modelId: preResult.definition.id,
-          },
-        ],
-        repoDir,
-        syncService,
-        repoContext.catalogStore,
+    if (data === undefined) {
+      throw new UserError(
+        `Revoking token '${name}' ended without completing`,
       );
-      if (lockResult.synced) repoContext.catalogStore.invalidate();
-      flushModelLocks = lockResult.flush;
     }
-
-    try {
-      let data: ServerTokenRevokeData | undefined;
-      await consumeStream(
-        serverTokenRevoke(libCtx, deps, { name }),
-        withDefaults<ServerTokenRevokeEvent>({
-          completed: (event) => {
-            data = event.data;
+    renderServerTokenRevoke(data, cliCtx.outputMode);
+  } finally {
+    if (flushModelLocks) {
+      try {
+        await flushModelLocks();
+      } catch (releaseError) {
+        cliCtx.logger.warn(
+          "Failed to release locks during cleanup: {error}",
+          {
+            error: releaseError instanceof Error
+              ? releaseError.message
+              : String(releaseError),
           },
-          error: (event) => {
-            throw new UserError(event.error.message);
-          },
-        }),
-      );
-      if (data === undefined) {
-        throw new UserError(
-          `Revoking token '${name}' ended without completing`,
         );
       }
-      renderServerTokenRevoke(data, cliCtx.outputMode);
-    } finally {
-      if (flushModelLocks) {
-        try {
-          await flushModelLocks();
-        } catch (releaseError) {
-          cliCtx.logger.warn(
-            "Failed to release locks during cleanup: {error}",
-            {
-              error: releaseError instanceof Error
-                ? releaseError.message
-                : String(releaseError),
-            },
-          );
-        }
-      }
     }
+  }
 
-    cliCtx.logger.debug("Server token revoke command completed");
-  });
+  cliCtx.logger.debug("Server token revoke command completed");
+});

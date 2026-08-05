@@ -32,17 +32,21 @@ import {
 } from "../cli/commands/version.ts";
 import {
   handleDataDelete,
+  handleDataGc,
   handleDataGet,
   handleDataList,
+  handleDataPrune,
   handleDataQuery,
   handleDataRename,
   handleDataSearch,
   handleDataVersions,
+  handleRunGc,
   handleSummarise,
 } from "./handlers/data_handlers.ts";
 import {
   handleModelCreate,
   handleModelDelete,
+  handleModelEdit,
   handleModelEvaluate,
   handleModelGet,
   handleModelMethodDescribe,
@@ -55,11 +59,17 @@ import {
   handleModelOutputLogs,
   handleModelOutputSearch,
   handleModelSearch,
+  handleModelTypeDescribe,
+  handleModelTypeSearch,
   handleModelValidate,
 } from "./handlers/model_handlers.ts";
 import {
   handleWorkflowApprovals,
   handleWorkflowApprove,
+  handleWorkflowCreate,
+  handleWorkflowDelete,
+  handleWorkflowEdit,
+  handleWorkflowEvaluate,
   handleWorkflowGet,
   handleWorkflowHistoryGet,
   handleWorkflowHistoryLogs,
@@ -70,16 +80,22 @@ import {
   handleWorkflowRunSearch,
   handleWorkflowSchema,
   handleWorkflowSearch,
+  handleWorkflowValidate,
 } from "./handlers/workflow_handlers.ts";
 import {
   handleVaultAnnotate,
+  handleVaultAuditTrail,
+  handleVaultCreate,
   handleVaultDelete,
   handleVaultDescribe,
+  handleVaultEdit,
   handleVaultGet,
   handleVaultInspect,
   handleVaultListKeys,
   handleVaultPut,
+  handleVaultReadSecret,
   handleVaultSearch,
+  handleVaultTypeSearch,
 } from "./handlers/vault_handlers.ts";
 import {
   handleAccessCanI,
@@ -87,6 +103,9 @@ import {
   handleAccessGrantList,
   handleAccessGroupList,
   handleAccessReload,
+  handleAccessTokenList,
+  handleAccessTokenRevoke,
+  handleAccessTokenRotate,
 } from "./handlers/access_handlers.ts";
 import {
   handleReportDescribe,
@@ -96,6 +115,7 @@ import {
 } from "./handlers/report_handlers.ts";
 import {
   handleAuditTimeline,
+  handleDatastoreNamespaceList,
   handleDatastoreSetupExtension,
   handleDatastoreStatus,
   handleDoctorDatastores,
@@ -117,6 +137,9 @@ import {
   handleVaultMigrate,
   handleWorkerList,
   handleWorkerQueueList,
+  handleWorkerTokenCreate,
+  handleWorkerTokenList,
+  handleWorkerTokenRevoke,
   handleWorkerVerify,
 } from "./handlers/admin_handlers.ts";
 import {
@@ -871,6 +894,209 @@ const RunAttachRequestSchema = z.object({
   }),
 });
 
+const AccessTokenListRequestSchema = z.object({
+  type: z.literal("access.token.list"),
+  id: z.string().min(1).max(256),
+  payload: z.object({}).optional(),
+});
+
+const AccessTokenRevokeRequestSchema = z.object({
+  type: z.literal("access.token.revoke"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    name: z.string().min(1),
+  }),
+});
+
+const AccessTokenRotateRequestSchema = z.object({
+  type: z.literal("access.token.rotate"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    name: z.string().min(1),
+    durationMs: z.number().positive().optional(),
+    vaultName: z.string().optional(),
+  }),
+});
+
+const ModelEditRequestSchema = z.object({
+  type: z.literal("model.edit"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    modelIdOrName: z.string().min(1),
+    content: z.string().optional(),
+  }),
+});
+
+const ModelTypeDescribeRequestSchema = z.object({
+  type: z.literal("model.type.describe"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    typeArg: z.string().min(1),
+  }),
+});
+
+const ModelTypeSearchRequestSchema = z.object({
+  type: z.literal("model.type.search"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    query: z.string().optional(),
+  }).optional(),
+});
+
+const WorkflowCreateRequestSchema = z.object({
+  type: z.literal("workflow.create"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    name: z.string().min(1),
+  }),
+});
+
+const WorkflowDeleteRequestSchema = z.object({
+  type: z.literal("workflow.delete"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    workflowIdOrName: z.string().min(1),
+  }),
+});
+
+const WorkflowEditRequestSchema = z.object({
+  type: z.literal("workflow.edit"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    workflowIdOrName: z.string().min(1),
+    content: z.string().optional(),
+  }),
+});
+
+const WorkflowValidateRequestSchema = z.object({
+  type: z.literal("workflow.validate"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    workflowIdOrName: z.string().optional(),
+  }).optional(),
+});
+
+const WorkflowEvaluateRequestSchema = z.object({
+  type: z.literal("workflow.evaluate"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    workflowIdOrName: z.string().optional(),
+    inputs: z.record(z.string(), z.unknown()).optional(),
+  }).optional(),
+});
+
+const VaultCreateRequestSchema = z.object({
+  type: z.literal("vault.create"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    vaultType: z.string().min(1),
+    name: z.string().min(1),
+    config: z.record(z.string(), z.unknown()).optional(),
+    auditReads: z.boolean().optional(),
+  }),
+});
+
+const VaultEditRequestSchema = z.object({
+  type: z.literal("vault.edit"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    vaultNameOrId: z.string().min(1),
+    vaultType: z.string().optional(),
+  }),
+});
+
+const VaultAuditTrailRequestSchema = z.object({
+  type: z.literal("vault.audit-trail"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    vaultName: z.string().optional(),
+    secretKey: z.string().optional(),
+    since: z.string().optional(),
+    until: z.string().optional(),
+    limit: z.number().int().positive().optional(),
+  }).optional(),
+});
+
+const VaultReadSecretRequestSchema = z.object({
+  type: z.literal("vault.read-secret"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    vaultName: z.string().min(1),
+    secretKey: z.string().min(1),
+  }),
+});
+
+const VaultTypeSearchRequestSchema = z.object({
+  type: z.literal("vault.type.search"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    query: z.string().optional(),
+  }).optional(),
+});
+
+const WorkerTokenCreateRequestSchema = z.object({
+  type: z.literal("worker.token.create"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    name: z.string().min(1),
+    durationMs: z.number().positive(),
+    vaultName: z.string().optional(),
+    maxEnrollments: z.union([
+      z.number().int().positive(),
+      z.literal("unlimited"),
+    ])
+      .optional(),
+  }),
+});
+
+const WorkerTokenListRequestSchema = z.object({
+  type: z.literal("worker.token.list"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    showAll: z.boolean().optional(),
+  }).optional(),
+});
+
+const WorkerTokenRevokeRequestSchema = z.object({
+  type: z.literal("worker.token.revoke"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    name: z.string().min(1),
+  }),
+});
+
+const DataGcRequestSchema = z.object({
+  type: z.literal("data.gc"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    dryRun: z.boolean().optional(),
+  }).optional(),
+});
+
+const DataPruneRequestSchema = z.object({
+  type: z.literal("data.prune"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    dryRun: z.boolean().optional(),
+  }).optional(),
+});
+
+const RunGcRequestSchema = z.object({
+  type: z.literal("run.gc"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    dryRun: z.boolean().optional(),
+    workflowRunRetentionDays: z.number().positive().optional(),
+    outputRetentionDays: z.number().positive().optional(),
+  }).optional(),
+});
+
+const DatastoreNamespaceListRequestSchema = z.object({
+  type: z.literal("datastore.namespace.list"),
+  id: z.string().min(1).max(256),
+  payload: z.object({}).optional(),
+});
+
 const ServerVersionRequestSchema = z.object({
   type: z.literal("server.version"),
   id: z.string().min(1).max(256),
@@ -954,6 +1180,29 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   RunDoctorRequestSchema,
   RunAttachRequestSchema,
   CancelRequestSchema,
+  AccessTokenListRequestSchema,
+  AccessTokenRevokeRequestSchema,
+  AccessTokenRotateRequestSchema,
+  ModelEditRequestSchema,
+  ModelTypeDescribeRequestSchema,
+  ModelTypeSearchRequestSchema,
+  WorkflowCreateRequestSchema,
+  WorkflowDeleteRequestSchema,
+  WorkflowEditRequestSchema,
+  WorkflowValidateRequestSchema,
+  WorkflowEvaluateRequestSchema,
+  VaultCreateRequestSchema,
+  VaultEditRequestSchema,
+  VaultAuditTrailRequestSchema,
+  VaultReadSecretRequestSchema,
+  VaultTypeSearchRequestSchema,
+  WorkerTokenCreateRequestSchema,
+  WorkerTokenListRequestSchema,
+  WorkerTokenRevokeRequestSchema,
+  DataGcRequestSchema,
+  DataPruneRequestSchema,
+  RunGcRequestSchema,
+  DatastoreNamespaceListRequestSchema,
 ]);
 
 /**
@@ -1832,6 +2081,233 @@ export function handleMessage(
         ctx,
         request.id,
         request.payload,
+        controller,
+        principal,
+      );
+      break;
+    case "access.token.list":
+      task = handleAccessTokenList(
+        socket,
+        ctx,
+        request.id,
+        controller,
+        principal,
+      );
+      break;
+    case "access.token.revoke":
+      task = handleAccessTokenRevoke(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
+    case "access.token.rotate":
+      task = handleAccessTokenRotate(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
+    case "model.edit":
+      task = handleModelEdit(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
+    case "model.type.describe":
+      task = handleModelTypeDescribe(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
+    case "model.type.search":
+      task = handleModelTypeSearch(
+        socket,
+        ctx,
+        request.id,
+        controller,
+        principal,
+        request.payload,
+      );
+      break;
+    case "workflow.create":
+      task = handleWorkflowCreate(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
+    case "workflow.delete":
+      task = handleWorkflowDelete(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
+    case "workflow.edit":
+      task = handleWorkflowEdit(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
+    case "workflow.validate":
+      task = handleWorkflowValidate(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
+    case "workflow.evaluate":
+      task = handleWorkflowEvaluate(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
+    case "vault.create":
+      task = handleVaultCreate(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
+    case "vault.edit":
+      task = handleVaultEdit(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
+    case "vault.audit-trail":
+      task = handleVaultAuditTrail(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
+    case "vault.read-secret":
+      task = handleVaultReadSecret(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
+    case "vault.type.search":
+      task = handleVaultTypeSearch(
+        socket,
+        ctx,
+        request.id,
+        controller,
+        principal,
+        request.payload,
+      );
+      break;
+    case "worker.token.create":
+      task = handleWorkerTokenCreate(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
+    case "worker.token.list":
+      task = handleWorkerTokenList(
+        socket,
+        ctx,
+        request.id,
+        controller,
+        principal,
+      );
+      break;
+    case "worker.token.revoke":
+      task = handleWorkerTokenRevoke(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
+    case "data.gc":
+      task = handleDataGc(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
+    case "data.prune":
+      task = handleDataPrune(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
+    case "run.gc":
+      task = handleRunGc(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
+    case "datastore.namespace.list":
+      task = handleDatastoreNamespaceList(
+        socket,
+        ctx,
+        request.id,
         controller,
         principal,
       );

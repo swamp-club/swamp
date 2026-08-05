@@ -22,6 +22,7 @@ import {
   consumeStream,
   createLibSwampContext,
   vaultTypeSearch,
+  type VaultTypeSearchData,
   type VaultTypeSearchDeps,
 } from "../../libswamp/mod.ts";
 import { createVaultTypeSearchRenderer } from "../../presentation/renderers/vault_type_search.tsx";
@@ -32,6 +33,13 @@ import {
 } from "../context.ts";
 import { getVaultTypes } from "../../domain/vaults/vault_types.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { VaultTypeSearchResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -47,6 +55,27 @@ export async function vaultTypeSearchAction(
   const effectiveMode = interactiveOutputMode(ctx);
   const libCtx = createLibSwampContext();
   ctx.logger.debug`Searching vault types with query: ${query ?? "(none)"}`;
+
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<VaultTypeSearchResponse>(
+      { server, token },
+      {
+        type: "vault.type.search",
+        payload: { query },
+      },
+    );
+    const renderer = createVaultTypeSearchRenderer(effectiveMode);
+    renderer.handlers().completed({
+      kind: "completed",
+      data: response.data as unknown as VaultTypeSearchData,
+    });
+    return;
+  }
 
   await vaultTypeRegistry.ensureLoaded();
 
@@ -72,10 +101,11 @@ export async function vaultTypeSearchAction(
   ctx.logger.debug("Vault type search command completed");
 }
 
-export const vaultTypeSearchCommand = new Command()
-  .name("search")
-  .description("Search for vault types")
-  .example("Browse vault types", "swamp vault type-search")
-  .example("Search by keyword", "swamp vault type-search aws")
-  .arguments("[query:string]")
-  .action(vaultTypeSearchAction);
+export const vaultTypeSearchCommand = withRemoteOptions(
+  new Command()
+    .name("search")
+    .description("Search for vault types")
+    .example("Browse vault types", "swamp vault type-search")
+    .example("Search by keyword", "swamp vault type-search aws")
+    .arguments("[query:string]"),
+).action(vaultTypeSearchAction);

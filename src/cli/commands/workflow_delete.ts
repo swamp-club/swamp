@@ -23,6 +23,7 @@ import {
   createLibSwampContext,
   createWorkflowDeleteDeps,
   workflowDelete,
+  type WorkflowDeleteData,
   workflowDeletePreview,
 } from "../../libswamp/mod.ts";
 import {
@@ -37,29 +38,59 @@ import {
 import { requireInitializedRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { WorkflowDeleteResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const workflowDeleteCommand = new Command()
-  .name("delete")
-  .description("Delete a workflow and its run history")
-  .example("Delete a workflow", "swamp workflow delete deploy-pipeline")
-  .example("Force delete", "swamp workflow delete deploy-pipeline --force")
-  .arguments("<workflow_id_or_name:workflow_name>")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option("-y, --yes", "Skip confirmation prompt")
-  .option("-f, --force", "Skip confirmation prompt (alias for --yes)")
+export const workflowDeleteCommand = withRemoteOptions(
+  new Command()
+    .name("delete")
+    .description("Delete a workflow and its run history")
+    .example("Delete a workflow", "swamp workflow delete deploy-pipeline")
+    .example("Force delete", "swamp workflow delete deploy-pipeline --force")
+    .arguments("<workflow_id_or_name:workflow_name>")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option("-y, --yes", "Skip confirmation prompt")
+    .option("-f, --force", "Skip confirmation prompt (alias for --yes)"),
+).action(
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
-  .action(async function (options: AnyOptions, workflowIdOrName: string) {
+  async function (options: AnyOptions, workflowIdOrName: string) {
     const cliCtx = createContext(options as GlobalOptions, [
       "workflow",
       "delete",
     ]);
     cliCtx.logger.debug`Deleting workflow: ${workflowIdOrName}`;
+
+    const server = resolveServeUrl(options.server as string | undefined);
+    if (server) {
+      const token = await resolveServerToken(
+        server,
+        options.token as string | undefined,
+      );
+      const response = await requestServerResponse<WorkflowDeleteResponse>(
+        { server, token },
+        {
+          type: "workflow.delete",
+          payload: { workflowIdOrName },
+        },
+      );
+      const renderer = createWorkflowDeleteRenderer(cliCtx.outputMode);
+      renderer.handlers().completed({
+        kind: "completed",
+        data: response.data as unknown as WorkflowDeleteData,
+      });
+      return;
+    }
 
     const { repoDir, datastoreResolver } = await requireInitializedRepo({
       repoDir: resolveRepoDir(options.repoDir),
@@ -106,4 +137,5 @@ export const workflowDeleteCommand = new Command()
     );
 
     cliCtx.logger.debug("Workflow delete command completed");
-  });
+  },
+);

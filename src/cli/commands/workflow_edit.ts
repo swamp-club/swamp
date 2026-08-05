@@ -23,6 +23,7 @@ import {
   createLibSwampContext,
   createWorkflowEditDeps,
   workflowEdit,
+  type WorkflowEditData,
   workflowSearch,
   type WorkflowSearchDeps,
 } from "../../libswamp/mod.ts";
@@ -36,28 +37,59 @@ import {
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { WorkflowEditResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const workflowEditCommand = new Command()
-  .name("edit")
-  .description("Edit a workflow file")
-  .example("Edit a workflow", "swamp workflow edit deploy-pipeline")
-  .example("Interactive search", "swamp workflow edit")
-  .arguments("[workflow_id_or_name:workflow_name]")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
+export const workflowEditCommand = withRemoteOptions(
+  new Command()
+    .name("edit")
+    .description("Edit a workflow file")
+    .example("Edit a workflow", "swamp workflow edit deploy-pipeline")
+    .example("Interactive search", "swamp workflow edit")
+    .arguments("[workflow_id_or_name:workflow_name]")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
-  .action(async function (options: AnyOptions, workflowIdOrName?: string) {
+  async function (options: AnyOptions, workflowIdOrName?: string) {
     const cliCtx = createContext(options as GlobalOptions, [
       "workflow",
       "edit",
     ]);
     cliCtx.logger
       .debug`Editing workflow: ${workflowIdOrName ?? "(interactive)"}`;
+
+    const server = resolveServeUrl(options.server as string | undefined);
+    if (server) {
+      const token = await resolveServerToken(
+        server,
+        options.token as string | undefined,
+      );
+      const content = await readStdin();
+      const response = await requestServerResponse<WorkflowEditResponse>(
+        { server, token },
+        {
+          type: "workflow.edit",
+          payload: { workflowIdOrName, content },
+        },
+      );
+      const renderer = createWorkflowEditRenderer(cliCtx.outputMode);
+      renderer.handlers().completed({
+        kind: "completed",
+        data: response.data as unknown as WorkflowEditData,
+      });
+      return;
+    }
 
     const { repoContext, repoDir } = await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
@@ -108,4 +140,5 @@ export const workflowEditCommand = new Command()
     );
 
     cliCtx.logger.debug("Workflow edit command completed");
-  });
+  },
+);

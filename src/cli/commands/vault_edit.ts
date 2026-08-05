@@ -23,6 +23,7 @@ import {
   createLibSwampContext,
   createVaultEditDeps,
   vaultEdit,
+  type VaultEditData,
   vaultSearch,
   type VaultSearchDeps,
 } from "../../libswamp/mod.ts";
@@ -35,69 +36,109 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { VaultEditResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const vaultEditCommand = new Command()
-  .name("edit")
-  .description("Edit a vault configuration file")
-  .example("Edit a vault", "swamp vault edit my-vault")
-  .example("Interactive search", "swamp vault edit")
-  .arguments("[vault_name_or_id:string]")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option("-t, --type <type:string>", "Vault type (optional, narrows search)")
-  .action(async function (options: AnyOptions, vaultNameOrId?: string) {
-    const cliCtx = createContext(options as GlobalOptions, ["vault", "edit"]);
-    cliCtx.logger.debug`Editing vault: ${vaultNameOrId ?? "(interactive)"}`;
+export const vaultEditCommand = withRemoteOptions(
+  new Command()
+    .name("edit")
+    .description("Edit a vault configuration file")
+    .example("Edit a vault", "swamp vault edit my-vault")
+    .example("Interactive search", "swamp vault edit")
+    .arguments("[vault_name_or_id:string]")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option(
+      "-t, --type <type:string>",
+      "Vault type (optional, narrows search)",
+    ),
+).action(async function (options: AnyOptions, vaultNameOrId?: string) {
+  const cliCtx = createContext(options as GlobalOptions, ["vault", "edit"]);
+  cliCtx.logger.debug`Editing vault: ${vaultNameOrId ?? "(interactive)"}`;
 
-    const { repoContext, repoDir } = await requireInitializedRepoUnlocked({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
-    const vaultType = options.type as string | undefined;
-    const libCtx = createLibSwampContext({ logger: cliCtx.logger });
-
-    // Interactive search mode when no argument provided
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
     if (!vaultNameOrId) {
-      if (cliCtx.outputMode === "json") {
-        throw new UserError(
-          "Vault name or ID is required in non-interactive mode",
-        );
-      }
-
-      const searchDeps: VaultSearchDeps = {
-        findAllVaults: () => repoContext.vaultConfigRepo.findAll(),
-      };
-
-      const searchRenderer = createVaultSearchRenderer(cliCtx.outputMode);
-      await consumeStream(
-        vaultSearch(libCtx, searchDeps, { query: undefined }),
-        searchRenderer.handlers(),
+      throw new UserError(
+        "Vault name or ID is required with --server (interactive search is not supported remotely)",
       );
-
-      const selected = searchRenderer.selectedItem();
-      if (!selected) {
-        cliCtx.logger.debug`Search cancelled`;
-        return;
-      }
-
-      cliCtx.logger.debug`Selected vault: ${selected.name} (${selected.id})`;
-      vaultNameOrId = selected.name;
     }
-    const deps = createVaultEditDeps(repoDir);
-
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<VaultEditResponse>(
+      { server, token },
+      {
+        type: "vault.edit",
+        payload: {
+          vaultNameOrId,
+          vaultType: options.type as string | undefined,
+        },
+      },
+    );
     const renderer = createVaultEditRenderer(cliCtx.outputMode);
+    renderer.handlers().completed({
+      kind: "completed",
+      data: response.data as unknown as VaultEditData,
+    });
+    return;
+  }
+
+  const { repoContext, repoDir } = await requireInitializedRepoUnlocked({
+    repoDir: resolveRepoDir(options.repoDir),
+    outputMode: cliCtx.outputMode,
+  });
+  const vaultType = options.type as string | undefined;
+  const libCtx = createLibSwampContext({ logger: cliCtx.logger });
+
+  // Interactive search mode when no argument provided
+  if (!vaultNameOrId) {
+    if (cliCtx.outputMode === "json") {
+      throw new UserError(
+        "Vault name or ID is required in non-interactive mode",
+      );
+    }
+
+    const searchDeps: VaultSearchDeps = {
+      findAllVaults: () => repoContext.vaultConfigRepo.findAll(),
+    };
+
+    const searchRenderer = createVaultSearchRenderer(cliCtx.outputMode);
     await consumeStream(
-      vaultEdit(libCtx, deps, {
-        vaultNameOrId,
-        vaultType,
-      }),
-      renderer.handlers(),
+      vaultSearch(libCtx, searchDeps, { query: undefined }),
+      searchRenderer.handlers(),
     );
 
-    cliCtx.logger.debug("Vault edit command completed");
-  });
+    const selected = searchRenderer.selectedItem();
+    if (!selected) {
+      cliCtx.logger.debug`Search cancelled`;
+      return;
+    }
+
+    cliCtx.logger.debug`Selected vault: ${selected.name} (${selected.id})`;
+    vaultNameOrId = selected.name;
+  }
+  const deps = createVaultEditDeps(repoDir);
+
+  const renderer = createVaultEditRenderer(cliCtx.outputMode);
+  await consumeStream(
+    vaultEdit(libCtx, deps, {
+      vaultNameOrId,
+      vaultType,
+    }),
+    renderer.handlers(),
+  );
+
+  cliCtx.logger.debug("Vault edit command completed");
+});

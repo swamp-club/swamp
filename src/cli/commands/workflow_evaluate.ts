@@ -33,6 +33,8 @@ import {
   createLibSwampContext,
   createWorkflowEvaluateDeps,
   workflowEvaluate,
+  type WorkflowEvaluateAllData,
+  type WorkflowEvaluateItemData,
 } from "../../libswamp/mod.ts";
 import { createWorkflowEvaluateRenderer } from "../../presentation/renderers/workflow_evaluate.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
@@ -42,179 +44,209 @@ import { mergeInputArgs, parseInputs } from "../input_parser.ts";
 import { InputValidationService } from "../../domain/inputs/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { WorkflowEvaluateResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const workflowEvaluateCommand = new Command()
-  .name("evaluate")
-  .description("Evaluate expressions in workflow definitions")
-  .example("Evaluate a workflow", "swamp workflow evaluate deploy-pipeline")
-  .example("Evaluate all workflows", "swamp workflow evaluate --all")
-  .example(
-    "With inputs",
-    "swamp workflow evaluate deploy-pipeline --input env=prod",
-  )
-  .arguments("[workflow_id_or_name:string]")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option("--all", "Evaluate all workflow definitions")
-  .option("--input <value:string>", "Input values (key=value or JSON)", {
-    collect: true,
-  })
-  .option("--arg <value:string>", "Alias for --input", {
-    collect: true,
-    hidden: true,
-  })
-  .option("--input-file <file:string>", "Input values from YAML file")
-  .action(
-    async function (options: AnyOptions, workflowIdOrName?: string) {
-      const cliCtx = createContext(options as GlobalOptions, [
-        "workflow",
-        "evaluate",
-      ]);
+export const workflowEvaluateCommand = withRemoteOptions(
+  new Command()
+    .name("evaluate")
+    .description("Evaluate expressions in workflow definitions")
+    .example("Evaluate a workflow", "swamp workflow evaluate deploy-pipeline")
+    .example("Evaluate all workflows", "swamp workflow evaluate --all")
+    .example(
+      "With inputs",
+      "swamp workflow evaluate deploy-pipeline --input env=prod",
+    )
+    .arguments("[workflow_id_or_name:string]")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option("--all", "Evaluate all workflow definitions")
+    .option("--input <value:string>", "Input values (key=value or JSON)", {
+      collect: true,
+    })
+    .option("--arg <value:string>", "Alias for --input", {
+      collect: true,
+      hidden: true,
+    })
+    .option("--input-file <file:string>", "Input values from YAML file"),
+).action(
+  async function (options: AnyOptions, workflowIdOrName?: string) {
+    const cliCtx = createContext(options as GlobalOptions, [
+      "workflow",
+      "evaluate",
+    ]);
 
-      const { inputs } = await parseInputs({
-        input: mergeInputArgs(options),
-        inputFile: options.inputFile as string | undefined,
-      });
+    const { inputs } = await parseInputs({
+      input: mergeInputArgs(options),
+      inputFile: options.inputFile as string | undefined,
+    });
 
-      // If --all flag or no argument, evaluate all workflows (global lock)
-      if (options.all || !workflowIdOrName) {
-        const { repoDir, repoContext, datastoreResolver } =
-          await requireInitializedRepo({
-            repoDir: resolveRepoDir(options.repoDir),
-            outputMode: cliCtx.outputMode,
-          });
-
-        const ctx = createLibSwampContext({ logger: cliCtx.logger });
-        const deps = createWorkflowEvaluateDeps(
-          repoDir,
-          repoContext.workflowRepo,
-          datastoreResolver,
-        );
-        const renderer = createWorkflowEvaluateRenderer(cliCtx.outputMode);
-
-        await consumeStream(
-          workflowEvaluate(ctx, deps, { inputs }),
-          renderer.handlers(),
-        );
-        return;
-      }
-
-      // Single workflow evaluation — use per-model lock
-      const unlocked = await requireInitializedRepoUnlocked({
-        repoDir: resolveRepoDir(options.repoDir),
-        outputMode: cliCtx.outputMode,
-      });
-      const workflowRepo = unlocked.repoContext.workflowRepo;
-
-      // Look up the workflow for input validation and lock resolution
-      const workflow = await workflowRepo.findByName(workflowIdOrName) ??
-        await workflowRepo.findById(createWorkflowId(workflowIdOrName));
-
-      if (!workflow) {
-        throw new UserError(`Workflow not found: ${workflowIdOrName}`);
-      }
-
-      // Validate inputs against workflow schema if provided
-      if (workflow.inputs && Object.keys(inputs).length > 0) {
-        const validationService = new InputValidationService();
-        const inputsWithDefaults = validationService.applyDefaults(
-          inputs,
-          workflow.inputs,
-        );
-        const validationResult = validationService.validate(
-          inputsWithDefaults,
-          workflow.inputs,
-        );
-        if (!validationResult.valid) {
-          const errorMessages = validationResult.errors
-            .map((e) => `  ${e.message}`)
-            .join("\n");
-          throw new UserError(`Input validation failed:\n${errorMessages}`);
-        }
-        // Use inputs with defaults applied
-        Object.assign(inputs, inputsWithDefaults);
-      }
-
-      // Extract model references for per-model locking
-      const modelRefs = await extractModelReferencesFromWorkflow(
-        workflow,
-        workflowRepo,
+    const server = resolveServeUrl(options.server as string | undefined);
+    if (server) {
+      const token = await resolveServerToken(
+        server,
+        options.token as string | undefined,
       );
+      const response = await requestServerResponse<WorkflowEvaluateResponse>(
+        { server, token },
+        {
+          type: "workflow.evaluate",
+          payload: { workflowIdOrName, inputs },
+        },
+      );
+      const renderer = createWorkflowEvaluateRenderer(cliCtx.outputMode);
+      renderer.handlers().completed({
+        kind: "completed",
+        data: response.data as unknown as
+          | WorkflowEvaluateItemData
+          | WorkflowEvaluateAllData,
+      });
+      return;
+    }
 
-      let flushModelLocks: (() => Promise<void>) | null = null;
-      let repoDir: string;
-      let datastoreResolver = unlocked.datastoreResolver;
-
-      if (modelRefs !== null && modelRefs.length > 0) {
-        // Resolve model references to { modelType, modelId }
-        const definitionRepo = unlocked.repoContext.definitionRepo;
-        const resolvedModels: Array<{ modelType: string; modelId: string }> =
-          [];
-
-        for (const ref of modelRefs) {
-          const lookupResult = await findDefinitionByIdOrName(
-            definitionRepo,
-            ref,
-          );
-          if (lookupResult) {
-            resolvedModels.push({
-              modelType: lookupResult.type.normalized,
-              modelId: lookupResult.definition.id,
-            });
-          }
-        }
-
-        if (resolvedModels.length > 0) {
-          const lockResult = await acquireModelLocks(
-            unlocked.datastoreConfig,
-            resolvedModels,
-            unlocked.repoDir,
-            unlocked.syncService,
-            unlocked.repoContext.catalogStore,
-          );
-          if (lockResult.synced) {
-            unlocked.repoContext.catalogStore.invalidate();
-          }
-          flushModelLocks = lockResult.flush;
-        }
-
-        repoDir = unlocked.repoDir;
-      } else if (modelRefs === null) {
-        // Dynamic references — fall back to global lock
-        const logger = getSwampLogger(["workflow", "evaluate"]);
-        logger
-          .info`Workflow contains dynamic model references — using global lock`;
-        const globalResult = await requireInitializedRepo({
+    // If --all flag or no argument, evaluate all workflows (global lock)
+    if (options.all || !workflowIdOrName) {
+      const { repoDir, repoContext, datastoreResolver } =
+        await requireInitializedRepo({
           repoDir: resolveRepoDir(options.repoDir),
           outputMode: cliCtx.outputMode,
         });
-        repoDir = globalResult.repoDir;
-        datastoreResolver = globalResult.datastoreResolver;
-      } else {
-        // No model references
-        repoDir = unlocked.repoDir;
-      }
 
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
       const deps = createWorkflowEvaluateDeps(
         repoDir,
-        workflowRepo,
+        repoContext.workflowRepo,
         datastoreResolver,
       );
       const renderer = createWorkflowEvaluateRenderer(cliCtx.outputMode);
 
-      try {
-        await consumeStream(
-          workflowEvaluate(ctx, deps, { workflowIdOrName, inputs }),
-          renderer.handlers(),
-        );
-      } finally {
-        if (flushModelLocks) await flushModelLocks();
+      await consumeStream(
+        workflowEvaluate(ctx, deps, { inputs }),
+        renderer.handlers(),
+      );
+      return;
+    }
+
+    // Single workflow evaluation — use per-model lock
+    const unlocked = await requireInitializedRepoUnlocked({
+      repoDir: resolveRepoDir(options.repoDir),
+      outputMode: cliCtx.outputMode,
+    });
+    const workflowRepo = unlocked.repoContext.workflowRepo;
+
+    // Look up the workflow for input validation and lock resolution
+    const workflow = await workflowRepo.findByName(workflowIdOrName) ??
+      await workflowRepo.findById(createWorkflowId(workflowIdOrName));
+
+    if (!workflow) {
+      throw new UserError(`Workflow not found: ${workflowIdOrName}`);
+    }
+
+    // Validate inputs against workflow schema if provided
+    if (workflow.inputs && Object.keys(inputs).length > 0) {
+      const validationService = new InputValidationService();
+      const inputsWithDefaults = validationService.applyDefaults(
+        inputs,
+        workflow.inputs,
+      );
+      const validationResult = validationService.validate(
+        inputsWithDefaults,
+        workflow.inputs,
+      );
+      if (!validationResult.valid) {
+        const errorMessages = validationResult.errors
+          .map((e) => `  ${e.message}`)
+          .join("\n");
+        throw new UserError(`Input validation failed:\n${errorMessages}`);
       }
-    },
-  );
+      // Use inputs with defaults applied
+      Object.assign(inputs, inputsWithDefaults);
+    }
+
+    // Extract model references for per-model locking
+    const modelRefs = await extractModelReferencesFromWorkflow(
+      workflow,
+      workflowRepo,
+    );
+
+    let flushModelLocks: (() => Promise<void>) | null = null;
+    let repoDir: string;
+    let datastoreResolver = unlocked.datastoreResolver;
+
+    if (modelRefs !== null && modelRefs.length > 0) {
+      // Resolve model references to { modelType, modelId }
+      const definitionRepo = unlocked.repoContext.definitionRepo;
+      const resolvedModels: Array<{ modelType: string; modelId: string }> = [];
+
+      for (const ref of modelRefs) {
+        const lookupResult = await findDefinitionByIdOrName(
+          definitionRepo,
+          ref,
+        );
+        if (lookupResult) {
+          resolvedModels.push({
+            modelType: lookupResult.type.normalized,
+            modelId: lookupResult.definition.id,
+          });
+        }
+      }
+
+      if (resolvedModels.length > 0) {
+        const lockResult = await acquireModelLocks(
+          unlocked.datastoreConfig,
+          resolvedModels,
+          unlocked.repoDir,
+          unlocked.syncService,
+          unlocked.repoContext.catalogStore,
+        );
+        if (lockResult.synced) {
+          unlocked.repoContext.catalogStore.invalidate();
+        }
+        flushModelLocks = lockResult.flush;
+      }
+
+      repoDir = unlocked.repoDir;
+    } else if (modelRefs === null) {
+      // Dynamic references — fall back to global lock
+      const logger = getSwampLogger(["workflow", "evaluate"]);
+      logger
+        .info`Workflow contains dynamic model references — using global lock`;
+      const globalResult = await requireInitializedRepo({
+        repoDir: resolveRepoDir(options.repoDir),
+        outputMode: cliCtx.outputMode,
+      });
+      repoDir = globalResult.repoDir;
+      datastoreResolver = globalResult.datastoreResolver;
+    } else {
+      // No model references
+      repoDir = unlocked.repoDir;
+    }
+
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = createWorkflowEvaluateDeps(
+      repoDir,
+      workflowRepo,
+      datastoreResolver,
+    );
+    const renderer = createWorkflowEvaluateRenderer(cliCtx.outputMode);
+
+    try {
+      await consumeStream(
+        workflowEvaluate(ctx, deps, { workflowIdOrName, inputs }),
+        renderer.handlers(),
+      );
+    } finally {
+      if (flushModelLocks) await flushModelLocks();
+    }
+  },
+);

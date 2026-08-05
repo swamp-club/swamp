@@ -45,6 +45,9 @@ import {
   createVaultMigrateDeps,
   createWorkerListDeps,
   createWorkerQueueListDeps,
+  createWorkerTokenCreateDeps,
+  createWorkerTokenRevokeDeps,
+  datastoreNamespaceList,
   datastoreSetupExtension,
   datastoreStatus,
   doctorDatastores,
@@ -73,16 +76,28 @@ import {
   validateExtensionName,
   vaultMigrate,
   vaultMigratePreview,
+  withDefaults,
   workerList,
   workerQueueList,
+  workerTokenCreate,
+  workerTokenList,
+  workerTokenRevoke,
 } from "../../libswamp/mod.ts";
 import {
+  type CustomDatastoreConfig,
   isCustomDatastoreConfig,
 } from "../../domain/datastore/datastore_config.ts";
+import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
-import { resolveDatastoreConfig } from "../../cli/resolve_datastore.ts";
+import {
+  datastoreBasePath,
+  resolveDatastoreConfig,
+} from "../../cli/resolve_datastore.ts";
+import {
+  listNamespaceManifests,
+} from "../../infrastructure/persistence/namespace_manifest.ts";
 import { createExtensionInstallDeps } from "../../cli/create_extension_install_deps.ts";
 import { loadIdentity } from "../../cli/load_identity.ts";
 import { resolveModelsDir } from "../../cli/resolve_models_dir.ts";
@@ -97,6 +112,8 @@ import type {
   VaultMigratePayload,
   WorkerListPayload,
   WorkerProbeResult,
+  WorkerTokenCreatePayload,
+  WorkerTokenRevokePayload,
   WorkerVerifyPayload,
 } from "../protocol.ts";
 import { dispatchFleetProbe } from "../fleet_probe_dispatch.ts";
@@ -1742,5 +1759,239 @@ export async function handleServeReload(
     logger.error`Extension reload failed (requested by ${who}): ${error}`;
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "serve_reload_failed", message);
+  }
+}
+
+export async function handleWorkerTokenCreate(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: WorkerTokenCreatePayload,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = await createWorkerTokenCreateDeps(
+      libCtx,
+      ctx.repoDir,
+      ctx.repoContext,
+    );
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      workerTokenCreate(libCtx, deps, {
+        name: payload.name,
+        durationMs: payload.durationMs,
+        vaultName: payload.vaultName,
+        maxEnrollments: payload.maxEnrollments,
+      }),
+      withDefaults({
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      }),
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "worker.token.create",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "worker_token_create_failed", message);
+  }
+}
+
+export async function handleWorkerTokenList(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = createWorkerListDeps(
+      ctx.repoContext.dataQueryService,
+    );
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      workerTokenList(libCtx, deps),
+      withDefaults({
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      }),
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "worker.token.list",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "worker_token_list_failed", message);
+  }
+}
+
+export async function handleWorkerTokenRevoke(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: WorkerTokenRevokePayload,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = await createWorkerTokenRevokeDeps(
+      libCtx,
+      ctx.repoDir,
+      ctx.repoContext,
+    );
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      workerTokenRevoke(libCtx, deps, { name: payload.name }),
+      withDefaults({
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      }),
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "worker.token.revoke",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "worker_token_revoke_failed", message);
+  }
+}
+
+export async function handleDatastoreNamespaceList(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "data",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const dsBasePath = datastoreBasePath(ctx.datastoreConfig);
+
+    let listProvider: DatastoreProvider | undefined;
+    if (isCustomDatastoreConfig(ctx.datastoreConfig)) {
+      await datastoreTypeRegistry.ensureLoaded();
+      await datastoreTypeRegistry.ensureTypeLoaded(ctx.datastoreConfig.type);
+      const typeInfo = datastoreTypeRegistry.get(ctx.datastoreConfig.type);
+      listProvider = typeInfo?.createProvider?.(ctx.datastoreConfig.config);
+    }
+
+    const deps = {
+      getCurrentNamespace: () => ctx.datastoreConfig.namespace,
+      listNamespaces: async () => {
+        if (listProvider?.listNamespaces) {
+          const slugs = await listProvider.listNamespaces(
+            (ctx.datastoreConfig as CustomDatastoreConfig).datastorePath,
+          );
+          return slugs.map((ns: string) => ({
+            namespace: ns,
+            repoId: "",
+            registeredAt: "",
+          }));
+        }
+        return await listNamespaceManifests(dsBasePath);
+      },
+    };
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      datastoreNamespaceList(libCtx, deps),
+      {
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "datastore.namespace.list",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "datastore_namespace_list_failed", message);
   }
 }

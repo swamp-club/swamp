@@ -23,6 +23,7 @@ import {
   createLibSwampContext,
   createVaultReadSecretDeps,
   vaultReadSecret,
+  type VaultReadSecretData,
 } from "../../libswamp/mod.ts";
 import { createVaultReadSecretRenderer } from "../../presentation/renderers/vault_read_secret.ts";
 import {
@@ -35,74 +36,109 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { VaultReadSecretResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const vaultReadSecretCommand = new Command()
-  .name("read-secret")
-  .description(
-    `Read a secret value from a vault.
+export const vaultReadSecretCommand = withRemoteOptions(
+  new Command()
+    .name("read-secret")
+    .description(
+      `Read a secret value from a vault.
 
 In interactive (log) mode, prompts for confirmation before revealing the secret
 unless --force is set. In --json mode, outputs the value directly.`,
-  )
-  .example("Read a secret", "swamp vault read-secret my-vault API_KEY --force")
-  .example(
-    "Read a secret (JSON output)",
-    "swamp vault read-secret my-vault API_KEY --json",
-  )
-  .arguments("<vault_name:string> <key:string>")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option("-y, --yes", "Skip confirmation prompt")
-  .option("-f, --force", "Skip confirmation prompt (alias for --yes)")
-  .action(async function (
-    options: AnyOptions,
-    vaultName: string,
-    key: string,
-  ) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "vault",
-      "read-secret",
-    ]);
-    cliCtx.logger.debug`Reading secret from vault: ${vaultName}`;
+    )
+    .example(
+      "Read a secret",
+      "swamp vault read-secret my-vault API_KEY --force",
+    )
+    .example(
+      "Read a secret (JSON output)",
+      "swamp vault read-secret my-vault API_KEY --json",
+    )
+    .arguments("<vault_name:string> <key:string>")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option("-y, --yes", "Skip confirmation prompt")
+    .option("-f, --force", "Skip confirmation prompt (alias for --yes)"),
+).action(async function (
+  options: AnyOptions,
+  vaultName: string,
+  key: string,
+) {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "vault",
+    "read-secret",
+  ]);
+  cliCtx.logger.debug`Reading secret from vault: ${vaultName}`;
 
-    const { repoDir, repoContext, datastoreConfig, syncService } =
-      await requireInitializedRepoUnlocked({
-        repoDir: resolveRepoDir(options.repoDir),
-        outputMode: cliCtx.outputMode,
-      });
-    const { flush } = await acquireVaultSync(
-      datastoreConfig,
-      syncService,
-      repoDir,
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<VaultReadSecretResponse>(
+      { server, token },
+      {
+        type: "vault.read-secret",
+        payload: {
+          vaultName,
+          secretKey: key,
+        },
+      },
+    );
+    const renderer = createVaultReadSecretRenderer(cliCtx.outputMode);
+    renderer.handlers().completed({
+      kind: "completed",
+      data: response.data as unknown as VaultReadSecretData,
+    });
+    return;
+  }
+
+  const { repoDir, repoContext, datastoreConfig, syncService } =
+    await requireInitializedRepoUnlocked({
+      repoDir: resolveRepoDir(options.repoDir),
+      outputMode: cliCtx.outputMode,
+    });
+  const { flush } = await acquireVaultSync(
+    datastoreConfig,
+    syncService,
+    repoDir,
+  );
+
+  try {
+    if (cliCtx.outputMode === "log" && !options.yes && !options.force) {
+      const confirmed = await promptConfirmation(
+        `This will reveal the secret '${key}' from vault '${vaultName}'. Continue?`,
+      );
+      if (!confirmed) {
+        cliCtx.logger.info`Cancelled.`;
+        return;
+      }
+    }
+
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = createVaultReadSecretDeps(repoDir, repoContext.eventBus);
+
+    const renderer = createVaultReadSecretRenderer(cliCtx.outputMode);
+    await consumeStream(
+      vaultReadSecret(ctx, deps, { vaultName, secretKey: key }),
+      renderer.handlers(),
     );
 
-    try {
-      if (cliCtx.outputMode === "log" && !options.yes && !options.force) {
-        const confirmed = await promptConfirmation(
-          `This will reveal the secret '${key}' from vault '${vaultName}'. Continue?`,
-        );
-        if (!confirmed) {
-          cliCtx.logger.info`Cancelled.`;
-          return;
-        }
-      }
-
-      const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = createVaultReadSecretDeps(repoDir, repoContext.eventBus);
-
-      const renderer = createVaultReadSecretRenderer(cliCtx.outputMode);
-      await consumeStream(
-        vaultReadSecret(ctx, deps, { vaultName, secretKey: key }),
-        renderer.handlers(),
-      );
-
-      cliCtx.logger.debug("Vault read-secret command completed");
-    } finally {
-      await flush();
-    }
-  });
+    cliCtx.logger.debug("Vault read-secret command completed");
+  } finally {
+    await flush();
+  }
+});

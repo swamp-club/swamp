@@ -26,6 +26,7 @@ import {
   createLibSwampContext,
   createModelCreateDeps,
   createModelDeleteDeps,
+  createModelEditDeps,
   createModelEvaluateDeps,
   createModelGetDeps,
   createModelMethodDescribeDeps,
@@ -34,9 +35,11 @@ import {
   createModelOutputGetDeps,
   createModelOutputLogsDeps,
   createModelValidateDeps,
+  createTypeDescribeDeps,
   modelCreate,
   modelDelete,
   modelDeletePreview,
+  modelEdit,
   modelEvaluate,
   modelGet,
   modelMethodDescribe,
@@ -50,12 +53,16 @@ import {
   modelSearch,
   type ModelSearchDeps,
   modelValidate,
+  typeDescribe,
+  typeSearch,
+  type TypeSearchDeps,
 } from "../../libswamp/mod.ts";
 import { createModelMethodRunDeps } from "../deps.ts";
 import { serializeEvent } from "../serializer.ts";
 import type {
   ModelCreatePayload,
   ModelDeletePayload,
+  ModelEditPayload,
   ModelEvaluatePayload,
   ModelGetPayload,
   ModelMethodDescribePayload,
@@ -68,6 +75,8 @@ import type {
   ModelOutputLogsPayload,
   ModelOutputSearchPayload,
   ModelSearchPayload,
+  ModelTypeDescribePayload,
+  ModelTypeSearchPayload,
   ModelValidatePayload,
 } from "../protocol.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
@@ -1354,5 +1363,162 @@ export async function handleModelEvaluate(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "model_evaluate_failed", message);
+  }
+}
+
+export async function handleModelEdit(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: ModelEditPayload,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "write", {
+      kind: "model",
+      name: payload.modelIdOrName,
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = createModelEditDeps(ctx.repoDir);
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      modelEdit(libCtx, deps, {
+        modelIdOrName: payload.modelIdOrName,
+        stdinContent: payload.content,
+      }),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "model.edit",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "model_edit_failed", message);
+  }
+}
+
+export async function handleModelTypeDescribe(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: ModelTypeDescribePayload,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "model",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = createTypeDescribeDeps();
+    const modelType = ModelType.create(payload.typeArg);
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      typeDescribe(libCtx, deps, modelType),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "model.type.describe",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "model_type_describe_failed", message);
+  }
+}
+
+export async function handleModelTypeSearch(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  controller: AbortController,
+  principal: Principal | null,
+  payload?: ModelTypeSearchPayload,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "model",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    await modelRegistry.ensureLoaded();
+    const deps: TypeSearchDeps = {
+      getRegisteredTypes: () => modelRegistry.publicTypes(),
+    };
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      typeSearch(libCtx, deps, { query: payload?.query }),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "model.type.search",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "model_type_search_failed", message);
   }
 }
