@@ -280,12 +280,18 @@ When using --server, the value must be passed as a positional argument or KEY=VA
           refreshFrom: options.refreshFrom as string | undefined,
           refreshTtlMs,
           clearRefresh: options.clearRefresh as boolean | undefined,
-          tags: parseLabels(options.label as string[] | undefined),
+          labels: parseLabels(options.label as string[] | undefined),
         },
       },
     );
     const renderer = createVaultPutRenderer(cliCtx.outputMode);
-    renderer.handlers().completed({
+    const handlers = renderer.handlers();
+    if (response.warnings) {
+      for (const message of response.warnings) {
+        handlers.warning({ kind: "warning", message });
+      }
+    }
+    handlers.completed({
       kind: "completed",
       data: response.data as unknown as VaultPutData,
     });

@@ -50,7 +50,7 @@ export interface VaultPutData {
   vaultType: string;
   overwritten: boolean;
   timestamp: string;
-  tags?: Record<string, string> | null;
+  labels?: Record<string, string> | null;
 }
 
 export type VaultPutEvent =
@@ -226,7 +226,7 @@ export async function* vaultPut(
       await deps.putSecret(input.vaultName, input.key, input.value);
       ctx.logger.debug`Secret stored successfully`;
 
-      let appliedTags: Record<string, string> | undefined;
+      let appliedLabels: Record<string, string> | undefined;
       if (input.tags && Object.keys(input.tags).length > 0) {
         try {
           const supportsAnno = await deps.supportsAnnotations(input.vaultName);
@@ -239,7 +239,7 @@ export async function* vaultPut(
               ? existing.merge({ labels: input.tags })
               : VaultAnnotation.create({ labels: input.tags });
             await deps.putAnnotation(input.vaultName, input.key, annotation);
-            appliedTags = input.tags;
+            appliedLabels = input.tags;
             ctx.logger.debug`Labels stored as annotations`;
           } else {
             yield {
@@ -303,10 +303,10 @@ export async function* vaultPut(
           vaultType: config.type,
           overwritten: input.overwritten,
           timestamp: new Date().toISOString(),
-          ...(appliedTags
-            ? { tags: appliedTags }
+          ...(appliedLabels
+            ? { labels: appliedLabels }
             : input.tags && Object.keys(input.tags).length > 0
-            ? { tags: null }
+            ? { labels: null }
             : {}),
         },
       };

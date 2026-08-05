@@ -243,7 +243,7 @@ export interface VaultPutPayload {
   refreshFrom?: string;
   refreshTtlMs?: number;
   clearRefresh?: boolean;
-  tags?: Record<string, string>;
+  labels?: Record<string, string>;
 }
 
 export interface VaultDeletePayload {

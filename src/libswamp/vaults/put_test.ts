@@ -266,7 +266,7 @@ Deno.test("vaultPut: stores tags as annotation when provider supports annotation
     VaultPutEvent,
     { kind: "completed" }
   >;
-  assertEquals(completed.data.tags, { owner: "platform-team", env: "prod" });
+  assertEquals(completed.data.labels, { owner: "platform-team", env: "prod" });
 });
 
 Deno.test("vaultPut: merges tags with existing annotation on overwrite", async () => {
@@ -377,5 +377,5 @@ Deno.test("vaultPut: skips annotation when tags is empty", async () => {
     VaultPutEvent,
     { kind: "completed" }
   >;
-  assertEquals(completed.data.tags, undefined);
+  assertEquals(completed.data.labels, undefined);
 });

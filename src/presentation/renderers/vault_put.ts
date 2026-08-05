@@ -29,11 +29,12 @@ class LogVaultPutRenderer implements Renderer<VaultPutEvent> {
     return {
       storing: () => {},
       completed: (e) => {
-        const tags = e.data.tags;
-        if (tags && Object.keys(tags).length > 0) {
-          const keys = Object.keys(tags).join(", ");
+        const labels = e.data.labels;
+        if (labels && Object.keys(labels).length > 0) {
+          const pairs = Object.entries(labels).map(([k, v]) => `${k}=${v}`)
+            .join(", ");
           logger
-            .info`Stored secret ${e.data.secretKey} in vault ${e.data.vaultName} with labels: ${keys}`;
+            .info`Stored secret ${e.data.secretKey} in vault ${e.data.vaultName} with labels: ${pairs}`;
         } else {
           logger
             .info`Stored secret ${e.data.secretKey} in vault ${e.data.vaultName}`;
