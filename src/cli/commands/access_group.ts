@@ -203,7 +203,7 @@ const accessGroupCreateCommand = new Command()
   )
   .option(
     "--token <token:string>",
-    "Server token (falls back to stored credential)",
+    "Server token; only applies with --server (falls back to stored credential or SWAMP_SERVER_TOKEN)",
   )
   .action(async function (options: AnyOptions, name: string) {
     const server = resolveServeUrl(options.server as string | undefined);
@@ -276,7 +276,7 @@ const accessGroupAddMemberCommand = new Command()
   )
   .option(
     "--token <token:string>",
-    "Server token (falls back to stored credential)",
+    "Server token; only applies with --server (falls back to stored credential or SWAMP_SERVER_TOKEN)",
   )
   .action(async function (
     options: AnyOptions,
@@ -351,7 +351,7 @@ const accessGroupRemoveMemberCommand = new Command()
   )
   .option(
     "--token <token:string>",
-    "Server token (falls back to stored credential)",
+    "Server token; only applies with --server (falls back to stored credential or SWAMP_SERVER_TOKEN)",
   )
   .action(async function (
     options: AnyOptions,
@@ -422,7 +422,7 @@ const accessGroupListCommand = new Command()
   )
   .option(
     "--token <token:string>",
-    "Server token (falls back to stored credential)",
+    "Server token; only applies with --server (falls back to stored credential or SWAMP_SERVER_TOKEN)",
   )
   .action(async function (options: AnyOptions) {
     const server = resolveServeUrl(options.server as string | undefined);
@@ -491,7 +491,7 @@ const accessGroupMembersCommand = new Command()
   )
   .option(
     "--token <token:string>",
-    "Server token (falls back to stored credential)",
+    "Server token; only applies with --server (falls back to stored credential or SWAMP_SERVER_TOKEN)",
   )
   .action(async function (options: AnyOptions, name: string) {
     const server = resolveServeUrl(options.server as string | undefined);

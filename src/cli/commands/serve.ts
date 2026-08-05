@@ -667,9 +667,9 @@ const reloadCommand = new Command()
   .name("reload")
   .description(
     "Reload pulled extension bundles and refresh the trust list on a running serve process.\n\n" +
-      "With --server, sends a serve.reload request over WebSocket. " +
+      "With --server, sends a reload request to the running server over WebSocket. " +
       "Without --server, reads .swamp/serve.pid and sends SIGHUP locally. " +
-      "The local path requires the serve process to be running with --hot-reload.",
+      "Requires the serve process to be running with --hot-reload.",
   )
   .example(
     "Reload on a remote server",
@@ -686,7 +686,7 @@ const reloadCommand = new Command()
   )
   .option(
     "--token <token:string>",
-    "Server token (falls back to stored credential)",
+    "Server token; only applies with --server (falls back to stored credential or SWAMP_SERVER_TOKEN)",
   )
   .action(async function (options: AnyOptions) {
     const server = resolveServeUrl(options.server as string | undefined);
@@ -1948,6 +1948,7 @@ export const serveCommand = new Command()
         defaultVault: repoMarker?.defaultVault,
         instanceId,
         staleTtlMs,
+        hotReload: merged.hotReload,
       };
 
     const ac = new AbortController();
@@ -2723,6 +2724,9 @@ export const serveCommand = new Command()
                 logger.error`${err}`;
               }
             }
+          })
+          .catch((err) => {
+            logger.error`Unexpected error during hot-reload: ${err}`;
           });
       });
     }
