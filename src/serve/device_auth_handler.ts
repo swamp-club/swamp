@@ -41,6 +41,8 @@ import {
 import { createResourceWriter } from "../domain/models/data_writer.ts";
 import { VaultService } from "../domain/vaults/vault_service.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
+import { YamlDefinitionRepository } from "../infrastructure/persistence/yaml_definition_repository.ts";
+import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 
 const logger = getSwampLogger(["serve", "device-auth"]);
 
@@ -292,6 +294,7 @@ async function mintServerTokenImpl(
   repoDir: string,
   repoContext: RepositoryContext,
   defaultVault?: string,
+  syncService?: DatastoreSyncService,
 ): Promise<string> {
   const tokenName = `oauth-${crypto.randomUUID().slice(0, 8)}`;
   const secretKey = serverTokenSecretKey(tokenName);
@@ -311,7 +314,13 @@ async function mintServerTokenImpl(
       type: SERVER_TOKEN_MODEL_TYPE.normalized,
       name: tokenName,
     });
-    await defRepo.save(SERVER_TOKEN_MODEL_TYPE, def);
+    const autoDefRepo = new YamlDefinitionRepository(
+      repoDir,
+      repoContext.eventBus,
+      repoContext.autoDefinitionsDir,
+      false,
+    );
+    await autoDefRepo.save(SERVER_TOKEN_MODEL_TYPE, def);
   }
 
   const now = Date.now();
@@ -345,6 +354,11 @@ async function mintServerTokenImpl(
     tokenData as unknown as Record<string, unknown>,
   );
 
+  if (syncService) {
+    await syncService.markDirty();
+    await syncService.pushChanged();
+  }
+
   logger.info("Minted OAuth server token {name} for {principal}", {
     name: tokenName,
     principal: principalId,
@@ -363,6 +377,7 @@ export function createDeviceAuthDeps(
   repoDir: string,
   repoContext: RepositoryContext,
   defaultVault?: string,
+  syncService?: DatastoreSyncService,
 ): DeviceAuthDeps {
   return {
     authConfig,
@@ -389,6 +404,7 @@ export function createDeviceAuthDeps(
         rd,
         rc,
         defaultVault,
+        syncService,
       ),
     storeAccessToken: async (tokenName: string, accessToken: string) => {
       const vaultService = await VaultService.fromRepository(
