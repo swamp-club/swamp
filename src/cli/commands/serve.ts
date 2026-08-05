@@ -1364,6 +1364,24 @@ export const serveCommand = new Command()
       );
     }
 
+    const tokenTypeDir = SERVER_TOKEN_MODEL_TYPE.toDirectoryPath();
+    const tokenSourceDir = join(modelsDir, tokenTypeDir);
+    const tokenMigrationResult = await migrateGrantDefinitions(
+      tokenSourceDir,
+      join(autoDefDir, tokenTypeDir),
+    );
+    if (tokenMigrationResult.moved > 0) {
+      logger
+        .info`Migrated ${tokenMigrationResult.moved} server-token definition(s) from models/ to auto-definitions/`;
+      await cleanupEmptyParentDirs(
+        join(tokenSourceDir, "_placeholder"),
+        modelsDir,
+      );
+      if (syncService) {
+        await syncService.pushChanged();
+      }
+    }
+
     const caps = syncService?.capabilities?.();
     const hasRemoteControlPlane = !!(caps?.controlPlane &&
       syncService?.controlPlaneStore);
@@ -2739,6 +2757,7 @@ export const serveCommand = new Command()
             resolvedRepoDir,
             repoContext,
             repoMarker?.defaultVault,
+            syncService,
           );
           const deviceAuthResponse = await handleDeviceAuth(
             req,
