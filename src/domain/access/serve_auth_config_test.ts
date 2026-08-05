@@ -286,6 +286,23 @@ Deno.test("buildServeAuthConfig: restrictedModelTypes defaults to empty", () => 
   assertEquals(config.restrictedModelTypes, []);
 });
 
+Deno.test("buildServeAuthConfig: restrictedCommands defaults to empty", () => {
+  const config = buildServeAuthConfig({});
+  assertEquals(config.restrictedCommands, []);
+});
+
+Deno.test("buildServeAuthConfig: restrictedCommands parses comma-separated list", () => {
+  const config = buildServeAuthConfig({
+    restrictedCommands:
+      "datastore.namespace.list, extension.install, vault.put",
+  });
+  assertEquals(config.restrictedCommands, [
+    "datastore.namespace.list",
+    "extension.install",
+    "vault.put",
+  ]);
+});
+
 Deno.test("buildServeAuthConfig: restrictedModelTypes parses and normalizes types", () => {
   const config = buildServeAuthConfig({
     restrictedModelTypes: "command/shell, AWS::Lambda::Function",

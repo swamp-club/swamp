@@ -68,6 +68,7 @@ export interface ServeConfigFile {
     "oauth-client-id"?: string;
     "groups-field"?: string;
     "restricted-model-types"?: string[];
+    "restricted-commands"?: string[];
     "group-refresh-interval"?: string;
   };
   tls?: {
@@ -122,6 +123,7 @@ const KNOWN_AUTH_KEYS = new Set([
   "oauth-client-id",
   "groups-field",
   "restricted-model-types",
+  "restricted-commands",
   "group-refresh-interval",
 ]);
 
@@ -495,6 +497,7 @@ export interface MergedServeOptions {
   oauthClientId?: string;
   groupsField?: string;
   restrictedModelTypes?: string;
+  restrictedCommands?: string;
   groupRefreshInterval?: string;
   trustProxy: boolean;
   wsIdleTimeout?: string;
@@ -686,6 +689,13 @@ export function mergeServeOptions(
     undefined,
   );
 
+  const restrictedCommands = resolveString(
+    "restricted-commands",
+    cliOptions.restrictedCommands as string | undefined,
+    config?.auth?.["restricted-commands"]?.join(","),
+    undefined,
+  );
+
   const groupRefreshInterval = resolveString(
     "group-refresh-interval",
     cliOptions.groupRefreshInterval as string | undefined,
@@ -791,6 +801,7 @@ export function mergeServeOptions(
     oauthClientId,
     groupsField,
     restrictedModelTypes,
+    restrictedCommands,
     groupRefreshInterval,
     trustProxy,
     wsIdleTimeout,

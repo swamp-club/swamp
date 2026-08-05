@@ -412,6 +412,7 @@ const modeNoneConfig: ServeAuthConfig = {
   oauthProvider: "",
   groupsField: "",
   restrictedModelTypes: [],
+  restrictedCommands: [],
 };
 
 const modeTokenConfig: ServeAuthConfig = {
@@ -422,6 +423,7 @@ const modeTokenConfig: ServeAuthConfig = {
   oauthProvider: "",
   groupsField: "",
   restrictedModelTypes: [],
+  restrictedCommands: [],
 };
 
 const testPrincipal: Principal = { kind: "user", id: "adam" };
@@ -1077,6 +1079,7 @@ const restrictedConfig: ServeAuthConfig = {
   oauthProvider: "",
   groupsField: "",
   restrictedModelTypes: ["command/shell"],
+  restrictedCommands: [],
 };
 
 Deno.test("restrictedModelTypes: non-admin denied run on restricted type", async () => {
@@ -1199,6 +1202,116 @@ Deno.test("restrictedModelTypes: non-restricted type still allowed for non-admin
         methodName: "apply",
         typeArg: "terraform/aws",
         definitionName: "my-terraform",
+      },
+    })),
+    testPrincipal,
+  );
+
+  await new Promise((r) => setTimeout(r, 50));
+
+  const unauthorizedErrors = mock.sent
+    .map((s) => JSON.parse(s))
+    .filter((m) =>
+      m.type === "error" &&
+      (m.error as Record<string, unknown>).code === "unauthorized"
+    );
+  assertEquals(unauthorizedErrors.length, 0);
+});
+
+// ── restrictedCommands: admin-only enforcement via config ─────────────────
+
+const restrictedCommandConfig: ServeAuthConfig = {
+  mode: "token",
+  admins: [],
+  allowedCollectives: [],
+  allowedUsers: [],
+  oauthProvider: "",
+  groupsField: "",
+  restrictedModelTypes: [],
+  restrictedCommands: ["model.search"],
+};
+
+Deno.test("restrictedCommands: non-admin denied on restricted command", async () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(restrictedCommandConfig, [lowPrivGrant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "model.search",
+      id: "rc-denied-1",
+      payload: { query: "test" },
+    })),
+    testPrincipal,
+  );
+
+  await new Promise((r) => setTimeout(r, 50));
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  const errorMessage = String(
+    (msg.error as Record<string, unknown>).message,
+  );
+  assertStringIncludes(errorMessage, "admin");
+  assertStringIncludes(errorMessage, "access:");
+  assertStringIncludes(errorMessage, "model.search");
+});
+
+Deno.test("restrictedCommands: admin can use restricted command", async () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const adminGrant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    actions: ["admin"],
+    resource: { kind: "access", pattern: "*" },
+  });
+  const ctx = makeCtx(restrictedCommandConfig, [adminGrant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "model.search",
+      id: "rc-admin-1",
+      payload: { query: "test" },
+    })),
+    testPrincipal,
+  );
+
+  await new Promise((r) => setTimeout(r, 50));
+
+  const unauthorizedErrors = mock.sent
+    .map((s) => JSON.parse(s))
+    .filter((m) =>
+      m.type === "error" &&
+      (m.error as Record<string, unknown>).code === "unauthorized"
+    );
+  assertEquals(unauthorizedErrors.length, 0);
+});
+
+Deno.test("restrictedCommands: non-restricted command still allowed for non-admin", async () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(restrictedCommandConfig, [lowPrivGrant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "model.method.run",
+      id: "rc-allowed-1",
+      payload: {
+        modelIdOrName: "my-model",
+        methodName: "run",
+        typeArg: "terraform/aws",
+        definitionName: "my-model",
       },
     })),
     testPrincipal,

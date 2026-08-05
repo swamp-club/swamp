@@ -341,6 +341,12 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
       options.restrictedModelTypes as string,
     );
   }
+  if (options.restrictedCommands) {
+    args.push(
+      "--restricted-commands",
+      options.restrictedCommands as string,
+    );
+  }
   if (options.groupRefreshInterval) {
     args.push(
       "--group-refresh-interval",
@@ -542,6 +548,10 @@ const daemonEnableCommand = new Command()
   .option(
     "--restricted-model-types <types:string>",
     "Comma-separated model types that require admin authority to create or run (e.g. command/shell). Requires --auth-mode token or oauth",
+  )
+  .option(
+    "--restricted-commands <cmds:string>",
+    "Comma-separated server commands that require admin authority (e.g. datastore.namespace.list,extension.install). Requires --auth-mode token or oauth",
   )
   .option(
     "--group-refresh-interval <duration:string>",
@@ -862,6 +872,10 @@ export const serveCommand = new Command()
     "Comma-separated model types that require admin authority to create or run (e.g. command/shell). Requires --auth-mode token or oauth",
   )
   .option(
+    "--restricted-commands <cmds:string>",
+    "Comma-separated server commands that require admin authority (e.g. datastore.namespace.list,extension.install). Requires --auth-mode token or oauth",
+  )
+  .option(
     "--group-refresh-interval <duration:string>",
     "How often to re-fetch IdP group memberships for active server tokens (env: SWAMP_GROUP_REFRESH_INTERVAL). " +
       "Accepts seconds (14400), explicit units (4h, 30m), or 0 to disable. Default: 4h. Requires --auth-mode oauth.",
@@ -1029,6 +1043,7 @@ export const serveCommand = new Command()
       oauthClientId: merged.oauthClientId,
       groupsField: merged.groupsField,
       restrictedModelTypes: merged.restrictedModelTypes,
+      restrictedCommands: merged.restrictedCommands,
     });
 
     if (authConfig.mode === "none" && authConfig.admins.length > 0) {
@@ -1044,6 +1059,16 @@ export const serveCommand = new Command()
     ) {
       logger.warn(
         "--restricted-model-types is set but --auth-mode is {mode} — type restrictions will have no effect",
+        { mode: authConfig.mode },
+      );
+    }
+
+    if (
+      authConfig.mode === "none" &&
+      authConfig.restrictedCommands.length > 0
+    ) {
+      logger.warn(
+        "--restricted-commands is set but --auth-mode is {mode} — command restrictions will have no effect",
         { mode: authConfig.mode },
       );
     }

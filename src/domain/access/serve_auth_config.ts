@@ -32,6 +32,7 @@ export interface ServeAuthConfig {
   oauthClientId?: string;
   groupsField: string;
   restrictedModelTypes: string[];
+  restrictedCommands: string[];
 }
 
 const VALID_AUTH_MODES: ReadonlySet<string> = new Set([
@@ -51,6 +52,7 @@ export interface ServeAuthConfigInput {
   oauthClientId?: string;
   groupsField?: string;
   restrictedModelTypes?: string;
+  restrictedCommands?: string;
 }
 
 function parseCommaSeparated(value: string | undefined): string[] {
@@ -97,6 +99,7 @@ export function buildServeAuthConfig(
   const restrictedModelTypes = parseCommaSeparated(
     input.restrictedModelTypes,
   ).map((t) => ModelType.create(t).normalized);
+  const restrictedCommands = parseCommaSeparated(input.restrictedCommands);
 
   if (admins.length > 0) {
     validateAdmins(admins, mode);
@@ -150,5 +153,6 @@ export function buildServeAuthConfig(
     oauthClientId,
     groupsField,
     restrictedModelTypes,
+    restrictedCommands,
   };
 }
