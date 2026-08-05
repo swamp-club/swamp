@@ -1251,12 +1251,13 @@ export const serveCommand = new Command()
     );
     if (tokenMigrationResult.moved > 0) {
       logger
-        .info`Migrated ${tokenMigrationResult.moved} server-token definition(s) from models/ to auto-definitions/`;
+        .info`Migrated ${tokenMigrationResult.moved} server-token definition(s) from models/ to .swamp/auto-definitions/`;
       await cleanupEmptyParentDirs(
         join(tokenSourceDir, "_placeholder"),
         modelsDir,
       );
       if (syncService) {
+        await syncService.markDirty();
         await syncService.pushChanged();
       }
     }
