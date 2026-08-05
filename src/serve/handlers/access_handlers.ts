@@ -457,23 +457,21 @@ export async function handleAccessReload(
             validateGrantCondition,
           );
           if (externalResult.errors.length > 0) {
-            allErrors.push(...externalResult.errors);
+            allErrors.push(...externalResult.errors.map((e) => ({
+              ...e,
+              filename: "external-grants-file",
+            })));
           } else {
             validEntries.set(ctx.grantsFile, externalResult.entries);
           }
         }
       } catch (error) {
-        if (error instanceof Deno.errors.NotFound) {
-          allErrors.push({
-            filename: ctx.grantsFile,
-            message: "External grants file not found",
-          });
-        } else {
-          allErrors.push({
-            filename: ctx.grantsFile,
-            message: `Failed to read: ${error}`,
-          });
-        }
+        logger
+          .error`Failed to read external grants file ${ctx.grantsFile}: ${error}`;
+        allErrors.push({
+          filename: "external-grants-file",
+          message: "Failed to read external grants file",
+        });
       }
 
       if (allErrors.length > 0) {
@@ -511,10 +509,10 @@ export async function handleAccessReload(
 
     const fileResultList: AccessReloadFileResult[] = [];
     for (const [filename, perFile] of reconcileResult.perFile) {
-      const parsed = fileResults.get(filename);
+      const entries = validEntries.get(filename);
       fileResultList.push({
         filename,
-        entryCount: parsed?.entries.length ?? 0,
+        entryCount: entries?.length ?? 0,
         created: perFile.created,
         revoked: perFile.revoked,
         reactivated: perFile.reactivated,

@@ -496,7 +496,7 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--grants-file <path:string>",
-    "Path to an external grants YAML file loaded at startup (env: SWAMP_GRANTS_FILE)",
+    "Path to an external grants YAML file loaded at startup",
   )
   .option(
     "--grant-reload <mode:string>",
@@ -1751,24 +1751,23 @@ export const serveCommand = new Command()
         : resolve(merged.grantsFile))
       : undefined;
     if (externalGrantsFilePath) {
-      const resolvedPath = externalGrantsFilePath;
       let content: string;
       try {
-        content = await Deno.readTextFile(resolvedPath);
+        content = await Deno.readTextFile(externalGrantsFilePath);
       } catch (cause) {
         if (cause instanceof Deno.errors.NotFound) {
           throw new UserError(
-            `External grants file not found: ${resolvedPath}`,
+            `External grants file not found: ${externalGrantsFilePath}`,
           );
         }
         throw new UserError(
-          `Failed to read external grants file ${resolvedPath}: ${cause}`,
+          `Failed to read external grants file ${externalGrantsFilePath}: ${cause}`,
         );
       }
 
       if (content.trim().length > 0) {
         const externalResult = parseGrantFile(
-          resolvedPath,
+          externalGrantsFilePath,
           content,
           validateGrantCondition,
         );
@@ -1785,12 +1784,12 @@ export const serveCommand = new Command()
             }`,
           );
         }
-        validEntries.set(resolvedPath, externalResult.entries);
+        validEntries.set(externalGrantsFilePath, externalResult.entries);
         logger
-          .info`Loaded ${externalResult.entries.length} grant(s) from external file ${resolvedPath}`;
+          .info`Loaded ${externalResult.entries.length} grant(s) from external file ${externalGrantsFilePath}`;
       } else {
         logger
-          .info`External grants file ${resolvedPath} is empty — no external grants added`;
+          .info`External grants file ${externalGrantsFilePath} is empty — no external grants added`;
       }
     }
 
