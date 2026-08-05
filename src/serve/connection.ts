@@ -113,6 +113,7 @@ import {
   handleExtensionUpdate,
   handleRunDoctor,
   handleRunHistory,
+  handleServeReload,
   handleVaultMigrate,
   handleWorkerList,
   handleWorkerQueueList,
@@ -227,6 +228,11 @@ const AccessCanIRequestSchema = z.object({
 
 const AccessReloadRequestSchema = z.object({
   type: z.literal("access.reload"),
+  id: z.string().min(1).max(256),
+});
+
+const ServeReloadRequestSchema = z.object({
+  type: z.literal("serve.reload"),
   id: z.string().min(1).max(256),
 });
 
@@ -878,6 +884,7 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   AccessCheckRequestSchema,
   AccessCanIRequestSchema,
   AccessReloadRequestSchema,
+  ServeReloadRequestSchema,
   DataGetRequestSchema,
   DataQueryRequestSchema,
   DataListRequestSchema,
@@ -1157,6 +1164,9 @@ export function handleMessage(
       break;
     case "access.reload":
       task = handleAccessReload(socket, ctx, request.id, principal);
+      break;
+    case "serve.reload":
+      task = handleServeReload(socket, ctx, request.id, principal);
       break;
     case "data.get":
       task = handleDataGet(
