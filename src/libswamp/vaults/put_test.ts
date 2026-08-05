@@ -17,11 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import type { RefreshHook } from "../../domain/vaults/refresh_hook.ts";
-import { VaultAnnotation } from "../../domain/vaults/vault_annotation.ts";
 import {
   vaultPut,
   type VaultPutDeps,
@@ -237,13 +236,11 @@ Deno.test("vaultPut: clearRefresh no-ops when provider does not support hooks", 
   assertEquals(deleted, false);
 });
 
-Deno.test("vaultPut: stores tags as annotation when provider supports annotations", async () => {
-  let storedAnnotation: VaultAnnotation | null = null;
+Deno.test("vaultPut: passes tags to putSecret and reports labels in completed event", async () => {
+  let receivedTags: Record<string, string> | undefined;
   const deps = makeDeps({
-    supportsAnnotations: () => Promise.resolve(true),
-    getAnnotation: () => Promise.resolve(null),
-    putAnnotation: (_vault, _key, annotation) => {
-      storedAnnotation = annotation;
+    putSecret: (_vault, _key, _value, tags) => {
+      receivedTags = tags;
       return Promise.resolve();
     },
   });
@@ -258,9 +255,7 @@ Deno.test("vaultPut: stores tags as annotation when provider supports annotation
     }),
   );
 
-  assertEquals(storedAnnotation !== null, true);
-  assertEquals(storedAnnotation!.labels["owner"], "platform-team");
-  assertEquals(storedAnnotation!.labels["env"], "prod");
+  assertEquals(receivedTags, { owner: "platform-team", env: "prod" });
 
   const completed = events.find((e) => e.kind === "completed") as Extract<
     VaultPutEvent,
@@ -269,17 +264,12 @@ Deno.test("vaultPut: stores tags as annotation when provider supports annotation
   assertEquals(completed.data.labels, { owner: "platform-team", env: "prod" });
 });
 
-Deno.test("vaultPut: merges tags with existing annotation on overwrite", async () => {
-  let storedAnnotation: VaultAnnotation | null = null;
-  const existing = VaultAnnotation.create({
-    labels: { existing: "value", owner: "old-team" },
-    notes: "keep me",
-  });
+Deno.test("vaultPut: does not call putAnnotation when tags are provided", async () => {
+  let annotationCalled = false;
   const deps = makeDeps({
     supportsAnnotations: () => Promise.resolve(true),
-    getAnnotation: () => Promise.resolve(existing),
-    putAnnotation: (_vault, _key, annotation) => {
-      storedAnnotation = annotation;
+    putAnnotation: () => {
+      annotationCalled = true;
       return Promise.resolve();
     },
   });
@@ -289,76 +279,20 @@ Deno.test("vaultPut: merges tags with existing annotation on overwrite", async (
       vaultName: "my-vault",
       key: "API_KEY",
       value: "secret123",
-      overwritten: true,
-      tags: { owner: "new-team", env: "prod" },
-    }),
-  );
-
-  assertEquals(storedAnnotation !== null, true);
-  assertEquals(storedAnnotation!.labels["existing"], "value");
-  assertEquals(storedAnnotation!.labels["owner"], "new-team");
-  assertEquals(storedAnnotation!.labels["env"], "prod");
-  assertEquals(storedAnnotation!.notes, "keep me");
-});
-
-Deno.test("vaultPut: yields warning when annotations not supported and tags provided", async () => {
-  const deps = makeDeps({
-    supportsAnnotations: () => Promise.resolve(false),
-  });
-
-  const events = await collect<VaultPutEvent>(
-    vaultPut(createLibSwampContext(), deps, {
-      vaultName: "my-vault",
-      key: "API_KEY",
-      value: "secret123",
       overwritten: false,
       tags: { owner: "team" },
     }),
   );
 
-  const warning = events.find((e) => e.kind === "warning") as Extract<
-    VaultPutEvent,
-    { kind: "warning" }
-  >;
-  assertEquals(warning !== undefined, true);
-  assertStringIncludes(warning.message, "does not support annotations");
-  assertStringIncludes(warning.message, "labels were ignored");
+  assertEquals(annotationCalled, false);
 });
 
-Deno.test("vaultPut: yields warning but completes when annotation fails", async () => {
+Deno.test("vaultPut: does not pass tags to putSecret when tags is empty", async () => {
+  let receivedTags: Record<string, string> | undefined;
   const deps = makeDeps({
-    supportsAnnotations: () => Promise.resolve(true),
-    getAnnotation: () => Promise.resolve(null),
-    putAnnotation: () => Promise.reject(new Error("annotation write failed")),
-  });
-
-  const events = await collect<VaultPutEvent>(
-    vaultPut(createLibSwampContext(), deps, {
-      vaultName: "my-vault",
-      key: "API_KEY",
-      value: "secret123",
-      overwritten: false,
-      tags: { owner: "team" },
-    }),
-  );
-
-  const warning = events.find((e) => e.kind === "warning") as Extract<
-    VaultPutEvent,
-    { kind: "warning" }
-  >;
-  assertEquals(warning !== undefined, true);
-  assertStringIncludes(warning.message, "labeling failed");
-
-  const completed = events.find((e) => e.kind === "completed");
-  assertEquals(completed !== undefined, true);
-});
-
-Deno.test("vaultPut: skips annotation when tags is empty", async () => {
-  let annotationCalled = false;
-  const deps = makeDeps({
-    supportsAnnotations: () => {
-      annotationCalled = true;
-      return Promise.resolve(true);
+    putSecret: (_vault, _key, _value, tags) => {
+      receivedTags = tags;
+      return Promise.resolve();
     },
   });
 
@@ -372,7 +306,7 @@ Deno.test("vaultPut: skips annotation when tags is empty", async () => {
     }),
   );
 
-  assertEquals(annotationCalled, false);
+  assertEquals(receivedTags, undefined);
   const completed = events.find((e) => e.kind === "completed") as Extract<
     VaultPutEvent,
     { kind: "completed" }
