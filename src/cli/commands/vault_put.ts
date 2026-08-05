@@ -55,6 +55,7 @@ import {
 } from "../remote_run.ts";
 import type { VaultPutResponse } from "../../serve/protocol.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { parseLabels } from "./vault_annotate.ts";
 
 const vaultLogger = getSwampLogger(["vault", "put"]);
 
@@ -166,6 +167,10 @@ When using --server, the value must be passed as a positional argument or KEY=VA
       "Remove refresh hook from a secret",
       "swamp vault put my-vault GCP_TOKEN --clear-refresh",
     )
+    .example(
+      "Store with tags",
+      "swamp vault put my-vault API_KEY=sk-123 --tag owner=platform-team --tag env=prod",
+    )
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
@@ -186,6 +191,11 @@ When using --server, the value must be passed as a positional argument or KEY=VA
     .option(
       "--clear-refresh",
       "Remove the refresh hook from this secret",
+    )
+    .option(
+      "--tag <tag:string>",
+      "Attach a metadata tag to the secret (key=value, repeatable)",
+      { collect: true },
     ),
 ).action(async function (
   options: AnyOptions,
@@ -270,6 +280,7 @@ When using --server, the value must be passed as a positional argument or KEY=VA
           refreshFrom: options.refreshFrom as string | undefined,
           refreshTtlMs,
           clearRefresh: options.clearRefresh as boolean | undefined,
+          tags: parseLabels(options.tag as string[] | undefined),
         },
       },
     );
@@ -392,6 +403,7 @@ When using --server, the value must be passed as a positional argument or KEY=VA
         refreshFrom: options.refreshFrom,
         refreshTtlMs,
         clearRefresh: options.clearRefresh,
+        tags: parseLabels(options.tag as string[] | undefined),
       }),
       renderer.handlers(),
     );

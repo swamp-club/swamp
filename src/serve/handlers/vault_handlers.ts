@@ -216,6 +216,7 @@ export async function handleVaultPut(
         refreshFrom: payload.refreshFrom,
         refreshTtlMs: payload.refreshTtlMs,
         clearRefresh: payload.clearRefresh,
+        tags: payload.tags,
       }),
       {
         storing: () => {},
