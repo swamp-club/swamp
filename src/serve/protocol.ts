@@ -463,6 +463,7 @@ export type ServerRequest =
   | { type: "access.check"; id: string; payload: AccessCheckPayload }
   | { type: "access.can-i"; id: string; payload: AccessCanIPayload }
   | { type: "access.reload"; id: string }
+  | { type: "serve.reload"; id: string }
   | { type: "data.get"; id: string; payload: DataGetPayload }
   | { type: "data.query"; id: string; payload: DataQueryPayload }
   | { type: "data.list"; id: string; payload: DataListPayload }
@@ -695,6 +696,12 @@ export interface AccessReloadResponse {
   filesProcessed?: number;
   fileResults?: AccessReloadFileResult[];
   errors?: string[];
+}
+
+export interface ServeReloadResponse {
+  success: boolean;
+  reloadedCount: number;
+  errors: string[];
 }
 
 export interface DataGetResponse {
@@ -1031,6 +1038,7 @@ export type ServerMessage =
   | { type: "access.check"; id: string; payload: AccessCheckResponse }
   | { type: "access.can-i"; id: string; payload: AccessCanIResponse }
   | { type: "access.reload"; id: string; payload: AccessReloadResponse }
+  | { type: "serve.reload"; id: string; payload: ServeReloadResponse }
   | { type: "data.get"; id: string; payload: DataGetResponse }
   | { type: "data.query"; id: string; payload: DataQueryResponse }
   | { type: "data.list"; id: string; payload: DataListResponse }

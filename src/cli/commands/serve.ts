@@ -73,7 +73,6 @@ import {
 import { groupCommandAction } from "../group_action.ts";
 import {
   normalizeFireTime,
-  resolveTrustedCollectives,
   ScheduledExecutionService,
 } from "../../libswamp/mod.ts";
 import {
@@ -97,19 +96,18 @@ import { RunCancelRegistry } from "../../serve/run_cancel_registry.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
-import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import {
-  incrementReloadGeneration,
-  LockfileRepository,
-} from "../../libswamp/mod.ts";
-import { removeAttachedExtensionsForType } from "../../domain/extensions/model_kind_adapter.ts";
+  isReloading,
+  performServeReload,
+} from "../../serve/extension_reload.ts";
 import {
-  extensionKindToKindDir,
-} from "../../domain/extensions/source_failure_recorder.ts";
-import { computeSourceFingerprint } from "../../domain/extensions/bundle_freshness.ts";
-import { bundleExtension } from "../../domain/models/bundle.ts";
-import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
-import { ModelType } from "../../domain/models/model_type.ts";
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+} from "../remote_run.ts";
+import { validateServerRepoExclusivity } from "./access_helpers.ts";
+import type { ServeReloadResponse } from "../../serve/protocol.ts";
+import { createServeReloadRenderer } from "../../presentation/renderers/serve_reload.ts";
 import {
   type PolicyReloadMode,
   PolicySnapshotLoader,
@@ -131,7 +129,7 @@ import {
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { GRANT_MODEL_TYPE } from "../../domain/models/access/grant_model.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
-import { dirname, isAbsolute, join, resolve } from "@std/path";
+import { isAbsolute, join, resolve } from "@std/path";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
 import {
   RepoMarkerRepository,
@@ -142,7 +140,6 @@ import {
   RunTrackerStore,
 } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
-import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import {
   cleanupExpiredClaims,
@@ -162,8 +159,6 @@ import {
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { requireAuthenticated, requireScope } from "../auth_context.ts";
-import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
-import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import {
@@ -668,182 +663,66 @@ const daemonStatusCommand = new Command()
     renderDaemonStatus(status, ctx.outputMode, toServiceMode(mode));
   });
 
-async function reloadPulledExtensions(
-  repoDir: string,
-  lockfilePath: string,
-): Promise<number> {
-  incrementReloadGeneration();
-
-  const catalogDbPath = swampPath(repoDir, "_extension_catalog.db");
-
-  const catalog = new ExtensionCatalogStore(catalogDbPath);
-  try {
-    const lockfile = await LockfileRepository.create(lockfilePath);
-    const entries = lockfile.getAllEntries();
-
-    // Re-bundle only sources whose fingerprint changed since the catalog
-    // was last written. Unchanged sources keep their existing bundle and
-    // skip the expensive deno-bundle subprocess.
-    // Query by source_path prefix instead of extension_name — the
-    // source_path PK always reflects the pulled-extensions directory
-    // layout, even when extension_name is empty (swamp-club#1149).
-    const pulledRoot = join(repoDir, ".swamp", "pulled-extensions");
-    const rebundled = new Set<string>();
-    let denoRuntime: EmbeddedDenoRuntime | undefined;
-    let denoPath: string | undefined;
-    for (const [extName] of Object.entries(entries)) {
-      const sourcePrefix = canonicalizePath(
-        join(pulledRoot, extName) + "/",
-      );
-      const allRows = catalog.findBySourcePathPrefix(sourcePrefix);
-      for (const row of allRows) {
-        if (
-          !row.source_path || !row.bundle_path ||
-          rebundled.has(row.source_path)
-        ) continue;
-        try {
-          const kindDir = extensionKindToKindDir(
-            row.kind as Parameters<typeof extensionKindToKindDir>[0],
-          );
-          const baseDir = join(pulledRoot, extName, kindDir);
-          const currentFp = await computeSourceFingerprint(
-            row.source_path,
-            baseDir,
-          );
-          if (currentFp === row.source_fingerprint) continue;
-          if (!denoRuntime) {
-            denoRuntime = new EmbeddedDenoRuntime();
-          }
-          if (!denoPath) {
-            denoPath = await denoRuntime.ensureDeno();
-          }
-          const js = await bundleExtension(row.source_path, denoPath, {
-            env: denoRuntime.getDenoEnv(),
-          });
-          await Deno.mkdir(dirname(row.bundle_path), { recursive: true });
-          await Deno.writeTextFile(row.bundle_path, js);
-          catalog.updateSourceFingerprint(row.source_path, currentFp);
-          rebundled.add(row.source_path);
-        } catch (err) {
-          logger.warn(
-            "Hot-reload: failed to re-bundle {path}, keeping old bundle: {error}",
-            {
-              path: row.source_path,
-              error: err instanceof Error ? err.message : String(err),
-            },
-          );
-        }
-      }
-    }
-
-    let reloadedCount = 0;
-    for (const [name] of Object.entries(entries)) {
-      const sourcePrefix = canonicalizePath(
-        join(pulledRoot, name) + "/",
-      );
-      const rows = catalog.findBySourcePathPrefix(sourcePrefix);
-      if (rows.length === 0) continue;
-
-      for (const row of rows) {
-        if (!row.type_normalized) continue;
-        try {
-          const kind = row.kind;
-
-          if (kind === "model") {
-            modelRegistry.invalidateType(row.type_normalized);
-            removeAttachedExtensionsForType(row.type_normalized);
-            modelRegistry.registerLazy({
-              type: ModelType.create(row.type_normalized),
-              bundlePath: row.bundle_path,
-              sourcePath: row.source_path,
-              version: row.version,
-              sourceFingerprint: row.source_fingerprint,
-            });
-            await modelRegistry.ensureTypeLoaded(row.type_normalized);
-            reloadedCount++;
-          } else if (kind === "vault") {
-            vaultTypeRegistry.invalidateType(row.type_normalized);
-            vaultTypeRegistry.registerLazy({
-              type: row.type_normalized,
-              bundlePath: row.bundle_path,
-              sourcePath: row.source_path,
-              version: row.version,
-            });
-            await vaultTypeRegistry.ensureTypeLoaded(row.type_normalized);
-            reloadedCount++;
-          } else if (kind === "datastore") {
-            datastoreTypeRegistry.invalidateType(row.type_normalized);
-            datastoreTypeRegistry.registerLazy({
-              type: row.type_normalized,
-              bundlePath: row.bundle_path,
-              sourcePath: row.source_path,
-              version: row.version,
-            });
-            await datastoreTypeRegistry.ensureTypeLoaded(row.type_normalized);
-            reloadedCount++;
-          } else if (kind === "report") {
-            reportRegistry.invalidateType(row.type_normalized);
-            reportRegistry.registerLazy({
-              type: row.type_normalized,
-              bundlePath: row.bundle_path,
-              sourcePath: row.source_path,
-              version: row.version,
-            });
-            await reportRegistry.ensureTypeLoaded(row.type_normalized);
-            reloadedCount++;
-          }
-        } catch (err) {
-          logger.warn(
-            "Failed to reload type {type} from {extension}: {error}",
-            {
-              type: row.type_normalized,
-              extension: name,
-              error: err instanceof Error ? err.message : String(err),
-            },
-          );
-        }
-      }
-    }
-    return reloadedCount;
-  } finally {
-    catalog.close();
-  }
-}
-
-async function reloadTrustedCollectives(
-  repoDir: string,
-): Promise<void> {
-  const markerRepo = new RepoMarkerRepository();
-  const marker = await markerRepo.read(RepoPath.create(repoDir));
-
-  let authCollectives: string[] | undefined;
-  try {
-    const authRepo = new AuthRepository();
-    const creds = await authRepo.load();
-    authCollectives = creds?.collectives;
-  } catch {
-    // Auth file unreadable — continue without membership collectives
-  }
-
-  const collectives = resolveTrustedCollectives(marker, authCollectives);
-  const resolver = getAutoResolver();
-  if (resolver) {
-    resolver.updateAllowedCollectives(collectives);
-  }
-}
-
 const reloadCommand = new Command()
   .name("reload")
   .description(
     "Reload pulled extension bundles and refresh the trust list on a running serve process.\n\n" +
-      "Reads .swamp/serve.pid and sends SIGHUP to trigger hot-reload. " +
-      "Requires the serve process to be running with --hot-reload.",
+      "With --server, sends a serve.reload request over WebSocket. " +
+      "Without --server, reads .swamp/serve.pid and sends SIGHUP locally. " +
+      "The local path requires the serve process to be running with --hot-reload.",
   )
+  .example(
+    "Reload on a remote server",
+    "swamp serve reload --server wss://swamp.acme.internal:9090",
+  )
+  .example("Reload locally", "swamp serve reload")
   .option(
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
-  .action(async (options: AnyOptions) => {
+  .option(
+    "--server <url:string>",
+    "Reload extensions on a 'swamp serve' server instead of locally (env: SWAMP_SERVE_URL)",
+  )
+  .option(
+    "--token <token:string>",
+    "Server token (falls back to stored credential)",
+  )
+  .action(async function (options: AnyOptions) {
+    const server = resolveServeUrl(options.server as string | undefined);
+
+    validateServerRepoExclusivity(
+      server,
+      options.repoDir as string | undefined,
+    );
+
+    const ctx = createContext(options as GlobalOptions, ["serve", "reload"]);
+    const renderer = createServeReloadRenderer(ctx.outputMode);
+
+    if (server) {
+      const token = await resolveServerToken(
+        server,
+        options.token as string | undefined,
+      );
+
+      const response = await requestServerResponse<ServeReloadResponse>(
+        { server, ...(token ? { token } : {}) },
+        { type: "serve.reload" },
+      );
+
+      if (!response.success) {
+        renderer.render({
+          success: false,
+          reloadedCount: 0,
+          errors: response.errors,
+        });
+        throw new UserError("Extension reload failed on the server");
+      }
+
+      renderer.render(response);
+      return;
+    }
+
     const repoDir = resolveRepoDir(options.repoDir as string | undefined);
     const pidPath = swampPath(repoDir, "serve.pid");
 
@@ -2824,39 +2703,26 @@ export const serveCommand = new Command()
       await Deno.writeTextFile(pidPath, String(Deno.pid));
       logger.info`Hot-reload enabled, PID file written to ${pidPath}`;
 
-      let reloading = false;
       Deno.addSignalListener("SIGHUP", () => {
-        if (reloading) {
+        if (isReloading()) {
           logger.warn("Hot-reload already in progress, ignoring SIGHUP");
           return;
         }
-        reloading = true;
         logger.info("SIGHUP received, reloading pulled extensions...");
-        reloadPulledExtensions(resolvedRepoDir, extensionLockfilePath)
-          .then(async (count) => {
-            logger.info`Hot-reloaded ${count} type(s)`;
-            try {
-              await reloadTrustedCollectives(resolvedRepoDir);
-              logger.info("Trust list refreshed from .swamp.yaml");
-            } catch (err) {
-              logger.warn(
-                "Failed to refresh trust list, keeping current config: {error}",
-                {
-                  error: err instanceof Error ? err.message : String(err),
-                },
-              );
+        performServeReload(resolvedRepoDir, extensionLockfilePath)
+          .then((result) => {
+            if (result.success) {
+              logger.info`Hot-reloaded ${result.reloadedCount} type(s)`;
+              if (result.errors.length > 0) {
+                for (const err of result.errors) {
+                  logger.warn`${err}`;
+                }
+              }
+            } else {
+              for (const err of result.errors) {
+                logger.error`${err}`;
+              }
             }
-          })
-          .catch((err) => {
-            logger.error(
-              "Hot-reload failed, continuing with old code: {error}",
-              {
-                error: err instanceof Error ? err.message : String(err),
-              },
-            );
-          })
-          .finally(() => {
-            reloading = false;
           });
       });
     }

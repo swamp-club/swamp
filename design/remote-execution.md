@@ -1110,13 +1110,20 @@ nginx pattern.
 
 1. Start serve with `swamp serve --hot-reload`
 2. Push updated extension code, pull it (`swamp extension pull @name --force`)
-3. Run `swamp serve reload` — reads `.swamp/serve.pid`, sends SIGHUP
+3. Trigger a reload:
+   - **Local**: `swamp serve reload` — reads `.swamp/serve.pid`, sends SIGHUP
+   - **Remote**: `swamp serve reload --server wss://host:port` — sends a
+     `serve.reload` WebSocket request (requires admin authorization)
 4. Serve reloads all pulled extension types. In-flight requests complete on old
    code; new requests use new code.
 
 ### Mechanism
 
-On SIGHUP, `reloadPulledExtensions()` performs a READ-ONLY scan:
+Both the SIGHUP signal handler and the `serve.reload` WebSocket handler call the
+same shared `performServeReload()` function in `src/serve/extension_reload.ts`.
+A module-level reloading guard prevents concurrent reloads from either trigger.
+
+`reloadPulledExtensions()` performs a READ-ONLY scan:
 
 1. Opens a fresh `ExtensionCatalogStore` (reads `_extension_catalog.db`)
 2. Reads the lockfile via `LockfileRepository` for extension names/versions

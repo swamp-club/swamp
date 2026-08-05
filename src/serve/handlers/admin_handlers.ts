@@ -129,6 +129,10 @@ import {
   send,
   sendError,
 } from "./shared.ts";
+import {
+  performServeReload,
+  resolveLockfilePath,
+} from "../extension_reload.ts";
 import { isReservedVaultName } from "./vault_handlers.ts";
 
 export async function handleWorkerList(
@@ -1689,5 +1693,34 @@ export async function handleAuditTimeline(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "audit_timeline_failed", message);
+  }
+}
+
+export async function handleServeReload(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const lockfilePath = await resolveLockfilePath(ctx.repoDir);
+    const result = await performServeReload(ctx.repoDir, lockfilePath);
+
+    send(socket, {
+      type: "serve.reload",
+      id: requestId,
+      payload: result,
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "serve_reload_failed", message);
   }
 }
