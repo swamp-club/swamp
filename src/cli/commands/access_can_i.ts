@@ -53,7 +53,7 @@ export const accessCanICommand = new Command()
   )
   .option(
     "--token <token:string>",
-    "Server token (falls back to stored credential)",
+    "Server token; only applies with --server (falls back to stored credential or SWAMP_SERVER_TOKEN)",
   )
   .option(
     "--action <action:string>",

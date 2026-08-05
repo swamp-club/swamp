@@ -67,6 +67,7 @@ import {
   send,
   sendError,
 } from "./shared.ts";
+import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 
 export async function handleAccessGrantList(
   socket: WebSocket,
@@ -404,6 +405,10 @@ export async function handleAccessReload(
     }, ctx)
   ) return;
 
+  const logger = getSwampLogger(["access", "reload"]);
+  const who = principal ? `${principal.kind}:${principal.id}` : "anonymous";
+  logger.info`Access policy reload requested by ${who}`;
+
   try {
     if (!ctx.policySnapshotLoader) {
       sendError(
@@ -473,6 +478,9 @@ export async function handleAccessReload(
     }
 
     const snapshotResult = await ctx.policySnapshotLoader.loadWithCounts();
+
+    logger
+      .info`Access policy reload completed: ${snapshotResult.grantCount} grant(s), ${snapshotResult.groupCount} group(s) (requested by ${who})`;
 
     send(socket, {
       type: "access.reload",

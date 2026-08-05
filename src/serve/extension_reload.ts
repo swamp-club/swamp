@@ -45,6 +45,7 @@ import { getAutoResolver } from "../domain/extensions/auto_resolver_context.ts";
 import { AuthRepository } from "../infrastructure/persistence/auth_repository.ts";
 import { resolveTrustedCollectives } from "../libswamp/mod.ts";
 import { resolveModelsDir } from "../cli/resolve_models_dir.ts";
+import type { ServeReloadResponse } from "./protocol.ts";
 
 const logger = getSwampLogger(["serve", "reload"]);
 
@@ -229,16 +230,10 @@ export async function resolveLockfilePath(
   );
 }
 
-export interface ServeReloadResult {
-  success: boolean;
-  reloadedCount: number;
-  errors: string[];
-}
-
 export async function performServeReload(
   repoDir: string,
   lockfilePath: string,
-): Promise<ServeReloadResult> {
+): Promise<ServeReloadResponse> {
   if (reloading) {
     return {
       success: false,

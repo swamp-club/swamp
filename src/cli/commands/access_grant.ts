@@ -125,7 +125,7 @@ const accessGrantCreateCommand = new Command()
   )
   .option(
     "--token <token:string>",
-    "Server token (falls back to stored credential)",
+    "Server token; only applies with --server (falls back to stored credential or SWAMP_SERVER_TOKEN)",
   )
   .action(async function (options: AnyOptions) {
     if (!options.allow && !options.deny) {
@@ -316,7 +316,7 @@ const accessGrantListCommand = new Command()
   )
   .option(
     "--token <token:string>",
-    "Server token (falls back to stored credential)",
+    "Server token; only applies with --server (falls back to stored credential or SWAMP_SERVER_TOKEN)",
   )
   .action(async function (options: AnyOptions) {
     const server = resolveServeUrl(options.server as string | undefined);
@@ -410,7 +410,7 @@ const accessGrantRevokeCommand = new Command()
   )
   .option(
     "--token <token:string>",
-    "Server token (falls back to stored credential)",
+    "Server token; only applies with --server (falls back to stored credential or SWAMP_SERVER_TOKEN)",
   )
   .action(async function (options: AnyOptions, grantId: string) {
     const server = resolveServeUrl(options.server as string | undefined);

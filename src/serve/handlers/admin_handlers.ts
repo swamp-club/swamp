@@ -1710,9 +1710,28 @@ export async function handleServeReload(
     }, ctx)
   ) return;
 
+  if (!ctx.hotReload) {
+    sendError(
+      socket,
+      requestId,
+      "hot_reload_disabled",
+      "Extension reload is not available — the server was not started with --hot-reload",
+    );
+    return;
+  }
+
+  const logger = getSwampLogger(["serve", "reload"]);
+  const who = principal ? `${principal.kind}:${principal.id}` : "anonymous";
+  logger.info`Extension reload requested by ${who}`;
+
   try {
     const lockfilePath = await resolveLockfilePath(ctx.repoDir);
     const result = await performServeReload(ctx.repoDir, lockfilePath);
+
+    if (result.success) {
+      logger
+        .info`Extension reload completed: ${result.reloadedCount} type(s) reloaded (requested by ${who})`;
+    }
 
     send(socket, {
       type: "serve.reload",
