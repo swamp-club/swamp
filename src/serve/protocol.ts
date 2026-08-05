@@ -137,6 +137,7 @@ export interface VaultPutPayload {
   refreshFrom?: string;
   refreshTtlMs?: number;
   clearRefresh?: boolean;
+  labels?: Record<string, string>;
 }
 
 export interface VaultDeletePayload {
@@ -834,6 +835,7 @@ export interface VaultGetResponse {
 
 export interface VaultPutResponse {
   data: Record<string, unknown>;
+  warnings?: string[];
 }
 
 export interface VaultDeleteResponse {

@@ -207,6 +207,7 @@ export async function handleVaultPut(
     }
 
     let result: Record<string, unknown> | undefined;
+    const warnings: string[] = [];
     await consumeStream(
       vaultPut(libCtx, deps, {
         vaultName: payload.vaultName,
@@ -216,10 +217,13 @@ export async function handleVaultPut(
         refreshFrom: payload.refreshFrom,
         refreshTtlMs: payload.refreshTtlMs,
         clearRefresh: payload.clearRefresh,
+        tags: payload.labels,
       }),
       {
         storing: () => {},
-        warning: () => {},
+        warning: (e) => {
+          warnings.push(e.message);
+        },
         completed: (e) => {
           result = e.data as unknown as Record<string, unknown>;
         },
@@ -237,7 +241,10 @@ export async function handleVaultPut(
     send(socket, {
       type: "vault.put",
       id: requestId,
-      payload: { data: result ?? {} },
+      payload: {
+        data: result ?? {},
+        ...(warnings.length > 0 ? { warnings } : {}),
+      },
     });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {

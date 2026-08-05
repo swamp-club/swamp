@@ -55,6 +55,7 @@ import {
 } from "../remote_run.ts";
 import type { VaultPutResponse } from "../../serve/protocol.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { parseLabels } from "./vault_annotate.ts";
 
 const vaultLogger = getSwampLogger(["vault", "put"]);
 
@@ -166,6 +167,10 @@ When using --server, the value must be passed as a positional argument or KEY=VA
       "Remove refresh hook from a secret",
       "swamp vault put my-vault GCP_TOKEN --clear-refresh",
     )
+    .example(
+      "Store with labels",
+      "swamp vault put my-vault API_KEY=sk-123 --label owner=platform-team --label env=prod",
+    )
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
@@ -186,6 +191,11 @@ When using --server, the value must be passed as a positional argument or KEY=VA
     .option(
       "--clear-refresh",
       "Remove the refresh hook from this secret",
+    )
+    .option(
+      "--label <label:string>",
+      "Attach a metadata label to the secret (key=value, repeatable)",
+      { collect: true },
     ),
 ).action(async function (
   options: AnyOptions,
@@ -270,11 +280,18 @@ When using --server, the value must be passed as a positional argument or KEY=VA
           refreshFrom: options.refreshFrom as string | undefined,
           refreshTtlMs,
           clearRefresh: options.clearRefresh as boolean | undefined,
+          labels: parseLabels(options.label as string[] | undefined),
         },
       },
     );
     const renderer = createVaultPutRenderer(cliCtx.outputMode);
-    renderer.handlers().completed({
+    const handlers = renderer.handlers();
+    if (response.warnings) {
+      for (const message of response.warnings) {
+        handlers.warning({ kind: "warning", message });
+      }
+    }
+    handlers.completed({
       kind: "completed",
       data: response.data as unknown as VaultPutData,
     });
@@ -392,6 +409,7 @@ When using --server, the value must be passed as a positional argument or KEY=VA
         refreshFrom: options.refreshFrom,
         refreshTtlMs,
         clearRefresh: options.clearRefresh,
+        tags: parseLabels(options.label as string[] | undefined),
       }),
       renderer.handlers(),
     );

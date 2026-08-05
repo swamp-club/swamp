@@ -374,6 +374,7 @@ const VaultPutRequestSchema = z.object({
     refreshFrom: z.string().optional(),
     refreshTtlMs: z.number().optional(),
     clearRefresh: z.boolean().optional(),
+    labels: z.record(z.string().min(1), z.string()).optional(),
   }),
 });
 
