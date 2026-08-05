@@ -32,6 +32,7 @@ import type {
 import {
   collectErrors,
   type GrantFileError,
+  parseGrantFile,
   readGrantFiles,
 } from "../../domain/access/grant_file.ts";
 import {
@@ -444,6 +445,50 @@ export async function handleAccessReload(
     >();
     for (const [filename, result] of fileResults) {
       validEntries.set(filename, result.entries);
+    }
+
+    if (ctx.grantsFile) {
+      try {
+        const content = await Deno.readTextFile(ctx.grantsFile);
+        if (content.trim().length > 0) {
+          const externalResult = parseGrantFile(
+            ctx.grantsFile,
+            content,
+            validateGrantCondition,
+          );
+          if (externalResult.errors.length > 0) {
+            allErrors.push(...externalResult.errors);
+          } else {
+            validEntries.set(ctx.grantsFile, externalResult.entries);
+          }
+        }
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) {
+          allErrors.push({
+            filename: ctx.grantsFile,
+            message: "External grants file not found",
+          });
+        } else {
+          allErrors.push({
+            filename: ctx.grantsFile,
+            message: `Failed to read: ${error}`,
+          });
+        }
+      }
+
+      if (allErrors.length > 0) {
+        send(socket, {
+          type: "access.reload",
+          id: requestId,
+          payload: {
+            success: false,
+            grantCount: 0,
+            groupCount: 0,
+            errors: formatGrantFileErrors(allErrors),
+          },
+        });
+        return;
+      }
     }
 
     const autoDefDir = join(ctx.repoDir, ".swamp", "auto-definitions");

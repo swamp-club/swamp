@@ -103,6 +103,8 @@ export interface ConnectionContext {
   instanceId?: string;
   /** Heartbeat stale TTL in ms — used by cross-instance run.attach fallback. */
   staleTtlMs?: number;
+  /** Resolved path to external grants file, if --grants-file was provided. */
+  grantsFile?: string;
   /** Whether --hot-reload is enabled — gates serve.reload over WebSocket. */
   hotReload?: boolean;
 }
