@@ -26,14 +26,23 @@ import {
   createLibSwampContext,
   createWorkflowApprovalsDeps,
   createWorkflowApproveDeps,
+  createWorkflowCreateDeps,
+  createWorkflowDeleteDeps,
+  createWorkflowEditDeps,
+  createWorkflowEvaluateDeps,
   createWorkflowGetDeps,
   createWorkflowHistoryGetDeps,
   createWorkflowHistoryLogsDeps,
   createWorkflowRejectDeps,
+  createWorkflowValidateDeps,
   mapWorkflowExecutionEvent,
   workflowApprovals,
   type WorkflowApprovalsEvent,
   workflowApprove,
+  workflowCreate,
+  workflowDelete,
+  workflowEdit,
+  workflowEvaluate,
   workflowGet,
   workflowHistoryGet,
   workflowHistoryLogs,
@@ -44,13 +53,19 @@ import {
   workflowRunSearch,
   type WorkflowRunSearchDeps,
   workflowSchema,
+  workflowsDirFor,
   workflowSearch,
   type WorkflowSearchDeps,
+  workflowValidate,
 } from "../../libswamp/mod.ts";
 import { createWorkflowRunDeps, executeWorkflowWithLocks } from "../deps.ts";
 import { serializeEvent } from "../serializer.ts";
 import type {
   WorkflowApprovePayload,
+  WorkflowCreatePayload,
+  WorkflowDeletePayload,
+  WorkflowEditPayload,
+  WorkflowEvaluatePayload,
   WorkflowGetPayload,
   WorkflowHistoryGetPayload,
   WorkflowHistoryLogsPayload,
@@ -61,6 +76,7 @@ import type {
   WorkflowRunSearchPayload,
   WorkflowSchemaPayload,
   WorkflowSearchPayload,
+  WorkflowValidatePayload,
 } from "../protocol.ts";
 import { acquireModelLocks } from "../../cli/repo_context.ts";
 import {
@@ -1215,4 +1231,275 @@ export async function handleWorkflowResume(
   }
 
   await subscribeUntilDetach(buffer, socket, requestId, controller);
+}
+
+export async function handleWorkflowCreate(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: WorkflowCreatePayload,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "write", {
+      kind: "workflow",
+      name: payload.name,
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = createWorkflowCreateDeps(ctx.repoDir);
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      workflowCreate(libCtx, deps, { name: payload.name }),
+      {
+        creating: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "workflow.create",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "workflow_create_failed", message);
+  }
+}
+
+export async function handleWorkflowDelete(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: WorkflowDeletePayload,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "write", {
+      kind: "workflow",
+      name: payload.workflowIdOrName,
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = createWorkflowDeleteDeps(ctx.repoDir, ctx.datastoreResolver);
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      workflowDelete(libCtx, deps, {
+        workflowIdOrName: payload.workflowIdOrName,
+      }),
+      {
+        deleting: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "workflow.delete",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "workflow_delete_failed", message);
+  }
+}
+
+export async function handleWorkflowEdit(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: WorkflowEditPayload,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "write", {
+      kind: "workflow",
+      name: payload.workflowIdOrName,
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = createWorkflowEditDeps(
+      ctx.repoDir,
+      ctx.repoContext.workflowRepo,
+    );
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      workflowEdit(libCtx, deps, {
+        workflowIdOrName: payload.workflowIdOrName,
+        stdinContent: payload.content,
+      }),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "workflow.edit",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "workflow_edit_failed", message);
+  }
+}
+
+export async function handleWorkflowValidate(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: WorkflowValidatePayload | undefined,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "workflow",
+      name: payload?.workflowIdOrName ?? "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = createWorkflowValidateDeps(
+      ctx.repoContext.workflowRepo,
+      ctx.repoContext.definitionRepo,
+      workflowsDirFor(ctx.repoDir),
+    );
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      workflowValidate(libCtx, deps, {
+        workflowIdOrName: payload?.workflowIdOrName,
+      }),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "workflow.validate",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "workflow_validate_failed", message);
+  }
+}
+
+export async function handleWorkflowEvaluate(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: WorkflowEvaluatePayload | undefined,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "workflow",
+      name: payload?.workflowIdOrName ?? "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = createWorkflowEvaluateDeps(
+      ctx.repoDir,
+      ctx.repoContext.workflowRepo,
+      ctx.datastoreResolver,
+    );
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      workflowEvaluate(libCtx, deps, {
+        workflowIdOrName: payload?.workflowIdOrName,
+        inputs: payload?.inputs ?? {},
+      }),
+      {
+        evaluating: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "workflow.evaluate",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "workflow_evaluate_failed", message);
+  }
 }

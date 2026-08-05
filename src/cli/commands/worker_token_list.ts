@@ -31,49 +31,78 @@ import {
   createWorkerListDeps,
   withDefaults,
   workerTokenList,
+  type WorkerTokenListData,
   type WorkerTokenListEvent,
 } from "../../libswamp/mod.ts";
 import { renderWorkerTokenList } from "../../presentation/output/worker_output.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { WorkerTokenListResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const workerTokenListCommand = new Command()
-  .name("list")
-  .description(
-    "List worker enrollment tokens: state, expiry, and bound instance",
-  )
-  .example("List all tokens", "swamp worker token list")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .action(async function (options: AnyOptions) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "worker",
-      "token",
-      "list",
-    ]);
+export const workerTokenListCommand = withRemoteOptions(
+  new Command()
+    .name("list")
+    .description(
+      "List worker enrollment tokens: state, expiry, and bound instance",
+    )
+    .example("List all tokens", "swamp worker token list")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(async function (options: AnyOptions) {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "worker",
+    "token",
+    "list",
+  ]);
 
-    const { repoContext } = await requireInitializedRepoReadOnly({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
-
-    const libCtx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createWorkerListDeps(repoContext.dataQueryService);
-
-    await consumeStream(
-      workerTokenList(libCtx, deps),
-      withDefaults<WorkerTokenListEvent>({
-        completed: (event) => {
-          renderWorkerTokenList(event.data, cliCtx.outputMode);
-        },
-        error: (event) => {
-          throw new UserError(event.error.message);
-        },
-      }),
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
     );
+    const response = await requestServerResponse<WorkerTokenListResponse>(
+      { server, token },
+      {
+        type: "worker.token.list",
+        payload: {},
+      },
+    );
+    renderWorkerTokenList(
+      response.data as unknown as WorkerTokenListData,
+      cliCtx.outputMode,
+    );
+    return;
+  }
 
-    cliCtx.logger.debug("Worker token list command completed");
+  const { repoContext } = await requireInitializedRepoReadOnly({
+    repoDir: resolveRepoDir(options.repoDir),
+    outputMode: cliCtx.outputMode,
   });
+
+  const libCtx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = createWorkerListDeps(repoContext.dataQueryService);
+
+  await consumeStream(
+    workerTokenList(libCtx, deps),
+    withDefaults<WorkerTokenListEvent>({
+      completed: (event) => {
+        renderWorkerTokenList(event.data, cliCtx.outputMode);
+      },
+      error: (event) => {
+        throw new UserError(event.error.message);
+      },
+    }),
+  );
+
+  cliCtx.logger.debug("Worker token list command completed");
+});

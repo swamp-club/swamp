@@ -39,100 +39,128 @@ import {
   type WorkerTokenRevokeEvent,
 } from "../../libswamp/mod.ts";
 import { renderWorkerTokenRevoke } from "../../presentation/output/worker_output.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { WorkerTokenRevokeResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const workerTokenRevokeCommand = new Command()
-  .name("revoke")
-  .description("Invalidate a worker enrollment token before it expires")
-  .example("Revoke a token", "swamp worker token revoke ci-runner-3")
-  .arguments("<name:string>")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .action(async function (options: AnyOptions, name: string) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "worker",
-      "token",
-      "revoke",
-    ]);
+export const workerTokenRevokeCommand = withRemoteOptions(
+  new Command()
+    .name("revoke")
+    .description("Invalidate a worker enrollment token before it expires")
+    .example("Revoke a token", "swamp worker token revoke ci-runner-3")
+    .arguments("<name:string>")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(async function (options: AnyOptions, name: string) {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "worker",
+    "token",
+    "revoke",
+  ]);
 
-    const { repoDir, repoContext, datastoreConfig, syncService } =
-      await requireInitializedRepoUnlocked({
-        repoDir: resolveRepoDir(options.repoDir),
-        outputMode: cliCtx.outputMode,
-      });
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<WorkerTokenRevokeResponse>(
+      { server, token },
+      {
+        type: "worker.token.revoke",
+        payload: { name },
+      },
+    );
+    renderWorkerTokenRevoke(
+      response.data as unknown as WorkerTokenRevokeData,
+      cliCtx.outputMode,
+    );
+    return;
+  }
 
-    cliCtx.logger.debug`Revoking enrollment token ${name}`;
+  const { repoDir, repoContext, datastoreConfig, syncService } =
+    await requireInitializedRepoUnlocked({
+      repoDir: resolveRepoDir(options.repoDir),
+      outputMode: cliCtx.outputMode,
+    });
 
-    const libCtx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = await createWorkerTokenRevokeDeps(
-      libCtx,
+  cliCtx.logger.debug`Revoking enrollment token ${name}`;
+
+  const libCtx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = await createWorkerTokenRevokeDeps(
+    libCtx,
+    repoDir,
+    repoContext,
+  );
+
+  // Per-model lock around the state transition — mirrors
+  // `swamp model method run`.
+  const preResult = await findDefinitionByIdOrName(
+    repoContext.definitionRepo,
+    name,
+  );
+  let flushModelLocks: (() => Promise<void>) | null = null;
+  if (preResult) {
+    const lockResult = await acquireModelLocks(
+      datastoreConfig,
+      [
+        {
+          modelType: preResult.type.normalized,
+          modelId: preResult.definition.id,
+        },
+      ],
       repoDir,
-      repoContext,
+      syncService,
+      repoContext.catalogStore,
     );
+    if (lockResult.synced) repoContext.catalogStore.invalidate();
+    flushModelLocks = lockResult.flush;
+  }
 
-    // Per-model lock around the state transition — mirrors
-    // `swamp model method run`.
-    const preResult = await findDefinitionByIdOrName(
-      repoContext.definitionRepo,
-      name,
+  try {
+    let data: WorkerTokenRevokeData | undefined;
+    await consumeStream(
+      workerTokenRevoke(libCtx, deps, { name }),
+      withDefaults<WorkerTokenRevokeEvent>({
+        completed: (event) => {
+          data = event.data;
+        },
+        error: (event) => {
+          throw new UserError(event.error.message);
+        },
+      }),
     );
-    let flushModelLocks: (() => Promise<void>) | null = null;
-    if (preResult) {
-      const lockResult = await acquireModelLocks(
-        datastoreConfig,
-        [
-          {
-            modelType: preResult.type.normalized,
-            modelId: preResult.definition.id,
-          },
-        ],
-        repoDir,
-        syncService,
-        repoContext.catalogStore,
+    if (data === undefined) {
+      throw new UserError(
+        `Revoking token '${name}' ended without completing`,
       );
-      if (lockResult.synced) repoContext.catalogStore.invalidate();
-      flushModelLocks = lockResult.flush;
     }
-
-    try {
-      let data: WorkerTokenRevokeData | undefined;
-      await consumeStream(
-        workerTokenRevoke(libCtx, deps, { name }),
-        withDefaults<WorkerTokenRevokeEvent>({
-          completed: (event) => {
-            data = event.data;
+    renderWorkerTokenRevoke(data, cliCtx.outputMode);
+  } finally {
+    if (flushModelLocks) {
+      try {
+        await flushModelLocks();
+      } catch (releaseError) {
+        cliCtx.logger.warn(
+          "Failed to release locks during cleanup: {error}",
+          {
+            error: releaseError instanceof Error
+              ? releaseError.message
+              : String(releaseError),
           },
-          error: (event) => {
-            throw new UserError(event.error.message);
-          },
-        }),
-      );
-      if (data === undefined) {
-        throw new UserError(
-          `Revoking token '${name}' ended without completing`,
         );
       }
-      renderWorkerTokenRevoke(data, cliCtx.outputMode);
-    } finally {
-      if (flushModelLocks) {
-        try {
-          await flushModelLocks();
-        } catch (releaseError) {
-          cliCtx.logger.warn(
-            "Failed to release locks during cleanup: {error}",
-            {
-              error: releaseError instanceof Error
-                ? releaseError.message
-                : String(releaseError),
-            },
-          );
-        }
-      }
     }
+  }
 
-    cliCtx.logger.debug("Worker token revoke command completed");
-  });
+  cliCtx.logger.debug("Worker token revoke command completed");
+});

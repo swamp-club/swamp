@@ -438,6 +438,127 @@ export interface VaultMigratePayload {
   targetConfig?: Record<string, unknown>;
 }
 
+// ── Access token operations ──────────────────────────────────────────
+
+export type AccessTokenListPayload = Record<string, never>;
+
+export interface AccessTokenRevokePayload {
+  name: string;
+}
+
+export interface AccessTokenRotatePayload {
+  name: string;
+  durationMs?: number;
+  vaultName?: string;
+}
+
+// ── Model edit / type operations ────────────────────────────────────
+
+export interface ModelEditPayload {
+  modelIdOrName: string;
+  content?: string;
+}
+
+export interface ModelTypeDescribePayload {
+  typeArg: string;
+}
+
+export interface ModelTypeSearchPayload {
+  query?: string;
+}
+
+// ── Workflow CRUD operations ────────────────────────────────────────
+
+export interface WorkflowCreatePayload {
+  name: string;
+}
+
+export interface WorkflowDeletePayload {
+  workflowIdOrName: string;
+}
+
+export interface WorkflowEditPayload {
+  workflowIdOrName: string;
+  content?: string;
+}
+
+export interface WorkflowValidatePayload {
+  workflowIdOrName?: string;
+}
+
+export interface WorkflowEvaluatePayload {
+  workflowIdOrName?: string;
+  inputs?: Record<string, unknown>;
+}
+
+// ── Vault CRUD / audit operations ───────────────────────────────────
+
+export interface VaultCreatePayload {
+  vaultType: string;
+  name: string;
+  config?: Record<string, unknown>;
+  auditReads?: boolean;
+}
+
+export interface VaultEditPayload {
+  vaultNameOrId: string;
+  vaultType?: string;
+}
+
+export interface VaultAuditTrailPayload {
+  vaultName?: string;
+  secretKey?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+}
+
+export interface VaultReadSecretPayload {
+  vaultName: string;
+  secretKey: string;
+}
+
+export interface VaultTypeSearchPayload {
+  query?: string;
+}
+
+// ── Worker token operations ─────────────────────────────────────────
+
+export interface WorkerTokenCreatePayload {
+  name: string;
+  durationMs: number;
+  vaultName?: string;
+  maxEnrollments?: number | "unlimited";
+}
+
+export interface WorkerTokenListPayload {
+  showAll?: boolean;
+}
+
+export interface WorkerTokenRevokePayload {
+  name: string;
+}
+
+// ── Data / run housekeeping ─────────────────────────────────────────
+
+export interface DataGcPayload {
+  dryRun?: boolean;
+}
+
+export interface DataPrunePayload {
+  dryRun?: boolean;
+}
+
+export interface RunGcPayload {
+  dryRun?: boolean;
+  workflowRunRetentionDays?: number;
+  outputRetentionDays?: number;
+}
+
+// ── Datastore namespace ─────────────────────────────────────────────
+
+export type DatastoreNamespaceListPayload = Record<string, never>;
+
 // ── Doctor operations ────────────────────────────────────────────────
 
 export type DoctorVaultsPayload = Record<string, never>;
@@ -633,7 +754,82 @@ export type ServerRequest =
     payload?: RunDoctorPayload;
   }
   | { type: "run.attach"; id: string; payload: RunAttachPayload }
-  | { type: "cancel"; id: string };
+  | { type: "cancel"; id: string }
+  | {
+    type: "access.token.list";
+    id: string;
+    payload?: AccessTokenListPayload;
+  }
+  | {
+    type: "access.token.revoke";
+    id: string;
+    payload: AccessTokenRevokePayload;
+  }
+  | {
+    type: "access.token.rotate";
+    id: string;
+    payload: AccessTokenRotatePayload;
+  }
+  | { type: "model.edit"; id: string; payload: ModelEditPayload }
+  | {
+    type: "model.type.describe";
+    id: string;
+    payload: ModelTypeDescribePayload;
+  }
+  | {
+    type: "model.type.search";
+    id: string;
+    payload?: ModelTypeSearchPayload;
+  }
+  | { type: "workflow.create"; id: string; payload: WorkflowCreatePayload }
+  | { type: "workflow.delete"; id: string; payload: WorkflowDeletePayload }
+  | { type: "workflow.edit"; id: string; payload: WorkflowEditPayload }
+  | {
+    type: "workflow.validate";
+    id: string;
+    payload?: WorkflowValidatePayload;
+  }
+  | {
+    type: "workflow.evaluate";
+    id: string;
+    payload?: WorkflowEvaluatePayload;
+  }
+  | { type: "vault.create"; id: string; payload: VaultCreatePayload }
+  | { type: "vault.edit"; id: string; payload: VaultEditPayload }
+  | {
+    type: "vault.audit-trail";
+    id: string;
+    payload?: VaultAuditTrailPayload;
+  }
+  | { type: "vault.read-secret"; id: string; payload: VaultReadSecretPayload }
+  | {
+    type: "vault.type.search";
+    id: string;
+    payload?: VaultTypeSearchPayload;
+  }
+  | {
+    type: "worker.token.create";
+    id: string;
+    payload: WorkerTokenCreatePayload;
+  }
+  | {
+    type: "worker.token.list";
+    id: string;
+    payload?: WorkerTokenListPayload;
+  }
+  | {
+    type: "worker.token.revoke";
+    id: string;
+    payload: WorkerTokenRevokePayload;
+  }
+  | { type: "data.gc"; id: string; payload?: DataGcPayload }
+  | { type: "data.prune"; id: string; payload?: DataPrunePayload }
+  | { type: "run.gc"; id: string; payload?: RunGcPayload }
+  | {
+    type: "datastore.namespace.list";
+    id: string;
+    payload?: DatastoreNamespaceListPayload;
+  };
 
 // ── Outbound (server → client) ───────────────────────────────────────────
 
@@ -981,6 +1177,98 @@ export interface DoctorExtensionsResponse {
   data: Record<string, unknown>;
 }
 
+export interface AccessTokenListResponse {
+  data: Record<string, unknown>;
+}
+
+export interface AccessTokenRevokeResponse {
+  data: Record<string, unknown>;
+}
+
+export interface AccessTokenRotateResponse {
+  data: Record<string, unknown>;
+}
+
+export interface ModelEditResponse {
+  data: Record<string, unknown>;
+}
+
+export interface ModelTypeDescribeResponse {
+  data: Record<string, unknown>;
+}
+
+export interface ModelTypeSearchResponse {
+  data: Record<string, unknown>;
+}
+
+export interface WorkflowCreateResponse {
+  data: Record<string, unknown>;
+}
+
+export interface WorkflowDeleteResponse {
+  data: Record<string, unknown>;
+}
+
+export interface WorkflowEditResponse {
+  data: Record<string, unknown>;
+}
+
+export interface WorkflowValidateResponse {
+  data: Record<string, unknown>;
+}
+
+export interface WorkflowEvaluateResponse {
+  data: Record<string, unknown>;
+}
+
+export interface VaultCreateResponse {
+  data: Record<string, unknown>;
+}
+
+export interface VaultEditResponse {
+  data: Record<string, unknown>;
+}
+
+export interface VaultAuditTrailResponse {
+  data: Record<string, unknown>;
+}
+
+export interface VaultReadSecretResponse {
+  data: Record<string, unknown>;
+}
+
+export interface VaultTypeSearchResponse {
+  data: Record<string, unknown>;
+}
+
+export interface WorkerTokenCreateResponse {
+  data: Record<string, unknown>;
+}
+
+export interface WorkerTokenListResponse {
+  data: Record<string, unknown>;
+}
+
+export interface WorkerTokenRevokeResponse {
+  data: Record<string, unknown>;
+}
+
+export interface DataGcResponse {
+  data: Record<string, unknown>;
+}
+
+export interface DataPruneResponse {
+  data: Record<string, unknown>;
+}
+
+export interface RunGcResponse {
+  data: Record<string, unknown>;
+}
+
+export interface DatastoreNamespaceListResponse {
+  data: Record<string, unknown>;
+}
+
 export interface RunHistoryPayload {
   active?: boolean;
   all?: boolean;
@@ -1189,4 +1477,83 @@ export type ServerMessage =
     type: "run.interrupted";
     id: string;
     payload: { runId: string; instanceId: string; reason: "instance_dead" };
+  }
+  | {
+    type: "access.token.list";
+    id: string;
+    payload: AccessTokenListResponse;
+  }
+  | {
+    type: "access.token.revoke";
+    id: string;
+    payload: AccessTokenRevokeResponse;
+  }
+  | {
+    type: "access.token.rotate";
+    id: string;
+    payload: AccessTokenRotateResponse;
+  }
+  | { type: "model.edit"; id: string; payload: ModelEditResponse }
+  | {
+    type: "model.type.describe";
+    id: string;
+    payload: ModelTypeDescribeResponse;
+  }
+  | {
+    type: "model.type.search";
+    id: string;
+    payload: ModelTypeSearchResponse;
+  }
+  | { type: "workflow.create"; id: string; payload: WorkflowCreateResponse }
+  | { type: "workflow.delete"; id: string; payload: WorkflowDeleteResponse }
+  | { type: "workflow.edit"; id: string; payload: WorkflowEditResponse }
+  | {
+    type: "workflow.validate";
+    id: string;
+    payload: WorkflowValidateResponse;
+  }
+  | {
+    type: "workflow.evaluate";
+    id: string;
+    payload: WorkflowEvaluateResponse;
+  }
+  | { type: "vault.create"; id: string; payload: VaultCreateResponse }
+  | { type: "vault.edit"; id: string; payload: VaultEditResponse }
+  | {
+    type: "vault.audit-trail";
+    id: string;
+    payload: VaultAuditTrailResponse;
+  }
+  | {
+    type: "vault.read-secret";
+    id: string;
+    payload: VaultReadSecretResponse;
+  }
+  | {
+    type: "vault.type.search";
+    id: string;
+    payload: VaultTypeSearchResponse;
+  }
+  | {
+    type: "worker.token.create";
+    id: string;
+    payload: WorkerTokenCreateResponse;
+  }
+  | {
+    type: "worker.token.list";
+    id: string;
+    payload: WorkerTokenListResponse;
+  }
+  | {
+    type: "worker.token.revoke";
+    id: string;
+    payload: WorkerTokenRevokeResponse;
+  }
+  | { type: "data.gc"; id: string; payload: DataGcResponse }
+  | { type: "data.prune"; id: string; payload: DataPruneResponse }
+  | { type: "run.gc"; id: string; payload: RunGcResponse }
+  | {
+    type: "datastore.namespace.list";
+    id: string;
+    payload: DatastoreNamespaceListResponse;
   };

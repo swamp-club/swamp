@@ -23,6 +23,7 @@ import {
   createDataPruneDeps,
   createLibSwampContext,
   dataPrune,
+  type DataPruneData,
   dataPrunePreview,
 } from "../../libswamp/mod.ts";
 import {
@@ -40,77 +41,106 @@ import {
   requireInitializedRepoReadOnly,
 } from "../repo_context.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { DataPruneResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const dataPruneCommand = new Command()
-  .name("prune")
-  .description(
-    "Reclaim orphaned data whose owning model definition no longer exists.\n" +
-      "Unlike `data gc` (which enforces each model's declared lifetime and\n" +
-      "version-cap), prune removes data left behind when a model definition is\n" +
-      "deleted or migrated away. Deletion is irreversible; use --dry-run first.",
-  )
-  .example(
-    "Preview orphaned data that would be reclaimed",
-    "swamp data prune --dry-run",
-  )
-  .example("Reclaim orphaned data", "swamp data prune --force")
-  .example(
-    "Run non-interactively in JSON mode (no prompt, structured output)",
-    "swamp data prune --json",
-  )
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option("--dry-run", "Show what would be reclaimed without deleting")
-  .option("-y, --yes", "Skip confirmation prompt")
-  .option("-f, --force", "Skip confirmation prompt (alias for --yes)")
-  .action(async function (options: AnyOptions) {
-    const cliCtx = createContext(options as GlobalOptions, ["data", "prune"]);
+export const dataPruneCommand = withRemoteOptions(
+  new Command()
+    .name("prune")
+    .description(
+      "Reclaim orphaned data whose owning model definition no longer exists.\n" +
+        "Unlike `data gc` (which enforces each model's declared lifetime and\n" +
+        "version-cap), prune removes data left behind when a model definition is\n" +
+        "deleted or migrated away. Deletion is irreversible; use --dry-run first.",
+    )
+    .example(
+      "Preview orphaned data that would be reclaimed",
+      "swamp data prune --dry-run",
+    )
+    .example("Reclaim orphaned data", "swamp data prune --force")
+    .example(
+      "Run non-interactively in JSON mode (no prompt, structured output)",
+      "swamp data prune --json",
+    )
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option("--dry-run", "Show what would be reclaimed without deleting")
+    .option("-y, --yes", "Skip confirmation prompt")
+    .option("-f, --force", "Skip confirmation prompt (alias for --yes)"),
+).action(async function (options: AnyOptions) {
+  const cliCtx = createContext(options as GlobalOptions, ["data", "prune"]);
 
-    const repoOpts = {
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    };
-    const { repoDir, repoContext, datastoreResolver } = options.dryRun
-      ? await requireInitializedRepoReadOnly(repoOpts)
-      : await requireInitializedRepo(repoOpts);
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createDataPruneDeps(
-      repoDir,
-      datastoreResolver,
-      repoContext.unifiedDataRepo,
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
     );
+    const response = await requestServerResponse<DataPruneResponse>(
+      { server, token },
+      {
+        type: "data.prune",
+        payload: { dryRun: !!options.dryRun },
+      },
+    );
+    const renderer = createDataPruneRenderer(cliCtx.outputMode);
+    renderer.handlers().completed({
+      kind: "completed",
+      data: response.data as unknown as DataPruneData,
+    });
+    return;
+  }
 
-    // Phase 1: Preview + Prompt (only in interactive mode without --force and not dry-run)
-    if (
-      cliCtx.outputMode === "log" && !options.yes && !options.force &&
-      !options.dryRun
-    ) {
-      const preview = await dataPrunePreview(ctx, deps);
-      if (preview.items.length === 0) {
-        console.log("No orphaned data to reclaim.");
-        return;
-      }
+  const repoOpts = {
+    repoDir: resolveRepoDir(options.repoDir),
+    outputMode: cliCtx.outputMode,
+  };
+  const { repoDir, repoContext, datastoreResolver } = options.dryRun
+    ? await requireInitializedRepoReadOnly(repoOpts)
+    : await requireInitializedRepo(repoOpts);
 
-      renderDataPrunePreview(preview, cliCtx.outputMode);
-      const confirmed = await promptConfirmation(
-        "Reclaim this orphaned data?",
-      );
-      if (!confirmed) {
-        renderDataPruneCancelled(cliCtx.outputMode);
-        return;
-      }
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = createDataPruneDeps(
+    repoDir,
+    datastoreResolver,
+    repoContext.unifiedDataRepo,
+  );
+
+  // Phase 1: Preview + Prompt (only in interactive mode without --force and not dry-run)
+  if (
+    cliCtx.outputMode === "log" && !options.yes && !options.force &&
+    !options.dryRun
+  ) {
+    const preview = await dataPrunePreview(ctx, deps);
+    if (preview.items.length === 0) {
+      console.log("No orphaned data to reclaim.");
+      return;
     }
 
-    // Phase 2: Execute prune
-    const renderer = createDataPruneRenderer(cliCtx.outputMode);
-    await consumeStream(
-      dataPrune(ctx, deps, { dryRun: !!options.dryRun }),
-      renderer.handlers(),
+    renderDataPrunePreview(preview, cliCtx.outputMode);
+    const confirmed = await promptConfirmation(
+      "Reclaim this orphaned data?",
     );
-  });
+    if (!confirmed) {
+      renderDataPruneCancelled(cliCtx.outputMode);
+      return;
+    }
+  }
+
+  // Phase 2: Execute prune
+  const renderer = createDataPruneRenderer(cliCtx.outputMode);
+  await consumeStream(
+    dataPrune(ctx, deps, { dryRun: !!options.dryRun }),
+    renderer.handlers(),
+  );
+});

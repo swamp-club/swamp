@@ -25,6 +25,7 @@ import {
   DEFAULT_WORKFLOW_RUN_RETENTION_DAYS,
   parseDuration,
   runGc,
+  type RunGcData,
   runGcPreview,
 } from "../../libswamp/mod.ts";
 import {
@@ -42,88 +43,121 @@ import {
   requireInitializedRepoReadOnly,
 } from "../repo_context.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { RunGcResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const runGcCommand = new Command()
-  .name("gc")
-  .description(
-    "Garbage-collect old workflow runs and model method outputs. Running and suspended runs are never deleted regardless of age.",
-  )
-  .example("Preview what would be collected", "swamp run gc --dry-run")
-  .example("Run GC with default 30-day retention", "swamp run gc --force")
-  .example("Delete runs older than 7 days", "swamp run gc --older-than 7d")
-  .example(
-    "Run non-interactively in JSON mode (no prompt, structured output)",
-    "swamp run gc --json --older-than 14d",
-  )
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option("--dry-run", "Show what would be deleted without deleting")
-  .option("-y, --yes", "Skip confirmation prompt")
-  .option("-f, --force", "Skip confirmation prompt (alias for --yes)")
-  .option(
-    "--older-than <duration:string>",
-    `Retention period. Units: m=minutes, h=hours, d=days, w=weeks, mo=months, y=years (e.g. 7d, 2w, 1mo). Default: ${DEFAULT_WORKFLOW_RUN_RETENTION_DAYS}d`,
-  )
-  .action(async function (options: AnyOptions) {
-    const cliCtx = createContext(options as GlobalOptions, ["run", "gc"]);
+export const runGcCommand = withRemoteOptions(
+  new Command()
+    .name("gc")
+    .description(
+      "Garbage-collect old workflow runs and model method outputs. Running and suspended runs are never deleted regardless of age.",
+    )
+    .example("Preview what would be collected", "swamp run gc --dry-run")
+    .example("Run GC with default 30-day retention", "swamp run gc --force")
+    .example("Delete runs older than 7 days", "swamp run gc --older-than 7d")
+    .example(
+      "Run non-interactively in JSON mode (no prompt, structured output)",
+      "swamp run gc --json --older-than 14d",
+    )
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option("--dry-run", "Show what would be deleted without deleting")
+    .option("-y, --yes", "Skip confirmation prompt")
+    .option("-f, --force", "Skip confirmation prompt (alias for --yes)")
+    .option(
+      "--older-than <duration:string>",
+      `Retention period. Units: m=minutes, h=hours, d=days, w=weeks, mo=months, y=years (e.g. 7d, 2w, 1mo). Default: ${DEFAULT_WORKFLOW_RUN_RETENTION_DAYS}d`,
+    ),
+).action(async function (options: AnyOptions) {
+  const cliCtx = createContext(options as GlobalOptions, ["run", "gc"]);
 
-    const repoOpts = {
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    };
-    const { repoDir, repoContext, datastoreResolver } = options.dryRun
-      ? await requireInitializedRepoReadOnly(repoOpts)
-      : await requireInitializedRepo(repoOpts);
+  let retentionDays = DEFAULT_WORKFLOW_RUN_RETENTION_DAYS;
+  if (options.olderThan) {
+    const ms = parseDuration(options.olderThan);
+    retentionDays = ms / (24 * 60 * 60 * 1000);
+  }
 
-    let retentionDays = DEFAULT_WORKFLOW_RUN_RETENTION_DAYS;
-    if (options.olderThan) {
-      const ms = parseDuration(options.olderThan);
-      retentionDays = ms / (24 * 60 * 60 * 1000);
-    }
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createRunGcDeps(
-      repoDir,
-      datastoreResolver,
-      repoContext.markDirty,
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
     );
-
-    const gcInput = {
-      dryRun: !!options.dryRun,
-      workflowRunRetentionDays: retentionDays,
-      outputRetentionDays: retentionDays,
-    };
-
-    if (
-      cliCtx.outputMode === "log" && !options.yes && !options.force &&
-      !options.dryRun
-    ) {
-      const preview = await runGcPreview(ctx, deps, gcInput);
-      if (
-        preview.workflowRunsToDelete === 0 && preview.outputsToDelete === 0
-      ) {
-        cliCtx.logger.info("Nothing to clean up.");
-        return;
-      }
-
-      renderRunGcPreview(preview, cliCtx.outputMode);
-      const confirmed = await promptConfirmation(
-        "Proceed with run garbage collection?",
-      );
-      if (!confirmed) {
-        renderRunGcCancelled(cliCtx.outputMode);
-        return;
-      }
-    }
-
+    const response = await requestServerResponse<RunGcResponse>(
+      { server, token },
+      {
+        type: "run.gc",
+        payload: {
+          dryRun: !!options.dryRun,
+          workflowRunRetentionDays: retentionDays,
+          outputRetentionDays: retentionDays,
+        },
+      },
+    );
     const renderer = createRunGcRenderer(cliCtx.outputMode);
-    await consumeStream(
-      runGc(ctx, deps, gcInput),
-      renderer.handlers(),
+    renderer.handlers().completed({
+      kind: "completed",
+      data: response.data as unknown as RunGcData,
+    });
+    return;
+  }
+
+  const repoOpts = {
+    repoDir: resolveRepoDir(options.repoDir),
+    outputMode: cliCtx.outputMode,
+  };
+  const { repoDir, repoContext, datastoreResolver } = options.dryRun
+    ? await requireInitializedRepoReadOnly(repoOpts)
+    : await requireInitializedRepo(repoOpts);
+
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = createRunGcDeps(
+    repoDir,
+    datastoreResolver,
+    repoContext.markDirty,
+  );
+
+  const gcInput = {
+    dryRun: !!options.dryRun,
+    workflowRunRetentionDays: retentionDays,
+    outputRetentionDays: retentionDays,
+  };
+
+  if (
+    cliCtx.outputMode === "log" && !options.yes && !options.force &&
+    !options.dryRun
+  ) {
+    const preview = await runGcPreview(ctx, deps, gcInput);
+    if (
+      preview.workflowRunsToDelete === 0 && preview.outputsToDelete === 0
+    ) {
+      cliCtx.logger.info("Nothing to clean up.");
+      return;
+    }
+
+    renderRunGcPreview(preview, cliCtx.outputMode);
+    const confirmed = await promptConfirmation(
+      "Proceed with run garbage collection?",
     );
-  });
+    if (!confirmed) {
+      renderRunGcCancelled(cliCtx.outputMode);
+      return;
+    }
+  }
+
+  const renderer = createRunGcRenderer(cliCtx.outputMode);
+  await consumeStream(
+    runGc(ctx, deps, gcInput),
+    renderer.handlers(),
+  );
+});

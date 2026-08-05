@@ -22,6 +22,7 @@ import {
   consumeStream,
   createLibSwampContext,
   datastoreNamespaceList,
+  type NamespaceListData,
 } from "../../libswamp/mod.ts";
 import {
   createNamespaceListRenderer,
@@ -42,60 +43,94 @@ import {
 } from "../../domain/datastore/datastore_config.ts";
 import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { DatastoreNamespaceListResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const datastoreNamespacesCommand = new Command()
-  .description("List all namespaces in the datastore")
-  .example("List namespaces", "swamp datastore namespace list")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .action(async function (options: AnyOptions) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "datastore",
-      "namespaces",
-    ]);
-    cliCtx.logger.debug("Executing datastore namespaces command");
+export const datastoreNamespacesCommand = withRemoteOptions(
+  new Command()
+    .description("List all namespaces in the datastore")
+    .example("List namespaces", "swamp datastore namespace list")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(async function (options: AnyOptions) {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "datastore",
+    "namespaces",
+  ]);
+  cliCtx.logger.debug("Executing datastore namespaces command");
 
-    const repoDir = resolveRepoDir(options.repoDir);
-    const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
-    const dsBasePath = datastoreBasePath(datastoreConfig);
-
-    let listProvider: DatastoreProvider | undefined;
-    if (isCustomDatastoreConfig(datastoreConfig)) {
-      await datastoreTypeRegistry.ensureLoaded();
-      await datastoreTypeRegistry.ensureTypeLoaded(datastoreConfig.type);
-      const typeInfo = datastoreTypeRegistry.get(datastoreConfig.type);
-      listProvider = typeInfo?.createProvider?.(datastoreConfig.config);
-    }
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = {
-      getCurrentNamespace: () => datastoreConfig.namespace,
-      listNamespaces: async () => {
-        if (listProvider?.listNamespaces) {
-          const slugs = await listProvider.listNamespaces(
-            (datastoreConfig as CustomDatastoreConfig).datastorePath,
-          );
-          return slugs.map((ns) => ({
-            namespace: ns,
-            repoId: "",
-            registeredAt: "",
-          }));
-        }
-        return await listNamespaceManifests(dsBasePath);
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<
+      DatastoreNamespaceListResponse
+    >(
+      { server, token },
+      {
+        type: "datastore.namespace.list",
+        payload: {},
       },
-    };
-
+    );
     const renderer = createNamespaceListRenderer(
       cliCtx.outputMode,
       cliCtx.verbosity,
     );
-    await consumeStream(
-      datastoreNamespaceList(ctx, deps),
-      renderer.handlers(),
-    );
-  });
+    renderer.handlers().completed({
+      kind: "completed",
+      data: response.data as unknown as NamespaceListData,
+    });
+    return;
+  }
+
+  const repoDir = resolveRepoDir(options.repoDir);
+  const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
+  const dsBasePath = datastoreBasePath(datastoreConfig);
+
+  let listProvider: DatastoreProvider | undefined;
+  if (isCustomDatastoreConfig(datastoreConfig)) {
+    await datastoreTypeRegistry.ensureLoaded();
+    await datastoreTypeRegistry.ensureTypeLoaded(datastoreConfig.type);
+    const typeInfo = datastoreTypeRegistry.get(datastoreConfig.type);
+    listProvider = typeInfo?.createProvider?.(datastoreConfig.config);
+  }
+
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = {
+    getCurrentNamespace: () => datastoreConfig.namespace,
+    listNamespaces: async () => {
+      if (listProvider?.listNamespaces) {
+        const slugs = await listProvider.listNamespaces(
+          (datastoreConfig as CustomDatastoreConfig).datastorePath,
+        );
+        return slugs.map((ns) => ({
+          namespace: ns,
+          repoId: "",
+          registeredAt: "",
+        }));
+      }
+      return await listNamespaceManifests(dsBasePath);
+    },
+  };
+
+  const renderer = createNamespaceListRenderer(
+    cliCtx.outputMode,
+    cliCtx.verbosity,
+  );
+  await consumeStream(
+    datastoreNamespaceList(ctx, deps),
+    renderer.handlers(),
+  );
+});

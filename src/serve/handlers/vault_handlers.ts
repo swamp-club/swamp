@@ -25,36 +25,53 @@ import {
   consumeStream,
   createLibSwampContext,
   createVaultAnnotateDeps,
+  createVaultAuditTrailDeps,
+  createVaultCreateDeps,
   createVaultDeleteDeps,
   createVaultDescribeDeps,
+  createVaultEditDeps,
   createVaultGetDeps,
   createVaultInspectDeps,
   createVaultListKeysDeps,
   createVaultPutDeps,
+  createVaultReadSecretDeps,
   vaultAnnotate,
+  vaultAuditTrail,
+  vaultCreate,
   vaultDelete,
   vaultDeletePreview,
   vaultDescribe,
+  vaultEdit,
   vaultGet,
   vaultInspect,
   vaultListKeys,
   vaultPut,
   vaultPutPreview,
+  vaultReadSecret,
   vaultSearch,
   type VaultSearchDeps,
+  vaultTypeSearch,
+  type VaultTypeSearchDeps,
 } from "../../libswamp/mod.ts";
 import type {
   VaultAnnotatePayload,
+  VaultAuditTrailPayload,
+  VaultCreatePayload,
   VaultDeletePayload,
   VaultDescribePayload,
+  VaultEditPayload,
   VaultGetPayload,
   VaultInspectPayload,
   VaultListKeysPayload,
   VaultPutPayload,
+  VaultReadSecretPayload,
   VaultSearchPayload,
+  VaultTypeSearchPayload,
 } from "../protocol.ts";
 import { acquireVaultSync } from "../../cli/repo_context.ts";
 import type { Principal } from "../../domain/access/principal.ts";
+import { getVaultTypes } from "../../domain/vaults/vault_types.ts";
+import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import {
   authorizeOrReject,
   type ConnectionContext,
@@ -677,5 +694,281 @@ export async function handleVaultAnnotate(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "vault_annotate_failed", message);
+  }
+}
+
+export async function handleVaultCreate(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: VaultCreatePayload,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "write", {
+      kind: "data",
+      name: payload.name,
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = await createVaultCreateDeps(ctx.repoDir);
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      vaultCreate(libCtx, deps, {
+        vaultType: payload.vaultType,
+        name: payload.name,
+        config: payload.config,
+        repoDir: ctx.repoDir,
+        auditReads: payload.auditReads,
+      }),
+      {
+        creating: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "vault.create",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "vault_create_failed", message);
+  }
+}
+
+export async function handleVaultEdit(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: VaultEditPayload,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "write", {
+      kind: "data",
+      name: payload.vaultNameOrId,
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = createVaultEditDeps(ctx.repoDir);
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      vaultEdit(libCtx, deps, {
+        vaultNameOrId: payload.vaultNameOrId,
+        vaultType: payload.vaultType,
+      }),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "vault.edit",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "vault_edit_failed", message);
+  }
+}
+
+export async function handleVaultAuditTrail(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: VaultAuditTrailPayload | undefined,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "data",
+      name: payload?.vaultName ?? "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = createVaultAuditTrailDeps(ctx.repoDir);
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      vaultAuditTrail(libCtx, deps, {
+        vaultName: payload?.vaultName,
+        secretKey: payload?.secretKey,
+        since: payload?.since ? new Date(payload.since) : undefined,
+        until: payload?.until ? new Date(payload.until) : undefined,
+        limit: payload?.limit,
+      }),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "vault.audit-trail",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "vault_audit_trail_failed", message);
+  }
+}
+
+export async function handleVaultReadSecret(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: VaultReadSecretPayload,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (rejectReservedVault(socket, requestId, payload.vaultName)) return;
+
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "data",
+      name: payload.vaultName,
+      fields: { key: payload.secretKey },
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = createVaultReadSecretDeps(
+      ctx.repoDir,
+      ctx.repoContext.eventBus,
+    );
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      vaultReadSecret(libCtx, deps, {
+        vaultName: payload.vaultName,
+        secretKey: payload.secretKey,
+      }),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "vault.read-secret",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "vault_read_secret_failed", message);
+  }
+}
+
+export async function handleVaultTypeSearch(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  controller: AbortController,
+  principal: Principal | null,
+  payload?: VaultTypeSearchPayload,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "data",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    await vaultTypeRegistry.ensureLoaded();
+    const deps: VaultTypeSearchDeps = {
+      getVaultTypes: () => getVaultTypes(),
+    };
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      vaultTypeSearch(libCtx, deps, { query: payload?.query }),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "vault.type.search",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "vault_type_search_failed", message);
   }
 }

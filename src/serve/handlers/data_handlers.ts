@@ -24,32 +24,42 @@
 import {
   consumeStream,
   createDataDeleteDeps,
+  createDataGcDeps,
   createDataGetDeps,
   createDataListDeps,
+  createDataPruneDeps,
   createDataRenameDeps,
   createDataVersionsDeps,
   createLibSwampContext,
+  createRunGcDeps,
   createSummariseDeps,
   dataDelete,
+  dataGc,
   dataGet,
   dataList,
+  dataPrune,
   dataQuery,
   type DataQueryDeps,
   dataRename,
   dataSearch,
   type DataSearchDeps,
   dataVersions,
+  DEFAULT_WORKFLOW_RUN_RETENTION_DAYS,
   parseDuration,
+  runGc,
   summarise,
 } from "../../libswamp/mod.ts";
 import type {
   DataDeletePayload,
+  DataGcPayload,
   DataGetPayload,
   DataListPayload,
+  DataPrunePayload,
   DataQueryPayload,
   DataRenamePayload,
   DataSearchPayload,
   DataVersionsPayload,
+  RunGcPayload,
   SummarisePayload,
 } from "../protocol.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
@@ -595,5 +605,174 @@ export async function handleSummarise(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "summarise_failed", message);
+  }
+}
+
+export async function handleDataGc(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: DataGcPayload | undefined,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "write", {
+      kind: "data",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = createDataGcDeps(
+      ctx.repoDir,
+      ctx.datastoreResolver,
+      ctx.repoContext.markDirty,
+    );
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      dataGc(libCtx, deps, { dryRun: payload?.dryRun ?? false }),
+      {
+        collecting: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "data.gc",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "data_gc_failed", message);
+  }
+}
+
+export async function handleDataPrune(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: DataPrunePayload | undefined,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "write", {
+      kind: "data",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = createDataPruneDeps(
+      ctx.repoDir,
+      ctx.datastoreResolver,
+      ctx.repoContext.unifiedDataRepo,
+    );
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      dataPrune(libCtx, deps, { dryRun: payload?.dryRun ?? false }),
+      {
+        collecting: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "data.prune",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "data_prune_failed", message);
+  }
+}
+
+export async function handleRunGc(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: RunGcPayload | undefined,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "write", {
+      kind: "data",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = createRunGcDeps(
+      ctx.repoDir,
+      ctx.datastoreResolver,
+      ctx.repoContext.markDirty,
+    );
+
+    const retentionDays = payload?.workflowRunRetentionDays ??
+      DEFAULT_WORKFLOW_RUN_RETENTION_DAYS;
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      runGc(libCtx, deps, {
+        dryRun: payload?.dryRun ?? false,
+        workflowRunRetentionDays: retentionDays,
+        outputRetentionDays: payload?.outputRetentionDays ?? retentionDays,
+      }),
+      {
+        collecting: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "run.gc",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "run_gc_failed", message);
   }
 }

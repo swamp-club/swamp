@@ -23,6 +23,7 @@ import {
   createLibSwampContext,
   createModelEditDeps,
   modelEdit,
+  type ModelEditData,
   modelSearch,
   type ModelSearchDeps,
 } from "../../libswamp/mod.ts";
@@ -36,24 +37,55 @@ import {
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { ModelEditResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const modelEditCommand = new Command()
-  .name("edit")
-  .description("Edit a model definition file")
-  .example("Edit a model", "swamp model edit my-server")
-  .example("Interactive search", "swamp model edit")
-  .arguments("[model_id_or_name:model_name]")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
+export const modelEditCommand = withRemoteOptions(
+  new Command()
+    .name("edit")
+    .description("Edit a model definition file")
+    .example("Edit a model", "swamp model edit my-server")
+    .example("Interactive search", "swamp model edit")
+    .arguments("[model_id_or_name:model_name]")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
-  .action(async function (options: AnyOptions, modelIdOrName?: string) {
+  async function (options: AnyOptions, modelIdOrName?: string) {
     const cliCtx = createContext(options as GlobalOptions, ["model", "edit"]);
     cliCtx.logger.debug`Editing model: ${modelIdOrName ?? "(interactive)"}`;
+
+    const server = resolveServeUrl(options.server as string | undefined);
+    if (server) {
+      const token = await resolveServerToken(
+        server,
+        options.token as string | undefined,
+      );
+      const content = await readStdin();
+      const response = await requestServerResponse<ModelEditResponse>(
+        { server, token },
+        {
+          type: "model.edit",
+          payload: { modelIdOrName, content },
+        },
+      );
+      const renderer = createModelEditRenderer(cliCtx.outputMode);
+      renderer.handlers().completed({
+        kind: "completed",
+        data: response.data as unknown as ModelEditData,
+      });
+      return;
+    }
 
     const { repoContext, repoDir } = await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
@@ -103,4 +135,5 @@ export const modelEditCommand = new Command()
     );
 
     cliCtx.logger.debug("Model edit command completed");
-  });
+  },
+);

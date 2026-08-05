@@ -2612,3 +2612,715 @@ Deno.test("validateServerRequest: workflow.resume accepts request without trace 
   const result = validateServerRequest(input);
   assertEquals(typeof result, "object");
 });
+
+// ── validateServerRequest: new command types (issue #1531) ─────────────
+
+Deno.test("validateServerRequest accepts access.token.list", () => {
+  assertEquals(
+    typeof validateServerRequest({ type: "access.token.list", id: "r1" }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest accepts access.token.revoke", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "access.token.revoke",
+      id: "r1",
+      payload: { name: "my-token" },
+    }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest rejects access.token.revoke without name", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "access.token.revoke",
+      id: "r1",
+      payload: {},
+    }),
+    "string",
+  );
+});
+
+Deno.test("validateServerRequest accepts access.token.rotate", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "access.token.rotate",
+      id: "r1",
+      payload: { name: "my-token", durationMs: 3600000 },
+    }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest accepts access.token.rotate without optional fields", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "access.token.rotate",
+      id: "r1",
+      payload: { name: "my-token" },
+    }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest accepts model.edit", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "model.edit",
+      id: "r1",
+      payload: { modelIdOrName: "test-model", content: "name: test" },
+    }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest rejects model.edit without modelIdOrName", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "model.edit",
+      id: "r1",
+      payload: {},
+    }),
+    "string",
+  );
+});
+
+Deno.test("validateServerRequest accepts model.type.describe", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "model.type.describe",
+      id: "r1",
+      payload: { typeArg: "command/shell" },
+    }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest rejects model.type.describe without typeArg", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "model.type.describe",
+      id: "r1",
+      payload: {},
+    }),
+    "string",
+  );
+});
+
+Deno.test("validateServerRequest accepts model.type.search", () => {
+  assertEquals(
+    typeof validateServerRequest({ type: "model.type.search", id: "r1" }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest accepts model.type.search with query", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "model.type.search",
+      id: "r1",
+      payload: { query: "shell" },
+    }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest accepts workflow.create", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "workflow.create",
+      id: "r1",
+      payload: { name: "deploy" },
+    }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest rejects workflow.create without name", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "workflow.create",
+      id: "r1",
+      payload: {},
+    }),
+    "string",
+  );
+});
+
+Deno.test("validateServerRequest accepts workflow.delete", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "workflow.delete",
+      id: "r1",
+      payload: { workflowIdOrName: "deploy" },
+    }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest accepts workflow.edit", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "workflow.edit",
+      id: "r1",
+      payload: { workflowIdOrName: "deploy", content: "jobs: {}" },
+    }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest accepts workflow.validate", () => {
+  assertEquals(
+    typeof validateServerRequest({ type: "workflow.validate", id: "r1" }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest accepts workflow.validate with workflowIdOrName", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "workflow.validate",
+      id: "r1",
+      payload: { workflowIdOrName: "deploy" },
+    }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest accepts workflow.evaluate", () => {
+  assertEquals(
+    typeof validateServerRequest({ type: "workflow.evaluate", id: "r1" }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest accepts workflow.evaluate with inputs", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "workflow.evaluate",
+      id: "r1",
+      payload: { workflowIdOrName: "deploy", inputs: { env: "prod" } },
+    }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest accepts vault.create", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "vault.create",
+      id: "r1",
+      payload: { vaultType: "local_encryption", name: "my-vault" },
+    }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest rejects vault.create without name", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "vault.create",
+      id: "r1",
+      payload: { vaultType: "local_encryption" },
+    }),
+    "string",
+  );
+});
+
+Deno.test("validateServerRequest accepts vault.edit", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "vault.edit",
+      id: "r1",
+      payload: { vaultNameOrId: "my-vault" },
+    }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest accepts vault.audit-trail", () => {
+  assertEquals(
+    typeof validateServerRequest({ type: "vault.audit-trail", id: "r1" }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest accepts vault.audit-trail with filters", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "vault.audit-trail",
+      id: "r1",
+      payload: { vaultName: "v1", secretKey: "k1", limit: 50 },
+    }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest accepts vault.read-secret", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "vault.read-secret",
+      id: "r1",
+      payload: { vaultName: "my-vault", secretKey: "API_KEY" },
+    }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest rejects vault.read-secret without secretKey", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "vault.read-secret",
+      id: "r1",
+      payload: { vaultName: "my-vault" },
+    }),
+    "string",
+  );
+});
+
+Deno.test("validateServerRequest accepts vault.type.search", () => {
+  assertEquals(
+    typeof validateServerRequest({ type: "vault.type.search", id: "r1" }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest accepts worker.token.create", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "worker.token.create",
+      id: "r1",
+      payload: { name: "wt-1", durationMs: 3600000 },
+    }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest accepts worker.token.create with unlimited enrollments", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "worker.token.create",
+      id: "r1",
+      payload: {
+        name: "wt-1",
+        durationMs: 3600000,
+        maxEnrollments: "unlimited",
+      },
+    }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest rejects worker.token.create without durationMs", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "worker.token.create",
+      id: "r1",
+      payload: { name: "wt-1" },
+    }),
+    "string",
+  );
+});
+
+Deno.test("validateServerRequest accepts worker.token.list", () => {
+  assertEquals(
+    typeof validateServerRequest({ type: "worker.token.list", id: "r1" }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest accepts worker.token.revoke", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "worker.token.revoke",
+      id: "r1",
+      payload: { name: "wt-1" },
+    }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest accepts data.gc", () => {
+  assertEquals(
+    typeof validateServerRequest({ type: "data.gc", id: "r1" }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest accepts data.gc with dryRun", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "data.gc",
+      id: "r1",
+      payload: { dryRun: true },
+    }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest accepts data.prune", () => {
+  assertEquals(
+    typeof validateServerRequest({ type: "data.prune", id: "r1" }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest accepts run.gc", () => {
+  assertEquals(
+    typeof validateServerRequest({ type: "run.gc", id: "r1" }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest accepts run.gc with retention options", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "run.gc",
+      id: "r1",
+      payload: {
+        dryRun: true,
+        workflowRunRetentionDays: 30,
+        outputRetentionDays: 14,
+      },
+    }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest accepts datastore.namespace.list", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "datastore.namespace.list",
+      id: "r1",
+    }),
+    "object",
+  );
+});
+
+// ── Authorization: new command types (issue #1531) ───────────────────────
+
+Deno.test("authorizeOrReject: access.token.list requires admin on access:*", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(modeTokenConfig, []);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({ type: "access.token.list", id: "at-1" })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  assertStringIncludes(
+    String((msg.error as Record<string, unknown>).message),
+    "admin",
+  );
+});
+
+Deno.test("authorizeOrReject: access.token.revoke requires admin on access:*", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(modeTokenConfig, []);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "access.token.revoke",
+      id: "at-2",
+      payload: { name: "tok" },
+    })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+});
+
+Deno.test("authorizeOrReject: worker.token.create requires admin on access:*", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(modeTokenConfig, []);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "worker.token.create",
+      id: "wt-1",
+      payload: { name: "wt", durationMs: 3600000 },
+    })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  assertStringIncludes(
+    String((msg.error as Record<string, unknown>).message),
+    "admin",
+  );
+});
+
+Deno.test("authorizeOrReject: model.edit requires write on model:<name>", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(modeTokenConfig, []);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "model.edit",
+      id: "me-1",
+      payload: { modelIdOrName: "test-model" },
+    })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  assertStringIncludes(
+    String((msg.error as Record<string, unknown>).message),
+    "write",
+  );
+  assertStringIncludes(
+    String((msg.error as Record<string, unknown>).message),
+    "model:test-model",
+  );
+});
+
+Deno.test("authorizeOrReject: workflow.create requires write on workflow:<name>", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(modeTokenConfig, []);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "workflow.create",
+      id: "wc-1",
+      payload: { name: "deploy" },
+    })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  assertStringIncludes(
+    String((msg.error as Record<string, unknown>).message),
+    "write",
+  );
+  assertStringIncludes(
+    String((msg.error as Record<string, unknown>).message),
+    "workflow:deploy",
+  );
+});
+
+Deno.test("authorizeOrReject: vault.read-secret requires read on data:<vault>", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(modeTokenConfig, []);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "vault.read-secret",
+      id: "vrs-1",
+      payload: { vaultName: "prod-vault", secretKey: "API_KEY" },
+    })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  assertStringIncludes(
+    String((msg.error as Record<string, unknown>).message),
+    "read",
+  );
+  assertStringIncludes(
+    String((msg.error as Record<string, unknown>).message),
+    "data:prod-vault",
+  );
+});
+
+Deno.test("authorizeOrReject: data.gc requires write on data:*", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(modeTokenConfig, []);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({ type: "data.gc", id: "dgc-1" })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  assertStringIncludes(
+    String((msg.error as Record<string, unknown>).message),
+    "write",
+  );
+  assertStringIncludes(
+    String((msg.error as Record<string, unknown>).message),
+    "data:*",
+  );
+});
+
+Deno.test("authorizeOrReject: model.type.search requires read on model:*", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(modeTokenConfig, []);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({ type: "model.type.search", id: "mts-1" })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  assertStringIncludes(
+    String((msg.error as Record<string, unknown>).message),
+    "read",
+  );
+  assertStringIncludes(
+    String((msg.error as Record<string, unknown>).message),
+    "model:*",
+  );
+});
+
+Deno.test("authorizeOrReject: admin on access:* allows all new command types", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const adminGrant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    actions: ["admin"],
+    resource: { kind: "access", pattern: "*" },
+  });
+  const ctx = makeCtx(modeTokenConfig, [adminGrant]);
+
+  const newTypes = [
+    { type: "access.token.list", id: "admin-atl" },
+    {
+      type: "access.token.revoke",
+      id: "admin-atr",
+      payload: { name: "tok" },
+    },
+    {
+      type: "access.token.rotate",
+      id: "admin-atro",
+      payload: { name: "tok" },
+    },
+    {
+      type: "model.edit",
+      id: "admin-me",
+      payload: { modelIdOrName: "m" },
+    },
+    {
+      type: "model.type.describe",
+      id: "admin-mtd",
+      payload: { typeArg: "command/shell" },
+    },
+    { type: "model.type.search", id: "admin-mts" },
+    { type: "workflow.create", id: "admin-wc", payload: { name: "wf" } },
+    {
+      type: "workflow.delete",
+      id: "admin-wd",
+      payload: { workflowIdOrName: "wf" },
+    },
+    {
+      type: "workflow.edit",
+      id: "admin-we",
+      payload: { workflowIdOrName: "wf" },
+    },
+    { type: "workflow.validate", id: "admin-wv" },
+    { type: "workflow.evaluate", id: "admin-wev" },
+    {
+      type: "vault.create",
+      id: "admin-vc",
+      payload: { vaultType: "local_encryption", name: "v" },
+    },
+    {
+      type: "vault.edit",
+      id: "admin-ve",
+      payload: { vaultNameOrId: "v" },
+    },
+    { type: "vault.audit-trail", id: "admin-vat" },
+    {
+      type: "vault.read-secret",
+      id: "admin-vrs",
+      payload: { vaultName: "v", secretKey: "k" },
+    },
+    { type: "vault.type.search", id: "admin-vts" },
+    {
+      type: "worker.token.create",
+      id: "admin-wtc",
+      payload: { name: "wt", durationMs: 3600000 },
+    },
+    { type: "worker.token.list", id: "admin-wtl" },
+    {
+      type: "worker.token.revoke",
+      id: "admin-wtr",
+      payload: { name: "wt" },
+    },
+    { type: "data.gc", id: "admin-dgc" },
+    { type: "data.prune", id: "admin-dp" },
+    { type: "run.gc", id: "admin-rgc" },
+    { type: "datastore.namespace.list", id: "admin-dnl" },
+  ];
+
+  for (const msg of newTypes) {
+    handleMessage(
+      mock as unknown as WebSocket,
+      ctx,
+      active,
+      makeEvent(JSON.stringify(msg)),
+      testPrincipal,
+    );
+  }
+
+  const unauthorizedErrors = mock.sent
+    .map((s) => JSON.parse(s))
+    .filter((m) =>
+      m.type === "error" &&
+      (m.error as Record<string, unknown>).code === "unauthorized"
+    );
+  assertEquals(
+    unauthorizedErrors.length,
+    0,
+    "admin superuser should not be denied any new command type",
+  );
+});

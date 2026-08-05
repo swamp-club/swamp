@@ -28,6 +28,8 @@ import type {
   AccessGrantListPayload,
   AccessGroupListPayload,
   AccessReloadFileResult,
+  AccessTokenRevokePayload,
+  AccessTokenRotatePayload,
 } from "../protocol.ts";
 import {
   collectErrors,
@@ -69,6 +71,17 @@ import {
   sendError,
 } from "./shared.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import {
+  consumeStream,
+  createLibSwampContext,
+  createServerTokenListDeps,
+  createServerTokenRevokeDeps,
+  createServerTokenRotateDeps,
+  serverTokenList,
+  serverTokenRevoke,
+  serverTokenRotate,
+  withDefaults,
+} from "../../libswamp/mod.ts";
 
 export async function handleAccessGrantList(
   socket: WebSocket,
@@ -540,5 +553,165 @@ export async function handleAccessReload(
     logger.error`Access policy reload failed (requested by ${who}): ${error}`;
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_reload_failed", message);
+  }
+}
+
+export async function handleAccessTokenList(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = createServerTokenListDeps(
+      ctx.repoContext.dataQueryService,
+    );
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      serverTokenList(libCtx, deps),
+      withDefaults({
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      }),
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "access.token.list",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "access_token_list_failed", message);
+  }
+}
+
+export async function handleAccessTokenRevoke(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: AccessTokenRevokePayload,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = await createServerTokenRevokeDeps(
+      libCtx,
+      ctx.repoDir,
+      ctx.repoContext,
+    );
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      serverTokenRevoke(libCtx, deps, { name: payload.name }),
+      withDefaults({
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      }),
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "access.token.revoke",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "access_token_revoke_failed", message);
+  }
+}
+
+export async function handleAccessTokenRotate(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: AccessTokenRotatePayload,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = await createServerTokenRotateDeps(
+      libCtx,
+      ctx.repoDir,
+      ctx.repoContext,
+    );
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      serverTokenRotate(libCtx, deps, {
+        name: payload.name,
+        durationMs: payload.durationMs,
+        vaultName: payload.vaultName,
+      }),
+      withDefaults({
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      }),
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "access.token.rotate",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "access_token_rotate_failed", message);
   }
 }

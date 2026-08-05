@@ -30,50 +30,76 @@ import {
   createLibSwampContext,
   createServerTokenListDeps,
   serverTokenList,
+  type ServerTokenListData,
   type ServerTokenListEvent,
   withDefaults,
 } from "../../libswamp/mod.ts";
 import { renderServerTokenList } from "../../presentation/output/access_token_output.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { AccessTokenListResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const accessTokenListCommand = new Command()
-  .name("list")
-  .description(
-    "List server tokens: state, principal, expiry, and last use",
-  )
-  .example("List all tokens", "swamp access token list")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .action(async function (options: AnyOptions) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "access",
-      "token",
-      "list",
-    ]);
+export const accessTokenListCommand = withRemoteOptions(
+  new Command()
+    .name("list")
+    .description(
+      "List server tokens: state, principal, expiry, and last use",
+    )
+    .example("List all tokens", "swamp access token list")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(async function (options: AnyOptions) {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "access",
+    "token",
+    "list",
+  ]);
 
-    const { repoContext } = await requireInitializedRepoReadOnly({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
-
-    const libCtx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createServerTokenListDeps(repoContext.dataQueryService);
-
-    await consumeStream(
-      serverTokenList(libCtx, deps),
-      withDefaults<ServerTokenListEvent>({
-        completed: (event) => {
-          renderServerTokenList(event.data, cliCtx.outputMode);
-        },
-        error: (event) => {
-          throw new UserError(event.error.message);
-        },
-      }),
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
     );
+    const response = await requestServerResponse<AccessTokenListResponse>(
+      { server, token },
+      { type: "access.token.list", payload: {} },
+    );
+    renderServerTokenList(
+      response.data as unknown as ServerTokenListData,
+      cliCtx.outputMode,
+    );
+    return;
+  }
 
-    cliCtx.logger.debug("Server token list command completed");
+  const { repoContext } = await requireInitializedRepoReadOnly({
+    repoDir: resolveRepoDir(options.repoDir),
+    outputMode: cliCtx.outputMode,
   });
+
+  const libCtx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = createServerTokenListDeps(repoContext.dataQueryService);
+
+  await consumeStream(
+    serverTokenList(libCtx, deps),
+    withDefaults<ServerTokenListEvent>({
+      completed: (event) => {
+        renderServerTokenList(event.data, cliCtx.outputMode);
+      },
+      error: (event) => {
+        throw new UserError(event.error.message);
+      },
+    }),
+  );
+
+  cliCtx.logger.debug("Server token list command completed");
+});

@@ -23,6 +23,7 @@ import {
   createLibSwampContext,
   createWorkflowCreateDeps,
   workflowCreate,
+  type WorkflowCreateData,
 } from "../../libswamp/mod.ts";
 import { createWorkflowCreateRenderer } from "../../presentation/renderers/workflow_create.ts";
 import {
@@ -31,37 +32,63 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { WorkflowCreateResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const workflowCreateCommand = new Command()
-  .description("Create a new workflow")
-  .example("Create a workflow", "swamp workflow create deploy-pipeline")
-  .arguments("<name:string>")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .action(async function (options: AnyOptions, name: string) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "workflow",
-      "create",
-    ]);
-    cliCtx.logger.debug`Creating workflow: name=${name}`;
+export const workflowCreateCommand = withRemoteOptions(
+  new Command()
+    .description("Create a new workflow")
+    .example("Create a workflow", "swamp workflow create deploy-pipeline")
+    .arguments("<name:string>")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(async function (options: AnyOptions, name: string) {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "workflow",
+    "create",
+  ]);
+  cliCtx.logger.debug`Creating workflow: name=${name}`;
 
-    const { repoDir } = await requireInitializedRepoUnlocked({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createWorkflowCreateDeps(repoDir);
-    const renderer = createWorkflowCreateRenderer(cliCtx.outputMode);
-    await consumeStream(
-      workflowCreate(ctx, deps, { name }),
-      renderer.handlers(),
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
     );
+    const response = await requestServerResponse<WorkflowCreateResponse>(
+      { server, token },
+      { type: "workflow.create", payload: { name } },
+    );
+    const renderer = createWorkflowCreateRenderer(cliCtx.outputMode);
+    renderer.handlers().completed({
+      kind: "completed",
+      data: response.data as unknown as WorkflowCreateData,
+    });
+    return;
+  }
 
-    cliCtx.logger.debug("Workflow create command completed");
+  const { repoDir } = await requireInitializedRepoUnlocked({
+    repoDir: resolveRepoDir(options.repoDir),
+    outputMode: cliCtx.outputMode,
   });
+
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = createWorkflowCreateDeps(repoDir);
+  const renderer = createWorkflowCreateRenderer(cliCtx.outputMode);
+  await consumeStream(
+    workflowCreate(ctx, deps, { name }),
+    renderer.handlers(),
+  );
+
+  cliCtx.logger.debug("Workflow create command completed");
+});
