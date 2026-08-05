@@ -494,6 +494,7 @@ export async function handleAccessReload(
       },
     });
   } catch (error) {
+    logger.error`Access policy reload failed (requested by ${who}): ${error}`;
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_reload_failed", message);
   }

@@ -76,7 +76,7 @@ Deno.test("performServeReload: returns zero count for empty lockfile", async () 
   }
 });
 
-Deno.test("performServeReload: reloading guard resets after completion", async () => {
+Deno.test("performServeReload: resets isReloading flag after failure", async () => {
   assertEquals(isReloading(), false);
   const tmpDir = await Deno.makeTempDir();
   try {

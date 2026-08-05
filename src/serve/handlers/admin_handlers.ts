@@ -1739,6 +1739,7 @@ export async function handleServeReload(
       payload: result,
     });
   } catch (error) {
+    logger.error`Extension reload failed (requested by ${who}): ${error}`;
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "serve_reload_failed", message);
   }
