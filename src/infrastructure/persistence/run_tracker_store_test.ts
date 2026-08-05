@@ -22,6 +22,7 @@ import { join } from "@std/path";
 import { hostname } from "node:os";
 import { ActiveRun } from "../../domain/models/active_run.ts";
 import { type PendingRunEntry, RunTrackerStore } from "./run_tracker_store.ts";
+import { isSensitiveHeader } from "../../serve/webhook.ts";
 
 function makeTempDbPath(): string {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-run-tracker-test-" });
@@ -551,6 +552,57 @@ Deno.test("RunTrackerStore: register stores null initiatedBy for ghost runs", ()
 
     const found = store.findById("ghost-run");
     assertEquals(found?.initiatedBy, null);
+  } finally {
+    store.close();
+  }
+});
+
+// ── scrubPendingRunHeaders tests ─────────────────────────────────────
+
+Deno.test("scrubPendingRunHeaders: strips sensitive headers from pending run payloads", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    const payload = JSON.stringify({
+      headers: {
+        authorization: "Bearer secret",
+        "x-github-event": "push",
+        cookie: "session=abc",
+      },
+    });
+    store.enqueuePendingRun(makePendingRun({ id: "pr-scrub-1", payload }));
+
+    const scrubbed = store.scrubPendingRunHeaders(isSensitiveHeader);
+    assertEquals(scrubbed, 1);
+
+    const found = store.findAllPendingRuns();
+    assertEquals(found.length, 1);
+    const updatedPayload = JSON.parse(found[0].payload!);
+    assertEquals(updatedPayload.headers, { "x-github-event": "push" });
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("scrubPendingRunHeaders: leaves rows with no headers unchanged", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    const payload = JSON.stringify({ body: {} });
+    store.enqueuePendingRun(makePendingRun({ id: "pr-no-headers", payload }));
+
+    const scrubbed = store.scrubPendingRunHeaders(isSensitiveHeader);
+    assertEquals(scrubbed, 0);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("scrubPendingRunHeaders: handles null payload gracefully", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    store.enqueuePendingRun(makePendingRun({ id: "pr-null-payload" }));
+
+    const scrubbed = store.scrubPendingRunHeaders(isSensitiveHeader);
+    assertEquals(scrubbed, 0);
   } finally {
     store.close();
   }
