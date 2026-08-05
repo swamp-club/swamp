@@ -322,6 +322,7 @@ Deno.test("vaultPut: yields warning when annotations not supported and tags prov
   >;
   assertEquals(warning !== undefined, true);
   assertStringIncludes(warning.message, "does not support annotations");
+  assertStringIncludes(warning.message, "labels were ignored");
 });
 
 Deno.test("vaultPut: yields warning but completes when annotation fails", async () => {
@@ -346,7 +347,7 @@ Deno.test("vaultPut: yields warning but completes when annotation fails", async 
     { kind: "warning" }
   >;
   assertEquals(warning !== undefined, true);
-  assertStringIncludes(warning.message, "tagging failed");
+  assertStringIncludes(warning.message, "labeling failed");
 
   const completed = events.find((e) => e.kind === "completed");
   assertEquals(completed !== undefined, true);

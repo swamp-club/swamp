@@ -228,9 +228,9 @@ export async function* vaultPut(
 
       let appliedTags: Record<string, string> | undefined;
       if (input.tags && Object.keys(input.tags).length > 0) {
-        const supportsAnno = await deps.supportsAnnotations(input.vaultName);
-        if (supportsAnno) {
-          try {
+        try {
+          const supportsAnno = await deps.supportsAnnotations(input.vaultName);
+          if (supportsAnno) {
             const existing = await deps.getAnnotation(
               input.vaultName,
               input.key,
@@ -240,21 +240,21 @@ export async function* vaultPut(
               : VaultAnnotation.create({ labels: input.tags });
             await deps.putAnnotation(input.vaultName, input.key, annotation);
             appliedTags = input.tags;
-            ctx.logger.debug`Tags stored as annotations`;
-          } catch (error) {
-            const message = error instanceof Error
-              ? error.message
-              : String(error);
+            ctx.logger.debug`Labels stored as annotations`;
+          } else {
             yield {
               kind: "warning",
-              message: `Secret stored but tagging failed: ${message}`,
+              message:
+                `Vault '${input.vaultName}' does not support annotations — labels were ignored`,
             };
           }
-        } else {
+        } catch (error) {
+          const message = error instanceof Error
+            ? error.message
+            : String(error);
           yield {
             kind: "warning",
-            message:
-              `Vault '${input.vaultName}' does not support annotations — --tag was ignored`,
+            message: `Secret stored but labeling failed: ${message}`,
           };
         }
       }
