@@ -50,7 +50,7 @@ export interface VaultPutData {
   vaultType: string;
   overwritten: boolean;
   timestamp: string;
-  tags?: Record<string, string>;
+  tags?: Record<string, string> | null;
 }
 
 export type VaultPutEvent =
@@ -303,7 +303,11 @@ export async function* vaultPut(
           vaultType: config.type,
           overwritten: input.overwritten,
           timestamp: new Date().toISOString(),
-          ...(appliedTags ? { tags: appliedTags } : {}),
+          ...(appliedTags
+            ? { tags: appliedTags }
+            : input.tags && Object.keys(input.tags).length > 0
+            ? { tags: null }
+            : {}),
         },
       };
     })(),
