@@ -25,7 +25,6 @@ import {
 } from "@std/assert";
 import { UserError } from "../domain/errors.ts";
 import {
-  appendTokenToUrl,
   normalizeServerUrl,
   probeServerHealth,
   requestServerResponse,
@@ -395,30 +394,6 @@ Deno.test({
       await server.shutdown();
     }
   },
-});
-
-// ── appendTokenToUrl tests ──────────────────────────────────────────────
-
-Deno.test("appendTokenToUrl: appends token as query param", () => {
-  const result = appendTokenToUrl(
-    "ws://localhost:9090/",
-    "adam-token.secret123",
-  );
-  assertEquals(result, "ws://localhost:9090/?token=adam-token.secret123");
-});
-
-Deno.test("appendTokenToUrl: returns unchanged URL when no token", () => {
-  const url = "ws://localhost:9090/";
-  assertEquals(appendTokenToUrl(url), url);
-  assertEquals(appendTokenToUrl(url, undefined), url);
-});
-
-Deno.test("appendTokenToUrl: preserves existing path", () => {
-  const result = appendTokenToUrl(
-    "wss://swamp.acme.internal:9090/api",
-    "tok.sec",
-  );
-  assertEquals(result, "wss://swamp.acme.internal:9090/api?token=tok.sec");
 });
 
 // ── resolveServerToken tests ────────────────────────────────────────────
@@ -996,6 +971,165 @@ Deno.test({
         ) {}
       }, UserError);
       assertStringIncludes(error.message, "closed before the run completed");
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+// ── Token transport tests ─────────────────────────────────────────────
+
+Deno.test({
+  name:
+    "requestServerResponse: sends token via Authorization header, not query param",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    let capturedUrl: string | undefined;
+    let capturedAuthHeader: string | null | undefined;
+    const server = Deno.serve(
+      { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+      (req) => {
+        capturedUrl = req.url;
+        capturedAuthHeader = req.headers.get("authorization");
+        const { socket, response } = Deno.upgradeWebSocket(req);
+        socket.onmessage = (event) => {
+          const parsed = JSON.parse(event.data as string);
+          socket.send(JSON.stringify({
+            type: parsed.type,
+            id: parsed.id,
+            payload: { ok: true },
+          }));
+        };
+        return response;
+      },
+    );
+    try {
+      const url = `ws://127.0.0.1:${server.addr.port}`;
+      await requestServerResponse<{ ok: boolean }>(
+        { server: url, token: "mytoken.secret" },
+        { type: "test" },
+      );
+      assertEquals(capturedAuthHeader, "Bearer mytoken.secret");
+      const parsedUrl = new URL(capturedUrl!);
+      assertEquals(parsedUrl.searchParams.has("token"), false);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name: "requestServerResponse: extra headers passed alongside Authorization",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    let capturedAuthHeader: string | null | undefined;
+    let capturedCustomHeader: string | null | undefined;
+    const server = Deno.serve(
+      { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+      (req) => {
+        capturedAuthHeader = req.headers.get("authorization");
+        capturedCustomHeader = req.headers.get("x-custom");
+        const { socket, response } = Deno.upgradeWebSocket(req);
+        socket.onmessage = (event) => {
+          const parsed = JSON.parse(event.data as string);
+          socket.send(JSON.stringify({
+            type: parsed.type,
+            id: parsed.id,
+            payload: { ok: true },
+          }));
+        };
+        return response;
+      },
+    );
+    try {
+      const url = `ws://127.0.0.1:${server.addr.port}`;
+      await requestServerResponse<{ ok: boolean }>(
+        {
+          server: url,
+          token: "tok.sec",
+          headers: { "X-Custom": "proxy-value" },
+        },
+        { type: "test" },
+      );
+      assertEquals(capturedAuthHeader, "Bearer tok.sec");
+      assertEquals(capturedCustomHeader, "proxy-value");
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "remote run: reconnect sends Authorization header, not query param token",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const capturedHeaders: (string | null)[] = [];
+    const capturedUrls: string[] = [];
+    let connectionCount = 0;
+    const server = Deno.serve(
+      { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+      (req) => {
+        capturedHeaders.push(req.headers.get("authorization"));
+        capturedUrls.push(req.url);
+        connectionCount++;
+        const { socket, response } = Deno.upgradeWebSocket(req);
+        socket.onmessage = (event) => {
+          const parsed = JSON.parse(event.data as string);
+          if (parsed.type === "workflow.run") {
+            socket.send(JSON.stringify({
+              type: "event",
+              id: parsed.id,
+              event: {
+                kind: "started",
+                runId: "run-abc",
+                workflowName: "wf",
+                seq: 1,
+              },
+            }));
+            setTimeout(() => socket.close(), 20);
+          } else if (parsed.type === "run.attach") {
+            socket.send(JSON.stringify({
+              type: "run.attached",
+              id: parsed.id,
+              payload: {
+                runId: "run-abc",
+                kind: "workflow-run",
+                startedAt: "2026-08-01T00:00:00Z",
+              },
+            }));
+            socket.send(JSON.stringify({
+              type: "event",
+              id: parsed.id,
+              event: { kind: "completed", status: "succeeded", seq: 2 },
+            }));
+            socket.send(JSON.stringify({ type: "done", id: parsed.id }));
+          }
+        };
+        return response;
+      },
+    );
+    try {
+      const url = `ws://127.0.0.1:${server.addr.port}`;
+      for await (
+        const _ of runWorkflowOverServer({
+          server: url,
+          token: "tok.reconnect-secret",
+          payload: { workflowIdOrName: "wf" },
+        })
+      ) { /* consume */ }
+      assertEquals(connectionCount >= 2, true);
+      for (let i = 0; i < capturedHeaders.length; i++) {
+        assertEquals(
+          capturedHeaders[i],
+          "Bearer tok.reconnect-secret",
+        );
+        const parsed = new URL(capturedUrls[i]);
+        assertEquals(parsed.searchParams.has("token"), false);
+      }
     } finally {
       await server.shutdown();
     }

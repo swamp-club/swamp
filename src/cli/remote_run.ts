@@ -26,10 +26,10 @@
  * drains until the server confirms.
  *
  * Authentication: when `--auth-mode token` is active on the server, the
- * client appends `?token=<name>.<secret>` to the WebSocket URL. The token
- * comes from (in precedence order): the `--token` flag, the
- * `SWAMP_SERVER_TOKEN` env var, or the `~/.config/swamp/servers.json` file
- * via `ServerCredentialRepository`.
+ * client sends the token via the `Authorization: Bearer` header on the
+ * WebSocket upgrade request. The token comes from (in precedence order):
+ * the `--token` flag, the `SWAMP_SERVER_TOKEN` env var, or the
+ * `~/.config/swamp/servers.json` file via `ServerCredentialRepository`.
  */
 
 import type { Command } from "@cliffy/command";
@@ -80,18 +80,6 @@ export interface ServerRunOptions {
   headers?: Record<string, string>;
   /** Test seam: WebSocket factory. */
   createSocket?: (url: string, headers?: Record<string, string>) => WebSocket;
-}
-
-/**
- * Appends a `?token=` query parameter to a WebSocket URL for server token
- * authentication. Returns the original URL unmodified when no token is
- * provided.
- */
-export function appendTokenToUrl(url: string, token?: string): string {
-  if (!token) return url;
-  const parsed = new URL(url);
-  parsed.searchParams.set("token", token);
-  return parsed.href;
 }
 
 /**
@@ -193,10 +181,16 @@ export function requestServerResponse<T>(
   request: { type: string; id?: string; payload?: unknown },
 ): Promise<T> {
   const baseUrl = normalizeServerUrl(options.server);
-  const url = appendTokenToUrl(baseUrl, options.token);
-  const headers = options.headers ?? resolveExtraHeaders();
+  const extraHeaders = options.headers ?? resolveExtraHeaders();
+  const headers: Record<string, string> = { ...extraHeaders };
+  if (options.token) {
+    headers["Authorization"] = `Bearer ${options.token}`;
+  }
   const requestId = request.id ?? crypto.randomUUID();
-  const socket = (options.createSocket ?? defaultCreateSocket)(url, headers);
+  const socket = (options.createSocket ?? defaultCreateSocket)(
+    baseUrl,
+    headers,
+  );
   const timeoutMs = options.timeoutMs ?? REQUEST_RESPONSE_TIMEOUT_MS;
 
   const raw = new Promise<T>((resolve, reject) => {
@@ -426,10 +420,16 @@ async function* singleConnectionStream(
   StreamOutcome
 > {
   const baseUrl = normalizeServerUrl(options.server);
-  const url = appendTokenToUrl(baseUrl, options.token);
-  const headers = options.headers ?? resolveExtraHeaders();
+  const extraHeaders = options.headers ?? resolveExtraHeaders();
+  const headers: Record<string, string> = { ...extraHeaders };
+  if (options.token) {
+    headers["Authorization"] = `Bearer ${options.token}`;
+  }
   const requestId = crypto.randomUUID();
-  const socket = (options.createSocket ?? defaultCreateSocket)(url, headers);
+  const socket = (options.createSocket ?? defaultCreateSocket)(
+    baseUrl,
+    headers,
+  );
 
   const queue: ServerMessage[] = [];
   let wake: (() => void) | null = null;

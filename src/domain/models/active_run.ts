@@ -194,6 +194,8 @@ export class ActiveRun {
 
   isStale(ttlMs: number): boolean {
     if (this._status !== "running") return false;
-    return Date.now() - this._heartbeatAt.getTime() > ttlMs;
+    const heartbeatTime = this._heartbeatAt.getTime();
+    if (isNaN(heartbeatTime)) return true;
+    return Date.now() - heartbeatTime > ttlMs;
   }
 }

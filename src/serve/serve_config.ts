@@ -41,6 +41,9 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   staleTtl: "SWAMP_STALE_TTL",
   reconciliationInterval: "SWAMP_RECONCILIATION_INTERVAL",
   groupRefreshInterval: "SWAMP_GROUP_REFRESH_INTERVAL",
+  maxConcurrentRuns: "SWAMP_MAX_CONCURRENT_RUNS",
+  maxRunsPerPrincipal: "SWAMP_MAX_RUNS_PER_PRINCIPAL",
+  maxRunDuration: "SWAMP_MAX_RUN_DURATION",
 };
 
 // ── Webhook Config Types ──────────────────────────────────────────────
@@ -89,6 +92,9 @@ export interface ServeConfigFile {
   "heartbeat-interval"?: string;
   "stale-ttl"?: string;
   "reconciliation-interval"?: string;
+  "max-concurrent-runs"?: number;
+  "max-runs-per-principal"?: number;
+  "max-run-duration"?: string;
 }
 
 // ── Known Keys ────────────────────────────────────────────────────────
@@ -112,6 +118,9 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "heartbeat-interval",
   "stale-ttl",
   "reconciliation-interval",
+  "max-concurrent-runs",
+  "max-runs-per-principal",
+  "max-run-duration",
 ]);
 
 const KNOWN_AUTH_KEYS = new Set([
@@ -509,6 +518,9 @@ export interface MergedServeOptions {
   staleTtl?: string;
   reconciliationInterval?: string;
   hotReload: boolean;
+  maxConcurrentRuns?: number;
+  maxRunsPerPrincipal?: number;
+  maxRunDuration?: string;
 }
 
 export function mergeServeOptions(
@@ -557,6 +569,31 @@ export function mergeServeOptions(
     }
 
     return defaultValue;
+  }
+
+  function resolveOptionalNumber(
+    flagName: string,
+    cliValue: number | undefined,
+    configValue: number | undefined,
+  ): number | undefined {
+    if (explicitFlags.has(flagName)) {
+      return cliValue;
+    }
+
+    const envVarName = SERVE_ENV_MAP[kebabToCamel(flagName)];
+    if (envVarName) {
+      const envValue = envLookup(envVarName);
+      if (envValue !== undefined && envValue.trim() !== "") {
+        const n = Number(envValue);
+        if (!isNaN(n)) return n;
+      }
+    }
+
+    if (configValue !== undefined) {
+      return configValue;
+    }
+
+    return undefined;
   }
 
   function resolveBoolean(
@@ -773,6 +810,25 @@ export function mergeServeOptions(
     false,
   );
 
+  const maxConcurrentRuns = resolveOptionalNumber(
+    "max-concurrent-runs",
+    cliOptions.maxConcurrentRuns as number | undefined,
+    config?.["max-concurrent-runs"],
+  );
+
+  const maxRunsPerPrincipal = resolveOptionalNumber(
+    "max-runs-per-principal",
+    cliOptions.maxRunsPerPrincipal as number | undefined,
+    config?.["max-runs-per-principal"],
+  );
+
+  const maxRunDuration = resolveString(
+    "max-run-duration",
+    cliOptions.maxRunDuration as string | undefined,
+    config?.["max-run-duration"],
+    undefined,
+  );
+
   // Webhooks: CLI --webhook flags replace config file webhooks entirely
   let webhook: string[] | undefined;
   let webhookEndpoints: WebhookEndpoint[] | undefined;
@@ -813,5 +869,8 @@ export function mergeServeOptions(
     staleTtl,
     reconciliationInterval,
     hotReload,
+    maxConcurrentRuns,
+    maxRunsPerPrincipal,
+    maxRunDuration,
   };
 }

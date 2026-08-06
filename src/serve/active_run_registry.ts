@@ -18,8 +18,27 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { RunEventBuffer } from "./run_event_buffer.ts";
+import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+
+const logger = getSwampLogger(["serve", "active-run-registry"]);
+
+const ANONYMOUS_PRINCIPAL = "@anonymous";
 
 export type RunKind = "workflow-run" | "workflow-resume" | "method-run";
+
+export type RegistryErrorCode =
+  | "already_registered"
+  | "global_cap"
+  | "principal_cap";
+
+export class RegistryCapacityError extends Error {
+  readonly code: RegistryErrorCode;
+  constructor(code: RegistryErrorCode, message: string) {
+    super(message);
+    this.name = "RegistryCapacityError";
+    this.code = code;
+  }
+}
 
 export interface ActiveRun {
   readonly runId: string;
@@ -29,30 +48,76 @@ export interface ActiveRun {
   readonly controller: AbortController;
   readonly startedAt: Date;
   readonly completion: Promise<void>;
+  readonly principalId: string | null;
+}
+
+export interface ActiveRunRegistryOptions {
+  maxConcurrent?: number;
+  maxPerPrincipal?: number;
+  maxRunDurationMs?: number;
 }
 
 export class ActiveRunRegistry {
   readonly #runs = new Map<string, ActiveRun>();
   readonly #maxConcurrent: number;
+  readonly #maxPerPrincipal: number | undefined;
+  readonly #maxRunDurationMs: number | undefined;
+  readonly #timers = new Map<string, ReturnType<typeof setTimeout>>();
 
-  constructor(options?: { maxConcurrent?: number }) {
-    this.#maxConcurrent = options?.maxConcurrent ?? 100;
+  constructor(options?: ActiveRunRegistryOptions) {
+    this.#maxConcurrent = Math.max(1, options?.maxConcurrent ?? 100);
+    this.#maxPerPrincipal = options?.maxPerPrincipal !== undefined
+      ? Math.max(1, options.maxPerPrincipal)
+      : undefined;
+    this.#maxRunDurationMs = options?.maxRunDurationMs;
   }
 
   register(run: ActiveRun): void {
     if (this.#runs.has(run.runId)) {
-      throw new Error(`Run ${run.runId} is already registered`);
+      throw new RegistryCapacityError(
+        "already_registered",
+        `Run ${run.runId} is already registered`,
+      );
     }
     if (this.#runs.size >= this.#maxConcurrent) {
-      throw new Error(
+      throw new RegistryCapacityError(
+        "global_cap",
         `Too many concurrent runs (limit: ${this.#maxConcurrent}); wait for active runs to complete`,
       );
     }
+    if (this.#maxPerPrincipal !== undefined) {
+      const effectivePrincipal = run.principalId ?? ANONYMOUS_PRINCIPAL;
+      const count = this.#countForPrincipal(effectivePrincipal);
+      if (count >= this.#maxPerPrincipal) {
+        throw new RegistryCapacityError(
+          "principal_cap",
+          `Too many concurrent runs for principal ${effectivePrincipal} (limit: ${this.#maxPerPrincipal}); wait for active runs to complete`,
+        );
+      }
+    }
     this.#runs.set(run.runId, run);
+
+    if (this.#maxRunDurationMs !== undefined) {
+      const timer = setTimeout(() => {
+        this.#timers.delete(run.runId);
+        logger.warn(
+          "Run {runId} exceeded max duration ({durationMs}ms), aborting",
+          { runId: run.runId, durationMs: this.#maxRunDurationMs! },
+        );
+        run.controller.abort(new Error("max run duration exceeded"));
+      }, this.#maxRunDurationMs);
+      Deno.unrefTimer(timer);
+      this.#timers.set(run.runId, timer);
+    }
   }
 
   deregister(runId: string): void {
     this.#runs.delete(runId);
+    const timer = this.#timers.get(runId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.#timers.delete(runId);
+    }
   }
 
   rekey(oldId: string, newId: string): boolean {
@@ -61,6 +126,11 @@ export class ActiveRunRegistry {
     if (this.#runs.has(newId)) return false;
     this.#runs.delete(oldId);
     this.#runs.set(newId, { ...run, runId: newId });
+    const timer = this.#timers.get(oldId);
+    if (timer !== undefined) {
+      this.#timers.delete(oldId);
+      this.#timers.set(newId, timer);
+    }
     return true;
   }
 
@@ -73,6 +143,16 @@ export class ActiveRunRegistry {
     if (!run) return false;
     run.controller.abort(new Error("cancelled by user"));
     return true;
+  }
+
+  cancelAll(typeFilter?: string): number {
+    let count = 0;
+    for (const run of this.#runs.values()) {
+      if (typeFilter && !matchesTypeFilter(run.kind, typeFilter)) continue;
+      run.controller.abort(new Error("cancelled by user"));
+      count++;
+    }
+    return count;
   }
 
   list(): ReadonlyArray<ActiveRun> {
@@ -99,4 +179,19 @@ export class ActiveRunRegistry {
       new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
     ]);
   }
+
+  #countForPrincipal(effectivePrincipalId: string): number {
+    let count = 0;
+    for (const run of this.#runs.values()) {
+      const p = run.principalId ?? ANONYMOUS_PRINCIPAL;
+      if (p === effectivePrincipalId) count++;
+    }
+    return count;
+  }
+}
+
+function matchesTypeFilter(kind: RunKind, filter: string): boolean {
+  if (kind === filter) return true;
+  if (filter === "workflow-run" && kind === "workflow-resume") return true;
+  return false;
 }
