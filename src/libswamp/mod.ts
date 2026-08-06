@@ -63,8 +63,10 @@ export {
   type AuthWhoamiEvent,
   createAuthDeps,
   whoami,
+  type WhoamiCollectiveEntitlement,
   type WhoamiIdentity,
 } from "./auth/whoami.ts";
+export type { WhoamiTrial } from "../infrastructure/http/swamp_club_client.ts";
 
 // Workflow operations
 export {

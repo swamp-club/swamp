@@ -59,12 +59,53 @@ export interface CreateApiKeyResponse {
   key: string;
 }
 
-/** An organization the user belongs to. */
+/**
+ * A collective's trial clock, as the server resolved it.
+ *
+ * Every number here is elapsed-based and computed server-side, so it is
+ * timezone-independent. Render `daysRemaining` as given — recomputing it from
+ * `endsAt` in local time reintroduces the zone bug the server avoided.
+ */
+export interface WhoamiTrial {
+  state: "none" | "active" | "expired";
+  startedAt: string | null;
+  endsAt: string | null;
+  trigger?: string | null;
+  dayNumber?: number;
+  daysRemaining: number;
+}
+
+/**
+ * An organization the user belongs to.
+ *
+ * Membership only — deliberately carries no billing. Extension push and pull
+ * authorize namespace ownership from this list (via {@link getCollectives}),
+ * so entitlement travels in {@link WhoamiResponse.collectiveEntitlements}
+ * instead of as extra keys here. Keeping the two apart means a change to how
+ * plans are reported can never reach the publish path.
+ */
 export interface WhoamiOrganization {
   slug: string;
   name: string;
   role: string;
   personal: boolean;
+}
+
+/**
+ * What one collective entitles the user to, joined to
+ * {@link WhoamiOrganization} on `slug`.
+ *
+ * All fields but `slug` are optional: a self-hosted or older swamp-club sends
+ * no entitlement at all, and whoami must not degrade to an error when it is
+ * missing.
+ */
+export interface WhoamiCollectiveEntitlementResponse {
+  slug: string;
+  plan?: string;
+  planName?: string;
+  /** Owner/admin only — the server omits it for plain members. */
+  subscriptionStatus?: string | null;
+  trial?: WhoamiTrial | null;
 }
 
 /** Response from the /api/whoami endpoint. */
@@ -74,7 +115,11 @@ export interface WhoamiResponse {
   username?: string;
   email?: string;
   name?: string;
+  /** Strongest plan across the user's collectives. Server-derived. */
+  plan?: string;
   organizations?: WhoamiOrganization[];
+  /** Per-collective entitlement. Absent from servers that predate it. */
+  collectiveEntitlements?: WhoamiCollectiveEntitlementResponse[];
   collectiveToken?: boolean;
   collectiveId?: string;
   collectiveSlug?: string;

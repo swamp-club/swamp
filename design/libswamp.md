@@ -677,7 +677,8 @@ export { merge } from "./stream/merge.ts";
 export { assertCompletes, assertErrors, collect } from "./testing.ts";
 
 // Auth operations
-export { createAuthDeps, type AuthDeps, type AuthWhoamiEvent, whoami, type WhoamiIdentity } from "./auth/whoami.ts";
+export { createAuthDeps, type AuthDeps, type AuthWhoamiEvent, whoami, type WhoamiCollectiveEntitlement, type WhoamiIdentity } from "./auth/whoami.ts";
+export type { WhoamiTrial } from "../infrastructure/http/swamp_club_client.ts";
 
 // Workflow operations
 export { workflowRun, type WorkflowRunDeps, type WorkflowRunEvent, type WorkflowRunInput, ... } from "./workflows/run.ts";

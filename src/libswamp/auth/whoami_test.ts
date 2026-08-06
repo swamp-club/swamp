@@ -365,3 +365,111 @@ Deno.test("createAuthDeps: saveCredentials writes file when SWAMP_API_KEY is not
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
+
+// --- entitlement mapping (issue #1544) ---
+
+/** The exact JSON a current swamp-club returns for an owner. Kept in step with
+ * `tests/fixtures/whoami-owner-response.json` in the swamp-club repo, which a
+ * server test asserts against — so a field rename there breaks a test here. */
+const ownerFixture: WhoamiResponse = JSON.parse(
+  await Deno.readTextFile(
+    new URL("./whoami_response.fixture.json", import.meta.url),
+  ),
+);
+
+Deno.test("whoami maps server entitlement onto the identity", async () => {
+  const ctx = createLibSwampContext();
+  const deps = makeDeps({
+    credentials: testCredentials,
+    whoamiResponse: ownerFixture,
+  });
+
+  const events = await collect<AuthWhoamiEvent>(whoami(ctx, deps));
+  const completed = events.at(-1) as Extract<
+    AuthWhoamiEvent,
+    { kind: "completed" }
+  >;
+
+  assertEquals(completed.identity.plan, "team");
+  assertEquals(completed.identity.collectiveEntitlements?.length, 2);
+
+  const [acme, keeb] = completed.identity.collectiveEntitlements!;
+  assertEquals(acme.slug, "acme");
+  assertEquals(acme.plan, "team");
+  assertEquals(acme.planName, "Team");
+  assertEquals(acme.subscriptionStatus, "active");
+  assertEquals(acme.trial, null);
+
+  assertEquals(keeb.plan, "free");
+  assertEquals(keeb.trial?.state, "active");
+  assertEquals(keeb.trial?.daysRemaining, 13);
+});
+
+Deno.test("whoami leaves entitlement absent when the server sends none", async () => {
+  // An older or self-hosted swamp-club. The renderers key off this to fall
+  // back to the pre-entitlement output.
+  const ctx = createLibSwampContext();
+  const deps = makeDeps({
+    credentials: testCredentials,
+    whoamiResponse: testWhoamiResponse,
+  });
+
+  const events = await collect<AuthWhoamiEvent>(whoami(ctx, deps));
+  const completed = events.at(-1) as Extract<
+    AuthWhoamiEvent,
+    { kind: "completed" }
+  >;
+
+  assertEquals(completed.identity.plan, undefined);
+  assertEquals(completed.identity.collectiveEntitlements, undefined);
+  assertEquals(completed.identity.collectives, ["si"]);
+});
+
+Deno.test("whoami omits subscriptionStatus the server withheld from a member", async () => {
+  const ctx = createLibSwampContext();
+  const deps = makeDeps({
+    credentials: testCredentials,
+    whoamiResponse: {
+      ...ownerFixture,
+      organizations: [
+        { slug: "acme", name: "Acme", role: "member", personal: false },
+      ],
+      collectiveEntitlements: [
+        { slug: "acme", plan: "team", planName: "Team", trial: null },
+      ],
+    },
+  });
+
+  const events = await collect<AuthWhoamiEvent>(whoami(ctx, deps));
+  const completed = events.at(-1) as Extract<
+    AuthWhoamiEvent,
+    { kind: "completed" }
+  >;
+
+  const entitlement = completed.identity.collectiveEntitlements![0];
+  assertEquals("subscriptionStatus" in entitlement, false);
+  assertEquals(entitlement.plan, "team");
+});
+
+Deno.test("whoami caches only slugs, never entitlement", async () => {
+  // AuthCredentials.collectives is a persisted on-disk cache. A plan written
+  // there would go stale and become a second, wrong source of truth for a
+  // question the server owns.
+  const ctx = createLibSwampContext();
+  let saved: AuthCredentials | null = null;
+  const deps: AuthDeps = {
+    loadCredentials: () => Promise.resolve(testCredentials),
+    saveCredentials: (credentials) => {
+      saved = credentials;
+      return Promise.resolve();
+    },
+    fetchWhoami: () => Promise.resolve(ownerFixture),
+    serverUrlOverride: undefined,
+  };
+
+  await collect<AuthWhoamiEvent>(whoami(ctx, deps));
+
+  assertEquals(saved!.collectives, ["acme", "keeb"]);
+  assertEquals("plan" in saved!, false);
+  assertEquals("collectiveEntitlements" in saved!, false);
+});

@@ -1,0 +1,47 @@
+{
+  "authenticated": true,
+  "id": "user-1",
+  "username": "keeb",
+  "email": "test@example.com",
+  "name": "Test",
+  "organizations": [
+    {
+      "slug": "acme",
+      "name": "Acme",
+      "role": "owner",
+      "personal": false
+    },
+    {
+      "slug": "keeb",
+      "name": "keeb",
+      "role": "owner",
+      "personal": true
+    }
+  ],
+  "plan": "team",
+  "collectiveEntitlements": [
+    {
+      "slug": "acme",
+      "plan": "team",
+      "planName": "Team",
+      "subscriptionStatus": "active",
+      "trial": null
+    },
+    {
+      "slug": "keeb",
+      "plan": "free",
+      "planName": "Free",
+      "subscriptionStatus": null,
+      "trial": {
+        "state": "active",
+        "startedAt": "2026-07-20T00:00:00.000Z",
+        "endsAt": "2026-08-19T00:00:00.000Z",
+        "trigger": "collective_created",
+        "dayNumber": 18,
+        "daysRemaining": 13,
+        "totalDays": 30,
+        "extended": false
+      }
+    }
+  ]
+}

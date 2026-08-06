@@ -275,6 +275,19 @@ class LogAuthWhoamiRenderer implements Renderer<AuthWhoamiEvent> {
         writeOutput(
           `${e.identity.username} (${e.identity.email}) on ${e.identity.serverUrl}`,
         );
+
+        // Richer output when the server sent entitlement...
+        const entitlements = e.identity.collectiveEntitlements;
+        if (entitlements && entitlements.length > 0) {
+          writeOutput(`${bold(cyan("Plan:"))} ${bold(planName)}`);
+          writeOutput(cyan("Collectives:"));
+          writeOutput(collectiveLines(entitlements).join("\n"));
+          return;
+        }
+
+        // ...and the original single line when it didn't. An older or
+        // self-hosted swamp-club sends no entitlement fields, and upgrading
+        // the CLI alone must not change what those users see.
         if (e.identity.collectives && e.identity.collectives.length > 0) {
           writeOutput(`Collectives: ${e.identity.collectives.join(", ")}`);
         }
@@ -286,6 +299,11 @@ class LogAuthWhoamiRenderer implements Renderer<AuthWhoamiEvent> {
   }
 }
 ```
+
+Note the shape of that fallback: the renderer branches on whether the *server*
+supplied a field, not on a CLI-side flag. Optional-everything is what lets one
+CLI talk to several server versions, and the pre-existing output is the
+behaviour to preserve, not a legacy path to tolerate.
 
 ### JSON-mode renderer
 
@@ -306,6 +324,13 @@ class JsonAuthWhoamiRenderer implements Renderer<AuthWhoamiEvent> {
             name: e.identity.name,
             ...(e.identity.collectives
               ? { collectives: e.identity.collectives }
+              : {}),
+            // Entitlement passes through verbatim. Log mode makes display
+            // decisions (it hides a paid collective's trial); JSON mode makes
+            // none — it is what gets pasted into a support report.
+            ...(e.identity.plan ? { plan: e.identity.plan } : {}),
+            ...(e.identity.collectiveEntitlements
+              ? { collectiveEntitlements: e.identity.collectiveEntitlements }
               : {}),
           },
           null,
