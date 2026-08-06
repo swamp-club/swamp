@@ -25,7 +25,6 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound } from "../errors.ts";
 import { RefreshHook } from "../../domain/vaults/refresh_hook.ts";
-import { VaultAnnotation } from "../../domain/vaults/vault_annotation.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Minimal vault config shape needed by the generator. */
@@ -50,7 +49,7 @@ export interface VaultPutData {
   vaultType: string;
   overwritten: boolean;
   timestamp: string;
-  labels?: Record<string, string> | null;
+  labels?: Record<string, string>;
 }
 
 export type VaultPutEvent =
@@ -76,7 +75,12 @@ export interface VaultPutDeps {
   findVault: (name: string) => Promise<VaultPutConfigInfo | null>;
   listVaultNames: () => Promise<string[]>;
   secretExists: (vaultName: string, key: string) => Promise<boolean>;
-  putSecret: (vaultName: string, key: string, value: string) => Promise<void>;
+  putSecret: (
+    vaultName: string,
+    key: string,
+    value: string,
+    tags?: Record<string, string>,
+  ) => Promise<void>;
   publishSecretUpdated: (
     vaultId: string,
     vaultType: string,
@@ -90,16 +94,6 @@ export interface VaultPutDeps {
   ) => Promise<void>;
   deleteRefreshHook: (vaultName: string, key: string) => Promise<void>;
   supportsRefreshHooks: (vaultName: string) => Promise<boolean>;
-  supportsAnnotations: (vaultName: string) => Promise<boolean>;
-  getAnnotation: (
-    vaultName: string,
-    key: string,
-  ) => Promise<VaultAnnotation | null>;
-  putAnnotation: (
-    vaultName: string,
-    key: string,
-    annotation: VaultAnnotation,
-  ) => Promise<void>;
 }
 
 /** Wires real infrastructure into VaultPutDeps. */
@@ -128,9 +122,9 @@ export function createVaultPutDeps(
       const keys = await svc.list(vaultName);
       return keys.includes(key);
     },
-    putSecret: async (vaultName, key, value) => {
+    putSecret: async (vaultName, key, value, tags) => {
       const svc = await getVaultService();
-      await svc.put(vaultName, key, value);
+      await svc.put(vaultName, key, value, tags ? { tags } : undefined);
     },
     publishSecretUpdated: async (vaultId, vaultType, vaultName, key) => {
       const event = createVaultSecretUpdated(
@@ -152,18 +146,6 @@ export function createVaultPutDeps(
     supportsRefreshHooks: async (vaultName) => {
       const svc = await getVaultService();
       return svc.supportsRefreshHooks(vaultName);
-    },
-    supportsAnnotations: async (vaultName) => {
-      const svc = await getVaultService();
-      return svc.supportsAnnotations(vaultName);
-    },
-    getAnnotation: async (vaultName, key) => {
-      const svc = await getVaultService();
-      return svc.getAnnotation(vaultName, key);
-    },
-    putAnnotation: async (vaultName, key, annotation) => {
-      const svc = await getVaultService();
-      await svc.putAnnotation(vaultName, key, annotation);
     },
   };
 }
@@ -223,41 +205,13 @@ export async function* vaultPut(
         return;
       }
 
-      await deps.putSecret(input.vaultName, input.key, input.value);
+      const tags = input.tags && Object.keys(input.tags).length > 0
+        ? input.tags
+        : undefined;
+      await deps.putSecret(input.vaultName, input.key, input.value, tags);
       ctx.logger.debug`Secret stored successfully`;
 
-      let appliedLabels: Record<string, string> | undefined;
-      if (input.tags && Object.keys(input.tags).length > 0) {
-        try {
-          const supportsAnno = await deps.supportsAnnotations(input.vaultName);
-          if (supportsAnno) {
-            const existing = await deps.getAnnotation(
-              input.vaultName,
-              input.key,
-            );
-            const annotation = existing
-              ? existing.merge({ labels: input.tags })
-              : VaultAnnotation.create({ labels: input.tags });
-            await deps.putAnnotation(input.vaultName, input.key, annotation);
-            appliedLabels = input.tags;
-            ctx.logger.debug`Labels stored as annotations`;
-          } else {
-            yield {
-              kind: "warning",
-              message:
-                `Vault '${input.vaultName}' does not support annotations — labels were ignored`,
-            };
-          }
-        } catch (error) {
-          const message = error instanceof Error
-            ? error.message
-            : String(error);
-          yield {
-            kind: "warning",
-            message: `Secret stored but labeling failed: ${message}`,
-          };
-        }
-      }
+      const appliedLabels: Record<string, string> | undefined = tags;
 
       if (input.clearRefresh) {
         const supportsHooks = await deps.supportsRefreshHooks(
@@ -303,11 +257,7 @@ export async function* vaultPut(
           vaultType: config.type,
           overwritten: input.overwritten,
           timestamp: new Date().toISOString(),
-          ...(appliedLabels
-            ? { labels: appliedLabels }
-            : input.tags && Object.keys(input.tags).length > 0
-            ? { labels: null }
-            : {}),
+          ...(appliedLabels ? { labels: appliedLabels } : {}),
         },
       };
     })(),

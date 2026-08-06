@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { VaultDeleteProvider, VaultProvider } from "./vault_provider.ts";
+import type {
+  VaultDeleteProvider,
+  VaultProvider,
+  VaultPutOptions,
+} from "./vault_provider.ts";
 
 /**
  * Mock vault provider for testing and demonstrations.
@@ -54,7 +58,7 @@ export class MockVaultProvider implements VaultProvider, VaultDeleteProvider {
   put(
     secretKey: string,
     secretValue: string,
-    _options?: import("./vault_provider.ts").VaultPutOptions,
+    _options?: VaultPutOptions,
   ): Promise<void> {
     this.secrets.set(secretKey, secretValue);
     return Promise.resolve();

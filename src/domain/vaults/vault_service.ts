@@ -22,6 +22,7 @@ import {
   isVaultDeleteProvider,
   type VaultConfiguration,
   type VaultProvider,
+  type VaultPutOptions,
 } from "./vault_provider.ts";
 import {
   isVaultAnnotationProvider,
@@ -322,9 +323,10 @@ export class VaultService {
     vaultName: string,
     secretKey: string,
     secretValue: string,
+    options?: VaultPutOptions,
   ): Promise<void> {
     const provider = this.requireProvider(vaultName);
-    await provider.put(secretKey, secretValue);
+    await provider.put(secretKey, secretValue, options);
   }
 
   async delete(vaultName: string, secretKey: string): Promise<void> {

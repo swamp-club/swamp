@@ -166,3 +166,48 @@ Deno.test("putAnnotation: overwrites existing annotation", async () => {
     assertEquals(second!.labels, { env: "prod", region: "us-east-1" });
   });
 });
+
+Deno.test("put: stores tags as annotation via VaultPutOptions", async () => {
+  await withTempDir(async (dir) => {
+    const vault = createVault("tags-vault", dir);
+    await vault.put("tagged-secret", "secret-value", {
+      tags: { env: "prod", owner: "platform" },
+    });
+
+    const annotation = await vault.getAnnotation("tagged-secret");
+    assertEquals(annotation !== null, true);
+    assertEquals(annotation!.labels, { env: "prod", owner: "platform" });
+  });
+});
+
+Deno.test("put: merges tags with existing annotation", async () => {
+  await withTempDir(async (dir) => {
+    const vault = createVault("merge-tags-vault", dir);
+    await vault.put("my-secret", "secret-value");
+
+    const existing = VaultAnnotation.create({
+      notes: "keep me",
+      labels: { existing: "value" },
+    });
+    await vault.putAnnotation("my-secret", existing);
+
+    await vault.put("my-secret", "updated-value", {
+      tags: { env: "prod" },
+    });
+
+    const annotation = await vault.getAnnotation("my-secret");
+    assertEquals(annotation!.notes, "keep me");
+    assertEquals(annotation!.labels["existing"], "value");
+    assertEquals(annotation!.labels["env"], "prod");
+  });
+});
+
+Deno.test("put: skips annotation when tags is empty", async () => {
+  await withTempDir(async (dir) => {
+    const vault = createVault("no-tags-vault", dir);
+    await vault.put("my-secret", "secret-value", { tags: {} });
+
+    const annotation = await vault.getAnnotation("my-secret");
+    assertEquals(annotation, null);
+  });
+});
