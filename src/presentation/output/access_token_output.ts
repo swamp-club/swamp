@@ -91,8 +91,11 @@ export function renderServerTokenCreate(
     "",
     `Retrieve the token with: ${
       bold(
-        `swamp vault get ${data.vaultRef.vaultName} ${data.vaultRef.secretKey}`,
+        `swamp vault read-secret ${data.vaultRef.vaultName} ${data.vaultRef.secretKey} --yes`,
       )
+    }`,
+    `The client token is ${bold("<name>.<secret>")} — prepend the token name: ${
+      bold(`${data.name}.<secret>`)
     }`,
   ];
   writeOutput(lines.join("\n"));
@@ -169,8 +172,11 @@ export function renderServerTokenRotate(
     "",
     `Retrieve the new token with: ${
       bold(
-        `swamp vault get ${data.vaultRef.vaultName} ${data.vaultRef.secretKey}`,
+        `swamp vault read-secret ${data.vaultRef.vaultName} ${data.vaultRef.secretKey} --yes`,
       )
+    }`,
+    `The client token is ${bold("<name>.<secret>")} — prepend the token name: ${
+      bold(`${data.name}.<secret>`)
     }`,
   ];
   writeOutput(lines.join("\n"));
