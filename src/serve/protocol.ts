@@ -849,6 +849,7 @@ export interface SerializedError {
 
 export interface AccessGrantListResponse {
   grants: Record<string, unknown>[];
+  subjectDisplayNames?: Record<string, string>;
 }
 
 export interface AccessGroupListResponse {

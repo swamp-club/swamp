@@ -144,6 +144,44 @@ export async function handleAccessGrantList(
       );
     }
 
+    const subjectDisplayNames: Record<string, string> = {};
+    const unresolvedSubs = new Set<string>();
+
+    for (const r of results) {
+      if (r.grant.subject.kind !== "user") continue;
+      const sub = r.grant.subject.name;
+      if (ctx.resolvedUserNames?.[sub]) {
+        subjectDisplayNames[sub] = ctx.resolvedUserNames[sub];
+      } else {
+        unresolvedSubs.add(sub);
+      }
+    }
+
+    if (unresolvedSubs.size > 0) {
+      const libCtx = createLibSwampContext();
+      const deps = createServerTokenListDeps(
+        ctx.repoContext.dataQueryService,
+      );
+      await consumeStream(
+        serverTokenList(libCtx, deps),
+        withDefaults({
+          completed: (e) => {
+            for (const token of e.data.tokens) {
+              const tokenSub = token.principalId.startsWith("user:")
+                ? token.principalId.slice(5)
+                : token.principalId;
+              if (
+                unresolvedSubs.has(tokenSub) &&
+                !subjectDisplayNames[tokenSub]
+              ) {
+                subjectDisplayNames[tokenSub] = token.principalEmail;
+              }
+            }
+          },
+        }),
+      );
+    }
+
     send(socket, {
       type: "access.grant.list",
       id: requestId,
@@ -152,6 +190,9 @@ export async function handleAccessGrantList(
           ...r.grant,
           instanceName: r.instanceName,
         })) as unknown as Record<string, unknown>[],
+        ...(Object.keys(subjectDisplayNames).length > 0
+          ? { subjectDisplayNames }
+          : {}),
       },
     });
   } catch (error) {
