@@ -245,8 +245,41 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   async findLatestByWorkflowId(
     workflowId: WorkflowId,
   ): Promise<WorkflowRun | null> {
-    const runs = await this.findAllByWorkflowId(workflowId);
-    return runs[0] ?? null;
+    const runsDir = this.getRunsDir(workflowId);
+    const indexDir = this.getLocalIndexDir(workflowId);
+    const index = await this.getValidatedIndex(runsDir, indexDir);
+
+    if (index) {
+      const latestId = this.findLatestRunIdFromIndex(index);
+      if (latestId) {
+        return this.findById(workflowId, latestId as WorkflowRunId);
+      }
+      return null;
+    }
+
+    // Fallback: scan as lightweight summaries to find the latest, then
+    // load only that one as a full aggregate.
+    const summaries = await this.findAllSummariesByWorkflowId(workflowId);
+    if (summaries.length === 0) return null;
+    return this.findById(
+      workflowId,
+      summaries[0].id as WorkflowRunId,
+    );
+  }
+
+  private findLatestRunIdFromIndex(
+    index: WorkflowRunIndex,
+  ): string | null {
+    let latestId: string | null = null;
+    let latestTime = -1;
+    for (const [id, entry] of Object.entries(index)) {
+      const time = entry.startedAt ? new Date(entry.startedAt).getTime() : 0;
+      if (time > latestTime) {
+        latestTime = time;
+        latestId = id;
+      }
+    }
+    return latestId;
   }
 
   /**

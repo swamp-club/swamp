@@ -944,6 +944,60 @@ Deno.test("index: corrupt JSON triggers rebuild on read", async () => {
   });
 });
 
+Deno.test("findLatestByWorkflowId: uses index without loading all runs", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+
+    const run1 = WorkflowRun.create(workflow);
+    run1.start();
+    await repo.save(workflow.id, run1);
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    const run2 = WorkflowRun.create(workflow);
+    run2.start();
+    await repo.save(workflow.id, run2);
+
+    // Index exists from save — findLatestByWorkflowId should use it
+    const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    const index = await readRunIndex(runsDir);
+    assertNotEquals(index, null);
+    assertEquals(Object.keys(index!).length, 2);
+
+    const latest = await repo.findLatestByWorkflowId(workflow.id);
+    assertNotEquals(latest, null);
+    assertEquals(latest!.id, run2.id);
+  });
+});
+
+Deno.test("findLatestByWorkflowId: falls back to summary scan when index missing", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+
+    const run1 = WorkflowRun.create(workflow);
+    run1.start();
+    await repo.save(workflow.id, run1);
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    const run2 = WorkflowRun.create(workflow);
+    run2.start();
+    await repo.save(workflow.id, run2);
+
+    // Delete the index to force fallback to summary scan
+    const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    await Deno.remove(getIndexPath(runsDir));
+    const index = await readRunIndex(runsDir);
+    assertEquals(index, null);
+
+    const latest = await repo.findLatestByWorkflowId(workflow.id);
+    assertNotEquals(latest, null);
+    assertEquals(latest!.id, run2.id);
+  });
+});
+
 Deno.test("save: index is written to local path, not cache baseDir", async () => {
   await withTempDir(async (dir) => {
     const cacheDir = await Deno.makeTempDir();
