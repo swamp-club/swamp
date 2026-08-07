@@ -268,9 +268,7 @@ function renderExtensionScrollback(
   _detail: ExtensionSearchItem | undefined,
 ): string {
   const lines: string[] = [
-    `${item.name} ${
-      item.latestVersion ? `v${item.latestVersion}` : "prerelease"
-    }`,
+    `${item.name} ${versionLabel(item)}`,
   ];
 
   if (item.description) {
