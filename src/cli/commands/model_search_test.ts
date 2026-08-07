@@ -47,6 +47,22 @@ Deno.test("modelSearchCommand is registered as subcommand of modelCommand", asyn
   assertEquals(searchCmd !== undefined, true);
 });
 
+Deno.test("modelSearchCommand has --all option", async () => {
+  const { modelSearchCommand } = await import("./model_search.ts");
+  const options = modelSearchCommand.getOptions();
+  const allOption = options.find((o) => o.name === "all");
+  assertEquals(allOption !== undefined, true);
+});
+
+Deno.test("model list alias has --all option", async () => {
+  const { modelCommand } = await import("./model_create.ts");
+  const listCmd = modelCommand.getCommand("list", true);
+  assertEquals(listCmd !== undefined, true);
+  const options = listCmd!.getOptions();
+  const allOption = options.find((o) => o.name === "all");
+  assertEquals(allOption !== undefined, true);
+});
+
 // filterModels tests
 Deno.test("filterModels returns all models when query is empty", async () => {
   const { filterModels } = await import(

@@ -524,11 +524,15 @@ export async function handleModelSearch(
     const libCtx = createLibSwampContext();
     const deps: ModelSearchDeps = {
       findAllGlobal: () => ctx.repoContext.definitionRepo.findAllGlobal(),
+      isInternalType: (type: string) => modelRegistry.isInternal(type),
     };
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
-      modelSearch(libCtx, deps, { query: payload?.query }),
+      modelSearch(libCtx, deps, {
+        query: payload?.query,
+        includeInternal: payload?.includeInternal,
+      }),
       {
         resolving: () => {},
         completed: (e) => {

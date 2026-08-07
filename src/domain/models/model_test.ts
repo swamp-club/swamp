@@ -444,6 +444,16 @@ Deno.test("ModelRegistry.publicTypes excludes internal models", () => {
   assertEquals(publicTypes[0].normalized, "swamp/echo");
 });
 
+Deno.test("ModelRegistry.isInternal returns true for internal types", () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("swamp/echo"));
+  registry.register(createTestModel("swamp/internal"));
+  registry.markInternal("swamp/internal");
+
+  assertEquals(registry.isInternal("swamp/internal"), true);
+  assertEquals(registry.isInternal("swamp/echo"), false);
+});
+
 Deno.test("ModelDefinition method can execute", async () => {
   const model = createTestModel("swamp/echo");
 

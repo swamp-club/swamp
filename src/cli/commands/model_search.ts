@@ -29,6 +29,7 @@ import {
   type ModelSearchDeps,
   type ModelSearchItem,
 } from "../../libswamp/mod.ts";
+import { modelRegistry } from "../../domain/models/model.ts";
 import { createModelSearchRenderer } from "../../presentation/renderers/model_search.tsx";
 import {
   createContext,
@@ -113,6 +114,7 @@ export async function modelSearchAction(
 
   const deps: ModelSearchDeps = {
     findAllGlobal: () => repoContext.definitionRepo.findAllGlobal(),
+    isInternalType: (type: string) => modelRegistry.isInternal(type),
   };
 
   const repoDir = resolveRepoDir(options.repoDir);
@@ -120,9 +122,10 @@ export async function modelSearchAction(
     ? await createModelFetchPreview(repoDir)
     : undefined;
 
+  const includeInternal = options.all as boolean | undefined;
   const renderer = createModelSearchRenderer(effectiveMode, fetchPreview);
   await consumeStream(
-    modelSearch(libCtx, deps, { query }),
+    modelSearch(libCtx, deps, { query, includeInternal }),
     renderer.handlers(),
   );
 
@@ -142,9 +145,11 @@ export const modelSearchCommand = withRemoteOptions(
     .description("Search for model definitions")
     .example("Browse all models", "swamp model search")
     .example("Search by keyword", "swamp model search aws")
+    .example("Include internal types", "swamp model search --all")
     .arguments("[query:string]")
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
-    ),
+    )
+    .option("--all", "Include internal model types"),
 ).action(modelSearchAction);

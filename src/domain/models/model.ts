@@ -1273,6 +1273,13 @@ export class ModelRegistry {
       : type.normalized;
     this.internalTypes.add(normalized);
   }
+
+  isInternal(type: ModelType | string): boolean {
+    const normalized = typeof type === "string"
+      ? ModelType.create(type).normalized
+      : type.normalized;
+    return this.internalTypes.has(normalized);
+  }
 }
 
 /**

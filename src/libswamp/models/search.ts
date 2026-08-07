@@ -53,6 +53,7 @@ export interface ModelSearchDeps {
       type: { normalized: string };
     }>
   >;
+  isInternalType?: (type: string) => boolean;
 }
 
 /**
@@ -60,6 +61,7 @@ export interface ModelSearchDeps {
  */
 export interface ModelSearchInput {
   query?: string;
+  includeInternal?: boolean;
 }
 
 /**
@@ -80,7 +82,10 @@ export async function* modelSearch(
       yield { kind: "resolving" };
 
       const allResults = await deps.findAllGlobal();
-      const results: ModelSearchItem[] = allResults.map(
+      const filtered = input.includeInternal || !deps.isInternalType
+        ? allResults
+        : allResults.filter((r) => !deps.isInternalType!(r.type.normalized));
+      const results: ModelSearchItem[] = filtered.map(
         ({ definition, type }) => ({
           id: definition.id,
           name: definition.name,

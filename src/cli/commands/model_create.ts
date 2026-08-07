@@ -157,5 +157,6 @@ export const modelCommand = new Command()
         "--repo-dir <dir:string>",
         "Repository directory (env: SWAMP_REPO_DIR)",
       )
+      .option("--all", "Include internal model types")
       .action(modelSearchAction),
   );
