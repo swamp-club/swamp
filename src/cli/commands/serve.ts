@@ -2048,6 +2048,7 @@ export const serveCommand = new Command()
 
     let heartbeatService: InstanceHeartbeatService | undefined;
 
+    logger.info("Boot: reaping stale runs via tracker");
     // Reap stale runs via the SQLite tracker (heartbeat + PID liveness).
     // This handles both model-method and workflow runs registered with the tracker.
     const runTracker = RunTrackerStore.fromSwampDir(
@@ -2075,6 +2076,7 @@ export const serveCommand = new Command()
       })`;
     }
 
+    logger.info("Boot: reconciling workflow run state");
     // Reconcile YAML-persisted workflow run state with tracker verdicts.
     // The tracker is the liveness authority; the YAML entity is the run record.
     // Legacy runs (pre-tracker) fall back to PID liveness checking.
@@ -2093,6 +2095,7 @@ export const serveCommand = new Command()
       instanceId,
     );
 
+    logger.info("Boot: sweeping stale records");
     const swept = await sweepStaleRecords({
       repoDir: resolvedRepoDir,
       repoContext,
@@ -2138,6 +2141,7 @@ export const serveCommand = new Command()
     const enableSchedule = merged.schedule;
     const webhookFlags: string[] = merged.webhook ?? [];
 
+    logger.info("Boot: starting scheduler");
     // Start scheduled execution service if enabled
     let scheduledExecution: ScheduledExecutionService | null = null;
     if (enableSchedule) {
