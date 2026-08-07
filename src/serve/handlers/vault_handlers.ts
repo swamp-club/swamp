@@ -366,23 +366,31 @@ export async function handleVaultDelete(
     if (error instanceof DOMException && error.name === "AbortError") {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
     } else if (
-      payload.force &&
       error instanceof Error &&
       /not found|can't find|ResourceNotFoundException/i.test(error.message)
     ) {
-      send(socket, {
-        type: "vault.delete",
-        id: requestId,
-        payload: {
-          data: {
-            vaultName: payload.vaultName,
-            secretKey: payload.key,
-            vaultType,
-            noOp: true,
-            timestamp: new Date().toISOString(),
+      if (payload.force) {
+        send(socket, {
+          type: "vault.delete",
+          id: requestId,
+          payload: {
+            data: {
+              vaultName: payload.vaultName,
+              secretKey: payload.key,
+              vaultType,
+              noOp: true,
+              timestamp: new Date().toISOString(),
+            },
           },
-        },
-      });
+        });
+      } else {
+        sendError(
+          socket,
+          requestId,
+          "not_found",
+          `Secret '${payload.key}' not found in vault '${payload.vaultName}'`,
+        );
+      }
     } else {
       const message = sanitizeErrorForClient(error);
       sendError(socket, requestId, "vault_delete_failed", message);

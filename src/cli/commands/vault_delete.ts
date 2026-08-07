@@ -175,22 +175,26 @@ When using --server, the confirmation prompt is not available — use --force to
       );
     } catch (error) {
       if (
-        options.force &&
         error instanceof Error &&
         /not found|can't find|ResourceNotFoundException/i.test(error.message)
       ) {
-        const renderer = createVaultDeleteRenderer(cliCtx.outputMode);
-        renderer.handlers().completed({
-          kind: "completed",
-          data: {
-            vaultName,
-            secretKey: key,
-            vaultType: preview.vaultType,
-            timestamp: new Date().toISOString(),
-            noOp: true,
-          },
-        });
-        return;
+        if (options.force) {
+          const renderer = createVaultDeleteRenderer(cliCtx.outputMode);
+          renderer.handlers().completed({
+            kind: "completed",
+            data: {
+              vaultName,
+              secretKey: key,
+              vaultType: preview.vaultType,
+              timestamp: new Date().toISOString(),
+              noOp: true,
+            },
+          });
+          return;
+        }
+        throw new UserError(
+          `Secret '${key}' not found in vault '${vaultName}'`,
+        );
       }
       throw error;
     }
