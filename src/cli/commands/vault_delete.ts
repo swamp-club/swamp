@@ -154,26 +154,6 @@ When using --server, the confirmation prompt is not available — use --force to
       );
     }
 
-    if (!preview.secretExists) {
-      if (options.force) {
-        const renderer = createVaultDeleteRenderer(cliCtx.outputMode);
-        renderer.handlers().completed({
-          kind: "completed",
-          data: {
-            vaultName,
-            secretKey: key,
-            vaultType: preview.vaultType,
-            timestamp: new Date().toISOString(),
-            noOp: true,
-          },
-        });
-        return;
-      }
-      throw new UserError(
-        `Secret '${key}' not found in vault '${vaultName}'`,
-      );
-    }
-
     if (cliCtx.outputMode === "log" && !options.yes && !options.force) {
       const confirmed = await promptConfirmation(
         `Delete secret '${key}' from vault '${vaultName}'?`,
@@ -184,14 +164,40 @@ When using --server, the confirmation prompt is not available — use --force to
       }
     }
 
-    const renderer = createVaultDeleteRenderer(cliCtx.outputMode);
-    await consumeStream(
-      vaultDelete(ctx, deps, {
-        vaultName,
-        key,
-      }),
-      renderer.handlers(),
-    );
+    try {
+      const renderer = createVaultDeleteRenderer(cliCtx.outputMode);
+      await consumeStream(
+        vaultDelete(ctx, deps, {
+          vaultName,
+          key,
+        }),
+        renderer.handlers(),
+      );
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        /not found|can't find|ResourceNotFoundException/i.test(error.message)
+      ) {
+        if (options.force) {
+          const renderer = createVaultDeleteRenderer(cliCtx.outputMode);
+          renderer.handlers().completed({
+            kind: "completed",
+            data: {
+              vaultName,
+              secretKey: key,
+              vaultType: preview.vaultType,
+              timestamp: new Date().toISOString(),
+              noOp: true,
+            },
+          });
+          return;
+        }
+        throw new UserError(
+          `Secret '${key}' not found in vault '${vaultName}'`,
+        );
+      }
+      throw error;
+    }
 
     cliCtx.logger.debug("Vault delete command completed");
   } finally {
