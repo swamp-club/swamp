@@ -313,7 +313,7 @@ echo $AWS_REGION
 aws sts get-caller-identity
 
 # Check vault expressions resolve
-swamp vault get <vault-name> <key> --json
+swamp vault read-secret <vault-name> <key> --json
 ```
 
 ## Data and Output Issues
