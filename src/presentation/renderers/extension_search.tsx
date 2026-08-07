@@ -128,6 +128,16 @@ export function createExtensionSearchRenderer(
 
 const DESCRIPTION_MAX = 60;
 
+function versionLabel(item: ExtensionSearchItem): string {
+  return item.latestVersion
+    ? `v${item.latestVersion}`
+    : item.latestRc
+    ? `rc: ${item.latestRc}`
+    : item.latestBeta
+    ? `beta: ${item.latestBeta}`
+    : "prerelease";
+}
+
 function renderExtensionResultLine(
   item: ExtensionSearchItem,
 ): React.ReactElement {
@@ -143,7 +153,7 @@ function renderExtensionResultLine(
     <Text>
       {`${item.name} `}
       <Text dimColor>
-        {item.latestVersion ? `v${item.latestVersion}` : "prerelease"}
+        {versionLabel(item)}
       </Text>
       {deprecated && <Text color="yellow">[deprecated]</Text>}
       {truncatedDesc && <Text dimColor>{` ${EM_DASH} ${truncatedDesc}`}</Text>}
@@ -163,7 +173,7 @@ function renderExtensionPreview(
     <Text key="name" wrap="truncate-end">
       <Text color="cyan" bold>{item.name}</Text>{" "}
       <Text dimColor>
-        {item.latestVersion ? `v${item.latestVersion}` : "prerelease"}
+        {versionLabel(item)}
       </Text>
     </Text>,
   ];

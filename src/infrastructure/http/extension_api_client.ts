@@ -146,6 +146,8 @@ export interface ExtensionSearchEntry {
   labels: string[];
   contentTypes?: string[];
   latestVersion: string | null;
+  latestRc?: string | null;
+  latestBeta?: string | null;
   createdAt: string;
   updatedAt: string;
   deprecatedAt?: string | null;

@@ -148,6 +148,69 @@ Deno.test("extensionSearch: passes query and params through", async () => {
   assertEquals(capturedParams?.page, 2);
 });
 
+Deno.test("extensionSearch: maps latestBeta and latestRc from API response", async () => {
+  const deps = makeDeps({
+    searchExtensions: () =>
+      Promise.resolve({
+        extensions: [
+          {
+            name: "@ns/beta-only",
+            description: "Beta-only extension",
+            latestVersion: null,
+            latestRc: null,
+            latestBeta: "2026.08.01.1",
+            platforms: [],
+            labels: [],
+            contentTypes: [],
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-02T00:00:00Z",
+          },
+          {
+            name: "@ns/rc-and-stable",
+            description: "Has RC and stable",
+            latestVersion: "2026.07.01.1",
+            latestRc: "2026.08.05.1",
+            latestBeta: null,
+            platforms: [],
+            labels: [],
+            contentTypes: [],
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-02T00:00:00Z",
+          },
+        ],
+        meta: { total: 2, page: 1, perPage: 20 },
+      }),
+  });
+
+  const events = await collect<ExtensionSearchEvent>(
+    extensionSearch(createLibSwampContext(), deps, { query: "ns" }),
+  );
+
+  const completed = events[1] as Extract<
+    ExtensionSearchEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.results[0].latestVersion, null);
+  assertEquals(completed.data.results[0].latestRc, null);
+  assertEquals(completed.data.results[0].latestBeta, "2026.08.01.1");
+  assertEquals(completed.data.results[1].latestVersion, "2026.07.01.1");
+  assertEquals(completed.data.results[1].latestRc, "2026.08.05.1");
+  assertEquals(completed.data.results[1].latestBeta, null);
+});
+
+Deno.test("extensionSearch: defaults latestBeta and latestRc to null when absent from API", async () => {
+  const events = await collect<ExtensionSearchEvent>(
+    extensionSearch(createLibSwampContext(), makeDeps(), { query: "aws" }),
+  );
+
+  const completed = events[1] as Extract<
+    ExtensionSearchEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.results[0].latestRc, null);
+  assertEquals(completed.data.results[0].latestBeta, null);
+});
+
 Deno.test("extensionSearch: empty results", async () => {
   const deps = makeDeps({
     searchExtensions: () =>

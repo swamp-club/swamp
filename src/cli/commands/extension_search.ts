@@ -152,7 +152,10 @@ export const extensionSearchCommand = withRemoteOptions(
     }
   }
   if (options.channel) {
-    options.channel = options.channel.filter((ch: string) => ch !== "stable");
+    const hasNonStable = options.channel.some((ch: string) => ch !== "stable");
+    if (!hasNonStable) {
+      options.channel = [];
+    }
   }
 
   // Validate sort option value
