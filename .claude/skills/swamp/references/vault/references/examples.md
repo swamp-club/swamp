@@ -269,7 +269,7 @@ config:
 
 ```bash
 # Get secrets from local vault (one at a time for security)
-swamp vault get prod-secrets API_KEY --json
+swamp vault read-secret prod-secrets API_KEY --json
 # Copy the value
 
 # Put into AWS vault
