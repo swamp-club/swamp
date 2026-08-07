@@ -137,6 +137,30 @@ export class CalVer {
   }
 
   /**
+   * Returns the number of calendar days between two CalVer dates.
+   *
+   * Ignores the MICRO segment — only the YYYY.MM.DD prefix matters.
+   * Returns 0 when `installed` is the same date or newer than `latest`.
+   */
+  static daysBehind(installed: CalVer, latest: CalVer): number {
+    const iParts = installed.value.split(".");
+    const lParts = latest.value.split(".");
+    const iMs = Date.UTC(
+      Number(iParts[0]),
+      Number(iParts[1]) - 1,
+      Number(iParts[2]),
+    );
+    const lMs = Date.UTC(
+      Number(lParts[0]),
+      Number(lParts[1]) - 1,
+      Number(lParts[2]),
+    );
+    const diffMs = lMs - iMs;
+    if (diffMs <= 0) return 0;
+    return Math.floor(diffMs / (24 * 60 * 60 * 1000));
+  }
+
+  /**
    * Value equality.
    */
   equals(other: CalVer): boolean {

@@ -184,6 +184,12 @@ import type {
   ResolvedSourceDirs,
 } from "../domain/repo/swamp_sources.ts";
 import { discoverManifestCrossKindDirs } from "../domain/extensions/manifest_cross_kind_discovery.ts";
+import { readUpstreamExtensions } from "../infrastructure/persistence/upstream_extensions.ts";
+import { FileExtensionUpdateCheckRepository } from "../infrastructure/persistence/extension_update_check_repository.ts";
+import {
+  findStaleExtensions,
+  formatStalenessWarning,
+} from "../domain/extensions/extension_staleness.ts";
 
 // Import models barrel to trigger self-registration
 import "../domain/models/models.ts";
@@ -461,6 +467,7 @@ export async function configureExtensionLoaders(
   await checkForMissingPulledExtensions(repoDir, marker, deferredWarnings);
   await checkForSupersededSkills(repoDir, marker, deferredWarnings);
   await checkForLocalBundledSkills(repoDir, marker, deferredWarnings);
+  await checkForStaleExtensions(repoDir, marker, lockfilePath, quiet);
 }
 
 /**
@@ -1016,6 +1023,49 @@ async function checkForLocalBundledSkills(
     const updatedMarker = {
       ...marker,
       lastSkillMigrationWarning: new Date().toISOString(),
+    };
+    await markerRepo.write(repoPath, updatedMarker);
+  } catch {
+    // Non-fatal — don't block startup
+  }
+}
+
+const STALENESS_WARNING_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+async function checkForStaleExtensions(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+  lockfilePath: string,
+  quiet: boolean,
+): Promise<void> {
+  try {
+    if (quiet || !marker) return;
+
+    if (marker.lastStalenessWarning) {
+      const lastWarning = new Date(marker.lastStalenessWarning).getTime();
+      if (Date.now() - lastWarning < STALENESS_WARNING_INTERVAL_MS) {
+        return;
+      }
+    }
+
+    const lockfile = await readUpstreamExtensions(lockfilePath);
+    if (Object.keys(lockfile).length === 0) return;
+
+    const swampDir = swampPath(repoDir, "");
+    const cacheRepo = new FileExtensionUpdateCheckRepository(swampDir);
+    const cache = await cacheRepo.read();
+    if (Object.keys(cache).length === 0) return;
+
+    const stale = findStaleExtensions(lockfile, cache);
+    if (stale.length === 0) return;
+
+    console.error(`swamp-warning: ${formatStalenessWarning(stale)}`);
+
+    const repoPath = RepoPath.create(repoDir);
+    const markerRepo = new RepoMarkerRepository();
+    const updatedMarker: RepoMarkerData = {
+      ...marker,
+      lastStalenessWarning: new Date().toISOString(),
     };
     await markerRepo.write(repoPath, updatedMarker);
   } catch {

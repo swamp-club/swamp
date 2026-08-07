@@ -201,6 +201,50 @@ Deno.test("CalVer.withEpochMicro produces a valid CalVer", () => {
   assertEquals(CalVer.isValid(result.value), true);
 });
 
+// --- daysBehind ---
+
+Deno.test("CalVer.daysBehind: returns 0 for identical versions", () => {
+  const a = CalVer.create("2026.05.26.1");
+  const b = CalVer.create("2026.05.26.1");
+  assertEquals(CalVer.daysBehind(a, b), 0);
+});
+
+Deno.test("CalVer.daysBehind: returns 0 when installed is newer", () => {
+  const installed = CalVer.create("2026.07.25.1");
+  const latest = CalVer.create("2026.05.26.1");
+  assertEquals(CalVer.daysBehind(installed, latest), 0);
+});
+
+Deno.test("CalVer.daysBehind: computes days across months", () => {
+  const installed = CalVer.create("2026.05.26.1");
+  const latest = CalVer.create("2026.07.25.1");
+  assertEquals(CalVer.daysBehind(installed, latest), 60);
+});
+
+Deno.test("CalVer.daysBehind: computes days across years", () => {
+  const installed = CalVer.create("2025.12.01.1");
+  const latest = CalVer.create("2026.01.31.1");
+  assertEquals(CalVer.daysBehind(installed, latest), 61);
+});
+
+Deno.test("CalVer.daysBehind: ignores micro segment", () => {
+  const a = CalVer.create("2026.05.26.1");
+  const b = CalVer.create("2026.05.26.99");
+  assertEquals(CalVer.daysBehind(a, b), 0);
+});
+
+Deno.test("CalVer.daysBehind: single day difference", () => {
+  const installed = CalVer.create("2026.06.01.1");
+  const latest = CalVer.create("2026.06.02.1");
+  assertEquals(CalVer.daysBehind(installed, latest), 1);
+});
+
+Deno.test("CalVer.daysBehind: handles leap year boundary", () => {
+  const installed = CalVer.create("2024.02.28.1");
+  const latest = CalVer.create("2024.03.01.1");
+  assertEquals(CalVer.daysBehind(installed, latest), 2); // Feb 29 is a leap day
+});
+
 // --- toString ---
 
 Deno.test("CalVer.toString returns the raw string", () => {
