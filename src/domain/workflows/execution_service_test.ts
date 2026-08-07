@@ -173,6 +173,21 @@ class InMemoryWorkflowRunRepository implements WorkflowRunRepository {
     );
   }
 
+  async findGlobalByStatus(
+    status: string | string[],
+    since?: Date,
+  ): Promise<{ run: WorkflowRun; workflowId: WorkflowId }[]> {
+    const statuses = new Set(Array.isArray(status) ? status : [status]);
+    const all = await this.findAllGlobal();
+    return all.filter(({ run }) => {
+      if (!statuses.has(run.status)) return false;
+      if (since !== undefined) {
+        if (run.startedAt === undefined || run.startedAt < since) return false;
+      }
+      return true;
+    });
+  }
+
   save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
     const existing = this.runs.get(workflowId) ?? [];
     const idx = existing.findIndex((r) => r.id === run.id);
@@ -3281,6 +3296,13 @@ class TrackingRunRepository implements WorkflowRunRepository {
     cutoff: Date,
   ): Promise<{ run: WorkflowRun; workflowId: WorkflowId }[]> {
     return this.inner.findAllGlobalSince(cutoff);
+  }
+
+  findGlobalByStatus(
+    status: string | string[],
+    since?: Date,
+  ): Promise<{ run: WorkflowRun; workflowId: WorkflowId }[]> {
+    return this.inner.findGlobalByStatus(status, since);
   }
 
   save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {

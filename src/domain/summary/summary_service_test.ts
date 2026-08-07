@@ -152,6 +152,20 @@ function createMockWorkflowRunRepo(
           run.startedAt !== undefined && run.startedAt >= cutoff
         ),
       ),
+    findGlobalByStatus: (status: string | string[], since?: Date) => {
+      const statuses = new Set(Array.isArray(status) ? status : [status]);
+      return Promise.resolve(
+        items.filter(({ run }) => {
+          if (!statuses.has(run.status)) return false;
+          if (since !== undefined) {
+            if (run.startedAt === undefined || run.startedAt < since) {
+              return false;
+            }
+          }
+          return true;
+        }),
+      );
+    },
     findById: () => Promise.resolve(null),
     findAllByWorkflowId: () => Promise.resolve([]),
     findLatestByWorkflowId: () => Promise.resolve(null),
