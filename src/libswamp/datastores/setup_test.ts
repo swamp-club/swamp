@@ -41,6 +41,7 @@ import {
   SyncTimeoutError,
 } from "../../domain/datastore/datastore_sync_service.ts";
 import { readNamespaceManifest } from "../../infrastructure/persistence/namespace_manifest.ts";
+import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 
 function makeDeps(
   overrides: Partial<DatastoreSetupDeps> = {},
@@ -965,7 +966,7 @@ Deno.test("datastoreSetupExtension: migrates to namespace-scoped cache path when
     datastoreSetupExtension(createLibSwampContext(), deps, input),
   );
 
-  assertEquals(capturedDestPath, join("/tmp/repo", ".cache", "infra"));
+  assertPathEquals(capturedDestPath, join("/tmp/repo", ".cache", "infra"));
 });
 
 Deno.test("datastoreSetupExtension: migrates to bare cache path when no namespace is set", async () => {
@@ -989,7 +990,7 @@ Deno.test("datastoreSetupExtension: migrates to bare cache path when no namespac
     datastoreSetupExtension(createLibSwampContext(), deps, input),
   );
 
-  assertEquals(capturedDestPath, join("/tmp/repo", ".cache"));
+  assertPathEquals(capturedDestPath, join("/tmp/repo", ".cache"));
 });
 
 Deno.test("datastoreSetupExtension: threads namespace on skip-migration pull-only path", async () => {
