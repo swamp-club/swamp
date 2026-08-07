@@ -67,6 +67,14 @@ See `design/skills.md` for the full skill testing pipeline.
   `""value""`. Numbers and other primitives render unquoted, so a bare
   `${count}` is correct in all cases.
 
+- The `organizations` array from `GET /api/whoami` is an authorization contract,
+  not a general-purpose payload. `getCollectives()` in
+  `src/infrastructure/http/swamp_club_client.ts` reduces it to slugs, and
+  extension push and pull authorize namespace ownership from that list. Add new
+  server-supplied data as its own optional top-level field joined on `slug` (as
+  `collectiveEntitlements` does) rather than as extra keys on the organization
+  entries, so changes to unrelated concerns can never reach the publish path.
+
 Changes should only touch what's necessary — don't refactor adjacent code that
 isn't part of the task. Keep the blast radius small.
 

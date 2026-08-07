@@ -19,7 +19,7 @@
 
 import { assertEquals, assertRejects } from "@std/assert";
 import { assertStringIncludes } from "@std/assert/string-includes";
-import { SwampClubClient } from "./swamp_club_client.ts";
+import { getCollectives, SwampClubClient } from "./swamp_club_client.ts";
 import { UserError } from "../../domain/errors.ts";
 
 /** Start a simple mock HTTP server that returns canned responses. */
@@ -828,4 +828,73 @@ Deno.test("submitIssue: respects caller abort signal", async () => {
   } finally {
     await mock.shutdown();
   }
+});
+
+// --- getCollectives: the extension-push authorization path (issue #1544) ---
+
+Deno.test("getCollectives: returns slugs from organizations", () => {
+  const slugs = getCollectives({
+    authenticated: true,
+    organizations: [
+      { slug: "acme", name: "Acme", role: "owner", personal: false },
+      { slug: "keeb", name: "keeb", role: "owner", personal: true },
+    ],
+  });
+
+  assertEquals(slugs, ["acme", "keeb"]);
+});
+
+Deno.test("getCollectives: entitlement never changes the collective list", () => {
+  // Extension push and pull authorize namespace ownership from this list
+  // (push.ts `fetchCollectives`). Entitlement is reported in its own
+  // `collectiveEntitlements` field precisely so billing can never add, drop,
+  // or reorder a collective the publish path depends on.
+  const organizations = [
+    { slug: "acme", name: "Acme", role: "owner", personal: false },
+    { slug: "keeb", name: "keeb", role: "owner", personal: true },
+  ];
+
+  const withoutEntitlement = getCollectives({
+    authenticated: true,
+    organizations,
+  });
+  const withEntitlement = getCollectives({
+    authenticated: true,
+    organizations,
+    plan: "team",
+    collectiveEntitlements: [
+      {
+        slug: "acme",
+        plan: "team",
+        planName: "Team",
+        subscriptionStatus: "active",
+        trial: null,
+      },
+      { slug: "keeb", plan: "free", planName: "Free", trial: null },
+    ],
+  });
+
+  assertEquals(withEntitlement, withoutEntitlement);
+  assertEquals(withEntitlement, ["acme", "keeb"]);
+});
+
+Deno.test("getCollectives: a collective missing entitlement is still listed", () => {
+  // The two arrays are joined on slug, not zipped. A collective absent from
+  // `collectiveEntitlements` must still authorize a push.
+  const slugs = getCollectives({
+    authenticated: true,
+    organizations: [
+      { slug: "acme", name: "Acme", role: "owner", personal: false },
+      { slug: "orphan", name: "Orphan", role: "member", personal: false },
+    ],
+    collectiveEntitlements: [
+      { slug: "acme", plan: "team", planName: "Team", trial: null },
+    ],
+  });
+
+  assertEquals(slugs, ["acme", "orphan"]);
+});
+
+Deno.test("getCollectives: undefined when the server sends no organizations", () => {
+  assertEquals(getCollectives({ authenticated: true }), undefined);
 });

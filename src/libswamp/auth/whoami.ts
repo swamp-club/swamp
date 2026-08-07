@@ -21,7 +21,10 @@ import {
   apiKeyFingerprint,
   type AuthCredentials,
 } from "../../domain/auth/auth_credentials.ts";
-import type { WhoamiResponse } from "../../infrastructure/http/swamp_club_client.ts";
+import type {
+  WhoamiResponse,
+  WhoamiTrial,
+} from "../../infrastructure/http/swamp_club_client.ts";
 import {
   getCollectives,
   SwampClubClient,
@@ -39,6 +42,24 @@ import {
   type SwampError,
 } from "../errors.ts";
 
+/**
+ * What one collective entitles the operative to, as the server reported it.
+ *
+ * Carried alongside — never instead of — {@link WhoamiIdentity.collectives}.
+ * That field is a slug list persisted to auth.json and read by three other
+ * call sites; widening it would rewrite every existing user's credentials file
+ * and turn a cache into a second, staler source of truth for a question the
+ * server owns.
+ */
+export interface WhoamiCollectiveEntitlement {
+  slug: string;
+  plan?: string;
+  planName?: string;
+  /** Owner/admin only — absent when the server withheld it. */
+  subscriptionStatus?: string | null;
+  trial?: WhoamiTrial | null;
+}
+
 export interface WhoamiIdentity {
   serverUrl: string;
   id: string;
@@ -46,6 +67,14 @@ export interface WhoamiIdentity {
   email: string;
   name: string;
   collectives?: string[];
+  /** Strongest plan across the operative's collectives. Server-derived. */
+  plan?: string;
+  /**
+   * Per-collective entitlement. Absent when the server sends none — an older
+   * or self-hosted swamp-club — which is what keeps whoami working against
+   * every server version.
+   */
+  collectiveEntitlements?: WhoamiCollectiveEntitlement[];
   collectiveToken?: boolean;
   collectiveSlug?: string;
   scopes?: string[];
@@ -108,6 +137,35 @@ export function createAuthDeps(options: CreateAuthDepsOptions = {}): AuthDeps {
   };
 }
 
+/**
+ * Per-collective entitlement from a whoami response, or undefined when the
+ * server sent none.
+ *
+ * Reads the dedicated `collectiveEntitlements` field, never `organizations` —
+ * that array is membership, and extension push authorizes against it. Returns
+ * undefined rather than an empty array so the renderers can tell "this server
+ * does not report entitlement" apart from "entitlement says everything is
+ * free", and fall back to the older output shape only in the first case.
+ */
+function toEntitlements(
+  response: WhoamiResponse,
+): WhoamiCollectiveEntitlement[] | undefined {
+  const entitlements = response.collectiveEntitlements;
+  if (!entitlements || entitlements.length === 0) return undefined;
+
+  return entitlements.map((entitlement) => ({
+    slug: entitlement.slug,
+    ...(entitlement.plan !== undefined ? { plan: entitlement.plan } : {}),
+    ...(entitlement.planName !== undefined
+      ? { planName: entitlement.planName }
+      : {}),
+    ...(entitlement.subscriptionStatus !== undefined
+      ? { subscriptionStatus: entitlement.subscriptionStatus }
+      : {}),
+    ...(entitlement.trial !== undefined ? { trial: entitlement.trial } : {}),
+  }));
+}
+
 /** Verifies the current authenticated identity via the swamp-club API. */
 export async function* whoami(
   ctx: LibSwampContext,
@@ -137,6 +195,7 @@ export async function* whoami(
     }
 
     const collectives = getCollectives(response);
+    const entitlements = toEntitlements(response);
 
     if (!response.collectiveToken) {
       // Refresh cached collectives in auth.json so they stay current.
@@ -156,6 +215,8 @@ export async function* whoami(
         email: response.email ?? "",
         name: response.name ?? "",
         ...(collectives ? { collectives } : {}),
+        ...(response.plan ? { plan: response.plan } : {}),
+        ...(entitlements ? { collectiveEntitlements: entitlements } : {}),
         ...(response.collectiveToken
           ? {
             collectiveToken: true,
