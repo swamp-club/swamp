@@ -279,6 +279,7 @@ async function withDetachedServeRepo(
         oauthProvider: "https://swamp-club.com",
         groupsField: "collectives",
         restrictedModelTypes: [],
+        restrictedCommands: [],
       },
       activeRunRegistry: registry,
       cancelRegistry: new RunCancelRegistry(),
