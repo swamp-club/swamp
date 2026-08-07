@@ -50,6 +50,9 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { ExtensionOutdatedResponse } from "../../serve/protocol.ts";
+import { extensionCacheKey } from "../../domain/extensions/extension_update_check_cache.ts";
+import { FileExtensionUpdateCheckRepository } from "../../infrastructure/persistence/extension_update_check_repository.ts";
+import { swampPath } from "../../infrastructure/persistence/paths.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -174,6 +177,8 @@ export const extensionOutdatedCommand = withRemoteOptions(
     extensionUpdate(ctx, deps, { checkOnly: true }),
   );
 
+  await populateUpdateCheckCache(repoDir, completed.data.extensions);
+
   const filtered = filterOutdated(completed.data.extensions);
   const hasUpdateAvailable = filtered.some(
     (s) => s.status === "update_available",
@@ -194,3 +199,31 @@ export const extensionOutdatedCommand = withRemoteOptions(
     Deno.exit(1);
   }
 });
+
+async function populateUpdateCheckCache(
+  repoDir: string,
+  statuses: ExtensionUpdateStatus[],
+): Promise<void> {
+  try {
+    const cacheRepo = new FileExtensionUpdateCheckRepository(
+      swampPath(repoDir, ""),
+    );
+    const cache = await cacheRepo.read();
+    const now = new Date().toISOString();
+
+    for (const s of statuses) {
+      if (s.status !== "up_to_date" && s.status !== "update_available") {
+        continue;
+      }
+      const key = extensionCacheKey(s.name, s.channel);
+      cache[key] = {
+        checkedAt: now,
+        latestVersion: s.latestVersion,
+      };
+    }
+
+    await cacheRepo.write(cache);
+  } catch {
+    // Non-fatal — cache population failure should not affect the command
+  }
+}

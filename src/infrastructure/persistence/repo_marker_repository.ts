@@ -62,6 +62,7 @@ export interface RepoMarkerData {
   trustMemberCollectives?: boolean;
   lastSkillMigrationWarning?: string;
   skillMigrationDismissed?: boolean;
+  lastStalenessWarning?: string;
   autoGc?: boolean;
   defaultVault?: string;
 }
