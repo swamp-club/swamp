@@ -1528,6 +1528,7 @@ export const serveCommand = new Command()
     );
 
     let oauthClientSecret = "";
+    const resolvedUserNames: Record<string, string> = {};
     if (authConfig.mode === "oauth") {
       const oauthVaultService = await VaultService.fromRepository(
         resolvedRepoDir,
@@ -1748,6 +1749,12 @@ export const serveCommand = new Command()
           TOKEN_SECRETS_VAULT_NAME,
           resolvedMap,
         );
+        for (const [key, sub] of Object.entries(resolvedMap)) {
+          const username = key.startsWith("allowed:")
+            ? key.slice("allowed:".length)
+            : key;
+          resolvedUserNames[sub] = username;
+        }
       } else if (credentials.resolvedAdmins) {
         for (let i = 0; i < authConfig.admins.length; i++) {
           const admin = authConfig.admins[i];
@@ -1782,6 +1789,12 @@ export const serveCommand = new Command()
                 "Restart serve without --oauth-client-id to re-register",
             );
           }
+        }
+        for (const [key, sub] of Object.entries(credentials.resolvedAdmins)) {
+          const username = key.startsWith("allowed:")
+            ? key.slice("allowed:".length)
+            : key;
+          resolvedUserNames[sub] = username;
         }
       } else {
         throw new UserError(
@@ -2132,6 +2145,9 @@ export const serveCommand = new Command()
         staleTtlMs,
         grantsFile: externalGrantsFilePath,
         hotReload: merged.hotReload,
+        ...(Object.keys(resolvedUserNames).length > 0
+          ? { resolvedUserNames }
+          : {}),
       };
 
     const ac = new AbortController();

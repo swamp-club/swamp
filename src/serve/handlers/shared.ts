@@ -107,6 +107,8 @@ export interface ConnectionContext {
   grantsFile?: string;
   /** Whether --hot-reload is enabled — gates serve.reload over WebSocket. */
   hotReload?: boolean;
+  /** Inverted resolvedAdmins map: OAuth sub → username. Populated at startup in OAuth mode. */
+  resolvedUserNames?: Record<string, string>;
 }
 
 // SECURITY: Authorization must operate on canonical (normalized) model types,

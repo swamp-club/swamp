@@ -22,10 +22,16 @@ import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 
 export interface AccessGrantListRenderer {
-  render(grants: Grant[]): void;
+  render(grants: Grant[], displayNames?: Record<string, string>): void;
 }
 
-function formatSubject(subject: Grant["subject"]): string {
+function formatSubject(
+  subject: Grant["subject"],
+  displayNames?: Record<string, string>,
+): string {
+  if (subject.kind === "user" && displayNames?.[subject.name]) {
+    return `${subject.kind}:${displayNames[subject.name]}`;
+  }
   return `${subject.kind}:${subject.name}`;
 }
 
@@ -34,7 +40,7 @@ function formatResource(resource: Grant["resource"]): string {
 }
 
 class LogAccessGrantListRenderer implements AccessGrantListRenderer {
-  render(grants: Grant[]): void {
+  render(grants: Grant[], displayNames?: Record<string, string>): void {
     if (grants.length === 0) {
       writeOutput("No active grants found.");
       return;
@@ -50,7 +56,7 @@ class LogAccessGrantListRenderer implements AccessGrantListRenderer {
 
     for (const grant of grants) {
       const id = grant.id.padEnd(idDisplay);
-      const subject = formatSubject(grant.subject).padEnd(28);
+      const subject = formatSubject(grant.subject, displayNames).padEnd(28);
       const effect = grant.effect.padEnd(6);
       const actions = grant.actions.join(",").padEnd(20);
       const resource = formatResource(grant.resource).padEnd(28);

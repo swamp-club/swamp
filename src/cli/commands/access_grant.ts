@@ -353,8 +353,11 @@ const accessGrantListCommand = new Command()
           grants.push(parsed.data);
         }
       }
+      const displayNames = response.subjectDisplayNames as
+        | Record<string, string>
+        | undefined;
       const renderer = createAccessGrantListRenderer(ctx.outputMode);
-      renderer.render(grants);
+      renderer.render(grants, displayNames);
       return;
     }
 

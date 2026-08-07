@@ -93,3 +93,88 @@ Deno.test("accessGrantListRenderer json: outputs JSON array", () => {
   const parsed = JSON.parse(output.join(""));
   assertStringIncludes(parsed[0].id, "test-uuid");
 });
+
+Deno.test("accessGrantListRenderer log: resolves user subject with display name", () => {
+  const renderer = createAccessGrantListRenderer("log");
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => output.push(args.join(" "));
+  try {
+    const grant = makeGrant({
+      subject: { kind: "user", name: "8d540893-434a-4422-8970-6edba6602e9b" },
+    });
+    renderer.render([grant], {
+      "8d540893-434a-4422-8970-6edba6602e9b": "paul",
+    });
+  } finally {
+    console.log = origLog;
+  }
+  assertStringIncludes(output[1], "user:paul");
+});
+
+Deno.test("accessGrantListRenderer log: falls back to raw sub when no display name", () => {
+  const renderer = createAccessGrantListRenderer("log");
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => output.push(args.join(" "));
+  try {
+    const grant = makeGrant({
+      subject: { kind: "user", name: "unknown-sub-id" },
+    });
+    renderer.render([grant], { "other-sub": "bob" });
+  } finally {
+    console.log = origLog;
+  }
+  assertStringIncludes(output[1], "user:unknown-sub-id");
+});
+
+Deno.test("accessGrantListRenderer log: does not resolve group subjects", () => {
+  const renderer = createAccessGrantListRenderer("log");
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => output.push(args.join(" "));
+  try {
+    const grant = makeGrant({
+      subject: { kind: "group", name: "platform-eng" },
+    });
+    renderer.render([grant], { "platform-eng": "should-not-appear" });
+  } finally {
+    console.log = origLog;
+  }
+  assertStringIncludes(output[1], "group:platform-eng");
+});
+
+Deno.test("accessGrantListRenderer json: ignores display names", () => {
+  const renderer = createAccessGrantListRenderer("json");
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => output.push(args.join(" "));
+  try {
+    const grant = makeGrant({
+      subject: { kind: "user", name: "8d540893-434a-4422-8970-6edba6602e9b" },
+    });
+    renderer.render([grant], {
+      "8d540893-434a-4422-8970-6edba6602e9b": "paul",
+    });
+  } finally {
+    console.log = origLog;
+  }
+  const parsed = JSON.parse(output.join(""));
+  assertStringIncludes(
+    parsed[0].subject.name,
+    "8d540893-434a-4422-8970-6edba6602e9b",
+  );
+});
+
+Deno.test("accessGrantListRenderer log: works without display names argument", () => {
+  const renderer = createAccessGrantListRenderer("log");
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => output.push(args.join(" "));
+  try {
+    renderer.render([makeGrant()]);
+  } finally {
+    console.log = origLog;
+  }
+  assertStringIncludes(output[1], "user:adam");
+});
