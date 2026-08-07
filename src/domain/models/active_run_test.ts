@@ -263,3 +263,20 @@ Deno.test("ActiveRun.fromData: initiatedBy absent defaults to null", () => {
 
   assertEquals(run.initiatedBy, null);
 });
+
+Deno.test("ActiveRun.isStale: returns true for invalid heartbeatAt (NaN)", () => {
+  const run = ActiveRun.fromData({
+    id: "test-id",
+    runKind: "model_method",
+    modelType: "@test/model",
+    methodName: "start",
+    workflowName: null,
+    pid: 1234,
+    hostname: "test-host",
+    startedAt: new Date().toISOString(),
+    heartbeatAt: "not-a-date",
+    status: "running",
+  });
+
+  assertEquals(run.isStale(90_000), true);
+});

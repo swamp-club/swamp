@@ -633,3 +633,125 @@ Deno.test("loadServeConfig: non-string grants-file produces error", () => {
     );
   });
 });
+
+// ── mergeServeOptions: new concurrency/duration fields ────────────────
+
+Deno.test("mergeServeOptions: max-concurrent-runs from CLI flag", () => {
+  const cliOptions = { maxConcurrentRuns: 50 };
+  const explicitFlags = new Set(["max-concurrent-runs"]);
+  const merged = mergeServeOptions(
+    null,
+    cliOptions,
+    explicitFlags,
+    () => undefined,
+  );
+  assertEquals(merged.maxConcurrentRuns, 50);
+});
+
+Deno.test("mergeServeOptions: max-concurrent-runs from env var", () => {
+  const merged = mergeServeOptions(
+    null,
+    {},
+    new Set<string>(),
+    (name) => name === "SWAMP_MAX_CONCURRENT_RUNS" ? "25" : undefined,
+  );
+  assertEquals(merged.maxConcurrentRuns, 25);
+});
+
+Deno.test("mergeServeOptions: max-concurrent-runs from config file", () => {
+  const config: ServeConfigFile = { "max-concurrent-runs": 75 };
+  const merged = mergeServeOptions(
+    config,
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.maxConcurrentRuns, 75);
+});
+
+Deno.test("mergeServeOptions: max-concurrent-runs defaults to undefined", () => {
+  const merged = mergeServeOptions(
+    null,
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.maxConcurrentRuns, undefined);
+});
+
+Deno.test("mergeServeOptions: max-runs-per-principal from CLI flag", () => {
+  const cliOptions = { maxRunsPerPrincipal: 5 };
+  const explicitFlags = new Set(["max-runs-per-principal"]);
+  const merged = mergeServeOptions(
+    null,
+    cliOptions,
+    explicitFlags,
+    () => undefined,
+  );
+  assertEquals(merged.maxRunsPerPrincipal, 5);
+});
+
+Deno.test("mergeServeOptions: max-run-duration from CLI flag", () => {
+  const cliOptions = { maxRunDuration: "1h" };
+  const explicitFlags = new Set(["max-run-duration"]);
+  const merged = mergeServeOptions(
+    null,
+    cliOptions,
+    explicitFlags,
+    () => undefined,
+  );
+  assertEquals(merged.maxRunDuration, "1h");
+});
+
+Deno.test("mergeServeOptions: max-run-duration from config file", () => {
+  const config: ServeConfigFile = { "max-run-duration": "30m" };
+  const merged = mergeServeOptions(
+    config,
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.maxRunDuration, "30m");
+});
+
+Deno.test("mergeServeOptions: non-numeric env var for max-concurrent-runs is ignored", () => {
+  const merged = mergeServeOptions(
+    null,
+    {},
+    new Set<string>(),
+    (name) => name === "SWAMP_MAX_CONCURRENT_RUNS" ? "abc" : undefined,
+  );
+  assertEquals(merged.maxConcurrentRuns, undefined);
+});
+
+Deno.test("mergeServeOptions: CLI flag zero for max-concurrent-runs passes through", () => {
+  const cliOptions = { maxConcurrentRuns: 0 };
+  const explicitFlags = new Set(["max-concurrent-runs"]);
+  const merged = mergeServeOptions(
+    null,
+    cliOptions,
+    explicitFlags,
+    () => undefined,
+  );
+  assertEquals(merged.maxConcurrentRuns, 0);
+});
+
+Deno.test("mergeServeOptions: empty env var for max-concurrent-runs is ignored", () => {
+  const merged = mergeServeOptions(
+    null,
+    {},
+    new Set<string>(),
+    (name) => name === "SWAMP_MAX_CONCURRENT_RUNS" ? "" : undefined,
+  );
+  assertEquals(merged.maxConcurrentRuns, undefined);
+});
+
+Deno.test("mergeServeOptions: whitespace-only env var for max-concurrent-runs is ignored", () => {
+  const merged = mergeServeOptions(
+    null,
+    {},
+    new Set<string>(),
+    (name) => name === "SWAMP_MAX_CONCURRENT_RUNS" ? "   " : undefined,
+  );
+  assertEquals(merged.maxConcurrentRuns, undefined);
+});

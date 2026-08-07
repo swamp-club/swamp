@@ -104,6 +104,7 @@ import {
   runWithParentTrace,
 } from "../../infrastructure/tracing/mod.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
+import { RegistryCapacityError } from "../active_run_registry.ts";
 import { RunEventBuffer } from "../run_event_buffer.ts";
 import {
   deleteActiveRun,
@@ -118,7 +119,9 @@ import {
   sendError,
   subscribeUntilDetach,
 } from "./shared.ts";
+import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 
+const logger = getSwampLogger(["serve", "connection"]);
 const DEFAULT_BUFFER_CAPACITY = 10_000;
 
 export async function handleWorkflowRun(
@@ -208,7 +211,38 @@ export async function handleWorkflowRun(
   let runId: string = crypto.randomUUID();
   const startedAt = new Date();
 
-  const completion = (async () => {
+  let resolveCompletion!: () => void;
+  const completion = new Promise<void>((r) => {
+    resolveCompletion = r;
+  });
+
+  try {
+    registry.register({
+      runId,
+      kind: "workflow-run",
+      resourceName: payload.workflowIdOrName,
+      buffer,
+      controller: runController,
+      startedAt,
+      completion,
+      principalId: principal ? principalToString(principal) : null,
+    });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    logger.warn("Detached workflow run rejected: {error}", { error: detail });
+    resolveCompletion();
+    if (err instanceof RegistryCapacityError) {
+      const clientMsg = err.code === "already_registered"
+        ? "A run with this ID is already in progress"
+        : "Too many concurrent runs; wait for active runs to complete";
+      sendError(socket, requestId, err.code, clientMsg);
+    } else {
+      sendError(socket, requestId, "internal_error", "Run registration failed");
+    }
+    return;
+  }
+
+  (async () => {
     try {
       await executeWorkflowWithLocks(
         ctx.repoDir,
@@ -282,32 +316,24 @@ export async function handleWorkflowRun(
       }
     } finally {
       registry.deregister(runId);
-      if (ctx.controlPlaneStore && ctx.instanceId) {
-        deleteActiveRun(ctx.controlPlaneStore, ctx.instanceId, runId);
+      try {
+        if (ctx.controlPlaneStore && ctx.instanceId) {
+          deleteActiveRun(ctx.controlPlaneStore, ctx.instanceId, runId);
+        }
+      } catch (cleanupErr) {
+        logger.warn("Failed to delete active run record: {error}", {
+          error: cleanupErr instanceof Error
+            ? cleanupErr.message
+            : String(cleanupErr),
+        });
       }
+      resolveCompletion();
     }
-  })();
-
-  try {
-    registry.register({
-      runId,
-      kind: "workflow-run",
-      resourceName: payload.workflowIdOrName,
-      buffer,
-      controller: runController,
-      startedAt,
-      completion,
+  })().catch((err) => {
+    logger.warn("Unhandled error in detached workflow run: {error}", {
+      error: err instanceof Error ? err.message : String(err),
     });
-  } catch {
-    runController.abort();
-    sendError(
-      socket,
-      requestId,
-      "too_many_requests",
-      `Too many concurrent runs; wait for active runs to complete`,
-    );
-    return;
-  }
+  });
 
   if (ctx.controlPlaneStore && ctx.instanceId) {
     writeActiveRun(ctx.controlPlaneStore, ctx.instanceId, runId, {
@@ -1101,8 +1127,42 @@ export async function handleWorkflowResume(
   const buffer = new RunEventBuffer(DEFAULT_BUFFER_CAPACITY);
   const runController = new AbortController();
   const runId: string = resolvedRun.id;
+  const startedAt = new Date();
 
-  const completion = (async () => {
+  let resolveCompletion!: () => void;
+  const completion = new Promise<void>((r) => {
+    resolveCompletion = r;
+  });
+
+  try {
+    registry.register({
+      runId,
+      kind: "workflow-resume",
+      resourceName: payload.workflowIdOrName,
+      buffer,
+      controller: runController,
+      startedAt,
+      completion,
+      principalId: principal ? principalToString(principal) : null,
+    });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    logger.warn("Detached workflow resume rejected: {error}", {
+      error: detail,
+    });
+    resolveCompletion();
+    if (err instanceof RegistryCapacityError) {
+      const clientMsg = err.code === "already_registered"
+        ? "A run with this ID is already in progress"
+        : "Too many concurrent runs; wait for active runs to complete";
+      sendError(socket, requestId, err.code, clientMsg);
+    } else {
+      sendError(socket, requestId, "internal_error", "Run registration failed");
+    }
+    return;
+  }
+
+  (async () => {
     const stepLockHook: StepLockHook = async (modelType, modelId) => {
       const lockResult = await acquireModelLocks(
         ctx.datastoreConfig,
@@ -1192,35 +1252,34 @@ export async function handleWorkflowResume(
         });
       }
     } finally {
-      ephemeral?.dispose();
-      registry.deregister(runId);
-      if (ctx.controlPlaneStore && ctx.instanceId) {
-        deleteActiveRun(ctx.controlPlaneStore, ctx.instanceId, runId);
+      try {
+        ephemeral?.dispose();
+      } catch (disposeErr) {
+        logger.warn("Failed to dispose ephemeral store: {error}", {
+          error: disposeErr instanceof Error
+            ? disposeErr.message
+            : String(disposeErr),
+        });
       }
+      registry.deregister(runId);
+      try {
+        if (ctx.controlPlaneStore && ctx.instanceId) {
+          deleteActiveRun(ctx.controlPlaneStore, ctx.instanceId, runId);
+        }
+      } catch (cleanupErr) {
+        logger.warn("Failed to delete active run record: {error}", {
+          error: cleanupErr instanceof Error
+            ? cleanupErr.message
+            : String(cleanupErr),
+        });
+      }
+      resolveCompletion();
     }
-  })();
-
-  const startedAt = new Date();
-  try {
-    registry.register({
-      runId,
-      kind: "workflow-resume",
-      resourceName: payload.workflowIdOrName,
-      buffer,
-      controller: runController,
-      startedAt,
-      completion,
+  })().catch((err) => {
+    logger.warn("Unhandled error in detached workflow resume: {error}", {
+      error: err instanceof Error ? err.message : String(err),
     });
-  } catch {
-    runController.abort();
-    sendError(
-      socket,
-      requestId,
-      "too_many_requests",
-      `Too many concurrent runs; wait for active runs to complete`,
-    );
-    return;
-  }
+  });
 
   if (ctx.controlPlaneStore && ctx.instanceId) {
     writeActiveRun(ctx.controlPlaneStore, ctx.instanceId, runId, {

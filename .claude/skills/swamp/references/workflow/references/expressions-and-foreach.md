@@ -358,9 +358,10 @@ A hard reference to a missing field surfaces an error and the run does not
 start. The rest of the workflow reads extracted values as normal inputs
 (`${{ inputs.identifier }}`).
 
-**Security:** `webhook.headers` values are not redacted. Avoid forwarding
-sensitive headers into model attributes — they would be stored in `.swamp/data/`
-and visible in `swamp data get` output.
+**Security:** Sensitive `webhook.headers` values (authentication, proxy
+credentials, and headers ending in `-token` or `-secret`) are redacted before
+the payload is exposed to workflow expressions. Redacted headers are omitted
+entirely, so a workflow referencing one will fail on the missing field.
 
 ## Data Artifact Tracking
 

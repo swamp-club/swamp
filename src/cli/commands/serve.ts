@@ -149,7 +149,10 @@ import {
   replayPendingRuns,
   sweepStaleRecords,
 } from "../../serve/boot_reconciliation.ts";
-import { InstanceHeartbeatService } from "../../serve/instance_heartbeat.ts";
+import {
+  DEFAULT_HEARTBEAT_INTERVAL_MS,
+  InstanceHeartbeatService,
+} from "../../serve/instance_heartbeat.ts";
 import { FileSystemControlPlaneStore } from "../../infrastructure/persistence/fs_control_plane_store.ts";
 import type { ControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
 import { installUnhandledRejectionGuard } from "../../serve/unhandled_rejection_guard.ts";
@@ -930,6 +933,22 @@ export const serveCommand = new Command()
       "Only effective with a control-plane-capable datastore (env: SWAMP_RECONCILIATION_INTERVAL)",
   )
   .option(
+    "--max-concurrent-runs <count:integer>",
+    "Maximum number of concurrent detached runs across all principals. Default: 100. " +
+      "(env: SWAMP_MAX_CONCURRENT_RUNS)",
+  )
+  .option(
+    "--max-runs-per-principal <count:integer>",
+    "Maximum number of concurrent detached runs per authenticated principal. " +
+      "Unset by default (no per-principal limit). (env: SWAMP_MAX_RUNS_PER_PRINCIPAL)",
+  )
+  .option(
+    "--max-run-duration <duration:string>",
+    "Maximum wall-clock time a detached run may execute before being aborted. " +
+      "Accepts seconds (3600), explicit units (1h, 30m). Unset by default (no limit). " +
+      "(env: SWAMP_MAX_RUN_DURATION)",
+  )
+  .option(
     "--hot-reload",
     "Enable SIGHUP-based hot-reload for pulled extension bundles. " +
       "Writes a PID file to .swamp/serve.pid; use 'swamp serve reload' to trigger a reload",
@@ -1033,6 +1052,39 @@ export const serveCommand = new Command()
     const reconciliationIntervalMs = reconciliationIntervalRaw !== undefined
       ? parseTimeout(reconciliationIntervalRaw, "--reconciliation-interval")
       : undefined;
+
+    const maxConcurrentRuns = merged.maxConcurrentRuns;
+    if (
+      maxConcurrentRuns !== undefined &&
+      (!Number.isInteger(maxConcurrentRuns) || maxConcurrentRuns < 1)
+    ) {
+      throw new UserError(
+        `--max-concurrent-runs must be a positive integer, got ${maxConcurrentRuns}`,
+      );
+    }
+    const maxRunsPerPrincipal = merged.maxRunsPerPrincipal;
+    if (
+      maxRunsPerPrincipal !== undefined &&
+      (!Number.isInteger(maxRunsPerPrincipal) || maxRunsPerPrincipal < 1)
+    ) {
+      throw new UserError(
+        `--max-runs-per-principal must be a positive integer, got ${maxRunsPerPrincipal}`,
+      );
+    }
+    const maxRunDurationRaw = merged.maxRunDuration !== undefined
+      ? String(merged.maxRunDuration)
+      : undefined;
+    const maxRunDurationMs = maxRunDurationRaw !== undefined
+      ? parseTimeout(maxRunDurationRaw, "--max-run-duration")
+      : undefined;
+    const MAX_SETTIMEOUT_MS = 2_147_483_647;
+    if (
+      maxRunDurationMs !== undefined && maxRunDurationMs > MAX_SETTIMEOUT_MS
+    ) {
+      throw new UserError(
+        `--max-run-duration (${maxRunDurationRaw}) exceeds the maximum safe timer duration (~24.8 days)`,
+      );
+    }
 
     const authConfig = buildServeAuthConfig({
       authMode: merged.authMode,
@@ -1321,15 +1373,19 @@ export const serveCommand = new Command()
       }
     }
 
-    if (
-      hasRemoteControlPlane &&
-      staleTtlMs !== undefined && heartbeatIntervalMs !== undefined &&
-      staleTtlMs < heartbeatIntervalMs * 2
-    ) {
-      throw new UserError(
-        `--stale-ttl (${staleTtlRaw}) must be at least 2x --heartbeat-interval (${heartbeatIntervalRaw}), ` +
-          "otherwise live instances will appear stale",
-      );
+    if (hasRemoteControlPlane) {
+      const effectiveStaleTtl = staleTtlMs ?? DEFAULT_STALE_TTL_MS;
+      const effectiveHeartbeat = heartbeatIntervalMs ??
+        DEFAULT_HEARTBEAT_INTERVAL_MS;
+      if (effectiveStaleTtl < effectiveHeartbeat * 2) {
+        const staleTtlLabel = staleTtlRaw ?? `${DEFAULT_STALE_TTL_MS}ms`;
+        const heartbeatLabel = heartbeatIntervalRaw ??
+          `${DEFAULT_HEARTBEAT_INTERVAL_MS}ms`;
+        throw new UserError(
+          `--stale-ttl (${staleTtlLabel}) must be at least 2x --heartbeat-interval (${heartbeatLabel}), ` +
+            "otherwise live instances will appear stale",
+        );
+      }
     }
 
     if (hasRemoteControlPlane) {
@@ -1357,6 +1413,7 @@ export const serveCommand = new Command()
       // namespaced path — root keys are no longer addressable — so we
       // use a sentinel to skip re-migration on subsequent boots.
       const rootRecords = new Map<string, Uint8Array>();
+      const rootReadErrors: Array<{ prefix: string; error: Error }> = [];
       if (serveNamespace) {
         const rootStore = syncService.controlPlaneStore!();
         for (
@@ -1376,14 +1433,10 @@ export const serveCommand = new Command()
               if (data) rootRecords.set(key, new Uint8Array(data));
             }
           } catch (err) {
-            logger.warn(
-              "Failed to read root control-plane records under {prefix}: {error}",
-              {
-                prefix,
-                error: err instanceof Error ? err.message : String(err),
-              },
-            );
-            throw err;
+            rootReadErrors.push({
+              prefix,
+              error: err instanceof Error ? err : new Error(String(err)),
+            });
           }
         }
       }
@@ -1395,7 +1448,28 @@ export const serveCommand = new Command()
         namespace: serveNamespace,
       });
 
-      if (serveNamespace && rootRecords.size > 0) {
+      if (serveNamespace && rootReadErrors.length > 0) {
+        const namespacedStore = syncService.controlPlaneStore!();
+        const sentinel = await namespacedStore.get(MIGRATION_SENTINEL);
+        if (sentinel) {
+          for (const { prefix, error } of rootReadErrors) {
+            logger.debug(
+              "Root read failed for {prefix} (migration already complete): {error}",
+              { prefix, error: error.message },
+            );
+          }
+        } else {
+          throw new Error(
+            `Cannot complete namespace migration: root control-plane read failed for ` +
+              `${rootReadErrors.map((e) => e.prefix).join(", ")}: ` +
+              rootReadErrors[0].error.message,
+          );
+        }
+      }
+
+      if (
+        serveNamespace && rootRecords.size > 0 && rootReadErrors.length === 0
+      ) {
         const namespacedStore = syncService.controlPlaneStore!();
         const sentinel = await namespacedStore.get(MIGRATION_SENTINEL);
         if (!sentinel) {
@@ -1850,7 +1924,11 @@ export const serveCommand = new Command()
 
     const cancelRegistry = new RunCancelRegistry();
     const detachRuns = merged.detachRuns;
-    const activeRunRegistry = new ActiveRunRegistry();
+    const activeRunRegistry = new ActiveRunRegistry({
+      maxConcurrent: maxConcurrentRuns,
+      maxPerPrincipal: maxRunsPerPrincipal,
+      maxRunDurationMs,
+    });
 
     if (detachRuns) {
       logger.warn(
@@ -2620,7 +2698,14 @@ export const serveCommand = new Command()
               clearRateLimit(cancelRemoteAddr);
 
               const cancelPrincipal = parsePrincipal(authResult.principalId);
-              if (policySnapshotLoader) {
+              if (!policySnapshotLoader) {
+                return Response.json({
+                  status: "error",
+                  message:
+                    "Authorization enforcement is enabled but no policy snapshot is available",
+                }, { status: 403 });
+              }
+              {
                 const service = policySnapshotLoader.decisionService;
                 const decision = service.decide(
                   {
@@ -2685,6 +2770,9 @@ export const serveCommand = new Command()
               }, { status: 400 });
             }
             let count = cancelRegistry.cancelAll(typeFilter);
+            if (activeRunRegistry) {
+              count += activeRunRegistry.cancelAll(typeFilter);
+            }
             if (
               (!typeFilter || typeFilter === "workflow-run") &&
               scheduledExecution

@@ -34,7 +34,6 @@ import { VERSION } from "./version.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { parseTimeout } from "../duration_parser.ts";
 import { resolveExtraHeaders } from "../../domain/auth/extra_headers.ts";
-import { appendTokenToUrl } from "../remote_run.ts";
 
 // Import models barrel so built-in models resolve from the worker's own
 // registry when a `builtin:` bundle fingerprint is dispatched.
@@ -230,10 +229,14 @@ export const workerConnectCommand = new Command()
     });
 
     try {
-      const extraHeaders = resolveExtraHeaders();
-      const authenticatedUrl = appendTokenToUrl(url, serverToken);
+      const extraHeaders: Record<string, string> = {
+        ...resolveExtraHeaders(),
+      };
+      if (serverToken) {
+        extraHeaders["Authorization"] = `Bearer ${serverToken}`;
+      }
       const result = await runWorker({
-        url: authenticatedUrl,
+        url,
         token,
         labels,
         swampVersion: VERSION,

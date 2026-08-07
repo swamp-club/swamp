@@ -124,10 +124,9 @@ swamp worker connect wss://orch:9090 \
   --label tier=ci
 ```
 
-The CLI appends the server token as a `?token=` query parameter to the
-WebSocket URL before connecting, using the same `appendTokenToUrl` helper as
-`--server` commands. This avoids leaking the token in `SWAMP_ORCHESTRATOR_URL`
-environment dumps or process listings.
+The CLI sends the server token via the `Authorization: Bearer` header on the
+WebSocket upgrade request. This avoids leaking the token in URL query
+parameters, which would appear in reverse proxy and load balancer access logs.
 
 ### A symmetric control protocol, two handler registries
 
@@ -196,14 +195,16 @@ provided, so `export SWAMP_SERVE_URL=wss://demo.swamp-club.ai` avoids
 repeating the URL on every invocation. The explicit flag takes precedence when
 both are set.
 
-When `--auth-mode token` is active, the server validates a `?token=name.secret`
-query parameter at WebSocket upgrade time via the `swamp/server-token` model's
-`redeem` method (timing-safe, vault-backed). Unauthenticated connections receive
-HTTP 401. The client resolves the token from (in precedence order) the
-`--token` flag, the `SWAMP_SERVER_TOKEN` + `SWAMP_SERVER_URL` env vars, or
-stored credentials in `~/.config/swamp/servers.json` (managed by
-`swamp auth server-login`). Token management is through
-`swamp access token mint/list/revoke`.
+When `--auth-mode token` is active, the server validates the token presented at
+WebSocket upgrade time via the `swamp/server-token` model's `redeem` method
+(timing-safe, vault-backed). The server accepts the token via `Authorization:
+Bearer`, the `Sec-WebSocket-Protocol` subprotocol, or a `?token=` query
+parameter (in that priority order). The CLI sends it via the `Authorization`
+header. Unauthenticated connections receive HTTP 401. The client resolves the
+token from (in precedence order) the `--token` flag, the `SWAMP_SERVER_TOKEN` +
+`SWAMP_SERVER_URL` env vars, or stored credentials in
+`~/.config/swamp/servers.json` (managed by `swamp auth server-login`). Token
+management is through `swamp access token mint/list/revoke`.
 
 When `--auth-mode oauth` is active, users authenticate via the OAuth device
 grant flow (RFC 8628) against swamp-club. The server acts as an OAuth client
@@ -230,7 +231,7 @@ The flow:
 
 After the device flow, OAuth-minted tokens are indistinguishable from
 manually-minted tokens. The WebSocket upgrade, cancel endpoint, and all
-handler authorization use the same `?token=<name>.<secret>` +
+handler authorization use the same `<name>.<secret>` token +
 `authenticateServerToken` path for both modes. The only difference is
 collectives: the `authorizeOrReject` function reads collectives from the
 token record (via a per-connection WeakMap set at upgrade time), enabling
@@ -254,11 +255,12 @@ v1 is swamp-club-specific: the OAuth client endpoint paths
 The `--oauth-provider` flag accepts a custom URL but only swamp-club is
 tested.
 
-The token travels as a `?token=` query parameter on the WebSocket upgrade URL.
-This avoids the browser WebSocket limitation (no custom headers), but the
-plaintext will appear in any reverse proxy or load balancer access logs that
-capture the full request URL. Use TLS (`wss://`) for non-loopback deployments
-and configure access-log redaction on any intermediary that fronts the server.
+The CLI sends the token via the `Authorization: Bearer` header on the WebSocket
+upgrade request. The server also accepts the `Sec-WebSocket-Protocol`
+subprotocol and `?token=` query parameter (for backward compatibility with older
+clients), but the header transport is preferred because it keeps credentials out
+of URL paths that reverse proxies and CDNs log. Use TLS (`wss://`) for
+non-loopback deployments.
 
 ### Extra headers for reverse proxies and tunnels
 

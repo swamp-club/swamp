@@ -203,9 +203,11 @@ trigger:
 
 swamp's CEL has no `??` operator — guard optional payload fields with the
 `has()` macro and a ternary: `has(x.y) ? x.y : fallback`. A hard reference to a
-missing field surfaces an error and the run does not start. Header values are
-not redacted (the same caveat as `env`). See `design/workflow.md` for the full
-walkthrough.
+missing field surfaces an error and the run does not start. Sensitive headers
+(authentication, proxy credentials, and headers ending in `-token` or `-secret`)
+are redacted before the payload is exposed to workflow expressions — redacted
+headers are omitted entirely, so a workflow referencing one will fail on the
+missing field. See `design/workflow.md` for the full walkthrough.
 
 **Run-scoped resource keys** — use `run.id` to prevent collisions when the
 same workflow runs concurrently:
