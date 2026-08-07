@@ -81,6 +81,7 @@ export async function modelSearchAction(
   query?: string,
 ): Promise<void> {
   const ctx = createContext(options as GlobalOptions, ["model", "search"]);
+  const includeInternal = options.all as boolean | undefined;
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
@@ -92,7 +93,7 @@ export async function modelSearchAction(
       { server, token },
       {
         type: "model.search",
-        payload: { query },
+        payload: { query, includeInternal },
       },
     );
     const renderer = createModelSearchRenderer(ctx.outputMode);
@@ -121,8 +122,6 @@ export async function modelSearchAction(
   const fetchPreview = effectiveMode === "log"
     ? await createModelFetchPreview(repoDir)
     : undefined;
-
-  const includeInternal = options.all as boolean | undefined;
   const renderer = createModelSearchRenderer(effectiveMode, fetchPreview);
   await consumeStream(
     modelSearch(libCtx, deps, { query, includeInternal }),

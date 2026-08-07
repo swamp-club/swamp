@@ -119,6 +119,7 @@ export interface ModelDeletePayload {
 
 export interface ModelSearchPayload {
   query?: string;
+  includeInternal?: boolean;
 }
 
 export interface ModelMethodDescribePayload {
