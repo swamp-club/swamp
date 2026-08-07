@@ -82,7 +82,23 @@ export async function mergeDirInto(
         // doesn't exist
       }
       if (!dstExists) {
-        await Deno.rename(srcPath, dstPath);
+        try {
+          await Deno.rename(srcPath, dstPath);
+        } catch {
+          try {
+            await Deno.copyFile(srcPath, dstPath);
+          } catch (copyError) {
+            if (copyError instanceof Deno.errors.NotFound) continue;
+            throw copyError;
+          }
+          try {
+            await Deno.remove(srcPath);
+          } catch (removeError) {
+            if (!(removeError instanceof Deno.errors.NotFound)) {
+              throw removeError;
+            }
+          }
+        }
         moved++;
       } else if (entry.isDirectory && !entry.isSymlink) {
         moved += await mergeRecursive(srcPath, dstPath, relPath);

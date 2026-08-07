@@ -278,7 +278,25 @@ export async function migrateGrantDefinitions(
     } catch (statError) {
       if (!(statError instanceof Deno.errors.NotFound)) throw statError;
 
-      await Deno.rename(srcPath, dstPath);
+      try {
+        await Deno.rename(srcPath, dstPath);
+      } catch {
+        // Cross-filesystem move (repo and home on different mounts): rename
+        // throws EXDEV, so fall back to copy-then-remove. A NotFound from
+        // either step means a concurrent invocation already migrated the
+        // file — skip it.
+        try {
+          await Deno.copyFile(srcPath, dstPath);
+        } catch (copyError) {
+          if (copyError instanceof Deno.errors.NotFound) continue;
+          throw copyError;
+        }
+        try {
+          await Deno.remove(srcPath);
+        } catch (removeError) {
+          if (!(removeError instanceof Deno.errors.NotFound)) throw removeError;
+        }
+      }
       result.moved++;
       logger.info`Migrated grant definition ${entry.name} to auto-definitions`;
     }
