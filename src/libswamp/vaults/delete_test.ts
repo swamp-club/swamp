@@ -32,7 +32,6 @@ function makeDeps(overrides: Partial<VaultDeleteDeps> = {}): VaultDeleteDeps {
     findVault: () =>
       Promise.resolve({ id: "v1", name: "my-vault", type: "local_encryption" }),
     listVaultNames: () => Promise.resolve(["my-vault"]),
-    secretExists: () => Promise.resolve(true),
     supportsDelete: () => Promise.resolve(true),
     deleteSecret: () => Promise.resolve(),
     publishSecretDeleted: () => Promise.resolve(),
@@ -40,7 +39,7 @@ function makeDeps(overrides: Partial<VaultDeleteDeps> = {}): VaultDeleteDeps {
   };
 }
 
-Deno.test("vaultDeletePreview: returns preview with secret existence check", async () => {
+Deno.test("vaultDeletePreview: returns preview for existing vault", async () => {
   const deps = makeDeps();
 
   const preview = await vaultDeletePreview(
@@ -53,7 +52,6 @@ Deno.test("vaultDeletePreview: returns preview with secret existence check", asy
   assertEquals(preview.vaultName, "my-vault");
   assertEquals(preview.vaultType, "local_encryption");
   assertEquals(preview.secretKey, "API_KEY");
-  assertEquals(preview.secretExists, true);
   assertEquals(preview.supportsDelete, true);
 });
 
@@ -89,22 +87,6 @@ Deno.test("vaultDeletePreview: reports unsupported when provider lacks delete", 
   );
 
   assertEquals(preview.supportsDelete, false);
-  assertEquals(preview.secretExists, false);
-});
-
-Deno.test("vaultDeletePreview: reports non-existent secret", async () => {
-  const deps = makeDeps({
-    secretExists: () => Promise.resolve(false),
-  });
-
-  const preview = await vaultDeletePreview(
-    createLibSwampContext(),
-    deps,
-    "my-vault",
-    "MISSING_KEY",
-  );
-
-  assertEquals(preview.secretExists, false);
 });
 
 Deno.test("vaultDelete: yields completed after deleting secret", async () => {
@@ -175,4 +157,30 @@ Deno.test("vaultDelete: publishes VaultSecretDeleted event", async () => {
 
   assertEquals(publishedKey, "SECRET");
   assertEquals(publishedVaultName, "my-vault");
+});
+
+Deno.test("vaultDelete: succeeds when provider normalizes key names", async () => {
+  let deletedKey = "";
+  const deps = makeDeps({
+    deleteSecret: (_vault, key) => {
+      deletedKey = key;
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<VaultDeleteEvent>(
+    vaultDelete(createLibSwampContext(), deps, {
+      vaultName: "my-vault",
+      key: "client_id",
+    }),
+  );
+
+  assertEquals(events.length, 2);
+  assertEquals(events[0].kind, "deleting");
+  const completed = events[1] as Extract<
+    VaultDeleteEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.secretKey, "client_id");
+  assertEquals(deletedKey, "client_id");
 });

@@ -154,8 +154,31 @@ When using --server, the confirmation prompt is not available — use --force to
       );
     }
 
-    if (!preview.secretExists) {
-      if (options.force) {
+    if (cliCtx.outputMode === "log" && !options.yes && !options.force) {
+      const confirmed = await promptConfirmation(
+        `Delete secret '${key}' from vault '${vaultName}'?`,
+      );
+      if (!confirmed) {
+        renderVaultDeleteCancelled(cliCtx.outputMode);
+        return;
+      }
+    }
+
+    try {
+      const renderer = createVaultDeleteRenderer(cliCtx.outputMode);
+      await consumeStream(
+        vaultDelete(ctx, deps, {
+          vaultName,
+          key,
+        }),
+        renderer.handlers(),
+      );
+    } catch (error) {
+      if (
+        options.force &&
+        error instanceof Error &&
+        /not found|can't find|ResourceNotFoundException/i.test(error.message)
+      ) {
         const renderer = createVaultDeleteRenderer(cliCtx.outputMode);
         renderer.handlers().completed({
           kind: "completed",
@@ -169,29 +192,8 @@ When using --server, the confirmation prompt is not available — use --force to
         });
         return;
       }
-      throw new UserError(
-        `Secret '${key}' not found in vault '${vaultName}'`,
-      );
+      throw error;
     }
-
-    if (cliCtx.outputMode === "log" && !options.yes && !options.force) {
-      const confirmed = await promptConfirmation(
-        `Delete secret '${key}' from vault '${vaultName}'?`,
-      );
-      if (!confirmed) {
-        renderVaultDeleteCancelled(cliCtx.outputMode);
-        return;
-      }
-    }
-
-    const renderer = createVaultDeleteRenderer(cliCtx.outputMode);
-    await consumeStream(
-      vaultDelete(ctx, deps, {
-        vaultName,
-        key,
-      }),
-      renderer.handlers(),
-    );
 
     cliCtx.logger.debug("Vault delete command completed");
   } finally {

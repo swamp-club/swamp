@@ -306,6 +306,7 @@ export async function handleVaultDelete(
     return;
   }
 
+  let vaultType = "";
   try {
     const libCtx = createLibSwampContext();
     const deps = createVaultDeleteDeps(ctx.repoDir, ctx.repoContext.eventBus);
@@ -317,6 +318,8 @@ export async function handleVaultDelete(
       payload.key,
     );
 
+    vaultType = preview.vaultType;
+
     if (!preview.supportsDelete) {
       sendError(
         socket,
@@ -324,33 +327,6 @@ export async function handleVaultDelete(
         "unsupported",
         `Vault '${payload.vaultName}' (type: ${preview.vaultType}) does not support deleting secrets`,
       );
-      return;
-    }
-
-    if (!preview.secretExists && !payload.force) {
-      sendError(
-        socket,
-        requestId,
-        "not_found",
-        `Secret '${payload.key}' not found in vault '${payload.vaultName}'`,
-      );
-      return;
-    }
-
-    if (!preview.secretExists && payload.force) {
-      send(socket, {
-        type: "vault.delete",
-        id: requestId,
-        payload: {
-          data: {
-            vaultName: payload.vaultName,
-            secretKey: payload.key,
-            vaultType: preview.vaultType,
-            noOp: true,
-            timestamp: new Date().toISOString(),
-          },
-        },
-      });
       return;
     }
 
@@ -389,6 +365,24 @@ export async function handleVaultDelete(
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
+    } else if (
+      payload.force &&
+      error instanceof Error &&
+      /not found|can't find|ResourceNotFoundException/i.test(error.message)
+    ) {
+      send(socket, {
+        type: "vault.delete",
+        id: requestId,
+        payload: {
+          data: {
+            vaultName: payload.vaultName,
+            secretKey: payload.key,
+            vaultType,
+            noOp: true,
+            timestamp: new Date().toISOString(),
+          },
+        },
+      });
     } else {
       const message = sanitizeErrorForClient(error);
       sendError(socket, requestId, "vault_delete_failed", message);

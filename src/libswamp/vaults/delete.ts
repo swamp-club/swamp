@@ -37,7 +37,6 @@ export interface VaultDeletePreview {
   vaultName: string;
   vaultType: string;
   secretKey: string;
-  secretExists: boolean;
   supportsDelete: boolean;
 }
 
@@ -62,7 +61,6 @@ export interface VaultDeleteInput {
 export interface VaultDeleteDeps {
   findVault: (name: string) => Promise<VaultDeleteConfigInfo | null>;
   listVaultNames: () => Promise<string[]>;
-  secretExists: (vaultName: string, key: string) => Promise<boolean>;
   supportsDelete: (vaultName: string) => Promise<boolean>;
   deleteSecret: (vaultName: string, key: string) => Promise<void>;
   publishSecretDeleted: (
@@ -92,11 +90,6 @@ export function createVaultDeleteDeps(
     listVaultNames: async () => {
       const all = await vaultConfigRepo.findAll();
       return all.map((v) => v.name);
-    },
-    secretExists: async (vaultName, key) => {
-      const svc = await getVaultService();
-      const keys = await svc.list(vaultName);
-      return keys.includes(key);
     },
     supportsDelete: async (vaultName) => {
       const svc = await getVaultService();
@@ -141,14 +134,12 @@ export async function vaultDeletePreview(
   }
 
   const supports = await deps.supportsDelete(vaultName);
-  const exists = supports ? await deps.secretExists(vaultName, key) : false;
-  ctx.logger.debug`Secret exists: ${exists}, supports delete: ${supports}`;
+  ctx.logger.debug`Supports delete: ${supports}`;
 
   return {
     vaultName: config.name,
     vaultType: config.type,
     secretKey: key,
-    secretExists: exists,
     supportsDelete: supports,
   };
 }
