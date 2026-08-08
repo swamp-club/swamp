@@ -29,6 +29,8 @@ export interface ExtensionSearchItem {
   repositoryVerified: boolean | null;
   repositoryVerifiedUrl: string | null;
   latestVersion: string | null;
+  latestRc: string | null;
+  latestBeta: string | null;
   platforms: string[];
   labels: string[];
   contentTypes: string[];
@@ -86,6 +88,8 @@ export interface ExtensionSearchDeps {
       repositoryVerified?: boolean | null;
       repositoryVerifiedUrl?: string | null;
       latestVersion: string | null;
+      latestRc?: string | null;
+      latestBeta?: string | null;
       platforms: string[];
       labels: string[];
       contentTypes?: string[];
@@ -136,6 +140,8 @@ export async function* extensionSearch(
             repositoryVerified: ext.repositoryVerified ?? null,
             repositoryVerifiedUrl: ext.repositoryVerifiedUrl ?? null,
             latestVersion: ext.latestVersion,
+            latestRc: ext.latestRc ?? null,
+            latestBeta: ext.latestBeta ?? null,
             platforms: ext.platforms,
             labels: ext.labels,
             contentTypes: ext.contentTypes ?? [],

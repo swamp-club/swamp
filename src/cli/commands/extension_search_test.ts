@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertStringIncludes, assertThrows } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { UserError } from "../../domain/errors.ts";
 
 Deno.test("extension search: --sort relevance without query throws UserError", () => {
@@ -109,4 +109,44 @@ Deno.test("extension search: invalid sort option throws UserError", () => {
   );
   assertStringIncludes(error.message, "invalid");
   assertStringIncludes(error.message, "Must be one of");
+});
+
+// Channel stable-stripping tests — replicate the logic from the command to
+// test the stripping behavior in isolation.
+
+function applyChannelStripping(channel: string[]): string[] {
+  const hasNonStable = channel.some((ch: string) => ch !== "stable");
+  if (!hasNonStable) {
+    return [];
+  }
+  return channel;
+}
+
+Deno.test("extension search: --channel stable alone is stripped to empty array", () => {
+  assertEquals(applyChannelStripping(["stable"]), []);
+});
+
+Deno.test("extension search: --channel beta is preserved", () => {
+  assertEquals(applyChannelStripping(["beta"]), ["beta"]);
+});
+
+Deno.test("extension search: --channel stable --channel beta keeps both values", () => {
+  assertEquals(
+    applyChannelStripping(["stable", "beta"]),
+    ["stable", "beta"],
+  );
+});
+
+Deno.test("extension search: --channel beta --channel rc keeps both values", () => {
+  assertEquals(
+    applyChannelStripping(["beta", "rc"]),
+    ["beta", "rc"],
+  );
+});
+
+Deno.test("extension search: --channel stable --channel beta --channel rc keeps all values", () => {
+  assertEquals(
+    applyChannelStripping(["stable", "beta", "rc"]),
+    ["stable", "beta", "rc"],
+  );
 });
