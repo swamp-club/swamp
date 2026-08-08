@@ -40,6 +40,7 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   heartbeatInterval: "SWAMP_HEARTBEAT_INTERVAL",
   staleTtl: "SWAMP_STALE_TTL",
   reconciliationInterval: "SWAMP_RECONCILIATION_INTERVAL",
+  hydrationTimeout: "SWAMP_HYDRATION_TIMEOUT",
   groupRefreshInterval: "SWAMP_GROUP_REFRESH_INTERVAL",
   maxConcurrentRuns: "SWAMP_MAX_CONCURRENT_RUNS",
   maxRunsPerPrincipal: "SWAMP_MAX_RUNS_PER_PRINCIPAL",
@@ -95,6 +96,7 @@ export interface ServeConfigFile {
   "max-concurrent-runs"?: number;
   "max-runs-per-principal"?: number;
   "max-run-duration"?: string;
+  "hydration-timeout"?: string;
 }
 
 // ── Known Keys ────────────────────────────────────────────────────────
@@ -121,6 +123,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "max-concurrent-runs",
   "max-runs-per-principal",
   "max-run-duration",
+  "hydration-timeout",
 ]);
 
 const KNOWN_AUTH_KEYS = new Set([
@@ -314,6 +317,7 @@ function validateConfigValues(
     ["heartbeat-interval", raw["heartbeat-interval"]],
     ["stale-ttl", raw["stale-ttl"]],
     ["reconciliation-interval", raw["reconciliation-interval"]],
+    ["hydration-timeout", raw["hydration-timeout"]],
   ];
   for (const [name, value] of stringFields) {
     if (value !== undefined && typeof value !== "string") {
@@ -521,6 +525,7 @@ export interface MergedServeOptions {
   maxConcurrentRuns?: number;
   maxRunsPerPrincipal?: number;
   maxRunDuration?: string;
+  hydrationTimeout?: string;
 }
 
 export function mergeServeOptions(
@@ -829,6 +834,13 @@ export function mergeServeOptions(
     undefined,
   );
 
+  const hydrationTimeout = resolveString(
+    "hydration-timeout",
+    cliOptions.hydrationTimeout as string | undefined,
+    config?.["hydration-timeout"],
+    undefined,
+  );
+
   // Webhooks: CLI --webhook flags replace config file webhooks entirely
   let webhook: string[] | undefined;
   let webhookEndpoints: WebhookEndpoint[] | undefined;
@@ -872,5 +884,6 @@ export function mergeServeOptions(
     maxConcurrentRuns,
     maxRunsPerPrincipal,
     maxRunDuration,
+    hydrationTimeout,
   };
 }
