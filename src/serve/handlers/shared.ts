@@ -284,7 +284,7 @@ export function authorizeOrReject(
     if (adminDecision && adminDecision.effect === "allow") return true;
   }
 
-  const principalStr = principalToString(principal);
+  const principalStr = resolveDisplayPrincipal(principal, ctx);
   if (decision && decision.effect === "deny") {
     sendError(
       socket,
@@ -301,6 +301,16 @@ export function authorizeOrReject(
     );
   }
   return false;
+}
+
+function resolveDisplayPrincipal(
+  principal: Principal,
+  ctx: ConnectionContext,
+): string {
+  if (principal.kind === "user" && ctx.resolvedUserNames?.[principal.id]) {
+    return `user:${ctx.resolvedUserNames[principal.id]}`;
+  }
+  return principalToString(principal);
 }
 
 export function send(socket: WebSocket, message: ServerMessage): void {

@@ -905,6 +905,61 @@ Deno.test("authorizeOrReject: explicit deny returns denied error frame", () => {
   assertStringIncludes(errorMessage, "explicitly denied");
 });
 
+Deno.test("authorizeOrReject: resolvedUserNames replaces raw ID in error message", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const opaqueId = "699e486007f77116ebf44bd2";
+  const principal: Principal = { kind: "user", id: opaqueId };
+  const ctx = makeCtx(modeTokenConfig, []);
+  ctx.resolvedUserNames = { [opaqueId]: "stack72" };
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "workflow.run",
+      id: "auth-resolve-1",
+      payload: { workflowIdOrName: "@acme/deploy" },
+    })),
+    principal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  const errorMessage = String((msg.error as Record<string, unknown>).message);
+  assertStringIncludes(errorMessage, "user:stack72");
+  assertEquals(errorMessage.includes(opaqueId), false);
+});
+
+Deno.test("authorizeOrReject: falls back to raw ID when resolvedUserNames absent", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const opaqueId = "699e486007f77116ebf44bd2";
+  const principal: Principal = { kind: "user", id: opaqueId };
+  const ctx = makeCtx(modeTokenConfig, []);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "workflow.run",
+      id: "auth-resolve-2",
+      payload: { workflowIdOrName: "@acme/deploy" },
+    })),
+    principal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  const errorMessage = String((msg.error as Record<string, unknown>).message);
+  assertStringIncludes(errorMessage, `user:${opaqueId}`);
+});
+
 // ── Authorization: missing policySnapshotLoader in enforcing mode ─────────
 
 // ── Authorization: denormalized access model typeArgs require admin ──────────
