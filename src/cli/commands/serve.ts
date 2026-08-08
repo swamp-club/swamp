@@ -383,6 +383,9 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
       options.reconciliationInterval as string,
     );
   }
+  if (options.hydrationTimeout) {
+    args.push("--hydration-timeout", options.hydrationTimeout as string);
+  }
   return args;
 }
 
@@ -590,6 +593,10 @@ const daemonEnableCommand = new Command()
   .option(
     "--reconciliation-interval <duration:string>",
     "Peer reconciliation scan interval (default: 60s, env: SWAMP_RECONCILIATION_INTERVAL)",
+  )
+  .option(
+    "--hydration-timeout <duration:string>",
+    "Startup cache hydration timeout (default: 60s, env: SWAMP_HYDRATION_TIMEOUT)",
   )
   .example("Enable daemon", "swamp serve daemon enable")
   .example(
@@ -933,6 +940,12 @@ export const serveCommand = new Command()
       "Only effective with a control-plane-capable datastore (env: SWAMP_RECONCILIATION_INTERVAL)",
   )
   .option(
+    "--hydration-timeout <duration:string>",
+    "Maximum time to wait for initial datastore cache hydration at startup. " +
+      "Accepts seconds (60), explicit units (60s, 5m). Default: 60s. " +
+      "Increase for large repos where the initial pull takes longer (env: SWAMP_HYDRATION_TIMEOUT)",
+  )
+  .option(
     "--max-concurrent-runs <count:integer>",
     "Maximum number of concurrent detached runs across all principals. Default: 100. " +
       "(env: SWAMP_MAX_CONCURRENT_RUNS)",
@@ -1052,6 +1065,11 @@ export const serveCommand = new Command()
     const reconciliationIntervalMs = reconciliationIntervalRaw !== undefined
       ? parseTimeout(reconciliationIntervalRaw, "--reconciliation-interval")
       : undefined;
+
+    const hydrationTimeoutRaw = merged.hydrationTimeout;
+    const hydrationTimeoutMs = hydrationTimeoutRaw !== undefined
+      ? parseTimeout(hydrationTimeoutRaw, "--hydration-timeout")
+      : 60_000;
 
     const maxConcurrentRuns = merged.maxConcurrentRuns;
     if (
@@ -1444,7 +1462,7 @@ export const serveCommand = new Command()
       await hydrateLocalCache({
         syncService,
         catalogInvalidate: () => repoContext.catalogStore.invalidate(),
-        signal: AbortSignal.timeout(60_000),
+        signal: AbortSignal.timeout(hydrationTimeoutMs),
         namespace: serveNamespace,
       });
 
