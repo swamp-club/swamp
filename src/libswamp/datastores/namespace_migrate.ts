@@ -271,15 +271,30 @@ export async function* datastoreNamespaceMigrate(
       }
 
       if (directories.length === 0) {
-        const hint = input.reverse
-          ? " If data was pushed to a remote datastore, run 'swamp datastore sync --pull' first to populate the local cache."
-          : "";
         yield {
-          kind: "error",
-          error: validationFailed(
-            `No data directories found to migrate.${hint}`,
-          ),
-          succeededDirectories: [],
+          kind: "preview",
+          data: {
+            namespace,
+            datastorePath,
+            reverse: input.reverse,
+            confirm: input.confirm,
+            directories: [],
+            totalFiles: 0,
+            totalBytes: 0,
+            isExtensionDatastore: deps.isExtensionDatastore,
+          },
+        };
+        yield {
+          kind: "completed",
+          data: {
+            namespace,
+            datastorePath,
+            reverse: input.reverse,
+            migratedDirectories: [],
+            totalFiles: 0,
+            totalBytes: 0,
+            isExtensionDatastore: deps.isExtensionDatastore,
+          },
         };
         return;
       }

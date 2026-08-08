@@ -39,6 +39,16 @@ class LogNamespaceMigrateRenderer implements Renderer<NamespaceMigrateEvent> {
   handlers(): EventHandlers<NamespaceMigrateEvent> {
     return {
       preview: (e) => {
+        if (e.data.directories.length === 0) {
+          const hint = e.data.reverse
+            ? " If data was pushed to a remote, run 'swamp datastore sync --pull' first."
+            : "";
+          writeOutput(
+            `Nothing to migrate — data is already in the namespace directory.${hint}`,
+          );
+          return;
+        }
+
         const direction = e.data.reverse ? "Reverse migration" : "Migration";
         const lines = [
           bold(`${direction} preview (namespace: "${e.data.namespace}")`),

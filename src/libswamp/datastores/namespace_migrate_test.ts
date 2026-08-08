@@ -69,16 +69,22 @@ Deno.test("datastoreNamespaceMigrate: errors when no namespace configured", asyn
   }
 });
 
-Deno.test("datastoreNamespaceMigrate: errors when no data directories exist", async () => {
+Deno.test("datastoreNamespaceMigrate: yields preview and completed when no data directories exist", async () => {
   const ctx = createLibSwampContext({});
   const deps = makeDeps();
   const events = await collect<NamespaceMigrateEvent>(
     datastoreNamespaceMigrate(ctx, deps, { confirm: false, reverse: false }),
   );
-  assertEquals(events.length, 1);
-  assertEquals(events[0].kind, "error");
-  if (events[0].kind === "error") {
-    assertStringIncludes(events[0].error.message, "No data directories found");
+  assertEquals(events.length, 2);
+  assertEquals(events[0].kind, "preview");
+  if (events[0].kind === "preview") {
+    assertEquals(events[0].data.directories.length, 0);
+    assertEquals(events[0].data.totalFiles, 0);
+    assertEquals(events[0].data.totalBytes, 0);
+  }
+  assertEquals(events[1].kind, "completed");
+  if (events[1].kind === "completed") {
+    assertEquals(events[1].data.migratedDirectories.length, 0);
   }
 });
 
