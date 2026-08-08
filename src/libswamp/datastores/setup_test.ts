@@ -41,6 +41,7 @@ import {
   SyncTimeoutError,
 } from "../../domain/datastore/datastore_sync_service.ts";
 import { readNamespaceManifest } from "../../infrastructure/persistence/namespace_manifest.ts";
+import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 
 function makeDeps(
   overrides: Partial<DatastoreSetupDeps> = {},
@@ -941,6 +942,55 @@ Deno.test("datastoreSetupExtension: omits namespace when not configured", async 
   const pull = setupSyncSpyCalls.find((c) => c.method === "pullChanged");
   assertEquals(push?.options?.namespace, undefined);
   assertEquals(pull?.options?.namespace, undefined);
+});
+
+Deno.test("datastoreSetupExtension: migrates to namespace-scoped cache path when namespace is set", async () => {
+  let capturedDestPath: string | undefined;
+  const deps = makeDeps({
+    migrateData: (_sourceDir: string, destPath: string) => {
+      capturedDestPath = destPath;
+      return Promise.resolve({
+        filesCopied: 5,
+        bytesCopied: 1024,
+        directoriesMigrated: ["data", "outputs"],
+        errors: [],
+      });
+    },
+  });
+  const input = makeExtensionInput({
+    type: SETUP_NS_TYPE,
+    namespace: "infra",
+  });
+
+  await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  assertPathEquals(capturedDestPath, join("/tmp/repo", ".cache", "infra"));
+});
+
+Deno.test("datastoreSetupExtension: migrates to bare cache path when no namespace is set", async () => {
+  let capturedDestPath: string | undefined;
+  const deps = makeDeps({
+    migrateData: (_sourceDir: string, destPath: string) => {
+      capturedDestPath = destPath;
+      return Promise.resolve({
+        filesCopied: 5,
+        bytesCopied: 1024,
+        directoriesMigrated: ["data", "outputs"],
+        errors: [],
+      });
+    },
+  });
+  const input = makeExtensionInput({
+    type: SETUP_NS_TYPE,
+  });
+
+  await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  assertPathEquals(capturedDestPath, join("/tmp/repo", ".cache"));
 });
 
 Deno.test("datastoreSetupExtension: threads namespace on skip-migration pull-only path", async () => {

@@ -456,11 +456,12 @@ export async function* datastoreSetupExtension(
 
         const sourceDir = `${input.repoDir}/.swamp`;
 
-        // Migrate local .swamp/ data to cache path
-        const config = { type: "filesystem" as const, path: cachePath };
+        // Migrate local .swamp/ data to cache path (namespace-scoped when set)
+        const migrationDest = ns ? join(cachePath, ns) : cachePath;
+        const config = { type: "filesystem" as const, path: migrationDest };
         const result = await deps.migrateData(
           sourceDir,
-          cachePath,
+          migrationDest,
           config,
         );
         errors.push(...result.errors);
