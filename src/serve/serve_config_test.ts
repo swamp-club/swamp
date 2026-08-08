@@ -755,3 +755,44 @@ Deno.test("mergeServeOptions: whitespace-only env var for max-concurrent-runs is
   );
   assertEquals(merged.maxConcurrentRuns, undefined);
 });
+
+Deno.test("mergeServeOptions: hydration-timeout from CLI flag", () => {
+  const merged = mergeServeOptions(
+    null,
+    { hydrationTimeout: "5m" },
+    new Set(["hydration-timeout"]),
+    () => undefined,
+  );
+  assertEquals(merged.hydrationTimeout, "5m");
+});
+
+Deno.test("mergeServeOptions: hydration-timeout from config file", () => {
+  const config: ServeConfigFile = { "hydration-timeout": "10m" };
+  const merged = mergeServeOptions(
+    config,
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.hydrationTimeout, "10m");
+});
+
+Deno.test("mergeServeOptions: hydration-timeout from env var", () => {
+  const merged = mergeServeOptions(
+    null,
+    {},
+    new Set<string>(),
+    (name) => name === "SWAMP_HYDRATION_TIMEOUT" ? "3m" : undefined,
+  );
+  assertEquals(merged.hydrationTimeout, "3m");
+});
+
+Deno.test("mergeServeOptions: hydration-timeout defaults to undefined", () => {
+  const merged = mergeServeOptions(
+    null,
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.hydrationTimeout, undefined);
+});
