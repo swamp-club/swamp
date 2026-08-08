@@ -998,6 +998,144 @@ Deno.test("findLatestByWorkflowId: falls back to summary scan when index missing
   });
 });
 
+Deno.test("findGlobalByStatus: returns only runs matching the target status", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+
+    const running = WorkflowRun.create(workflow);
+    running.start();
+    await repo.save(workflow.id, running);
+
+    const succeeded = WorkflowRun.create(workflow);
+    succeeded.start();
+    const jobRun = succeeded.getJob("job1");
+    jobRun?.start();
+    jobRun?.getStep("step1")?.start();
+    jobRun?.getStep("step1")?.succeed({ result: "ok" });
+    jobRun?.succeed();
+    succeeded.complete();
+    await repo.save(workflow.id, succeeded);
+
+    const found = await repo.findGlobalByStatus("running");
+    assertEquals(found.length, 1);
+    assertEquals(found[0].run.id, running.id);
+    assertEquals(found[0].run.status, "running");
+  });
+});
+
+Deno.test("findGlobalByStatus: accepts array of statuses", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+
+    const running = WorkflowRun.create(workflow);
+    running.start();
+    await repo.save(workflow.id, running);
+
+    const succeeded = WorkflowRun.create(workflow);
+    succeeded.start();
+    const jobRun = succeeded.getJob("job1");
+    jobRun?.start();
+    jobRun?.getStep("step1")?.start();
+    jobRun?.getStep("step1")?.succeed({ result: "ok" });
+    jobRun?.succeed();
+    succeeded.complete();
+    await repo.save(workflow.id, succeeded);
+
+    const found = await repo.findGlobalByStatus(["running", "succeeded"]);
+    assertEquals(found.length, 2);
+    const statuses = new Set(found.map((f) => f.run.status));
+    assert(statuses.has("running"));
+    assert(statuses.has("succeeded"));
+  });
+});
+
+Deno.test("findGlobalByStatus: respects since cutoff", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+
+    const old = WorkflowRun.create(workflow);
+    old.start();
+    await repo.save(workflow.id, old);
+
+    // Patch the YAML so startedAt is 7 days ago, then delete the index
+    // so it rebuilds from the patched YAML on the next read.
+    const oldPath = repo.getPath(workflow.id, old.id);
+    const oldDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const content = await Deno.readTextFile(oldPath);
+    const patched = content.replace(
+      /startedAt: .*/,
+      `startedAt: "${oldDate.toISOString()}"`,
+    );
+    await Deno.writeTextFile(oldPath, patched);
+    const indexPath = getIndexPath(
+      join(dir, ".swamp", "workflow-runs", workflow.id),
+    );
+    await Deno.remove(indexPath);
+
+    const fresh = WorkflowRun.create(workflow);
+    fresh.start();
+    await repo.save(workflow.id, fresh);
+
+    const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+    const found = await repo.findGlobalByStatus("running", cutoff);
+    assertEquals(found.length, 1);
+    assertEquals(found[0].run.id, fresh.id);
+  });
+});
+
+Deno.test("findGlobalByStatus: returns empty when no runs match", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+
+    const succeeded = WorkflowRun.create(workflow);
+    succeeded.start();
+    const jobRun = succeeded.getJob("job1");
+    jobRun?.start();
+    jobRun?.getStep("step1")?.start();
+    jobRun?.getStep("step1")?.succeed({ result: "ok" });
+    jobRun?.succeed();
+    succeeded.complete();
+    await repo.save(workflow.id, succeeded);
+
+    const found = await repo.findGlobalByStatus("running");
+    assertEquals(found.length, 0);
+  });
+});
+
+Deno.test("findGlobalByStatus: works across multiple workflows", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const wf1 = createTestWorkflow();
+    const wf2Id = createWorkflowId(crypto.randomUUID());
+
+    const run1 = WorkflowRun.create(wf1);
+    run1.start();
+    await repo.save(wf1.id, run1);
+
+    const run2 = WorkflowRun.create(wf1);
+    run2.start();
+    await repo.save(wf2Id, run2);
+
+    const found = await repo.findGlobalByStatus("running");
+    assertEquals(found.length, 2);
+    const workflowIds = new Set(found.map((f) => f.workflowId));
+    assert(workflowIds.has(wf1.id));
+    assert(workflowIds.has(wf2Id));
+  });
+});
+
+Deno.test("findGlobalByStatus: returns empty for nonexistent base dir", async () => {
+  const repo = new YamlWorkflowRunRepository(
+    "/tmp/does-not-exist-" + crypto.randomUUID(),
+  );
+  const found = await repo.findGlobalByStatus("running");
+  assertEquals(found.length, 0);
+});
+
 Deno.test("save: index is written to local path, not cache baseDir", async () => {
   await withTempDir(async (dir) => {
     const cacheDir = await Deno.makeTempDir();

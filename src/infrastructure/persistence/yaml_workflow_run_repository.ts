@@ -423,6 +423,90 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     return runs;
   }
 
+  async findGlobalByStatus(
+    status: string | string[],
+    since?: Date,
+  ): Promise<{ run: WorkflowRun; workflowId: WorkflowId }[]> {
+    const statuses = Array.isArray(status) ? status : [status];
+    const statusSet = new Set(statuses);
+    const sinceMs = since?.getTime();
+    const results: { run: WorkflowRun; workflowId: WorkflowId }[] = [];
+
+    try {
+      for await (const entry of Deno.readDir(this.baseDir)) {
+        if (!entry.isDirectory) continue;
+        const workflowId = entry.name as WorkflowId;
+        const matchingIds = await this.findRunIdsByStatusFromIndex(
+          workflowId,
+          statusSet,
+          sinceMs,
+        );
+        for (const runId of matchingIds) {
+          const run = await this.findById(
+            workflowId,
+            runId as WorkflowRunId,
+          );
+          if (run && statusSet.has(run.status)) {
+            if (sinceMs !== undefined) {
+              const startedAtMs = run.startedAt?.getTime();
+              if (startedAtMs === undefined || startedAtMs < sinceMs) continue;
+            }
+            results.push({ run, workflowId });
+          }
+        }
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        return [];
+      }
+      throw error;
+    }
+
+    return results.sort((a, b) => {
+      const aTime = a.run.startedAt?.getTime() ?? 0;
+      const bTime = b.run.startedAt?.getTime() ?? 0;
+      return bTime - aTime;
+    });
+  }
+
+  private async findRunIdsByStatusFromIndex(
+    workflowId: WorkflowId,
+    statusSet: Set<string>,
+    sinceMs: number | undefined,
+  ): Promise<string[]> {
+    const runsDir = this.getRunsDir(workflowId);
+    const indexDir = this.getLocalIndexDir(workflowId);
+    const index = await this.getValidatedIndex(runsDir, indexDir);
+
+    if (index) {
+      const ids: string[] = [];
+      for (const [id, entry] of Object.entries(index)) {
+        if (!statusSet.has(entry.status)) continue;
+        if (sinceMs !== undefined) {
+          const startedAtMs = entry.startedAt
+            ? new Date(entry.startedAt).getTime()
+            : undefined;
+          if (startedAtMs === undefined || startedAtMs < sinceMs) continue;
+        }
+        ids.push(id);
+      }
+      return ids;
+    }
+
+    // Fallback: lightweight summary scan
+    const summaries = await this.findAllSummariesByWorkflowId(workflowId);
+    return summaries
+      .filter((s) => {
+        if (!statusSet.has(s.status)) return false;
+        if (sinceMs !== undefined) {
+          const startedAtMs = s.startedAt?.getTime();
+          if (startedAtMs === undefined || startedAtMs < sinceMs) return false;
+        }
+        return true;
+      })
+      .map((s) => s.id);
+  }
+
   async save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
     const path = this.getPath(workflowId, run.id);
     await this.notifyDirty(path);

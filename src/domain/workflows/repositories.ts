@@ -101,6 +101,21 @@ export interface WorkflowRunRepository {
   ): Promise<{ run: WorkflowRun; workflowId: WorkflowId }[]>;
 
   /**
+   * Finds all workflow runs across all workflows whose status matches one of
+   * the given values. When `since` is provided, only runs with
+   * `startedAt >= since` are included.
+   *
+   * Implementations use the per-workflow runs index to filter by status
+   * without hydrating full aggregates, then load only matching runs via
+   * `findById`. Falls back to a lightweight summary scan when no index
+   * exists.
+   */
+  findGlobalByStatus(
+    status: string | string[],
+    since?: Date,
+  ): Promise<{ run: WorkflowRun; workflowId: WorkflowId }[]>;
+
+  /**
    * Saves a workflow run.
    */
   save(workflowId: WorkflowId, run: WorkflowRun): Promise<void>;

@@ -2094,7 +2094,8 @@ export const serveCommand = new Command()
     // The tracker is the liveness authority; the YAML entity is the run record.
     // Legacy runs (pre-tracker) fall back to PID liveness checking.
     const reapCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const recentRuns = await repoContext.workflowRunRepo.findAllGlobalSince(
+    const recentRuns = await repoContext.workflowRunRepo.findGlobalByStatus(
+      "running",
       reapCutoff,
     );
     await reapOrphanedWorkflowRuns(
@@ -2991,13 +2992,16 @@ export const serveCommand = new Command()
             let allRuns:
               | Awaited<
                 ReturnType<
-                  typeof repoContext.workflowRunRepo.findAllGlobalSince
+                  typeof repoContext.workflowRunRepo.findGlobalByStatus
                 >
               >
               | undefined;
             try {
               allRuns = await repoContext.workflowRunRepo
-                .findAllGlobalSince(earliestCutoff);
+                .findGlobalByStatus(
+                  ["running", "cancelled"],
+                  earliestCutoff,
+                );
             } catch (err) {
               logger.warn(
                 "Failed to load workflow runs for interrupt: {error}",

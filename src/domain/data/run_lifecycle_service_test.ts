@@ -36,6 +36,7 @@ function createMockWorkflowRunRepo(
     findLatestByWorkflowId: () => Promise.resolve(null),
     findAllGlobal: () => Promise.resolve([]),
     findAllGlobalSince: () => Promise.resolve([]),
+    findGlobalByStatus: () => Promise.resolve([]),
     save: () => Promise.resolve(),
     nextId: () => "mock-id" as ReturnType<WorkflowRunRepository["nextId"]>,
     getPath: () => "",
