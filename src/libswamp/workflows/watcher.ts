@@ -24,6 +24,7 @@
  */
 
 import { basename, join } from "@std/path";
+import { parse as parseYaml } from "@std/yaml";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
@@ -46,6 +47,7 @@ export class WorkflowWatcher {
   private watcher: Deno.FsWatcher | null = null;
   private watchLoopPromise: Promise<void> = Promise.resolve();
   private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly filenameToId = new Map<string, WorkflowId>();
 
   constructor(
     private readonly workflowsDir: string,
@@ -133,25 +135,34 @@ export class WorkflowWatcher {
     kind: Deno.FsEvent["kind"],
   ): Promise<void> {
     const filename = basename(path);
+    if (
+      !filename.startsWith("workflow-") ||
+      (!filename.endsWith(".yaml") && !filename.endsWith(".yml"))
+    ) {
+      return;
+    }
 
     if (kind === "remove") {
-      // Extract workflow ID from filename pattern: workflow-{uuid}.yaml
-      const match = filename.match(/^workflow-([0-9a-f-]+)\.ya?ml$/);
-      if (match) {
-        this.onChange(match[1] as WorkflowId, null, filename);
+      const cachedId = this.filenameToId.get(filename);
+      if (cachedId) {
+        this.filenameToId.delete(filename);
+        this.onChange(cachedId, null, filename);
       }
       return;
     }
 
-    // For create/modify, re-read the workflow from the repository
+    // For create/modify, read the file to get the workflow ID
     try {
-      const match = filename.match(/^workflow-([0-9a-f-]+)\.ya?ml$/);
-      if (!match) return;
+      const content = await Deno.readTextFile(path);
+      const data = parseYaml(content) as { id?: string; name?: string };
+      if (!data?.id) return;
 
-      const workflowId = match[1] as WorkflowId;
+      const workflowId = data.id as WorkflowId;
+      this.filenameToId.set(filename, workflowId);
+
       const workflow = await this.workflowRepo.findById(workflowId);
       if (!workflow) {
-        this.onChange(workflowId, null, filename);
+        this.onChange(workflowId, null, data.name ?? filename);
         return;
       }
 
@@ -174,6 +185,10 @@ export class WorkflowWatcher {
   async scanExisting(): Promise<void> {
     const workflows = await this.workflowRepo.findAll();
     for (const workflow of workflows) {
+      // Populate filename→id map for delete event handling
+      const path = this.workflowRepo.getPath(workflow.id);
+      this.filenameToId.set(basename(path), workflow.id);
+
       if (workflow.schedule) {
         this.onChange(workflow.id, workflow.schedule, workflow.name);
       }

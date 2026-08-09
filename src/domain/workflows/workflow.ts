@@ -33,24 +33,55 @@ import {
 } from "../reports/report_selection.ts";
 import { Cron } from "croner";
 
-const WorkflowObjectSchema = z.object({
-  id: z.string().uuid(),
-  name: z.string().min(1).refine(
-    (name) => {
-      if (name.includes("..") || name.includes("\\") || name.includes("\0")) {
-        return false;
-      }
-      if (name.includes("/")) {
-        // Allow '/' only in scoped @collective/name extension names
-        return /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/.test(name);
-      }
-      return true;
-    },
+const WORKFLOW_NAME_MAX_LENGTH = 64;
+const WORKFLOW_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+
+/**
+ * Returns true when a workflow name is safe for direct use in a filename
+ * (i.e. `workflow-<name>.yaml`). Legacy names that don't match the strict
+ * pattern will fall back to UUID-based filenames.
+ */
+export function isFilenameSafeName(name: string): boolean {
+  return (
+    WORKFLOW_NAME_PATTERN.test(name) && name.length <= WORKFLOW_NAME_MAX_LENGTH
+  );
+}
+
+const workflowNameBase = z.string().min(1).refine(
+  (name) => {
+    if (name.includes("..") || name.includes("\\") || name.includes("\0")) {
+      return false;
+    }
+    if (name.includes("/")) {
+      return /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/.test(name);
+    }
+    return true;
+  },
+  {
+    message:
+      "Workflow name must not contain '..', '\\', or null bytes (path traversal). '/' is only allowed in scoped @collective/name patterns.",
+  },
+);
+
+const workflowNameStrict = workflowNameBase
+  .refine(
+    (name) => WORKFLOW_NAME_PATTERN.test(name),
     {
       message:
-        "Workflow name must not contain '..', '\\', or null bytes (path traversal). '/' is only allowed in scoped @collective/name patterns.",
+        "Workflow name must be lowercase alphanumeric with hyphens (e.g. 'deploy-pipeline'). Must start with a letter or number.",
     },
-  ),
+  )
+  .refine(
+    (name) => name.length <= WORKFLOW_NAME_MAX_LENGTH,
+    {
+      message:
+        `Workflow name must be at most ${WORKFLOW_NAME_MAX_LENGTH} characters.`,
+    },
+  );
+
+const WorkflowObjectSchema = z.object({
+  id: z.string().uuid(),
+  name: workflowNameBase,
   description: z.string().optional(),
   trigger: z.object({
     schedule: z.string().refine(
@@ -165,8 +196,8 @@ export class Workflow {
       reports: props.reports,
     };
 
-    // Always validate the name (path traversal protection)
-    WorkflowObjectSchema.shape.name.parse(data.name);
+    // Strict name validation on creation — enforces kebab-case and max length
+    workflowNameStrict.parse(data.name);
 
     // Only validate full schema if jobs exist (jobs.min(1) requires at least one)
     if (jobs.length > 0) {

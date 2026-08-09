@@ -29,6 +29,7 @@ import {
   type WorkflowId,
 } from "../../domain/workflows/workflow_id.ts";
 import {
+  isFilenameSafeName,
   Workflow,
   type WorkflowData,
 } from "../../domain/workflows/workflow.ts";
@@ -45,10 +46,14 @@ const logger = getLogger(["workflow-repo"]);
  * YAML-based implementation of WorkflowRepository.
  *
  * Stores workflows as YAML files in the directory structure:
- * {repoDir}/workflows/workflow-{uuid}.yaml
+ * {repoDir}/workflows/workflow-{name}.yaml   (new default for filename-safe names)
+ * {repoDir}/workflows/workflow-{uuid}.yaml   (legacy, still discoverable)
  */
 export class YamlWorkflowRepository implements WorkflowRepository {
   private readonly baseDir: string;
+  // Tracks the actual on-disk path for each workflow ID, so getPath()
+  // returns the real location rather than guessing.
+  private readonly idToActualPath = new Map<WorkflowId, string>();
 
   constructor(
     private readonly repoDir: string,
@@ -59,20 +64,57 @@ export class YamlWorkflowRepository implements WorkflowRepository {
   }
 
   async findById(id: WorkflowId): Promise<Workflow | null> {
-    const path = this.getPath(id);
+    // Fast path: try UUID-based filename (legacy)
+    const legacyPath = this.getLegacyPath(id);
     try {
-      const content = await Deno.readTextFile(path);
+      const content = await Deno.readTextFile(legacyPath);
       const data = parseYaml(content) as WorkflowData;
-      return Workflow.fromData(data);
+      const workflow = Workflow.fromData(data);
+      this.idToActualPath.set(id, legacyPath);
+      return workflow;
     } catch (error) {
-      if (error instanceof Deno.errors.NotFound) {
-        return null;
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
       }
-      throw error;
     }
+
+    // Try name-based filename from cache
+    const cachedPath = this.idToActualPath.get(id);
+    if (cachedPath && cachedPath !== legacyPath) {
+      try {
+        const content = await Deno.readTextFile(cachedPath);
+        const data = parseYaml(content) as WorkflowData;
+        return Workflow.fromData(data);
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          throw error;
+        }
+      }
+    }
+
+    // Slow path: scan all workflow files
+    const workflows = await this.findAll();
+    return workflows.find((w) => w.id === id) ?? null;
   }
 
   async findByName(name: string): Promise<Workflow | null> {
+    // Fast path: try name-based filename directly
+    if (isFilenameSafeName(name)) {
+      const namePath = this.getNamePath(name);
+      try {
+        const content = await Deno.readTextFile(namePath);
+        const data = parseYaml(content) as WorkflowData;
+        const workflow = Workflow.fromData(data);
+        this.idToActualPath.set(workflow.id as WorkflowId, namePath);
+        return workflow;
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          throw error;
+        }
+      }
+    }
+
+    // Slow path: scan all workflow files
     const workflows = await this.findAll();
     return workflows.find((w) => w.name === name) ?? null;
   }
@@ -91,7 +133,9 @@ export class YamlWorkflowRepository implements WorkflowRepository {
           try {
             const content = await Deno.readTextFile(path);
             const data = parseYaml(content) as WorkflowData;
-            workflows.push(Workflow.fromData(data));
+            const workflow = Workflow.fromData(data);
+            this.idToActualPath.set(workflow.id as WorkflowId, path);
+            workflows.push(workflow);
           } catch (parseError) {
             const errorMsg = parseError instanceof Error
               ? parseError.message
@@ -123,16 +167,56 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     await assertSafePath(dir, this.baseDir);
     await ensureDir(dir);
 
-    const path = this.getPath(workflow.id);
+    const targetPath = this.resolveWritePath(workflow);
+    const previousPath = this.idToActualPath.get(workflow.id);
 
     // Check if this is a new workflow or an update
-    const isNew = !(await this.exists(path));
+    const isNew = !(await this.exists(targetPath)) &&
+      !(previousPath && await this.exists(previousPath));
 
     const data = workflow.toData();
     // Remove undefined values since YAML can't stringify them
     const cleanData = JSON.parse(JSON.stringify(data));
     const content = stringifyYaml(cleanData as Record<string, unknown>);
-    await atomicWriteTextFile(path, content);
+    await atomicWriteTextFile(targetPath, content);
+
+    // Clean up old file if we wrote to a different path
+    if (previousPath && previousPath !== targetPath) {
+      try {
+        await Deno.remove(previousPath);
+        logger.debug`Migrated workflow file from ${basename(previousPath)} to ${
+          basename(targetPath)
+        }`;
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          logger.warn`Failed to remove old workflow file ${previousPath}: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+        }
+      }
+    }
+
+    // Also check the legacy UUID path if it wasn't the previousPath
+    const legacyPath = this.getLegacyPath(workflow.id);
+    if (
+      targetPath !== legacyPath && previousPath !== legacyPath &&
+      await this.exists(legacyPath)
+    ) {
+      try {
+        await Deno.remove(legacyPath);
+        logger.debug`Migrated workflow file from ${basename(legacyPath)} to ${
+          basename(targetPath)
+        }`;
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          logger.warn`Failed to remove legacy workflow file ${legacyPath}: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+        }
+      }
+    }
+
+    this.idToActualPath.set(workflow.id, targetPath);
 
     // Emit event
     if (this.eventBus) {
@@ -159,26 +243,38 @@ export class YamlWorkflowRepository implements WorkflowRepository {
   }
 
   async delete(id: WorkflowId): Promise<void> {
-    const path = this.getPath(id);
+    // Get the workflow before deleting for the event and to find the right file
+    const workflow = await this.findById(id);
+    const workflowName = workflow?.name;
 
-    // Get the workflow name before deleting for the event
-    let workflowName: string | undefined;
-    if (this.eventBus) {
-      const workflow = await this.findById(id);
-      workflowName = workflow?.name;
+    // Try removing both possible file paths
+    const pathsToTry = new Set([
+      this.getLegacyPath(id),
+      ...(workflowName && isFilenameSafeName(workflowName)
+        ? [this.getNamePath(workflowName)]
+        : []),
+    ]);
+    const cachedPath = this.idToActualPath.get(id);
+    if (cachedPath) pathsToTry.add(cachedPath);
+
+    let deleted = false;
+    for (const path of pathsToTry) {
+      try {
+        await Deno.remove(path);
+        deleted = true;
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          throw error;
+        }
+      }
     }
 
-    try {
-      await Deno.remove(path);
+    if (deleted) {
+      this.idToActualPath.delete(id);
 
-      // Emit event if we had a name
       if (this.eventBus && workflowName) {
         const event = createWorkflowDeleted(id, workflowName);
         await this.eventBus.publish(event);
-      }
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
-        throw error;
       }
     }
   }
@@ -188,6 +284,21 @@ export class YamlWorkflowRepository implements WorkflowRepository {
   }
 
   getPath(id: WorkflowId): string {
+    return this.idToActualPath.get(id) ?? this.getLegacyPath(id);
+  }
+
+  private resolveWritePath(workflow: Workflow): string {
+    if (isFilenameSafeName(workflow.name)) {
+      return this.getNamePath(workflow.name);
+    }
+    return this.getLegacyPath(workflow.id);
+  }
+
+  private getNamePath(name: string): string {
+    return join(this.getWorkflowsDir(), `workflow-${name}.yaml`);
+  }
+
+  private getLegacyPath(id: WorkflowId): string {
     return join(this.getWorkflowsDir(), `workflow-${id}.yaml`);
   }
 

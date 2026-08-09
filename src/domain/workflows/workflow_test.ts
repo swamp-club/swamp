@@ -19,7 +19,11 @@
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { parse as parseYaml } from "@std/yaml";
-import { Workflow, type WorkflowInput } from "./workflow.ts";
+import {
+  isFilenameSafeName,
+  Workflow,
+  type WorkflowInput,
+} from "./workflow.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
@@ -405,6 +409,28 @@ Deno.test("Workflow.fromData and toData roundtrip with tags", () => {
   assertEquals(restored.tags, { env: "prod", region: "us-east-1" });
 });
 
+// isFilenameSafeName tests
+
+Deno.test("isFilenameSafeName: accepts kebab-case names", () => {
+  assertEquals(isFilenameSafeName("deploy-pipeline"), true);
+  assertEquals(isFilenameSafeName("my-workflow-2"), true);
+  assertEquals(isFilenameSafeName("a"), true);
+  assertEquals(isFilenameSafeName("123"), true);
+});
+
+Deno.test("isFilenameSafeName: rejects non-kebab-case names", () => {
+  assertEquals(isFilenameSafeName("My Workflow"), false);
+  assertEquals(isFilenameSafeName("UPPER"), false);
+  assertEquals(isFilenameSafeName("has_underscores"), false);
+  assertEquals(isFilenameSafeName("-starts-hyphen"), false);
+  assertEquals(isFilenameSafeName("@john/pod-inventory"), false);
+});
+
+Deno.test("isFilenameSafeName: rejects names over 64 characters", () => {
+  assertEquals(isFilenameSafeName("a".repeat(64)), true);
+  assertEquals(isFilenameSafeName("a".repeat(65)), false);
+});
+
 // Path traversal validation tests
 
 Deno.test("Workflow.create rejects name with '..'", () => {
@@ -420,7 +446,6 @@ Deno.test("Workflow.create rejects name with '/'", () => {
   assertThrows(
     () => Workflow.create({ name: "a/b", jobs: [createTestJob("j")] }),
     Error,
-    "path traversal",
   );
 });
 
@@ -428,7 +453,6 @@ Deno.test("Workflow.create rejects name with '\\'", () => {
   assertThrows(
     () => Workflow.create({ name: "a\\b", jobs: [createTestJob("j")] }),
     Error,
-    "path traversal",
   );
 });
 
@@ -436,33 +460,124 @@ Deno.test("Workflow.create rejects path traversal even without jobs", () => {
   assertThrows(
     () => Workflow.create({ name: "../../../tmp/evil" }),
     Error,
-    "path traversal",
   );
 });
 
-// Scoped @collective/name tests
+Deno.test("Workflow.create enforces lowercase kebab-case", () => {
+  assertThrows(
+    () => Workflow.create({ name: "My Workflow" }),
+    Error,
+    "lowercase alphanumeric",
+  );
+  assertThrows(
+    () => Workflow.create({ name: "UPPER" }),
+    Error,
+    "lowercase alphanumeric",
+  );
+  assertThrows(
+    () => Workflow.create({ name: "has_underscores" }),
+    Error,
+    "lowercase alphanumeric",
+  );
+  assertThrows(
+    () => Workflow.create({ name: "-starts-with-hyphen" }),
+    Error,
+    "lowercase alphanumeric",
+  );
+});
 
-Deno.test("Workflow.create accepts scoped @collective/name", () => {
-  const workflow = Workflow.create({ name: "@john/pod-inventory" });
+Deno.test("Workflow.create enforces max name length", () => {
+  const longName = "a" + "-long".repeat(20);
+  assertEquals(longName.length > 64, true);
+  assertThrows(
+    () => Workflow.create({ name: longName }),
+    Error,
+    "at most 64",
+  );
+});
+
+Deno.test("Workflow.create rejects scoped names (create is for user workflows)", () => {
+  assertThrows(
+    () => Workflow.create({ name: "@john/pod-inventory" }),
+    Error,
+    "lowercase alphanumeric",
+  );
+});
+
+// Scoped @collective/name tests (via fromData — extension workflows)
+
+Deno.test("Workflow.fromData accepts scoped @collective/name", () => {
+  const data = {
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "@john/pod-inventory",
+    inputs: undefined,
+    version: 1,
+    jobs: [{
+      name: "j",
+      steps: [{
+        name: "s",
+        task: {
+          type: "model_method" as const,
+          modelIdOrName: "m",
+          methodName: "r",
+        },
+      }],
+    }],
+  };
+  const workflow = Workflow.fromData(data);
   assertEquals(workflow.name, "@john/pod-inventory");
 });
 
-Deno.test("Workflow.create accepts scoped name with multiple segments", () => {
-  const workflow = Workflow.create({ name: "@swamp/aws/ec2" });
+Deno.test("Workflow.fromData accepts scoped name with multiple segments", () => {
+  const data = {
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "@swamp/aws/ec2",
+    inputs: undefined,
+    version: 1,
+    jobs: [{
+      name: "j",
+      steps: [{
+        name: "s",
+        task: {
+          type: "model_method" as const,
+          modelIdOrName: "m",
+          methodName: "r",
+        },
+      }],
+    }],
+  };
+  const workflow = Workflow.fromData(data);
   assertEquals(workflow.name, "@swamp/aws/ec2");
 });
 
-Deno.test("Workflow.create rejects malformed scoped names", () => {
+Deno.test("Workflow.fromData rejects malformed scoped names", () => {
+  const makeData = (name: string) => ({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name,
+    inputs: undefined,
+    version: 1,
+    jobs: [{
+      name: "j",
+      steps: [{
+        name: "s",
+        task: {
+          type: "model_method" as const,
+          modelIdOrName: "m",
+          methodName: "r",
+        },
+      }],
+    }],
+  });
   assertThrows(
-    () => Workflow.create({ name: "@/" }),
+    () => Workflow.fromData(makeData("@/")),
     Error,
   );
   assertThrows(
-    () => Workflow.create({ name: "@scope/" }),
+    () => Workflow.fromData(makeData("@scope/")),
     Error,
   );
   assertThrows(
-    () => Workflow.create({ name: "@UPPER/case" }),
+    () => Workflow.fromData(makeData("@UPPER/case")),
     Error,
   );
 });

@@ -28,7 +28,7 @@
 
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
-import { stringify as stringifyYaml } from "@std/yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 
 const REPO = "/tmp/swamp-tag-test";
 const SWAMP = join(REPO, ".swamp");
@@ -162,9 +162,8 @@ for await (const entry of Deno.readDir(workflowsDir)) {
     const text = await Deno.readTextFile(path);
     if (text.includes("deploy-pipeline")) {
       workflowPath = path;
-      // Extract ID from filename: workflow-<uuid>.yaml
-      const match = entry.name.match(/workflow-(.+)\.yaml/);
-      if (match) workflowId = match[1];
+      const parsed = parseYaml(text) as { id?: string };
+      if (parsed?.id) workflowId = parsed.id;
     }
   }
 }
