@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertNotEquals } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { YamlWorkflowRepository } from "./yaml_workflow_repository.ts";
@@ -282,5 +286,147 @@ Deno.test("YamlWorkflowRepository.findByName skips broken YAML files", async () 
     const result = await repo.findByName("good-workflow");
     assertNotEquals(result, null);
     assertEquals(result!.name, "good-workflow");
+  });
+});
+
+// Name-based filename tests
+
+Deno.test("YamlWorkflowRepository.save writes name-based filename", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    const workflow = createTestWorkflow("deploy-pipeline");
+
+    await repo.save(workflow);
+
+    const workflowsDir = join(dir, "workflows");
+    const files: string[] = [];
+    for await (const entry of Deno.readDir(workflowsDir)) {
+      files.push(entry.name);
+    }
+    assertEquals(files.length, 1);
+    assertEquals(files[0], "workflow-deploy-pipeline.yaml");
+  });
+});
+
+Deno.test("YamlWorkflowRepository.getPath returns name-based path after save", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    const workflow = createTestWorkflow("deploy-pipeline");
+
+    await repo.save(workflow);
+
+    const path = repo.getPath(workflow.id);
+    assertStringIncludes(path, "workflow-deploy-pipeline.yaml");
+  });
+});
+
+Deno.test("YamlWorkflowRepository.findById reads legacy UUID-based files", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    const workflow = createTestWorkflow("legacy-workflow");
+    const id = workflow.id;
+
+    // Write a legacy UUID-based file directly
+    const workflowsDir = join(dir, "workflows");
+    await Deno.mkdir(workflowsDir, { recursive: true });
+    const { stringify } = await import("@std/yaml");
+    const data = workflow.toData();
+    await Deno.writeTextFile(
+      join(workflowsDir, `workflow-${id}.yaml`),
+      stringify(JSON.parse(JSON.stringify(data)) as Record<string, unknown>),
+    );
+
+    const found = await repo.findById(id);
+    assertNotEquals(found, null);
+    assertEquals(found!.name, "legacy-workflow");
+    assertEquals(found!.id, id);
+  });
+});
+
+Deno.test("YamlWorkflowRepository.save migrates legacy UUID file to name-based", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    const workflow = createTestWorkflow("migrating-workflow");
+    const id = workflow.id;
+
+    // Write a legacy UUID-based file directly
+    const workflowsDir = join(dir, "workflows");
+    await Deno.mkdir(workflowsDir, { recursive: true });
+    const { stringify } = await import("@std/yaml");
+    const data = workflow.toData();
+    await Deno.writeTextFile(
+      join(workflowsDir, `workflow-${id}.yaml`),
+      stringify(JSON.parse(JSON.stringify(data)) as Record<string, unknown>),
+    );
+
+    // Re-save triggers migration
+    await repo.save(workflow);
+
+    const files: string[] = [];
+    for await (const entry of Deno.readDir(workflowsDir)) {
+      files.push(entry.name);
+    }
+    assertEquals(files.length, 1);
+    assertEquals(files[0], "workflow-migrating-workflow.yaml");
+  });
+});
+
+Deno.test("YamlWorkflowRepository.findByName uses fast path for filename-safe names", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    const workflow = createTestWorkflow("fast-lookup");
+
+    await repo.save(workflow);
+
+    const found = await repo.findByName("fast-lookup");
+    assertNotEquals(found, null);
+    assertEquals(found!.name, "fast-lookup");
+  });
+});
+
+Deno.test("YamlWorkflowRepository.delete removes name-based file", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    const workflow = createTestWorkflow("to-delete");
+
+    await repo.save(workflow);
+
+    const found = await repo.findById(workflow.id);
+    assertNotEquals(found, null);
+
+    await repo.delete(workflow.id);
+
+    const deleted = await repo.findById(workflow.id);
+    assertEquals(deleted, null);
+  });
+});
+
+Deno.test("YamlWorkflowRepository.getPath returns UUID path for legacy files", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    const workflow = createTestWorkflow("legacy-path-test");
+    const id = workflow.id;
+
+    // Write a legacy UUID-based file directly
+    const workflowsDir = join(dir, "workflows");
+    await Deno.mkdir(workflowsDir, { recursive: true });
+    const { stringify } = await import("@std/yaml");
+    const data = workflow.toData();
+    const legacyFilename = `workflow-${id}.yaml`;
+    await Deno.writeTextFile(
+      join(workflowsDir, legacyFilename),
+      stringify(JSON.parse(JSON.stringify(data)) as Record<string, unknown>),
+    );
+
+    // Load via findById — populates the cache with the actual path
+    await repo.findById(id);
+
+    // getPath should return the UUID-based path where the file actually is
+    const path = repo.getPath(id);
+    assertStringIncludes(path, legacyFilename);
+
+    // The file at that path should actually exist
+    const stat = await Deno.stat(path);
+    assertEquals(stat.isFile, true);
   });
 });

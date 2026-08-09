@@ -74,7 +74,8 @@ removes the superseded directories via `removeSupersededSkills()`.
 Source-of-truth files live in top-level directories tracked in git:
 
 - **`models/`** — Model definitions: `models/{normalized-type}/{id}.yaml`
-- **`workflows/`** — Workflow definitions: `workflows/workflow-{id}.yaml`
+- **`workflows/`** — Workflow definitions: `workflows/workflow-{name}.yaml`
+  (legacy `workflow-{uuid}.yaml` also supported)
 - **`vaults/`** — Vault configurations: `vaults/{vault-type}/{id}.yaml`
 - **`grants/`** — Declarative access grant files: `grants/{name}.yaml` or
   `grants/{name}.yml`. Each file contains a `grants:` array of grant entries
@@ -199,7 +200,7 @@ These are real files (not symlinks) tracked in git.
 **Workflow definitions (`workflows/`):**
 
 ```
-workflows/workflow-{id}.yaml
+workflows/workflow-{name}.yaml
 ```
 
 These are real files (not symlinks) tracked in git.

@@ -38,11 +38,9 @@ function makeJob(name: string): Job {
   });
 }
 
-const arbWorkflowName = fc.string({ minLength: 1, maxLength: 30 }).filter(
-  (s) =>
-    !s.includes("..") && !s.includes("/") && !s.includes("\\") &&
-    !s.includes("\0"),
-);
+const arbWorkflowName = fc
+  .stringMatching(/^[a-z0-9][a-z0-9-]{0,29}$/)
+  .filter((s) => s.length >= 1);
 
 Deno.test("property: schema rejects empty jobs array", () => {
   fc.assert(

@@ -35,7 +35,8 @@ top-level directories that are tracked in git:
 
 - **`models/`** — Model definitions organized by normalized type:
   `models/{type}/{id}.yaml`
-- **`workflows/`** — Workflow definitions: `workflows/workflow-{id}.yaml`
+- **`workflows/`** — Workflow definitions: `workflows/workflow-{name}.yaml`
+  (legacy `workflow-{uuid}.yaml` also supported)
 - **`vaults/`** — Vault configurations: `vaults/{vault-type}/{id}.yaml`
 
 These directories are the primary way to explore and understand the repository.

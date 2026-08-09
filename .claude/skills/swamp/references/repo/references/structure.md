@@ -64,7 +64,7 @@ my-swamp-repo/
 │       └── {model-id}.yaml
 │
 ├── workflows/                   # Workflow definitions (flat files)
-│   └── workflow-{uuid}.yaml
+│   └── workflow-{name}.yaml     # (legacy: workflow-{uuid}.yaml also supported)
 │
 ├── vaults/                      # Vault configurations by type
 │   └── {vault-type}/

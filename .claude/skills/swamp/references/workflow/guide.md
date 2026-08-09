@@ -61,15 +61,28 @@ Workflow files are stored directly in the `workflows/` directory:
 
 ```
 workflows/
-  workflow-{uuid}.yaml
+  workflow-{name}.yaml          # default for new workflows
+  workflow-{uuid}.yaml          # legacy format, still supported
 ```
 
 Internal data (evaluated workflows, run records) lives in `.swamp/`:
 
 ```
-.swamp/workflows-evaluated/{uuid}.yaml
-.swamp/workflow-runs/{workflow-id}/{run-id}.yaml
+.swamp/workflows-evaluated/workflow-{name}.yaml
+.swamp/workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
 ```
+
+## Finding Workflow Files
+
+Workflow files may be named `workflow-{name}.yaml` or `workflow-{uuid}.yaml`
+(legacy). **Never guess the filename** — use the CLI to get the actual path:
+
+```bash
+swamp workflow get <name_or_id> --json   # → "path" field has the file location
+```
+
+This works for both naming conventions. The `path` is also returned by
+`swamp workflow create --json`.
 
 ## IMPORTANT: Always Get Schema First
 

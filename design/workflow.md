@@ -313,8 +313,9 @@ is used with zero overhead.
 
 Workflows are specified in YAML files, that are validated with Zod, in the
 top-level `workflows/` directory of the repository, as
-`workflows/workflow-{uuid}.yaml`. Workflow run output is stored in the datastore
-at `workflow-runs/{workflow-uuid}/workflow-run-{run-uuid}.yaml` (default path:
+`workflows/workflow-{name}.yaml` (legacy `workflow-{uuid}.yaml` files are also
+supported). Workflow run output is stored in the datastore at
+`workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml` (default path:
 `.swamp/workflow-runs/`).
 
 ## Validation
@@ -390,8 +391,9 @@ failure), never a silent strip.
 
 ## Workflow Definition
 
-Workflows are specified in `workflows/workflow-{uuid}.yaml`. They have a unique
-id, a globally unique name, a set of jobs, and optionally workflow inputs.
+Workflows are specified in `workflows/workflow-{name}.yaml` (legacy
+`workflow-{uuid}.yaml` files are also supported). They have a unique id, a
+globally unique name, a set of jobs, and optionally workflow inputs.
 
 ### Workflow Inputs
 

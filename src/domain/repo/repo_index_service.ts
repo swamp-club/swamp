@@ -86,7 +86,7 @@ export interface RebuildResult {
  *
  * Workflow View (`/workflows/{workflow-name}/`):
  * ```
- * workflow.yaml   → ../workflows/workflow-{id}.yaml
+ * workflow.yaml   → ../workflows/workflow-{name}.yaml
  * runs/
  *   latest/       → {latest-timestamp}/
  *   {timestamp}/
