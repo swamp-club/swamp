@@ -111,6 +111,16 @@ export const ALLOWED_EXTENSIONS = new Set([
   ".txt",
 ]);
 
+export const LEGAL_BASENAMES = new Set([
+  "AUTHORS",
+  "CONTRIBUTORS",
+  "COPYING",
+  "COPYING-EXCEPTION",
+  "LICENSE",
+  "NOTICE",
+  "PATENTS",
+]);
+
 const MAX_FILE_COUNT = 150;
 const MAX_INDIVIDUAL_FILE_SIZE = 1_000_000; // 1 MB
 const MAX_TOTAL_SIZE = 10_000_000; // 10 MB
@@ -156,10 +166,12 @@ export async function analyzeExtensionSafety(
       continue;
     }
 
-    // Check allowed extensions (exempt files skip this check)
+    // Check allowed extensions (exempt files and legal basenames skip this check)
     const ext = extname(file).toLowerCase();
     const isExempt = exemptFromExtensionCheck?.has(file) ?? false;
-    if (!isExempt && !ALLOWED_EXTENSIONS.has(ext)) {
+    if (
+      !isExempt && !ALLOWED_EXTENSIONS.has(ext) && !LEGAL_BASENAMES.has(name)
+    ) {
       errors.push({
         file,
         message: `File extension "${ext}" is not allowed. Allowed: ${

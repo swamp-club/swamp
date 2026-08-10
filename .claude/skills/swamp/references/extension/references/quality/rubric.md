@@ -136,8 +136,7 @@ Recognized license filenames (case-sensitive matches):
 ```
 LICENSE, LICENSE.md, LICENSE.txt, LICENSE.MD, LICENSE.TXT,
 License, License.md, License.txt,
-license, license.md, license.txt,
-COPYING, COPYING.md, COPYING.txt
+license, license.md, license.txt
 ```
 
 ### `repository-verified` (2 pts)

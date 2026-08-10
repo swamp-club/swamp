@@ -243,6 +243,31 @@ Deno.test("extensionPushPrepare: additionalFiles with disallowed extension sugge
   assertStringIncludes(error.message, ".bin");
 });
 
+Deno.test("extensionPushPrepare: additionalFiles with legal basenames pass pre-check", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const copyingPath = `${tmpDir}/COPYING`;
+    const licensePath = `${tmpDir}/LICENSE`;
+    await Deno.writeTextFile(copyingPath, "Legal text\n");
+    await Deno.writeTextFile(licensePath, "Legal text\n");
+
+    const deps = makePrepareDeps();
+    const input = makePrepareInput({
+      repoDir: tmpDir,
+      additionalFilePaths: [copyingPath, licensePath],
+      manifest: makeManifest({
+        additionalFiles: ["COPYING", "LICENSE"],
+      }),
+      dryRun: true,
+    });
+
+    const result = await extensionPushPrepare(ctx, deps, input);
+    assertEquals(result.isDryRun, true);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
 Deno.test("extensionPushPrepare: safety errors throw SwampError", async () => {
   const deps = makePrepareDeps({
     analyzeExtensionSafety: () =>
