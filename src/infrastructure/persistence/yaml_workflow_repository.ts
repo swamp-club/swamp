@@ -105,8 +105,12 @@ export class YamlWorkflowRepository implements WorkflowRepository {
         const content = await Deno.readTextFile(namePath);
         const data = parseYaml(content) as WorkflowData;
         const workflow = Workflow.fromData(data);
-        this.idToActualPath.set(workflow.id as WorkflowId, namePath);
-        return workflow;
+        if (workflow.name !== name) {
+          // File content doesn't match filename — fall through to slow path
+        } else {
+          this.idToActualPath.set(workflow.id as WorkflowId, namePath);
+          return workflow;
+        }
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) {
           throw error;
@@ -171,8 +175,10 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     const previousPath = this.idToActualPath.get(workflow.id);
 
     // Check if this is a new workflow or an update
+    const legacyPath = this.getLegacyPath(workflow.id);
     const isNew = !(await this.exists(targetPath)) &&
-      !(previousPath && await this.exists(previousPath));
+      !(previousPath && await this.exists(previousPath)) &&
+      !(await this.exists(legacyPath));
 
     const data = workflow.toData();
     // Remove undefined values since YAML can't stringify them
@@ -197,7 +203,6 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     }
 
     // Also check the legacy UUID path if it wasn't the previousPath
-    const legacyPath = this.getLegacyPath(workflow.id);
     if (
       targetPath !== legacyPath && previousPath !== legacyPath &&
       await this.exists(legacyPath)

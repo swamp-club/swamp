@@ -384,6 +384,33 @@ Deno.test("YamlWorkflowRepository.findByName uses fast path for filename-safe na
   });
 });
 
+Deno.test("YamlWorkflowRepository.findByName falls through when file name diverges from content", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    const workflow = createTestWorkflow("deploy");
+
+    await repo.save(workflow);
+
+    // Simulate user editing the YAML name without renaming the file
+    const workflowsDir = join(dir, "workflows");
+    const filePath = join(workflowsDir, "workflow-deploy.yaml");
+    const content = await Deno.readTextFile(filePath);
+    await Deno.writeTextFile(
+      filePath,
+      content.replace("name: deploy", "name: staging"),
+    );
+
+    // findByName("deploy") should NOT return the mismatched workflow
+    const result = await repo.findByName("deploy");
+    assertEquals(result, null);
+
+    // findByName("staging") should find it via the slow path
+    const staging = await repo.findByName("staging");
+    assertNotEquals(staging, null);
+    assertEquals(staging!.name, "staging");
+  });
+});
+
 Deno.test("YamlWorkflowRepository.delete removes name-based file", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlWorkflowRepository(dir);
