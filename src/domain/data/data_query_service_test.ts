@@ -1492,3 +1492,91 @@ Deno.test("DataQueryService: content stays raw string for non-JSON records", () 
   assertEquals(results[0].content, "hello world");
   catalog.close();
 });
+
+// ============================================================================
+// Backfill must not delete rows for models the predicate never mentions.
+//
+// Full backfill commits with a replace, not an insert, so any model the disk
+// walk fails to see is deleted from the catalog rather than merely left
+// unindexed. A model whose data names are bare integers used to be invisible to
+// that walk, which meant *any* query — including one matching nothing — wiped
+// its rows. See swamp-club#1580.
+//
+// The type must be scoped (`@scope/name`) to reproduce: with a single-segment
+// type the misclassified branch is skipped by the `childSegments.length >= 2`
+// guard in collectAllData, so only multi-segment types are affected — which is
+// every model that comes from an extension.
+// ============================================================================
+
+Deno.test("DataQueryService: a non-matching query preserves rows for models with numeric data names", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-numeric-names-" });
+  const dbPath = join(dir, ".swamp", "data", "_catalog.db");
+  const catalog = new CatalogStore(dbPath);
+  // Do NOT mark populated — the query must trigger a full backfill, which is
+  // the destructive path.
+
+  const numericNames = ["207333", "124364"];
+  for (const [index, name] of numericNames.entries()) {
+    const dataDir = join(
+      dir,
+      ".swamp",
+      "data",
+      "@scope",
+      "shows",
+      "model-001",
+      name,
+      "1",
+    );
+    ensureDirSync(dataDir);
+    Deno.writeTextFileSync(
+      join(dataDir, "raw"),
+      JSON.stringify({ hello: "world" }),
+    );
+    Deno.writeTextFileSync(
+      join(dataDir, "metadata.yaml"),
+      stringifyYaml({
+        name,
+        id: `00000000-0000-1000-8000-00000000010${index}`,
+        version: 1,
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: { type: "resource", specName: "result", modelName: "shows" },
+        ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    Deno.writeTextFileSync(
+      join(
+        dir,
+        ".swamp",
+        "data",
+        "@scope",
+        "shows",
+        "model-001",
+        name,
+        "latest",
+      ),
+      "1",
+    );
+  }
+
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const service = new DataQueryService(catalog, dataRepo);
+
+  // A predicate that matches nothing at all, and never mentions this model.
+  const results = await service.query(
+    'name == "__nonexistent__"',
+  ) as DataRecord[];
+  assertEquals(results.length, 0);
+
+  // The query returning nothing is correct. Deleting the rows is the bug.
+  assertEquals(
+    catalog.count(),
+    numericNames.length,
+    "backfill dropped rows for a model the predicate never mentioned",
+  );
+
+  catalog.close();
+});

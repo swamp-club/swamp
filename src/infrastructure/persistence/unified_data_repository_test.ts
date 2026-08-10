@@ -1416,3 +1416,87 @@ Deno.test("save: write-time pruning emits markDirty for each pruned version", as
     }
   }
 });
+
+// ============================================================================
+// Numeric data names — models that key resources by an external numeric id
+// (TMDB id, issue number) produce `{model-id}/{207333}/{1}/`, which the tree
+// walk must not confuse with `{model-id}/{data-name}/{version}/`.
+// ============================================================================
+
+Deno.test(
+  "findAllGlobal: finds data whose names are purely numeric",
+  async () => {
+    await withDataRepo(async (repo) => {
+      for (const name of ["207333", "124364", "289324"]) {
+        await repo.save(
+          testType,
+          "model-1",
+          makeData(name),
+          new TextEncoder().encode("x"),
+        );
+      }
+
+      const found = await repo.findAllGlobal();
+
+      assertEquals(found.length, 3);
+      assertEquals(
+        found.map((f) => f.data.name).sort(),
+        ["124364", "207333", "289324"],
+      );
+      // The type must survive the walk intact — deriving it from a truncated
+      // path is what silently drops these records.
+      for (const f of found) {
+        assertEquals(f.modelType.normalized, testType.normalized);
+        assertEquals(f.modelId, "model-1");
+      }
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSync: finds data whose names are purely numeric",
+  async () => {
+    await withDataRepo(async (repo) => {
+      await repo.save(
+        testType,
+        "model-1",
+        makeData("207333"),
+        new TextEncoder().encode("x"),
+      );
+
+      const found = repo.findAllGlobalSync();
+
+      assertEquals(found.length, 1);
+      assertEquals(found[0].data.name, "207333");
+      assertEquals(found[0].modelType.normalized, testType.normalized);
+      assertEquals(found[0].modelId, "model-1");
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobal: numeric and named data coexist under one model",
+  async () => {
+    await withDataRepo(async (repo) => {
+      await repo.save(
+        testType,
+        "model-1",
+        makeData("207333"),
+        new TextEncoder().encode("x"),
+      );
+      await repo.save(
+        testType,
+        "model-1",
+        makeData("recommendations"),
+        new TextEncoder().encode("y"),
+      );
+
+      const found = await repo.findAllGlobal();
+
+      assertEquals(
+        found.map((f) => f.data.name).sort(),
+        ["207333", "recommendations"],
+      );
+    });
+  },
+);

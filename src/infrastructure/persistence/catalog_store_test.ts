@@ -855,6 +855,59 @@ Deno.test("bulkReplaceNamespace: does not touch global populated flag", () => {
   store.close();
 });
 
+Deno.test("latestRowCountsByType: counts latest rows per type within a namespace", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsert(makeRow({
+    namespace: "own",
+    type_normalized: "@scope/shows",
+    data_name: "207333",
+    version: 2,
+    is_latest: 1,
+  }));
+  // An older version of the same item must not be counted twice.
+  store.upsert(makeRow({
+    namespace: "own",
+    type_normalized: "@scope/shows",
+    data_name: "207333",
+    version: 1,
+    is_latest: 0,
+  }));
+  store.upsert(makeRow({
+    namespace: "own",
+    type_normalized: "@scope/other",
+    data_name: "thing",
+    is_latest: 1,
+  }));
+  // A foreign namespace's rows belong to another repo's disk, not ours.
+  store.upsert(makeRow({
+    namespace: "security",
+    type_normalized: "@scope/shows",
+    data_name: "scan",
+    is_latest: 1,
+  }));
+
+  const counts = store.latestRowCountsByType("own");
+  assertEquals(counts.get("@scope/shows"), 1);
+  assertEquals(counts.get("@scope/other"), 1);
+  assertEquals(counts.size, 2);
+
+  const allNamespaces = store.latestRowCountsByType();
+  assertEquals(allNamespaces.get("@scope/shows"), 2);
+
+  store.close();
+});
+
+Deno.test("latestRowCountsByType: returns an empty map for an empty catalog", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  assertEquals(store.latestRowCountsByType("own").size, 0);
+
+  store.close();
+});
+
 Deno.test("bulkUpsertForeign: upserts foreign rows and records lastSynced", () => {
   const dbPath = makeTempDbPath();
   const store = new CatalogStore(dbPath);

@@ -332,10 +332,28 @@ The catalog builds up incrementally:
    retries. The `populated` flag is not set by scoped backfill.
 3. **Full backfill on first query** — on the first call to
    `DataQueryService.query()`, if the catalog is not marked as populated, a
-   one-time `findAllGlobal()` runs, bulk-inserts all existing metadata, and
-   sets a `populated` flag in the `catalog_meta` table.
+   one-time `findAllGlobal()` runs, commits every row it found, and sets a
+   `populated` flag in the `catalog_meta` table.
 4. **Self-healing** — if `_catalog.db` is deleted or corrupted, the next query
    triggers a backfill automatically.
+
+Full backfill **replaces** rather than inserts. It commits through
+`bulkReplaceNamespace()` (or `bulkReplaceAll()` when no namespace is
+configured), each of which deletes the existing rows before writing the new
+set. Backfill is therefore only as correct as `findAllGlobal()` is complete:
+anything the on-disk walk fails to see is not left stale in the index, it is
+deleted from it. A gap in the walk is data loss in the catalog, not a missing
+entry — and because the walk runs before the predicate is applied, a query that
+matches nothing can still delete rows.
+
+Data on disk is never touched by backfill, so the loss is recoverable, but it
+does not recover on its own: the `populated` flag stays set, and `data get` and
+`data list` keep working, so nothing surfaces the gap. `swamp doctor datastores`
+compares the index against the on-disk walk and reports any shortfall, and
+`swamp doctor datastores --repair -y` removes `_catalog.db` so the next query
+rebuilds it. That rebuild also clears foreign-namespace rows fetched by
+`swamp datastore catalog pull` — they describe data that is not on local disk,
+so a local walk cannot recreate them; re-pull to restore them.
 
 ### Remote Datastores (S3)
 

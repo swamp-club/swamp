@@ -234,12 +234,18 @@ export {
   type VaultRequiredFinding,
 } from "./models/doctor_vaults.ts";
 export {
+  type CatalogCompletenessSummary,
+  type CatalogIndexRepairResult,
+  type CatalogShortfall,
   type DatastoreHealthFinding,
   doctorDatastores,
   type DoctorDatastoresData,
   type DoctorDatastoresDeps,
   type DoctorDatastoresEvent,
   type NamespaceContaminationFinding,
+  repairCatalogIndex,
+  type RepairCatalogIndexDeps,
+  type RepairCatalogIndexEvent,
   repairDatastoreContamination,
   type RepairDatastoresDeps,
   type RepairDatastoresEvent,

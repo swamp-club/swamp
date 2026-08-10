@@ -43,6 +43,27 @@ export interface VaultMismatchFinding {
   vaultType: string;
 }
 
+/** A model type whose on-disk data is not fully represented in the catalog. */
+export interface CatalogShortfall {
+  typeNormalized: string;
+  diskRecords: number;
+  catalogRecords: number;
+}
+
+/**
+ * Comparison of the local catalog index against the on-disk data walk.
+ *
+ * The catalog is a local index of data on disk. When the walk can see records
+ * the index does not have, queries silently under-report — and because full
+ * backfill commits with a replace rather than an insert, the gap is destructive
+ * rather than merely stale. See design/data-query.md.
+ */
+export interface CatalogCompletenessSummary {
+  diskRecords: number;
+  catalogRecords: number;
+  shortfalls: ReadonlyArray<CatalogShortfall>;
+}
+
 /** Foreign namespace objects detected under the repo's own namespace. */
 export interface NamespaceContaminationFinding {
   foreignNamespaces: ReadonlyArray<{ namespace: string; objectCount: number }>;
@@ -56,6 +77,7 @@ export interface DoctorDatastoresData {
   healthFindings: DatastoreHealthFinding[];
   vaultMismatchFindings: VaultMismatchFinding[];
   contaminationFinding?: NamespaceContaminationFinding;
+  catalogCompletenessFinding?: CatalogCompletenessSummary;
 }
 
 export type DoctorDatastoresEvent =
@@ -76,6 +98,14 @@ export interface DoctorDatastoresDeps {
   checkNamespaceContamination?: (
     config: DatastoreConfig,
   ) => Promise<NamespaceContaminationSummary | null>;
+  /**
+   * Compares the local catalog index against the on-disk walk.
+   *
+   * Implementations must read the catalog directly and never issue a data
+   * query — querying triggers backfill, and a diagnostic that repairs what it
+   * measures always reports health.
+   */
+  checkCatalogCompleteness?: () => Promise<CatalogCompletenessSummary | null>;
 }
 
 /**
@@ -101,6 +131,7 @@ export async function* doctorDatastores(
       const healthFindings: DatastoreHealthFinding[] = [];
       const vaultMismatchFindings: VaultMismatchFinding[] = [];
       let contaminationFinding: NamespaceContaminationFinding | undefined;
+      let catalogCompletenessFinding: CatalogCompletenessSummary | undefined;
 
       // Health check
       const { healthy, message } = await deps.checkHealth(config);
@@ -158,6 +189,31 @@ export async function* doctorDatastores(
         }
       }
 
+      // Catalog completeness check — the catalog is a local index, so this
+      // runs for every repo, with or without a namespace or remote datastore.
+      if (deps.checkCatalogCompleteness) {
+        const summary = await deps.checkCatalogCompleteness();
+        if (summary && summary.shortfalls.length > 0) {
+          catalogCompletenessFinding = summary;
+          const missing = summary.diskRecords - summary.catalogRecords;
+          healthFindings.push({
+            check: "catalog_completeness",
+            passed: false,
+            message:
+              `Catalog index is missing ${missing} record(s) across ${summary.shortfalls.length} model type(s) ` +
+              `that exist on disk. Queries against them return nothing. ` +
+              `Run 'swamp doctor datastores --repair' to preview a rebuild.`,
+          });
+        } else if (summary) {
+          healthFindings.push({
+            check: "catalog_completeness",
+            passed: true,
+            message:
+              `Catalog index covers all ${summary.diskRecords} record(s) on disk`,
+          });
+        }
+      }
+
       // Vault mismatch check — only relevant for custom (remote) datastores
       if (isCustom) {
         const vaults = await deps.getVaultConfigs();
@@ -179,6 +235,7 @@ export async function* doctorDatastores(
           healthFindings,
           vaultMismatchFindings,
           contaminationFinding,
+          catalogCompletenessFinding,
         },
       };
     })(),
@@ -486,6 +543,92 @@ export async function* repairUnmigratedData(
         },
         namespace,
       };
+    })(),
+  );
+}
+
+// ============================================================================
+// Repair: local catalog index rebuild
+// ============================================================================
+
+export interface CatalogIndexRepairResult {
+  shortfalls: ReadonlyArray<CatalogShortfall>;
+  missingRecords: number;
+}
+
+export type RepairCatalogIndexEvent =
+  | { kind: "scanning" }
+  | { kind: "preview"; completeness: CatalogCompletenessSummary }
+  | { kind: "step"; description: string }
+  | { kind: "completed"; result: CatalogIndexRepairResult }
+  | { kind: "not_needed" }
+  | { kind: "error"; error: SwampError };
+
+export interface RepairCatalogIndexDeps {
+  checkCompleteness: () => Promise<CatalogCompletenessSummary | null>;
+  /** Removes the catalog database so the next query rebuilds it from disk. */
+  invalidateCatalog: () => Promise<void>;
+}
+
+/**
+ * Detect and repair a local catalog index that under-reports what is on disk.
+ *
+ * Repair is a deletion, not a rebuild: the catalog database is removed and the
+ * next data query backfills it from the on-disk walk. That keeps the repair
+ * honest — it cannot paper over a walk that is still wrong — but it also drops
+ * foreign-namespace rows, which only `swamp datastore catalog pull` can
+ * restore, so the caller is told.
+ */
+export async function* repairCatalogIndex(
+  _ctx: LibSwampContext,
+  deps: RepairCatalogIndexDeps,
+  options: { confirm: boolean },
+): AsyncGenerator<RepairCatalogIndexEvent> {
+  yield* withGeneratorSpan(
+    "swamp.doctor.datastores.repair.catalog",
+    {},
+    (async function* () {
+      yield { kind: "scanning" };
+
+      const completeness = await deps.checkCompleteness();
+      if (!completeness || completeness.shortfalls.length === 0) {
+        yield { kind: "not_needed" };
+        return;
+      }
+
+      if (!options.confirm) {
+        yield { kind: "preview", completeness };
+        return;
+      }
+
+      try {
+        yield {
+          kind: "step",
+          description:
+            "Removing the catalog index (rebuilds on the next data query)",
+        };
+        await deps.invalidateCatalog();
+
+        yield {
+          kind: "completed",
+          result: {
+            shortfalls: completeness.shortfalls,
+            missingRecords: completeness.diskRecords -
+              completeness.catalogRecords,
+          },
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        yield {
+          kind: "error",
+          error: {
+            code: "catalog_repair_failed",
+            message:
+              `Could not remove the catalog index: ${message}. No changes were made.`,
+            cause: err instanceof Error ? err : undefined,
+          },
+        };
+      }
     })(),
   );
 }

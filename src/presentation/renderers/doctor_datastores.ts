@@ -21,6 +21,7 @@ import { bold, dim, green, red, yellow } from "@std/fmt/colors";
 import type {
   DoctorDatastoresEvent,
   EventHandlers,
+  RepairCatalogIndexEvent,
   RepairDatastoresEvent,
   RepairUnmigratedDataEvent,
 } from "../../libswamp/mod.ts";
@@ -85,6 +86,25 @@ class LogDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
           );
         }
 
+        // Render catalog shortfall details when present
+        if (data.catalogCompletenessFinding) {
+          const cc = data.catalogCompletenessFinding;
+          writeOutput(`\n${red("Catalog index incomplete:")}`);
+          for (const s of cc.shortfalls) {
+            writeOutput(
+              `  ${
+                bold(s.typeNormalized)
+              }: ${s.catalogRecords.toLocaleString()} indexed of ${s.diskRecords.toLocaleString()} on disk`,
+            );
+          }
+          writeOutput(
+            dim(
+              "\n  Data on disk is intact — only the query index is short.\n" +
+                "  Run 'swamp doctor datastores --repair' to preview a rebuild.",
+            ),
+          );
+        }
+
         // Render vault mismatch advisory (yellow, does not cause failure)
         if (data.vaultMismatchFindings.length > 0) {
           writeOutput(
@@ -136,6 +156,8 @@ class JsonDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
               healthFindings: data.healthFindings,
               vaultMismatchFindings: data.vaultMismatchFindings,
               contaminationFinding: data.contaminationFinding ?? null,
+              catalogCompletenessFinding: data.catalogCompletenessFinding ??
+                null,
             },
             null,
             2,
@@ -434,5 +456,132 @@ export function createUnmigratedDataRepairRenderer(
       return new JsonUnmigratedDataRepairRenderer();
     case "log":
       return new LogUnmigratedDataRepairRenderer();
+  }
+}
+
+// ============================================================================
+// Catalog index repair renderer
+// ============================================================================
+
+export type CatalogIndexRepairStatus = "pass" | "fail" | "preview";
+
+export interface CatalogIndexRepairRenderer {
+  handlers(): EventHandlers<RepairCatalogIndexEvent>;
+  readonly overallStatus: CatalogIndexRepairStatus;
+}
+
+/** Shown after any repair that drops the catalog database. */
+const FOREIGN_ROWS_NOTICE =
+  "Rebuilding the index also clears rows pulled from other namespaces " +
+  "(they describe data that is not on local disk, so the rebuild cannot " +
+  "recreate them). Restore them with: swamp datastore catalog pull";
+
+class LogCatalogIndexRepairRenderer implements CatalogIndexRepairRenderer {
+  overallStatus: CatalogIndexRepairStatus = "pass";
+
+  handlers(): EventHandlers<RepairCatalogIndexEvent> {
+    return {
+      scanning: () => {
+        writeOutput(dim("Comparing the catalog index against data on disk…"));
+      },
+      preview: (e) => {
+        this.overallStatus = "preview";
+        const { completeness } = e;
+        writeOutput(`\n${bold("Catalog index rebuild:")}`);
+        for (const s of completeness.shortfalls) {
+          writeOutput(
+            `  ${s.typeNormalized}: index ${s.catalogRecords.toLocaleString()} of ${s.diskRecords.toLocaleString()} record(s) on disk`,
+          );
+        }
+        writeOutput(
+          `  Remove the catalog index (rebuilds on the next data query)`,
+        );
+        writeOutput(dim(`\n  ${FOREIGN_ROWS_NOTICE}`));
+        writeOutput(dim("\n  Run with -y to proceed."));
+      },
+      step: (e) => {
+        writeOutput(`  ${e.description}`);
+      },
+      completed: (e) => {
+        this.overallStatus = "pass";
+        writeOutput(
+          `\n${green("✓")} ${
+            bold("Catalog index invalidated — will rebuild on next query:")
+          }`,
+        );
+        writeOutput(
+          `  ${e.result.missingRecords.toLocaleString()} missing record(s) across ${e.result.shortfalls.length} model type(s) will be re-indexed on the next data query`,
+        );
+        writeOutput(dim(`\n  ${FOREIGN_ROWS_NOTICE}`));
+      },
+      not_needed: () => {
+        this.overallStatus = "pass";
+        writeOutput(dim("Catalog index matches data on disk."));
+      },
+      error: (e) => {
+        this.overallStatus = "fail";
+        throw new UserError(e.error.message);
+      },
+    };
+  }
+}
+
+class JsonCatalogIndexRepairRenderer implements CatalogIndexRepairRenderer {
+  overallStatus: CatalogIndexRepairStatus = "pass";
+
+  handlers(): EventHandlers<RepairCatalogIndexEvent> {
+    return {
+      scanning: () => {},
+      preview: (e) => {
+        this.overallStatus = "preview";
+        console.log(
+          JSON.stringify(
+            {
+              status: "catalog_preview",
+              completeness: e.completeness,
+              foreignRowsNotice: FOREIGN_ROWS_NOTICE,
+            },
+            null,
+            2,
+          ),
+        );
+      },
+      step: () => {},
+      completed: (e) => {
+        this.overallStatus = "pass";
+        console.log(
+          JSON.stringify(
+            {
+              status: "catalog_completed",
+              result: e.result,
+              foreignRowsNotice: FOREIGN_ROWS_NOTICE,
+            },
+            null,
+            2,
+          ),
+        );
+      },
+      not_needed: () => {
+        this.overallStatus = "pass";
+        console.log(
+          JSON.stringify({ status: "catalog_not_needed" }, null, 2),
+        );
+      },
+      error: (e) => {
+        this.overallStatus = "fail";
+        throw new UserError(e.error.message);
+      },
+    };
+  }
+}
+
+export function createCatalogIndexRepairRenderer(
+  mode: OutputMode,
+): CatalogIndexRepairRenderer {
+  switch (mode) {
+    case "json":
+      return new JsonCatalogIndexRepairRenderer();
+    case "log":
+      return new LogCatalogIndexRepairRenderer();
   }
 }
