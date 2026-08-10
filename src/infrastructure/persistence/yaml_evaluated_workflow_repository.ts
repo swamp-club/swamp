@@ -121,8 +121,12 @@ export class YamlEvaluatedWorkflowRepository {
         const content = await Deno.readTextFile(namePath);
         const data = parseYaml(content) as WorkflowData;
         const workflow = Workflow.fromData(data);
-        this.idToActualPath.set(workflow.id as WorkflowId, namePath);
-        return workflow;
+        if (workflow.name !== name) {
+          // File content doesn't match filename — fall through to slow path
+        } else {
+          this.idToActualPath.set(workflow.id as WorkflowId, namePath);
+          return workflow;
+        }
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) {
           throw error;
@@ -174,9 +178,15 @@ export class YamlEvaluatedWorkflowRepository {
   }
 
   async delete(id: WorkflowId): Promise<void> {
+    // Populate cache so we discover name-based files on a cold instance
+    const workflow = await this.findById(id);
+
     const pathsToTry = new Set([this.getLegacyPath(id)]);
     const cachedPath = this.idToActualPath.get(id);
     if (cachedPath) pathsToTry.add(cachedPath);
+    if (workflow && isFilenameSafeName(workflow.name)) {
+      pathsToTry.add(this.getNamePath(workflow.name));
+    }
 
     for (const path of pathsToTry) {
       try {

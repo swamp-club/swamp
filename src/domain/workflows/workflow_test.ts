@@ -496,12 +496,9 @@ Deno.test("Workflow.create enforces max name length", () => {
   );
 });
 
-Deno.test("Workflow.create rejects scoped names (create is for user workflows)", () => {
-  assertThrows(
-    () => Workflow.create({ name: "@john/pod-inventory" }),
-    Error,
-    "lowercase alphanumeric",
-  );
+Deno.test("Workflow.create accepts scoped @collective/name", () => {
+  const workflow = Workflow.create({ name: "@john/pod-inventory" });
+  assertEquals(workflow.name, "@john/pod-inventory");
 });
 
 // Scoped @collective/name tests (via fromData — extension workflows)

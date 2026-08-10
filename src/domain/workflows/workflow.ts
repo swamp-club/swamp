@@ -65,7 +65,7 @@ const workflowNameBase = z.string().min(1).refine(
 
 const workflowNameStrict = workflowNameBase
   .refine(
-    (name) => WORKFLOW_NAME_PATTERN.test(name),
+    (name) => name.includes("/") || WORKFLOW_NAME_PATTERN.test(name),
     {
       message:
         "Workflow name must be lowercase alphanumeric with hyphens (e.g. 'deploy-pipeline'). Must start with a letter or number.",
