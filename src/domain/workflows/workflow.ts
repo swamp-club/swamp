@@ -65,7 +65,7 @@ const workflowNameBase = z.string().min(1).refine(
 
 const workflowNameStrict = workflowNameBase
   .refine(
-    (name) => name.includes("/") || WORKFLOW_NAME_PATTERN.test(name),
+    (name) => WORKFLOW_NAME_PATTERN.test(name),
     {
       message:
         "Workflow name must be lowercase alphanumeric with hyphens (e.g. 'deploy-pipeline'). Must start with a letter or number.",
@@ -196,8 +196,13 @@ export class Workflow {
       reports: props.reports,
     };
 
-    // Strict name validation on creation — enforces kebab-case and max length
-    workflowNameStrict.parse(data.name);
+    // Scoped @collective/name is validated by workflowNameBase (in the schema);
+    // unscoped names additionally enforce kebab-case and max length.
+    if (data.name.includes("/")) {
+      workflowNameBase.parse(data.name);
+    } else {
+      workflowNameStrict.parse(data.name);
+    }
 
     // Only validate full schema if jobs exist (jobs.min(1) requires at least one)
     if (jobs.length > 0) {
