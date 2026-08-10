@@ -457,7 +457,7 @@ export const doctorDatastoresCommand = withRemoteOptions(
     )
     .option(
       "--repair",
-      "Preview and repair datastore issues: root-level unmigrated data and foreign namespace contamination (add -y to execute).",
+      "Preview and repair datastore issues: catalog index completeness, root-level unmigrated data, and foreign namespace contamination (add -y to execute).",
     )
     .option(
       "-y, --yes",

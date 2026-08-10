@@ -505,7 +505,9 @@ class LogCatalogIndexRepairRenderer implements CatalogIndexRepairRenderer {
       completed: (e) => {
         this.overallStatus = "pass";
         writeOutput(
-          `\n${green("✓")} ${bold("Catalog index rebuild scheduled:")}`,
+          `\n${green("✓")} ${
+            bold("Catalog index invalidated — will rebuild on next query:")
+          }`,
         );
         writeOutput(
           `  ${e.result.missingRecords.toLocaleString()} missing record(s) across ${e.result.shortfalls.length} model type(s) will be re-indexed on the next data query`,
