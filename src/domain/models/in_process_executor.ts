@@ -49,7 +49,10 @@ export function wrapLoggerWithOutput(
   if (!onEvent) return logger;
   return new Proxy(logger, {
     get(target, prop, receiver) {
-      if (prop === "info" || prop === "warn") {
+      if (
+        prop === "info" || prop === "warn" || prop === "warning" ||
+        prop === "error"
+      ) {
         return (...args: unknown[]) => {
           const original = Reflect.get(target, prop, receiver) as (
             ...a: unknown[]
@@ -78,7 +81,9 @@ export function wrapLoggerWithOutput(
           onEvent({
             type: "output",
             line,
-            stream: prop === "warn" ? "stderr" : "stdout",
+            stream: prop === "warn" || prop === "warning" || prop === "error"
+              ? "stderr"
+              : "stdout",
           });
         };
       }
