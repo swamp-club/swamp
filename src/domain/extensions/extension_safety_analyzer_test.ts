@@ -234,6 +234,20 @@ Deno.test("analyzeExtensionSafety: extensionless file rejected when not exempt",
   }
 });
 
+Deno.test("analyzeExtensionSafety: legal basenames pass without exemption", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    for (const name of ["COPYING", "COPYING-EXCEPTION", "LICENSE", "NOTICE"]) {
+      const filePath = join(tmpDir, name);
+      await Deno.writeTextFile(filePath, "Legal text\n");
+      const result = await analyzeExtensionSafety([filePath]);
+      assertEquals(result.errors, [], `${name} should pass safety analysis`);
+    }
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
 Deno.test("analyzeExtensionSafety: exempt files still checked for hidden names", async () => {
   await withTempFiles(
     { ".hidden": "secret\n" },

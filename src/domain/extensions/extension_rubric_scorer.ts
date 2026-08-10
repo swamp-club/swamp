@@ -363,8 +363,7 @@ export function composeScore(
       1,
       factors.hasLicenseFile,
       {
-        remediation:
-          "Add a LICENSE / LICENSE.md / LICENSE.txt / COPYING entry to " +
+        remediation: "Add a LICENSE / LICENSE.md / LICENSE.txt entry to " +
           "`additionalFiles:` as a bare basename — entries are copied " +
           "verbatim to `extension/files/<entry>` in the archive, so " +
           "nested paths won't earn the factor. For per-directory layouts " +

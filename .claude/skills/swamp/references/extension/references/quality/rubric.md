@@ -131,7 +131,8 @@ nested entry like `additionalFiles: [legal/LICENSE]` lands at
 `<root>/files/legal/LICENSE` and earns zero. Use a bare basename and, if your
 source layout requires it, opt into `paths.base: manifest`.
 
-Recognized license filenames (case-sensitive matches):
+Recognized license filenames (case-sensitive matches). `LICENSE` variants are
+preferred; `COPYING` variants are also accepted:
 
 ```
 LICENSE, LICENSE.md, LICENSE.txt, LICENSE.MD, LICENSE.TXT,

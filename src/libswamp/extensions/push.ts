@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { dirname, extname, join, relative } from "@std/path";
+import { basename, dirname, extname, join, relative } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { createTarGz } from "../../infrastructure/archive/tar_archive.ts";
 import { extractBareSpecifierNames } from "../../domain/models/bundle.ts";
@@ -29,6 +29,7 @@ import type {
 } from "../../domain/extensions/extension_content.ts";
 import {
   ALLOWED_EXTENSIONS,
+  LEGAL_BASENAMES,
   type SafetyCheckResult,
   type SafetyIssue,
 } from "../../domain/extensions/extension_safety_analyzer.ts";
@@ -622,7 +623,7 @@ export async function extensionPushPrepare(
   // error can name the manifest field and suggest `binaries`.
   for (const file of input.additionalFilePaths) {
     const ext = extname(file).toLowerCase();
-    if (!ALLOWED_EXTENSIONS.has(ext)) {
+    if (!ALLOWED_EXTENSIONS.has(ext) && !LEGAL_BASENAMES.has(basename(file))) {
       const rel = relative(input.repoDir, file);
       throw validationFailed(
         `File "${rel}" in additionalFiles has extension "${ext}" which is not allowed. ` +
