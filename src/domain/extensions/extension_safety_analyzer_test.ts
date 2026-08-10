@@ -244,7 +244,7 @@ Deno.test("analyzeExtensionSafety: legal basenames pass without exemption", asyn
       assertEquals(result.errors, [], `${name} should pass safety analysis`);
     }
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
 

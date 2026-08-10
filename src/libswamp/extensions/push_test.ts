@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { join } from "@std/path";
 import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
@@ -246,8 +247,8 @@ Deno.test("extensionPushPrepare: additionalFiles with disallowed extension sugge
 Deno.test("extensionPushPrepare: additionalFiles with legal basenames pass pre-check", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
-    const copyingPath = `${tmpDir}/COPYING`;
-    const licensePath = `${tmpDir}/LICENSE`;
+    const copyingPath = join(tmpDir, "COPYING");
+    const licensePath = join(tmpDir, "LICENSE");
     await Deno.writeTextFile(copyingPath, "Legal text\n");
     await Deno.writeTextFile(licensePath, "Legal text\n");
 
