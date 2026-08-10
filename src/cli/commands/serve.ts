@@ -1703,14 +1703,128 @@ export const serveCommand = new Command()
         { clientId: credentials.clientId },
       );
 
-      if (credentials.accessToken) {
+      const cachedMap = credentials.resolvedAdmins ?? {};
+      const allCached = authConfig.admins.every((a) => {
+        const u = a.startsWith("user:") ? a.slice(5) : a;
+        return !!cachedMap[u];
+      }) && authConfig.allowedUsers.every((e) => {
+        const u = e.startsWith("user:") ? e.slice(5) : e;
+        return !!cachedMap[`allowed:${u}`];
+      });
+
+      let accessToken = credentials.accessToken;
+
+      if (!allCached && !accessToken) {
+        const missingAdmins = authConfig.admins
+          .map((a) => a.startsWith("user:") ? a.slice(5) : a)
+          .filter((u) => !cachedMap[u]);
+        const missingAllowed = authConfig.allowedUsers
+          .map((e) => e.startsWith("user:") ? e.slice(5) : e)
+          .filter((u) => !cachedMap[`allowed:${u}`]);
+        logger.info(
+          "OAuth user config changed — device grant required to resolve: {admins}",
+          {
+            admins: [
+              ...missingAdmins,
+              ...missingAllowed.map((u) => `allowed:${u}`),
+            ].join(", "),
+          },
+        );
+
+        const { startDeviceGrant, pollForToken, DeviceGrantPollError } =
+          await import(
+            "../../serve/oauth_client.ts"
+          );
+        const { BOOTSTRAP_CLIENT_ID } = await import(
+          "../../serve/oauth_registration.ts"
+        );
+        const grantSignal = AbortSignal.timeout(300_000);
+        const grant = await startDeviceGrant(
+          authConfig.oauthProvider,
+          BOOTSTRAP_CLIENT_ID,
+          grantSignal,
+        );
+
+        const verifyUrl = grant.verificationUriComplete ||
+          grant.verificationUri;
+        logger.info(
+          "Visit {uri} and verify code: {code}",
+          { uri: verifyUrl, code: grant.userCode },
+        );
+
+        let currentIntervalMs = (grant.interval || 5) * 1000;
+        const deadline = Date.now() + grant.expiresIn * 1000;
+        let tokenResponse;
+        while (Date.now() < deadline) {
+          try {
+            tokenResponse = await pollForToken(
+              authConfig.oauthProvider,
+              BOOTSTRAP_CLIENT_ID,
+              "",
+              grant.deviceCode,
+              grantSignal,
+            );
+            break;
+          } catch (err) {
+            if (err instanceof DeviceGrantPollError) {
+              if (err.code === "slow_down") {
+                currentIntervalMs += 5000;
+              }
+              if (
+                err.code === "authorization_pending" ||
+                err.code === "slow_down"
+              ) {
+                await new Promise((resolve) =>
+                  setTimeout(resolve, currentIntervalMs)
+                );
+                continue;
+              }
+              throw new UserError(
+                `OAuth re-registration failed: ${err.message}`,
+              );
+            }
+            throw err;
+          }
+        }
+        if (!tokenResponse) {
+          throw new UserError(
+            "OAuth re-registration failed: device grant timed out",
+          );
+        }
+        accessToken = tokenResponse.accessToken;
+      }
+
+      const resolvedMap: Record<string, string> = {};
+      if (allCached) {
+        for (let i = 0; i < authConfig.admins.length; i++) {
+          const admin = authConfig.admins[i];
+          const username = admin.startsWith("user:") ? admin.slice(5) : admin;
+          const sub = cachedMap[username];
+          authConfig.admins[i] = `user:${sub}`;
+          resolvedMap[username] = sub;
+          logger.info(
+            "Using cached admin resolution: {username} → user:{sub}",
+            { username, sub },
+          );
+        }
+        for (let i = 0; i < authConfig.allowedUsers.length; i++) {
+          const entry = authConfig.allowedUsers[i];
+          const username = entry.startsWith("user:") ? entry.slice(5) : entry;
+          const sub = cachedMap[`allowed:${username}`];
+          authConfig.allowedUsers[i] = sub;
+          resolvedMap[`allowed:${username}`] = sub;
+          logger.info(
+            "Using cached allowed-user resolution: {username} → {sub}",
+            { username, sub },
+          );
+        }
+      } else {
         const { resolveUsername } = await import(
           "../../serve/oauth_client.ts"
         );
         const { storeResolvedAdmins } = await import(
           "../../serve/oauth_registration.ts"
         );
-        const resolvedMap: Record<string, string> = {};
         for (let i = 0; i < authConfig.admins.length; i++) {
           const admin = authConfig.admins[i];
           const username = admin.startsWith("user:") ? admin.slice(5) : admin;
@@ -1718,7 +1832,7 @@ export const serveCommand = new Command()
             const sub = await resolveUsername(
               authConfig.oauthProvider,
               username,
-              credentials.accessToken,
+              accessToken!,
               AbortSignal.timeout(10_000),
             );
             authConfig.admins[i] = `user:${sub}`;
@@ -1742,7 +1856,7 @@ export const serveCommand = new Command()
             const sub = await resolveUsername(
               authConfig.oauthProvider,
               username,
-              credentials.accessToken,
+              accessToken!,
               AbortSignal.timeout(10_000),
             );
             authConfig.allowedUsers[i] = sub;
@@ -1767,58 +1881,13 @@ export const serveCommand = new Command()
           TOKEN_SECRETS_VAULT_NAME,
           resolvedMap,
         );
-        for (const [key, sub] of Object.entries(resolvedMap)) {
-          const username = key.startsWith("allowed:")
-            ? key.slice("allowed:".length)
-            : key;
-          resolvedUserNames[sub] = username;
-        }
-      } else if (credentials.resolvedAdmins) {
-        for (let i = 0; i < authConfig.admins.length; i++) {
-          const admin = authConfig.admins[i];
-          const username = admin.startsWith("user:") ? admin.slice(5) : admin;
-          const cachedSub = credentials.resolvedAdmins[username];
-          if (cachedSub) {
-            authConfig.admins[i] = `user:${cachedSub}`;
-            logger.info(
-              "Using cached admin resolution: {username} → user:{sub}",
-              { username, sub: cachedSub },
-            );
-          } else {
-            throw new UserError(
-              `Admin '${admin}' not found in cached resolutions. ` +
-                "Restart serve without --oauth-client-id to re-register",
-            );
-          }
-        }
-        for (let i = 0; i < authConfig.allowedUsers.length; i++) {
-          const entry = authConfig.allowedUsers[i];
-          const username = entry.startsWith("user:") ? entry.slice(5) : entry;
-          const cachedSub = credentials.resolvedAdmins[`allowed:${username}`];
-          if (cachedSub) {
-            authConfig.allowedUsers[i] = cachedSub;
-            logger.info(
-              "Using cached allowed-user resolution: {username} → {sub}",
-              { username, sub: cachedSub },
-            );
-          } else {
-            throw new UserError(
-              `Allowed-user '${entry}' not found in cached resolutions. ` +
-                "Restart serve without --oauth-client-id to re-register",
-            );
-          }
-        }
-        for (const [key, sub] of Object.entries(credentials.resolvedAdmins)) {
-          const username = key.startsWith("allowed:")
-            ? key.slice("allowed:".length)
-            : key;
-          resolvedUserNames[sub] = username;
-        }
-      } else {
-        throw new UserError(
-          "Cannot resolve usernames — no access token and no cached resolutions. " +
-            "Restart serve without --oauth-client-id to re-register",
-        );
+      }
+
+      for (const [key, sub] of Object.entries(resolvedMap)) {
+        const username = key.startsWith("allowed:")
+          ? key.slice("allowed:".length)
+          : key;
+        resolvedUserNames[sub] = username;
       }
     }
 
