@@ -19,7 +19,10 @@
 
 import { assertEquals } from "@std/assert";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
-import { InProcessExecutor } from "./in_process_executor.ts";
+import {
+  InProcessExecutor,
+  wrapLoggerWithOutput,
+} from "./in_process_executor.ts";
 import type { MethodExecutor } from "./in_process_executor.ts";
 import type { ExecutionRequest } from "./execution_envelope.ts";
 import { Definition } from "../definitions/definition.ts";
@@ -741,4 +744,73 @@ Deno.test("InProcessExecutor: does not wire gate methods when no workflowGateSer
 
   assertEquals(hasApprove, false);
   assertEquals(hasReject, false);
+});
+
+// ---------- wrapLoggerWithOutput Tests ----------
+
+Deno.test("wrapLoggerWithOutput: returns logger unchanged when onEvent is undefined", () => {
+  const logger = getLogger(["test", "wrap-noop"]);
+  const result = wrapLoggerWithOutput(logger, undefined);
+  assertEquals(result, logger);
+});
+
+Deno.test("wrapLoggerWithOutput: info emits stdout event", () => {
+  const logger = getLogger(["test", "wrap-info"]);
+  const events: { type: string; line: string; stream: string }[] = [];
+  const wrapped = wrapLoggerWithOutput(logger, (e) => {
+    if (e.type === "output") events.push(e);
+  });
+  wrapped.info("hello from info");
+  assertEquals(events.length, 1);
+  assertEquals(events[0].line, "hello from info");
+  assertEquals(events[0].stream, "stdout");
+});
+
+Deno.test("wrapLoggerWithOutput: warn emits stderr event", () => {
+  const logger = getLogger(["test", "wrap-warn"]);
+  const events: { type: string; line: string; stream: string }[] = [];
+  const wrapped = wrapLoggerWithOutput(logger, (e) => {
+    if (e.type === "output") events.push(e);
+  });
+  wrapped.warn("hello from warn");
+  assertEquals(events.length, 1);
+  assertEquals(events[0].line, "hello from warn");
+  assertEquals(events[0].stream, "stderr");
+});
+
+Deno.test("wrapLoggerWithOutput: warning emits stderr event", () => {
+  const logger = getLogger(["test", "wrap-warning"]);
+  const events: { type: string; line: string; stream: string }[] = [];
+  const wrapped = wrapLoggerWithOutput(logger, (e) => {
+    if (e.type === "output") events.push(e);
+  });
+  wrapped.warning("hello from warning");
+  assertEquals(events.length, 1);
+  assertEquals(events[0].line, "hello from warning");
+  assertEquals(events[0].stream, "stderr");
+});
+
+Deno.test("wrapLoggerWithOutput: error emits stderr event", () => {
+  const logger = getLogger(["test", "wrap-error"]);
+  const events: { type: string; line: string; stream: string }[] = [];
+  const wrapped = wrapLoggerWithOutput(logger, (e) => {
+    if (e.type === "output") events.push(e);
+  });
+  wrapped.error("hello from error");
+  assertEquals(events.length, 1);
+  assertEquals(events[0].line, "hello from error");
+  assertEquals(events[0].stream, "stderr");
+});
+
+Deno.test("wrapLoggerWithOutput: tagged template interpolation works", () => {
+  const logger = getLogger(["test", "wrap-template"]);
+  const events: { type: string; line: string; stream: string }[] = [];
+  const wrapped = wrapLoggerWithOutput(logger, (e) => {
+    if (e.type === "output") events.push(e);
+  });
+  const count = 42;
+  wrapped.info`found ${count} items`;
+  assertEquals(events.length, 1);
+  assertEquals(events[0].line, "found 42 items");
+  assertEquals(events[0].stream, "stdout");
 });
