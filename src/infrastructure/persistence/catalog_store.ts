@@ -623,6 +623,36 @@ export class CatalogStore {
   }
 
   /**
+   * Counts latest-version rows grouped by normalized model type, optionally
+   * scoped to a namespace.
+   *
+   * Exists so `swamp doctor datastores` can compare the index against what the
+   * on-disk walk sees without going through {@link DataQueryService} — a query
+   * triggers the very backfill being diagnosed, which would repair (or, on a
+   * broken walk, further damage) the state before it could be reported.
+   */
+  latestRowCountsByType(namespace?: string): Map<string, number> {
+    const stmt = namespace !== undefined
+      ? this.db.prepare(
+        `SELECT type_normalized, COUNT(*) as cnt FROM catalog
+           WHERE is_latest = 1 AND namespace = ?
+           GROUP BY type_normalized`,
+      )
+      : this.db.prepare(
+        `SELECT type_normalized, COUNT(*) as cnt FROM catalog
+           WHERE is_latest = 1
+           GROUP BY type_normalized`,
+      );
+    const rows =
+      (namespace !== undefined
+        ? stmt.all(namespace)
+        : stmt.all()) as unknown as Array<
+          { type_normalized: string; cnt: number }
+        >;
+    return new Map(rows.map((r) => [r.type_normalized, r.cnt]));
+  }
+
+  /**
    * Returns true if the catalog has been fully populated (backfill complete).
    */
   isPopulated(): boolean {

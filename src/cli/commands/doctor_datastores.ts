@@ -19,17 +19,22 @@
 
 import { Command } from "@cliffy/command";
 import {
+  type CatalogCompletenessSummary,
+  type CatalogShortfall,
   consumeStream,
   createLibSwampContext,
   doctorDatastores,
   type DoctorDatastoresData,
   type DoctorDatastoresDeps,
+  repairCatalogIndex,
+  type RepairCatalogIndexDeps,
   repairDatastoreContamination,
   type RepairDatastoresDeps,
   repairUnmigratedData,
   type RepairUnmigratedDataDeps,
 } from "../../libswamp/mod.ts";
 import {
+  createCatalogIndexRepairRenderer,
   createDoctorDatastoresRenderer,
   createRepairDatastoresRenderer,
   createUnmigratedDataRepairRenderer,
@@ -61,8 +66,20 @@ import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_mark
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { resolveDatastoreConfig } from "../resolve_datastore.ts";
 import { RUNS_INDEX_FILENAME } from "../../infrastructure/persistence/workflow_run_index.ts";
-import { catalogDbPath } from "../../infrastructure/persistence/repository_factory.ts";
-import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import {
+  catalogDbPath,
+  createCatalogStore,
+  createUnifiedDataRepository,
+  namespaceFromResolver,
+} from "../../infrastructure/persistence/repository_factory.ts";
+import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
+import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
+import type { UnifiedDataRepository } from "../../domain/data/repositories.ts";
+import type { Namespace } from "../../domain/data/namespace.ts";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
 import { join } from "@std/path";
 import {
   compareFiles,
@@ -163,6 +180,105 @@ async function createDoctorDatastoresDeps(
         dryRun: true,
       });
     },
+    checkCatalogCompleteness: () => checkCatalogCompleteness(repoDir),
+  };
+}
+
+/**
+ * Compares the local catalog index against the on-disk data walk, per model
+ * type, counting only latest-version records on both sides.
+ *
+ * Reads the catalog directly rather than issuing a data query: a query would
+ * trigger the catalog backfill, which repairs the exact condition being
+ * measured — the diagnostic would then always report health. Exported so that
+ * property can be tested against a real damaged catalog rather than a fake.
+ *
+ * Only shortfalls are reported. A type with more indexed rows than the walk
+ * can see is not a shortfall — that is what foreign-namespace rows look like.
+ */
+export async function compareCatalogToDisk(
+  catalogStore: CatalogStore,
+  dataRepo: UnifiedDataRepository,
+  namespace: Namespace,
+): Promise<CatalogCompletenessSummary> {
+  const diskByType = new Map<string, number>();
+  for (const record of await dataRepo.findAllGlobal()) {
+    const type = record.modelType.normalized;
+    diskByType.set(type, (diskByType.get(type) ?? 0) + 1);
+  }
+  const catalogByType = catalogStore.latestRowCountsByType(namespace);
+
+  const shortfalls: CatalogShortfall[] = [];
+  let diskRecords = 0;
+  let catalogRecords = 0;
+  for (const [typeNormalized, onDisk] of diskByType) {
+    const indexed = catalogByType.get(typeNormalized) ?? 0;
+    diskRecords += onDisk;
+    catalogRecords += indexed;
+    if (indexed < onDisk) {
+      shortfalls.push({
+        typeNormalized,
+        diskRecords: onDisk,
+        catalogRecords: indexed,
+      });
+    }
+  }
+
+  return { diskRecords, catalogRecords, shortfalls };
+}
+
+async function checkCatalogCompleteness(
+  repoDir: string,
+): Promise<CatalogCompletenessSummary | null> {
+  const markerRepo = new RepoMarkerRepository();
+  const marker = await markerRepo.read(RepoPath.create(repoDir));
+  const config = await resolveDatastoreConfig(marker, undefined, repoDir);
+  const datastoreResolver = new DefaultDatastorePathResolver(repoDir, config);
+  const catalogStore = createCatalogStore(repoDir, datastoreResolver);
+
+  try {
+    const namespace = namespaceFromResolver(datastoreResolver);
+    const dataRepo = createUnifiedDataRepository(
+      repoDir,
+      catalogStore,
+      datastoreResolver.localPath(SWAMP_SUBDIRS.data),
+      undefined,
+      namespace,
+    );
+    return await compareCatalogToDisk(catalogStore, dataRepo, namespace);
+  } finally {
+    // Release the SQLite handle before any repair removes the file — Windows
+    // refuses to delete a database that still has an open connection.
+    catalogStore.close();
+  }
+}
+
+/**
+ * Removes the catalog database and its SQLite sidecars, so the next data query
+ * rebuilds the index from disk.
+ */
+async function removeCatalogDb(repoDir: string): Promise<void> {
+  const dbPath = catalogDbPath(repoDir);
+  for (const suffix of ["", "-journal", "-wal", "-shm"]) {
+    try {
+      await Deno.remove(dbPath + suffix);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+  }
+}
+
+/**
+ * Catalog repair deps.
+ *
+ * Deliberately free of the namespace and custom-datastore requirements the
+ * other repairs carry: the catalog is a local index, and a plain local repo is
+ * exactly where an incomplete one goes unnoticed.
+ */
+function createCatalogRepairDeps(repoDir: string): RepairCatalogIndexDeps {
+  return {
+    checkCompleteness: () => checkCatalogCompleteness(repoDir),
+    invalidateCatalog: () => removeCatalogDb(repoDir),
   };
 }
 
@@ -256,16 +372,7 @@ async function createRepairDeps(
       }
       return invalidated;
     },
-    invalidateCatalog: async () => {
-      const dbPath = catalogDbPath(repoDir);
-      for (const suffix of ["", "-journal", "-wal", "-shm"]) {
-        try {
-          await Deno.remove(dbPath + suffix);
-        } catch (error) {
-          if (!(error instanceof Deno.errors.NotFound)) throw error;
-        }
-      }
-    },
+    invalidateCatalog: () => removeCatalogDb(repoDir),
   };
 }
 
@@ -431,7 +538,38 @@ export const doctorDatastoresCommand = withRemoteOptions(
       }
     }
 
-    const deps = await createRepairDeps(repoDir);
+    // Catalog repair runs before contamination repair: contamination repair
+    // ends by invalidating the catalog itself, so running it first would leave
+    // the completeness check comparing against a catalog that no longer exists.
+    const catalogRenderer = createCatalogIndexRepairRenderer(cliCtx.outputMode);
+    await consumeStream(
+      repairCatalogIndex(libCtx, createCatalogRepairDeps(repoDir), {
+        confirm: Boolean(options.yes),
+      }),
+      catalogRenderer.handlers(),
+    );
+    if (catalogRenderer.overallStatus === "fail") {
+      exitCode = 1;
+    }
+
+    let contaminationDeps: RepairDatastoresDeps | null = null;
+    try {
+      contaminationDeps = await createRepairDeps(repoDir);
+    } catch (error) {
+      if (error instanceof UserError) {
+        cliCtx.logger
+          .debug`Skipping namespace contamination repair: ${error.message}`;
+      } else {
+        throw error;
+      }
+    }
+
+    if (!contaminationDeps) {
+      if (exitCode !== 0) Deno.exit(1);
+      return;
+    }
+
+    const deps = contaminationDeps;
     const renderer = createRepairDatastoresRenderer(cliCtx.outputMode);
 
     await consumeStream(

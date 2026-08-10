@@ -22,9 +22,12 @@ import { join, SEPARATOR } from "@std/path";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
+  type CatalogCompletenessSummary,
   doctorDatastores,
   type DoctorDatastoresDeps,
   type DoctorDatastoresEvent,
+  repairCatalogIndex,
+  type RepairCatalogIndexEvent,
   repairDatastoreContamination,
   type RepairDatastoresDeps,
   type RepairDatastoresEvent,
@@ -807,4 +810,214 @@ Deno.test("repairUnmigratedData: emits step events during confirm", async () => 
   assertEquals(steps.length, 2);
   assertStringIncludes(steps[0].description, "data/");
   assertStringIncludes(steps[1].description, "outputs/");
+});
+
+// ============================================================================
+// Catalog completeness check and repair (swamp-club#1580)
+// ============================================================================
+
+const completeSummary: CatalogCompletenessSummary = {
+  diskRecords: 42,
+  catalogRecords: 42,
+  shortfalls: [],
+};
+
+const shortSummary: CatalogCompletenessSummary = {
+  diskRecords: 330,
+  catalogRecords: 16,
+  shortfalls: [
+    {
+      typeNormalized: "@keeb/rottentomatoes",
+      diskRecords: 314,
+      catalogRecords: 0,
+    },
+  ],
+};
+
+Deno.test("doctorDatastores: reports a complete catalog as passing", async () => {
+  const deps: DoctorDatastoresDeps = {
+    ...makeDeps(
+      filesystemConfig,
+      { healthy: true, message: "Datastore is accessible", latencyMs: 1 },
+      [],
+    ),
+    checkCatalogCompleteness: () => Promise.resolve(completeSummary),
+  };
+
+  const events = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    const finding = completed.data.healthFindings.find(
+      (f) => f.check === "catalog_completeness",
+    );
+    assertEquals(finding?.passed, true);
+    assertStringIncludes(finding?.message ?? "", "42");
+    assertEquals(completed.data.catalogCompletenessFinding, undefined);
+  }
+});
+
+Deno.test("doctorDatastores: reports a short catalog and names the remedy", async () => {
+  const deps: DoctorDatastoresDeps = {
+    ...makeDeps(
+      filesystemConfig,
+      { healthy: true, message: "Datastore is accessible", latencyMs: 1 },
+      [],
+    ),
+    checkCatalogCompleteness: () => Promise.resolve(shortSummary),
+  };
+
+  const events = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    const finding = completed.data.healthFindings.find(
+      (f) => f.check === "catalog_completeness",
+    );
+    assertEquals(finding?.passed, false);
+    assertStringIncludes(finding?.message ?? "", "314");
+    assertStringIncludes(
+      finding?.message ?? "",
+      "swamp doctor datastores --repair",
+    );
+    assertEquals(
+      completed.data.catalogCompletenessFinding?.shortfalls.length,
+      1,
+    );
+  }
+});
+
+// The catalog is a local index. A plain local repo with no namespace and no
+// remote datastore is exactly where an incomplete one goes unnoticed, so the
+// check must not be gated the way the migration and contamination checks are.
+Deno.test("doctorDatastores: catalog check runs without a namespace or custom datastore", async () => {
+  const deps: DoctorDatastoresDeps = {
+    ...makeDeps(
+      filesystemConfig,
+      { healthy: true, message: "Datastore is accessible", latencyMs: 1 },
+      [],
+    ),
+    checkCatalogCompleteness: () => Promise.resolve(shortSummary),
+    checkUnmigratedData: () =>
+      Promise.resolve({ unmigrated: false, directories: [] }),
+    checkNamespaceContamination: () => Promise.resolve(null),
+  };
+
+  const events = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind === "completed") {
+    assertEquals(completed.data.isCustom, false);
+    // No namespace configured, so neither namespace check contributed.
+    assertEquals(
+      completed.data.healthFindings.some((f) =>
+        f.check === "namespace_migration"
+      ),
+      false,
+    );
+    assertEquals(
+      completed.data.healthFindings.some((f) =>
+        f.check === "catalog_completeness"
+      ),
+      true,
+    );
+  }
+});
+
+Deno.test("repairCatalogIndex: no shortfall means nothing to repair", async () => {
+  let invalidated = 0;
+  const events = await collect<RepairCatalogIndexEvent>(
+    repairCatalogIndex(
+      createLibSwampContext(),
+      {
+        checkCompleteness: () => Promise.resolve(completeSummary),
+        invalidateCatalog: () => {
+          invalidated++;
+          return Promise.resolve();
+        },
+      },
+      { confirm: true },
+    ),
+  );
+
+  assertEquals(events.some((e) => e.kind === "not_needed"), true);
+  assertEquals(invalidated, 0, "a healthy catalog must not be deleted");
+});
+
+Deno.test("repairCatalogIndex: previews without deleting when not confirmed", async () => {
+  let invalidated = 0;
+  const events = await collect<RepairCatalogIndexEvent>(
+    repairCatalogIndex(
+      createLibSwampContext(),
+      {
+        checkCompleteness: () => Promise.resolve(shortSummary),
+        invalidateCatalog: () => {
+          invalidated++;
+          return Promise.resolve();
+        },
+      },
+      { confirm: false },
+    ),
+  );
+
+  const preview = events.find((e) => e.kind === "preview");
+  assertEquals(preview?.kind, "preview");
+  if (preview?.kind === "preview") {
+    assertEquals(preview.completeness.shortfalls.length, 1);
+  }
+  assertEquals(invalidated, 0, "preview must not touch the catalog");
+});
+
+Deno.test("repairCatalogIndex: invalidates the catalog exactly once when confirmed", async () => {
+  const callLog: string[] = [];
+  const events = await collect<RepairCatalogIndexEvent>(
+    repairCatalogIndex(
+      createLibSwampContext(),
+      {
+        checkCompleteness: () => {
+          callLog.push("checkCompleteness");
+          return Promise.resolve(shortSummary);
+        },
+        invalidateCatalog: () => {
+          callLog.push("invalidateCatalog");
+          return Promise.resolve();
+        },
+      },
+      { confirm: true },
+    ),
+  );
+
+  assertEquals(callLog, ["checkCompleteness", "invalidateCatalog"]);
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    assertEquals(completed.result.missingRecords, 314);
+    assertEquals(completed.result.shortfalls.length, 1);
+  }
+});
+
+Deno.test("repairCatalogIndex: reports a failed deletion without claiming success", async () => {
+  const events = await collect<RepairCatalogIndexEvent>(
+    repairCatalogIndex(
+      createLibSwampContext(),
+      {
+        checkCompleteness: () => Promise.resolve(shortSummary),
+        invalidateCatalog: () =>
+          Promise.reject(new Deno.errors.PermissionDenied("locked")),
+      },
+      { confirm: true },
+    ),
+  );
+
+  assertEquals(events.some((e) => e.kind === "completed"), false);
+  const errorEvent = events.find((e) => e.kind === "error");
+  assertEquals(errorEvent?.kind, "error");
+  if (errorEvent?.kind === "error") {
+    assertStringIncludes(errorEvent.error.message, "No changes were made");
+  }
 });

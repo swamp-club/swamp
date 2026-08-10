@@ -68,6 +68,36 @@ function looksLikeModelId(name: string): boolean {
 }
 
 /**
+ * A purely numeric directory name is ambiguous: it is the version directory of
+ * a data item, but it is equally a legitimate *data name* — models that key
+ * resources by an external numeric id (a TMDB id, an issue number) produce
+ * `{model-id}/{207333}/{2}/`. Depth alone cannot tell the two apart, so the
+ * tree walk has to confirm that a numeric directory actually holds a version's
+ * `metadata.yaml` before treating its grandparent as a model-id directory.
+ *
+ * Without this check the walk mistakes the *type* directory for a model-id
+ * directory, derives an invalid ModelType from the truncated path, and silently
+ * drops every data item under that model — which the catalog backfill then
+ * treats as "this model has no data" and deletes from the catalog.
+ */
+async function hasVersionMetadata(versionDir: string): Promise<boolean> {
+  try {
+    const stat = await Deno.stat(join(versionDir, "metadata.yaml"));
+    return stat.isFile;
+  } catch {
+    return false;
+  }
+}
+
+function hasVersionMetadataSync(versionDir: string): boolean {
+  try {
+    return Deno.statSync(join(versionDir, "metadata.yaml")).isFile;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * File system implementation of UnifiedDataRepository.
  *
  * Storage layout:
@@ -293,7 +323,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
               results.push({ data, modelType, modelId });
             }
           } catch {
-            // Skip invalid model types
+            // Not a valid model type — every data item below this directory is
+            // dropped from the walk. Logged because a silent drop here reads
+            // downstream as "this model has no data", which the catalog
+            // backfill then commits by deleting the model's rows.
+            logger
+              .debug`Skipping ${childPath} during walk: ${typeStr} is not a valid model type. If data is missing from data query, run swamp doctor datastores --repair.`;
           }
         } else {
           // Keep recursing deeper into type directories
@@ -387,7 +422,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         const childPath = join(dir, entry.name);
         try {
           for await (const subEntry of Deno.readDir(childPath)) {
-            if (subEntry.isDirectory && /^\d+$/.test(subEntry.name)) {
+            if (!subEntry.isDirectory || !/^\d+$/.test(subEntry.name)) continue;
+            if (await hasVersionMetadata(join(childPath, subEntry.name))) {
               return true;
             }
           }
@@ -1661,7 +1697,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
               results.push({ data, modelType, modelId });
             }
           } catch {
-            // Skip invalid model types
+            // See collectAllData — a silent drop here becomes a catalog delete.
+            logger
+              .debug`Skipping ${childPath} during walk: ${typeStr} is not a valid model type. If data is missing from data query, run swamp doctor datastores --repair.`;
           }
         } else {
           this.collectAllDataSync(childPath, childSegments, results);
@@ -1681,7 +1719,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         const childPath = join(dir, entry.name);
         try {
           for (const subEntry of Deno.readDirSync(childPath)) {
-            if (subEntry.isDirectory && /^\d+$/.test(subEntry.name)) {
+            if (!subEntry.isDirectory || !/^\d+$/.test(subEntry.name)) continue;
+            if (hasVersionMetadataSync(join(childPath, subEntry.name))) {
               return true;
             }
           }
