@@ -905,9 +905,9 @@ fetchForeignContent?(namespace: string, relPath: string): Promise<Uint8Array | n
 - `pullForeignCatalogs` — fetches exports from named namespaces, returns rows
 - `fetchForeignContent` — downloads a single file from a foreign namespace
 
-**Catalog backfill** is namespace-scoped: `bulkReplaceNamespace(namespace, rows)`
-deletes only the own namespace's rows and inserts fresh ones, preserving foreign
-rows. The global `populated` flag stays global. Foreign rows are upserted via
+**Catalog backfill** uses `bulkUpsert(rows)` (INSERT OR REPLACE) to additively
+merge the on-disk walk into the catalog, preserving rows the walk cannot see
+(e.g. lazily-hydrated remote data). Foreign rows are upserted via
 `bulkUpsertForeign` which records a `foreign_synced:{namespace}` timestamp in
 `catalog_meta`.
 
