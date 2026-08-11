@@ -26,6 +26,7 @@ import type {
   AccessCanIPayload,
   AccessCheckPayload,
   AccessGrantListPayload,
+  AccessGroupIdpEntry,
   AccessGroupListPayload,
   AccessReloadFileResult,
   AccessTokenRevokePayload,
@@ -82,6 +83,11 @@ import {
   serverTokenRotate,
   withDefaults,
 } from "../../libswamp/mod.ts";
+import type { DataRecord } from "../../domain/data/data_record.ts";
+import {
+  SERVER_TOKEN_MODEL_TYPE,
+  ServerTokenSchema,
+} from "../../domain/models/access/server_token_model.ts";
 
 export async function handleAccessGrantList(
   socket: WebSocket,
@@ -260,6 +266,79 @@ export async function handleAccessGroupList(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_group_list_failed", message);
+  }
+}
+
+export async function handleAccessGroupListIdp(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "access",
+      name: "group",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const TOKEN_DATA_NAME = "token-main";
+    const records = await ctx.repoContext.dataQueryService.query(
+      `modelType == "${SERVER_TOKEN_MODEL_TYPE.normalized}" && ` +
+        `name == "${TOKEN_DATA_NAME}"`,
+      { loadAttributes: true },
+    );
+
+    const nowMs = Date.now();
+    const groupMap = new Map<
+      string,
+      { activeTokenCount: number; lastSeenAt: string }
+    >();
+
+    for (const record of records as DataRecord[]) {
+      const parsed = ServerTokenSchema.safeParse(record.attributes);
+      if (!parsed.success) continue;
+      const token = parsed.data;
+
+      if (token.state !== "active") continue;
+      if (Date.parse(token.expiresAt) <= nowMs) continue;
+
+      const tokenLastSeen = token.lastUsedAt ?? token.createdAt;
+
+      for (const group of token.groups) {
+        const existing = groupMap.get(group);
+        if (existing) {
+          existing.activeTokenCount += 1;
+          if (tokenLastSeen > existing.lastSeenAt) {
+            existing.lastSeenAt = tokenLastSeen;
+          }
+        } else {
+          groupMap.set(group, {
+            activeTokenCount: 1,
+            lastSeenAt: tokenLastSeen,
+          });
+        }
+      }
+    }
+
+    const groups: AccessGroupIdpEntry[] = [...groupMap.entries()]
+      .map(([name, info]) => ({
+        name,
+        activeTokenCount: info.activeTokenCount,
+        lastSeenAt: info.lastSeenAt,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    send(socket, {
+      type: "access.group.list-idp",
+      id: requestId,
+      payload: { groups },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "access_group_list_idp_failed", message);
   }
 }
 

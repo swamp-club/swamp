@@ -49,7 +49,10 @@ import {
   GroupSchema,
 } from "../../domain/models/access/group_model.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
-import { createAccessGroupListRenderer } from "../../presentation/renderers/access_group.ts";
+import {
+  createAccessGroupIdpRenderer,
+  createAccessGroupListRenderer,
+} from "../../presentation/renderers/access_group.ts";
 import {
   buildModelMethodRunDeps,
   LOCAL_PRINCIPAL,
@@ -62,7 +65,10 @@ import {
   resolveServeUrl,
   runModelMethodOverServer,
 } from "../../cli/remote_run.ts";
-import type { AccessGroupListResponse } from "../../serve/protocol.ts";
+import type {
+  AccessGroupListIdpResponse,
+  AccessGroupListResponse,
+} from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -553,6 +559,48 @@ const accessGroupMembersCommand = new Command()
     renderer.renderMembers(match.group);
   });
 
+const accessGroupListIdpCommand = new Command()
+  .name("list-idp")
+  .description(
+    "List IdP groups observed from authenticated users on a server",
+  )
+  .example(
+    "List IdP groups",
+    "swamp access group list-idp --server wss://swamp.example.com",
+  )
+  .option(
+    "--server <url:string>",
+    "Server to query (required; env: SWAMP_SERVE_URL)",
+  )
+  .option(
+    "--token <token:string>",
+    "Server token (falls back to stored credential or SWAMP_SERVER_TOKEN)",
+  )
+  .action(async function (options: AnyOptions) {
+    const server = resolveServeUrl(options.server as string | undefined);
+    if (!server) {
+      throw new UserError(
+        "--server is required: IdP groups only exist on a swamp serve instance",
+      );
+    }
+
+    const ctx = createContext(options as GlobalOptions, [
+      "access",
+      "group",
+      "list-idp",
+    ]);
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<AccessGroupListIdpResponse>(
+      { server, ...(token ? { token } : {}) },
+      { type: "access.group.list-idp" },
+    );
+    const renderer = createAccessGroupIdpRenderer(ctx.outputMode);
+    renderer.renderList(response.groups);
+  });
+
 export const accessGroupCommand = new Command()
   .name("group")
   .description("Manage local groups")
@@ -561,4 +609,5 @@ export const accessGroupCommand = new Command()
   .command("add-member", accessGroupAddMemberCommand)
   .command("remove-member", accessGroupRemoveMemberCommand)
   .command("list", accessGroupListCommand)
+  .command("list-idp", accessGroupListIdpCommand)
   .command("members", accessGroupMembersCommand);
