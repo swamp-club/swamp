@@ -183,21 +183,98 @@ function buildContextSuggestions(
 }
 
 /**
- * Cliffy error handler that intercepts "Unknown command" errors and provides
- * context-aware suggestions.
+ * Extracts positional arguments from the raw CLI args for a given command path.
+ *
+ * Walks past the command-path segments, then collects non-flag tokens
+ * (anything not starting with `-`). Flag *values* (the token after a
+ * `--flag <value>` pair) are skipped by consuming the next token when a
+ * flag is seen.
+ */
+export function extractPositionalArgs(
+  rawArgs: string[],
+  commandPath: string,
+): string[] {
+  const pathSegments = commandPath.split(" ");
+  let i = 0;
+  for (const segment of pathSegments) {
+    while (i < rawArgs.length && rawArgs[i].startsWith("-")) {
+      i++;
+      if (i < rawArgs.length && !rawArgs[i].startsWith("-")) {
+        i++;
+      }
+    }
+    if (i < rawArgs.length && rawArgs[i] === segment) {
+      i++;
+    }
+  }
+
+  const positional: string[] = [];
+  while (i < rawArgs.length) {
+    if (rawArgs[i] === "--") {
+      break;
+    }
+    if (rawArgs[i].startsWith("-")) {
+      i++;
+      if (i < rawArgs.length && !rawArgs[i].startsWith("-")) {
+        i++;
+      }
+      continue;
+    }
+    positional.push(rawArgs[i]);
+    i++;
+  }
+  return positional;
+}
+
+/**
+ * Builds a helpful error message when a command receives too many positional
+ * arguments — typically because the user passed an unquoted multi-word value.
+ */
+export function buildTooManyArgumentsMessage(
+  cmd: Command,
+  rawArgs: string[],
+): string {
+  const commandPath = cmd.getPath();
+  const positional = extractPositionalArgs(rawArgs, commandPath);
+  const quoted = positional.join(" ");
+
+  if (positional.length >= 2) {
+    return `Too many arguments.\n\n` +
+      `  If your argument contains spaces, wrap it in quotes:\n` +
+      `    ${commandPath} "${quoted}"`;
+  }
+
+  return `Too many arguments.\n\n` +
+    `  Run "${commandPath} --help" for usage.`;
+}
+
+/**
+ * Cliffy error handler that intercepts "Unknown command" and "Too many
+ * arguments" errors and provides context-aware suggestions.
  *
  * Cliffy's `getErrorHandler()` only checks the current command and its
  * immediate parent, so this handler must be attached to each command that
  * should provide improved error messages.
  */
 export function unknownCommandErrorHandler(error: Error, cmd: Command): void {
-  if (
-    error instanceof ValidationError &&
-    error.message.startsWith("Unknown command")
-  ) {
-    const unknownName = extractUnknownName(error.message);
-    if (unknownName) {
-      const message = buildUnknownCommandMessage(unknownName, cmd);
+  if (error instanceof ValidationError) {
+    if (error.message.startsWith("Unknown command")) {
+      const unknownName = extractUnknownName(error.message);
+      if (unknownName) {
+        const message = buildUnknownCommandMessage(unknownName, cmd);
+        if (getOutputModeFromArgs(Deno.args) === "json") {
+          const jsonError = buildErrorJson(new Error(message));
+          // deno-lint-ignore no-console
+          console.error(JSON.stringify(jsonError, null, 2));
+          Deno.exit(2);
+        }
+        console.error(red(`error: ${message}`));
+        Deno.exit(2);
+      }
+    }
+
+    if (error.message.startsWith("Too many arguments")) {
+      const message = buildTooManyArgumentsMessage(cmd, Deno.args);
       if (getOutputModeFromArgs(Deno.args) === "json") {
         const jsonError = buildErrorJson(new Error(message));
         // deno-lint-ignore no-console

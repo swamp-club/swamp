@@ -20,7 +20,9 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { Command } from "@cliffy/command";
 import {
+  buildTooManyArgumentsMessage,
   buildUnknownCommandMessage,
+  extractPositionalArgs,
   extractUnknownName,
   getSubcommandNames,
 } from "./unknown_command_handler.ts";
@@ -166,4 +168,67 @@ Deno.test("buildUnknownCommandMessage - output context suggestions", () => {
   assertStringIncludes(msg, "swamp model output get my-server");
   assertStringIncludes(msg, "swamp model output search");
   assertStringIncludes(msg, "swamp model output logs my-server");
+});
+
+Deno.test("extractPositionalArgs - extracts args after command path", () => {
+  const args = ["extension", "search", "home", "assistant"];
+  const result = extractPositionalArgs(args, "extension search");
+  assertEquals(result, ["home", "assistant"]);
+});
+
+Deno.test("extractPositionalArgs - skips flags and their values", () => {
+  const args = ["extension", "search", "home", "assistant", "--json"];
+  const result = extractPositionalArgs(args, "extension search");
+  assertEquals(result, ["home", "assistant"]);
+});
+
+Deno.test("extractPositionalArgs - skips flag values between positional args", () => {
+  const args = [
+    "extension",
+    "search",
+    "--collective",
+    "myorg",
+    "home",
+    "assistant",
+  ];
+  const result = extractPositionalArgs(args, "extension search");
+  assertEquals(result, ["home", "assistant"]);
+});
+
+Deno.test("extractPositionalArgs - handles flags before command path", () => {
+  const args = ["--json", "extension", "search", "home", "assistant"];
+  const result = extractPositionalArgs(args, "extension search");
+  assertEquals(result, ["home", "assistant"]);
+});
+
+Deno.test("extractPositionalArgs - returns empty for no positional args", () => {
+  const args = ["extension", "search"];
+  const result = extractPositionalArgs(args, "extension search");
+  assertEquals(result, []);
+});
+
+Deno.test("buildTooManyArgumentsMessage - suggests quoting multi-word input", () => {
+  const cmd = new Command().name("search");
+  // Simulate cmd.getPath() returning the full path
+  const parent = new Command().name("extension").command("search", cmd);
+  // Force Cliffy to set the path by accessing the child through parent
+  const searchCmd = parent.getCommand("search")!;
+  const msg = buildTooManyArgumentsMessage(
+    searchCmd,
+    ["extension", "search", "home", "assistant"],
+  );
+  assertStringIncludes(msg, "Too many arguments");
+  assertStringIncludes(msg, "wrap it in quotes");
+  assertStringIncludes(msg, '"home assistant"');
+});
+
+Deno.test("buildTooManyArgumentsMessage - single extra arg shows help fallback", () => {
+  const cmd = new Command().name("search");
+  const parent = new Command().name("extension").command("search", cmd);
+  const searchCmd = parent.getCommand("search")!;
+  const msg = buildTooManyArgumentsMessage(
+    searchCmd,
+    ["extension", "search", "aws"],
+  );
+  assertStringIncludes(msg, "--help");
 });
