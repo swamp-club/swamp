@@ -1021,6 +1021,43 @@ Deno.test(
   },
 );
 
+Deno.test("CatalogStore: bulkUpsert inserts rows when absent", () => {
+  const store = new CatalogStore(makeTempDbPath());
+  const rows = [
+    makeRow({ data_name: "a", version: 1 }),
+    makeRow({ data_name: "b", version: 1 }),
+  ];
+  store.bulkUpsert(rows);
+  assertEquals(store.count(), 2);
+  store.close();
+});
+
+Deno.test("CatalogStore: bulkUpsert updates existing rows", () => {
+  const store = new CatalogStore(makeTempDbPath());
+  store.upsert(makeRow({ data_name: "a", version: 1, size: 100 }));
+  store.bulkUpsert([makeRow({ data_name: "a", version: 1, size: 999 })]);
+  const rows = [...store.iterate()];
+  assertEquals(rows.length, 1);
+  assertEquals(rows[0].size, 999);
+  store.close();
+});
+
+Deno.test(
+  "CatalogStore: bulkUpsert preserves rows not in upsert set",
+  () => {
+    const store = new CatalogStore(makeTempDbPath());
+    store.upsert(makeRow({ data_name: "existing", version: 1, size: 100 }));
+    store.bulkUpsert([makeRow({ data_name: "new", version: 1, size: 200 })]);
+    assertEquals(store.count(), 2);
+    const rows = [...store.iterate()];
+    const existing = rows.find((r) => r.data_name === "existing");
+    const added = rows.find((r) => r.data_name === "new");
+    assertEquals(existing?.size, 100);
+    assertEquals(added?.size, 200);
+    store.close();
+  },
+);
+
 Deno.test(
   "CatalogStore: findLatestRow scopes by namespace when provided",
   () => {

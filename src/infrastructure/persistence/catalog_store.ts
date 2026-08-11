@@ -412,6 +412,58 @@ export class CatalogStore {
   }
 
   /**
+   * Upserts catalog rows without deleting anything first. Rows already
+   * present (by primary key) are updated; rows absent from the batch
+   * are left untouched. Used by backfill so data the on-disk walk
+   * cannot see — e.g. under lazy hydration — is preserved rather than
+   * deleted.
+   */
+  bulkUpsert(rows: readonly CatalogRow[]): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const stmt = this.db.prepare(`
+        INSERT OR REPLACE INTO catalog (
+          namespace, type_normalized, model_id, data_name, id, version, is_latest, model_name,
+          spec_name, data_type, content_type, lifetime, owner_type,
+          streaming, size, created_at, tags,
+          owner_ref, workflow_run_id, workflow_name, job_name, step_name, source
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const row of rows) {
+        stmt.run(
+          row.namespace,
+          row.type_normalized,
+          row.model_id,
+          row.data_name,
+          row.id,
+          row.version,
+          row.is_latest,
+          row.model_name,
+          row.spec_name,
+          row.data_type,
+          row.content_type,
+          row.lifetime,
+          row.owner_type,
+          row.streaming,
+          row.size,
+          row.created_at,
+          row.tags,
+          row.owner_ref,
+          row.workflow_run_id,
+          row.workflow_name,
+          row.job_name,
+          row.step_name,
+          row.source,
+        );
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /**
    * Upserts foreign catalog rows from a catalog export. Uses INSERT OR
    * REPLACE so existing foreign rows are updated in place. Records the
    * sync timestamp in catalog_meta as `foreign_synced:{namespace}`.
