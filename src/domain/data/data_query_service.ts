@@ -542,12 +542,7 @@ export class DataQueryService {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
     }
 
-    const ns = this.dataRepo.namespace;
-    if (ns && ns.length > 0) {
-      this.catalogStore.bulkReplaceNamespace(ns, rows);
-    } else {
-      this.catalogStore.bulkReplaceAll(rows);
-    }
+    this.catalogStore.bulkUpsert(rows);
     this.catalogStore.markPopulated();
   }
 
@@ -608,12 +603,7 @@ export class DataQueryService {
         }
       }
     }
-    const syncNs = this.dataRepo.namespace;
-    if (syncNs && syncNs.length > 0) {
-      this.catalogStore.bulkReplaceNamespace(syncNs, rows);
-    } else {
-      this.catalogStore.bulkReplaceAll(rows);
-    }
+    this.catalogStore.bulkUpsert(rows);
     this.catalogStore.markPopulated();
   }
 

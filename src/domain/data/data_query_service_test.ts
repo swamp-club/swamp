@@ -536,6 +536,68 @@ Deno.test("DataQueryService: backfill triggers on unpopulated catalog", async ()
   catalog.close();
 });
 
+Deno.test("DataQueryService: backfill preserves catalog rows the walk cannot see", async () => {
+  const dir = Deno.makeTempDirSync({
+    prefix: "swamp-query-backfill-preserve-",
+  });
+  const dbPath = join(dir, ".swamp", "data", "_catalog.db");
+  const catalog = new CatalogStore(dbPath);
+
+  // Seed a row that represents data in the remote datastore but not on local
+  // disk (e.g. lazy hydration — metadata not yet pulled).
+  catalog.upsert(makeRow({
+    data_name: "remote-only",
+    id: "00000000-0000-1000-8000-000000000099",
+  }));
+  // Do NOT mark as populated — the next query must trigger backfill.
+
+  // Create one data item on disk for the walk to find.
+  const dataDir = join(
+    dir,
+    ".swamp",
+    "data",
+    "test-model",
+    "model-001",
+    "on-disk",
+    "1",
+  );
+  ensureDirSync(dataDir);
+  Deno.writeTextFileSync(
+    join(dataDir, "raw"),
+    JSON.stringify({ found: true }),
+  );
+  Deno.writeTextFileSync(
+    join(dataDir, "metadata.yaml"),
+    stringifyYaml({
+      name: "on-disk",
+      id: "00000000-0000-1000-8000-000000000002",
+      version: 1,
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      streaming: false,
+      tags: { type: "resource", specName: "result", modelName: "ingest" },
+      ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }),
+  );
+  Deno.writeTextFileSync(
+    join(dir, ".swamp", "data", "test-model", "model-001", "on-disk", "latest"),
+    "1",
+  );
+
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const service = new DataQueryService(catalog, dataRepo);
+
+  // Backfill runs — the walk finds "on-disk" but NOT "remote-only".
+  // With additive upsert, "remote-only" must survive.
+  const results = await service.query("true") as DataRecord[];
+  const names = results.map((r) => r.name).sort();
+  assertEquals(names, ["on-disk", "remote-only"]);
+  assertEquals(catalog.isPopulated(), true);
+  catalog.close();
+});
+
 Deno.test("DataQueryService: backfill stamps the repo namespace onto rebuilt rows", async () => {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-backfill-ns-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");

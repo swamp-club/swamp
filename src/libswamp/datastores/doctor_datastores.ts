@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  type CustomDatastoreConfig,
   type DatastoreConfig,
   DEFAULT_DATASTORE_SUBDIRS,
   isCustomDatastoreConfig,
@@ -54,9 +55,8 @@ export interface CatalogShortfall {
  * Comparison of the local catalog index against the on-disk data walk.
  *
  * The catalog is a local index of data on disk. When the walk can see records
- * the index does not have, queries silently under-report — and because full
- * backfill commits with a replace rather than an insert, the gap is destructive
- * rather than merely stale. See design/data-query.md.
+ * the index does not have, queries silently under-report.
+ * See design/data-query.md.
  */
 export interface CatalogCompletenessSummary {
   diskRecords: number;
@@ -192,6 +192,8 @@ export async function* doctorDatastores(
       // Catalog completeness check — the catalog is a local index, so this
       // runs for every repo, with or without a namespace or remote datastore.
       if (deps.checkCatalogCompleteness) {
+        const isLazy = isCustom &&
+          (config as CustomDatastoreConfig).hydrationStrategy === "lazy";
         const summary = await deps.checkCatalogCompleteness();
         if (summary && summary.shortfalls.length > 0) {
           catalogCompletenessFinding = summary;
@@ -205,11 +207,14 @@ export async function* doctorDatastores(
               `Run 'swamp doctor datastores --repair' to preview a rebuild.`,
           });
         } else if (summary) {
+          const qualifier = isLazy
+            ? " on disk (lazy hydration: only locally materialized data is checked)"
+            : " on disk";
           healthFindings.push({
             check: "catalog_completeness",
             passed: true,
             message:
-              `Catalog index covers all ${summary.diskRecords} record(s) on disk`,
+              `Catalog index covers all ${summary.diskRecords} record(s)${qualifier}`,
           });
         }
       }
