@@ -142,3 +142,37 @@ Deno.test("accessGroupCommand: members has --server option", async () => {
   const serverOpt = options.find((o) => o.name === "server");
   assertEquals(serverOpt !== undefined, true);
 });
+
+Deno.test("accessGroupCommand: has list-idp subcommand", async () => {
+  const { accessGroupCommand } = await import("./access_group.ts");
+  const commands = accessGroupCommand.getCommands();
+  const cmd = commands.find((c) => c.getName() === "list-idp");
+  assertEquals(cmd !== undefined, true);
+});
+
+Deno.test("accessGroupCommand: list-idp has --server option", async () => {
+  const { accessGroupCommand } = await import("./access_group.ts");
+  const commands = accessGroupCommand.getCommands();
+  const listIdpCmd = commands.find((c) => c.getName() === "list-idp")!;
+  const options = listIdpCmd.getOptions();
+  const serverOpt = options.find((o) => o.name === "server");
+  assertEquals(serverOpt !== undefined, true);
+});
+
+Deno.test("accessGroupCommand: list-idp has --token option", async () => {
+  const { accessGroupCommand } = await import("./access_group.ts");
+  const commands = accessGroupCommand.getCommands();
+  const listIdpCmd = commands.find((c) => c.getName() === "list-idp")!;
+  const options = listIdpCmd.getOptions();
+  const tokenOpt = options.find((o) => o.name === "token");
+  assertEquals(tokenOpt !== undefined, true);
+});
+
+Deno.test("accessGroupCommand: list-idp has no --repo-dir option", async () => {
+  const { accessGroupCommand } = await import("./access_group.ts");
+  const commands = accessGroupCommand.getCommands();
+  const listIdpCmd = commands.find((c) => c.getName() === "list-idp")!;
+  const options = listIdpCmd.getOptions();
+  const repoDirOpt = options.find((o) => o.name === "repo-dir");
+  assertEquals(repoDirOpt, undefined);
+});

@@ -17,9 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertStringIncludes } from "@std/assert";
-import { createAccessGroupListRenderer } from "./access_group.ts";
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  createAccessGroupIdpRenderer,
+  createAccessGroupListRenderer,
+} from "./access_group.ts";
 import type { Group } from "../../domain/models/access/group_model.ts";
+import type { AccessGroupIdpEntry } from "../../serve/protocol.ts";
 
 function makeGroup(overrides: Partial<Group> = {}): Group {
   return {
@@ -98,4 +102,64 @@ Deno.test("accessGroupListRenderer json: outputs JSON array", () => {
   }
   const parsed = JSON.parse(output.join(""));
   assertStringIncludes(parsed[0].name, "release-managers");
+});
+
+// ── IdP group renderer tests ─────────────────────────────────────────
+
+function makeIdpEntry(
+  overrides: Partial<AccessGroupIdpEntry> = {},
+): AccessGroupIdpEntry {
+  return {
+    name: "platform-eng",
+    activeTokenCount: 3,
+    lastSeenAt: "2026-08-10T12:00:00Z",
+    ...overrides,
+  };
+}
+
+Deno.test("accessGroupIdpRenderer log: shows header and data", () => {
+  const renderer = createAccessGroupIdpRenderer("log");
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => output.push(args.join(" "));
+  try {
+    renderer.renderList([makeIdpEntry()]);
+  } finally {
+    console.log = origLog;
+  }
+  assertStringIncludes(output[0], "GROUP");
+  assertStringIncludes(output[0], "ACTIVE TOKENS");
+  assertStringIncludes(output[0], "LAST SEEN");
+  assertStringIncludes(output[1], "platform-eng");
+  assertStringIncludes(output[1], "3");
+  assertStringIncludes(output[1], "2026-08-10");
+});
+
+Deno.test("accessGroupIdpRenderer log: shows empty message", () => {
+  const renderer = createAccessGroupIdpRenderer("log");
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => output.push(args.join(" "));
+  try {
+    renderer.renderList([]);
+  } finally {
+    console.log = origLog;
+  }
+  assertStringIncludes(output[0], "No IdP groups found");
+});
+
+Deno.test("accessGroupIdpRenderer json: outputs JSON array", () => {
+  const renderer = createAccessGroupIdpRenderer("json");
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => output.push(args.join(" "));
+  try {
+    renderer.renderList([makeIdpEntry(), makeIdpEntry({ name: "ops-team" })]);
+  } finally {
+    console.log = origLog;
+  }
+  const parsed = JSON.parse(output.join("")) as AccessGroupIdpEntry[];
+  assertEquals(parsed.length, 2);
+  assertEquals(parsed[0].name, "platform-eng");
+  assertEquals(parsed[1].name, "ops-team");
 });

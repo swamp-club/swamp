@@ -102,6 +102,7 @@ import {
   handleAccessCheck,
   handleAccessGrantList,
   handleAccessGroupList,
+  handleAccessGroupListIdp,
   handleAccessReload,
   handleAccessTokenList,
   handleAccessTokenRevoke,
@@ -224,6 +225,11 @@ const AccessGroupListRequestSchema = z.object({
   payload: z.object({
     name: z.string().optional(),
   }).optional(),
+});
+
+const AccessGroupListIdpRequestSchema = z.object({
+  type: z.literal("access.group.list-idp"),
+  id: z.string().min(1).max(256),
 });
 
 const AccessCheckRequestSchema = z.object({
@@ -1109,6 +1115,7 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   ModelMethodRunRequestSchema,
   AccessGrantListRequestSchema,
   AccessGroupListRequestSchema,
+  AccessGroupListIdpRequestSchema,
   AccessCheckRequestSchema,
   AccessCanIRequestSchema,
   AccessReloadRequestSchema,
@@ -1408,6 +1415,14 @@ export function handleMessage(
         request.id,
         principal,
         request.payload,
+      );
+      break;
+    case "access.group.list-idp":
+      task = handleAccessGroupListIdp(
+        socket,
+        ctx,
+        request.id,
+        principal,
       );
       break;
     case "access.check":

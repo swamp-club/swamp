@@ -583,6 +583,7 @@ export type ServerRequest =
   | { type: "model.method.run"; id: string; payload: ModelMethodRunPayload }
   | { type: "access.grant.list"; id: string; payload?: AccessGrantListPayload }
   | { type: "access.group.list"; id: string; payload?: AccessGroupListPayload }
+  | { type: "access.group.list-idp"; id: string }
   | { type: "access.check"; id: string; payload: AccessCheckPayload }
   | { type: "access.can-i"; id: string; payload: AccessCanIPayload }
   | { type: "access.reload"; id: string }
@@ -854,6 +855,16 @@ export interface AccessGrantListResponse {
 
 export interface AccessGroupListResponse {
   groups: Record<string, unknown>[];
+}
+
+export interface AccessGroupListIdpResponse {
+  groups: AccessGroupIdpEntry[];
+}
+
+export interface AccessGroupIdpEntry {
+  name: string;
+  activeTokenCount: number;
+  lastSeenAt: string;
 }
 
 export interface AccessCheckResponse {
@@ -1326,6 +1337,11 @@ export type ServerMessage =
     type: "access.group.list";
     id: string;
     payload: AccessGroupListResponse;
+  }
+  | {
+    type: "access.group.list-idp";
+    id: string;
+    payload: AccessGroupListIdpResponse;
   }
   | { type: "access.check"; id: string; payload: AccessCheckResponse }
   | { type: "access.can-i"; id: string; payload: AccessCanIResponse }

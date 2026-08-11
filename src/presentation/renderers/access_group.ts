@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Group } from "../../domain/models/access/group_model.ts";
+import type { AccessGroupIdpEntry } from "../../serve/protocol.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 
@@ -82,5 +83,49 @@ export function createAccessGroupListRenderer(
       return new JsonAccessGroupListRenderer();
     case "log":
       return new LogAccessGroupListRenderer();
+  }
+}
+
+// ── IdP group rendering ──────────────────────────────────────────────
+
+export interface AccessGroupIdpRenderer {
+  renderList(groups: AccessGroupIdpEntry[]): void;
+}
+
+class LogAccessGroupIdpRenderer implements AccessGroupIdpRenderer {
+  renderList(groups: AccessGroupIdpEntry[]): void {
+    if (groups.length === 0) {
+      writeOutput("No IdP groups found.");
+      return;
+    }
+
+    const header = `${"GROUP".padEnd(40)}  ${
+      "ACTIVE TOKENS".padEnd(14)
+    }  LAST SEEN`;
+    writeOutput(header);
+
+    for (const group of groups) {
+      const name = group.name.padEnd(40);
+      const count = String(group.activeTokenCount).padEnd(14);
+      const lastSeen = group.lastSeenAt.slice(0, 10);
+      writeOutput(`${name}  ${count}  ${lastSeen}`);
+    }
+  }
+}
+
+class JsonAccessGroupIdpRenderer implements AccessGroupIdpRenderer {
+  renderList(groups: AccessGroupIdpEntry[]): void {
+    writeOutput(JSON.stringify(groups, null, 2));
+  }
+}
+
+export function createAccessGroupIdpRenderer(
+  mode: OutputMode,
+): AccessGroupIdpRenderer {
+  switch (mode) {
+    case "json":
+      return new JsonAccessGroupIdpRenderer();
+    case "log":
+      return new LogAccessGroupIdpRenderer();
   }
 }
