@@ -251,6 +251,63 @@ Deno.test("DaemonTelemetryFlushService: never applies the hard retention cap", a
   assertEquals(repo.deleteAllCalled, false);
 });
 
+Deno.test("DaemonTelemetryFlushService: stop() awaits an in-flight timer drain before its own", async () => {
+  // Reproduces the race from swamp-club#1604: a timer-triggered drain is
+  // in progress when stop() is called. Without the fix, stop()'s #drain()
+  // returns immediately (guarded out) and stop() resolves while the drain
+  // is still running — shutdown proceeds before telemetry is delivered.
+  const repo = new FakeRepository();
+  const sender = new FakeSender();
+
+  let resolveGate!: () => void;
+  const gate = new Promise<void>((r) => {
+    resolveGate = r;
+  });
+  let sendCalls = 0;
+  const originalSendBatch = sender.sendBatch.bind(sender);
+  sender.sendBatch = async (entries: TelemetryEntry[]) => {
+    sendCalls++;
+    if (sendCalls === 1) await gate;
+    return originalSendBatch(entries);
+  };
+
+  repo.entries.push(entry("before-stop"));
+
+  const service = new DaemonTelemetryFlushService(
+    new TelemetryService(repo, "1.0.0"),
+    { sender, distinctId: "user-1", keepFlushed: false },
+    { intervalMs: 1 },
+  );
+
+  service.start();
+  while (sendCalls === 0) {
+    await new Promise((r) => setTimeout(r, 5));
+  }
+
+  repo.entries.push(entry("during-drain"));
+
+  // stop() must NOT resolve while the in-flight drain is blocked.
+  let stopDone = false;
+  const stopPromise = service.stop().then(() => {
+    stopDone = true;
+  });
+
+  await new Promise((r) => setTimeout(r, 20));
+  assertEquals(
+    stopDone,
+    false,
+    "stop() must not resolve while drain is in-flight",
+  );
+
+  resolveGate();
+  await stopPromise;
+
+  assertEquals(stopDone, true);
+  assertEquals(sender.countOf("before-stop"), 1);
+  assertEquals(sender.countOf("during-drain"), 1);
+  assertEquals(repo.entries.length, 0);
+});
+
 Deno.test("DaemonTelemetryFlushService: stop() prevents any further flushing", async () => {
   // Nothing may start a flush after shutdown begins, or it could race the
   // CLI's own teardown flush over the same spool.

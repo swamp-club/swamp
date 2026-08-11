@@ -81,7 +81,7 @@ export class DaemonTelemetryFlushService {
   readonly #credentials: TelemetryFlushCredentials;
   readonly #intervalMs: number;
   #timer: ReturnType<typeof setInterval> | null = null;
-  #running = false;
+  #drainPromise: Promise<void> | null = null;
   #stopped = false;
   #tickCount = 0;
   #consecutiveFailures = 0;
@@ -124,9 +124,8 @@ export class DaemonTelemetryFlushService {
       clearInterval(this.#timer);
       this.#timer = null;
     }
-    // Set before the final flush so no timer callback already in flight can
-    // start another drain behind it.
     this.#stopped = true;
+    if (this.#drainPromise) await this.#drainPromise;
     await this.#drain();
   }
 
@@ -145,37 +144,45 @@ export class DaemonTelemetryFlushService {
 
   /**
    * Sends batches until the spool is empty, a send fails, or the per-tick cap
-   * is reached.
+   * is reached. Only one drain runs at a time — concurrent callers return
+   * immediately. {@link stop} awaits {@link #drainPromise} so it never misses
+   * an in-flight drain started by the timer.
    */
   async #drain(): Promise<void> {
-    if (this.#running) return;
-    this.#running = true;
-    try {
-      for (let batch = 0; batch < MAX_BATCHES_PER_TICK; batch++) {
-        const outcome = await this.#flushOnce();
-        if (!outcome.result.ok) {
-          this.#consecutiveFailures++;
-          logger.warn(
-            "Telemetry flush failed ({reason}) — {failures} consecutive; entries stay queued",
-            {
-              reason: outcome.result.reason ?? "unknown",
-              failures: this.#consecutiveFailures,
-            },
-          );
-          if (this.#consecutiveFailures >= FAILURES_BEFORE_ISOLATION) {
-            await this.#isolateStuckBatch();
+    if (this.#drainPromise) return;
+
+    this.#drainPromise = (async () => {
+      try {
+        for (let batch = 0; batch < MAX_BATCHES_PER_TICK; batch++) {
+          const outcome = await this.#flushOnce();
+          if (!outcome.result.ok) {
+            this.#consecutiveFailures++;
+            logger.warn(
+              "Telemetry flush failed ({reason}) — {failures} consecutive; entries stay queued",
+              {
+                reason: outcome.result.reason ?? "unknown",
+                failures: this.#consecutiveFailures,
+              },
+            );
+            if (this.#consecutiveFailures >= FAILURES_BEFORE_ISOLATION) {
+              await this.#isolateStuckBatch();
+            }
+            return;
           }
-          return;
+          this.#consecutiveFailures = 0;
+          if (outcome.sentCount === 0) return;
         }
-        this.#consecutiveFailures = 0;
-        if (outcome.sentCount === 0) return;
+      } catch (error) {
+        logger.warn("Telemetry flush loop error: {error}", {
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
-    } catch (error) {
-      logger.warn("Telemetry flush loop error: {error}", {
-        error: error instanceof Error ? error.message : String(error),
-      });
+    })();
+
+    try {
+      await this.#drainPromise;
     } finally {
-      this.#running = false;
+      this.#drainPromise = null;
     }
   }
 
