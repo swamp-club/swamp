@@ -322,6 +322,117 @@ Deno.test("readGrantFiles: returns empty map when directory does not exist", asy
   assertEquals(results.size, 0);
 });
 
+Deno.test("readGrantFiles: loads symlinked YAML files", async () => {
+  await withTempDir(async (dir) => {
+    const realDir = join(dir, "real");
+    const grantsDir = join(dir, "grants");
+    await ensureDir(realDir);
+    await ensureDir(grantsDir);
+    await Deno.writeTextFile(
+      join(realDir, "team.yaml"),
+      `grants:\n  - subject: "user:adam"\n    effect: allow\n    actions: [run]\n    resource: "workflow:*"`,
+    );
+    await Deno.symlink(
+      join(realDir, "team.yaml"),
+      join(grantsDir, "team.yaml"),
+      { type: "file" },
+    );
+
+    const results = await readGrantFiles(grantsDir);
+    assertEquals(results.size, 1);
+    assertEquals(results.has("team.yaml"), true);
+    assertEquals(results.get("team.yaml")!.entries.length, 1);
+    assertEquals(results.get("team.yaml")!.errors.length, 0);
+  });
+});
+
+Deno.test("readGrantFiles: ignores symlinks to non-YAML files", async () => {
+  await withTempDir(async (dir) => {
+    const realDir = join(dir, "real");
+    const grantsDir = join(dir, "grants");
+    await ensureDir(realDir);
+    await ensureDir(grantsDir);
+    await Deno.writeTextFile(join(realDir, "notes.txt"), "not a grant file");
+    await Deno.symlink(
+      join(realDir, "notes.txt"),
+      join(grantsDir, "notes.txt"),
+      { type: "file" },
+    );
+
+    const results = await readGrantFiles(grantsDir);
+    assertEquals(results.size, 0);
+  });
+});
+
+Deno.test("readGrantFiles: ignores symlinked directories", async () => {
+  await withTempDir(async (dir) => {
+    const realDir = join(dir, "real");
+    const grantsDir = join(dir, "grants");
+    await ensureDir(realDir);
+    await ensureDir(grantsDir);
+    await Deno.writeTextFile(
+      join(grantsDir, "team.yaml"),
+      `grants:\n  - subject: "user:adam"\n    effect: allow\n    actions: [run]\n    resource: "workflow:*"`,
+    );
+    await Deno.symlink(realDir, join(grantsDir, "subdir"), { type: "dir" });
+
+    const results = await readGrantFiles(grantsDir);
+    assertEquals(results.size, 1);
+    assertEquals(results.has("team.yaml"), true);
+  });
+});
+
+Deno.test("readGrantFiles: handles broken symlinks gracefully", async () => {
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    await ensureDir(grantsDir);
+    await Deno.writeTextFile(
+      join(grantsDir, "good.yaml"),
+      `grants:\n  - subject: "user:adam"\n    effect: allow\n    actions: [run]\n    resource: "workflow:*"`,
+    );
+    await Deno.symlink(
+      join(dir, "nonexistent.yaml"),
+      join(grantsDir, "broken.yaml"),
+      { type: "file" },
+    );
+
+    const results = await readGrantFiles(grantsDir);
+    assertEquals(results.size, 2);
+    assertEquals(results.get("good.yaml")!.entries.length, 1);
+    assertEquals(results.get("good.yaml")!.errors.length, 0);
+    assertEquals(results.get("broken.yaml")!.entries.length, 0);
+    assertEquals(results.get("broken.yaml")!.errors.length, 1);
+    assertStringIncludes(
+      results.get("broken.yaml")!.errors[0].message,
+      "Failed to read",
+    );
+  });
+});
+
+Deno.test("readGrantFiles: ignores dot-prefixed symlinks (K8s ConfigMap internals)", async () => {
+  await withTempDir(async (dir) => {
+    const realDir = join(dir, "..2024_01_01_120000");
+    const grantsDir = join(dir, "grants");
+    await ensureDir(realDir);
+    await ensureDir(grantsDir);
+    await Deno.writeTextFile(
+      join(realDir, "team.yaml"),
+      `grants:\n  - subject: "user:adam"\n    effect: allow\n    actions: [run]\n    resource: "workflow:*"`,
+    );
+    await Deno.symlink(realDir, join(grantsDir, "..data"), { type: "dir" });
+    await Deno.symlink(
+      join(realDir, "team.yaml"),
+      join(grantsDir, "team.yaml"),
+      { type: "file" },
+    );
+
+    const results = await readGrantFiles(grantsDir);
+    assertEquals(results.size, 1);
+    assertEquals(results.has("team.yaml"), true);
+    assertEquals(results.has("..data"), false);
+  });
+});
+
 Deno.test("readGrantFiles: returns empty map for empty directory", async () => {
   await withTempDir(async (dir) => {
     const grantsDir = join(dir, "grants");
