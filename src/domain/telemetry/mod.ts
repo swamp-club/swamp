@@ -47,6 +47,12 @@ export {
 } from "./workflow_context.ts";
 
 export {
+  isWorkflowTriggerSource,
+  WORKFLOW_TRIGGER_SOURCES,
+  type WorkflowTriggerSource,
+} from "./trigger_source.ts";
+
+export {
   type AgentHarnessDetection,
   type DetectableAiTool,
   detectAgentHarness,

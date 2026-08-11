@@ -32,6 +32,7 @@ import {
   createSuccessResult,
   type InvocationResultData,
 } from "./invocation_result.ts";
+import type { WorkflowTriggerSource } from "./trigger_source.ts";
 import { UserError } from "../errors.ts";
 
 /** Default flush batch size */
@@ -48,6 +49,43 @@ export interface TelemetryFlushConfig {
   batchSize?: number;
   keepFlushed?: boolean;
   signal?: AbortSignal;
+  /**
+   * Entry ids the caller has already sent successfully but could not mark
+   * as flushed. They are still on disk, so `findUnflushed` keeps returning
+   * them; skipping them here prevents a repeatedly-flushing caller from
+   * sending the same invocation once per attempt.
+   */
+  skipIds?: ReadonlySet<string>;
+}
+
+/**
+ * Configuration for sending one specific entry, bypassing batch selection.
+ */
+export interface TelemetrySingleFlushConfig {
+  entry: TelemetryEntry;
+  sender: TelemetrySender;
+  distinctId: string;
+  repoId?: string;
+  authToken?: string;
+  keepFlushed?: boolean;
+  signal?: AbortSignal;
+}
+
+/**
+ * Result of a flush, from the service's point of view.
+ *
+ * Distinct from {@link TelemetryFlushResult}, which is the *sender's*
+ * vocabulary and knows nothing about the local spool. Marking is a
+ * persistence concern, so it is reported here rather than being folded into
+ * the sender's contract.
+ */
+export interface TelemetryFlushOutcome {
+  /** The sender's verdict for the batch it attempted. */
+  result: TelemetryFlushResult;
+  /** Ids that were accepted by the endpoint but could not be marked flushed. */
+  unmarkedIds: string[];
+  /** Entries sent in this flush. Zero means the spool was already drained. */
+  sentCount: number;
 }
 
 /**
@@ -85,6 +123,14 @@ const DEFAULT_RETENTION_DAYS = 2;
 const HARD_RETENTION_DAYS = 7;
 
 /**
+ * Retention for quarantined entries in days. Longer than the flushed
+ * retention because a quarantined entry is evidence — the reason an endpoint
+ * refuses a payload is usually only visible in the payload — but bounded,
+ * since unlike unflushed entries it is not data we still expect to deliver.
+ */
+const QUARANTINE_RETENTION_DAYS = 30;
+
+/**
  * Service for recording and analyzing CLI telemetry.
  *
  * The optional `invocationContext` is captured once at construction time —
@@ -101,13 +147,56 @@ const HARD_RETENTION_DAYS = 7;
 export class TelemetryService {
   readonly invocationId: TelemetryId;
 
+  /**
+   * Tail of the serialized flush chain. Every operation that reads
+   * unflushed entries and marks them queues behind this, so two callers
+   * holding this same service can never both read the same batch before
+   * either marks it — which would send every entry in it twice. `swamp
+   * serve` has exactly that shape at shutdown, when its daemon flush loop
+   * and the CLI teardown flush overlap.
+   *
+   * The lock protects one service over one spool. Services produced by
+   * {@link forkForRun} share the spool but not this field, which is safe
+   * only because forks are write-only — see forkForRun.
+   */
+  #flushChain: Promise<unknown> = Promise.resolve();
+
   constructor(
     private readonly repository: TelemetryRepository,
     private readonly swampVersion: string,
     private readonly invocationContext?: InvocationContextData,
     invocationId?: TelemetryId,
+    private readonly triggerSource?: WorkflowTriggerSource,
   ) {
     this.invocationId = invocationId ?? generateTelemetryId();
+  }
+
+  /**
+   * Creates a sibling service for one workflow run executed by a daemon.
+   *
+   * The CLI assumes one process is one invocation, so `invocationId` is
+   * allocated once per process. A long-lived `swamp serve` breaks that
+   * assumption: its unit of invocation is a workflow run, and its own
+   * process-level entry is not written until exit — possibly weeks later.
+   * A fork gives each run its own identity to parent its child method
+   * invocations to, sharing this service's repository, version, and
+   * invocation context.
+   *
+   * IMPORTANT: forks are WRITE-ONLY. They record entries; they must never
+   * flush. Flushing is serialized by a per-instance mutex (see
+   * {@link #flushInFlight}), and a fork does not share it — so a fork that
+   * flushed could race the root service over the same spool and send a batch
+   * twice. If a fork ever needs to flush, move the lock down to the
+   * repository first.
+   */
+  forkForRun(triggerSource?: WorkflowTriggerSource): TelemetryService {
+    return new TelemetryService(
+      this.repository,
+      this.swampVersion,
+      this.invocationContext,
+      generateTelemetryId(),
+      triggerSource ?? this.triggerSource,
+    );
   }
 
   /**
@@ -130,6 +219,7 @@ export class TelemetryService {
       denoVersion: Deno.version.deno,
       platform: Deno.build.os,
       invocationContext: this.invocationContext,
+      triggerSource: this.triggerSource,
     });
 
     await this.repository.save(entry);
@@ -162,6 +252,7 @@ export class TelemetryService {
       denoVersion: Deno.version.deno,
       platform: Deno.build.os,
       invocationContext: this.invocationContext,
+      triggerSource: this.triggerSource,
     });
 
     await this.repository.save(entry);
@@ -217,6 +308,7 @@ export class TelemetryService {
       invocationContext: this.invocationContext,
       parentInvocationId,
       workflowContext,
+      triggerSource: this.triggerSource,
     });
 
     await this.repository.save(entry);
@@ -252,31 +344,152 @@ export class TelemetryService {
   }
 
   /**
+   * Removes flushed telemetry entries older than the retention period, and
+   * quarantined entries past their (longer) retention. Never touches
+   * unflushed entries.
+   *
+   * This is the only cleanup a long-lived daemon may run.
+   * {@link cleanupOldTelemetry} also applies `HARD_RETENTION_DAYS`, which
+   * deletes UNFLUSHED entries — safe for a CLI process that will be started
+   * again shortly, and destructive for a daemon that has been unable to reach
+   * the endpoint for a week, since it would discard telemetry that is still
+   * perfectly sendable. Undelivered data on disk beats silently discarded
+   * data, so the daemon keeps unflushed entries indefinitely.
+   *
+   * @param retentionDays - Number of days to retain flushed entries (default: 2)
+   */
+  async pruneFlushedTelemetry(
+    retentionDays: number = DEFAULT_RETENTION_DAYS,
+  ): Promise<void> {
+    const flushedCutoff = new Date();
+    flushedCutoff.setDate(flushedCutoff.getDate() - retentionDays);
+
+    const quarantineCutoff = new Date();
+    quarantineCutoff.setDate(
+      quarantineCutoff.getDate() - QUARANTINE_RETENTION_DAYS,
+    );
+
+    try {
+      await Promise.all([
+        this.repository.deleteOlderThan(flushedCutoff),
+        this.repository.deleteQuarantinedOlderThan(quarantineCutoff),
+      ]);
+    } catch (error) {
+      if (Deno.env.get("SWAMP_DEBUG")) {
+        console.error("[Telemetry] Prune failed:", error);
+      }
+    }
+  }
+
+  /**
+   * Sets an entry aside as undeliverable so it stops blocking newer entries.
+   */
+  async quarantineEntry(entry: TelemetryEntry): Promise<void> {
+    await this.repository.quarantine(entry);
+  }
+
+  /**
    * Flushes unflushed telemetry entries to a remote endpoint.
-   * Returns a result indicating whether the flush succeeded and, on failure,
-   * the reason. Never throws.
+   * Returns the sender's verdict plus any entries that were accepted but
+   * could not be marked flushed. Never throws.
+   *
+   * Concurrent calls on the same service are serialized: a caller arriving
+   * while a flush is running awaits that flush rather than starting a second
+   * one. Without this, two callers can both read the same unflushed batch
+   * before either marks it and send every entry twice — the shape `swamp
+   * serve` produces at shutdown, when its daemon flush loop and the CLI
+   * teardown flush overlap.
    *
    * @param config - Flush configuration with sender and distinctId
    */
-  async flushTelemetry(
+  flushTelemetry(
     config: TelemetryFlushConfig,
-  ): Promise<TelemetryFlushResult> {
-    const batchSize = config.batchSize ?? DEFAULT_FLUSH_BATCH_SIZE;
-    const keepFlushed = config.keepFlushed ?? false;
+  ): Promise<TelemetryFlushOutcome> {
+    return this.#serialize(async () => {
+      const batchSize = config.batchSize ?? DEFAULT_FLUSH_BATCH_SIZE;
+      const keepFlushed = config.keepFlushed ?? false;
 
-    try {
-      return await this.doFlush(
-        config.sender,
-        config.distinctId,
-        batchSize,
-        keepFlushed,
-        config.repoId,
-        config.authToken,
-        config.signal,
-      );
-    } catch {
-      return { ok: false, reason: "unexpected error" };
-    }
+      try {
+        return await this.doFlush(
+          config.sender,
+          config.distinctId,
+          batchSize,
+          keepFlushed,
+          config.repoId,
+          config.authToken,
+          config.signal,
+          config.skipIds,
+        );
+      } catch {
+        return {
+          result: { ok: false, reason: "unexpected error" },
+          unmarkedIds: [],
+          sentCount: 0,
+        };
+      }
+    });
+  }
+
+  /**
+   * Returns unflushed entries excluding ones the caller has already
+   * delivered, for callers that need to retry a stuck batch entry by entry.
+   */
+  async findUnflushedForIsolation(
+    limit: number,
+    skipIds?: ReadonlySet<string>,
+  ): Promise<TelemetryEntry[]> {
+    const entries = await this.repository.findUnflushed(limit);
+    return skipIds?.size
+      ? entries.filter((entry) => !skipIds.has(entry.id))
+      : entries;
+  }
+
+  /**
+   * Sends a single entry, marking it flushed on success.
+   *
+   * Used to find the offender in a batch the endpoint keeps rejecting: a
+   * batch is all-or-nothing, so one bad entry hides behind the same failure
+   * as its blameless neighbours until they are sent apart.
+   */
+  flushEntry(
+    config: TelemetrySingleFlushConfig,
+  ): Promise<TelemetryFlushOutcome> {
+    return this.#serialize(async () => {
+      try {
+        const result = await config.sender.sendBatch(
+          [config.entry],
+          config.distinctId,
+          config.repoId,
+          config.authToken,
+          config.signal,
+        );
+        const unmarkedIds: string[] = [];
+        if (result.ok) {
+          const marked = await this.repository.markFlushed(
+            config.entry,
+            config.keepFlushed ?? false,
+          );
+          if (!marked) unmarkedIds.push(config.entry.id);
+        }
+        return { result, unmarkedIds, sentCount: result.ok ? 1 : 0 };
+      } catch {
+        return {
+          result: { ok: false, reason: "unexpected error" },
+          unmarkedIds: [],
+          sentCount: 0,
+        };
+      }
+    });
+  }
+
+  /**
+   * Runs `fn` after every previously-queued flush operation has settled.
+   */
+  #serialize<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.#flushChain.then(fn, fn);
+    // Swallow on the chain only — the caller still sees the real outcome.
+    this.#flushChain = run.then(() => {}, () => {});
+    return run;
   }
 
   private async doFlush(
@@ -287,9 +500,17 @@ export class TelemetryService {
     repoId?: string,
     authToken?: string,
     signal?: AbortSignal,
-  ): Promise<TelemetryFlushResult> {
-    const entries = await this.repository.findUnflushed(batchSize);
-    if (entries.length === 0) return { ok: true };
+    skipIds?: ReadonlySet<string>,
+  ): Promise<TelemetryFlushOutcome> {
+    const found = await this.repository.findUnflushed(batchSize);
+    // Entries the caller already delivered but could not mark are still on
+    // disk. Re-sending them would count the same invocation twice.
+    const entries = skipIds?.size
+      ? found.filter((entry) => !skipIds.has(entry.id))
+      : found;
+    if (entries.length === 0) {
+      return { result: { ok: true }, unmarkedIds: [], sentCount: 0 };
+    }
 
     const result = await sender.sendBatch(
       entries,
@@ -298,12 +519,14 @@ export class TelemetryService {
       authToken,
       signal,
     );
+    const unmarkedIds: string[] = [];
     if (result.ok) {
       for (const entry of entries) {
-        await this.repository.markFlushed(entry, keepFlushed);
+        const marked = await this.repository.markFlushed(entry, keepFlushed);
+        if (!marked) unmarkedIds.push(entry.id);
       }
     }
-    return result;
+    return { result, unmarkedIds, sentCount: result.ok ? entries.length : 0 };
   }
 
   /**

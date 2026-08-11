@@ -128,12 +128,15 @@ import { JsonTelemetryRepository } from "../infrastructure/persistence/json_tele
 import { HttpTelemetrySender } from "../infrastructure/telemetry/http_telemetry_sender.ts";
 import {
   buildInvocationContext,
+  clearActiveTelemetryContext,
   clearActiveTelemetryService,
   extractCommandInfo,
   isExternalDatastoreConfigured,
   isTelemetryDisabled,
   projectEnvSnapshot,
+  setActiveTelemetryContext,
   setActiveTelemetryService,
+  type TelemetryContext,
 } from "./telemetry_integration.ts";
 import type { CommandInvocationData } from "../domain/telemetry/command_invocation.ts";
 import { UserIdentityRepository } from "../infrastructure/persistence/user_identity_repository.ts";
@@ -1123,20 +1126,6 @@ export function resolveTelemetryEndpoint(
 
 import { resolveTrustedCollectives } from "../libswamp/mod.ts";
 
-interface TelemetryContext {
-  service: TelemetryService;
-  userId: string | null;
-  /**
-   * Repo-specific identifier, present only when the run happened inside a
-   * swamp repo. Undefined for repo-less runs — the event is then keyed solely
-   * by the user identity (userId).
-   */
-  repoId: string | undefined;
-  telemetryEndpoint: string;
-  keepFlushed: boolean;
-  authToken: string | null;
-}
-
 /**
  * Initialize the telemetry service for this invocation.
  *
@@ -1323,6 +1312,9 @@ export async function runCli(args: string[]): Promise<void> {
   // outer try/finally below regardless of how the invocation ends.
   if (telemetryCtx) {
     setActiveTelemetryService(telemetryCtx.service);
+    // `swamp serve` reaches the teardown flush below only at process exit,
+    // so it runs its own flush loop and needs these same credentials.
+    setActiveTelemetryContext(telemetryCtx);
   }
 
   // Read marker once for log level, extension loading, and auto-resolver.
@@ -1618,9 +1610,9 @@ export async function runCli(args: string[]): Promise<void> {
               keepFlushed: telemetryCtx.keepFlushed,
               signal: AbortSignal.timeout(2000),
             });
-            if (!flushResult.ok) {
-              const detail = flushResult.reason
-                ? ` (${flushResult.reason})`
+            if (!flushResult.result.ok) {
+              const detail = flushResult.result.reason
+                ? ` (${flushResult.result.reason})`
                 : "";
               logger.warn(
                 `Telemetry flush failed${detail} — entries are queued locally and will retry on the next invocation`,
@@ -1816,5 +1808,6 @@ export async function runCli(args: string[]): Promise<void> {
     // invocation finishes — runCli is the single setter and must be the
     // single clearer.
     clearActiveTelemetryService();
+    clearActiveTelemetryContext();
   }
 }

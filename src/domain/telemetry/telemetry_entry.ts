@@ -46,6 +46,10 @@ import {
   workflowContextFromData,
   workflowContextToData,
 } from "./workflow_context.ts";
+import {
+  isWorkflowTriggerSource,
+  type WorkflowTriggerSource,
+} from "./trigger_source.ts";
 
 /**
  * Properties required to create a new TelemetryEntry.
@@ -62,14 +66,15 @@ export interface CreateTelemetryEntryProps {
   invocationContext?: InvocationContextData;
   parentInvocationId?: string;
   workflowContext?: WorkflowContextData;
+  triggerSource?: WorkflowTriggerSource;
 }
 
 /**
  * Data transfer object for TelemetryEntry.
  *
- * `invocationContext`, `parentInvocationId`, and `workflowContext` are
- * optional so entries written before each field was introduced still decode
- * without loss.
+ * `invocationContext`, `parentInvocationId`, `workflowContext`, and
+ * `triggerSource` are optional so entries written before each field was
+ * introduced still decode without loss.
  */
 export interface TelemetryEntryData {
   id: string;
@@ -84,6 +89,7 @@ export interface TelemetryEntryData {
   invocationContext?: InvocationContextData;
   parentInvocationId?: string;
   workflowContext?: WorkflowContextData;
+  triggerSource?: WorkflowTriggerSource;
 }
 
 /**
@@ -103,6 +109,7 @@ export class TelemetryEntry {
     readonly invocationContext?: InvocationContext,
     readonly parentInvocationId?: TelemetryId,
     readonly workflowContext?: WorkflowContext,
+    readonly triggerSource?: WorkflowTriggerSource,
   ) {}
 
   /**
@@ -131,6 +138,7 @@ export class TelemetryEntry {
       props.workflowContext
         ? workflowContextFromData(props.workflowContext)
         : undefined,
+      props.triggerSource,
     );
   }
 
@@ -156,6 +164,11 @@ export class TelemetryEntry {
         : undefined,
       data.workflowContext
         ? workflowContextFromData(data.workflowContext)
+        : undefined,
+      // Spool files are on disk and may be hand-edited or written by a newer
+      // version, so an unrecognised value is dropped rather than trusted.
+      isWorkflowTriggerSource(data.triggerSource)
+        ? data.triggerSource
         : undefined,
     );
   }
@@ -183,6 +196,9 @@ export class TelemetryEntry {
     }
     if (this.workflowContext) {
       data.workflowContext = workflowContextToData(this.workflowContext);
+    }
+    if (this.triggerSource) {
+      data.triggerSource = this.triggerSource;
     }
     return data;
   }

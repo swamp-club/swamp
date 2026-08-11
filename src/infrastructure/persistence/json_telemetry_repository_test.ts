@@ -454,6 +454,103 @@ Deno.test("JsonTelemetryRepository.markFlushed does not throw on non-existent fi
   });
 });
 
+Deno.test("JsonTelemetryRepository.markFlushed reports success and failure", async () => {
+  // A caller that flushes on a timer re-reads whatever is still on disk, so a
+  // silent mark failure becomes a duplicate event every interval.
+  await withTempDir(async (dir) => {
+    const repo = new JsonTelemetryRepository(dir);
+    const entry = createTestEntry({
+      id: "mark-uuid",
+      date: new Date("2024-03-10T10:00:00Z"),
+    });
+    await repo.save(entry);
+
+    assertEquals(await repo.markFlushed(entry), true);
+    // Already gone — the second attempt cannot mark anything.
+    assertEquals(await repo.markFlushed(entry), false);
+  });
+});
+
+Deno.test("JsonTelemetryRepository.quarantine excludes an entry from findUnflushed", async () => {
+  // The escape hatch for a batch the endpoint always rejects. Without the
+  // exclusion the entry is read again forever and nothing behind it ships.
+  await withTempDir(async (dir) => {
+    const repo = new JsonTelemetryRepository(dir);
+    const poison = createTestEntry({
+      id: "poison-uuid",
+      date: new Date("2024-03-10T10:00:00Z"),
+    });
+    const healthy = createTestEntry({
+      id: "healthy-uuid",
+      date: new Date("2024-03-11T10:00:00Z"),
+    });
+    await repo.save(poison);
+    await repo.save(healthy);
+
+    await repo.quarantine(poison);
+
+    const unflushed = await repo.findUnflushed(10);
+    assertEquals(unflushed.length, 1);
+    assertEquals(unflushed[0].id, "healthy-uuid");
+
+    // Kept on disk, not deleted: the reason an endpoint refuses a payload is
+    // usually only visible in the payload.
+    const telemetryDir = join(dir, ".swamp", "telemetry");
+    const files: string[] = [];
+    for await (const f of Deno.readDir(telemetryDir)) files.push(f.name);
+    assertEquals(
+      files.includes("telemetry-2024-03-10-poison-uuid.quarantined.json"),
+      true,
+    );
+  });
+});
+
+Deno.test("JsonTelemetryRepository.deleteQuarantinedOlderThan removes only aged quarantined entries", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new JsonTelemetryRepository(dir);
+    const old = createTestEntry({
+      id: "old-uuid",
+      date: new Date("2024-01-01T10:00:00Z"),
+    });
+    const recent = createTestEntry({
+      id: "recent-uuid",
+      date: new Date("2024-03-10T10:00:00Z"),
+    });
+    const unflushed = createTestEntry({
+      id: "unflushed-uuid",
+      date: new Date("2024-01-01T10:00:00Z"),
+    });
+    await repo.save(old);
+    await repo.save(recent);
+    await repo.save(unflushed);
+    await repo.quarantine(old);
+    await repo.quarantine(recent);
+
+    const deleted = await repo.deleteQuarantinedOlderThan(
+      new Date("2024-02-01T00:00:00Z"),
+    );
+
+    assertEquals(deleted, 1);
+    const telemetryDir = join(dir, ".swamp", "telemetry");
+    const files: string[] = [];
+    for await (const f of Deno.readDir(telemetryDir)) files.push(f.name);
+    // The aged quarantined entry is gone; the recent one and the untouched
+    // unflushed entry both survive.
+    assertEquals(
+      files.includes("telemetry-2024-01-01-old-uuid.quarantined.json"),
+      false,
+    );
+    assertEquals(
+      files.includes("telemetry-2024-03-10-recent-uuid.quarantined.json"),
+      true,
+    );
+    assertEquals(
+      files.includes("telemetry-2024-01-01-unflushed-uuid.json"),
+      true,
+    );
+  });
+});
+
 Deno.test("JsonTelemetryRepository.deleteOlderThan preserves unflushed entries while removing flushed", async () => {
   await withTempDir(async (dir) => {
     const repo = new JsonTelemetryRepository(dir);
