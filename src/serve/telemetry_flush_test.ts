@@ -253,10 +253,9 @@ Deno.test("DaemonTelemetryFlushService: never applies the hard retention cap", a
 
 Deno.test("DaemonTelemetryFlushService: stop() awaits an in-flight timer drain before its own", async () => {
   // Reproduces the race from swamp-club#1604: a timer-triggered drain is
-  // in progress when stop() is called, and an entry is written between the
-  // drain's read and stop()'s final flush. Without the fix, stop()'s
-  // #drain() would return immediately (guarded by #running/#drainPromise)
-  // and the entry would be stranded.
+  // in progress when stop() is called. Without the fix, stop()'s #drain()
+  // returns immediately (guarded out) and stop() resolves while the drain
+  // is still running — shutdown proceeds before telemetry is delivered.
   const repo = new FakeRepository();
   const sender = new FakeSender();
 
@@ -281,21 +280,29 @@ Deno.test("DaemonTelemetryFlushService: stop() awaits an in-flight timer drain b
   );
 
   service.start();
-  // Let the timer fire and the drain enter the blocked sendBatch.
   while (sendCalls === 0) {
     await new Promise((r) => setTimeout(r, 5));
   }
 
-  // The drain is now blocked inside sendBatch. Add a new entry that only
-  // stop()'s final drain can pick up.
   repo.entries.push(entry("during-drain"));
 
-  // stop() must await the in-flight drain, then run its own to catch
-  // "during-drain".
-  const stopPromise = service.stop();
+  // stop() must NOT resolve while the in-flight drain is blocked.
+  let stopDone = false;
+  const stopPromise = service.stop().then(() => {
+    stopDone = true;
+  });
+
+  await new Promise((r) => setTimeout(r, 20));
+  assertEquals(
+    stopDone,
+    false,
+    "stop() must not resolve while drain is in-flight",
+  );
+
   resolveGate();
   await stopPromise;
 
+  assertEquals(stopDone, true);
   assertEquals(sender.countOf("before-stop"), 1);
   assertEquals(sender.countOf("during-drain"), 1);
   assertEquals(repo.entries.length, 0);
