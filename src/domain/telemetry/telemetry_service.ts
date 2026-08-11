@@ -184,7 +184,7 @@ export class TelemetryService {
    *
    * IMPORTANT: forks are WRITE-ONLY. They record entries; they must never
    * flush. Flushing is serialized by a per-instance mutex (see
-   * {@link #flushInFlight}), and a fork does not share it — so a fork that
+   * {@link #flushChain}), and a fork does not share it — so a fork that
    * flushed could race the root service over the same spool and send a batch
    * twice. If a fork ever needs to flush, move the lock down to the
    * repository first.
