@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { getLogger } from "@logtape/logtape";
 import { join } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import { z } from "zod";
@@ -195,12 +196,23 @@ export async function readGrantFiles(
   }
 
   const files = dirEntries
-    .filter((e) => e.isFile && isGrantFileExtension(e.name))
+    .filter((e) => (e.isFile || e.isSymlink) && isGrantFileExtension(e.name))
     .sort((a, b) => a.name.localeCompare(b.name));
 
+  const logger = getLogger(["swamp", "access", "grant-file"]);
   for (const file of files) {
     const path = join(grantsDir, file.name);
-    const content = await Deno.readTextFile(path);
+    let content: string;
+    try {
+      content = await Deno.readTextFile(path);
+    } catch (error) {
+      logger.warn`Skipping grant file ${file.name}: ${error}`;
+      results.set(file.name, {
+        entries: [],
+        errors: [{ filename: file.name, message: `Failed to read: ${error}` }],
+      });
+      continue;
+    }
     results.set(
       file.name,
       parseGrantFile(file.name, content, validateCondition),
