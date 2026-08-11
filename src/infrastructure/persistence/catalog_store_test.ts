@@ -801,60 +801,6 @@ Deno.test("CatalogStore: migrates v3 catalog DB to v4 with namespace column", ()
 
 // ── Phase 6c: namespace-scoped backfill and foreign upsert ──────────────────
 
-Deno.test("bulkReplaceNamespace: replaces only own namespace, preserves foreign", () => {
-  const dbPath = makeTempDbPath();
-  const store = new CatalogStore(dbPath);
-
-  const infraRow = makeRow({
-    namespace: "infra",
-    model_name: "infra-model",
-    data_name: "infra-data",
-  });
-  const securityRow = makeRow({
-    namespace: "security",
-    model_name: "security-model",
-    data_name: "security-data",
-  });
-
-  store.bulkReplaceAll([infraRow, securityRow]);
-  assertEquals(store.count(), 2);
-
-  const updatedInfraRow = makeRow({
-    namespace: "infra",
-    model_name: "infra-model-v2",
-    data_name: "infra-data-v2",
-  });
-  store.bulkReplaceNamespace("infra", [updatedInfraRow]);
-
-  const all = [...store.iterate()];
-  assertEquals(all.length, 2);
-
-  const infra = all.filter((r) => r.namespace === "infra");
-  assertEquals(infra.length, 1);
-  assertEquals(infra[0].model_name, "infra-model-v2");
-
-  const security = all.filter((r) => r.namespace === "security");
-  assertEquals(security.length, 1);
-  assertEquals(security[0].model_name, "security-model");
-
-  store.close();
-});
-
-Deno.test("bulkReplaceNamespace: does not touch global populated flag", () => {
-  const dbPath = makeTempDbPath();
-  const store = new CatalogStore(dbPath);
-
-  store.markPopulated();
-  assertEquals(store.isPopulated(), true);
-
-  store.bulkReplaceNamespace("infra", [
-    makeRow({ namespace: "infra" }),
-  ]);
-
-  assertEquals(store.isPopulated(), true);
-  store.close();
-});
-
 Deno.test("latestRowCountsByType: counts latest rows per type within a namespace", () => {
   const dbPath = makeTempDbPath();
   const store = new CatalogStore(dbPath);
@@ -912,7 +858,7 @@ Deno.test("bulkUpsertForeign: upserts foreign rows and records lastSynced", () =
   const dbPath = makeTempDbPath();
   const store = new CatalogStore(dbPath);
 
-  store.bulkReplaceAll([makeRow({ namespace: "own" })]);
+  store.bulkUpsert([makeRow({ namespace: "own" })]);
   assertEquals(store.count(), 1);
 
   const foreignRow = makeRow({
