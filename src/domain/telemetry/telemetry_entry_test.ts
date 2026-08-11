@@ -348,3 +348,99 @@ Deno.test("TelemetryEntry.fromData decodes legacy entries without parentInvocati
   assertEquals("parentInvocationId" in roundTripped, false);
   assertEquals("workflowContext" in roundTripped, false);
 });
+
+Deno.test("TelemetryEntry round-trips triggerSource through toData/fromData", () => {
+  const entry = TelemetryEntry.create({
+    invocation: {
+      command: "workflow",
+      subcommand: "run",
+      args: ["<REDACTED>"],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    result: { status: "success", exitCode: 0 },
+    startedAt: new Date("2026-02-05T12:00:00.000Z"),
+    completedAt: new Date("2026-02-05T12:00:05.000Z"),
+    swampVersion: "1.0.0",
+    denoVersion: "2.1.0",
+    platform: "linux",
+    triggerSource: "schedule",
+  });
+
+  assertEquals(entry.triggerSource, "schedule");
+  const data = entry.toData();
+  assertEquals(data.triggerSource, "schedule");
+  assertEquals(TelemetryEntry.fromData(data).triggerSource, "schedule");
+});
+
+Deno.test("TelemetryEntry omits triggerSource for interactive invocations", () => {
+  // The CLI never sets a trigger source, so its events must stay
+  // byte-identical to what shipped before the field existed.
+  const entry = TelemetryEntry.create({
+    invocation: {
+      command: "model",
+      subcommand: "create",
+      args: [],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    result: { status: "success", exitCode: 0 },
+    startedAt: new Date("2026-02-05T12:00:00.000Z"),
+    completedAt: new Date("2026-02-05T12:00:01.000Z"),
+    swampVersion: "1.0.0",
+    denoVersion: "2.1.0",
+    platform: "linux",
+  });
+
+  assertEquals(entry.triggerSource, undefined);
+  assertEquals("triggerSource" in entry.toData(), false);
+});
+
+Deno.test("TelemetryEntry.fromData decodes legacy entries without triggerSource", () => {
+  const legacyData: TelemetryEntryData = {
+    id: "legacy-3",
+    invocation: {
+      command: "workflow",
+      subcommand: "run",
+      args: ["<REDACTED>"],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    result: { status: "success", exitCode: 0 },
+    startedAt: "2026-02-05T12:00:00.000Z",
+    completedAt: "2026-02-05T12:00:05.000Z",
+    durationMs: 5000,
+    swampVersion: "1.0.0",
+    denoVersion: "2.1.0",
+    platform: "linux",
+  };
+
+  const entry = TelemetryEntry.fromData(legacyData);
+  assertEquals(entry.triggerSource, undefined);
+  assertEquals("triggerSource" in entry.toData(), false);
+});
+
+Deno.test("TelemetryEntry.fromData drops an unrecognised triggerSource", () => {
+  // A spool file can be hand-edited or written by a newer version; an unknown
+  // value must not reach the wire as though it were a known one.
+  const data = {
+    id: "unknown-source",
+    invocation: {
+      command: "workflow",
+      subcommand: "run",
+      args: [],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    result: { status: "success", exitCode: 0 },
+    startedAt: "2026-02-05T12:00:00.000Z",
+    completedAt: "2026-02-05T12:00:05.000Z",
+    durationMs: 5000,
+    swampVersion: "1.0.0",
+    denoVersion: "2.1.0",
+    platform: "linux",
+    triggerSource: "telepathy",
+  } as unknown as TelemetryEntryData;
+
+  assertEquals(TelemetryEntry.fromData(data).triggerSource, undefined);
+});

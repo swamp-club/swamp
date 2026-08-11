@@ -46,12 +46,52 @@ import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_w
 import { YamlEvaluatedWorkflowRepository } from "../src/infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
 import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
+import type { TelemetryEntry } from "../src/domain/telemetry/telemetry_entry.ts";
+import type { TelemetryRepository } from "../src/domain/telemetry/repositories.ts";
+import { TelemetryService } from "../src/domain/telemetry/telemetry_service.ts";
+import {
+  clearActiveTelemetryService,
+  setActiveTelemetryService,
+} from "../src/cli/telemetry_integration.ts";
 
 // Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 
 await initializeLogging({});
+
+/** Minimal spool that records what a run wrote. */
+class RecordingRepository implements TelemetryRepository {
+  saved: TelemetryEntry[] = [];
+  save(entry: TelemetryEntry): Promise<void> {
+    this.saved.push(entry);
+    return Promise.resolve();
+  }
+  findByDate(): Promise<TelemetryEntry[]> {
+    return Promise.resolve([]);
+  }
+  findByDateRange(): Promise<TelemetryEntry[]> {
+    return Promise.resolve([]);
+  }
+  deleteOlderThan(): Promise<number> {
+    return Promise.resolve(0);
+  }
+  deleteAllOlderThan(): Promise<number> {
+    return Promise.resolve(0);
+  }
+  findUnflushed(): Promise<TelemetryEntry[]> {
+    return Promise.resolve([]);
+  }
+  markFlushed(): Promise<boolean> {
+    return Promise.resolve(true);
+  }
+  quarantine(): Promise<void> {
+    return Promise.resolve();
+  }
+  deleteQuarantinedOlderThan(): Promise<number> {
+    return Promise.resolve(0);
+  }
+}
 
 const requiredInputSchema = {
   type: "object" as const,
@@ -112,6 +152,8 @@ async function runWebhook(
     new AbortController().signal,
     (event) => events.push(event),
     syncService,
+    undefined,
+    { triggerSource: "webhook" },
   );
   return events;
 }
@@ -226,6 +268,58 @@ Deno.test({
           route: "/hooks/linear",
         })
       );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "webhook run: records telemetry attributed to the webhook trigger, without the payload",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withRepo(async (repoDir) => {
+      const workflow = webhookWorkflow("webhook-telemetry", {
+        identifier: "${{ webhook.body.data.issue.identifier }}",
+      });
+      await new YamlWorkflowRepository(repoDir).save(workflow);
+
+      const repo = new RecordingRepository();
+      setActiveTelemetryService(new TelemetryService(repo, "test"));
+      try {
+        const events = await runWebhook(repoDir, workflow.name, {
+          body: {
+            data: { issue: { identifier: "PLT-2001" } },
+            secret: "super-secret-token",
+          },
+          headers: { authorization: "Bearer should-never-be-recorded" },
+          route: "/hooks/linear",
+        });
+        assertEquals(events.at(-1)?.kind, "completed");
+
+        // Exactly one parent entry for the run, attributed to the webhook
+        // trigger. The status is deliberately not asserted here: this
+        // fixture's step passes an input the shell model does not accept, so
+        // the run fails — the surrounding tests only ever asserted that the
+        // payload value reached the evaluated workflow. Success and failure
+        // statuses are pinned in the scheduled tests, where the fixture runs
+        // clean.
+        const parents = repo.saved.filter((e) => !e.parentInvocationId);
+        assertEquals(parents.length, 1);
+        assertEquals(parents[0].triggerSource, "webhook");
+        assertEquals(parents[0].invocation.command, "workflow");
+        assertEquals(parents[0].invocation.subcommand, "run");
+
+        // Webhook payloads are attacker-influenced and must never reach
+        // telemetry. Serve-side entries are generated with no human present,
+        // so this is asserted rather than assumed.
+        const serialized = JSON.stringify(repo.saved.map((e) => e.toData()));
+        assertEquals(serialized.includes("super-secret-token"), false);
+        assertEquals(serialized.includes("should-never-be-recorded"), false);
+        assertEquals(serialized.includes("PLT-2001"), false);
+      } finally {
+        clearActiveTelemetryService();
+      }
     });
   },
 });

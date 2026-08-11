@@ -30,7 +30,10 @@ import type {
   WorkflowRunDeps,
   WorkflowRunEvent,
   WorkflowRunInput,
+  WorkflowTelemetrySink,
 } from "../libswamp/mod.ts";
+import type { WorkflowTriggerSource } from "../domain/telemetry/mod.ts";
+import { createRunTelemetry, type RunTelemetry } from "./telemetry.ts";
 import { createLibSwampContext, workflowRun } from "../libswamp/mod.ts";
 import {
   type DirectTypeResolver,
@@ -53,7 +56,10 @@ import { DefaultMethodExecutionService } from "../domain/models/method_execution
 import { VaultService } from "../domain/vaults/vault_service.ts";
 import { ExpressionEvaluationService } from "../domain/expressions/expression_evaluation_service.ts";
 import { DataQueryService } from "../domain/data/data_query_service.ts";
-import { runFileSink } from "../infrastructure/logging/logger.ts";
+import {
+  getSwampLogger,
+  runFileSink,
+} from "../infrastructure/logging/logger.ts";
 import {
   SWAMP_SUBDIRS,
   swampPath,
@@ -71,12 +77,22 @@ import {
   runWithParentTrace,
 } from "../infrastructure/tracing/mod.ts";
 
+const logger = getSwampLogger(["serve", "deps"]);
+
 export async function createWorkflowRunDeps(
   repoDir: string,
   repoContext: RepositoryContext,
   datastoreConfig: DatastoreConfig,
   stepLockHook?: StepLockHook,
   runTracker?: RunTrackerRepository,
+  options?: {
+    /**
+     * Records per-method telemetry for this run. Left undefined by callers
+     * that are not a serve-executed run (and by every caller when telemetry
+     * is disabled), in which case libswamp's bridge is never constructed.
+     */
+    telemetrySink?: WorkflowTelemetrySink;
+  },
 ): Promise<WorkflowRunDeps> {
   await Promise.all([
     modelRegistry.ensureLoaded(),
@@ -178,6 +194,7 @@ export async function createWorkflowRunDeps(
     catalogStore: repoContext.catalogStore,
     dataRepo: repoContext.unifiedDataRepo,
     definitionRepo: repoContext.definitionRepo,
+    telemetrySink: options?.telemetrySink,
   };
 }
 
@@ -299,6 +316,15 @@ export async function executeWorkflowWithLocks(
   onEvent: (event: WorkflowRunEvent) => void,
   syncService?: DatastoreSyncService,
   runTracker?: RunTrackerRepository,
+  options?: {
+    /**
+     * What caused this run. Supplied by serve's trigger sites (scheduled,
+     * webhook, API) so the run is recorded and distinguishable from
+     * interactive use. Omitted by library and test callers, which then
+     * produce no telemetry — the pre-existing behaviour.
+     */
+    triggerSource?: WorkflowTriggerSource;
+  },
 ): Promise<void> {
   // Pre-lookup workflow for trigger.inputs resolution
   const workflowRepo = repoContext.workflowRepo;
@@ -320,12 +346,20 @@ export async function executeWorkflowWithLocks(
     return result;
   };
 
+  // Undefined when no trigger source was supplied (library/test callers) or
+  // when telemetry is disabled for this process, in which case the run
+  // produces no telemetry at all — exactly as before this was wired.
+  const runTelemetry = options?.triggerSource
+    ? createRunTelemetry(options.triggerSource)
+    : undefined;
+
   const deps = await createWorkflowRunDeps(
     repoDir,
     repoContext,
     datastoreConfig,
     stepLockHook,
     runTracker,
+    { telemetrySink: runTelemetry?.sink },
   );
   const libCtx = createLibSwampContext({ signal });
 
@@ -359,20 +393,78 @@ export async function executeWorkflowWithLocks(
     }
     : input;
 
+  // A workflow run reports failure through the event stream, not by
+  // throwing: input validation, a failed step, and a cancellation all
+  // complete normally from the caller's point of view. Recording those as
+  // successes would credit work that did not happen, so the outcome is read
+  // from the stream rather than from control flow.
+  let streamError: string | undefined;
+  let finalStatus: string | undefined;
   const run = async () => {
     for await (const event of workflowRun(libCtx, deps, effectiveInput)) {
+      if (event.kind === "error") streamError = event.error.message;
+      if (event.kind === "completed" || event.kind === "cancelled") {
+        finalStatus = event.run.status;
+      }
       onEvent(event);
     }
   };
 
-  if (input.traceparent) {
-    const headers: Record<string, string> = {
-      traceparent: input.traceparent,
-    };
-    if (input.tracestate) headers.tracestate = input.tracestate;
-    const traceCtx = extractTraceContext(headers);
-    await runWithParentTrace(traceCtx, run);
-  } else {
-    await run();
+  const runTraced = async () => {
+    if (input.traceparent) {
+      const headers: Record<string, string> = {
+        traceparent: input.traceparent,
+      };
+      if (input.tracestate) headers.tracestate = input.tracestate;
+      const traceCtx = extractTraceContext(headers);
+      await runWithParentTrace(traceCtx, run);
+    } else {
+      await run();
+    }
+  };
+
+  if (!runTelemetry) {
+    await runTraced();
+    return;
+  }
+
+  // Record the run's own parent entry however it ends. Telemetry must never
+  // be able to fail a workflow run, so `finish` is isolated from the run's
+  // own error and the original error always propagates.
+  try {
+    await runTraced();
+  } catch (error) {
+    await finishRunTelemetry(
+      runTelemetry,
+      error instanceof Error ? error : new Error(String(error)),
+    );
+    throw error;
+  }
+
+  const failure = finalStatus === "succeeded" ? null : new Error(
+    streamError ?? `workflow run ${finalStatus ?? "did not complete"}`,
+  );
+  await finishRunTelemetry(runTelemetry, failure);
+}
+
+/**
+ * Closes out a run's telemetry without letting a telemetry failure surface
+ * as a workflow failure.
+ */
+async function finishRunTelemetry(
+  runTelemetry: RunTelemetry,
+  error: Error | null,
+): Promise<void> {
+  try {
+    await runTelemetry.finish(error);
+  } catch (telemetryError) {
+    logger.warn(
+      "Failed to record workflow run telemetry: {error}",
+      {
+        error: telemetryError instanceof Error
+          ? telemetryError.message
+          : String(telemetryError),
+      },
+    );
   }
 }

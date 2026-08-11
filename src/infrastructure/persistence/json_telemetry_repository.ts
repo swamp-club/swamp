@@ -54,9 +54,7 @@ export class JsonTelemetryRepository implements TelemetryRepository {
       await assertSafePath(telemetryDir, this.baseDir);
       await ensureDir(telemetryDir);
 
-      const date = entry.startedAt.toISOString().split("T")[0];
-      const filename = `telemetry-${date}-${entry.id}.json`;
-      const path = join(telemetryDir, filename);
+      const path = join(telemetryDir, this.entryFilename(entry));
 
       const json = JSON.stringify(entry.toData(), null, 2);
       await atomicWriteTextFile(path, json);
@@ -214,7 +212,8 @@ export class JsonTelemetryRepository implements TelemetryRepository {
           dirEntry.isFile &&
           dirEntry.name.startsWith("telemetry-") &&
           dirEntry.name.endsWith(".json") &&
-          !dirEntry.name.endsWith(".flushed.json")
+          !dirEntry.name.endsWith(".flushed.json") &&
+          !dirEntry.name.endsWith(".quarantined.json")
         ) {
           filenames.push(dirEntry.name);
         }
@@ -250,27 +249,105 @@ export class JsonTelemetryRepository implements TelemetryRepository {
   /**
    * Marks a telemetry entry as flushed.
    * By default, deletes the file. If keepFlushed is true, renames to .flushed.json.
+   *
+   * Returns false when the delete or rename fails (a Windows file lock, a
+   * read-only spool, an interrupted rename). The entry then stays on disk and
+   * `findUnflushed` will return it again, so a repeatedly-flushing caller must
+   * use this result to avoid re-sending an entry the endpoint already accepted.
    */
   async markFlushed(
     entry: TelemetryEntry,
     keepFlushed?: boolean,
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
       const telemetryDir = this.getTelemetryDir();
-      const date = entry.startedAt.toISOString().split("T")[0];
-      const filename = `telemetry-${date}-${entry.id}.json`;
-      const filePath = join(telemetryDir, filename);
+      const filePath = join(telemetryDir, this.entryFilename(entry));
 
       if (keepFlushed) {
-        const flushedFilename = `telemetry-${date}-${entry.id}.flushed.json`;
-        const flushedPath = join(telemetryDir, flushedFilename);
+        const flushedPath = join(
+          telemetryDir,
+          this.entryFilename(entry, ".flushed.json"),
+        );
         await Deno.rename(filePath, flushedPath);
       } else {
         await Deno.remove(filePath);
       }
+      return true;
     } catch {
-      // Silent failure
+      return false;
     }
+  }
+
+  /**
+   * Sets an entry aside as undeliverable by renaming it to
+   * `.quarantined.json`, which `findUnflushed` skips.
+   *
+   * The file is kept rather than deleted so a rejected entry can still be
+   * inspected — the reason an endpoint refuses a payload is usually only
+   * visible in the payload itself.
+   */
+  async quarantine(entry: TelemetryEntry): Promise<void> {
+    try {
+      const telemetryDir = this.getTelemetryDir();
+      await Deno.rename(
+        join(telemetryDir, this.entryFilename(entry)),
+        join(telemetryDir, this.entryFilename(entry, ".quarantined.json")),
+      );
+    } catch {
+      // Silent failure - quarantining is best-effort. A failure leaves the
+      // entry unflushed, which the caller's own retry accounting handles.
+    }
+  }
+
+  /**
+   * Deletes quarantined entries older than the given date.
+   */
+  async deleteQuarantinedOlderThan(date: Date): Promise<number> {
+    let deletedCount = 0;
+    const cutoffDateStr = date.toISOString().split("T")[0];
+
+    try {
+      const telemetryDir = this.getTelemetryDir();
+
+      for await (const entry of Deno.readDir(telemetryDir)) {
+        if (
+          !entry.isFile ||
+          !entry.name.startsWith("telemetry-") ||
+          !entry.name.endsWith(".quarantined.json")
+        ) {
+          continue;
+        }
+
+        const entryDateStr = entry.name.slice(
+          "telemetry-".length,
+          "telemetry-".length + 10,
+        );
+        if (entryDateStr >= cutoffDateStr) continue;
+
+        try {
+          await Deno.remove(join(telemetryDir, entry.name));
+          deletedCount++;
+        } catch {
+          // Skip files that can't be removed
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+
+    return deletedCount;
+  }
+
+  /**
+   * Filename for an entry's spool file. The `telemetry-YYYY-MM-DD-` prefix
+   * makes filenames chronologically sortable, which is what lets
+   * `findUnflushed` order by name instead of parsing every file.
+   */
+  private entryFilename(entry: TelemetryEntry, suffix = ".json"): string {
+    const date = entry.startedAt.toISOString().split("T")[0];
+    return `telemetry-${date}-${entry.id}${suffix}`;
   }
 
   private getTelemetryDir(): string {

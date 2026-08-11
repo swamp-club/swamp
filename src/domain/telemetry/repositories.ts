@@ -80,8 +80,38 @@ export interface TelemetryRepository {
    * Marks a telemetry entry as flushed (sent to remote endpoint).
    * By default, deletes the file. If keepFlushed is true, renames to .flushed.json.
    *
+   * Returns whether the entry was actually marked. A `false` return means the
+   * entry is still on disk and will be read again by the next `findUnflushed`
+   * — harmless for a one-shot CLI run, but a caller that flushes repeatedly
+   * must not re-send it or the same invocation is counted once per attempt.
+   *
    * @param entry - The entry to mark as flushed
    * @param keepFlushed - If true, rename instead of delete
+   * @returns true if the entry was marked, false if the operation failed
    */
-  markFlushed(entry: TelemetryEntry, keepFlushed?: boolean): Promise<void>;
+  markFlushed(entry: TelemetryEntry, keepFlushed?: boolean): Promise<boolean>;
+
+  /**
+   * Sets an entry aside as undeliverable, excluding it from future
+   * `findUnflushed` results without deleting it.
+   *
+   * The escape hatch for a permanently-rejected entry. `findUnflushed`
+   * returns the oldest entries first and a batch is only marked after the
+   * whole batch sends, so without this a single entry the endpoint always
+   * rejects blocks every newer entry behind it forever.
+   *
+   * @param entry - The entry to quarantine
+   */
+  quarantine(entry: TelemetryEntry): Promise<void>;
+
+  /**
+   * Deletes quarantined entries older than the given date.
+   *
+   * Quarantined entries are, by definition, not deliverable, so unlike
+   * unflushed entries they are not worth retaining indefinitely.
+   *
+   * @param date - Delete quarantined entries older than this date
+   * @returns The number of entries deleted
+   */
+  deleteQuarantinedOlderThan(date: Date): Promise<number>;
 }

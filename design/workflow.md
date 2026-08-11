@@ -942,3 +942,35 @@ fields populated only at the model-method failure site (other yield
 sites — nesting depth, cycle detection, nested-workflow failure — leave
 them undefined so the bridge can distinguish structural failures from
 method failures).
+
+### Runs Executed by `swamp serve`
+
+Scheduled, webhook, and API-triggered runs record the same parent and child
+entries as an interactive `swamp workflow run`, with two differences.
+
+**The parent is the run, not the process.** The CLI allocates one invocation
+id per process, because for a CLI one process is one invocation. A daemon
+breaks that assumption: its own process-level entry is not written until it
+exits, possibly weeks later, so hanging children off it would leave every
+child with a dangling `parentInvocationId` for the daemon's entire uptime.
+Each serve-executed run therefore forks its own service
+(`TelemetryService.forkForRun`) and records a per-run parent shaped like the
+`swamp workflow run` invocation it stands in for, with the workflow name
+redacted exactly as the CLI redacts it.
+
+**Entries carry a `triggerSource`** of `schedule`, `webhook`, or `api`.
+Interactive runs leave the field unset, so their events are unchanged. The
+field is deliberately not called `source`: the telemetry backend derives a
+field by that name from the recorded command, and overloading it would
+collide two independently-owned concerns.
+
+Because a run reports failure through its event stream rather than by
+throwing — input validation, a failed step, and cancellation all return
+normally — the outcome is read from the stream. A run that did not reach
+`succeeded` records an error parent, which matters because only successful
+invocations are counted downstream.
+
+The composition lives in `src/serve/telemetry.ts`; the sink is threaded
+through `executeWorkflowWithLocks` in `src/serve/deps.ts`, which is the
+single path all three trigger types share. Callers that supply no trigger
+source (libswamp consumers, tests) produce no telemetry at all.

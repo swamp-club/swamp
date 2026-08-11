@@ -651,6 +651,7 @@ export class WebhookService {
         },
         this.deps.syncService,
         this.deps.runTracker,
+        { triggerSource: "webhook" },
       );
 
       if (completedRun?.status === "failed") {

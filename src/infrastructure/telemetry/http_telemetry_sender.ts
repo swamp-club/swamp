@@ -45,9 +45,17 @@ export class HttpTelemetrySender implements TelemetrySender {
     authToken?: string,
     signal?: AbortSignal,
   ): Promise<TelemetryFlushResult> {
+    // `insert_id` is the ingest queue's idempotency key: it carries a unique
+    // index, so a re-POST of an entry that was already accepted (a retry after
+    // a lost 202, or a flush that raced another flusher) is deduplicated
+    // instead of becoming a second queue doc. Without it the server generates
+    // one per POST and the same invocation is counted twice in the downstream
+    // rollups. The entry id is already a stable per-invocation UUID, which is
+    // exactly the key we want.
     const events = entries.map((entry) => ({
       event: "cli_invocation",
       distinct_id: distinctId,
+      insert_id: entry.id,
       properties: {
         ...entry.toData(),
         ...(repoId ? { $repo_id: repoId } : {}),

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertExists } from "@std/assert";
 import { TelemetryService } from "./telemetry_service.ts";
 import type { TelemetryRepository } from "./repositories.ts";
 import type {
@@ -32,8 +32,12 @@ class MockTelemetryRepository implements TelemetryRepository {
   mockEntries: TelemetryEntry[] = [];
   mockUnflushedEntries: TelemetryEntry[] = [];
   flushedEntries: TelemetryEntry[] = [];
+  quarantinedEntries: TelemetryEntry[] = [];
   deletedBefore: Date | null = null;
   deleteAllBefore: Date | null = null;
+  deletedQuarantinedBefore: Date | null = null;
+  /** When true, markFlushed reports failure without recording the entry. */
+  markFlushedFails = false;
 
   save(entry: TelemetryEntry): Promise<void> {
     this.savedEntries.push(entry);
@@ -65,9 +69,20 @@ class MockTelemetryRepository implements TelemetryRepository {
     return Promise.resolve(this.mockUnflushedEntries);
   }
 
-  markFlushed(entry: TelemetryEntry, _keepFlushed?: boolean): Promise<void> {
+  markFlushed(entry: TelemetryEntry, _keepFlushed?: boolean): Promise<boolean> {
+    if (this.markFlushedFails) return Promise.resolve(false);
     this.flushedEntries.push(entry);
+    return Promise.resolve(true);
+  }
+
+  quarantine(entry: TelemetryEntry): Promise<void> {
+    this.quarantinedEntries.push(entry);
     return Promise.resolve();
+  }
+
+  deleteQuarantinedOlderThan(date: Date): Promise<number> {
+    this.deletedQuarantinedBefore = date;
+    return Promise.resolve(2);
   }
 }
 
@@ -286,7 +301,7 @@ Deno.test("TelemetryService.flushTelemetry sends unflushed entries and marks the
     distinctId: "repo-uuid",
   });
 
-  assertEquals(result.ok, true);
+  assertEquals(result.result.ok, true);
   assertEquals(sender.sentBatches.length, 1);
   assertEquals(sender.sentBatches[0].entries.length, 2);
   assertEquals(sender.sentBatches[0].distinctId, "repo-uuid");
@@ -310,8 +325,8 @@ Deno.test("TelemetryService.flushTelemetry propagates failure reason from sender
     distinctId: "repo-uuid",
   });
 
-  assertEquals(result.ok, false);
-  assertEquals(result.reason, "HTTP 401");
+  assertEquals(result.result.ok, false);
+  assertEquals(result.result.reason, "HTTP 401");
   assertEquals(sender.sentBatches.length, 1);
   assertEquals(repo.flushedEntries.length, 0);
 });
@@ -328,7 +343,7 @@ Deno.test("TelemetryService.flushTelemetry returns ok when no unflushed entries"
     distinctId: "repo-uuid",
   });
 
-  assertEquals(result.ok, true);
+  assertEquals(result.result.ok, true);
   assertEquals(sender.sentBatches.length, 0);
   assertEquals(repo.flushedEntries.length, 0);
 });
@@ -569,4 +584,227 @@ Deno.test("TelemetryService.recordChildInvocation supports zero-duration entries
   assertEquals(repo.savedEntries[0].durationMs, 0);
   assertEquals(repo.savedEntries[0].result.status, "error");
   assertEquals(repo.savedEntries[0].workflowContext?.modelType, undefined);
+});
+
+Deno.test("TelemetryService stamps triggerSource on every record path", async () => {
+  const repo = new MockTelemetryRepository();
+  const service = new TelemetryService(
+    repo,
+    "1.0.0",
+    undefined,
+    undefined,
+    "schedule",
+  );
+  const invocation = {
+    command: "workflow",
+    subcommand: "run",
+    args: [],
+    optionKeys: [],
+    globalOptions: [],
+  };
+
+  await service.recordSuccess(invocation, new Date());
+  await service.recordError(invocation, new Date(), new Error("boom"));
+  await service.recordChildInvocation(
+    invocation,
+    new Date(),
+    new Date(),
+    null,
+    "parent-id",
+    { workflowName: "etl", runId: "r", jobName: "j", stepName: "s" },
+  );
+
+  assertEquals(repo.savedEntries.length, 3);
+  for (const entry of repo.savedEntries) {
+    assertEquals(entry.triggerSource, "schedule");
+  }
+});
+
+Deno.test("TelemetryService omits triggerSource when none is configured", async () => {
+  // The interactive CLI path must keep emitting exactly what it always has.
+  const repo = new MockTelemetryRepository();
+  const service = new TelemetryService(repo, "1.0.0");
+
+  await service.recordSuccess(
+    {
+      command: "model",
+      subcommand: "create",
+      args: [],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    new Date(),
+  );
+
+  assertEquals(repo.savedEntries[0].triggerSource, undefined);
+});
+
+Deno.test("TelemetryService.forkForRun returns a distinct identity over the same repository", async () => {
+  const repo = new MockTelemetryRepository();
+  const service = new TelemetryService(repo, "1.0.0");
+
+  const fork = service.forkForRun("webhook");
+
+  // A daemon's unit of invocation is a run, not a process, so each run needs
+  // its own id to parent its children to.
+  assertEquals(fork.invocationId === service.invocationId, false);
+
+  await fork.recordSuccess(
+    {
+      command: "workflow",
+      subcommand: "run",
+      args: ["<REDACTED>"],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    new Date(),
+  );
+
+  // Same spool as the parent service.
+  assertEquals(repo.savedEntries.length, 1);
+  assertEquals(repo.savedEntries[0].id, fork.invocationId);
+  assertEquals(repo.savedEntries[0].triggerSource, "webhook");
+});
+
+Deno.test("TelemetryService.pruneFlushedTelemetry never deletes unflushed entries", async () => {
+  // The executable form of the daemon retention decision. cleanupOldTelemetry
+  // also applies the hard cap, which deletes UNFLUSHED entries — safe for a
+  // CLI that will run again shortly, destructive for a daemon that has been
+  // unable to reach the endpoint for a week. If the daemon is ever rerouted
+  // through cleanupOldTelemetry, this test fails.
+  const repo = new MockTelemetryRepository();
+  const service = new TelemetryService(repo, "1.0.0");
+
+  await service.pruneFlushedTelemetry();
+
+  assertExists(repo.deletedBefore);
+  assertExists(repo.deletedQuarantinedBefore);
+  assertEquals(repo.deleteAllBefore, null);
+});
+
+Deno.test("TelemetryService.cleanupOldTelemetry still applies the hard cap", async () => {
+  // The CLI path is unchanged: a short-lived process may still drop entries
+  // it has been unable to deliver for a week.
+  const repo = new MockTelemetryRepository();
+  const service = new TelemetryService(repo, "1.0.0");
+
+  await service.cleanupOldTelemetry();
+
+  assertExists(repo.deletedBefore);
+  assertExists(repo.deleteAllBefore);
+});
+
+Deno.test("TelemetryService.flushTelemetry serializes concurrent flushes", async () => {
+  // Regression test for the shutdown double-send: serve's daemon flush loop
+  // and the CLI teardown flush both target this same service. If they can
+  // both read the unflushed batch before either marks it, every entry in it
+  // is sent twice. The guard has to live on the service, because neither
+  // caller can see the other's state.
+  const repo = new MockTelemetryRepository();
+  const sender = new MockTelemetrySender();
+  const service = new TelemetryService(repo, "1.0.0");
+
+  const entry = TelemetryEntry.create({
+    invocation: {
+      command: "workflow",
+      subcommand: "run",
+      args: [],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    result: { status: "success", exitCode: 0 },
+    startedAt: new Date(),
+    completedAt: new Date(),
+    swampVersion: "1.0.0",
+    denoVersion: "2.1.0",
+    platform: "linux",
+  });
+  repo.mockUnflushedEntries = [entry];
+
+  // findUnflushed reflects what markFlushed has removed, so a serialized
+  // second flush observes an empty spool.
+  const originalMarkFlushed = repo.markFlushed.bind(repo);
+  repo.markFlushed = (e: TelemetryEntry, keep?: boolean) => {
+    repo.mockUnflushedEntries = repo.mockUnflushedEntries.filter(
+      (candidate) => candidate.id !== e.id,
+    );
+    return originalMarkFlushed(e, keep);
+  };
+
+  const config = { sender, distinctId: "user-1" };
+  const [first, second] = await Promise.all([
+    service.flushTelemetry(config),
+    service.flushTelemetry(config),
+  ]);
+
+  assertEquals(sender.sentBatches.length, 1);
+  assertEquals(first.sentCount, 1);
+  assertEquals(second.sentCount, 0);
+});
+
+Deno.test("TelemetryService.flushTelemetry reports entries it could not mark", async () => {
+  // markFlushed failing leaves the entry on disk, so findUnflushed returns it
+  // again. A caller that flushes on a timer must know, or it re-sends the
+  // same invocation once per tick forever.
+  const repo = new MockTelemetryRepository();
+  const sender = new MockTelemetrySender();
+  const service = new TelemetryService(repo, "1.0.0");
+
+  const entry = TelemetryEntry.create({
+    invocation: {
+      command: "workflow",
+      subcommand: "run",
+      args: [],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    result: { status: "success", exitCode: 0 },
+    startedAt: new Date(),
+    completedAt: new Date(),
+    swampVersion: "1.0.0",
+    denoVersion: "2.1.0",
+    platform: "linux",
+  });
+  repo.mockUnflushedEntries = [entry];
+  repo.markFlushedFails = true;
+
+  const outcome = await service.flushTelemetry({
+    sender,
+    distinctId: "user-1",
+  });
+
+  assertEquals(outcome.result.ok, true);
+  assertEquals(outcome.unmarkedIds, [entry.id]);
+});
+
+Deno.test("TelemetryService.flushTelemetry skips ids the caller already delivered", async () => {
+  const repo = new MockTelemetryRepository();
+  const sender = new MockTelemetrySender();
+  const service = new TelemetryService(repo, "1.0.0");
+
+  const entry = TelemetryEntry.create({
+    invocation: {
+      command: "workflow",
+      subcommand: "run",
+      args: [],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    result: { status: "success", exitCode: 0 },
+    startedAt: new Date(),
+    completedAt: new Date(),
+    swampVersion: "1.0.0",
+    denoVersion: "2.1.0",
+    platform: "linux",
+  });
+  repo.mockUnflushedEntries = [entry];
+
+  const outcome = await service.flushTelemetry({
+    sender,
+    distinctId: "user-1",
+    skipIds: new Set([entry.id]),
+  });
+
+  assertEquals(sender.sentBatches.length, 0);
+  assertEquals(outcome.sentCount, 0);
 });

@@ -50,6 +50,33 @@ filesystem path or S3. See [./datastores.md] for details.
 
 See [./repo.md] for detailed architecture documentation.
 
+### Telemetry Flushing
+
+Telemetry is spooled to a user-level directory and flushed to the remote
+endpoint over HTTP. Where that flush happens depends on the process shape:
+
+- **CLI invocations** flush once, in the teardown that runs after the command
+  completes, and then apply the retention policy — including a hard cap that
+  drops entries undelivered for a week. That is safe for a process that will
+  be started again shortly.
+- **`swamp serve`** cannot use that path at all: its teardown is reached only
+  at process exit, so a daemon running for weeks would never flush. It runs
+  its own flush loop instead (`src/serve/telemetry_flush.ts`), draining on an
+  interval and once more on shutdown.
+
+The daemon deliberately prunes only entries it has already delivered, plus
+quarantined ones. It never applies the hard retention cap: a daemon that has
+been unable to reach the endpoint for a week must keep that telemetry rather
+than destroy work that is still perfectly sendable.
+
+Two properties matter for a flusher that retries forever rather than once.
+Entries carry an `insert_id` so the ingest queue can deduplicate a re-POST
+instead of counting the invocation twice. And an entry the endpoint
+persistently rejects is quarantined after bounded retries, because
+`findUnflushed` returns oldest-first and a batch is all-or-nothing — without
+an escape, one bad entry blocks every newer entry behind it indefinitely and
+the daemon delivers nothing while appearing to work.
+
 ## Models
 
 See [./models.md].

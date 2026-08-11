@@ -96,6 +96,56 @@ Deno.test("HttpTelemetrySender.sendBatch sends batch format for multiple entries
   await server.shutdown();
 });
 
+Deno.test("HttpTelemetrySender.sendBatch sends insert_id on both body shapes", async () => {
+  // insert_id is the ingest queue's idempotency key. Without it the server
+  // generates one per POST, so a retry of an already-accepted event becomes a
+  // second event and the invocation is counted twice downstream.
+  let capturedBody: string | undefined;
+
+  const server = Deno.serve({ port: 0 }, async (req: Request) => {
+    capturedBody = await req.text();
+    return new Response(JSON.stringify({ accepted: 1 }), { status: 202 });
+  });
+
+  const port = server.addr.port;
+  const sender = new HttpTelemetrySender(`http://localhost:${port}`);
+  const entry1 = createTestEntry("uuid-1", new Date("2024-03-10T10:00:00Z"));
+  const entry2 = createTestEntry("uuid-2", new Date("2024-03-10T11:00:00Z"));
+
+  await sender.sendBatch([entry1], "repo-uuid");
+  const single = JSON.parse(capturedBody!);
+  assertEquals(single.insert_id, "uuid-1");
+
+  await sender.sendBatch([entry1, entry2], "repo-uuid");
+  const batched = JSON.parse(capturedBody!);
+  assertEquals(batched.events[0].insert_id, "uuid-1");
+  assertEquals(batched.events[1].insert_id, "uuid-2");
+
+  await server.shutdown();
+});
+
+Deno.test("HttpTelemetrySender.sendBatch reuses the same insert_id when an entry is re-sent", async () => {
+  // The key must be stable across attempts, or the dedup it exists for cannot
+  // fire on the retry it is meant to catch.
+  const seen: string[] = [];
+
+  const server = Deno.serve({ port: 0 }, async (req: Request) => {
+    seen.push(JSON.parse(await req.text()).insert_id);
+    return new Response(JSON.stringify({ accepted: 1 }), { status: 202 });
+  });
+
+  const port = server.addr.port;
+  const sender = new HttpTelemetrySender(`http://localhost:${port}`);
+  const entry = createTestEntry("uuid-1", new Date("2024-03-10T10:00:00Z"));
+
+  await sender.sendBatch([entry], "repo-uuid");
+  await sender.sendBatch([entry], "repo-uuid");
+
+  assertEquals(seen, ["uuid-1", "uuid-1"]);
+
+  await server.shutdown();
+});
+
 Deno.test("HttpTelemetrySender.sendBatch returns reason on non-202 status", async () => {
   const server = Deno.serve({ port: 0 }, () => {
     return new Response(JSON.stringify({ error: "bad request" }), {

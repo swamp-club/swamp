@@ -55,6 +55,30 @@ export function isExternalDatastoreConfigured(
 let activeTelemetryService: TelemetryService | null = null;
 
 /**
+ * Everything needed to flush the spool to the remote endpoint, resolved once
+ * per invocation in `initTelemetryService`.
+ *
+ * Published alongside the service because `swamp serve` cannot rely on the
+ * CLI teardown to flush — a daemon reaches teardown only at process exit, so
+ * it needs to run its own flush loop, and that needs the same credentials.
+ */
+export interface TelemetryContext {
+  service: TelemetryService;
+  userId: string | null;
+  /**
+   * Repo-specific identifier, present only when the run happened inside a
+   * swamp repo. Undefined for repo-less runs — the event is then keyed solely
+   * by the user identity (userId).
+   */
+  repoId: string | undefined;
+  telemetryEndpoint: string;
+  keepFlushed: boolean;
+  authToken: string | null;
+}
+
+let activeTelemetryContext: TelemetryContext | null = null;
+
+/**
  * Sets the active TelemetryService for the current CLI invocation.
  * Call from runCli only — not from individual commands.
  */
@@ -75,6 +99,30 @@ export function clearActiveTelemetryService(): void {
  */
 export function getActiveTelemetryService(): TelemetryService | null {
   return activeTelemetryService;
+}
+
+/**
+ * Sets the active telemetry context for the current CLI invocation.
+ * Call from runCli only.
+ */
+export function setActiveTelemetryContext(context: TelemetryContext): void {
+  activeTelemetryContext = context;
+}
+
+/**
+ * Clears the active telemetry context. Call from runCli's finally block —
+ * the context holds an auth token and must not outlive the invocation.
+ */
+export function clearActiveTelemetryContext(): void {
+  activeTelemetryContext = null;
+}
+
+/**
+ * Returns the active telemetry context, or null when telemetry is disabled
+ * for this invocation.
+ */
+export function getActiveTelemetryContext(): TelemetryContext | null {
+  return activeTelemetryContext;
 }
 
 /**

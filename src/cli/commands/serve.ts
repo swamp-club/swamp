@@ -51,6 +51,10 @@ import {
 } from "../../serve/token_auth.ts";
 import { parsePrincipal } from "../../domain/access/principal.ts";
 import { executeWorkflowWithLocks } from "../../serve/deps.ts";
+import { DaemonTelemetryFlushService } from "../../serve/telemetry_flush.ts";
+import { getActiveTelemetryContext } from "../telemetry_integration.ts";
+import { HttpTelemetrySender } from "../../infrastructure/telemetry/http_telemetry_sender.ts";
+import { USER_AGENT } from "../load_identity.ts";
 import { CapabilityService } from "../../serve/capability_service.ts";
 import { WorkerGateway } from "../../serve/worker_gateway.ts";
 import { dispatchFleetProbe } from "../../serve/fleet_probe_dispatch.ts";
@@ -2242,6 +2246,7 @@ export const serveCommand = new Command()
       };
 
     const ac = new AbortController();
+    let telemetryFlushService: DaemonTelemetryFlushService | null = null;
     const enableSchedule = merged.schedule;
     const webhookFlags: string[] = merged.webhook ?? [];
 
@@ -2262,6 +2267,7 @@ export const serveCommand = new Command()
             onEvent,
             syncService,
             runTracker,
+            { triggerSource: "schedule" },
           ),
         pendingRunHook: {
           enqueue: (entry) => {
@@ -3141,6 +3147,12 @@ export const serveCommand = new Command()
         await collectiveRefreshService.dispose();
       }
       await policySnapshotLoader.dispose();
+      // Final telemetry flush, after runs have drained so their entries are
+      // included. Must happen BEFORE ac.abort(), which releases
+      // `await server.finished` and with it the CLI's own teardown flush.
+      if (telemetryFlushService) {
+        await telemetryFlushService.stop();
+      }
       rejectionGuard.dispose();
       setRemoteStepDispatcher(null);
       ac.abort();
@@ -3311,6 +3323,51 @@ export const serveCommand = new Command()
         FIRE_RECORD_REAP_INTERVAL_MS,
       );
       Deno.unrefTimer(reaperTimer);
+    }
+
+    // Telemetry flush loop. A daemon reaches the CLI's teardown flush only at
+    // process exit, so without this everything it spools sits unsent for the
+    // life of the process. Absent context = telemetry disabled for this run
+    // (--no-telemetry, marker opt-out, user-level opt-out); serve then stays
+    // as silent as it has always been.
+    const telemetryContext = getActiveTelemetryContext();
+    if (telemetryContext) {
+      const distinctId = telemetryContext.userId ?? telemetryContext.repoId;
+      if (distinctId) {
+        telemetryFlushService = new DaemonTelemetryFlushService(
+          telemetryContext.service,
+          {
+            sender: new HttpTelemetrySender(
+              telemetryContext.telemetryEndpoint,
+              USER_AGENT,
+            ),
+            distinctId,
+            repoId: telemetryContext.repoId,
+            authToken: telemetryContext.authToken ?? undefined,
+            keepFlushed: telemetryContext.keepFlushed,
+          },
+        );
+        telemetryFlushService.start();
+        // Log the identity the daemon will report under. A serve process
+        // running with a different HOME than the operator's shell resolves a
+        // different user identity, and its runs then credit an account nobody
+        // is looking at — indistinguishable at the UI from not reporting at
+        // all. The token is never logged, only whether one was found.
+        logger.info(
+          "Telemetry: flushing to {endpoint} as {identity} (authenticated: {authenticated})",
+          {
+            endpoint: telemetryContext.telemetryEndpoint,
+            identity: distinctId,
+            authenticated: telemetryContext.authToken !== null,
+          },
+        );
+      } else {
+        logger.warn(
+          "Telemetry: no user or repo identity resolved — scheduled runs will not be reported",
+        );
+      }
+    } else {
+      logger.info("Telemetry: disabled for this process");
     }
 
     isReady = true;
