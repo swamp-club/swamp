@@ -650,6 +650,7 @@ export class WebhookService {
           }
         },
         this.deps.syncService,
+        this.deps.runTracker,
       );
 
       if (completedRun?.status === "failed") {
