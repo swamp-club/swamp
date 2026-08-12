@@ -39,6 +39,14 @@ import { InstanceHeartbeatService } from "./instance_heartbeat.ts";
 import { cleanupActiveRunsForInstance } from "./active_run_tracker.ts";
 import type { PendingRunEntry } from "../infrastructure/persistence/run_tracker_store.ts";
 import { isSensitiveHeader } from "./webhook.ts";
+import {
+  SERVER_TOKEN_MODEL_TYPE,
+  SERVER_TOKEN_SECRET_KEY_PREFIX,
+} from "../domain/models/access/server_token_model.ts";
+import type {
+  VaultDeleteProvider,
+  VaultProvider,
+} from "../domain/vaults/vault_provider.ts";
 
 const logger = getSwampLogger(["serve", "boot-reconciliation"]);
 
@@ -592,6 +600,253 @@ export async function cleanupExpiredClaims(
     }
   }
   return cleaned;
+}
+
+// ── Token Durability Health Check ───────────────────────────────────
+
+export interface TokenHealthCheckDeps {
+  tokenSecretsProvider: VaultProvider & VaultDeleteProvider & {
+    list(): Promise<string[]>;
+  };
+  hasRemoteControlPlane: boolean;
+}
+
+export interface TokenHealthResult {
+  totalSecrets: number;
+  undecryptable: string[];
+  localOnlyWarning: boolean;
+}
+
+export async function checkTokenHealth(
+  deps: TokenHealthCheckDeps,
+): Promise<TokenHealthResult> {
+  const result: TokenHealthResult = {
+    totalSecrets: 0,
+    undecryptable: [],
+    localOnlyWarning: false,
+  };
+
+  let secretKeys: string[];
+  try {
+    secretKeys = await deps.tokenSecretsProvider.list();
+  } catch (err) {
+    logger.warn(
+      "Token health check: failed to list secrets: {error}",
+      { error: err instanceof Error ? err.message : String(err) },
+    );
+    return result;
+  }
+
+  const tokenSecretKeys = secretKeys.filter((k) =>
+    k.startsWith(SERVER_TOKEN_SECRET_KEY_PREFIX)
+  );
+  result.totalSecrets = tokenSecretKeys.length;
+
+  if (tokenSecretKeys.length === 0) return result;
+
+  if (!deps.hasRemoteControlPlane) {
+    result.localOnlyWarning = true;
+    logger.warn(
+      "Token secrets ({count}) are stored in a local-only control plane — they will be lost if this pod restarts. Configure a remote datastore to make tokens durable.",
+      { count: tokenSecretKeys.length },
+    );
+  }
+
+  for (const key of tokenSecretKeys) {
+    try {
+      await deps.tokenSecretsProvider.get(key);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("not found")) continue;
+      result.undecryptable.push(key);
+      logger.error(
+        "Token health check: secret {key} is undecryptable — the encryption key may have been lost or rotated. Affected token will fail authentication.",
+        { key },
+      );
+    }
+  }
+
+  if (result.undecryptable.length > 0) {
+    logger.error(
+      "Token health check: {count} of {total} token secret(s) are undecryptable — re-mint affected tokens",
+      { count: result.undecryptable.length, total: tokenSecretKeys.length },
+    );
+  }
+
+  return result;
+}
+
+// ── Three-Layer Token Consistency Sweep ─────────────────────────────
+
+export interface TokenConsistencyDeps {
+  repoContext: RepositoryContext;
+  tokenSecretsProvider: VaultProvider & VaultDeleteProvider & {
+    list(): Promise<string[]>;
+  };
+  knownUndecryptable?: Set<string>;
+}
+
+export interface TokenInconsistency {
+  mode:
+    | "orphaned-secret"
+    | "orphaned-data"
+    | "undecryptable-secret"
+    | "missing-secret";
+  tokenName: string;
+  detail: string;
+}
+
+export interface TokenConsistencyResult {
+  inconsistencies: TokenInconsistency[];
+}
+
+export async function sweepTokenConsistency(
+  deps: TokenConsistencyDeps,
+): Promise<TokenConsistencyResult> {
+  const inconsistencies: TokenInconsistency[] = [];
+
+  try {
+    return await sweepTokenConsistencyInner(deps, inconsistencies);
+  } catch (err) {
+    logger.warn(
+      "Token consistency sweep failed — skipping: {error}",
+      { error: err instanceof Error ? err.message : String(err) },
+    );
+    return { inconsistencies: [] };
+  }
+}
+
+async function sweepTokenConsistencyInner(
+  deps: TokenConsistencyDeps,
+  inconsistencies: TokenInconsistency[],
+): Promise<TokenConsistencyResult> {
+  let secretKeys: string[];
+  try {
+    const allKeys = await deps.tokenSecretsProvider.list();
+    secretKeys = allKeys.filter((k) =>
+      k.startsWith(SERVER_TOKEN_SECRET_KEY_PREFIX)
+    );
+  } catch {
+    return { inconsistencies };
+  }
+
+  const secretTokenNames = new Set(
+    secretKeys.map((k) => k.slice(SERVER_TOKEN_SECRET_KEY_PREFIX.length)),
+  );
+
+  const dataItems = await loadAttrsForType(
+    deps.repoContext.unifiedDataRepo,
+    SERVER_TOKEN_MODEL_TYPE,
+  );
+  const dataTokenNames = new Set(
+    dataItems.map((item) => item.modelName).filter(Boolean),
+  );
+
+  const allTokenNames = new Set([...secretTokenNames, ...dataTokenNames]);
+  const definitionNames = new Set<string>();
+  for (const tokenName of allTokenNames) {
+    const def = await deps.repoContext.definitionRepo.findByName(
+      SERVER_TOKEN_MODEL_TYPE,
+      tokenName,
+    );
+    if (def) definitionNames.add(tokenName);
+  }
+
+  for (const tokenName of secretTokenNames) {
+    if (!definitionNames.has(tokenName)) {
+      inconsistencies.push({
+        mode: "orphaned-secret",
+        tokenName,
+        detail:
+          "Secret exists in _token-secrets but no definition found in auto-definitions",
+      });
+    }
+  }
+
+  for (const tokenName of dataTokenNames) {
+    if (!definitionNames.has(tokenName)) {
+      inconsistencies.push({
+        mode: "orphaned-data",
+        tokenName,
+        detail: "Token data exists but no definition found in auto-definitions",
+      });
+    }
+  }
+
+  for (const tokenName of definitionNames) {
+    if (!secretTokenNames.has(tokenName)) {
+      inconsistencies.push({
+        mode: "missing-secret",
+        tokenName,
+        detail:
+          "Definition and data exist but no secret found in _token-secrets — token will fail authentication",
+      });
+    }
+  }
+
+  const knownUndecryptable = deps.knownUndecryptable ?? new Set();
+  for (const tokenName of definitionNames) {
+    if (!secretTokenNames.has(tokenName)) continue;
+    const key = `${SERVER_TOKEN_SECRET_KEY_PREFIX}${tokenName}`;
+    if (knownUndecryptable.has(key)) {
+      inconsistencies.push({
+        mode: "undecryptable-secret",
+        tokenName,
+        detail:
+          "Secret exists but cannot be decrypted — encryption key may have been lost or rotated",
+      });
+      continue;
+    }
+    try {
+      await deps.tokenSecretsProvider.get(key);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("not found")) continue;
+      inconsistencies.push({
+        mode: "undecryptable-secret",
+        tokenName,
+        detail:
+          "Secret exists but cannot be decrypted — encryption key may have been lost or rotated",
+      });
+    }
+  }
+
+  inconsistencies.sort((a, b) => {
+    const order: Record<TokenInconsistency["mode"], number> = {
+      "undecryptable-secret": 0,
+      "missing-secret": 1,
+      "orphaned-secret": 2,
+      "orphaned-data": 3,
+    };
+    return order[a.mode] - order[b.mode];
+  });
+
+  for (const item of inconsistencies) {
+    const level = item.mode === "undecryptable-secret" ||
+        item.mode === "missing-secret"
+      ? "error"
+      : "warn";
+    if (level === "error") {
+      logger.error(
+        "Token consistency: [{mode}] {tokenName} — {detail}",
+        { mode: item.mode, tokenName: item.tokenName, detail: item.detail },
+      );
+    } else {
+      logger.warn(
+        "Token consistency: [{mode}] {tokenName} — {detail}",
+        { mode: item.mode, tokenName: item.tokenName, detail: item.detail },
+      );
+    }
+  }
+
+  if (inconsistencies.length > 0) {
+    logger.warn(
+      "Token consistency sweep found {count} inconsistency/ies across server tokens",
+      { count: inconsistencies.length },
+    );
+  }
+
+  return { inconsistencies };
 }
 
 async function loadAttrsForType(

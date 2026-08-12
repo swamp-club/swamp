@@ -151,11 +151,13 @@ import {
 } from "../../infrastructure/persistence/paths.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import {
+  checkTokenHealth,
   cleanupExpiredClaims,
   hydrateLocalCache,
   reconcileRemoteInterruptedRuns,
   replayPendingRuns,
   sweepStaleRecords,
+  sweepTokenConsistency,
 } from "../../serve/boot_reconciliation.ts";
 import {
   DEFAULT_HEARTBEAT_INTERVAL_MS,
@@ -1552,6 +1554,17 @@ export const serveCommand = new Command()
       "control_plane",
       tokenSecretsProvider,
     );
+
+    const healthResult = await checkTokenHealth({
+      tokenSecretsProvider,
+      hasRemoteControlPlane,
+    });
+
+    await sweepTokenConsistency({
+      repoContext,
+      tokenSecretsProvider,
+      knownUndecryptable: new Set(healthResult.undecryptable),
+    });
 
     let oauthClientSecret = "";
     const resolvedUserNames: Record<string, string> = {};

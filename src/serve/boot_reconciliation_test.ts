@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import {
   type BootReconciliationDeps,
+  checkTokenHealth,
   CLAIM_TTL_MS,
   cleanupExpiredClaims,
   hydrateLocalCache,
@@ -29,6 +30,8 @@ import {
   replayPendingRuns,
   type ReplayPendingRunsDeps,
   sweepStaleRecords,
+  sweepTokenConsistency,
+  type TokenConsistencyDeps,
   type TransitionInput,
 } from "./boot_reconciliation.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
@@ -1280,4 +1283,230 @@ Deno.test("hydrateLocalCache: does not invalidate catalog on failure", async () 
   const h = createHydrateDeps({ pullError: new Error("network error") });
   await hydrateLocalCache(h.deps);
   assertEquals(h.invalidated.length, 0);
+});
+
+// ── Token Health Check Tests ─────────────────────────────────────────
+
+function createMockTokenSecretsProvider(opts: {
+  keys?: string[];
+  undecryptableKeys?: Set<string>;
+  listError?: Error;
+}) {
+  const secrets = new Map<string, string>();
+  for (const k of opts.keys ?? []) {
+    secrets.set(k, `plaintext-${k}`);
+  }
+  return {
+    getName: () => "_token-secrets",
+    get: (key: string): Promise<string> => {
+      if (opts.undecryptableKeys?.has(key)) {
+        return Promise.reject(new Error("AES-GCM decryption failed"));
+      }
+      const val = secrets.get(key);
+      if (!val) return Promise.reject(new Error(`Secret '${key}' not found`));
+      return Promise.resolve(val);
+    },
+    put: (_key: string, _val: string): Promise<void> => Promise.resolve(),
+    delete: (_key: string): Promise<void> => Promise.resolve(),
+    list: (): Promise<string[]> => {
+      if (opts.listError) return Promise.reject(opts.listError);
+      return Promise.resolve([...secrets.keys()]);
+    },
+  };
+}
+
+Deno.test("checkTokenHealth: returns empty result when no secrets exist", async () => {
+  const provider = createMockTokenSecretsProvider({ keys: [] });
+  const result = await checkTokenHealth({
+    tokenSecretsProvider: provider,
+    hasRemoteControlPlane: true,
+  });
+  assertEquals(result.totalSecrets, 0);
+  assertEquals(result.undecryptable.length, 0);
+  assertEquals(result.localOnlyWarning, false);
+});
+
+Deno.test("checkTokenHealth: detects undecryptable secrets", async () => {
+  const provider = createMockTokenSecretsProvider({
+    keys: ["server-token-good", "server-token-bad", "server-token-also-bad"],
+    undecryptableKeys: new Set(["server-token-bad", "server-token-also-bad"]),
+  });
+  const result = await checkTokenHealth({
+    tokenSecretsProvider: provider,
+    hasRemoteControlPlane: true,
+  });
+  assertEquals(result.totalSecrets, 3);
+  assertEquals(result.undecryptable.length, 2);
+  assertEquals(result.undecryptable.includes("server-token-bad"), true);
+  assertEquals(result.undecryptable.includes("server-token-also-bad"), true);
+});
+
+Deno.test("checkTokenHealth: warns on local-only control plane with tokens", async () => {
+  const provider = createMockTokenSecretsProvider({
+    keys: ["server-token-worker"],
+  });
+  const result = await checkTokenHealth({
+    tokenSecretsProvider: provider,
+    hasRemoteControlPlane: false,
+  });
+  assertEquals(result.localOnlyWarning, true);
+  assertEquals(result.totalSecrets, 1);
+});
+
+Deno.test("checkTokenHealth: no warning on local-only control plane without tokens", async () => {
+  const provider = createMockTokenSecretsProvider({ keys: [] });
+  const result = await checkTokenHealth({
+    tokenSecretsProvider: provider,
+    hasRemoteControlPlane: false,
+  });
+  assertEquals(result.localOnlyWarning, false);
+});
+
+Deno.test("checkTokenHealth: ignores non-token secrets", async () => {
+  const provider = createMockTokenSecretsProvider({
+    keys: ["oauth-access-token-foo", "oauth-client-secret"],
+  });
+  const result = await checkTokenHealth({
+    tokenSecretsProvider: provider,
+    hasRemoteControlPlane: true,
+  });
+  assertEquals(result.totalSecrets, 0);
+});
+
+Deno.test("checkTokenHealth: handles list failure gracefully", async () => {
+  const provider = createMockTokenSecretsProvider({
+    listError: new Error("GCS timeout"),
+  });
+  const result = await checkTokenHealth({
+    tokenSecretsProvider: provider,
+    hasRemoteControlPlane: true,
+  });
+  assertEquals(result.totalSecrets, 0);
+});
+
+// ── Token Consistency Sweep Tests ────────────────────────────────────
+
+function createMockConsistencyDeps(opts: {
+  secretKeys?: string[];
+  dataTokenNames?: string[];
+  definitionNames?: string[];
+  undecryptableKeys?: Set<string>;
+}): TokenConsistencyDeps {
+  const provider = createMockTokenSecretsProvider({
+    keys: (opts.secretKeys ?? []).map((n) => `server-token-${n}`),
+    undecryptableKeys: opts.undecryptableKeys
+      ? new Set([...opts.undecryptableKeys].map((n) => `server-token-${n}`))
+      : undefined,
+  });
+
+  const definitionSet = new Set(opts.definitionNames ?? []);
+
+  const dataItems = (opts.dataTokenNames ?? []).map((name) => ({
+    data: Data.create({
+      name: "token-main",
+      contentType: "application/json",
+      lifetime: "infinite" as const,
+      garbageCollection: 5,
+      tags: { modelName: name, type: "swamp/server-token" },
+      ownerDefinition: {
+        ownerType: "model-method" as const,
+        ownerRef: `def-${name}`,
+      },
+    }),
+    modelType: ModelType.create("swamp/server-token"),
+    modelId: `def-${name}`,
+  }));
+
+  return {
+    repoContext: {
+      definitionRepo: {
+        findByName: (_type: ModelType, name: string) =>
+          Promise.resolve(
+            definitionSet.has(name)
+              ? { name, id: `id-${name}`, type: "swamp/server-token" }
+              : null,
+          ),
+      },
+      unifiedDataRepo: {
+        findAllForType: () => Promise.resolve(dataItems),
+        getContent: (_mt: ModelType, _id: string, _name: string) =>
+          Promise.resolve(
+            encoder.encode(JSON.stringify({ state: "active" })),
+          ),
+      },
+    } as unknown as RepositoryContext,
+    tokenSecretsProvider: provider,
+  };
+}
+
+Deno.test("sweepTokenConsistency: detects orphaned secret", async () => {
+  const deps = createMockConsistencyDeps({
+    secretKeys: ["orphan-token"],
+    dataTokenNames: [],
+    definitionNames: [],
+  });
+  const result = await sweepTokenConsistency(deps);
+  assertEquals(result.inconsistencies.length, 1);
+  assertEquals(result.inconsistencies[0].mode, "orphaned-secret");
+  assertEquals(result.inconsistencies[0].tokenName, "orphan-token");
+});
+
+Deno.test("sweepTokenConsistency: detects orphaned data", async () => {
+  const deps = createMockConsistencyDeps({
+    secretKeys: [],
+    dataTokenNames: ["data-only-token"],
+    definitionNames: [],
+  });
+  const result = await sweepTokenConsistency(deps);
+  assertEquals(result.inconsistencies.length, 1);
+  assertEquals(result.inconsistencies[0].mode, "orphaned-data");
+  assertEquals(result.inconsistencies[0].tokenName, "data-only-token");
+});
+
+Deno.test("sweepTokenConsistency: detects missing secret", async () => {
+  const deps = createMockConsistencyDeps({
+    secretKeys: [],
+    dataTokenNames: ["def-token"],
+    definitionNames: ["def-token"],
+  });
+  const result = await sweepTokenConsistency(deps);
+  assertEquals(result.inconsistencies.length, 1);
+  assertEquals(result.inconsistencies[0].mode, "missing-secret");
+  assertEquals(result.inconsistencies[0].tokenName, "def-token");
+});
+
+Deno.test("sweepTokenConsistency: detects undecryptable secret", async () => {
+  const deps = createMockConsistencyDeps({
+    secretKeys: ["bad-token"],
+    dataTokenNames: ["bad-token"],
+    definitionNames: ["bad-token"],
+    undecryptableKeys: new Set(["bad-token"]),
+  });
+  const result = await sweepTokenConsistency(deps);
+  assertEquals(result.inconsistencies.length, 1);
+  assertEquals(result.inconsistencies[0].mode, "undecryptable-secret");
+});
+
+Deno.test("sweepTokenConsistency: reports no issues for consistent tokens", async () => {
+  const deps = createMockConsistencyDeps({
+    secretKeys: ["good-token"],
+    dataTokenNames: ["good-token"],
+    definitionNames: ["good-token"],
+  });
+  const result = await sweepTokenConsistency(deps);
+  assertEquals(result.inconsistencies.length, 0);
+});
+
+Deno.test("sweepTokenConsistency: orders by severity", async () => {
+  const deps = createMockConsistencyDeps({
+    secretKeys: ["orphan", "undecryptable"],
+    dataTokenNames: ["missing-secret-token"],
+    definitionNames: ["missing-secret-token", "undecryptable"],
+    undecryptableKeys: new Set(["undecryptable"]),
+  });
+  const result = await sweepTokenConsistency(deps);
+  const modes = result.inconsistencies.map((i) => i.mode);
+  assertEquals(modes[0], "undecryptable-secret");
+  assertEquals(modes[1], "missing-secret");
+  assertEquals(modes[2], "orphaned-secret");
 });
