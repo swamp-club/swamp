@@ -166,6 +166,24 @@ export const accessTokenMintCommand = new Command()
           `Minting token '${name}' ended without completing`,
         );
       }
+
+      if (syncService) {
+        await syncService.markDirty();
+        await syncService.pushChanged();
+
+        repoContext.catalogStore.invalidate();
+        const verifyResult = await findDefinitionByIdOrName(
+          repoContext.definitionRepo,
+          name,
+        );
+        if (!verifyResult) {
+          cliCtx.logger.warn(
+            "Server token {name} was minted but its definition could not be read back — it may not survive a pod restart. Re-mint the token if authentication fails after restart.",
+            { name },
+          );
+        }
+      }
+
       renderServerTokenCreate(data, cliCtx.outputMode);
     } finally {
       if (flushModelLocks) {

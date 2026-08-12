@@ -43,6 +43,8 @@ import { VaultService } from "../domain/vaults/vault_service.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
 import { YamlDefinitionRepository } from "../infrastructure/persistence/yaml_definition_repository.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
+import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
+import { join } from "@std/path";
 
 const logger = getSwampLogger(["serve", "device-auth"]);
 
@@ -314,6 +316,14 @@ async function mintServerTokenImpl(
       type: SERVER_TOKEN_MODEL_TYPE.normalized,
       name: tokenName,
     });
+    const defPath = join(
+      repoContext.autoDefinitionsDir,
+      SERVER_TOKEN_MODEL_TYPE.toDirectoryPath(),
+      `${def.id}.yaml`,
+    );
+    if (repoContext.markDirty) {
+      await repoContext.markDirty(defPath);
+    }
     const autoDefRepo = new YamlDefinitionRepository(
       repoDir,
       repoContext.eventBus,
@@ -357,6 +367,18 @@ async function mintServerTokenImpl(
   if (syncService) {
     await syncService.markDirty();
     await syncService.pushChanged();
+
+    repoContext.catalogStore.invalidate();
+    const verifyResult = await findDefinitionByIdOrName(
+      repoContext.definitionRepo,
+      tokenName,
+    );
+    if (!verifyResult) {
+      logger.warn(
+        "OAuth server token {name} was minted but its definition could not be read back — it may not survive a pod restart",
+        { name: tokenName },
+      );
+    }
   }
 
   logger.info("Minted OAuth server token {name} for {principal}", {
