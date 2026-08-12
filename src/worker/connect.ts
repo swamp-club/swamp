@@ -59,6 +59,9 @@ const REFRESH_FRACTION = 2 / 3;
 const RECONNECT_BASE_DELAY_MS = 1_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
 
+/** Give up after this many consecutive connection failures before enrollment. */
+const MAX_PRE_ENROLL_FAILURES = 3;
+
 export type WorkerStatusEvent =
   | { kind: "connecting"; url: string; attempt: number }
   | { kind: "enrolled"; workerId: string; reconnect: boolean }
@@ -197,6 +200,7 @@ export async function runWorker(
 
   let attempt = 0;
   let delayMs = RECONNECT_BASE_DELAY_MS;
+  let consecutivePreEnrollFailures = 0;
   while (!(options.signal?.aborted ?? false) && drainReason === null) {
     attempt++;
     options.onStatus?.({ kind: "connecting", url: options.url, attempt });
@@ -236,6 +240,7 @@ export async function runWorker(
           }
         },
       });
+      consecutivePreEnrollFailures = 0;
       options.onStatus?.({ kind: "disconnected", reason: outcome });
       delayMs = RECONNECT_BASE_DELAY_MS;
     } catch (error) {
@@ -243,6 +248,14 @@ export async function runWorker(
       if (isPermanentEnrollmentFailure(message)) {
         options.onStatus?.({ kind: "stopped", reason: message });
         throw error;
+      }
+      consecutivePreEnrollFailures++;
+      if (consecutivePreEnrollFailures >= MAX_PRE_ENROLL_FAILURES) {
+        const reason =
+          `connection failed ${MAX_PRE_ENROLL_FAILURES} consecutive times before enrollment — giving up (last error: ${message})`;
+        logger.error(reason);
+        options.onStatus?.({ kind: "stopped", reason });
+        throw new Error(reason);
       }
       options.onStatus?.({ kind: "disconnected", reason: message });
     }
@@ -298,7 +311,9 @@ function isPermanentEnrollmentFailure(message: string): boolean {
     message.includes("expired") ||
     message.includes("does not match") ||
     message.includes("already bound") ||
-    message.includes("protocol version");
+    message.includes("protocol version") ||
+    message.includes("does not exist") ||
+    message.includes("allowance exhausted");
 }
 
 function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
@@ -468,11 +483,12 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
       }
       const detail = connectErrorDetail ||
         (parts.length > 0 ? ` (${parts.join(": ")})` : "");
-      finish(
-        enrolled
-          ? `control socket closed${detail}`
-          : `socket closed before enrollment${detail}`,
-      );
+      if (enrolled) {
+        finish(`control socket closed${detail}`);
+      } else {
+        const reason = `socket closed before enrollment${detail}`;
+        finish(reason, new Error(reason));
+      }
     };
 
     socket.onerror = (event: Event) => {
