@@ -764,6 +764,105 @@ Deno.test({
   },
 });
 
+// ── rate-limit error classification tests ────────────────────────────
+
+function rateLimitingServer(): {
+  url: string;
+  shutdown: () => Promise<void>;
+} {
+  const server = Deno.serve(
+    { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+    (req) => {
+      if (req.headers.get("upgrade") === "websocket") {
+        return new Response("Too Many Requests", { status: 429 });
+      }
+      const url = new URL(req.url);
+      if (url.pathname === "/health") {
+        return Response.json({ status: "ok" });
+      }
+      return new Response("Not found", { status: 404 });
+    },
+  );
+  return {
+    url: `ws://127.0.0.1:${server.addr.port}`,
+    shutdown: () => server.shutdown(),
+  };
+}
+
+Deno.test({
+  name:
+    "remote run: rate-limited WebSocket upgrade shows rate-limit error, not auth failure",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = rateLimitingServer();
+    try {
+      const error = await assertRejects(async () => {
+        for await (
+          const _ of runWorkflowOverServer({
+            server: server.url,
+            payload: { workflowIdOrName: "wf" },
+          })
+          // deno-lint-ignore no-empty
+        ) {}
+      }, UserError);
+      assertStringIncludes(error.message, "Rate-limited");
+      assertEquals(error.message.includes("Authentication failed"), false);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "requestServerResponse: rate-limited WebSocket upgrade shows rate-limit error, not auth failure",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = rateLimitingServer();
+    try {
+      const error = await assertRejects(
+        () =>
+          requestServerResponse(
+            { server: server.url },
+            { type: "test.request" },
+          ),
+        UserError,
+      );
+      assertStringIncludes(error.message, "Rate-limited");
+      assertEquals(error.message.includes("Authentication failed"), false);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "remote run: auth rejection still shows authentication error (not rate-limit)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = authRejectingServer();
+    try {
+      const error = await assertRejects(async () => {
+        for await (
+          const _ of runWorkflowOverServer({
+            server: server.url,
+            payload: { workflowIdOrName: "wf" },
+          })
+          // deno-lint-ignore no-empty
+        ) {}
+      }, UserError);
+      assertStringIncludes(error.message, "Authentication failed");
+      assertEquals(error.message.includes("Rate-limited"), false);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
 // ── cross-instance reconnection tests ─────────────────────────────────
 
 Deno.test({

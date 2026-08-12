@@ -368,6 +368,16 @@ async function classifyConnectionError(
   wsUrl: string,
   originalMessage: string,
 ): Promise<string> {
+  const statusMatch = originalMessage.match(/Invalid status code: (\d+)/);
+  if (statusMatch) {
+    const statusCode = parseInt(statusMatch[1], 10);
+    if (statusCode === 429) {
+      return "Rate-limited by server — try again later";
+    }
+    if (statusCode === 401 || statusCode === 403) {
+      return `Authentication failed — run: swamp auth server-login --server ${wsUrl}`;
+    }
+  }
   if (await probeServerHealth(wsUrl)) {
     return `Authentication failed — run: swamp auth server-login --server ${wsUrl}`;
   }
