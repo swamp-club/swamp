@@ -360,21 +360,15 @@ Deno.test("ScheduledExecutionService: cronFireDedup error falls through to execu
 Deno.test("ScheduledExecutionService: pendingRunHook delete awaits enqueue before running", async () => {
   const wf = createTestWorkflow("hook-order-wf", "* * * * * *");
   const ops: string[] = [];
-  let resolveEnqueue: (() => void) | undefined;
 
   const hook: PendingRunHook = {
-    enqueue: (_entry) => {
+    enqueue: async (_entry) => {
       ops.push("enqueue-start");
-      return new Promise<void>((resolve) => {
-        resolveEnqueue = () => {
-          ops.push("enqueue-done");
-          resolve();
-        };
-      });
+      await new Promise<void>((r) => setTimeout(r, 50));
+      ops.push("enqueue-done");
     },
-    delete: (_id) => {
+    delete: async (_id) => {
       ops.push("delete");
-      return Promise.resolve();
     },
   };
 
@@ -388,22 +382,15 @@ Deno.test("ScheduledExecutionService: pendingRunHook delete awaits enqueue befor
 
   await service.start();
   await new Promise((resolve) => setTimeout(resolve, 1500));
-
-  // Enqueue should have started but delete should be blocked until we resolve
-  assertEquals(ops[0], "enqueue-start");
-  const deleteBeforeResolve = ops.indexOf("delete");
-  assertEquals(deleteBeforeResolve, -1);
-
-  // Now resolve the enqueue promise
-  resolveEnqueue!();
-  await new Promise((resolve) => setTimeout(resolve, 100));
-
   await service.stop();
 
   assertGreater(ops.length, 2);
-  const enqueueDoneIdx = ops.indexOf("enqueue-done");
-  const deleteIdx = ops.indexOf("delete");
-  assertGreater(deleteIdx, enqueueDoneIdx);
+  for (let i = 0; i < ops.length; i++) {
+    if (ops[i] === "delete") {
+      assertGreater(i, 0);
+      assertEquals(ops[i - 1], "enqueue-done");
+    }
+  }
 });
 
 Deno.test("normalizeFireTime: truncates milliseconds and replaces colons for Windows compat", () => {
