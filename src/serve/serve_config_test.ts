@@ -634,6 +634,83 @@ Deno.test("loadServeConfig: non-string grants-file produces error", () => {
   });
 });
 
+// ── grants-dir merge ──────────────────────────────────────────────────
+
+Deno.test("mergeServeOptions: grants-dir CLI flag wins over config and env", () => {
+  const config: ServeConfigFile = { "grants-dir": "/from/config" };
+  const cliOptions = { grantsDir: "/from/cli" };
+  const explicitFlags = new Set(["grants-dir"]);
+  const envLookup = () => undefined;
+
+  const merged = mergeServeOptions(
+    config,
+    cliOptions,
+    explicitFlags,
+    envLookup,
+  );
+  assertEquals(merged.grantsDir, "/from/cli");
+});
+
+Deno.test("mergeServeOptions: grants-dir env var wins over config when CLI not explicit", () => {
+  const config: ServeConfigFile = { "grants-dir": "/from/config" };
+  const cliOptions = {};
+  const explicitFlags = new Set<string>();
+  const envLookup = (name: string) =>
+    name === "SWAMP_GRANTS_DIR" ? "/from/env" : undefined;
+
+  const merged = mergeServeOptions(
+    config,
+    cliOptions,
+    explicitFlags,
+    envLookup,
+  );
+  assertEquals(merged.grantsDir, "/from/env");
+});
+
+Deno.test("mergeServeOptions: grants-dir from config when no CLI or env", () => {
+  const config: ServeConfigFile = { "grants-dir": "/from/config" };
+  const cliOptions = {};
+  const explicitFlags = new Set<string>();
+  const envLookup = () => undefined;
+
+  const merged = mergeServeOptions(
+    config,
+    cliOptions,
+    explicitFlags,
+    envLookup,
+  );
+  assertEquals(merged.grantsDir, "/from/config");
+});
+
+Deno.test("mergeServeOptions: grants-dir undefined when not specified anywhere", () => {
+  const cliOptions = {};
+  const explicitFlags = new Set<string>();
+  const envLookup = () => undefined;
+
+  const merged = mergeServeOptions(null, cliOptions, explicitFlags, envLookup);
+  assertEquals(merged.grantsDir, undefined);
+});
+
+Deno.test("loadServeConfig: grants-dir field is parsed", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { "grants-dir": "/etc/swamp/grants/" });
+    const config = loadServeConfig(undefined, dir);
+    assertNotEquals(config, null);
+    assertEquals(config!["grants-dir"], "/etc/swamp/grants/");
+  });
+});
+
+Deno.test("loadServeConfig: non-string grants-dir produces error", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { "grants-dir": 42 });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "expected string",
+    );
+  });
+});
+
 // ── mergeServeOptions: new concurrency/duration fields ────────────────
 
 Deno.test("mergeServeOptions: max-concurrent-runs from CLI flag", () => {

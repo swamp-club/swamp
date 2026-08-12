@@ -105,6 +105,8 @@ export interface ConnectionContext {
   staleTtlMs?: number;
   /** Resolved path to external grants file, if --grants-file was provided. */
   grantsFile?: string;
+  /** Resolved path to external grants directory, if --grants-dir was provided. */
+  grantsDir?: string;
   /** Whether --hot-reload is enabled — gates serve.reload over WebSocket. */
   hotReload?: boolean;
   /** Inverted resolvedAdmins map: OAuth sub → username. Populated at startup in OAuth mode. */

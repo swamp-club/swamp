@@ -342,3 +342,99 @@ Deno.test("GrantsDirectoryPoller: ignores dot-prefixed files", async () => {
     assertEquals(mock.loadCalls, 0, "load() should not have been called");
   });
 });
+
+Deno.test("GrantsDirectoryPoller: external grants dir changes detected", async () => {
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    await ensureDir(grantsDir);
+    const extDir = join(dir, "ext-grants");
+    await ensureDir(extDir);
+    await Deno.writeTextFile(join(extDir, "team.yaml"), VALID_GRANT_YAML);
+
+    const store = createMockFileGrantStore();
+    const mock = createMockLoader();
+
+    const poller = new GrantsDirectoryPoller({
+      grantsDir,
+      externalGrantsDir: extDir,
+      fileGrantStore: store,
+      policySnapshotLoader: mock.loader,
+      pollIntervalMs: 50,
+    });
+
+    await poller.start();
+    mock.reset();
+
+    const modifiedYaml =
+      `grants:\n  - subject: "user:sarah"\n    effect: deny\n    actions: [run]\n    resource: "workflow:*"`;
+    await Deno.writeTextFile(join(extDir, "team.yaml"), modifiedYaml);
+
+    await delay(200);
+    await poller.stop();
+
+    assertEquals(mock.loadCalls > 0, true, "load() should have been called");
+  });
+});
+
+Deno.test("GrantsDirectoryPoller: new file in external grants dir triggers reconcile", async () => {
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    await ensureDir(grantsDir);
+    const extDir = join(dir, "ext-grants");
+    await ensureDir(extDir);
+
+    const store = createMockFileGrantStore();
+    const mock = createMockLoader();
+
+    const poller = new GrantsDirectoryPoller({
+      grantsDir,
+      externalGrantsDir: extDir,
+      fileGrantStore: store,
+      policySnapshotLoader: mock.loader,
+      pollIntervalMs: 50,
+    });
+
+    await poller.start();
+    mock.reset();
+    store.writeCalls = 0;
+
+    await Deno.writeTextFile(join(extDir, "new-team.yaml"), VALID_GRANT_YAML);
+
+    await delay(200);
+    await poller.stop();
+
+    assertEquals(mock.loadCalls > 0, true, "load() should have been called");
+    assertEquals(store.writeCalls > 0, true, "grants should have been written");
+  });
+});
+
+Deno.test("GrantsDirectoryPoller: unchanged external grants dir produces no reconcile", async () => {
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    await ensureDir(grantsDir);
+    const extDir = join(dir, "ext-grants");
+    await ensureDir(extDir);
+    await Deno.writeTextFile(join(extDir, "team.yaml"), VALID_GRANT_YAML);
+
+    const store = createMockFileGrantStore();
+    const mock = createMockLoader();
+
+    const poller = new GrantsDirectoryPoller({
+      grantsDir,
+      externalGrantsDir: extDir,
+      fileGrantStore: store,
+      policySnapshotLoader: mock.loader,
+      pollIntervalMs: 50,
+    });
+
+    await poller.start();
+    mock.reset();
+    store.writeCalls = 0;
+
+    await delay(200);
+    await poller.stop();
+
+    assertEquals(mock.loadCalls, 0, "load() should not have been called");
+    assertEquals(store.writeCalls, 0, "no grants should have been written");
+  });
+});

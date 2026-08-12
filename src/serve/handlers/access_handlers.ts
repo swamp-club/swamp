@@ -622,6 +622,68 @@ export async function handleAccessReload(
       }
     }
 
+    if (ctx.grantsDir) {
+      try {
+        const dirEntries: Deno.DirEntry[] = [];
+        for await (const entry of Deno.readDir(ctx.grantsDir)) {
+          dirEntries.push(entry);
+        }
+        const yamlFiles = dirEntries
+          .filter((e) =>
+            (e.isFile || e.isSymlink) &&
+            (e.name.endsWith(".yaml") || e.name.endsWith(".yml")) &&
+            !e.name.startsWith(".")
+          )
+          .sort((a, b) => a.name.localeCompare(b.name));
+
+        for (const file of yamlFiles) {
+          const filePath = join(ctx.grantsDir, file.name);
+          try {
+            const content = await Deno.readTextFile(filePath);
+            if (content.trim().length === 0) continue;
+            const result = parseGrantFile(
+              filePath,
+              content,
+              validateGrantCondition,
+            );
+            if (result.errors.length > 0) {
+              allErrors.push(...result.errors);
+            } else {
+              validEntries.set(filePath, result.entries);
+            }
+          } catch (error) {
+            logger
+              .error`Failed to read external grants dir file ${filePath}: ${error}`;
+            allErrors.push({
+              filename: filePath,
+              message: `Failed to read: ${error}`,
+            });
+          }
+        }
+      } catch (error) {
+        logger
+          .error`Failed to read external grants directory ${ctx.grantsDir}: ${error}`;
+        allErrors.push({
+          filename: "external-grants-dir",
+          message: "Failed to read external grants directory",
+        });
+      }
+
+      if (allErrors.length > 0) {
+        send(socket, {
+          type: "access.reload",
+          id: requestId,
+          payload: {
+            success: false,
+            grantCount: 0,
+            groupCount: 0,
+            errors: formatGrantFileErrors(allErrors),
+          },
+        });
+        return;
+      }
+    }
+
     const autoDefDir = join(ctx.repoDir, ".swamp", "auto-definitions");
     const autoDefRepo = new YamlDefinitionRepository(
       ctx.repoDir,

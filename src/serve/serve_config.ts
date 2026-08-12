@@ -33,6 +33,7 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   certFile: "SWAMP_SERVE_CERT_FILE",
   keyFile: "SWAMP_SERVE_KEY_FILE",
   grantsFile: "SWAMP_GRANTS_FILE",
+  grantsDir: "SWAMP_GRANTS_DIR",
   wsIdleTimeout: "SWAMP_WS_IDLE_TIMEOUT",
   queueTimeout: "SWAMP_QUEUE_TIMEOUT",
   verifyOnEnroll: "SWAMP_VERIFY_ON_ENROLL",
@@ -86,6 +87,7 @@ export interface ServeConfigFile {
   "trust-proxy"?: boolean;
   "trusted-hosts"?: string[];
   "grants-file"?: string;
+  "grants-dir"?: string;
   "grant-reload"?: string;
   "ws-idle-timeout"?: string;
   "queue-timeout"?: string;
@@ -113,6 +115,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "trust-proxy",
   "trusted-hosts",
   "grants-file",
+  "grants-dir",
   "grant-reload",
   "ws-idle-timeout",
   "queue-timeout",
@@ -311,6 +314,7 @@ function validateConfigValues(
 
   const stringFields: [string, unknown][] = [
     ["grants-file", raw["grants-file"]],
+    ["grants-dir", raw["grants-dir"]],
     ["grant-reload", raw["grant-reload"]],
     ["ws-idle-timeout", raw["ws-idle-timeout"]],
     ["queue-timeout", raw["queue-timeout"]],
@@ -499,6 +503,7 @@ export interface MergedServeOptions {
   certFile?: string;
   keyFile?: string;
   grantsFile?: string;
+  grantsDir?: string;
   grantReload: string;
   webhook?: string[];
   webhookEndpoints?: WebhookEndpoint[];
@@ -665,6 +670,13 @@ export function mergeServeOptions(
     "grants-file",
     cliOptions.grantsFile as string | undefined,
     config?.["grants-file"],
+    undefined,
+  );
+
+  const grantsDir = resolveString(
+    "grants-dir",
+    cliOptions.grantsDir as string | undefined,
+    config?.["grants-dir"],
     undefined,
   );
 
@@ -858,6 +870,7 @@ export function mergeServeOptions(
     certFile,
     keyFile,
     grantsFile,
+    grantsDir,
     grantReload,
     webhook,
     webhookEndpoints,

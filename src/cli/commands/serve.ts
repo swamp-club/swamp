@@ -316,6 +316,9 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   if (options.grantsFile) {
     args.push("--grants-file", options.grantsFile as string);
   }
+  if (options.grantsDir) {
+    args.push("--grants-dir", options.grantsDir as string);
+  }
   if (options.grantReload && options.grantReload !== "manual") {
     args.push("--grant-reload", options.grantReload as string);
   }
@@ -517,6 +520,10 @@ const daemonEnableCommand = new Command()
   .option(
     "--grants-file <path:string>",
     "Path to an external grants YAML file loaded at startup",
+  )
+  .option(
+    "--grants-dir <path:string>",
+    "Path to a directory of grants YAML files loaded at startup",
   )
   .option(
     "--grant-reload <mode:string>",
@@ -841,6 +848,10 @@ export const serveCommand = new Command()
   .option(
     "--grants-file <path:string>",
     "Path to an external grants YAML file loaded at startup (env: SWAMP_GRANTS_FILE)",
+  )
+  .option(
+    "--grants-dir <path:string>",
+    "Path to a directory of grants YAML files loaded at startup (env: SWAMP_GRANTS_DIR)",
   )
   .option(
     "--grant-reload <mode:string>",
@@ -2000,6 +2011,82 @@ export const serveCommand = new Command()
       }
     }
 
+    const externalGrantsDirPath = merged.grantsDir
+      ? (isAbsolute(merged.grantsDir)
+        ? merged.grantsDir
+        : resolve(merged.grantsDir))
+      : undefined;
+    if (externalGrantsDirPath) {
+      let dirEntries: Deno.DirEntry[];
+      try {
+        dirEntries = [];
+        for await (const entry of Deno.readDir(externalGrantsDirPath)) {
+          dirEntries.push(entry);
+        }
+      } catch (cause) {
+        if (cause instanceof Deno.errors.NotFound) {
+          throw new UserError(
+            `External grants directory not found: ${externalGrantsDirPath}`,
+          );
+        }
+        throw new UserError(
+          `Failed to read external grants directory ${externalGrantsDirPath}: ${cause}`,
+        );
+      }
+
+      const yamlFiles = dirEntries
+        .filter((e) =>
+          (e.isFile || e.isSymlink) &&
+          (e.name.endsWith(".yaml") || e.name.endsWith(".yml")) &&
+          !e.name.startsWith(".")
+        )
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+      let totalLoaded = 0;
+      for (const file of yamlFiles) {
+        const filePath = join(externalGrantsDirPath, file.name);
+        let content: string;
+        try {
+          content = await Deno.readTextFile(filePath);
+        } catch (cause) {
+          throw new UserError(
+            `Failed to read grants file ${filePath}: ${cause}`,
+          );
+        }
+
+        if (content.trim().length === 0) continue;
+
+        const result = parseGrantFile(
+          filePath,
+          content,
+          validateGrantCondition,
+        );
+        if (result.errors.length > 0) {
+          const errorMessages = result.errors.map((e) => {
+            const loc = e.entryIndex !== undefined
+              ? `${e.filename} entry ${e.entryIndex + 1}`
+              : e.filename;
+            return `  ${loc}: ${e.message}`;
+          });
+          throw new UserError(
+            `Grants directory file validation failed — refusing to start:\n${
+              errorMessages.join("\n")
+            }`,
+          );
+        }
+        validEntries.set(filePath, result.entries);
+        totalLoaded += result.entries.length;
+      }
+
+      if (totalLoaded > 0) {
+        logger
+          .info`Loaded ${totalLoaded} grant(s) from ${yamlFiles.length} file(s) in external grants directory ${externalGrantsDirPath}`;
+      } else {
+        logger
+          .info`External grants directory ${externalGrantsDirPath} contains no grants`;
+      }
+    }
+
     const fileGrantStore = createFileGrantStore(
       repoContext.definitionRepo,
       autoDefRepo,
@@ -2035,6 +2122,7 @@ export const serveCommand = new Command()
       grantsDirectoryPoller = new GrantsDirectoryPoller({
         grantsDir,
         externalGrantsFile: externalGrantsFilePath,
+        externalGrantsDir: externalGrantsDirPath,
         validateCondition: validateGrantCondition,
         fileGrantStore,
         policySnapshotLoader,
@@ -2255,6 +2343,7 @@ export const serveCommand = new Command()
         instanceId,
         staleTtlMs,
         grantsFile: externalGrantsFilePath,
+        grantsDir: externalGrantsDirPath,
         hotReload: merged.hotReload,
         ...(Object.keys(resolvedUserNames).length > 0
           ? { resolvedUserNames }
