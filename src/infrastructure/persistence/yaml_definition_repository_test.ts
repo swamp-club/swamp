@@ -661,3 +661,80 @@ Deno.test("YamlDefinitionRepository.save passes through an unregistered type (sc
     assertNotEquals(await repo.findById(testType, definition.id), null);
   });
 });
+
+// --- I/O error propagation tests ---
+
+Deno.test("YamlDefinitionRepository.findAll throws UserError on EMFILE", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const goodDef = createTestDefinition("good-def");
+    await repo.save(testType, goodDef);
+
+    const originalReadTextFile = Deno.readTextFile;
+    Deno.readTextFile = () => {
+      throw Object.assign(new Error("Too many open files (os error 24)"), {
+        code: "EMFILE",
+      });
+    };
+    try {
+      const error = await assertRejects(
+        () => repo.findAll(testType),
+        UserError,
+      );
+      assertStringIncludes(error.message, "Too many open files");
+      assertStringIncludes(error.message, "ulimit -n");
+    } finally {
+      Deno.readTextFile = originalReadTextFile;
+    }
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findByNameGlobal throws UserError on EMFILE", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const goodDef = createTestDefinition("good-def");
+    await repo.save(testType, goodDef);
+
+    const originalReadTextFile = Deno.readTextFile;
+    Deno.readTextFile = () => {
+      throw Object.assign(new Error("Too many open files (os error 24)"), {
+        code: "EMFILE",
+      });
+    };
+    try {
+      const error = await assertRejects(
+        () => repo.findByNameGlobal("good-def"),
+        UserError,
+      );
+      assertStringIncludes(error.message, "Too many open files");
+      assertStringIncludes(error.message, "ulimit -n");
+    } finally {
+      Deno.readTextFile = originalReadTextFile;
+    }
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findAllGlobal throws UserError on EACCES", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const goodDef = createTestDefinition("good-def");
+    await repo.save(testType, goodDef);
+
+    const originalReadTextFile = Deno.readTextFile;
+    Deno.readTextFile = () => {
+      throw Object.assign(new Error("Permission denied (os error 13)"), {
+        code: "EACCES",
+      });
+    };
+    try {
+      const error = await assertRejects(
+        () => repo.findAllGlobal(),
+        UserError,
+      );
+      assertStringIncludes(error.message, "Permission denied");
+      assertStringIncludes(error.message, "ulimit -n");
+    } finally {
+      Deno.readTextFile = originalReadTextFile;
+    }
+  });
+});

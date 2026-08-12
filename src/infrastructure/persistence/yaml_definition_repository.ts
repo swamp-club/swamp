@@ -22,6 +22,7 @@ import { join } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
+import { isIoError } from "./io_errors.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { assertSafePath } from "./safe_path.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
@@ -130,8 +131,16 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             const content = await Deno.readTextFile(path);
             const data = parseYaml(content) as DefinitionData;
             definitions.push(Definition.fromData(data));
-          } catch (parseError) {
-            logger.warn`Skipping broken definition file ${path}: ${parseError}`;
+          } catch (error) {
+            if (isIoError(error)) {
+              throw new UserError(
+                `Failed to read definition file ${path}: ${
+                  error instanceof Error ? error.message : error
+                }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
+              );
+            }
+            const msg = error instanceof Error ? error.message : String(error);
+            logger.warn`Skipping broken definition file ${path}: ${msg}`;
           }
         }
       }
@@ -172,8 +181,16 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             const content = await Deno.readTextFile(path);
             const data = parseYaml(content) as DefinitionData;
             definitions.push(Definition.fromData(data));
-          } catch (parseError) {
-            logger.warn`Skipping broken definition file ${path}: ${parseError}`;
+          } catch (error) {
+            if (isIoError(error)) {
+              throw new UserError(
+                `Failed to read definition file ${path}: ${
+                  error instanceof Error ? error.message : error
+                }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
+              );
+            }
+            const msg = error instanceof Error ? error.message : String(error);
+            logger.warn`Skipping broken definition file ${path}: ${msg}`;
           }
         }
       }
@@ -230,9 +247,16 @@ export class YamlDefinitionRepository implements DefinitionRepository {
               const typeStr = definition.type ?? pathSegments.join("/");
               return { definition, type: ModelType.create(typeStr) };
             }
-          } catch (parseError) {
-            logger
-              .warn`Skipping broken definition file ${fullPath}: ${parseError}`;
+          } catch (error) {
+            if (isIoError(error)) {
+              throw new UserError(
+                `Failed to read definition file ${fullPath}: ${
+                  error instanceof Error ? error.message : error
+                }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
+              );
+            }
+            const msg = error instanceof Error ? error.message : String(error);
+            logger.warn`Skipping broken definition file ${fullPath}: ${msg}`;
           }
         } else if (entry.isDirectory) {
           // Recursively search subdirectories
@@ -294,9 +318,16 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             // Prefer the type from the YAML, fall back to path-based type
             const typeStr = definition.type ?? pathSegments.join("/");
             results.push({ definition, type: ModelType.create(typeStr) });
-          } catch (parseError) {
-            logger
-              .warn`Skipping broken definition file ${fullPath}: ${parseError}`;
+          } catch (error) {
+            if (isIoError(error)) {
+              throw new UserError(
+                `Failed to read definition file ${fullPath}: ${
+                  error instanceof Error ? error.message : error
+                }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
+              );
+            }
+            const msg = error instanceof Error ? error.message : String(error);
+            logger.warn`Skipping broken definition file ${fullPath}: ${msg}`;
           }
         } else if (entry.isDirectory) {
           // Recursively search subdirectories

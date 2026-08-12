@@ -21,6 +21,7 @@ import { ensureDir } from "@std/fs";
 import { basename, join } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import { atomicWriteTextFile } from "./atomic_write.ts";
+import { isIoError } from "./io_errors.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { assertSafePath } from "./safe_path.ts";
@@ -33,6 +34,7 @@ import {
   Workflow,
   type WorkflowData,
 } from "../../domain/workflows/workflow.ts";
+import { UserError } from "../../domain/errors.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
 import {
   createWorkflowCreated,
@@ -140,10 +142,17 @@ export class YamlWorkflowRepository implements WorkflowRepository {
             const workflow = Workflow.fromData(data);
             this.idToActualPath.set(workflow.id as WorkflowId, path);
             workflows.push(workflow);
-          } catch (parseError) {
-            const errorMsg = parseError instanceof Error
-              ? parseError.message
-              : String(parseError);
+          } catch (error) {
+            if (isIoError(error)) {
+              throw new UserError(
+                `Failed to read workflow file ${path}: ${
+                  error instanceof Error ? error.message : error
+                }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
+              );
+            }
+            const errorMsg = error instanceof Error
+              ? error.message
+              : String(error);
             const workflowName = this.tryExtractName(path);
 
             if (errorMsg.includes('type "shell" is no longer supported')) {
