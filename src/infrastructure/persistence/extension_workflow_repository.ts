@@ -20,6 +20,7 @@
 import { walk } from "@std/fs/walk";
 import { getLogger } from "@logtape/logtape";
 import { parse as parseYaml } from "@std/yaml";
+import { isIoError } from "./io_errors.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import {
   createWorkflowId,
@@ -81,10 +82,17 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
               seenNames.add(workflow.name);
               workflows.push(workflow);
             }
-          } catch (parseError) {
-            const errorMsg = parseError instanceof Error
-              ? parseError.message
-              : String(parseError);
+          } catch (error) {
+            if (isIoError(error)) {
+              throw new UserError(
+                `Failed to read extension workflow ${entry.path}: ${
+                  error instanceof Error ? error.message : error
+                }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
+              );
+            }
+            const errorMsg = error instanceof Error
+              ? error.message
+              : String(error);
             logger
               .warn`Skipping broken extension workflow ${entry.path}: ${errorMsg}`;
           }
@@ -145,12 +153,18 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
             if (data.id === id) {
               return entry.path;
             }
-          } catch {
-            // Skip broken files
+          } catch (error) {
+            if (isIoError(error)) {
+              throw new UserError(
+                `Failed to read extension workflow ${entry.path}: ${
+                  error instanceof Error ? error.message : error
+                }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
+              );
+            }
           }
         }
-      } catch {
-        // Directory doesn't exist
+      } catch (error) {
+        if (error instanceof UserError) throw error;
       }
     }
     return null;
