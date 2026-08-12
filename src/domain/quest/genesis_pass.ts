@@ -66,14 +66,6 @@ export interface GenesisChallenge {
   readonly done: boolean;
 }
 
-/** A single event in the display-only XP heartbeat stream. */
-export interface GenesisHeartbeat {
-  readonly kind: "drip" | "spike";
-  readonly amount: number;
-  readonly label: string;
-  readonly at: string;
-}
-
 /** Summary of the next tier above the operative's current position. */
 export interface GenesisNextTier {
   readonly n: number;
@@ -104,5 +96,4 @@ export interface GenesisPass {
   readonly ladderFraction: number;
   readonly tiers: GenesisTier[];
   readonly challenges: GenesisChallenge[];
-  readonly heartbeat: GenesisHeartbeat[];
 }
