@@ -49,6 +49,12 @@ import {
   authenticateServerToken,
   extractWebSocketToken,
 } from "../../serve/token_auth.ts";
+import {
+  checkIpBurst,
+  checkRateLimit,
+  clearRateLimit,
+  rateLimitKey,
+} from "../../serve/rate_limiter.ts";
 import { parsePrincipal } from "../../domain/access/principal.ts";
 import { executeWorkflowWithLocks } from "../../serve/deps.ts";
 import { DaemonTelemetryFlushService } from "../../serve/telemetry_flush.ts";
@@ -187,49 +193,6 @@ type AnyOptions = any;
 const logger = getSwampLogger(["serve"]);
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
-
-const authAttempts = new Map<string, { count: number; resetAt: number }>();
-const MAX_AUTH_ATTEMPTS = 5;
-const AUTH_WINDOW_MS = 60_000;
-const MAX_RATE_LIMIT_ENTRIES = 10_000;
-
-function sweepExpiredEntries(): void {
-  const now = Date.now();
-  for (const [ip, entry] of authAttempts) {
-    if (now > entry.resetAt) authAttempts.delete(ip);
-  }
-}
-
-function checkRateLimit(
-  ip: string,
-): { allowed: true } | { allowed: false; retryAfterSeconds: number } {
-  const now = Date.now();
-  const entry = authAttempts.get(ip);
-  if (!entry || now > entry.resetAt) {
-    if (authAttempts.size >= MAX_RATE_LIMIT_ENTRIES) sweepExpiredEntries();
-    if (authAttempts.size >= MAX_RATE_LIMIT_ENTRIES) {
-      const oldest = authAttempts.keys().next().value!;
-      authAttempts.delete(oldest);
-    }
-    authAttempts.set(ip, { count: 1, resetAt: now + AUTH_WINDOW_MS });
-    return { allowed: true };
-  }
-  entry.count++;
-  if (entry.count <= MAX_AUTH_ATTEMPTS) {
-    return { allowed: true };
-  }
-  return {
-    allowed: false,
-    retryAfterSeconds: Math.ceil((entry.resetAt - now) / 1000),
-  };
-}
-
-function clearRateLimit(ip: string): void {
-  const entry = authAttempts.get(ip);
-  if (entry) {
-    entry.count = 0;
-  }
-}
 
 export function assertOffLoopbackSecurity(
   host: string,
@@ -2832,15 +2795,15 @@ export const serveCommand = new Command()
           }
 
           if (authConfig.mode !== "none") {
-            const rateCheck = checkRateLimit(remoteAddr);
-            if (!rateCheck.allowed) {
-              logger.warn("WebSocket auth rate-limited from {ip}", {
+            const ipBurst = checkIpBurst(remoteAddr);
+            if (!ipBurst.allowed) {
+              logger.warn("WebSocket IP burst rate-limited from {ip}", {
                 ip: remoteAddr,
               });
               return new Response("Too Many Requests", {
                 status: 429,
                 headers: {
-                  "Retry-After": String(rateCheck.retryAfterSeconds),
+                  "Retry-After": String(ipBurst.retryAfterSeconds),
                 },
               });
             }
@@ -2855,6 +2818,22 @@ export const serveCommand = new Command()
                 status: 401,
               });
             }
+
+            const rlKey = rateLimitKey(extracted.token, remoteAddr);
+            const rateCheck = checkRateLimit(rlKey);
+            if (!rateCheck.allowed) {
+              logger.warn(
+                "WebSocket auth rate-limited for {key} from {ip}",
+                { key: rlKey, ip: remoteAddr },
+              );
+              return new Response("Too Many Requests", {
+                status: 429,
+                headers: {
+                  "Retry-After": String(rateCheck.retryAfterSeconds),
+                },
+              });
+            }
+
             logger.debug(
               "WebSocket token received via {transport} from {ip}",
               { transport: extracted.transport, ip: remoteAddr },
@@ -2866,12 +2845,12 @@ export const serveCommand = new Command()
             );
             if (!result.ok) {
               logger.warn(
-                "WebSocket auth rejected from {ip}: {error}",
-                { ip: remoteAddr, error: result.error },
+                "WebSocket auth rejected for {key} from {ip}: {error}",
+                { key: rlKey, ip: remoteAddr, error: result.error },
               );
               return new Response("Unauthorized", { status: 401 });
             }
-            clearRateLimit(remoteAddr);
+            clearRateLimit(rlKey);
             const principal = parsePrincipal(result.principalId);
             const upgradeOpts = extracted.transport === "subprotocol"
               ? {
@@ -2925,12 +2904,12 @@ export const serveCommand = new Command()
                   ?.split(",")[0]?.trim() ??
                   info.remoteAddr.hostname)
                 : info.remoteAddr.hostname;
-              const cancelRateCheck = checkRateLimit(cancelRemoteAddr);
-              if (!cancelRateCheck.allowed) {
+              const cancelIpBurst = checkIpBurst(cancelRemoteAddr);
+              if (!cancelIpBurst.allowed) {
                 return new Response("Too Many Requests", {
                   status: 429,
                   headers: {
-                    "Retry-After": String(cancelRateCheck.retryAfterSeconds),
+                    "Retry-After": String(cancelIpBurst.retryAfterSeconds),
                   },
                 });
               }
@@ -2943,6 +2922,16 @@ export const serveCommand = new Command()
                   status: 401,
                 });
               }
+              const cancelRlKey = rateLimitKey(token, cancelRemoteAddr);
+              const cancelRateCheck = checkRateLimit(cancelRlKey);
+              if (!cancelRateCheck.allowed) {
+                return new Response("Too Many Requests", {
+                  status: 429,
+                  headers: {
+                    "Retry-After": String(cancelRateCheck.retryAfterSeconds),
+                  },
+                });
+              }
               const authResult = await authenticateServerToken(
                 token,
                 resolvedRepoDir,
@@ -2951,7 +2940,7 @@ export const serveCommand = new Command()
               if (!authResult.ok) {
                 return new Response("Unauthorized", { status: 401 });
               }
-              clearRateLimit(cancelRemoteAddr);
+              clearRateLimit(cancelRlKey);
 
               const cancelPrincipal = parsePrincipal(authResult.principalId);
               if (!policySnapshotLoader) {
@@ -3048,7 +3037,7 @@ export const serveCommand = new Command()
                 ?.split(",")[0]?.trim() ??
                 info.remoteAddr.hostname)
               : info.remoteAddr.hostname;
-            const deviceRateCheck = checkRateLimit(deviceRemoteAddr);
+            const deviceRateCheck = checkIpBurst(deviceRemoteAddr);
             if (!deviceRateCheck.allowed) {
               return new Response(
                 JSON.stringify({ error: "Too Many Requests" }),
