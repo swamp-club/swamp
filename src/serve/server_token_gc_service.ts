@@ -89,6 +89,7 @@ export class ServerTokenGcService {
     this.#timer = setTimeout(() => {
       void this.#tick();
     }, this.#deps.intervalMs);
+    Deno.unrefTimer(this.#timer);
   }
 
   async #tick(): Promise<void> {

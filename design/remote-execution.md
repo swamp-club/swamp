@@ -249,46 +249,6 @@ initialized, the server refuses to start.
 Collectives are snapshotted at login time and become stale if the user's
 collective membership changes in swamp-club. Refresh is a later phase.
 
-### Server token garbage collection
-
-Every `swamp auth server-login` mints a new `oauth-<random>` server token with a
-30-day expiry. Old tokens are never rotated in place — each login creates a fresh
-token. Over time, expired and revoked tokens accumulate across four storage
-layers: the definition YAML in `.swamp/auto-definitions/`, the token data record,
-the token secret in `_token-secrets`, and the OAuth access token in
-`_token-secrets`.
-
-The `ServerTokenGcService` runs as a periodic timer inside `swamp serve`
-(alongside the reconciliation timer and fire record reaper). On each sweep it
-queries all `swamp/server-token` data records, identifies GC-eligible tokens, and
-deletes them across all four layers.
-
-A token is GC-eligible when:
-
-- **Revoked** — deleted immediately (revocation is a deliberate admin action).
-- **Expired** — deleted after a configurable grace period (default 1 hour past
-  `expiresAt`). The grace period avoids racing with token refreshes or clock
-  skew.
-
-Active tokens that are past their `expiresAt` are treated as effectively expired
-without first running the `expire` model method — matching the
-`effectiveTokenState` pattern used by `swamp access token list`.
-
-Configuration:
-
-- `--token-gc-interval` (default `1h`, env `SWAMP_TOKEN_GC_INTERVAL`) — sweep
-  interval. Set to `0` to disable.
-- `--token-gc-grace-period` (default `1h`, env `SWAMP_TOKEN_GC_GRACE_PERIOD`) —
-  how long after expiry before deletion.
-
-The service runs once synchronously at startup (after token secret migration and
-`sweepTokenConsistency`), then starts the periodic timer. It is disposed during
-server shutdown alongside the collective refresh service.
-
-Per-token errors are caught and logged — a failure to delete one token does not
-block the rest of the sweep. `sweepTokenConsistency` at next boot flags any
-inconsistencies left behind by partial deletions.
-
 v1 is swamp-club-specific: the OAuth client endpoint paths
 (`/api/auth/device/code`, `/api/auth/device/token`,
 `/api/auth/oauth2/userinfo`, `/api/auth/oauth2/register`) are hardcoded.
@@ -992,6 +952,26 @@ re-dispatch never race into double execution:
 
 Transparent re-dispatch (or mid-step resume) of a write-bearing step is a later
 feature that must first solve write idempotency. It is not promised in v1.
+
+### Pre-enrollment failure handling
+
+When the control socket closes before enrollment completes (e.g. HTTP 401/403
+from token auth, or a network-level rejection), the worker treats it as a
+connection error and applies two guards:
+
+- **Permanent failure detection.** If the error message matches a known
+  permanent pattern (token revoked/expired/not-found, protocol mismatch,
+  enrollment allowance exhausted), the worker stops immediately with a clear
+  error. These conditions cannot be fixed by retrying.
+
+- **Consecutive failure cap.** If the error does not match a known pattern, the
+  worker retries up to 3 times. After 3 consecutive pre-enrollment failures, it
+  stops. The counter resets when enrollment succeeds, so transient blips during
+  an established session do not accumulate.
+
+Post-enrollment socket drops (the worker was enrolled and executing dispatches)
+continue to use exponential backoff and reconnect normally — a brief network
+interruption during a session should not terminate the worker.
 
 ## Security and trust
 
