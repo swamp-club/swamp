@@ -199,6 +199,144 @@ Deno.test("runWorker: a stable cache directory keeps the machine id across resta
   }
 });
 
+/**
+ * A socket that immediately closes without calling onopen — simulates
+ * an HTTP-level rejection (401, 403, 429) where the WebSocket upgrade
+ * never completes.
+ */
+class RejectingSocket {
+  onopen: (() => void) | null = null;
+  onmessage: ((event: { data: string }) => void) | null = null;
+  onclose: ((event: CloseEvent | Event | undefined) => void) | null = null;
+  onerror: ((event: Event) => void) | null = null;
+
+  constructor(readonly errorMessage?: string) {
+    queueMicrotask(() => {
+      if (this.errorMessage) {
+        const event = new ErrorEvent("error", {
+          message: this.errorMessage,
+        });
+        this.onerror?.(event);
+      }
+      this.onclose?.(undefined);
+    });
+  }
+
+  send(_data: string): void {}
+  close(): void {}
+}
+
+Deno.test("runWorker: pre-enrollment failures stop after 3 consecutive attempts", async () => {
+  const events: WorkerStatusEvent[] = [];
+  let socketCount = 0;
+  const error = await assertRejects(
+    () =>
+      runWorker({
+        url: "ws://test:1",
+        token: "ci.s",
+        swampVersion: "1.2.3",
+        onStatus: (event) => events.push(event),
+        createSocket: () => {
+          socketCount++;
+          return new RejectingSocket() as unknown as WebSocket;
+        },
+      }),
+    Error,
+  );
+  assertStringIncludes(error.message, "3 consecutive times");
+  assertEquals(socketCount, 3);
+  assertEquals(events.at(-1)?.kind, "stopped");
+});
+
+Deno.test("runWorker: HTTP 401 stops after 3 consecutive attempts", async () => {
+  const events: WorkerStatusEvent[] = [];
+  let socketCount = 0;
+  const error = await assertRejects(
+    () =>
+      runWorker({
+        url: "ws://test:1",
+        token: "ci.s",
+        swampVersion: "1.2.3",
+        onStatus: (event) => events.push(event),
+        createSocket: () => {
+          socketCount++;
+          return new RejectingSocket(
+            "failed to connect to WebSocket: Invalid status code: 401",
+          ) as unknown as WebSocket;
+        },
+      }),
+    Error,
+  );
+  assertStringIncludes(error.message, "3 consecutive times");
+  assertEquals(socketCount, 3);
+  assertEquals(events.at(-1)?.kind, "stopped");
+});
+
+Deno.test("runWorker: 'does not exist' enrollment failure stops immediately", async () => {
+  const events: WorkerStatusEvent[] = [];
+  const error = await assertRejects(
+    () =>
+      runWorker({
+        url: "ws://test:1",
+        token: "dead.token",
+        swampVersion: "1.2.3",
+        onStatus: (event) => events.push(event),
+        createSocket: () =>
+          new FakeSocket((channel) => {
+            channel.register(RemoteMethod.enroll, () =>
+              Promise.reject(
+                new RpcError({
+                  code: "invalid_token",
+                  message: "Enrollment token 'dead' does not exist",
+                }),
+              ));
+          }) as unknown as WebSocket,
+      }),
+    Error,
+  );
+  assertStringIncludes(error.message, "does not exist");
+  assertEquals(events.at(-1)?.kind, "stopped");
+});
+
+Deno.test("runWorker: pre-enrollment failure counter resets after successful enrollment", async () => {
+  const events: WorkerStatusEvent[] = [];
+  let socketCount = 0;
+  const controller = new AbortController();
+
+  const done = runWorker({
+    url: "ws://test:1",
+    token: "ci.s",
+    swampVersion: "1.2.3",
+    signal: controller.signal,
+    onStatus: (event) => {
+      events.push(event);
+      if (event.kind === "enrolled") {
+        controller.abort();
+      }
+    },
+    createSocket: () => {
+      socketCount++;
+      // First two attempts fail before enrollment, third succeeds.
+      if (socketCount <= 2) {
+        return new RejectingSocket() as unknown as WebSocket;
+      }
+      const socket = new FakeSocket((channel) => {
+        channel.register(
+          RemoteMethod.enroll,
+          () => Promise.resolve(enrollResult("ci")),
+        );
+      });
+      return socket as unknown as WebSocket;
+    },
+  });
+
+  await done;
+  assertEquals(socketCount, 3);
+  const kinds = events.map((e) => e.kind);
+  assertEquals(kinds.includes("enrolled"), true);
+  assertEquals(kinds.at(-1), "stopped");
+});
+
 Deno.test("runWorker: permanent enrollment failures stop the loop", async () => {
   const events: WorkerStatusEvent[] = [];
   const error = await assertRejects(
