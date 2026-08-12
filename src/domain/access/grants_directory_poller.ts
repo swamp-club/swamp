@@ -38,6 +38,7 @@ const DEFAULT_POLL_INTERVAL_MS = 30_000;
 export interface GrantsDirectoryPollerOptions {
   grantsDir: string;
   externalGrantsFile?: string;
+  externalGrantsDir?: string;
   validateCondition?: ConditionValidator;
   fileGrantStore: FileGrantStore;
   policySnapshotLoader: PolicySnapshotLoader;
@@ -47,6 +48,7 @@ export interface GrantsDirectoryPollerOptions {
 export class GrantsDirectoryPoller {
   readonly #grantsDir: string;
   readonly #externalGrantsFile: string | undefined;
+  readonly #externalGrantsDir: string | undefined;
   readonly #validateCondition: ConditionValidator | undefined;
   readonly #fileGrantStore: FileGrantStore;
   readonly #policySnapshotLoader: PolicySnapshotLoader;
@@ -59,6 +61,7 @@ export class GrantsDirectoryPoller {
   constructor(options: GrantsDirectoryPollerOptions) {
     this.#grantsDir = options.grantsDir;
     this.#externalGrantsFile = options.externalGrantsFile;
+    this.#externalGrantsDir = options.externalGrantsDir;
     this.#validateCondition = options.validateCondition;
     this.#fileGrantStore = options.fileGrantStore;
     this.#policySnapshotLoader = options.policySnapshotLoader;
@@ -142,6 +145,53 @@ export class GrantsDirectoryPoller {
         }
       }
 
+      if (this.#externalGrantsDir) {
+        try {
+          const dirEntries: Deno.DirEntry[] = [];
+          for await (const entry of Deno.readDir(this.#externalGrantsDir)) {
+            dirEntries.push(entry);
+          }
+          const yamlFiles = dirEntries
+            .filter((e) =>
+              (e.isFile || e.isSymlink) &&
+              (e.name.endsWith(".yaml") || e.name.endsWith(".yml")) &&
+              !e.name.startsWith(".")
+            )
+            .sort((a, b) => a.name.localeCompare(b.name));
+
+          for (const file of yamlFiles) {
+            const filePath = join(this.#externalGrantsDir, file.name);
+            try {
+              const content = await Deno.readTextFile(filePath);
+              if (content.trim().length === 0) continue;
+              const result = parseGrantFile(
+                filePath,
+                content,
+                this.#validateCondition,
+              );
+              if (result.errors.length > 0) {
+                for (const error of result.errors) {
+                  const loc = error.entryIndex !== undefined
+                    ? `${error.filename} entry ${error.entryIndex + 1}`
+                    : error.filename;
+                  logger
+                    .warn`External grants dir file error during auto-reload: ${loc}: ${error.message}`;
+                }
+              }
+              validEntries.set(filePath, result.entries);
+            } catch (error) {
+              logger
+                .warn`Failed to read external grants dir file ${filePath} during auto-reload: ${error}`;
+            }
+          }
+        } catch (error) {
+          if (!(error instanceof Deno.errors.NotFound)) {
+            logger
+              .warn`Failed to read external grants directory during auto-reload: ${error}`;
+          }
+        }
+      }
+
       const reconcileResult = await reconcileAllFileGrants(
         validEntries,
         this.#fileGrantStore,
@@ -203,6 +253,36 @@ export class GrantsDirectoryPoller {
         parts.push(`EXTERNAL:${content}`);
       } catch {
         parts.push("EXTERNAL:ERROR");
+      }
+    }
+
+    if (this.#externalGrantsDir) {
+      try {
+        const dirEntries: Deno.DirEntry[] = [];
+        for await (const entry of Deno.readDir(this.#externalGrantsDir)) {
+          dirEntries.push(entry);
+        }
+        const files = dirEntries
+          .filter((e) =>
+            (e.isFile || e.isSymlink) &&
+            (e.name.endsWith(".yaml") || e.name.endsWith(".yml")) &&
+            !e.name.startsWith(".")
+          )
+          .sort((a, b) => a.name.localeCompare(b.name));
+
+        for (const file of files) {
+          const path = join(this.#externalGrantsDir, file.name);
+          try {
+            const content = await Deno.readTextFile(path);
+            parts.push(`EXTDIR:${file.name}:${content}`);
+          } catch {
+            parts.push(`EXTDIR:${file.name}:ERROR`);
+          }
+        }
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          throw error;
+        }
       }
     }
 
