@@ -200,7 +200,9 @@ function sweepExpiredEntries(): void {
   }
 }
 
-function checkRateLimit(ip: string): boolean {
+function checkRateLimit(
+  ip: string,
+): { allowed: true } | { allowed: false; retryAfterSeconds: number } {
   const now = Date.now();
   const entry = authAttempts.get(ip);
   if (!entry || now > entry.resetAt) {
@@ -210,10 +212,16 @@ function checkRateLimit(ip: string): boolean {
       authAttempts.delete(oldest);
     }
     authAttempts.set(ip, { count: 1, resetAt: now + AUTH_WINDOW_MS });
-    return true;
+    return { allowed: true };
   }
   entry.count++;
-  return entry.count <= MAX_AUTH_ATTEMPTS;
+  if (entry.count <= MAX_AUTH_ATTEMPTS) {
+    return { allowed: true };
+  }
+  return {
+    allowed: false,
+    retryAfterSeconds: Math.ceil((entry.resetAt - now) / 1000),
+  };
 }
 
 function clearRateLimit(ip: string): void {
@@ -2824,11 +2832,17 @@ export const serveCommand = new Command()
           }
 
           if (authConfig.mode !== "none") {
-            if (!checkRateLimit(remoteAddr)) {
+            const rateCheck = checkRateLimit(remoteAddr);
+            if (!rateCheck.allowed) {
               logger.warn("WebSocket auth rate-limited from {ip}", {
                 ip: remoteAddr,
               });
-              return new Response("Too Many Requests", { status: 429 });
+              return new Response("Too Many Requests", {
+                status: 429,
+                headers: {
+                  "Retry-After": String(rateCheck.retryAfterSeconds),
+                },
+              });
             }
 
             const extracted = extractWebSocketToken(req);
@@ -2911,8 +2925,14 @@ export const serveCommand = new Command()
                   ?.split(",")[0]?.trim() ??
                   info.remoteAddr.hostname)
                 : info.remoteAddr.hostname;
-              if (!checkRateLimit(cancelRemoteAddr)) {
-                return new Response("Too Many Requests", { status: 429 });
+              const cancelRateCheck = checkRateLimit(cancelRemoteAddr);
+              if (!cancelRateCheck.allowed) {
+                return new Response("Too Many Requests", {
+                  status: 429,
+                  headers: {
+                    "Retry-After": String(cancelRateCheck.retryAfterSeconds),
+                  },
+                });
               }
               const authHeader = req.headers.get("authorization");
               const token = authHeader?.startsWith("Bearer ")
@@ -3028,12 +3048,16 @@ export const serveCommand = new Command()
                 ?.split(",")[0]?.trim() ??
                 info.remoteAddr.hostname)
               : info.remoteAddr.hostname;
-            if (!checkRateLimit(deviceRemoteAddr)) {
+            const deviceRateCheck = checkRateLimit(deviceRemoteAddr);
+            if (!deviceRateCheck.allowed) {
               return new Response(
                 JSON.stringify({ error: "Too Many Requests" }),
                 {
                   status: 429,
-                  headers: { "content-type": "application/json" },
+                  headers: {
+                    "content-type": "application/json",
+                    "Retry-After": String(deviceRateCheck.retryAfterSeconds),
+                  },
                 },
               );
             }
