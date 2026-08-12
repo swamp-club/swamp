@@ -17,9 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertGreater } from "@std/assert";
 import {
   normalizeFireTime,
+  type PendingRunHook,
   type ScheduledExecutionEvent,
   ScheduledExecutionService,
 } from "./scheduled_execution.ts";
@@ -354,6 +355,43 @@ Deno.test("ScheduledExecutionService: cronFireDedup error falls through to execu
     (e as { dedupSkip?: boolean }).dedupSkip === true
   );
   assertEquals(skipped.length, 0);
+});
+
+Deno.test("ScheduledExecutionService: pendingRunHook delete awaits enqueue before running", async () => {
+  const wf = createTestWorkflow("hook-order-wf", "* * * * * *");
+  const ops: string[] = [];
+
+  const hook: PendingRunHook = {
+    enqueue: async (_entry) => {
+      ops.push("enqueue-start");
+      await new Promise<void>((r) => setTimeout(r, 50));
+      ops.push("enqueue-done");
+    },
+    delete: (_id) => {
+      ops.push("delete");
+      return Promise.resolve();
+    },
+  };
+
+  const mockRepo = createMockWorkflowRepo([wf]);
+  const service = new ScheduledExecutionService({
+    workflowRepo: mockRepo,
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => Promise.resolve(),
+    pendingRunHook: hook,
+  });
+
+  await service.start();
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await service.stop();
+
+  assertGreater(ops.length, 2);
+  for (let i = 0; i < ops.length; i++) {
+    if (ops[i] === "delete") {
+      assertGreater(i, 0);
+      assertEquals(ops[i - 1], "enqueue-done");
+    }
+  }
 });
 
 Deno.test("normalizeFireTime: truncates milliseconds and replaces colons for Windows compat", () => {

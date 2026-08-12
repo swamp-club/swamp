@@ -345,6 +345,7 @@ export interface WebhookEndpointInfo {
 export class WebhookService {
   private readonly runQueue: Array<{
     pendingRunId?: string;
+    putPromise?: Promise<void>;
     workflowIdOrName: string;
     route: string;
     payload: WebhookPayload;
@@ -462,6 +463,7 @@ export class WebhookService {
     );
 
     let pendingRunId: string | undefined;
+    let putPromise: Promise<void> | undefined;
     if (this.deps.runTracker) {
       pendingRunId = crypto.randomUUID();
       const pendingEntry = {
@@ -476,7 +478,7 @@ export class WebhookService {
       };
       this.deps.runTracker.enqueuePendingRun(pendingEntry);
       if (this.deps.controlPlaneStore) {
-        this.deps.controlPlaneStore.put(
+        putPromise = this.deps.controlPlaneStore.put(
           `pending-runs/${pendingRunId}`,
           new TextEncoder().encode(JSON.stringify(pendingEntry)),
         ).catch((err: unknown) => {
@@ -493,6 +495,7 @@ export class WebhookService {
 
     this.runQueue.push({
       pendingRunId,
+      putPromise,
       workflowIdOrName: endpoint.workflowIdOrName,
       route: endpoint.route,
       payload: webhookPayload,
@@ -567,6 +570,7 @@ export class WebhookService {
       while (this.runQueue.length > 0) {
         const {
           pendingRunId,
+          putPromise,
           workflowIdOrName,
           route,
           payload,
@@ -576,7 +580,8 @@ export class WebhookService {
         if (pendingRunId && this.deps.runTracker) {
           this.deps.runTracker.deletePendingRun(pendingRunId);
           if (this.deps.controlPlaneStore) {
-            this.deps.controlPlaneStore.delete(
+            if (putPromise) await putPromise;
+            await this.deps.controlPlaneStore.delete(
               `pending-runs/${pendingRunId}`,
             ).catch((err: unknown) => {
               logger.warn(

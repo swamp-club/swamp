@@ -2388,13 +2388,15 @@ export const serveCommand = new Command()
             { triggerSource: "schedule" },
           ),
         pendingRunHook: {
-          enqueue: (entry) => {
+          enqueue: async (entry) => {
             runTracker.enqueuePendingRun(entry);
             if (controlPlaneStore) {
-              controlPlaneStore.put(
-                `pending-runs/${entry.id}`,
-                new TextEncoder().encode(JSON.stringify(entry)),
-              ).catch((err: unknown) => {
+              try {
+                await controlPlaneStore.put(
+                  `pending-runs/${entry.id}`,
+                  new TextEncoder().encode(JSON.stringify(entry)),
+                );
+              } catch (err: unknown) {
                 logger.warn(
                   "Control-plane dual-write failed for cron pending run {id}: {error}",
                   {
@@ -2402,15 +2404,17 @@ export const serveCommand = new Command()
                     error: err instanceof Error ? err.message : String(err),
                   },
                 );
-              });
+              }
             }
           },
-          delete: (id) => {
+          delete: async (id) => {
             runTracker.deletePendingRun(id);
             if (controlPlaneStore) {
-              controlPlaneStore.delete(
-                `pending-runs/${id}`,
-              ).catch((err: unknown) => {
+              try {
+                await controlPlaneStore.delete(
+                  `pending-runs/${id}`,
+                );
+              } catch (err: unknown) {
                 logger.warn(
                   "Control-plane delete failed for cron pending run {id}: {error}",
                   {
@@ -2418,7 +2422,7 @@ export const serveCommand = new Command()
                     error: err instanceof Error ? err.message : String(err),
                   },
                 );
-              });
+              }
             }
           },
         },
