@@ -399,6 +399,15 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   if (options.hydrationTimeout) {
     args.push("--hydration-timeout", options.hydrationTimeout as string);
   }
+  if (options.tokenGcInterval) {
+    args.push("--token-gc-interval", options.tokenGcInterval as string);
+  }
+  if (options.tokenGcGracePeriod) {
+    args.push(
+      "--token-gc-grace-period",
+      options.tokenGcGracePeriod as string,
+    );
+  }
   return args;
 }
 
@@ -614,6 +623,14 @@ const daemonEnableCommand = new Command()
   .option(
     "--hydration-timeout <duration:string>",
     "Startup cache hydration timeout (default: 60s, env: SWAMP_HYDRATION_TIMEOUT)",
+  )
+  .option(
+    "--token-gc-interval <duration:string>",
+    "Server token GC sweep interval (default: 1h, env: SWAMP_TOKEN_GC_INTERVAL)",
+  )
+  .option(
+    "--token-gc-grace-period <duration:string>",
+    "Grace period after token expiry before GC deletes it (default: 1h, env: SWAMP_TOKEN_GC_GRACE_PERIOD)",
   )
   .example("Enable daemon", "swamp serve daemon enable")
   .example(
@@ -967,6 +984,18 @@ export const serveCommand = new Command()
       "Increase for large repos where the initial pull takes longer (env: SWAMP_HYDRATION_TIMEOUT)",
   )
   .option(
+    "--token-gc-interval <duration:string>",
+    "How often to sweep and delete expired/revoked server tokens. " +
+      "Accepts seconds (3600), explicit units (1h, 30m), or 0 to disable. Default: 1h. " +
+      "Only effective with a control-plane-capable datastore (env: SWAMP_TOKEN_GC_INTERVAL)",
+  )
+  .option(
+    "--token-gc-grace-period <duration:string>",
+    "How long after token expiry before the GC deletes it. Revoked tokens are deleted immediately. " +
+      "Accepts seconds (3600), explicit units (1h, 30m). Default: 1h. " +
+      "(env: SWAMP_TOKEN_GC_GRACE_PERIOD)",
+  )
+  .option(
     "--max-concurrent-runs <count:integer>",
     "Maximum number of concurrent detached runs across all principals. Default: 100. " +
       "(env: SWAMP_MAX_CONCURRENT_RUNS)",
@@ -1091,6 +1120,20 @@ export const serveCommand = new Command()
     const hydrationTimeoutMs = hydrationTimeoutRaw !== undefined
       ? parseTimeout(hydrationTimeoutRaw, "--hydration-timeout")
       : 60_000;
+
+    const tokenGcIntervalRaw = merged.tokenGcInterval;
+    let tokenGcIntervalMs: number | undefined;
+    if (tokenGcIntervalRaw !== undefined) {
+      const normalized = tokenGcIntervalRaw.trim().toLowerCase();
+      tokenGcIntervalMs = normalized === "0"
+        ? 0
+        : parseTimeout(tokenGcIntervalRaw, "--token-gc-interval");
+    }
+
+    const tokenGcGracePeriodRaw = merged.tokenGcGracePeriod;
+    const tokenGcGracePeriodMs = tokenGcGracePeriodRaw !== undefined
+      ? parseTimeout(tokenGcGracePeriodRaw, "--token-gc-grace-period")
+      : undefined;
 
     const maxConcurrentRuns = merged.maxConcurrentRuns;
     if (
@@ -3264,6 +3307,9 @@ export const serveCommand = new Command()
       if (collectiveRefreshService) {
         await collectiveRefreshService.dispose();
       }
+      if (tokenGcService) {
+        await tokenGcService.dispose();
+      }
       if (grantsDirectoryPoller) {
         await grantsDirectoryPoller.stop();
       }
@@ -3444,6 +3490,85 @@ export const serveCommand = new Command()
         FIRE_RECORD_REAP_INTERVAL_MS,
       );
       Deno.unrefTimer(reaperTimer);
+    }
+
+    // Server token GC — periodic sweep to delete expired/revoked tokens
+    let tokenGcService:
+      | import("../../serve/server_token_gc_service.ts").ServerTokenGcService
+      | null = null;
+    {
+      const {
+        ServerTokenGcService: GcService,
+        DEFAULT_TOKEN_GC_INTERVAL_MS,
+        DEFAULT_TOKEN_GC_GRACE_PERIOD_MS,
+      } = await import("../../serve/server_token_gc_service.ts");
+      const { oauthAccessTokenKey } = await import(
+        "../../serve/device_auth_handler.ts"
+      );
+      const { serverTokenSecretKey } = await import(
+        "../../domain/models/access/server_token_model.ts"
+      );
+
+      const gcIntervalMs = tokenGcIntervalMs ?? DEFAULT_TOKEN_GC_INTERVAL_MS;
+      const gcGracePeriodMs = tokenGcGracePeriodMs ??
+        DEFAULT_TOKEN_GC_GRACE_PERIOD_MS;
+
+      if (gcIntervalMs > 0) {
+        tokenGcService = new GcService({
+          intervalMs: gcIntervalMs,
+          gracePeriodMs: gcGracePeriodMs,
+          listTokens: async () => {
+            const records = await repoContext.dataQueryService.query(
+              `modelType == "${SERVER_TOKEN_MODEL_TYPE.normalized}" && name == "token-main"`,
+              { loadAttributes: true },
+            ) as import("../../domain/data/data_record.ts").DataRecord[];
+            const tokens:
+              import("../../serve/server_token_gc_service.ts").TokenGcInfo[] =
+                [];
+            for (const record of records) {
+              const parsed = ServerTokenSchema.safeParse(record.attributes);
+              if (!parsed.success) continue;
+              const def = await repoContext.definitionRepo.findByName(
+                SERVER_TOKEN_MODEL_TYPE,
+                parsed.data.name,
+              );
+              if (!def) continue;
+              tokens.push({
+                name: parsed.data.name,
+                definitionId: def.id,
+                state: parsed.data.state,
+                expiresAt: parsed.data.expiresAt,
+                revokedAt: parsed.data.revokedAt,
+              });
+            }
+            return tokens;
+          },
+          deleteTokenSecret: async (tokenName) => {
+            await tokenSecretsProvider.delete(serverTokenSecretKey(tokenName));
+          },
+          deleteOAuthAccessToken: async (tokenName) => {
+            await tokenSecretsProvider.delete(
+              oauthAccessTokenKey(tokenName),
+            );
+          },
+          deleteTokenData: async (definitionId, _tokenName) => {
+            await repoContext.unifiedDataRepo.delete(
+              SERVER_TOKEN_MODEL_TYPE,
+              definitionId,
+              "token-main",
+            );
+          },
+          deleteDefinition: async (definitionId) => {
+            await repoContext.definitionRepo.delete(
+              SERVER_TOKEN_MODEL_TYPE,
+              definitionId as import("../../domain/definitions/definition.ts").DefinitionId,
+            );
+          },
+        });
+
+        await tokenGcService.runOnce();
+        tokenGcService.start();
+      }
     }
 
     // Telemetry flush loop. A daemon reaches the CLI's teardown flush only at
