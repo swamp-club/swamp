@@ -145,7 +145,10 @@ import {
   DEFAULT_STALE_TTL_MS,
   RunTrackerStore,
 } from "../../infrastructure/persistence/run_tracker_store.ts";
-import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import {
+  getSwampConfigDir,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import {
   cleanupExpiredClaims,
@@ -3369,18 +3372,37 @@ export const serveCommand = new Command()
         // different user identity, and its runs then credit an account nobody
         // is looking at — indistinguishable at the UI from not reporting at
         // all. The token is never logged, only whether one was found.
+        const authenticated = telemetryContext.authToken !== null;
         logger.info(
           "Telemetry: flushing to {endpoint} as {identity} (authenticated: {authenticated})",
           {
             endpoint: telemetryContext.telemetryEndpoint,
             identity: distinctId,
-            authenticated: telemetryContext.authToken !== null,
+            authenticated,
           },
         );
+        if (!authenticated) {
+          logger.info(
+            "Telemetry: runs are reported but not attributed to your account — run `swamp auth login` or set SWAMP_API_KEY to authenticate",
+          );
+        }
       } else {
-        logger.warn(
-          "Telemetry: no user or repo identity resolved — scheduled runs will not be reported",
-        );
+        let identityPath: string | undefined;
+        try {
+          identityPath = join(getSwampConfigDir(), "identity.json");
+        } catch {
+          // HOME not set — the path itself is the problem
+        }
+        if (identityPath) {
+          logger.warn(
+            "Telemetry: no user or repo identity resolved — checked {path}; run `swamp auth whoami` to diagnose",
+            { path: identityPath },
+          );
+        } else {
+          logger.warn(
+            "Telemetry: no user or repo identity resolved — HOME is not set, so no identity file can be located",
+          );
+        }
       }
     } else {
       logger.info("Telemetry: disabled for this process");
