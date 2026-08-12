@@ -23,6 +23,10 @@ import {
   ServerTokenGcService,
   type TokenGcInfo,
 } from "./server_token_gc_service.ts";
+import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
+import { ControlPlaneVaultProvider } from "../domain/vaults/control_plane_vault_provider.ts";
+import { serverTokenSecretKey } from "../domain/models/access/server_token_model.ts";
+import { oauthAccessTokenKey } from "./device_auth_handler.ts";
 
 const ONE_HOUR = 60 * 60 * 1000;
 const THIRTY_DAYS = 30 * 24 * ONE_HOUR;
@@ -275,4 +279,71 @@ Deno.test("runOnce: secret deletion failure does not prevent data and definition
     { definitionId: "def-oauth-nosecret", tokenName: "oauth-nosecret" },
   ]);
   assertEquals(deps.deletedDefinitions, ["def-oauth-nosecret"]);
+});
+
+function createInMemoryControlPlaneStore(): ControlPlaneStore & {
+  data: Map<string, Uint8Array>;
+} {
+  const data = new Map<string, Uint8Array>();
+  return {
+    data,
+    put: (key: string, value: Uint8Array) => {
+      data.set(key, value);
+      return Promise.resolve();
+    },
+    get: (key: string) => Promise.resolve(data.get(key) ?? null),
+    delete: (key: string) => {
+      data.delete(key);
+      return Promise.resolve();
+    },
+    list: (prefix: string) =>
+      Promise.resolve([...data.keys()].filter((k) => k.startsWith(prefix))),
+  };
+}
+
+Deno.test("runOnce: deletes control plane vault entries for token secrets and OAuth access tokens", async () => {
+  const store = createInMemoryControlPlaneStore();
+  const provider = new ControlPlaneVaultProvider(store);
+  await provider.initialize();
+
+  const tokenName = "oauth-test123";
+  await provider.put(serverTokenSecretKey(tokenName), "secret-value");
+  await provider.put(oauthAccessTokenKey(tokenName), "oauth-token-value");
+
+  const secretsBefore = await provider.list();
+  assertEquals(secretsBefore.length, 2);
+
+  const token = makeToken({
+    name: tokenName,
+    state: "revoked",
+  });
+  const deletedData: Array<{ definitionId: string; tokenName: string }> = [];
+  const deletedDefinitions: string[] = [];
+
+  const service = new ServerTokenGcService({
+    intervalMs: 100,
+    gracePeriodMs: ONE_HOUR,
+    listTokens: () => Promise.resolve([token]),
+    deleteTokenSecret: async (name) => {
+      await provider.delete(serverTokenSecretKey(name));
+    },
+    deleteOAuthAccessToken: async (name) => {
+      await provider.delete(oauthAccessTokenKey(name));
+    },
+    deleteTokenData: (definitionId, name) => {
+      deletedData.push({ definitionId, tokenName: name });
+      return Promise.resolve();
+    },
+    deleteDefinition: (definitionId) => {
+      deletedDefinitions.push(definitionId);
+      return Promise.resolve();
+    },
+  });
+
+  const count = await service.runOnce();
+
+  assertEquals(count, 1);
+  const secretsAfter = await provider.list();
+  assertEquals(secretsAfter.length, 0);
+  assertEquals(store.data.size, 1); // only the encryption key remains
 });
