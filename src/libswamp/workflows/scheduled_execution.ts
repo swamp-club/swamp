@@ -111,8 +111,8 @@ export interface PendingRunHook {
     source: "cron";
     workflowIdOrName: string;
     createdAt: string;
-  }): void;
-  delete(id: string): void;
+  }): Promise<void>;
+  delete(id: string): Promise<void>;
 }
 
 export interface ActiveRunHook {
@@ -150,6 +150,7 @@ export class ScheduledExecutionService {
   private readonly workflowNames = new Map<WorkflowId, string>();
   private readonly runQueue: Array<{
     pendingRunId?: string;
+    enqueuePromise?: Promise<void>;
     workflowId: WorkflowId;
     workflowName: string;
   }> = [];
@@ -390,16 +391,22 @@ export class ScheduledExecutionService {
     // contention. Before scheduling, each workflow ran as a separate
     // process via systemd timers; serializing preserves that behavior.
     let pendingRunId: string | undefined;
+    let enqueuePromise: Promise<void> | undefined;
     if (this.deps.pendingRunHook) {
       pendingRunId = crypto.randomUUID();
-      this.deps.pendingRunHook.enqueue({
+      enqueuePromise = this.deps.pendingRunHook.enqueue({
         id: pendingRunId,
         source: "cron",
         workflowIdOrName: workflowName,
         createdAt: new Date().toISOString(),
       });
     }
-    this.runQueue.push({ pendingRunId, workflowId, workflowName });
+    this.runQueue.push({
+      pendingRunId,
+      enqueuePromise,
+      workflowId,
+      workflowName,
+    });
     if (!this.processing) {
       this.processingPromise = this.processQueue();
     }
@@ -411,10 +418,11 @@ export class ScheduledExecutionService {
 
     try {
       while (this.runQueue.length > 0) {
-        const { pendingRunId, workflowId, workflowName } = this.runQueue
-          .shift()!;
+        const { pendingRunId, enqueuePromise, workflowId, workflowName } = this
+          .runQueue.shift()!;
         if (pendingRunId && this.deps.pendingRunHook) {
-          this.deps.pendingRunHook.delete(pendingRunId);
+          if (enqueuePromise) await enqueuePromise;
+          await this.deps.pendingRunHook.delete(pendingRunId);
         }
         await this.executeWorkflow(workflowId, workflowName);
       }
