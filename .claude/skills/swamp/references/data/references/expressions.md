@@ -105,8 +105,8 @@ manifest: ${{ data.query('tags.role == "manifest"', '{"name": name, "version": v
   and across workflow runs (persisted data).
 - `model.<name>.file.<specName>.<instanceName>` — accesses file metadata (path,
   size, contentType). Same behavior as resource expressions.
-- `data.latest(modelName, dataName)` — reads persisted data snapshot taken at
-  workflow start.
+- `data.latest(modelName, dataName)` — reads the latest persisted data for a
+  model. Sees writes made by earlier steps in the same workflow run.
 - Use `data.version()` function for specific versions
 - Use `data.findByTag()` to query across models
 - See the workflow skill's

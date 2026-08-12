@@ -1173,3 +1173,237 @@ Deno.test("workers.connected() returns empty array when all workers disconnected
     catalog.close();
   });
 });
+
+// ============================================================================
+// invalidateLatest() causes re-read of written coordinate
+// ============================================================================
+
+Deno.test("invalidateLatest: re-reads coordinate after invalidation", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const type = ModelType.create("test/model");
+
+    const model = Definition.create({
+      name: "cached-model",
+      globalArguments: {},
+    });
+    await defRepo.save(type, model);
+
+    const data = Data.create({
+      name: "result",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", modelName: "cached-model" },
+      ownerDefinition: owner,
+    });
+    await dataRepo.save(
+      type,
+      model.id,
+      data,
+      new TextEncoder().encode(JSON.stringify({ value: "old" })),
+    );
+
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
+    const ctx = await resolver.buildContext();
+    assertExists(ctx.data);
+
+    const first = await ctx.data.latest("cached-model", "result");
+    assertExists(first);
+    assertEquals(first.attributes.value, "old");
+
+    await dataRepo.save(
+      type,
+      model.id,
+      data,
+      new TextEncoder().encode(JSON.stringify({ value: "new" })),
+    );
+
+    const stale = await ctx.data.latest("cached-model", "result");
+    assertExists(stale);
+    assertEquals(stale.attributes.value, "old");
+
+    ctx.data.invalidateLatest!("cached-model", "result");
+
+    const fresh = await ctx.data.latest("cached-model", "result");
+    assertExists(fresh);
+    assertEquals(fresh.attributes.value, "new");
+    catalog.close();
+  });
+});
+
+// ============================================================================
+// invalidateLatest() only affects the targeted coordinate
+// ============================================================================
+
+Deno.test("invalidateLatest: other coordinates remain cached", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const type = ModelType.create("test/model");
+
+    const modelA = Definition.create({
+      name: "model-a",
+      globalArguments: {},
+    });
+    await defRepo.save(type, modelA);
+
+    const modelB = Definition.create({
+      name: "model-b",
+      globalArguments: {},
+    });
+    await defRepo.save(type, modelB);
+
+    const dataA = Data.create({
+      name: "result",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", modelName: "model-a" },
+      ownerDefinition: owner,
+    });
+    await dataRepo.save(
+      type,
+      modelA.id,
+      dataA,
+      new TextEncoder().encode(JSON.stringify({ from: "a-v1" })),
+    );
+
+    const dataB = Data.create({
+      name: "result",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", modelName: "model-b" },
+      ownerDefinition: owner,
+    });
+    await dataRepo.save(
+      type,
+      modelB.id,
+      dataB,
+      new TextEncoder().encode(JSON.stringify({ from: "b-v1" })),
+    );
+
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
+    const ctx = await resolver.buildContext();
+    assertExists(ctx.data);
+
+    await ctx.data.latest("model-a", "result");
+    await ctx.data.latest("model-b", "result");
+
+    await dataRepo.save(
+      type,
+      modelA.id,
+      dataA,
+      new TextEncoder().encode(JSON.stringify({ from: "a-v2" })),
+    );
+    await dataRepo.save(
+      type,
+      modelB.id,
+      dataB,
+      new TextEncoder().encode(JSON.stringify({ from: "b-v2" })),
+    );
+
+    ctx.data.invalidateLatest!("model-a", "result");
+
+    const freshA = await ctx.data.latest("model-a", "result");
+    assertExists(freshA);
+    assertEquals(freshA.attributes.from, "a-v2");
+
+    const staleB = await ctx.data.latest("model-b", "result");
+    assertExists(staleB);
+    assertEquals(staleB.attributes.from, "b-v1");
+
+    catalog.close();
+  });
+});
+
+// ============================================================================
+// invalidateLatest() clears cached null (miss)
+// ============================================================================
+
+Deno.test("invalidateLatest: clears cached null so new data is visible", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const type = ModelType.create("test/model");
+
+    const model = Definition.create({
+      name: "late-writer",
+      globalArguments: {},
+    });
+    await defRepo.save(type, model);
+
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
+    const ctx = await resolver.buildContext();
+    assertExists(ctx.data);
+
+    const miss = await ctx.data.latest("late-writer", "result");
+    assertEquals(miss, null);
+
+    const data = Data.create({
+      name: "result",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", modelName: "late-writer" },
+      ownerDefinition: owner,
+    });
+    await dataRepo.save(
+      type,
+      model.id,
+      data,
+      new TextEncoder().encode(JSON.stringify({ appeared: true })),
+    );
+
+    const stillNull = await ctx.data.latest("late-writer", "result");
+    assertEquals(stillNull, null);
+
+    ctx.data.invalidateLatest!("late-writer", "result");
+
+    const found = await ctx.data.latest("late-writer", "result");
+    assertExists(found);
+    assertEquals(found.attributes.appeared, true);
+    catalog.close();
+  });
+});

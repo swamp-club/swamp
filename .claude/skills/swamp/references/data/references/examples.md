@@ -13,19 +13,19 @@
 
 ## CEL Expression Quick Reference
 
-| Expression Pattern                                           | Description                                 |
-| ------------------------------------------------------------ | ------------------------------------------- |
-| `model.<name>.resource.<spec>.<instance>.attributes.<field>` | Cross-model resource reference (PREFERRED)  |
-| `model.<name>.resource.result.result.attributes.stdout`      | command/shell stdout                        |
-| `model.<name>.file.<spec>.<instance>.path`                   | File path reference                         |
-| `self.name`                                                  | Current model's name                        |
-| `inputs.<name>`                                              | Workflow or model runtime input             |
-| `env.<VAR_NAME>`                                             | Environment variable                        |
-| `vault.get("<vault-name>", "<key>")`                         | Vault secret                                |
-| `data.version("<model>", "<name>", <version>)`               | Specific version of data                    |
-| `data.latest("<model>", "<name>")`                           | Latest version (snapshot at workflow start) |
-| `data.findByTag("<key>", "<value>")`                         | Find data by tag                            |
-| `data.findBySpec("<model>", "<spec>")`                       | Find all instances from a spec              |
+| Expression Pattern                                           | Description                                |
+| ------------------------------------------------------------ | ------------------------------------------ |
+| `model.<name>.resource.<spec>.<instance>.attributes.<field>` | Cross-model resource reference (PREFERRED) |
+| `model.<name>.resource.result.result.attributes.stdout`      | command/shell stdout                       |
+| `model.<name>.file.<spec>.<instance>.path`                   | File path reference                        |
+| `self.name`                                                  | Current model's name                       |
+| `inputs.<name>`                                              | Workflow or model runtime input            |
+| `env.<VAR_NAME>`                                             | Environment variable                       |
+| `vault.get("<vault-name>", "<key>")`                         | Vault secret                               |
+| `data.version("<model>", "<name>", <version>)`               | Specific version of data                   |
+| `data.latest("<model>", "<name>")`                           | Latest version (sees current-run writes)   |
+| `data.findByTag("<key>", "<value>")`                         | Find data by tag                           |
+| `data.findBySpec("<model>", "<spec>")`                       | Find all instances from a spec             |
 
 ## CEL Path Patterns by Model Type
 

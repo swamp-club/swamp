@@ -3041,6 +3041,17 @@ export class WorkflowExecutionService {
           }
         }
 
+        // Invalidate data.latest() cache entries for data written by this
+        // step so subsequent steps (and their guards) see fresh values.
+        if (stepExprContext?.data?.invalidateLatest && stepDataHandles) {
+          for (const handle of stepDataHandles) {
+            const modelName = handle.tags["modelName"];
+            if (modelName) {
+              stepExprContext.data.invalidateLatest(modelName, handle.name);
+            }
+          }
+        }
+
         // Update expression context for subsequent steps (only when not using --last-evaluated)
         if (stepExprContext && taskOutput.model) {
           // Create model entry if it doesn't exist
