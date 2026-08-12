@@ -116,6 +116,7 @@ import {
   type PolicyReloadMode,
   PolicySnapshotLoader,
 } from "../../domain/access/policy_snapshot_loader.ts";
+import { GrantsDirectoryPoller } from "../../domain/access/grants_directory_poller.ts";
 import {
   createAdminGrantStore,
   materializeAdmins,
@@ -2026,6 +2027,18 @@ export const serveCommand = new Command()
       mode: grantReloadMode,
     });
 
+    let grantsDirectoryPoller: GrantsDirectoryPoller | null = null;
+    if (grantReloadMode === "auto") {
+      grantsDirectoryPoller = new GrantsDirectoryPoller({
+        grantsDir,
+        externalGrantsFile: externalGrantsFilePath,
+        validateCondition: validateGrantCondition,
+        fileGrantStore,
+        policySnapshotLoader,
+      });
+      await grantsDirectoryPoller.start();
+    }
+
     const cancelRegistry = new RunCancelRegistry();
     const detachRuns = merged.detachRuns;
     const activeRunRegistry = new ActiveRunRegistry({
@@ -3145,6 +3158,9 @@ export const serveCommand = new Command()
       }
       if (collectiveRefreshService) {
         await collectiveRefreshService.dispose();
+      }
+      if (grantsDirectoryPoller) {
+        await grantsDirectoryPoller.stop();
       }
       await policySnapshotLoader.dispose();
       // Final telemetry flush, after runs have drained so their entries are

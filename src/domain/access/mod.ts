@@ -47,6 +47,8 @@ export {
   readGrantFiles,
 } from "./grant_file.ts";
 
+export { GrantsDirectoryPoller } from "./grants_directory_poller.ts";
+
 export {
   createFileGrantStore,
   type FileGrantStore,
