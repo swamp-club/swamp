@@ -316,6 +316,10 @@ First run: both steps execute. Second run: both guards are truthy (data exists),
 both steps skip. If `lookup-ami` succeeded but `create-instance` failed, re-run
 skips the lookup and retries only the create.
 
+Guards see writes made by earlier steps in the same run — a guard that reads
+`data.latest("x", "y")` after a prior step wrote to those coordinates will see
+the freshly written data.
+
 ### Skip based on value comparison
 
 ```yaml

@@ -55,11 +55,16 @@ follows this sequence:
 
 1. **Dependency conditions** — `dependsOn` conditions are checked. If not met,
    the step is skipped with reason `"dependency"`.
-2. **Expression context** — the step's expression context is built, including
-   `self.*` for forEach steps, `inputs.*`, `data.*`, and `run.*`.
+2. **Expression context** — the step receives a shallow copy of the run-wide
+   expression context, including `self.*` for forEach steps, `inputs.*`,
+   `data.*`, and `run.*`. The `data` namespace is shared across all steps —
+   `data.latest()` results are cached per-coordinate, and the cache is
+   invalidated when a model method step writes data, so subsequent steps (and
+   their guards) see fresh values.
 3. **Guard evaluation** — if the step declares a `guard` expression, it is
    evaluated. A truthy result skips the step with reason `"guarded"` (already
    done). A falsy result proceeds to execution. A CEL error fails the step.
+   Guards see writes made by earlier steps in the same run.
 4. **Task execution** — the step's task runs (model method, nested workflow,
    manual approval, or assert).
 

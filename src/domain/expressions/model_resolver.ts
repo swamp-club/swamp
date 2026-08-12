@@ -238,6 +238,13 @@ export interface DataNamespace {
     predicate: string,
     select?: string,
   ): Promise<DataRecord[] | unknown[]>;
+
+  /**
+   * Invalidate the cached `latest()` result for a specific model+data
+   * coordinate so subsequent reads re-fetch from disk. Called by the
+   * workflow engine after a step writes data.
+   */
+  invalidateLatest?(modelName: string, dataName: string): void;
 }
 
 /**
@@ -911,6 +918,14 @@ export class ModelResolver {
       ): Promise<DataRecord[] | unknown[]> => {
         if (!this.dataQueryService) return [];
         return await this.dataQueryService.query(predicate, { select });
+      },
+      invalidateLatest: (modelName: string, dataName: string): void => {
+        const suffix = `\0${modelName}\0${dataName}`;
+        for (const key of latestCache.keys()) {
+          if (key.endsWith(suffix)) {
+            latestCache.delete(key);
+          }
+        }
       },
     };
   }
