@@ -3559,7 +3559,13 @@ export const serveCommand = new Command()
             );
           },
           deleteDefinition: async (definitionId) => {
-            await repoContext.definitionRepo.delete(
+            const gcAutoDefRepo = new YamlDefinitionRepository(
+              resolvedRepoDir,
+              repoContext.eventBus,
+              autoDefDir,
+              false,
+            );
+            await gcAutoDefRepo.delete(
               SERVER_TOKEN_MODEL_TYPE,
               definitionId as import("../../domain/definitions/definition.ts").DefinitionId,
             );
