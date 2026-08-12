@@ -367,8 +367,9 @@ Deno.test("ScheduledExecutionService: pendingRunHook delete awaits enqueue befor
       await new Promise<void>((r) => setTimeout(r, 50));
       ops.push("enqueue-done");
     },
-    delete: async (_id) => {
+    delete: (_id) => {
       ops.push("delete");
+      return Promise.resolve();
     },
   };
 
