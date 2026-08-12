@@ -1555,7 +1555,7 @@ export const serveCommand = new Command()
       tokenSecretsProvider,
     );
 
-    await checkTokenHealth({
+    const healthResult = await checkTokenHealth({
       tokenSecretsProvider,
       hasRemoteControlPlane,
     });
@@ -1563,6 +1563,7 @@ export const serveCommand = new Command()
     await sweepTokenConsistency({
       repoContext,
       tokenSecretsProvider,
+      knownUndecryptable: new Set(healthResult.undecryptable),
     });
 
     let oauthClientSecret = "";

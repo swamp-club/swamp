@@ -683,6 +683,7 @@ export interface TokenConsistencyDeps {
   tokenSecretsProvider: VaultProvider & VaultDeleteProvider & {
     list(): Promise<string[]>;
   };
+  knownUndecryptable?: Set<string>;
 }
 
 export interface TokenInconsistency {
@@ -704,6 +705,21 @@ export async function sweepTokenConsistency(
 ): Promise<TokenConsistencyResult> {
   const inconsistencies: TokenInconsistency[] = [];
 
+  try {
+    return await sweepTokenConsistencyInner(deps, inconsistencies);
+  } catch (err) {
+    logger.warn(
+      "Token consistency sweep failed — skipping: {error}",
+      { error: err instanceof Error ? err.message : String(err) },
+    );
+    return { inconsistencies: [] };
+  }
+}
+
+async function sweepTokenConsistencyInner(
+  deps: TokenConsistencyDeps,
+  inconsistencies: TokenInconsistency[],
+): Promise<TokenConsistencyResult> {
   let secretKeys: string[];
   try {
     const allKeys = await deps.tokenSecretsProvider.list();
@@ -768,9 +784,19 @@ export async function sweepTokenConsistency(
     }
   }
 
+  const knownUndecryptable = deps.knownUndecryptable ?? new Set();
   for (const tokenName of definitionNames) {
     if (!secretTokenNames.has(tokenName)) continue;
     const key = `${SERVER_TOKEN_SECRET_KEY_PREFIX}${tokenName}`;
+    if (knownUndecryptable.has(key)) {
+      inconsistencies.push({
+        mode: "undecryptable-secret",
+        tokenName,
+        detail:
+          "Secret exists but cannot be decrypted — encryption key may have been lost or rotated",
+      });
+      continue;
+    }
     try {
       await deps.tokenSecretsProvider.get(key);
     } catch (err) {
