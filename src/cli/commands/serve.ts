@@ -175,6 +175,7 @@ import { installUnhandledRejectionGuard } from "../../serve/unhandled_rejection_
 import {
   checkOpenFileLimit,
   isProcessDead,
+  tryRaiseOpenFileLimit,
 } from "../../infrastructure/runtime/process.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
@@ -1159,9 +1160,17 @@ export const serveCommand = new Command()
 
     const rejectionGuard = installUnhandledRejectionGuard();
 
-    const fileLimitWarning = checkOpenFileLimit();
-    if (fileLimitWarning) {
-      logger.warn(fileLimitWarning.message);
+    const raiseResult = tryRaiseOpenFileLimit();
+    if (raiseResult.raised) {
+      logger
+        .info`raised open-file limit from ${raiseResult.from} to ${raiseResult.to}`;
+    } else {
+      const fileLimitWarning = checkOpenFileLimit();
+      if (fileLimitWarning) {
+        logger
+          .warn`could not raise open-file limit automatically (${raiseResult.reason})`;
+        logger.warn(fileLimitWarning.message);
+      }
     }
 
     ctx.logger.info`Initializing repository at ${repoDir}`;

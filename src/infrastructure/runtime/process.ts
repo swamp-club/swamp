@@ -94,6 +94,80 @@ function getOpenFileSoftLimitPosix(): number | null {
   }
 }
 
+// RLIMIT_NOFILE constant differs by platform.
+const RLIMIT_NOFILE = Deno.build.os === "linux" ? 7 : 8;
+
+export type RaiseLimitResult =
+  | { raised: true; from: number; to: number }
+  | { raised: false; reason: string };
+
+/**
+ * Attempts to raise the open-file soft limit to `MIN_RECOMMENDED_NOFILE`
+ * via libc setrlimit. Returns whether the raise succeeded.
+ *
+ * This is the same pattern used by Redis, HAProxy, and Nginx at startup.
+ * The hard limit (set by the administrator via ulimit -Hn / LimitNOFILE)
+ * is the security boundary — raising the soft limit within it is a
+ * normal, unprivileged POSIX operation.
+ */
+export function tryRaiseOpenFileLimit(): RaiseLimitResult {
+  if (Deno.build.os === "windows") {
+    return { raised: false, reason: "windows" };
+  }
+
+  try {
+    const libName = Deno.build.os === "darwin"
+      ? "libSystem.B.dylib"
+      : "libc.so.6";
+
+    const lib = Deno.dlopen(libName, {
+      getrlimit: { parameters: ["i32", "buffer"], result: "i32" },
+      setrlimit: { parameters: ["i32", "buffer"], result: "i32" },
+    });
+
+    try {
+      // struct rlimit { rlim_t rlim_cur; rlim_t rlim_max; } — two uint64 fields
+      const rlimit = new BigUint64Array(2);
+      const buf = new Uint8Array(rlimit.buffer);
+
+      if (lib.symbols.getrlimit(RLIMIT_NOFILE, buf) !== 0) {
+        return { raised: false, reason: "getrlimit failed" };
+      }
+
+      const soft = Number(rlimit[0]);
+      const hard = Number(rlimit[1]);
+
+      if (soft >= MIN_RECOMMENDED_NOFILE) {
+        return { raised: false, reason: "already sufficient" };
+      }
+
+      // RLIM_INFINITY is 0xFFFFFFFFFFFFFFFF on both platforms
+      const RLIM_INFINITY = 0xFFFFFFFFFFFFFFFFn;
+      const effectiveHard = rlimit[1] === RLIM_INFINITY
+        ? Number.MAX_SAFE_INTEGER
+        : hard;
+
+      if (effectiveHard < MIN_RECOMMENDED_NOFILE) {
+        return { raised: false, reason: "hard limit too low" };
+      }
+
+      const target = Math.min(effectiveHard, MIN_RECOMMENDED_NOFILE);
+      rlimit[0] = BigInt(target);
+      // rlimit[1] (hard limit) stays unchanged
+
+      if (lib.symbols.setrlimit(RLIMIT_NOFILE, buf) !== 0) {
+        return { raised: false, reason: "setrlimit failed" };
+      }
+
+      return { raised: true, from: soft, to: target };
+    } finally {
+      lib.close();
+    }
+  } catch {
+    return { raised: false, reason: "ffi unavailable" };
+  }
+}
+
 /**
  * Checks the open-file soft limit and returns a warning message if it is
  * below `MIN_RECOMMENDED_NOFILE`.  Returns `null` when the limit is
