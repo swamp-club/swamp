@@ -93,22 +93,22 @@ the `denoPath` field.
 
 ## Quick Reference
 
-| Task                | Command/Action                                 |
-| ------------------- | ---------------------------------------------- |
-| Type-check          | `~/.swamp/deno/deno check <file>`              |
-| Run tests           | `~/.swamp/deno/deno test <file>`               |
-| Show deno path      | `swamp doctor extensions --json` → `denoPath`  |
-| Search community    | `swamp extension search <query> --json`        |
-| Verify registration | `swamp model type search --json`               |
-| Verify it loads     | `swamp doctor extensions --json`               |
-| Inspect catalog     | `swamp doctor extensions --verbose`            |
-| Repair stale state  | `swamp doctor extensions --repair`             |
-| Next version        | `swamp extension version --manifest m.yaml -j` |
-| Create manifest     | Create `manifest.yaml` with extension entries  |
-| Format extension    | `swamp extension fmt manifest.yaml --json`     |
-| Check formatting    | `swamp extension fmt manifest.yaml --check -j` |
-| Quality score       | `swamp extension quality manifest.yaml --json` |
-| Dry-run push        | `swamp extension push manifest.yaml --dry-run` |
-| Push extension      | `swamp extension push manifest.yaml --json`    |
+| Task                | Command/Action                                     |
+| ------------------- | -------------------------------------------------- |
+| Type-check          | `~/.swamp/deno/deno check <file>`                  |
+| Run tests           | `~/.swamp/deno/deno test <file>`                   |
+| Show deno path      | `swamp doctor extensions --json` → `denoPath`      |
+| Search community    | `swamp extension search <query> --json`            |
+| Verify registration | `swamp model type search --json`                   |
+| Verify it loads     | `swamp doctor extensions --json`                   |
+| Inspect catalog     | `swamp doctor extensions --verbose`                |
+| Repair stale state  | `swamp doctor extensions --repair`                 |
+| Next version        | `swamp extension version --manifest m.yaml --json` |
+| Create manifest     | Create `manifest.yaml` with extension entries      |
+| Format extension    | `swamp extension fmt manifest.yaml --json`         |
+| Check formatting    | `swamp extension fmt manifest.yaml --check --json` |
+| Quality score       | `swamp extension quality manifest.yaml --json`     |
+| Dry-run push        | `swamp extension push manifest.yaml --dry-run`     |
+| Push extension      | `swamp extension push manifest.yaml --json`        |
 
 For detailed walkthroughs of each operation, see [reference.md](reference.md).
