@@ -2488,13 +2488,18 @@ export const serveCommand = new Command()
                 );
               }
               break;
-            case "schedule_completed":
+            case "schedule_completed": {
               logger.info(
                 "Scheduled workflow {name} completed (run: {runId})",
                 { name: event.workflowName, runId: event.runId },
               );
-              runMetricsTracker.record("completed", 0);
+              const schedRun = runTracker.findById(event.runId);
+              const schedDuration = schedRun
+                ? Date.now() - schedRun.startedAt.getTime()
+                : 0;
+              runMetricsTracker.record("completed", schedDuration);
               break;
+            }
             case "schedule_failed":
               logger.error(
                 "Scheduled workflow {name} failed: {error}",
@@ -2720,13 +2725,18 @@ export const serveCommand = new Command()
                 { workflow: event.workflowName },
               );
               break;
-            case "webhook_completed":
+            case "webhook_completed": {
               logger.info(
                 "Webhook workflow {workflow} completed (run: {runId})",
                 { workflow: event.workflowName, runId: event.runId },
               );
-              runMetricsTracker.record("completed", 0);
+              const whRun = runTracker.findById(event.runId);
+              const whDuration = whRun
+                ? Date.now() - whRun.startedAt.getTime()
+                : 0;
+              runMetricsTracker.record("completed", whDuration);
               break;
+            }
             case "webhook_failed":
               logger.error(
                 "Webhook workflow {workflow} failed: {error}",
@@ -2771,7 +2781,7 @@ export const serveCommand = new Command()
     const runMetricsTracker = new RunMetricsTracker();
 
     const componentHealthChecker = new ComponentHealthChecker({
-      checkDatastore: async (signal) => {
+      checkDatastore: async (_signal) => {
         if (isCustomDatastoreConfig(datastoreConfig)) {
           await datastoreTypeRegistry.ensureTypeLoaded(datastoreConfig.type);
           const typeInfo = datastoreTypeRegistry.get(datastoreConfig.type);
@@ -2788,7 +2798,6 @@ export const serveCommand = new Command()
           };
         }
         const verifier = new FilesystemDatastoreVerifier(datastoreConfig.path);
-        void signal;
         return await verifier.verify();
       },
     });
@@ -3162,6 +3171,8 @@ export const serveCommand = new Command()
 
                 const cleanup = () => {
                   clearInterval(timer);
+                  ac.signal.removeEventListener("abort", cleanup);
+                  req.signal.removeEventListener("abort", cleanup);
                   try {
                     controller.close();
                   } catch {
@@ -3180,6 +3191,7 @@ export const serveCommand = new Command()
                 "cache-control": "no-cache",
                 "connection": "keep-alive",
                 "x-accel-buffering": "no",
+                "x-health-interval": String(intervalMs),
               },
             });
           }
@@ -3195,9 +3207,21 @@ export const serveCommand = new Command()
               adminAuthDeps,
             );
             if (!auth.ok) return auth.response;
-            const runs = runTracker.findAll();
+            const limitParam = url.searchParams.get("limit");
+            const offsetParam = url.searchParams.get("offset");
+            const limit = limitParam !== null
+              ? Math.max(1, Math.min(10000, parseInt(limitParam, 10) || 100))
+              : 100;
+            const offset = offsetParam !== null
+              ? Math.max(0, parseInt(offsetParam, 10) || 0)
+              : 0;
+            const allRuns = runTracker.findAll();
+            const paged = allRuns.slice(offset, offset + limit);
             return Response.json({
-              runs: runs.map((r) => ({
+              total: allRuns.length,
+              limit,
+              offset,
+              runs: paged.map((r) => ({
                 id: r.id,
                 runKind: r.runKind,
                 modelType: r.modelType,

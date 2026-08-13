@@ -17,19 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertNotEquals } from "@std/assert";
 import { RunMetricsTracker } from "./run_metrics_tracker.ts";
 
-Deno.test("RunMetricsTracker: snapshot returns zeros when no records", () => {
+Deno.test("RunMetricsTracker: snapshot returns zeros and null latency when no records", () => {
   const tracker = new RunMetricsTracker();
   const snap = tracker.snapshot();
   assertEquals(snap.completions, 0);
   assertEquals(snap.failures, 0);
   assertEquals(snap.cancellations, 0);
   assertEquals(snap.throughputPerMinute, 0);
-  assertEquals(snap.latency.p50, 0);
-  assertEquals(snap.latency.p95, 0);
-  assertEquals(snap.latency.p99, 0);
+  assertEquals(snap.latency, null);
 });
 
 Deno.test("RunMetricsTracker: counts completions, failures, and cancellations", () => {
@@ -52,9 +50,10 @@ Deno.test("RunMetricsTracker: computes latency percentiles", () => {
   }
 
   const snap = tracker.snapshot();
-  assertEquals(snap.latency.p50, 500);
-  assertEquals(snap.latency.p95, 950);
-  assertEquals(snap.latency.p99, 990);
+  assertNotEquals(snap.latency, null);
+  assertEquals(snap.latency!.p50, 500);
+  assertEquals(snap.latency!.p95, 950);
+  assertEquals(snap.latency!.p99, 990);
 });
 
 Deno.test("RunMetricsTracker: single record returns same value for all percentiles", () => {
@@ -62,9 +61,10 @@ Deno.test("RunMetricsTracker: single record returns same value for all percentil
   tracker.record("completed", 42);
 
   const snap = tracker.snapshot();
-  assertEquals(snap.latency.p50, 42);
-  assertEquals(snap.latency.p95, 42);
-  assertEquals(snap.latency.p99, 42);
+  assertNotEquals(snap.latency, null);
+  assertEquals(snap.latency!.p50, 42);
+  assertEquals(snap.latency!.p95, 42);
+  assertEquals(snap.latency!.p99, 42);
 });
 
 Deno.test("RunMetricsTracker: computes throughput per minute", () => {

@@ -107,8 +107,14 @@ export class ComponentHealthChecker {
       );
     }
 
+    const timeout = new Promise<never>((_, reject) => {
+      controller.signal.addEventListener("abort", () => {
+        reject(new Error(`Health check timed out after ${this.#timeoutMs}ms`));
+      }, { once: true });
+    });
+
     try {
-      return await fn(controller.signal);
+      return await Promise.race([fn(controller.signal), timeout]);
     } finally {
       clearTimeout(timer);
     }

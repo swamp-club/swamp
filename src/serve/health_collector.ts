@@ -102,26 +102,22 @@ export interface HealthCollectorDeps {
 
 export class HealthCollector {
   readonly #deps: HealthCollectorDeps;
-  #collecting = false;
-  #lastSnapshot: HealthSnapshot | null = null;
+  #inflight: Promise<HealthSnapshot> | null = null;
 
   constructor(deps: HealthCollectorDeps) {
     this.#deps = deps;
   }
 
-  async collect(signal?: AbortSignal): Promise<HealthSnapshot> {
-    if (this.#collecting && this.#lastSnapshot) {
-      return this.#lastSnapshot;
+  collect(signal?: AbortSignal): Promise<HealthSnapshot> {
+    if (this.#inflight) {
+      return this.#inflight;
     }
 
-    this.#collecting = true;
-    try {
-      const snapshot = await this.#buildSnapshot(signal);
-      this.#lastSnapshot = snapshot;
-      return snapshot;
-    } finally {
-      this.#collecting = false;
-    }
+    const p = this.#buildSnapshot(signal).finally(() => {
+      this.#inflight = null;
+    });
+    this.#inflight = p;
+    return p;
   }
 
   async #buildSnapshot(signal?: AbortSignal): Promise<HealthSnapshot> {

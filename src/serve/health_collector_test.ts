@@ -60,6 +60,7 @@ Deno.test("HealthCollector: collects minimal snapshot with no subsystems", async
   assertEquals(snapshot.webhooks, []);
   assertEquals(snapshot.components, []);
   assertEquals(snapshot.metrics.completions, 0);
+  assertEquals(snapshot.metrics.latency, null);
 });
 
 Deno.test("HealthCollector: includes metrics from tracker", async () => {

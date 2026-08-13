@@ -35,7 +35,7 @@ export interface RunMetricsSnapshot {
     readonly p50: number;
     readonly p95: number;
     readonly p99: number;
-  };
+  } | null;
 }
 
 const DEFAULT_WINDOW_MS = 5 * 60 * 1000;
@@ -90,7 +90,8 @@ export class RunMetricsTracker {
       ? Math.round((total / windowMinutes) * 100) / 100
       : 0;
 
-    durations.sort((a, b) => a - b);
+    const withDuration = durations.filter((d) => d > 0);
+    withDuration.sort((a, b) => a - b);
 
     return {
       windowMs: this.#windowMs,
@@ -98,11 +99,13 @@ export class RunMetricsTracker {
       failures,
       cancellations,
       throughputPerMinute,
-      latency: {
-        p50: percentile(durations, 0.5),
-        p95: percentile(durations, 0.95),
-        p99: percentile(durations, 0.99),
-      },
+      latency: withDuration.length > 0
+        ? {
+          p50: percentile(withDuration, 0.5),
+          p95: percentile(withDuration, 0.95),
+          p99: percentile(withDuration, 0.99),
+        }
+        : null,
     };
   }
 
