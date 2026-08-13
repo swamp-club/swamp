@@ -852,6 +852,7 @@ export {
   type PackageCacheHashInput,
 } from "../domain/extensions/extension_package_cache.ts";
 export {
+  type FactorStatus,
   RUBRIC_VERSION,
   type RubricFactor,
   type RubricScore,

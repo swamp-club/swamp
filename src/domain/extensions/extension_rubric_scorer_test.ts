@@ -389,10 +389,12 @@ function factorsAllEarned(): Parameters<typeof composeScore>[0] {
   };
 }
 
-Deno.test("composeScore: perfect extension earns 14/14 (100%)", () => {
+Deno.test("composeScore: perfect extension earns 12/12 client-confirmed (100%)", () => {
   const score = composeScore(factorsAllEarned(), makeManifest());
-  assertEquals(score.earnedPoints, 14);
+  assertEquals(score.earnedPoints, 12);
   assertEquals(score.maxEarnablePoints, 14);
+  assertEquals(score.maxClientEarnablePoints, 12);
+  assertEquals(score.provisionalPoints, 2);
   assertEquals(score.percentage, 100);
   assertEquals(score.allPassed, true);
 });
@@ -403,10 +405,23 @@ Deno.test("composeScore: has-readme is worth 2 points", () => {
   assertEquals(factor.maxPoints, 2);
 });
 
-Deno.test("composeScore: repository-verified is worth 2 points", () => {
+Deno.test("composeScore: repository-verified is provisional when URL is verifiable", () => {
   const score = composeScore(factorsAllEarned(), makeManifest());
   const factor = score.factors.find((f) => f.id === "repository-verified")!;
   assertEquals(factor.maxPoints, 2);
+  assertEquals(factor.earnedPoints, 0);
+  assertEquals(factor.status, "provisional");
+});
+
+Deno.test("composeScore: repository-verified is missing when URL is not verifiable", () => {
+  const score = composeScore(
+    factorsAllEarned(),
+    makeManifest({ repository: "http://bad/x" }),
+  );
+  const factor = score.factors.find((f) => f.id === "repository-verified")!;
+  assertEquals(factor.maxPoints, 2);
+  assertEquals(factor.earnedPoints, 0);
+  assertEquals(factor.status, "missing");
 });
 
 Deno.test("composeScore: bad manifest fails several factors", () => {
@@ -420,7 +435,7 @@ Deno.test("composeScore: bad manifest fails several factors", () => {
   );
   assertEquals(score.allPassed, false);
   const failed = score.factors
-    .filter((f) => f.status !== "earned")
+    .filter((f) => f.status !== "earned" && f.status !== "provisional")
     .map((f) => f.id);
   assert(failed.includes("description"));
   assert(failed.includes("repository-verified"));
@@ -536,13 +551,13 @@ Deno.test("composeScore: factor IDs and order match server", () => {
 });
 
 Deno.test("composeScore: percentage floors (not rounds)", () => {
-  // 13/14 = 92.86 → floor = 92
+  // 11/12 client-earnable = 91.67 → floor = 91
   const score = composeScore(
     { ...factorsAllEarned(), hasLicenseFile: false },
     makeManifest(),
   );
-  assertEquals(score.earnedPoints, 13);
-  assertEquals(score.percentage, 92);
+  assertEquals(score.earnedPoints, 11);
+  assertEquals(score.percentage, 91);
 });
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -861,21 +876,23 @@ Deno.test("[parity] composeScore: empty everything earns universal-platform only
   assertEquals(byId.get("entrypoints-docs"), undefined);
 });
 
-Deno.test("[parity] composeScore: perfect score hits 100% without any verification badge", () => {
+Deno.test("[parity] composeScore: perfect score hits 100% with repository-verified provisional", () => {
   const score = composeScore(factorsAllEarned(), makeManifest());
-  // 14/14
-  assertEquals(score.earnedPoints, 14);
+  // 12/12 client-earnable (repo-verified is provisional, excluded from total)
+  assertEquals(score.earnedPoints, 12);
+  assertEquals(score.maxClientEarnablePoints, 12);
+  assertEquals(score.provisionalPoints, 2);
   assertEquals(score.percentage, 100);
   assertEquals(score.allPassed, true);
 });
 
-Deno.test("[parity] composeScore: percentage floors (13/14 → 92)", () => {
+Deno.test("[parity] composeScore: percentage floors (11/12 → 91)", () => {
   const score = composeScore(
     { ...factorsAllEarned(), hasLicenseFile: false },
     makeManifest(),
   );
-  assertEquals(score.earnedPoints, 13);
-  assertEquals(score.percentage, 92);
+  assertEquals(score.earnedPoints, 11);
+  assertEquals(score.percentage, 91);
 });
 
 Deno.test("[parity] composeScore: platforms factor earns 2 for any count", () => {
