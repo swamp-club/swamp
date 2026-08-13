@@ -190,6 +190,84 @@ export async function getUserInfo(
   };
 }
 
+export interface RegisterInstanceRequest {
+  readonly oauthClientId: string;
+  readonly instanceId: string;
+  readonly collectiveSlugs: string[];
+  readonly hostname: string;
+  readonly version: string;
+  readonly deploymentMode: string;
+  readonly tags?: Record<string, string>;
+}
+
+export interface RegisterInstanceResponse {
+  readonly oauthClientId: string;
+  readonly instanceId: string;
+  readonly registeredAt: string;
+  readonly startedAt: string;
+}
+
+export async function registerInstance(
+  providerUrl: string,
+  accessToken: string,
+  request: RegisterInstanceRequest,
+  signal: AbortSignal,
+): Promise<RegisterInstanceResponse> {
+  const resp = await fetch(`${providerUrl}/api/v1/serve/instances`, {
+    method: "PUT",
+    headers: {
+      "content-type": "application/json",
+      "authorization": `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(request),
+    signal,
+  });
+  if (!resp.ok) {
+    const data = await resp.json().catch(() => ({}));
+    throw new Error(
+      `Instance registration failed: ${resp.status} ${resp.statusText}${
+        data.error ? ` — ${data.error}` : ""
+      }`,
+    );
+  }
+  return await resp.json() as RegisterInstanceResponse;
+}
+
+export interface HeartbeatResponse {
+  readonly oauthClientId: string;
+  readonly lastHeartbeatAt: string;
+  readonly heartbeatCount: number;
+}
+
+export async function sendInstanceHeartbeat(
+  providerUrl: string,
+  accessToken: string,
+  oauthClientId: string,
+  signal: AbortSignal,
+): Promise<HeartbeatResponse> {
+  const resp = await fetch(
+    `${providerUrl}/api/v1/serve/instances/${
+      encodeURIComponent(oauthClientId)
+    }/heartbeat`,
+    {
+      method: "PUT",
+      headers: {
+        "authorization": `Bearer ${accessToken}`,
+      },
+      signal,
+    },
+  );
+  if (!resp.ok) {
+    const data = await resp.json().catch(() => ({}));
+    throw new Error(
+      `Instance heartbeat failed: ${resp.status} ${resp.statusText}${
+        data.error ? ` — ${data.error}` : ""
+      }`,
+    );
+  }
+  return await resp.json() as HeartbeatResponse;
+}
+
 export async function resolveUsername(
   providerUrl: string,
   username: string,
