@@ -169,6 +169,7 @@ async function main() {
       "--allow-run",
       "--allow-sys",
       "--allow-net",
+      "--allow-ffi", // libc getrlimit/setrlimit for fd-limit raising at serve startup
       "--include",
       ".claude/skills",
       "--include",

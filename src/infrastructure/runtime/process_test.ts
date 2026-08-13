@@ -22,6 +22,7 @@ import {
   checkOpenFileLimit,
   getOpenFileSoftLimit,
   isProcessDead,
+  tryRaiseOpenFileLimit,
 } from "./process.ts";
 
 Deno.test("isProcessDead: returns false for the current process", () => {
@@ -46,4 +47,34 @@ Deno.test("checkOpenFileLimit: returns null when limit is sufficient", () => {
   const limit = getOpenFileSoftLimit();
   if (limit === null || limit < 8192) return;
   assertEquals(checkOpenFileLimit(), null);
+});
+
+Deno.test("tryRaiseOpenFileLimit: returns without throwing", () => {
+  const result = tryRaiseOpenFileLimit();
+  assertEquals(typeof result.raised, "boolean");
+  if (!result.raised) {
+    assertEquals(typeof result.reason, "string");
+  }
+});
+
+Deno.test("tryRaiseOpenFileLimit: is idempotent", () => {
+  const first = tryRaiseOpenFileLimit();
+  const second = tryRaiseOpenFileLimit();
+  if (first.raised) {
+    assertEquals(second.raised, false);
+    assertEquals(
+      (second as { raised: false; reason: string }).reason,
+      "already sufficient",
+    );
+  }
+});
+
+Deno.test("tryRaiseOpenFileLimit: returns raised=false on Windows", () => {
+  if (Deno.build.os !== "windows") return;
+  const result = tryRaiseOpenFileLimit();
+  assertEquals(result.raised, false);
+  assertEquals(
+    (result as { raised: false; reason: string }).reason,
+    "windows",
+  );
 });
