@@ -116,6 +116,15 @@ import {
   resolveServeUrl,
 } from "../remote_run.ts";
 import { validateServerRepoExclusivity } from "./access_helpers.ts";
+import { VERSION } from "./version.ts";
+import {
+  registerInstance,
+  sendInstanceHeartbeat,
+} from "../../serve/oauth_client.ts";
+import {
+  ClubHeartbeatService,
+  DEFAULT_CLUB_HEARTBEAT_INTERVAL_MS,
+} from "../../serve/club_heartbeat_service.ts";
 import type { ServeReloadResponse } from "../../serve/protocol.ts";
 import { createServeReloadRenderer } from "../../presentation/renderers/serve_reload.ts";
 import {
@@ -2139,6 +2148,39 @@ export const serveCommand = new Command()
 
     const instanceId = crypto.randomUUID();
 
+    const clubApiKey = Deno.env.get("SWAMP_API_KEY") ?? null;
+    if (
+      authConfig.mode === "oauth" &&
+      authConfig.oauthClientId &&
+      authConfig.allowedCollectives.length > 0 &&
+      clubApiKey
+    ) {
+      try {
+        await registerInstance(
+          authConfig.oauthProvider,
+          clubApiKey,
+          {
+            oauthClientId: authConfig.oauthClientId,
+            instanceId,
+            collectiveSlugs: [...authConfig.allowedCollectives],
+            hostname: Deno.hostname(),
+            version: VERSION,
+            deploymentMode: deploymentMode.mode,
+          },
+          AbortSignal.timeout(30_000),
+        );
+        logger.info(
+          "Registered serve instance with swamp-club (clientId: {clientId})",
+          { clientId: authConfig.oauthClientId },
+        );
+      } catch (err) {
+        logger.warn(
+          "Failed to register serve instance with swamp-club: {error}",
+          { error: err instanceof Error ? err.message : String(err) },
+        );
+      }
+    }
+
     // Migrate existing vault-backed token secrets to the encrypted
     // control-plane store. Runs before auth middleware accepts tokens.
     if (authConfig.mode === "oauth") {
@@ -2662,6 +2704,22 @@ export const serveCommand = new Command()
         closeConnectionsForPrincipal,
       });
       collectiveRefreshService.start();
+    }
+
+    let clubHeartbeatService: ClubHeartbeatService | null = null;
+    if (
+      authConfig.mode === "oauth" && authConfig.oauthClientId &&
+      authConfig.allowedCollectives.length > 0 &&
+      clubApiKey
+    ) {
+      clubHeartbeatService = new ClubHeartbeatService({
+        providerUrl: authConfig.oauthProvider,
+        oauthClientId: authConfig.oauthClientId,
+        intervalMs: DEFAULT_CLUB_HEARTBEAT_INTERVAL_MS,
+        getAccessToken: () => Promise.resolve(clubApiKey),
+        sendHeartbeat: sendInstanceHeartbeat,
+      });
+      clubHeartbeatService.start();
     }
 
     // Parse and initialize webhook endpoints
@@ -3289,6 +3347,9 @@ export const serveCommand = new Command()
       }
       if (collectiveRefreshService) {
         await collectiveRefreshService.dispose();
+      }
+      if (clubHeartbeatService) {
+        clubHeartbeatService.stop();
       }
       if (grantsDirectoryPoller) {
         await grantsDirectoryPoller.stop();
