@@ -99,12 +99,10 @@ export class ComponentHealthChecker {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.#timeoutMs);
 
+    let onParentAbort: (() => void) | null = null;
     if (parentSignal) {
-      parentSignal.addEventListener(
-        "abort",
-        () => controller.abort(),
-        { once: true },
-      );
+      onParentAbort = () => controller.abort();
+      parentSignal.addEventListener("abort", onParentAbort, { once: true });
     }
 
     const timeout = new Promise<never>((_, reject) => {
@@ -117,6 +115,9 @@ export class ComponentHealthChecker {
       return await Promise.race([fn(controller.signal), timeout]);
     } finally {
       clearTimeout(timer);
+      if (onParentAbort && parentSignal) {
+        parentSignal.removeEventListener("abort", onParentAbort);
+      }
     }
   }
 }

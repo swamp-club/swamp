@@ -3152,7 +3152,11 @@ export const serveCommand = new Command()
             const stream = new ReadableStream<Uint8Array>({
               async start(controller) {
                 const encoder = new TextEncoder();
+                let stopped = false;
+                let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+
                 const push = async () => {
+                  if (stopped) return;
                   try {
                     const snapshot = await healthCollector.collect(ac.signal);
                     eventId++;
@@ -3163,14 +3167,14 @@ export const serveCommand = new Command()
                   } catch {
                     // Collection failed — skip this tick
                   }
+                  if (!stopped) {
+                    pendingTimer = setTimeout(push, intervalMs);
+                  }
                 };
 
-                await push();
-
-                const timer = setInterval(push, intervalMs);
-
                 const cleanup = () => {
-                  clearInterval(timer);
+                  stopped = true;
+                  if (pendingTimer !== null) clearTimeout(pendingTimer);
                   ac.signal.removeEventListener("abort", cleanup);
                   req.signal.removeEventListener("abort", cleanup);
                   try {
@@ -3182,6 +3186,8 @@ export const serveCommand = new Command()
 
                 ac.signal.addEventListener("abort", cleanup, { once: true });
                 req.signal.addEventListener("abort", cleanup, { once: true });
+
+                await push();
               },
             });
 
