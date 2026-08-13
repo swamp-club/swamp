@@ -49,7 +49,9 @@ function makeScore(overrides: Partial<RubricScore> = {}): RubricScore {
     ],
     earnedPoints: 12,
     maxEarnablePoints: 14,
-    percentage: 85,
+    maxClientEarnablePoints: 12,
+    provisionalPoints: 2,
+    percentage: 100,
     allPassed: false,
     ...overrides,
   };

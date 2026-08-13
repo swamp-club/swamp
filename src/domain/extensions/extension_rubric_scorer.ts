@@ -23,11 +23,13 @@ import type { ExtensionManifest } from "./extension_manifest.ts";
 /**
  * Client-side scorer for the Swamp Club extension quality rubric.
  *
- * Mirrors swamp-club's server-side scorecard pipeline byte-for-byte
+ * Client-side counterpart to swamp-club's server-side scorecard pipeline
  * (`lib/domain/scorecard/analysis-factors.ts` and
- * `lib/domain/scorecard/score.ts` in the swamp-club repo) so local
- * `swamp extension quality` results match the score the registry will
- * compute after publish.
+ * `lib/domain/scorecard/score.ts` in the swamp-club repo). Factors the
+ * CLI can fully evaluate use the same logic as the server. The
+ * `repository-verified` factor is marked "provisional" locally because
+ * only the server can HTTP-HEAD the URL — its points are excluded from
+ * the client-side total and tracked separately as `provisionalPoints`.
  *
  * Distinct from `extension_quality_checker.ts` in this directory —
  * that module runs `deno fmt` / `deno lint` / dynamic-import checks as
@@ -255,7 +257,7 @@ export function computeAnalysisFactors(input: {
 // ── Score composition (mirror score.ts) ────────────────────────────────
 
 /** Status of one scorecard row. */
-export type FactorStatus = "earned" | "partial" | "missing";
+export type FactorStatus = "earned" | "partial" | "missing" | "provisional";
 
 /** One row of the scorecard. */
 export interface RubricFactor {
@@ -275,6 +277,8 @@ export interface RubricScore {
   maxEarnablePoints: number;
   percentage: number;
   allPassed: boolean;
+  provisionalPoints: number;
+  maxClientEarnablePoints: number;
 }
 
 /**
@@ -370,17 +374,7 @@ export function composeScore(
           "(manifest beside LICENSE), opt in with `paths.base: manifest`.",
       },
     ),
-    boolRow(
-      "repository-verified",
-      "Verified public repository (server confirms on publish)",
-      2,
-      repositoryLikelyVerifiable(manifest.repository),
-      {
-        remediation:
-          "Set `repository:` to a public HTTPS URL on github.com, gitlab.com, " +
-          "codeberg.org, or bitbucket.org. Server will verify it resolves publicly.",
-      },
-    ),
+    repositoryVerifiedRow(manifest.repository),
     dependencyTrustRow(
       factors.dependencyTrustPassed,
       factors.dependencyTrustBlockerCount,
@@ -389,7 +383,13 @@ export function composeScore(
 
   const earned = rows.reduce((s, r) => s + r.earnedPoints, 0);
   const max = rows.reduce((s, r) => s + r.maxPoints, 0);
-  const percentage = max === 0 ? 0 : Math.floor((earned * 100) / max);
+  const provisional = rows
+    .filter((r) => r.status === "provisional")
+    .reduce((s, r) => s + r.maxPoints, 0);
+  const clientMax = max - provisional;
+  const percentage = clientMax === 0
+    ? 0
+    : Math.floor((earned * 100) / clientMax);
 
   return {
     rubricVersion: RUBRIC_VERSION,
@@ -397,7 +397,11 @@ export function composeScore(
     earnedPoints: earned,
     maxEarnablePoints: max,
     percentage,
-    allPassed: rows.every((r) => r.status === "earned"),
+    allPassed: rows.every((r) =>
+      r.status === "earned" || r.status === "provisional"
+    ),
+    provisionalPoints: provisional,
+    maxClientEarnablePoints: clientMax,
   };
 }
 
@@ -415,6 +419,31 @@ function boolRow(
     maxPoints,
     status: earned ? "earned" : "missing",
     remediation: earned ? undefined : extra.remediation,
+  };
+}
+
+function repositoryVerifiedRow(
+  repository: string | undefined,
+): RubricFactor {
+  const verifiable = repositoryLikelyVerifiable(repository);
+  if (verifiable) {
+    return {
+      id: "repository-verified",
+      label: "Verified public repository (server confirms on publish)",
+      earnedPoints: 0,
+      maxPoints: 2,
+      status: "provisional",
+    };
+  }
+  return {
+    id: "repository-verified",
+    label: "Verified public repository (server confirms on publish)",
+    earnedPoints: 0,
+    maxPoints: 2,
+    status: "missing",
+    remediation:
+      "Set `repository:` to a public HTTPS URL on github.com, gitlab.com, " +
+      "codeberg.org, or bitbucket.org. Server will verify it resolves publicly.",
   };
 }
 

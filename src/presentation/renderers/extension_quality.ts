@@ -20,6 +20,7 @@
 import type {
   EventHandlers,
   ExtensionQualityEvent,
+  FactorStatus,
 } from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
@@ -30,6 +31,18 @@ function formatDownloads(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return String(n);
+}
+
+function factorMark(status: FactorStatus): string {
+  switch (status) {
+    case "earned":
+      return "✓";
+    case "provisional":
+      return "~";
+    case "partial":
+    case "missing":
+      return "✗";
+  }
 }
 
 /** Renderer interface that also reports pass/fail to the CLI. */
@@ -67,19 +80,27 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
       },
       completed: (e) => {
         const { score, archiveSize } = e.data;
-        logger
-          .info`Rubric v${score.rubricVersion} — ${score.earnedPoints}/${score.maxEarnablePoints} points (${score.percentage}%, ${
-          score.allPassed ? "all factors earned" : "some factors missing"
-        })`;
+        const provisional = score.provisionalPoints > 0
+          ? ` (+${score.provisionalPoints} pending server verification)`
+          : "";
+        const passStatus = score.allPassed
+          ? "all factors earned"
+          : "some factors missing";
+        logger.info(
+          `Rubric v${score.rubricVersion} — ${score.earnedPoints}/${score.maxClientEarnablePoints} points (${score.percentage}%${provisional}, ${passStatus})`,
+        );
         for (const factor of score.factors) {
-          const mark = factor.status === "earned" ? "✓" : "✗";
+          const mark = factorMark(factor.status);
           const pts = `${factor.earnedPoints}/${factor.maxPoints}`;
           logger.info`  ${mark} ${factor.id} [${pts}] — ${factor.label}`;
           if (factor.id === "fast-check") {
             logger
               .info`      ℹ This factor is deprecated and will be removed in a future release.`;
           }
-          if (factor.status !== "earned" && factor.remediation) {
+          if (
+            factor.status !== "earned" && factor.status !== "provisional" &&
+            factor.remediation
+          ) {
             logger.info`      → ${factor.remediation}`;
           }
         }
@@ -115,12 +136,6 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
             logger.warn`  ${w.dependency}: ${w.message}`;
           }
         }
-        // `repository-verified` is a structural check on our side — the
-        // server does the final HTTP HEAD to confirm the repo is public.
-        // Surface that caveat so users know why their local "earned"
-        // could still come back "missing" from the registry.
-        logger
-          .info`Note: \`repository-verified\` earns here when the URL is well-formed on an allowlisted host; the registry does the final public-reachable check on publish.`;
         logger.info`Packaged archive: ${archiveSize} bytes`;
       },
       error: (e) => {
@@ -161,6 +176,8 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
             rubricVersion: score.rubricVersion,
             earnedPoints: score.earnedPoints,
             maxEarnablePoints: score.maxEarnablePoints,
+            maxClientEarnablePoints: score.maxClientEarnablePoints,
+            provisionalPoints: score.provisionalPoints,
             percentage: score.percentage,
             allPassed: score.allPassed,
             factors: score.factors,

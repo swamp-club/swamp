@@ -201,15 +201,25 @@ Deno.test(
       const parsed = parseFirstJson(stdout);
       assertEquals(parsed.status, "passed");
       assertEquals(parsed.rubricVersion, 3);
-      assertEquals(parsed.earnedPoints, 14);
+      assertEquals(parsed.earnedPoints, 12);
       assertEquals(parsed.maxEarnablePoints, 14);
+      assertEquals(parsed.maxClientEarnablePoints, 12);
+      assertEquals(parsed.provisionalPoints, 2);
       assertEquals(parsed.percentage, 100);
       assertEquals(parsed.allPassed, true);
 
-      // Every factor must be "earned" — catches any regression where a
-      // specific factor's pass logic drifts from the server.
+      // Every factor must be "earned" or "provisional" — catches any
+      // regression where a factor's pass logic drifts from the server.
       for (const f of parsed.factors) {
-        assertEquals(f.status, "earned", `factor ${f.id} not earned`);
+        if (f.id === "repository-verified") {
+          assertEquals(
+            f.status,
+            "provisional",
+            `factor ${f.id} not provisional`,
+          );
+        } else {
+          assertEquals(f.status, "earned", `factor ${f.id} not earned`);
+        }
       }
     } finally {
       await Deno.remove(tmpDir, { recursive: true });
