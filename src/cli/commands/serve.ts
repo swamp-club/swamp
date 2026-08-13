@@ -98,6 +98,13 @@ import {
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
+import { RunMetricsTracker } from "../../serve/run_metrics_tracker.ts";
+import { ComponentHealthChecker } from "../../serve/component_health_checker.ts";
+import { HealthCollector } from "../../serve/health_collector.ts";
+import {
+  type AdminAuthDeps,
+  authenticateAdmin,
+} from "../../serve/admin_auth.ts";
 import {
   deleteActiveRun,
   writeActiveRun,
@@ -181,6 +188,7 @@ import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { requireAuthenticated, requireScope } from "../auth_context.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import {
   type DatastoreClassification,
@@ -958,6 +966,11 @@ export const serveCommand = new Command()
     "--hot-reload",
     "Enable SIGHUP-based hot-reload for pulled extension bundles. " +
       "Writes a PID file to .swamp/serve.pid; use 'swamp serve reload' to trigger a reload",
+  )
+  .option(
+    "--enable-internal-api",
+    "Enable the /internal/runs endpoint for full run history access " +
+      "(env: SWAMP_ENABLE_INTERNAL_API)",
   )
   .example(
     "Enable TLS",
@@ -2480,12 +2493,14 @@ export const serveCommand = new Command()
                 "Scheduled workflow {name} completed (run: {runId})",
                 { name: event.workflowName, runId: event.runId },
               );
+              runMetricsTracker.record("completed", 0);
               break;
             case "schedule_failed":
               logger.error(
                 "Scheduled workflow {name} failed: {error}",
                 { name: event.workflowName, error: event.error },
               );
+              runMetricsTracker.record("failed", 0);
               break;
           }
         }
@@ -2710,12 +2725,14 @@ export const serveCommand = new Command()
                 "Webhook workflow {workflow} completed (run: {runId})",
                 { workflow: event.workflowName, runId: event.runId },
               );
+              runMetricsTracker.record("completed", 0);
               break;
             case "webhook_failed":
               logger.error(
                 "Webhook workflow {workflow} failed: {error}",
                 { workflow: event.workflowName, error: event.error },
               );
+              runMetricsTracker.record("failed", 0);
               break;
           }
         }
@@ -2748,6 +2765,55 @@ export const serveCommand = new Command()
     }
 
     let isReady = false;
+    const enableInternalApi = merged.enableInternalApi;
+    const serverStartedAt = Date.now();
+
+    const runMetricsTracker = new RunMetricsTracker();
+
+    const componentHealthChecker = new ComponentHealthChecker({
+      checkDatastore: async (signal) => {
+        if (isCustomDatastoreConfig(datastoreConfig)) {
+          await datastoreTypeRegistry.ensureTypeLoaded(datastoreConfig.type);
+          const typeInfo = datastoreTypeRegistry.get(datastoreConfig.type);
+          if (typeInfo?.createProvider) {
+            const provider = typeInfo.createProvider(datastoreConfig.config);
+            const verifier = provider.createVerifier();
+            return await verifier.verify();
+          }
+          return {
+            healthy: false,
+            message: "No provider available for datastore type",
+            latencyMs: 0,
+            datastoreType: datastoreConfig.type,
+          };
+        }
+        const verifier = new FilesystemDatastoreVerifier(datastoreConfig.path);
+        void signal;
+        return await verifier.verify();
+      },
+    });
+
+    const healthCollector = new HealthCollector({
+      instanceId,
+      deploymentMode: deploymentMode.mode,
+      startedAt: serverStartedAt,
+      isReady: () => isReady,
+      activeRunRegistry: activeRunRegistry ?? null,
+      metricsTracker: runMetricsTracker,
+      componentChecker: componentHealthChecker,
+      workerProvider: workerGateway,
+      scheduleProvider: scheduledExecution,
+      scheduleEnabled: enableSchedule,
+      webhookProvider: webhookService ?? null,
+    });
+
+    const adminAuthDeps: AdminAuthDeps = {
+      authMode: authConfig.mode,
+      repoDir: resolvedRepoDir,
+      repoContext,
+      policySnapshotLoader,
+      trustProxy,
+    };
 
     const wsScheme = tlsEnabled ? "wss" : "ws";
     const server = Deno.serve(
@@ -3034,6 +3100,118 @@ export const serveCommand = new Command()
               count += scheduledExecution.cancelAllRuns();
             }
             return Response.json({ status: "cancelled", count });
+          }
+        }
+
+        // Health snapshot endpoint (authenticated + authorized)
+        if (req.method === "GET") {
+          const url = new URL(req.url);
+          if (url.pathname === "/api/v1/health") {
+            const auth = await authenticateAdmin(
+              req,
+              info.remoteAddr.hostname,
+              adminAuthDeps,
+            );
+            if (!auth.ok) return auth.response;
+            const snapshot = await healthCollector.collect(ac.signal);
+            return Response.json(snapshot);
+          }
+
+          // SSE health stream (authenticated + authorized)
+          if (url.pathname === "/api/v1/health/stream") {
+            const auth = await authenticateAdmin(
+              req,
+              info.remoteAddr.hostname,
+              adminAuthDeps,
+            );
+            if (!auth.ok) return auth.response;
+
+            const intervalParam = url.searchParams.get("interval");
+            let intervalMs = 5000;
+            if (intervalParam !== null) {
+              const parsed = parseInt(intervalParam, 10);
+              if (!isNaN(parsed)) {
+                intervalMs = Math.max(1000, Math.min(60000, parsed));
+              }
+            }
+
+            const lastEventIdHeader = req.headers.get("Last-Event-ID");
+            let eventId = lastEventIdHeader !== null
+              ? parseInt(lastEventIdHeader, 10) || 0
+              : 0;
+
+            const stream = new ReadableStream<Uint8Array>({
+              async start(controller) {
+                const encoder = new TextEncoder();
+                const push = async () => {
+                  try {
+                    const snapshot = await healthCollector.collect(ac.signal);
+                    eventId++;
+                    const event = `id: ${eventId}\nevent: health\ndata: ${
+                      JSON.stringify(snapshot)
+                    }\n\n`;
+                    controller.enqueue(encoder.encode(event));
+                  } catch {
+                    // Collection failed — skip this tick
+                  }
+                };
+
+                await push();
+
+                const timer = setInterval(push, intervalMs);
+
+                const cleanup = () => {
+                  clearInterval(timer);
+                  try {
+                    controller.close();
+                  } catch {
+                    // Already closed
+                  }
+                };
+
+                ac.signal.addEventListener("abort", cleanup, { once: true });
+                req.signal.addEventListener("abort", cleanup, { once: true });
+              },
+            });
+
+            return new Response(stream, {
+              headers: {
+                "content-type": "text/event-stream",
+                "cache-control": "no-cache",
+                "connection": "keep-alive",
+                "x-accel-buffering": "no",
+              },
+            });
+          }
+
+          // Internal runs endpoint (opt-in, authenticated + authorized)
+          if (url.pathname === "/internal/runs") {
+            if (!enableInternalApi) {
+              return new Response("Not found", { status: 404 });
+            }
+            const auth = await authenticateAdmin(
+              req,
+              info.remoteAddr.hostname,
+              adminAuthDeps,
+            );
+            if (!auth.ok) return auth.response;
+            const runs = runTracker.findAll();
+            return Response.json({
+              runs: runs.map((r) => ({
+                id: r.id,
+                runKind: r.runKind,
+                modelType: r.modelType,
+                methodName: r.methodName,
+                workflowName: r.workflowName,
+                pid: r.pid,
+                hostname: r.hostname,
+                status: r.status,
+                startedAt: r.startedAt.toISOString(),
+                heartbeatAt: r.heartbeatAt.toISOString(),
+                initiatedBy: r.initiatedBy,
+                instanceId: r.instanceId,
+              })),
+            });
           }
         }
 

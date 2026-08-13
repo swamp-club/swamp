@@ -87,6 +87,28 @@ If the rejection does orphan a run (e.g. the rejection fires during execution
 and prevents the run from completing normally), the heartbeat reaper will mark
 it as stale after the 90-second TTL.
 
+### Run Metrics Tracker
+
+A separate in-memory subsystem (`src/serve/run_metrics_tracker.ts`) that
+aggregates run completion events into sliding-window throughput and latency
+metrics for the health monitoring endpoints.
+
+The RunMetricsTracker is NOT related to the SQLite-based run tracker — it is a
+lightweight, in-memory, serve-only counters that records outcomes (completed,
+failed, cancelled) and computes:
+
+- Completion, failure, and cancellation counts within the window
+- Throughput per minute
+- Latency percentiles (P50, P95, P99)
+
+Default window is 5 minutes. Records are pruned on snapshot or when the buffer
+exceeds 10,000 entries. Event sources: scheduled execution
+(schedule_completed/schedule_failed), webhook execution
+(webhook_completed/webhook_failed).
+
+The metrics are surfaced on `GET /api/v1/health` and
+`GET /api/v1/health/stream`.
+
 ### Local-only
 
 The tracker DB is NOT synced to remote datastores. PIDs and heartbeats are
@@ -96,3 +118,5 @@ inherently local — a PID from machine A is meaningless on machine B.
 
 - #636 — OOM crash leaves run stuck in "running"
 - #519 — persistent, queryable workflow runs (foundation laid here)
+- #1613 — Health snapshot endpoints with SSE streaming (added RunMetricsTracker
+  and `/internal/runs` endpoint for full run history access)
