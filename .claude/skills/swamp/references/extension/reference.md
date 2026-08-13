@@ -163,8 +163,13 @@ All extension types follow the same lifecycle:
 6. **Unit tests** — colocate `*_test.ts`; `~/.swamp/deno/deno test` passes.
 7. **Version + manifest** — `swamp extension version`,
    `swamp extension fmt manifest.yaml --check`.
-8. **Quality check** (optional) — `swamp extension quality manifest.yaml`.
-9. **Publish** — use the `swamp-extension-publish` skill.
+8. **Upgrade entry** (if bumping version) — add an `upgrades` entry for the new
+   version, even a no-op. Without one, existing instances stay at their old
+   `typeVersion` forever. See
+   [references/model/upgrades.md](references/model/upgrades.md). `push` warns
+   when it detects a version bump without an upgrade entry.
+9. **Quality check** (optional) — `swamp extension quality manifest.yaml`.
+10. **Publish** — use the `swamp-extension-publish` skill.
 
 ### Adversarial Review Gate
 

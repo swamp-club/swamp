@@ -52,6 +52,7 @@ export interface ExtensionPushRenderer extends Renderer<ExtensionPushEvent> {
   renderQualityErrors(issues: QualityIssue[]): void;
   renderUpgradeChainErrors(issues: QualityIssue[]): void;
   renderVersionDriftWarnings(warnings: QualityIssue[]): void;
+  renderVersionBumpUpgradeWarnings(warnings: QualityIssue[]): void;
   renderCompilationErrors(errors: CompilationError[]): void;
   renderDryRun(data: {
     name: string;
@@ -258,6 +259,13 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     }
   }
 
+  renderVersionBumpUpgradeWarnings(warnings: QualityIssue[]): void {
+    this.logger.warn`Version bump without upgrade entry (non-blocking):`;
+    for (const w of warnings) {
+      this.logger.warn`  ${w.output}`;
+    }
+  }
+
   renderCompilationErrors(errors: CompilationError[]): void {
     this.logger.error`Bundle compilation failed:`;
     for (const r of errors) {
@@ -373,6 +381,12 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
   renderVersionDriftWarnings(warnings: QualityIssue[]): void {
     console.log(
       JSON.stringify({ versionDriftWarnings: warnings }, null, 2),
+    );
+  }
+
+  renderVersionBumpUpgradeWarnings(warnings: QualityIssue[]): void {
+    console.log(
+      JSON.stringify({ versionBumpUpgradeWarnings: warnings }, null, 2),
     );
   }
 

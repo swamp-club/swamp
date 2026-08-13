@@ -48,6 +48,7 @@ import {
 } from "../../presentation/renderers/extension_push.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
 import {
+  checkVersionBumpWithoutUpgrade,
   checkVersionConsistency,
   type PublishedExtensionState,
   type QualityIssue,
@@ -71,6 +72,7 @@ interface ExtensionPushOptions extends GlobalOptions {
   releaseNotes?: string;
   channel?: string;
   versionSuffix?: string;
+  skipUpgradeCheck?: boolean;
 }
 
 /**
@@ -198,6 +200,10 @@ export const extensionPushCommand = new Command()
   .option(
     "--version-suffix <type:string>",
     "Override version micro segment: 'epoch' uses Unix timestamp (e.g. 2026.06.18.1750263600)",
+  )
+  .option(
+    "--skip-upgrade-check",
+    "Suppress warning when version is bumped without upgrade entries",
   )
   .action(async function (options: ExtensionPushOptions, manifestPath: string) {
     if (
@@ -574,6 +580,24 @@ export const extensionPushCommand = new Command()
     );
     if (versionIssues.length > 0) {
       renderer.renderVersionDriftWarnings(versionIssues);
+    }
+
+    // 6e. Version-bump-without-upgrade check — warn when the extension
+    // version changed from the published baseline but model files lack
+    // an upgrades array. Skipped when --skip-upgrade-check is passed,
+    // when there is no published version, or when the version has not
+    // changed.
+    if (
+      !options.skipUpgradeCheck &&
+      published &&
+      published.manifestVersion !== prepared.manifest.version
+    ) {
+      const upgradeWarnings = await checkVersionBumpWithoutUpgrade(
+        allModelFiles,
+      );
+      if (upgradeWarnings.length > 0) {
+        renderer.renderVersionBumpUpgradeWarnings(upgradeWarnings);
+      }
     }
 
     // 7. Dry run — stop here

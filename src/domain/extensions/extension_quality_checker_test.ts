@@ -22,6 +22,7 @@ import { join } from "@std/path";
 import {
   checkExtensionQuality,
   checkUpgradeChainConsistency,
+  checkVersionBumpWithoutUpgrade,
   checkVersionConsistency,
   type PublishedExtensionState,
   stripCommentsAndStrings,
@@ -700,4 +701,77 @@ Deno.test("checkUpgradeChainConsistency: file without model export is skipped", 
       assertEquals(issues, []);
     },
   );
+});
+
+// ── checkVersionBumpWithoutUpgrade tests ─────────────────────────────
+
+Deno.test("checkVersionBumpWithoutUpgrade: model with upgrades produces no issues", async () => {
+  await withTempFiles(
+    {
+      "model.ts": `export const model = {
+  type: "@test/greeter",
+  version: "2026.05.22.1",
+  methods: {},
+  upgrades: [
+    {
+      toVersion: "2026.05.22.1",
+      description: "Upgrade",
+      upgradeAttributes: (old) => old,
+    },
+  ],
+};
+`,
+    },
+    async (_dir, paths) => {
+      const issues = await checkVersionBumpWithoutUpgrade(paths);
+      assertEquals(issues, []);
+    },
+  );
+});
+
+Deno.test("checkVersionBumpWithoutUpgrade: model without upgrades reports issue", async () => {
+  await withTempFiles(
+    {
+      "model.ts": `export const model = {
+  type: "@test/greeter",
+  version: "2026.05.22.1",
+  methods: {},
+};
+`,
+    },
+    async (_dir, paths) => {
+      const issues = await checkVersionBumpWithoutUpgrade(paths);
+      assertEquals(issues.length, 1);
+      assertEquals(issues[0].check, "version-bump-upgrade");
+      assertStringIncludes(issues[0].output, "2026.05.22.1");
+      assertStringIncludes(issues[0].output, "no upgrades array");
+    },
+  );
+});
+
+Deno.test("checkVersionBumpWithoutUpgrade: file without model export is skipped", async () => {
+  await withTempFiles(
+    {
+      "helper.ts": `export function add(a: number, b: number): number {
+  return a + b;
+}
+`,
+    },
+    async (_dir, paths) => {
+      const issues = await checkVersionBumpWithoutUpgrade(paths);
+      assertEquals(issues, []);
+    },
+  );
+});
+
+Deno.test("checkVersionBumpWithoutUpgrade: empty file list produces no issues", async () => {
+  const issues = await checkVersionBumpWithoutUpgrade([]);
+  assertEquals(issues, []);
+});
+
+Deno.test("checkVersionBumpWithoutUpgrade: nonexistent files are skipped", async () => {
+  const issues = await checkVersionBumpWithoutUpgrade([
+    "/tmp/does-not-exist-12345.ts",
+  ]);
+  assertEquals(issues, []);
 });
