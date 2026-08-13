@@ -420,6 +420,46 @@ Deno.test("RunFileSink.redactActive: applies the union of every active redactor"
   });
 });
 
+Deno.test("RunFileSink: register with append preserves existing file content", async () => {
+  await withTempDir(async (dir) => {
+    const sink = new RunFileSink();
+    const logPath = join(dir, "append.log");
+
+    const handle1 = await sink.register([], logPath);
+    sink.sink(makeRecord(["workflow", "run", "wf1"], "first attempt"));
+    sink.unregister(handle1);
+
+    const handle2 = await sink.register([], logPath, undefined, undefined, {
+      append: true,
+    });
+    sink.sink(makeRecord(["workflow", "run", "wf1"], "second attempt"));
+    sink.unregister(handle2);
+
+    const content = await Deno.readTextFile(logPath);
+    assertStringIncludes(content, "first attempt");
+    assertStringIncludes(content, "second attempt");
+  });
+});
+
+Deno.test("RunFileSink: register without append truncates existing file content", async () => {
+  await withTempDir(async (dir) => {
+    const sink = new RunFileSink();
+    const logPath = join(dir, "truncate.log");
+
+    const handle1 = await sink.register([], logPath);
+    sink.sink(makeRecord(["workflow", "run", "wf1"], "first attempt"));
+    sink.unregister(handle1);
+
+    const handle2 = await sink.register([], logPath);
+    sink.sink(makeRecord(["workflow", "run", "wf1"], "second attempt"));
+    sink.unregister(handle2);
+
+    const content = await Deno.readTextFile(logPath);
+    assertEquals(content.includes("first attempt"), false);
+    assertStringIncludes(content, "second attempt");
+  });
+});
+
 Deno.test("RunFileSink.redactActive: passes text through unchanged when no redactor is active", async () => {
   await withTempDir(async (dir) => {
     const sink = new RunFileSink();

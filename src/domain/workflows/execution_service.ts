@@ -2114,7 +2114,8 @@ export class WorkflowExecutionService {
 
     const secretRedactor = new SecretRedactor();
 
-    // Re-register the log file sink so resume output is captured
+    // Re-register the log file sink so resume output is captured.
+    // Append to preserve records from earlier attempts.
     const workflowLogPath = existingRun.logFile ??
       join(
         swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns),
@@ -2126,6 +2127,7 @@ export class WorkflowExecutionService {
       workflowLogPath,
       secretRedactor,
       swampPath(this.repoDir),
+      { append: true },
     );
 
     // Declared before the try so the finally at the end of this method can
