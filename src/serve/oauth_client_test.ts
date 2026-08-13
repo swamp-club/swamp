@@ -18,11 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
+import { assertStringIncludes } from "@std/assert";
 import {
   DeviceGrantPollError,
   getUserInfo,
   pollForToken,
+  registerInstance,
   resolveUsername,
+  sendInstanceHeartbeat,
   startDeviceGrant,
 } from "./oauth_client.ts";
 
@@ -616,6 +619,208 @@ Deno.test("resolveUsername: sends Bearer auth header", async () => {
       AbortSignal.timeout(5000),
     );
     assertEquals(receivedAuth, "Bearer my-secret-token");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+// ── registerInstance ───────────────────────────────────────────────────
+
+Deno.test("registerInstance: sends correct URL, headers, and body", async () => {
+  let receivedPath = "";
+  let receivedMethod = "";
+  let receivedAuth = "";
+  let receivedContentType = "";
+  let receivedBody: Record<string, unknown> = {};
+  const mock = startMockServer(async (req) => {
+    receivedPath = new URL(req.url).pathname;
+    receivedMethod = req.method;
+    receivedAuth = req.headers.get("authorization") ?? "";
+    receivedContentType = req.headers.get("content-type") ?? "";
+    receivedBody = await req.json();
+    return Response.json({
+      oauthClientId: "clt-abc",
+      instanceId: "inst-123",
+      registeredAt: "2026-08-13T10:00:00.000Z",
+      startedAt: "2026-08-13T14:00:00.000Z",
+    });
+  });
+  try {
+    const result = await registerInstance(
+      `http://localhost:${mock.port}`,
+      "my-api-key",
+      {
+        oauthClientId: "clt-abc",
+        instanceId: "inst-123",
+        collectiveSlugs: ["acme-corp"],
+        hostname: "prod-01",
+        version: "20260813.0",
+        deploymentMode: "durable",
+        tags: { env: "production" },
+      },
+      AbortSignal.timeout(5000),
+    );
+    assertEquals(receivedPath, "/api/v1/serve/instances");
+    assertEquals(receivedMethod, "PUT");
+    assertEquals(receivedAuth, "Bearer my-api-key");
+    assertEquals(receivedContentType, "application/json");
+    assertEquals(receivedBody.oauthClientId, "clt-abc");
+    assertEquals(receivedBody.instanceId, "inst-123");
+    assertEquals(receivedBody.collectiveSlugs, ["acme-corp"]);
+    assertEquals(receivedBody.hostname, "prod-01");
+    assertEquals(receivedBody.version, "20260813.0");
+    assertEquals(receivedBody.deploymentMode, "durable");
+    assertEquals(
+      receivedBody.tags as Record<string, string>,
+      { env: "production" },
+    );
+    assertEquals(result.oauthClientId, "clt-abc");
+    assertEquals(result.instanceId, "inst-123");
+    assertEquals(result.registeredAt, "2026-08-13T10:00:00.000Z");
+    assertEquals(result.startedAt, "2026-08-13T14:00:00.000Z");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("registerInstance: throws with JSON error body on HTTP error", async () => {
+  const mock = startMockServer(() =>
+    Response.json(
+      { error: "OAuth client not found" },
+      { status: 422 },
+    )
+  );
+  try {
+    const err = await assertRejects(
+      () =>
+        registerInstance(
+          `http://localhost:${mock.port}`,
+          "tok",
+          {
+            oauthClientId: "bad-client",
+            instanceId: "i",
+            collectiveSlugs: ["org"],
+            hostname: "h",
+            version: "v",
+            deploymentMode: "local",
+          },
+          AbortSignal.timeout(5000),
+        ),
+      Error,
+    );
+    assertStringIncludes(err.message, "422");
+    assertStringIncludes(err.message, "OAuth client not found");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("registerInstance: throws with status text on non-JSON error body", async () => {
+  const mock = startMockServer(() =>
+    new Response("Internal Server Error", { status: 500 })
+  );
+  try {
+    const err = await assertRejects(
+      () =>
+        registerInstance(
+          `http://localhost:${mock.port}`,
+          "tok",
+          {
+            oauthClientId: "c",
+            instanceId: "i",
+            collectiveSlugs: ["org"],
+            hostname: "h",
+            version: "v",
+            deploymentMode: "local",
+          },
+          AbortSignal.timeout(5000),
+        ),
+      Error,
+    );
+    assertStringIncludes(err.message, "500");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+// ── sendInstanceHeartbeat ─────────────────────────────────────────────
+
+Deno.test("sendInstanceHeartbeat: sends correct URL with encoded oauthClientId and auth header", async () => {
+  let receivedPath = "";
+  let receivedMethod = "";
+  let receivedAuth = "";
+  const mock = startMockServer((req) => {
+    receivedPath = new URL(req.url).pathname;
+    receivedMethod = req.method;
+    receivedAuth = req.headers.get("authorization") ?? "";
+    return Response.json({
+      oauthClientId: "clt/special",
+      lastHeartbeatAt: "2026-08-13T15:00:00.000Z",
+      heartbeatCount: 5,
+    });
+  });
+  try {
+    const result = await sendInstanceHeartbeat(
+      `http://localhost:${mock.port}`,
+      "my-token",
+      "clt/special",
+      AbortSignal.timeout(5000),
+    );
+    assertEquals(
+      receivedPath,
+      "/api/v1/serve/instances/clt%2Fspecial/heartbeat",
+    );
+    assertEquals(receivedMethod, "PUT");
+    assertEquals(receivedAuth, "Bearer my-token");
+    assertEquals(result.oauthClientId, "clt/special");
+    assertEquals(result.lastHeartbeatAt, "2026-08-13T15:00:00.000Z");
+    assertEquals(result.heartbeatCount, 5);
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("sendInstanceHeartbeat: throws with JSON error body on HTTP error", async () => {
+  const mock = startMockServer(() =>
+    Response.json(
+      { error: "No registration found for this oauthClientId" },
+      { status: 404 },
+    )
+  );
+  try {
+    const err = await assertRejects(
+      () =>
+        sendInstanceHeartbeat(
+          `http://localhost:${mock.port}`,
+          "tok",
+          "missing-client",
+          AbortSignal.timeout(5000),
+        ),
+      Error,
+    );
+    assertStringIncludes(err.message, "404");
+    assertStringIncludes(err.message, "No registration found");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("sendInstanceHeartbeat: throws with status text on non-JSON error body", async () => {
+  const mock = startMockServer(() =>
+    new Response("Bad Gateway", { status: 502 })
+  );
+  try {
+    const err = await assertRejects(
+      () =>
+        sendInstanceHeartbeat(
+          `http://localhost:${mock.port}`,
+          "tok",
+          "client-id",
+          AbortSignal.timeout(5000),
+        ),
+      Error,
+    );
+    assertStringIncludes(err.message, "502");
   } finally {
     await mock.shutdown();
   }

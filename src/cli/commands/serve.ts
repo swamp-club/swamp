@@ -2142,6 +2142,7 @@ export const serveCommand = new Command()
     const clubApiKey = Deno.env.get("SWAMP_API_KEY") ?? null;
     if (
       authConfig.mode === "oauth" &&
+      authConfig.oauthClientId &&
       authConfig.allowedCollectives.length > 0 &&
       clubApiKey
     ) {
@@ -2150,7 +2151,7 @@ export const serveCommand = new Command()
           authConfig.oauthProvider,
           clubApiKey,
           {
-            oauthClientId: authConfig.oauthClientId!,
+            oauthClientId: authConfig.oauthClientId,
             instanceId,
             collectiveSlugs: [...authConfig.allowedCollectives],
             hostname: Deno.hostname(),

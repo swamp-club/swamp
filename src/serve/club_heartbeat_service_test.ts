@@ -62,3 +62,61 @@ Deno.test("ClubHeartbeatService: double start is idempotent", () => {
   service.start();
   service.stop();
 });
+
+Deno.test("ClubHeartbeatService: calls sendHeartbeat with correct arguments on tick", async () => {
+  const calls: { providerUrl: string; token: string; clientId: string }[] = [];
+  const service = new ClubHeartbeatService({
+    providerUrl: "https://club.example.com",
+    oauthClientId: "clt-test-456",
+    intervalMs: 50,
+    getAccessToken: () => Promise.resolve("my-secret-key"),
+    sendHeartbeat: (providerUrl, token, clientId) => {
+      calls.push({ providerUrl, token, clientId });
+      return Promise.resolve({ heartbeatCount: calls.length });
+    },
+  });
+  service.start();
+  await new Promise((r) => setTimeout(r, 120));
+  service.stop();
+  assertEquals(calls.length >= 1, true);
+  assertEquals(calls[0].providerUrl, "https://club.example.com");
+  assertEquals(calls[0].token, "my-secret-key");
+  assertEquals(calls[0].clientId, "clt-test-456");
+});
+
+Deno.test("ClubHeartbeatService: skips beat when getAccessToken returns null", async () => {
+  let heartbeatCalled = false;
+  const service = new ClubHeartbeatService({
+    providerUrl: "https://example.com",
+    oauthClientId: "clt-test",
+    intervalMs: 50,
+    getAccessToken: () => Promise.resolve(null),
+    sendHeartbeat: () => {
+      heartbeatCalled = true;
+      return Promise.resolve({ heartbeatCount: 1 });
+    },
+  });
+  service.start();
+  await new Promise((r) => setTimeout(r, 120));
+  service.stop();
+  assertEquals(heartbeatCalled, false);
+});
+
+Deno.test("ClubHeartbeatService: sendHeartbeat failure does not stop the service", async () => {
+  let callCount = 0;
+  const service = new ClubHeartbeatService({
+    providerUrl: "https://example.com",
+    oauthClientId: "clt-test",
+    intervalMs: 50,
+    getAccessToken: () => Promise.resolve("tok"),
+    sendHeartbeat: () => {
+      callCount++;
+      if (callCount === 1) throw new Error("network error");
+      return Promise.resolve({ heartbeatCount: callCount });
+    },
+  });
+  service.start();
+  await new Promise((r) => setTimeout(r, 180));
+  service.stop();
+  assertEquals(callCount >= 2, true);
+});
