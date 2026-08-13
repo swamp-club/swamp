@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
+import { join } from "@std/path";
 import { FileSystemControlPlaneStore } from "./fs_control_plane_store.ts";
 import { PathTraversalError } from "./safe_path.ts";
 
@@ -263,6 +264,41 @@ Deno.test("FileSystemControlPlaneStore: two rapid putIfAbsent calls — one wins
       true,
       `stored data should match the winner's payload, got: ${stored}`,
     );
+  });
+});
+
+Deno.test("FileSystemControlPlaneStore: delete cleans up empty parent directories", async () => {
+  await withTempDir(async (dir) => {
+    const store = new FileSystemControlPlaneStore(dir);
+
+    await store.put("active-runs/instance-1/run-abc", encoder.encode("data"));
+    await store.delete("active-runs/instance-1/run-abc");
+
+    const controlDir = join(dir, "_control");
+    const instanceDir = join(controlDir, "active-runs", "instance-1");
+    const activeRunsDir = join(controlDir, "active-runs");
+
+    const instanceExists = await Deno.stat(instanceDir).then(() => true).catch(
+      () => false,
+    );
+    const activeRunsExists = await Deno.stat(activeRunsDir).then(() => true)
+      .catch(() => false);
+
+    assertEquals(instanceExists, false, "instance dir should be removed");
+    assertEquals(activeRunsExists, false, "active-runs dir should be removed");
+  });
+});
+
+Deno.test("FileSystemControlPlaneStore: delete preserves non-empty parent directories", async () => {
+  await withTempDir(async (dir) => {
+    const store = new FileSystemControlPlaneStore(dir);
+
+    await store.put("active-runs/instance-1/run-a", encoder.encode("a"));
+    await store.put("active-runs/instance-1/run-b", encoder.encode("b"));
+    await store.delete("active-runs/instance-1/run-a");
+
+    const remaining = await store.get("active-runs/instance-1/run-b");
+    assertEquals(decoder.decode(remaining!), "b");
   });
 });
 

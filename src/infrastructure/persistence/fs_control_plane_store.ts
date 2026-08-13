@@ -20,6 +20,7 @@
 import { dirname, join } from "@std/path";
 import type { ControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
 import { atomicWriteFile } from "./atomic_write.ts";
+import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { assertContainedPath } from "./safe_path.ts";
 
 /**
@@ -81,14 +82,16 @@ export class FileSystemControlPlaneStore implements ControlPlaneStore {
   }
 
   async delete(key: string): Promise<void> {
+    const path = this.#keyToPath(key);
     try {
-      await Deno.remove(this.#keyToPath(key));
+      await Deno.remove(path);
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
         return;
       }
       throw error;
     }
+    await cleanupEmptyParentDirs(path, this.#rootDir);
   }
 
   async list(prefix: string): Promise<string[]> {
