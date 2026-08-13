@@ -91,6 +91,7 @@ export class RunFileSink {
     filePath: string,
     redactor?: SecretRedactor,
     boundary?: string,
+    options?: { append?: boolean },
   ): Promise<string> {
     // Validate the file path stays within the expected boundary
     if (boundary) {
@@ -106,7 +107,7 @@ export class RunFileSink {
     const fd = await Deno.open(filePath, {
       write: true,
       create: true,
-      truncate: true,
+      ...(options?.append ? { append: true } : { truncate: true }),
     });
 
     // Only mutate the map once all fallible I/O has succeeded.
