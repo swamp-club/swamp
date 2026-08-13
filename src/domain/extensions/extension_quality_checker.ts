@@ -25,7 +25,13 @@ import {
 
 /** A quality issue found during checking. */
 export interface QualityIssue {
-  check: "fmt" | "lint" | "dynamic-import" | "version-drift" | "upgrade-chain";
+  check:
+    | "fmt"
+    | "lint"
+    | "dynamic-import"
+    | "version-drift"
+    | "upgrade-chain"
+    | "version-bump-upgrade";
   output: string;
 }
 
@@ -41,6 +47,8 @@ export function qualityCheckLabel(check: QualityIssue["check"]): string {
       return "Version drift";
     case "upgrade-chain":
       return "Upgrade chain";
+    case "version-bump-upgrade":
+      return "Version bump upgrade";
   }
 }
 
@@ -448,6 +456,51 @@ export async function checkUpgradeChainConsistency(
           `or update the model version to match.`,
       });
     }
+  }
+
+  return issues;
+}
+
+/**
+ * Checks for model files that have a version field but no upgrades array.
+ * This catches the case where a version was bumped but no upgrade entry
+ * was added — existing instances would be stranded at their old
+ * typeVersion. Only meaningful when the extension version is being bumped
+ * from a previously published baseline.
+ */
+export async function checkVersionBumpWithoutUpgrade(
+  modelFiles: string[],
+): Promise<QualityIssue[]> {
+  const issues: QualityIssue[] = [];
+
+  for (const file of modelFiles) {
+    let content: string;
+    try {
+      content = await Deno.readTextFile(file);
+    } catch (e) {
+      if (!(e instanceof Deno.errors.NotFound)) {
+        issues.push({
+          check: "version-bump-upgrade",
+          output: `${basename(file)}: could not read file: ${e}`,
+        });
+      }
+      continue;
+    }
+
+    const modelVersion = extractModelVersion(content);
+    if (!modelVersion) continue;
+
+    const lastToVersion = extractLastUpgradeToVersion(content);
+    if (lastToVersion !== null) continue;
+
+    issues.push({
+      check: "version-bump-upgrade",
+      output: `${basename(file)}: model has version "${modelVersion}" but no ` +
+        `upgrades array. Existing instances will not auto-migrate to this ` +
+        `version. Add an upgrades entry (even a no-op) — see ` +
+        `references/model/upgrades.md. If this model is new and has never ` +
+        `been published, pass --skip-upgrade-check to acknowledge.`,
+    });
   }
 
   return issues;
