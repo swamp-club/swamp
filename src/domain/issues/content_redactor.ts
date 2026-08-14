@@ -605,8 +605,10 @@ function applyRedactions(
     return match;
   });
 
-  // 10. Phone numbers
+  // 10. Phone numbers — require at least one structural character beyond
+  //     digits and whitespace to avoid matching numeric data like status codes.
   result = result.replace(PHONE_RE, (match) => {
+    if (!/[+().-]/.test(match)) return match;
     const digits = match.replace(/\D/g, "");
     if (digits.length >= 7 && digits.length <= 15) {
       count("phone number");
