@@ -507,11 +507,12 @@ override.
 
 **Precedence for schedule:** `serve.yaml override > workflow YAML trigger`
 
-**Precedence for trigger inputs:** override inputs replace the original
-`trigger.inputs` entirely (shallow-merge at the trigger level, not deep-merge
-at the inputs level). The existing `caller > trigger.inputs > schema defaults`
-layering remains unchanged — the override simply changes which `trigger.inputs`
-is used as the baseline.
+**Precedence for trigger inputs:** override inputs are merged on top of the
+workflow's built-in `trigger.inputs` — override keys win, but built-in keys
+not present in the override fall through. The existing
+`caller inputs > trigger.inputs > schema defaults` layering remains unchanged;
+override inputs occupy the caller inputs slot, layered above built-in
+`trigger.inputs`.
 
 #### Trigger Inputs
 
