@@ -2405,15 +2405,19 @@ export const serveCommand = new Command()
     const webhookFlags: string[] = merged.webhook ?? [];
 
     logger.info("Boot: starting scheduler");
-    // Build trigger overrides map from serve config
     let triggerOverrides: Map<string, TriggerOverride> | undefined;
     if (merged.triggerOverrides) {
       triggerOverrides = new Map(Object.entries(merged.triggerOverrides));
     }
 
-    // Start scheduled execution service if enabled
     let scheduledExecution: ScheduledExecutionService | null = null;
     if (enableSchedule) {
+      if (triggerOverrides && triggerOverrides.size > 0) {
+        logger.info(
+          "Loaded {count} trigger override(s) from serve.yaml",
+          { count: triggerOverrides.size },
+        );
+      }
       scheduledExecution = new ScheduledExecutionService({
         workflowRepo: repoContext.workflowRepo,
         repoDir: resolvedRepoDir,
