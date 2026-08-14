@@ -516,8 +516,9 @@ override.
 - The `handleScheduleChange` callback also consults the override map, so
   live-reloaded workflows respect overrides
 - Overrides for unknown workflow names are logged as warnings and skipped
-- Overrides are read once at startup — editing `serve.yaml` while serve is
-  running requires a restart (consistent with other serve config fields)
+- Overrides are read at startup and re-read on `swamp serve reload` (SIGHUP or
+  WebSocket `serve.reload`) — changes to `serve.yaml` take effect without a
+  full restart
 - Works with both extension and local workflows — but the primary use case is
   extension workflows that cannot be edited directly
 

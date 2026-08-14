@@ -163,8 +163,10 @@ export class ScheduledExecutionService {
   private processing = false;
   private processingPromise: Promise<void> = Promise.resolve();
   private eventHandler: ScheduledExecutionEventHandler | null = null;
+  private triggerOverrides: ReadonlyMap<string, TriggerOverride>;
 
   constructor(private readonly deps: ScheduledExecutionDeps) {
+    this.triggerOverrides = deps.triggerOverrides ?? new Map();
     this.scheduler = new WorkflowScheduler();
     this.watcher = new WorkflowWatcher(
       workflowsDir(deps.repoDir),
@@ -311,7 +313,7 @@ export class ScheduledExecutionService {
     workflowName: string,
     builtInSchedule: string | null,
   ): string | null {
-    const override = this.deps.triggerOverrides?.get(workflowName);
+    const override = this.triggerOverrides.get(workflowName);
     if (override?.schedule !== undefined) {
       return override.schedule;
     }
@@ -334,7 +336,7 @@ export class ScheduledExecutionService {
         cronExpression: effective,
       });
       const isOverride =
-        this.deps.triggerOverrides?.get(workflowName)?.schedule !== undefined;
+        this.triggerOverrides.get(workflowName)?.schedule !== undefined;
       logger.info(
         isOverride
           ? "Registered schedule for workflow {name}: {schedule} (serve.yaml override)"
@@ -355,8 +357,8 @@ export class ScheduledExecutionService {
   }
 
   private async applyTriggerOverrides(): Promise<void> {
-    const overrides = this.deps.triggerOverrides;
-    if (!overrides || overrides.size === 0) return;
+    const overrides = this.triggerOverrides;
+    if (overrides.size === 0) return;
 
     const registeredNames = new Set(this.workflowNames.values());
 
@@ -384,6 +386,81 @@ export class ScheduledExecutionService {
 
       this.handleScheduleChange(workflow.id, null, workflow.name);
     }
+  }
+
+  async updateTriggerOverrides(
+    newOverrides: ReadonlyMap<string, TriggerOverride>,
+  ): Promise<number> {
+    const oldOverrides = this.triggerOverrides;
+    this.triggerOverrides = newOverrides;
+    let changed = 0;
+
+    // Removed overrides: fall back to built-in schedule
+    for (const [workflowName] of oldOverrides) {
+      if (newOverrides.has(workflowName)) continue;
+
+      const workflowId = this.findWorkflowIdByName(workflowName);
+      if (workflowId) {
+        const workflow = await this.deps.workflowRepo.findByName(workflowName);
+        this.handleScheduleChange(
+          workflowId,
+          workflow?.schedule ?? null,
+          workflowName,
+        );
+        changed++;
+      }
+    }
+
+    // Added or changed overrides
+    for (const [workflowName, newOverride] of newOverrides) {
+      const oldOverride = oldOverrides.get(workflowName);
+
+      if (
+        oldOverride?.schedule === newOverride.schedule &&
+        JSON.stringify(oldOverride?.inputs) ===
+          JSON.stringify(newOverride.inputs)
+      ) {
+        continue;
+      }
+
+      const workflowId = this.findWorkflowIdByName(workflowName);
+      if (workflowId) {
+        const workflow = await this.deps.workflowRepo.findByName(workflowName);
+        this.handleScheduleChange(
+          workflowId,
+          workflow?.schedule ?? null,
+          workflowName,
+        );
+        changed++;
+      } else if (newOverride.schedule) {
+        const workflow = await this.deps.workflowRepo.findByName(workflowName);
+        if (workflow) {
+          this.handleScheduleChange(workflow.id, null, workflow.name);
+          changed++;
+        } else {
+          logger.warn(
+            "Trigger override for unknown workflow {name} — skipping",
+            { name: workflowName },
+          );
+        }
+      }
+    }
+
+    if (changed > 0) {
+      logger.info(
+        "Updated trigger overrides: {changed} schedule(s) changed",
+        { changed },
+      );
+    }
+
+    return changed;
+  }
+
+  private findWorkflowIdByName(name: string): WorkflowId | undefined {
+    for (const [id, n] of this.workflowNames) {
+      if (n === name) return id;
+    }
+    return undefined;
   }
 
   private async handleFire(
@@ -505,7 +582,7 @@ export class ScheduledExecutionService {
       let completedRun: WorkflowRunView | undefined;
       let streamError: string | undefined;
 
-      const override = this.deps.triggerOverrides?.get(workflowName);
+      const override = this.triggerOverrides.get(workflowName);
 
       await withSpan(
         "swamp.scheduled.fire",

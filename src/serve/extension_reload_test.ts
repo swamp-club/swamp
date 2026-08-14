@@ -87,3 +87,94 @@ Deno.test("performServeReload: resets isReloading flag after failure", async () 
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
+
+Deno.test("performServeReload: calls triggerOverrideUpdater with overrides from serve.yaml", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
+    await Deno.writeTextFile(
+      join(tmpDir, ".swamp", "serve.yaml"),
+      `triggers:\n  my-workflow:\n    schedule: "0 3 * * *"\n`,
+    );
+
+    let receivedOverrides: ReadonlyMap<string, unknown> | undefined;
+    const result = await performServeReload(
+      tmpDir,
+      join(tmpDir, "nonexistent_lockfile.json"),
+      {
+        triggerOverrideUpdater: (overrides) => {
+          receivedOverrides = overrides;
+          return Promise.resolve(overrides.size);
+        },
+      },
+    );
+
+    assertEquals(result.success, true);
+    assertEquals(result.triggerOverridesChanged, 1);
+    assertEquals(receivedOverrides?.size, 1);
+    const entry = receivedOverrides?.get("my-workflow") as
+      | { schedule?: string }
+      | undefined;
+    assertEquals(entry?.schedule, "0 3 * * *");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("performServeReload: passes empty map when serve.yaml has no triggers", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
+    await Deno.writeTextFile(
+      join(tmpDir, ".swamp", "serve.yaml"),
+      `port: 8080\n`,
+    );
+
+    let receivedOverrides: ReadonlyMap<string, unknown> | undefined;
+    const result = await performServeReload(
+      tmpDir,
+      join(tmpDir, "nonexistent_lockfile.json"),
+      {
+        triggerOverrideUpdater: (overrides) => {
+          receivedOverrides = overrides;
+          return Promise.resolve(overrides.size);
+        },
+      },
+    );
+
+    assertEquals(result.success, true);
+    assertEquals(result.triggerOverridesChanged, 0);
+    assertEquals(receivedOverrides?.size, 0);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("performServeReload: trigger override updater error is soft failure", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
+    await Deno.writeTextFile(
+      join(tmpDir, ".swamp", "serve.yaml"),
+      `triggers:\n  my-wf:\n    schedule: "0 3 * * *"\n`,
+    );
+
+    const result = await performServeReload(
+      tmpDir,
+      join(tmpDir, "nonexistent_lockfile.json"),
+      {
+        triggerOverrideUpdater: () =>
+          Promise.reject(new Error("scheduler broke")),
+      },
+    );
+
+    assertEquals(result.success, true);
+    assertStringIncludes(
+      result.errors[0],
+      "Failed to reload trigger overrides",
+    );
+    assertStringIncludes(result.errors[0], "scheduler broke");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});

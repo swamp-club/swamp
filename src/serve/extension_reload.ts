@@ -46,6 +46,8 @@ import { AuthRepository } from "../infrastructure/persistence/auth_repository.ts
 import { resolveTrustedCollectives } from "../libswamp/mod.ts";
 import { resolveModelsDir } from "../cli/resolve_models_dir.ts";
 import type { ServeReloadResponse } from "./protocol.ts";
+import { readServeConfigFile } from "./serve_config.ts";
+import type { TriggerOverride } from "../libswamp/mod.ts";
 
 const logger = getSwampLogger(["serve", "reload"]);
 
@@ -230,9 +232,16 @@ export async function resolveLockfilePath(
   );
 }
 
+export interface ServeReloadOptions {
+  triggerOverrideUpdater?: (
+    overrides: ReadonlyMap<string, TriggerOverride>,
+  ) => Promise<number>;
+}
+
 export async function performServeReload(
   repoDir: string,
   lockfilePath: string,
+  options?: ServeReloadOptions,
 ): Promise<ServeReloadResponse> {
   if (reloading) {
     return {
@@ -245,6 +254,7 @@ export async function performServeReload(
   reloading = true;
   const errors: string[] = [];
   let reloadedCount = 0;
+  let triggerOverridesChanged = 0;
 
   try {
     reloadedCount = await reloadPulledExtensions(repoDir, lockfilePath);
@@ -258,7 +268,24 @@ export async function performServeReload(
       );
     }
 
-    return { success: true, reloadedCount, errors };
+    if (options?.triggerOverrideUpdater) {
+      try {
+        const config = await readServeConfigFile(repoDir);
+        const overrides = new Map<string, TriggerOverride>(
+          config?.triggers ? Object.entries(config.triggers) : [],
+        );
+        triggerOverridesChanged = await options.triggerOverrideUpdater(
+          overrides,
+        );
+      } catch (err) {
+        errors.push(
+          "Failed to reload trigger overrides: " +
+            (err instanceof Error ? err.message : String(err)),
+        );
+      }
+    }
+
+    return { success: true, reloadedCount, triggerOverridesChanged, errors };
   } catch (err) {
     return {
       success: false,

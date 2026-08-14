@@ -72,6 +72,7 @@ import {
   ReconcileFromDiskService,
   type ReconcileTransition,
   resolveServerUrl,
+  type TriggerOverride,
   UpgradeExtensionService,
   validateExtensionName,
   vaultMigrate,
@@ -1743,11 +1744,31 @@ export async function handleServeReload(
 
   try {
     const lockfilePath = await resolveLockfilePath(ctx.repoDir);
-    const result = await performServeReload(ctx.repoDir, lockfilePath);
+    const reloadOptions = ctx.scheduledExecution
+      ? {
+        triggerOverrideUpdater: (
+          overrides: ReadonlyMap<string, TriggerOverride>,
+        ) => ctx.scheduledExecution!.updateTriggerOverrides(overrides),
+      }
+      : undefined;
+    const result = await performServeReload(
+      ctx.repoDir,
+      lockfilePath,
+      reloadOptions,
+    );
 
     if (result.success) {
       logger
         .info`Extension reload completed: ${result.reloadedCount} type(s) reloaded (requested by ${who})`;
+      if (
+        result.triggerOverridesChanged &&
+        result.triggerOverridesChanged > 0
+      ) {
+        logger.info(
+          "Reloaded {count} trigger override(s) from serve.yaml (requested by {who})",
+          { count: result.triggerOverridesChanged, who },
+        );
+      }
     }
 
     send(socket, {

@@ -957,6 +957,7 @@ export interface AccessReloadResponse {
 export interface ServeReloadResponse {
   success: boolean;
   reloadedCount: number;
+  triggerOverridesChanged?: number;
   errors: string[];
 }
 
