@@ -68,6 +68,7 @@ import {
   ModelTypeType,
   WorkflowNameType,
 } from "./completion_types.ts";
+import { isTransientError } from "../infrastructure/persistence/io_errors.ts";
 import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
 import { readLocalManifestIdentity } from "../infrastructure/persistence/local_manifest_reader.ts";
@@ -584,6 +585,26 @@ function isMissingHomeError(error: unknown): boolean {
   return error instanceof Error && error.message.includes("home directory");
 }
 
+function throwOnTransientLoadFailures(
+  failures: ReadonlyArray<
+    { file: string; error: string; originalError?: unknown }
+  >,
+  kind: string,
+): void {
+  const transient = failures.filter((f) =>
+    isTransientError(f.originalError ?? new Error(f.error))
+  );
+  if (transient.length === 0) return;
+  const details = transient
+    .map((f) => `${f.file}: ${f.error}`)
+    .join("; ");
+  throw new UserError(
+    `Failed to load ${transient.length} extension ${kind}(s): ${details}. ` +
+      "If another swamp process is writing the extension index, retry once it finishes.",
+    "lock_timeout",
+  );
+}
+
 /**
  * Load user models from configured directory.
  * Uses the bundle catalog for lazy per-bundle loading when available.
@@ -658,6 +679,8 @@ async function loadUserModels(
       },
     );
 
+    throwOnTransientLoadFailures(result.failed, "model");
+
     for (const failure of result.failed) {
       if (failure.error.startsWith("Cannot extend unregistered model type")) {
         logger
@@ -668,10 +691,20 @@ async function loadUserModels(
       }
     }
   } catch (error) {
+    if (error instanceof UserError) throw error;
     if (error instanceof Deno.errors.NotFound) return;
     // configureExtensionLoaders already emitted one actionable warning for
     // the missing-home case; suppress the misleading per-kind duplicate.
     if (isMissingHomeError(error)) return;
+    if (isTransientError(error)) {
+      throw new UserError(
+        `Failed to load extension models: ${
+          error instanceof Error ? error.message : String(error)
+        }. ` +
+          "If another swamp process is writing the extension index, retry once it finishes.",
+        "lock_timeout",
+      );
+    }
     logger
       .warn`Failed to load user model extensions: ${
       error instanceof Error ? error.message : String(error)
@@ -728,6 +761,8 @@ async function loadUserVaults(
         additionalDirs: [...sourceDirs, ...pulledDirs],
       });
 
+      throwOnTransientLoadFailures(result.failed, "vault");
+
       for (const failure of result.failed) {
         logger
           .warn`Failed to load user vault ${failure.file}: ${failure.error}`;
@@ -738,14 +773,26 @@ async function loadUserVaults(
         skipAlreadyRegistered: true,
       });
 
+      throwOnTransientLoadFailures(result.failed, "vault");
+
       for (const failure of result.failed) {
         logger
           .warn`Failed to load user vault ${failure.file}: ${failure.error}`;
       }
     }
   } catch (error) {
+    if (error instanceof UserError) throw error;
     if (error instanceof Deno.errors.NotFound) return;
     if (isMissingHomeError(error)) return;
+    if (isTransientError(error)) {
+      throw new UserError(
+        `Failed to load extension vaults: ${
+          error instanceof Error ? error.message : String(error)
+        }. ` +
+          "If another swamp process is writing the extension index, retry once it finishes.",
+        "lock_timeout",
+      );
+    }
     logger
       .warn`Failed to load user vault extensions: ${
       error instanceof Error ? error.message : String(error)
@@ -799,6 +846,8 @@ async function loadUserDatastores(
         },
       );
 
+      throwOnTransientLoadFailures(result.failed, "datastore");
+
       for (const failure of result.failed) {
         logger
           .warn`Failed to load user datastore ${failure.file}: ${failure.error}`;
@@ -809,14 +858,26 @@ async function loadUserDatastores(
         skipAlreadyRegistered: true,
       });
 
+      throwOnTransientLoadFailures(result.failed, "datastore");
+
       for (const failure of result.failed) {
         logger
           .warn`Failed to load user datastore ${failure.file}: ${failure.error}`;
       }
     }
   } catch (error) {
+    if (error instanceof UserError) throw error;
     if (error instanceof Deno.errors.NotFound) return;
     if (isMissingHomeError(error)) return;
+    if (isTransientError(error)) {
+      throw new UserError(
+        `Failed to load extension datastores: ${
+          error instanceof Error ? error.message : String(error)
+        }. ` +
+          "If another swamp process is writing the extension index, retry once it finishes.",
+        "lock_timeout",
+      );
+    }
     logger
       .warn`Failed to load user datastore extensions: ${
       error instanceof Error ? error.message : String(error)
@@ -869,6 +930,8 @@ async function loadUserReports(
         additionalDirs: [...sourceDirs, ...pulledDirs],
       });
 
+      throwOnTransientLoadFailures(result.failed, "report");
+
       for (const failure of result.failed) {
         logger
           .warn`Failed to load user report ${failure.file}: ${failure.error}`;
@@ -879,14 +942,26 @@ async function loadUserReports(
         skipAlreadyRegistered: true,
       });
 
+      throwOnTransientLoadFailures(result.failed, "report");
+
       for (const failure of result.failed) {
         logger
           .warn`Failed to load user report ${failure.file}: ${failure.error}`;
       }
     }
   } catch (error) {
+    if (error instanceof UserError) throw error;
     if (error instanceof Deno.errors.NotFound) return;
     if (isMissingHomeError(error)) return;
+    if (isTransientError(error)) {
+      throw new UserError(
+        `Failed to load extension reports: ${
+          error instanceof Error ? error.message : String(error)
+        }. ` +
+          "If another swamp process is writing the extension index, retry once it finishes.",
+        "lock_timeout",
+      );
+    }
     logger
       .warn`Failed to load user report extensions: ${
       error instanceof Error ? error.message : String(error)
