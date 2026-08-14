@@ -75,3 +75,15 @@ Deno.test("serveReloadRenderer json: includes errors on failure", () => {
   assertEquals(parsed.success, false);
   assertStringIncludes(parsed.errors[0], "already in progress");
 });
+
+Deno.test("serveReloadRenderer json: includes triggerOverridesChanged in output", () => {
+  const result: ServeReloadResponse = {
+    success: true,
+    reloadedCount: 2,
+    triggerOverridesChanged: 3,
+    errors: [],
+  };
+  const output = captureRender("json", result);
+  const parsed = JSON.parse(output.join(""));
+  assertEquals(parsed.triggerOverridesChanged, 3);
+});

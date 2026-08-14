@@ -974,7 +974,8 @@ export const serveCommand = new Command()
   )
   .option(
     "--hot-reload",
-    "Enable SIGHUP-based hot-reload for pulled extension bundles. " +
+    "Enable SIGHUP-based hot-reload for pulled extension bundles and " +
+      "trigger overrides from serve.yaml. " +
       "Writes a PID file to .swamp/serve.pid; use 'swamp serve reload' to trigger a reload",
   )
   .option(

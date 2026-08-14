@@ -40,6 +40,13 @@ class LogServeReloadRenderer implements ServeReloadRenderer {
 
     logger.info`Reloaded ${result.reloadedCount} extension type(s)`;
 
+    if (result.triggerOverridesChanged && result.triggerOverridesChanged > 0) {
+      logger.info(
+        "Reloaded {count} trigger override(s) from serve.yaml",
+        { count: result.triggerOverridesChanged },
+      );
+    }
+
     if (result.errors.length > 0) {
       for (const error of result.errors) {
         logger.warn`${error}`;
