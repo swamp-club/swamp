@@ -98,6 +98,13 @@ import {
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
+import { RunMetricsTracker } from "../../serve/run_metrics_tracker.ts";
+import { ComponentHealthChecker } from "../../serve/component_health_checker.ts";
+import { HealthCollector } from "../../serve/health_collector.ts";
+import {
+  type AdminAuthDeps,
+  authenticateAdmin,
+} from "../../serve/admin_auth.ts";
 import {
   deleteActiveRun,
   writeActiveRun,
@@ -190,6 +197,7 @@ import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { requireAuthenticated, requireScope } from "../auth_context.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import {
   type DatastoreClassification,
@@ -967,6 +975,11 @@ export const serveCommand = new Command()
     "--hot-reload",
     "Enable SIGHUP-based hot-reload for pulled extension bundles. " +
       "Writes a PID file to .swamp/serve.pid; use 'swamp serve reload' to trigger a reload",
+  )
+  .option(
+    "--enable-internal-api",
+    "Enable the /internal/runs endpoint for full run history access " +
+      "(env: SWAMP_ENABLE_INTERNAL_API)",
   )
   .example(
     "Enable TLS",
@@ -2517,17 +2530,24 @@ export const serveCommand = new Command()
                 );
               }
               break;
-            case "schedule_completed":
+            case "schedule_completed": {
               logger.info(
                 "Scheduled workflow {name} completed (run: {runId})",
                 { name: event.workflowName, runId: event.runId },
               );
+              const schedRun = runTracker.findById(event.runId);
+              const schedDuration = schedRun
+                ? Date.now() - schedRun.startedAt.getTime()
+                : 0;
+              runMetricsTracker.record("completed", schedDuration);
               break;
+            }
             case "schedule_failed":
               logger.error(
                 "Scheduled workflow {name} failed: {error}",
                 { name: event.workflowName, error: event.error },
               );
+              runMetricsTracker.record("failed", 0);
               break;
           }
         }
@@ -2763,17 +2783,24 @@ export const serveCommand = new Command()
                 { workflow: event.workflowName },
               );
               break;
-            case "webhook_completed":
+            case "webhook_completed": {
               logger.info(
                 "Webhook workflow {workflow} completed (run: {runId})",
                 { workflow: event.workflowName, runId: event.runId },
               );
+              const whRun = runTracker.findById(event.runId);
+              const whDuration = whRun
+                ? Date.now() - whRun.startedAt.getTime()
+                : 0;
+              runMetricsTracker.record("completed", whDuration);
               break;
+            }
             case "webhook_failed":
               logger.error(
                 "Webhook workflow {workflow} failed: {error}",
                 { workflow: event.workflowName, error: event.error },
               );
+              runMetricsTracker.record("failed", 0);
               break;
           }
         }
@@ -2806,6 +2833,54 @@ export const serveCommand = new Command()
     }
 
     let isReady = false;
+    const enableInternalApi = merged.enableInternalApi;
+    const serverStartedAt = Date.now();
+
+    const runMetricsTracker = new RunMetricsTracker();
+
+    const componentHealthChecker = new ComponentHealthChecker({
+      checkDatastore: async (_signal) => {
+        if (isCustomDatastoreConfig(datastoreConfig)) {
+          await datastoreTypeRegistry.ensureTypeLoaded(datastoreConfig.type);
+          const typeInfo = datastoreTypeRegistry.get(datastoreConfig.type);
+          if (typeInfo?.createProvider) {
+            const provider = typeInfo.createProvider(datastoreConfig.config);
+            const verifier = provider.createVerifier();
+            return await verifier.verify();
+          }
+          return {
+            healthy: false,
+            message: "No provider available for datastore type",
+            latencyMs: 0,
+            datastoreType: datastoreConfig.type,
+          };
+        }
+        const verifier = new FilesystemDatastoreVerifier(datastoreConfig.path);
+        return await verifier.verify();
+      },
+    });
+
+    const healthCollector = new HealthCollector({
+      instanceId,
+      deploymentMode: deploymentMode.mode,
+      startedAt: serverStartedAt,
+      isReady: () => isReady,
+      activeRunRegistry: activeRunRegistry ?? null,
+      metricsTracker: runMetricsTracker,
+      componentChecker: componentHealthChecker,
+      workerProvider: workerGateway,
+      scheduleProvider: scheduledExecution,
+      scheduleEnabled: enableSchedule,
+      webhookProvider: webhookService ?? null,
+    });
+
+    const adminAuthDeps: AdminAuthDeps = {
+      authMode: authConfig.mode,
+      repoDir: resolvedRepoDir,
+      repoContext,
+      policySnapshotLoader,
+      trustProxy,
+    };
 
     const wsScheme = tlsEnabled ? "wss" : "ws";
     const server = Deno.serve(
@@ -3092,6 +3167,139 @@ export const serveCommand = new Command()
               count += scheduledExecution.cancelAllRuns();
             }
             return Response.json({ status: "cancelled", count });
+          }
+        }
+
+        // Health snapshot endpoint (authenticated + authorized)
+        if (req.method === "GET") {
+          const url = new URL(req.url);
+          if (url.pathname === "/api/v1/health") {
+            const auth = await authenticateAdmin(
+              req,
+              info.remoteAddr.hostname,
+              adminAuthDeps,
+            );
+            if (!auth.ok) return auth.response;
+            const snapshot = await healthCollector.collect(ac.signal);
+            return Response.json(snapshot);
+          }
+
+          // SSE health stream (authenticated + authorized)
+          if (url.pathname === "/api/v1/health/stream") {
+            const auth = await authenticateAdmin(
+              req,
+              info.remoteAddr.hostname,
+              adminAuthDeps,
+            );
+            if (!auth.ok) return auth.response;
+
+            const intervalParam = url.searchParams.get("interval");
+            let intervalMs = 5000;
+            if (intervalParam !== null) {
+              const parsed = parseInt(intervalParam, 10);
+              if (!isNaN(parsed)) {
+                intervalMs = Math.max(1000, Math.min(60000, parsed));
+              }
+            }
+
+            const lastEventIdHeader = req.headers.get("Last-Event-ID");
+            let eventId = lastEventIdHeader !== null
+              ? parseInt(lastEventIdHeader, 10) || 0
+              : 0;
+
+            const stream = new ReadableStream<Uint8Array>({
+              async start(controller) {
+                const encoder = new TextEncoder();
+                let stopped = false;
+                let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+
+                const push = async () => {
+                  if (stopped) return;
+                  try {
+                    const snapshot = await healthCollector.collect(ac.signal);
+                    eventId++;
+                    const event = `id: ${eventId}\nevent: health\ndata: ${
+                      JSON.stringify(snapshot)
+                    }\n\n`;
+                    controller.enqueue(encoder.encode(event));
+                  } catch {
+                    // Collection failed — skip this tick
+                  }
+                  if (!stopped) {
+                    pendingTimer = setTimeout(push, intervalMs);
+                  }
+                };
+
+                const cleanup = () => {
+                  stopped = true;
+                  if (pendingTimer !== null) clearTimeout(pendingTimer);
+                  ac.signal.removeEventListener("abort", cleanup);
+                  req.signal.removeEventListener("abort", cleanup);
+                  try {
+                    controller.close();
+                  } catch {
+                    // Already closed
+                  }
+                };
+
+                ac.signal.addEventListener("abort", cleanup, { once: true });
+                req.signal.addEventListener("abort", cleanup, { once: true });
+
+                await push();
+              },
+            });
+
+            return new Response(stream, {
+              headers: {
+                "content-type": "text/event-stream",
+                "cache-control": "no-cache",
+                "connection": "keep-alive",
+                "x-accel-buffering": "no",
+                "x-health-interval": String(intervalMs),
+              },
+            });
+          }
+
+          // Internal runs endpoint (opt-in, authenticated + authorized)
+          if (url.pathname === "/internal/runs") {
+            if (!enableInternalApi) {
+              return new Response("Not found", { status: 404 });
+            }
+            const auth = await authenticateAdmin(
+              req,
+              info.remoteAddr.hostname,
+              adminAuthDeps,
+            );
+            if (!auth.ok) return auth.response;
+            const limitParam = url.searchParams.get("limit");
+            const offsetParam = url.searchParams.get("offset");
+            const limit = limitParam !== null
+              ? Math.max(1, Math.min(10000, parseInt(limitParam, 10) || 100))
+              : 100;
+            const offset = offsetParam !== null
+              ? Math.max(0, parseInt(offsetParam, 10) || 0)
+              : 0;
+            const allRuns = runTracker.findAll();
+            const paged = allRuns.slice(offset, offset + limit);
+            return Response.json({
+              total: allRuns.length,
+              limit,
+              offset,
+              runs: paged.map((r) => ({
+                id: r.id,
+                runKind: r.runKind,
+                modelType: r.modelType,
+                methodName: r.methodName,
+                workflowName: r.workflowName,
+                pid: r.pid,
+                hostname: r.hostname,
+                status: r.status,
+                startedAt: r.startedAt.toISOString(),
+                heartbeatAt: r.heartbeatAt.toISOString(),
+                initiatedBy: r.initiatedBy,
+                instanceId: r.instanceId,
+              })),
+            });
           }
         }
 

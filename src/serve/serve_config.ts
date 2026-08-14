@@ -46,6 +46,7 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   maxConcurrentRuns: "SWAMP_MAX_CONCURRENT_RUNS",
   maxRunsPerPrincipal: "SWAMP_MAX_RUNS_PER_PRINCIPAL",
   maxRunDuration: "SWAMP_MAX_RUN_DURATION",
+  enableInternalApi: "SWAMP_ENABLE_INTERNAL_API",
 };
 
 // ── Webhook Config Types ──────────────────────────────────────────────
@@ -99,6 +100,7 @@ export interface ServeConfigFile {
   "max-runs-per-principal"?: number;
   "max-run-duration"?: string;
   "hydration-timeout"?: string;
+  "enable-internal-api"?: boolean;
 }
 
 // ── Known Keys ────────────────────────────────────────────────────────
@@ -127,6 +129,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "max-runs-per-principal",
   "max-run-duration",
   "hydration-timeout",
+  "enable-internal-api",
 ]);
 
 const KNOWN_AUTH_KEYS = new Set([
@@ -531,6 +534,7 @@ export interface MergedServeOptions {
   maxRunsPerPrincipal?: number;
   maxRunDuration?: string;
   hydrationTimeout?: string;
+  enableInternalApi: boolean;
 }
 
 export function mergeServeOptions(
@@ -853,6 +857,13 @@ export function mergeServeOptions(
     undefined,
   );
 
+  const enableInternalApi = resolveBoolean(
+    "enable-internal-api",
+    cliOptions.enableInternalApi as boolean,
+    config?.["enable-internal-api"],
+    false,
+  );
+
   // Webhooks: CLI --webhook flags replace config file webhooks entirely
   let webhook: string[] | undefined;
   let webhookEndpoints: WebhookEndpoint[] | undefined;
@@ -898,5 +909,6 @@ export function mergeServeOptions(
     maxRunsPerPrincipal,
     maxRunDuration,
     hydrationTimeout,
+    enableInternalApi,
   };
 }
