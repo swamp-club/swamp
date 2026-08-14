@@ -219,6 +219,42 @@ Deno.test("redactIssueContent: does not match bare digit runs as phone numbers",
   assertEquals(result.text.includes("[REDACTED-PHONE]"), false);
 });
 
+Deno.test("redactIssueContent: does not redact space-separated HTTP status codes", () => {
+  const result = redactIssueContent(
+    "404 404 404 404 404 404 404 404",
+  );
+  assertEquals(result.text, "404 404 404 404 404 404 404 404");
+  assertEquals(result.summary.totalRedactions, 0);
+});
+
+Deno.test("redactIssueContent: does not redact mixed status code runs", () => {
+  const input =
+    "HOPS=0:  404 404 404 404 404 404 404 404\nHOPS=1:  404 404 404 404 404 429 429 429";
+  const result = redactIssueContent(input);
+  assertEquals(result.text, input);
+});
+
+Deno.test("redactIssueContent: does not redact status codes in fenced code blocks", () => {
+  const input = "```\n404 404 404 404 404 404 404 404\n```";
+  const result = redactIssueContent(input);
+  assertEquals(result.text, input);
+});
+
+Deno.test("redactIssueContent: redacts phone numbers with dot separators", () => {
+  const result = redactIssueContent("Call 555.867.5309 for support");
+  assertStringIncludes(result.text, "[REDACTED-PHONE]");
+});
+
+Deno.test("redactIssueContent: redacts phone numbers with hyphen separators", () => {
+  const result = redactIssueContent("Call 555-867-5309 for support");
+  assertStringIncludes(result.text, "[REDACTED-PHONE]");
+});
+
+Deno.test("redactIssueContent: redacts phone numbers with parentheses", () => {
+  const result = redactIssueContent("Call (555) 867-5309 for support");
+  assertStringIncludes(result.text, "[REDACTED-PHONE]");
+});
+
 Deno.test("redactIssueContent: redacts connection string credentials", () => {
   const result = redactIssueContent(
     "postgres://admin:s3cret@db-prod.internal:5432/mydb",
