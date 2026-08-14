@@ -123,6 +123,14 @@ import {
   subscribeUntilDetach,
 } from "./shared.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { join } from "@std/path";
+import {
+  readServeConfigFile,
+  SERVE_CONFIG_PATH,
+  type TriggerOverrideEntry,
+  validateTriggerOverrideEntry,
+  writeServeConfigFile,
+} from "../serve_config.ts";
 
 const logger = getSwampLogger(["serve", "connection"]);
 const DEFAULT_BUFFER_CAPACITY = 10_000;
@@ -1570,13 +1578,6 @@ export async function handleWorkflowEvaluate(
 
 // ── Workflow trigger override handlers ──────────────────────────────
 
-import {
-  readServeConfigFile,
-  type TriggerOverrideEntry,
-  validateTriggerOverrideEntry,
-  writeServeConfigFile,
-} from "../serve_config.ts";
-
 export async function handleWorkflowTriggerSet(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -1601,7 +1602,7 @@ export async function handleWorkflowTriggerSet(
         : {}),
     };
 
-    const configPath = `${ctx.repoDir}/.swamp/serve.yaml`;
+    const configPath = join(ctx.repoDir, SERVE_CONFIG_PATH);
     validateTriggerOverrideEntry(entry, configPath, payload.workflowName);
 
     const config = await readServeConfigFile(ctx.repoDir) ?? {};

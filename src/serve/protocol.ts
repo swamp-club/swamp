@@ -508,6 +508,21 @@ export interface WorkflowTriggerRemovePayload {
   workflowName: string;
 }
 
+export interface EffectiveTrigger {
+  readonly schedule: string | null;
+  readonly inputs: Record<string, unknown>;
+}
+
+export interface WorkflowTriggerGetResult {
+  readonly workflowName: string;
+  readonly builtIn: EffectiveTrigger | null;
+  readonly override: {
+    readonly schedule?: string;
+    readonly inputs?: Record<string, unknown>;
+  } | null;
+  readonly effective: EffectiveTrigger;
+}
+
 // ── Vault CRUD / audit operations ───────────────────────────────────
 
 export interface VaultCreatePayload {
@@ -1266,15 +1281,18 @@ export interface WorkflowEvaluateResponse {
 }
 
 export interface WorkflowTriggerSetResponse {
-  data: Record<string, unknown>;
+  data: {
+    workflowName: string;
+    entry: { schedule?: string; inputs?: Record<string, unknown> };
+  };
 }
 
 export interface WorkflowTriggerGetResponse {
-  data: Record<string, unknown>;
+  data: WorkflowTriggerGetResult;
 }
 
 export interface WorkflowTriggerRemoveResponse {
-  data: Record<string, unknown>;
+  data: { workflowName: string };
 }
 
 export interface VaultCreateResponse {

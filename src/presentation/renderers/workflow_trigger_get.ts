@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { WorkflowTriggerGetResult } from "../../cli/commands/workflow_trigger_get.ts";
+import type { WorkflowTriggerGetResult } from "../../serve/protocol.ts";
 import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 
@@ -32,10 +32,15 @@ export function renderWorkflowTriggerGet(
 
   const logger = getSwampLogger(["workflow", "trigger", "get"]);
 
+  if (!data.builtIn && !data.override) {
+    logger.info`No trigger configured for workflow ${data.workflowName}`;
+    return;
+  }
+
   logger.info`Trigger for ${data.workflowName}:`;
 
   if (data.builtIn) {
-    logger.info`  built-in:`;
+    logger.info("  built-in:");
     if (data.builtIn.schedule) {
       logger.info`    schedule: ${data.builtIn.schedule}`;
     }
@@ -47,7 +52,7 @@ export function renderWorkflowTriggerGet(
   }
 
   if (data.override) {
-    logger.info`  override (serve.yaml):`;
+    logger.info("  override (serve.yaml):");
     if (data.override.schedule) {
       logger.info`    schedule: ${data.override.schedule}`;
     }
@@ -58,13 +63,12 @@ export function renderWorkflowTriggerGet(
     }
   }
 
-  logger.info`  effective:`;
+  logger.info("  effective:");
   if (data.effective.schedule) {
-    logger.info`    schedule: ${data.effective.schedule}${
-      data.override?.schedule ? " (from override)" : " (built-in)"
-    }`;
+    const source = data.override?.schedule ? "override" : "built-in";
+    logger.info`    schedule: ${data.effective.schedule} (${source})`;
   } else {
-    logger.info`    schedule: (none)`;
+    logger.info("    schedule: (none)");
   }
   if (Object.keys(data.effective.inputs).length > 0) {
     for (const [key, value] of Object.entries(data.effective.inputs)) {

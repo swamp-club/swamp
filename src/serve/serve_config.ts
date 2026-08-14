@@ -1049,11 +1049,7 @@ export async function writeServeConfigFile(
 ): Promise<void> {
   const path = join(repoDir, DEFAULT_CONFIG_PATH);
   const dir = join(repoDir, ".swamp");
-  try {
-    await Deno.mkdir(dir, { recursive: true });
-  } catch {
-    // Directory already exists
-  }
+  await Deno.mkdir(dir, { recursive: true });
   const content = stringifyYaml(
     config as unknown as Record<string, unknown>,
   );

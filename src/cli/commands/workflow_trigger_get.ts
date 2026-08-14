@@ -35,19 +35,10 @@ import {
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
-import type { WorkflowTriggerGetResponse } from "../../serve/protocol.ts";
-
-export interface EffectiveTrigger {
-  readonly schedule: string | null;
-  readonly inputs: Record<string, unknown>;
-}
-
-export interface WorkflowTriggerGetResult {
-  readonly workflowName: string;
-  readonly builtIn: EffectiveTrigger | null;
-  readonly override: TriggerOverrideEntry | null;
-  readonly effective: EffectiveTrigger;
-}
+import type {
+  EffectiveTrigger,
+  WorkflowTriggerGetResponse,
+} from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -89,7 +80,7 @@ export const workflowTriggerGetCommand = withRemoteOptions(
     );
     renderWorkflowTriggerGet(
       cliCtx.outputMode,
-      response.data as unknown as WorkflowTriggerGetResult,
+      response.data,
     );
     return;
   }
@@ -129,17 +120,6 @@ export const workflowTriggerGetCommand = withRemoteOptions(
       ...(override?.inputs ?? {}),
     },
   };
-
-  if (!builtIn && !override) {
-    cliCtx.logger.info`No trigger found for workflow ${workflowName}`;
-    renderWorkflowTriggerGet(cliCtx.outputMode, {
-      workflowName,
-      builtIn: null,
-      override: null,
-      effective: { schedule: null, inputs: {} },
-    });
-    return;
-  }
 
   renderWorkflowTriggerGet(cliCtx.outputMode, {
     workflowName,

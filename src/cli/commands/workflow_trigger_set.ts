@@ -18,8 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { join } from "@std/path";
 import {
   readServeConfigFile,
+  SERVE_CONFIG_PATH,
   type TriggerOverrideEntry,
   validateTriggerOverrideEntry,
   writeServeConfigFile,
@@ -75,9 +77,13 @@ export const workflowTriggerSetCommand = withRemoteOptions(
       "Cron expression for the trigger schedule",
       { required: true },
     )
-    .option("--input <value:string>", "Input values (key=value, repeatable)", {
-      collect: true,
-    })
+    .option(
+      "--input <value:string>",
+      "Input values (key=value, repeatable; JSON syntax not supported)",
+      {
+        collect: true,
+      },
+    )
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
@@ -114,13 +120,9 @@ export const workflowTriggerSetCommand = withRemoteOptions(
         },
       },
     );
-    const data = response.data as unknown as {
-      workflowName: string;
-      entry: TriggerOverrideEntry;
-    };
     renderWorkflowTriggerSet(cliCtx.outputMode, {
-      workflowName: data.workflowName,
-      entry: data.entry,
+      workflowName: response.data.workflowName,
+      entry: response.data.entry,
     });
     return;
   }
@@ -135,7 +137,7 @@ export const workflowTriggerSetCommand = withRemoteOptions(
     ? { ...entry, inputs }
     : entry;
 
-  const configPath = `${repoDir}/.swamp/serve.yaml`;
+  const configPath = join(repoDir, SERVE_CONFIG_PATH);
   validateTriggerOverrideEntry(entryWithInputs, configPath, workflowName);
 
   cliCtx.logger.debug`Setting trigger override for workflow ${workflowName}`;
