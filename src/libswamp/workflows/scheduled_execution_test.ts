@@ -500,6 +500,26 @@ Deno.test("ScheduledExecutionService: trigger override inputs are passed to exec
   assertEquals(capturedInputs[0].inputs, { channel: "#alerts", count: 5 });
 });
 
+Deno.test("ScheduledExecutionService: inputs-only override on unscheduled workflow is a no-op", async () => {
+  const wf = createTestWorkflow("unscheduled-wf");
+
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => Promise.resolve(),
+    triggerOverrides: new Map([
+      ["unscheduled-wf", { inputs: { channel: "#alerts" } }],
+    ]),
+  });
+
+  await service.start();
+
+  const schedules = service.listSchedules();
+  assertEquals(schedules.length, 0);
+
+  await service.stop();
+});
+
 Deno.test("ScheduledExecutionService: no trigger overrides works as before", async () => {
   const wf = createTestWorkflow("scheduled-wf", "0 * * * *");
   const events: ScheduledExecutionEvent[] = [];

@@ -333,8 +333,12 @@ export class ScheduledExecutionService {
         workflowName,
         cronExpression: effective,
       });
+      const isOverride =
+        this.deps.triggerOverrides?.get(workflowName)?.schedule !== undefined;
       logger.info(
-        "Registered schedule for workflow {name}: {schedule}",
+        isOverride
+          ? "Registered schedule for workflow {name}: {schedule} (serve.yaml override)"
+          : "Registered schedule for workflow {name}: {schedule}",
         { name: workflowName, schedule: effective },
       );
     } else {
@@ -354,17 +358,21 @@ export class ScheduledExecutionService {
     const overrides = this.deps.triggerOverrides;
     if (!overrides || overrides.size === 0) return;
 
+    const registeredNames = new Set(this.workflowNames.values());
+
     for (const [workflowName, override] of overrides) {
-      if (!override.schedule) continue;
+      if (!override.schedule) {
+        if (!registeredNames.has(workflowName)) {
+          logger.warn(
+            "Trigger override for workflow {name} has only inputs but workflow has no schedule — override is a no-op",
+            { name: workflowName },
+          );
+        }
+        continue;
+      }
 
-      // Skip workflows already registered by scanExisting — handleScheduleChange
-      // already applied the override for those via resolveSchedule
-      const alreadyRegistered = [...this.workflowNames.values()].includes(
-        workflowName,
-      );
-      if (alreadyRegistered) continue;
+      if (registeredNames.has(workflowName)) continue;
 
-      // Look up unscheduled workflows that have an override
       const workflow = await this.deps.workflowRepo.findByName(workflowName);
       if (!workflow) {
         logger.warn(

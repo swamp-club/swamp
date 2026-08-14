@@ -314,32 +314,6 @@ export class Workflow {
   }
 
   /**
-   * Returns a new Workflow with the trigger block shallow-merged. Override
-   * fields replace the corresponding originals; unspecified fields fall
-   * through from the existing trigger.
-   */
-  withTrigger(
-    override: { schedule?: string; inputs?: Record<string, unknown> },
-  ): Workflow {
-    const merged = {
-      ...this.trigger,
-      ...override,
-    };
-    return new Workflow(
-      this.id,
-      this.name,
-      this.description,
-      merged,
-      this.tags,
-      this.inputs,
-      [...this._jobs],
-      this.version,
-      this.concurrency,
-      this.reports,
-    );
-  }
-
-  /**
    * Converts to plain data for persistence.
    */
   toData(): WorkflowData {
