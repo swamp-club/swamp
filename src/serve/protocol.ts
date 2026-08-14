@@ -492,6 +492,37 @@ export interface WorkflowEvaluatePayload {
   inputs?: Record<string, unknown>;
 }
 
+// ── Workflow trigger override operations ────────────────────────────
+
+export interface WorkflowTriggerSetPayload {
+  workflowName: string;
+  schedule: string;
+  inputs?: Record<string, unknown>;
+}
+
+export interface WorkflowTriggerGetPayload {
+  workflowName: string;
+}
+
+export interface WorkflowTriggerRemovePayload {
+  workflowName: string;
+}
+
+export interface EffectiveTrigger {
+  readonly schedule: string | null;
+  readonly inputs: Record<string, unknown>;
+}
+
+export interface WorkflowTriggerGetResult {
+  readonly workflowName: string;
+  readonly builtIn: EffectiveTrigger | null;
+  readonly override: {
+    readonly schedule?: string;
+    readonly inputs?: Record<string, unknown>;
+  } | null;
+  readonly effective: EffectiveTrigger;
+}
+
 // ── Vault CRUD / audit operations ───────────────────────────────────
 
 export interface VaultCreatePayload {
@@ -786,6 +817,21 @@ export type ServerRequest =
   | { type: "workflow.create"; id: string; payload: WorkflowCreatePayload }
   | { type: "workflow.delete"; id: string; payload: WorkflowDeletePayload }
   | { type: "workflow.edit"; id: string; payload: WorkflowEditPayload }
+  | {
+    type: "workflow.trigger.set";
+    id: string;
+    payload: WorkflowTriggerSetPayload;
+  }
+  | {
+    type: "workflow.trigger.get";
+    id: string;
+    payload: WorkflowTriggerGetPayload;
+  }
+  | {
+    type: "workflow.trigger.remove";
+    id: string;
+    payload: WorkflowTriggerRemovePayload;
+  }
   | {
     type: "workflow.validate";
     id: string;
@@ -1234,6 +1280,21 @@ export interface WorkflowEvaluateResponse {
   data: Record<string, unknown>;
 }
 
+export interface WorkflowTriggerSetResponse {
+  data: {
+    workflowName: string;
+    entry: { schedule?: string; inputs?: Record<string, unknown> };
+  };
+}
+
+export interface WorkflowTriggerGetResponse {
+  data: WorkflowTriggerGetResult;
+}
+
+export interface WorkflowTriggerRemoveResponse {
+  data: { workflowName: string };
+}
+
 export interface VaultCreateResponse {
   data: Record<string, unknown>;
 }
@@ -1525,6 +1586,21 @@ export type ServerMessage =
   | { type: "workflow.create"; id: string; payload: WorkflowCreateResponse }
   | { type: "workflow.delete"; id: string; payload: WorkflowDeleteResponse }
   | { type: "workflow.edit"; id: string; payload: WorkflowEditResponse }
+  | {
+    type: "workflow.trigger.set";
+    id: string;
+    payload: WorkflowTriggerSetResponse;
+  }
+  | {
+    type: "workflow.trigger.get";
+    id: string;
+    payload: WorkflowTriggerGetResponse;
+  }
+  | {
+    type: "workflow.trigger.remove";
+    id: string;
+    payload: WorkflowTriggerRemoveResponse;
+  }
   | {
     type: "workflow.validate";
     id: string;

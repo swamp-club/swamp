@@ -26,9 +26,11 @@ import {
   mergeServeOptions,
   parseExplicitFlags,
   parseWebhookConfig,
+  readServeConfigFile,
   type ServeConfigFile,
   type TriggerOverrideEntry,
   type WebhookConfigEntry,
+  writeServeConfigFile,
 } from "./serve_config.ts";
 
 await initializeLogging({});
@@ -1002,4 +1004,75 @@ Deno.test("mergeServeOptions: triggerOverrides undefined when empty", () => {
     () => undefined,
   );
   assertEquals(merged.triggerOverrides, undefined);
+});
+
+// ── readServeConfigFile / writeServeConfigFile ──────────────────────
+
+Deno.test("writeServeConfigFile: creates file when it does not exist", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await writeServeConfigFile(dir, {
+      triggers: { "my-workflow": { schedule: "0 3 * * *" } },
+    });
+    const result = await readServeConfigFile(dir);
+    assertEquals(result?.triggers?.["my-workflow"]?.schedule, "0 3 * * *");
+  } finally {
+    try {
+      await Deno.remove(dir, { recursive: true });
+    } catch { /* Windows EBUSY */ }
+  }
+});
+
+Deno.test("writeServeConfigFile: preserves other config sections", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await writeServeConfigFile(dir, {
+      port: 9090,
+      host: "0.0.0.0",
+      triggers: { "scan-cves": { schedule: "0 3 * * *" } },
+    });
+    const result = await readServeConfigFile(dir);
+    assertEquals(result?.port, 9090);
+    assertEquals(result?.host, "0.0.0.0");
+    assertEquals(result?.triggers?.["scan-cves"]?.schedule, "0 3 * * *");
+  } finally {
+    try {
+      await Deno.remove(dir, { recursive: true });
+    } catch { /* Windows EBUSY */ }
+  }
+});
+
+Deno.test("writeServeConfigFile: replace semantics for trigger entries", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await writeServeConfigFile(dir, {
+      triggers: {
+        "my-workflow": { schedule: "0 3 * * *", inputs: { channel: "#ops" } },
+      },
+    });
+
+    const config = await readServeConfigFile(dir);
+    config!.triggers!["my-workflow"] = { schedule: "0 6 * * *" };
+    await writeServeConfigFile(dir, config!);
+
+    const result = await readServeConfigFile(dir);
+    assertEquals(result?.triggers?.["my-workflow"]?.schedule, "0 6 * * *");
+    assertEquals(result?.triggers?.["my-workflow"]?.inputs, undefined);
+  } finally {
+    try {
+      await Deno.remove(dir, { recursive: true });
+    } catch { /* Windows EBUSY */ }
+  }
+});
+
+Deno.test("readServeConfigFile: returns null when file does not exist", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const result = await readServeConfigFile(dir);
+    assertEquals(result, null);
+  } finally {
+    try {
+      await Deno.remove(dir, { recursive: true });
+    } catch { /* Windows EBUSY */ }
+  }
 });
