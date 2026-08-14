@@ -29,7 +29,7 @@ import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
-import type { WorkflowRunEvent } from "./run.ts";
+import type { WorkflowRunEvent, WorkflowRunInput } from "./run.ts";
 
 function createTestWorkflow(
   name: string,
@@ -392,6 +392,131 @@ Deno.test("ScheduledExecutionService: pendingRunHook delete awaits enqueue befor
       assertEquals(ops[i - 1], "enqueue-done");
     }
   }
+});
+
+// ── Trigger Overrides ────────────────────────────────────────────────
+
+Deno.test("ScheduledExecutionService: trigger override adds schedule to unscheduled workflow", async () => {
+  const wf = createTestWorkflow("unscheduled-wf");
+  const events: ScheduledExecutionEvent[] = [];
+
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => Promise.resolve(),
+    triggerOverrides: new Map([
+      ["unscheduled-wf", { schedule: "0 3 * * *" }],
+    ]),
+  });
+
+  await service.start((e) => events.push(e));
+
+  const schedules = service.listSchedules();
+  assertEquals(schedules.length, 1);
+  assertEquals(schedules[0].cronExpression, "0 3 * * *");
+
+  await service.stop();
+});
+
+Deno.test("ScheduledExecutionService: trigger override replaces existing schedule", async () => {
+  const wf = createTestWorkflow("scheduled-wf", "0 12 * * *");
+  const events: ScheduledExecutionEvent[] = [];
+
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => Promise.resolve(),
+    triggerOverrides: new Map([
+      ["scheduled-wf", { schedule: "0 3 * * *" }],
+    ]),
+  });
+
+  await service.start((e) => events.push(e));
+
+  const schedules = service.listSchedules();
+  assertEquals(schedules.length, 1);
+  assertEquals(schedules[0].cronExpression, "0 3 * * *");
+
+  await service.stop();
+});
+
+Deno.test("ScheduledExecutionService: trigger override for unknown workflow is skipped", async () => {
+  const events: ScheduledExecutionEvent[] = [];
+
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => Promise.resolve(),
+    triggerOverrides: new Map([
+      ["nonexistent-wf", { schedule: "0 3 * * *" }],
+    ]),
+  });
+
+  await service.start((e) => events.push(e));
+
+  const schedules = service.listSchedules();
+  assertEquals(schedules.length, 0);
+
+  await service.stop();
+});
+
+Deno.test("ScheduledExecutionService: trigger override inputs are passed to executeWorkflow at fire time", async () => {
+  const wf = createTestWorkflow("input-override-wf", "* * * * * *");
+  const capturedInputs: WorkflowRunInput[] = [];
+
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: (input, _signal, onEvent) => {
+      capturedInputs.push(input);
+      onEvent({
+        kind: "started",
+        runId: "run-1",
+        workflowName: wf.name,
+        jobs: [],
+      });
+      onEvent({
+        kind: "completed",
+        run: {
+          id: "run-1",
+          workflowId: wf.id,
+          workflowName: wf.name,
+          status: "succeeded",
+          jobs: [],
+        },
+      });
+      return Promise.resolve();
+    },
+    triggerOverrides: new Map([
+      ["input-override-wf", { inputs: { channel: "#alerts", count: 5 } }],
+    ]),
+  });
+
+  await service.start();
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await service.stop();
+
+  assertGreater(capturedInputs.length, 0);
+  assertEquals(capturedInputs[0].inputs, { channel: "#alerts", count: 5 });
+});
+
+Deno.test("ScheduledExecutionService: no trigger overrides works as before", async () => {
+  const wf = createTestWorkflow("scheduled-wf", "0 * * * *");
+  const events: ScheduledExecutionEvent[] = [];
+
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => Promise.resolve(),
+  });
+
+  await service.start((e) => events.push(e));
+
+  const schedules = service.listSchedules();
+  assertEquals(schedules.length, 1);
+  assertEquals(schedules[0].cronExpression, "0 * * * *");
+
+  await service.stop();
 });
 
 Deno.test("normalizeFireTime: truncates milliseconds and replaces colons for Windows compat", () => {

@@ -469,6 +469,50 @@ jobs:
 The `ScheduledExecutionService` lives in libswamp, so any consumer (serve, a
 future daemon, or programmatic use) can use the same scheduling infrastructure.
 
+#### Trigger Overrides
+
+Extension-bundled workflows are read-only — users cannot modify their YAML to
+add or change a trigger. The `triggers` section in `.swamp/serve.yaml` provides
+per-workflow overrides that survive extension updates:
+
+```yaml
+# .swamp/serve.yaml
+triggers:
+  "@swamp/cve/researcher/scan":
+    schedule: "0 3 * * *"
+    inputs:
+      channel: "#security"
+  daily-report:
+    schedule: "0 8 * * 1-5"
+```
+
+Each key is a workflow name (including scoped `@collective/name` patterns). The
+override is shallow-merged onto the workflow's built-in `trigger` block:
+override fields replace their counterparts; unspecified fields fall through from
+the original. A workflow with no built-in trigger block gains one from the
+override.
+
+**Override behavior:**
+
+- Applied at `ScheduledExecutionService` startup in a two-phase scan: first all
+  workflows with built-in schedules are registered, then the override map adds
+  schedules for any remaining unscheduled workflows
+- The `handleScheduleChange` callback also consults the override map, so
+  live-reloaded workflows respect overrides
+- Overrides for unknown workflow names are logged as warnings and skipped
+- Overrides are read once at startup — editing `serve.yaml` while serve is
+  running requires a restart (consistent with other serve config fields)
+- Works with both extension and local workflows — but the primary use case is
+  extension workflows that cannot be edited directly
+
+**Precedence for schedule:** `serve.yaml override > workflow YAML trigger`
+
+**Precedence for trigger inputs:** override inputs replace the original
+`trigger.inputs` entirely (shallow-merge at the trigger level, not deep-merge
+at the inputs level). The existing `caller > trigger.inputs > schema defaults`
+layering remains unchanged — the override simply changes which `trigger.inputs`
+is used as the baseline.
+
 #### Trigger Inputs
 
 Scheduled (and webhook) runs have no `--input` flag, so a `trigger.inputs` map

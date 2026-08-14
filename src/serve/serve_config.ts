@@ -19,6 +19,7 @@
 
 import { parse as parseYaml } from "@std/yaml";
 import { join } from "@std/path";
+import { Cron } from "croner";
 import { UserError } from "../domain/errors.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { resolveSecret, type WebhookEndpoint } from "./webhook.ts";
@@ -60,6 +61,13 @@ export interface WebhookConfigEntry {
   readonly prefix?: string;
 }
 
+// ── Trigger Override Types ────────────────────────────────────────────
+
+export interface TriggerOverrideEntry {
+  readonly schedule?: string;
+  readonly inputs?: Record<string, unknown>;
+}
+
 // ── Config File Shape ─────────────────────────────────────────────────
 
 export interface ServeConfigFile {
@@ -82,6 +90,7 @@ export interface ServeConfigFile {
     "key-file"?: string;
   };
   webhooks?: WebhookConfigEntry[];
+  triggers?: Record<string, TriggerOverrideEntry>;
   schedule?: boolean;
   "hot-reload"?: boolean;
   "detach-runs"?: boolean;
@@ -111,6 +120,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "auth",
   "tls",
   "webhooks",
+  "triggers",
   "schedule",
   "hot-reload",
   "detach-runs",
@@ -367,6 +377,21 @@ function validateConfigValues(
     }
   }
 
+  if (raw.triggers !== undefined) {
+    if (
+      typeof raw.triggers !== "object" || raw.triggers === null ||
+      Array.isArray(raw.triggers)
+    ) {
+      throw new UserError(
+        `Invalid triggers in ${path}: expected mapping of workflow name to trigger override`,
+      );
+    }
+    const triggersObj = raw.triggers as Record<string, unknown>;
+    for (const [name, entry] of Object.entries(triggersObj)) {
+      validateTriggerOverrideEntry(entry, path, name);
+    }
+  }
+
   if (raw.webhooks !== undefined) {
     if (!Array.isArray(raw.webhooks)) {
       throw new UserError(
@@ -437,6 +462,60 @@ function validateWebhookEntry(
         `Invalid webhook at index ${index} in ${path}: generic scheme requires a header name`,
       );
     }
+  }
+}
+
+const KNOWN_TRIGGER_OVERRIDE_KEYS = new Set(["schedule", "inputs"]);
+
+function validateTriggerOverrideEntry(
+  entry: unknown,
+  path: string,
+  workflowName: string,
+): void {
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+    throw new UserError(
+      `Invalid trigger override for '${workflowName}' in ${path}: expected object with optional 'schedule' and 'inputs'`,
+    );
+  }
+  const obj = entry as Record<string, unknown>;
+  for (const key of Object.keys(obj)) {
+    if (!KNOWN_TRIGGER_OVERRIDE_KEYS.has(key)) {
+      logger.warn(
+        "Unknown key {key} in trigger override for {workflow} in {path} — ignoring",
+        { key, workflow: workflowName, path },
+      );
+    }
+  }
+  if (obj.schedule !== undefined) {
+    if (typeof obj.schedule !== "string") {
+      throw new UserError(
+        `Invalid trigger override for '${workflowName}' in ${path}: schedule must be a string, got ${typeof obj
+          .schedule}`,
+      );
+    }
+    try {
+      const cron = new Cron(obj.schedule);
+      cron.stop();
+    } catch {
+      throw new UserError(
+        `Invalid trigger override for '${workflowName}' in ${path}: invalid cron expression '${obj.schedule}'`,
+      );
+    }
+  }
+  if (obj.inputs !== undefined) {
+    if (
+      typeof obj.inputs !== "object" || obj.inputs === null ||
+      Array.isArray(obj.inputs)
+    ) {
+      throw new UserError(
+        `Invalid trigger override for '${workflowName}' in ${path}: inputs must be a mapping`,
+      );
+    }
+  }
+  if (obj.schedule === undefined && obj.inputs === undefined) {
+    throw new UserError(
+      `Invalid trigger override for '${workflowName}' in ${path}: must specify at least 'schedule' or 'inputs'`,
+    );
   }
 }
 
@@ -530,6 +609,7 @@ export interface MergedServeOptions {
   staleTtl?: string;
   reconciliationInterval?: string;
   hotReload: boolean;
+  triggerOverrides?: Record<string, TriggerOverrideEntry>;
   maxConcurrentRuns?: number;
   maxRunsPerPrincipal?: number;
   maxRunDuration?: string;
@@ -874,6 +954,12 @@ export function mergeServeOptions(
     webhookEndpoints = config.webhooks.map(parseWebhookConfig);
   }
 
+  // Trigger overrides: serve.yaml only (no CLI flag or env var in v1)
+  const triggerOverrides: Record<string, TriggerOverrideEntry> | undefined =
+    config?.triggers && Object.keys(config.triggers).length > 0
+      ? config.triggers
+      : undefined;
+
   return {
     port,
     host,
@@ -905,6 +991,7 @@ export function mergeServeOptions(
     staleTtl,
     reconciliationInterval,
     hotReload,
+    triggerOverrides,
     maxConcurrentRuns,
     maxRunsPerPrincipal,
     maxRunDuration,

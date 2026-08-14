@@ -27,6 +27,7 @@ import {
   parseExplicitFlags,
   parseWebhookConfig,
   type ServeConfigFile,
+  type TriggerOverrideEntry,
   type WebhookConfigEntry,
 } from "./serve_config.ts";
 
@@ -872,4 +873,133 @@ Deno.test("mergeServeOptions: hydration-timeout defaults to undefined", () => {
     () => undefined,
   );
   assertEquals(merged.hydrationTimeout, undefined);
+});
+
+// ── Trigger Overrides ────────────────────────────────────────────────
+
+Deno.test("loadServeConfig: parses valid triggers section", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, {
+      triggers: {
+        "scan-cves": { schedule: "0 3 * * *" },
+        "@swamp/cve/researcher/scan": {
+          schedule: "0 12 * * 1",
+          inputs: { channel: "#security" },
+        },
+      },
+    });
+    const config = loadServeConfig(undefined, dir)!;
+    assertEquals(Object.keys(config.triggers!).length, 2);
+    assertEquals(config.triggers!["scan-cves"].schedule, "0 3 * * *");
+    assertEquals(
+      config.triggers!["@swamp/cve/researcher/scan"].inputs?.channel,
+      "#security",
+    );
+  });
+});
+
+Deno.test("loadServeConfig: rejects triggers with invalid cron expression", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, {
+      triggers: {
+        "my-workflow": { schedule: "not-a-cron" },
+      },
+    });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "invalid cron expression",
+    );
+  });
+});
+
+Deno.test("loadServeConfig: rejects trigger override that is not an object", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, {
+      triggers: {
+        "my-workflow": "0 3 * * *",
+      },
+    });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "expected object",
+    );
+  });
+});
+
+Deno.test("loadServeConfig: rejects trigger override with neither schedule nor inputs", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, {
+      triggers: {
+        "my-workflow": {},
+      },
+    });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "must specify at least",
+    );
+  });
+});
+
+Deno.test("loadServeConfig: rejects triggers that is an array", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, {
+      triggers: [{ schedule: "0 3 * * *" }],
+    });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "expected mapping",
+    );
+  });
+});
+
+Deno.test("loadServeConfig: accepts trigger override with inputs only", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, {
+      triggers: {
+        "my-workflow": { inputs: { count: 5 } },
+      },
+    });
+    const config = loadServeConfig(undefined, dir)!;
+    assertEquals(config.triggers!["my-workflow"].inputs, { count: 5 });
+    assertEquals(config.triggers!["my-workflow"].schedule, undefined);
+  });
+});
+
+Deno.test("mergeServeOptions: triggerOverrides from config", () => {
+  const triggers: Record<string, TriggerOverrideEntry> = {
+    "scan-cves": { schedule: "0 3 * * *" },
+  };
+  const config: ServeConfigFile = { triggers };
+  const merged = mergeServeOptions(
+    config,
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.triggerOverrides, triggers);
+});
+
+Deno.test("mergeServeOptions: triggerOverrides undefined when not configured", () => {
+  const merged = mergeServeOptions(
+    null,
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.triggerOverrides, undefined);
+});
+
+Deno.test("mergeServeOptions: triggerOverrides undefined when empty", () => {
+  const config: ServeConfigFile = { triggers: {} };
+  const merged = mergeServeOptions(
+    config,
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.triggerOverrides, undefined);
 });
