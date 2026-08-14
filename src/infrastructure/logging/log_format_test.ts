@@ -19,7 +19,11 @@
 
 import { assertEquals, assertMatch, assertNotMatch } from "@std/assert";
 import type { LogRecord } from "@logtape/logtape";
-import { textFormatter, TIMESTAMP_FORMAT } from "./log_format.ts";
+import {
+  serveTextFormatter,
+  textFormatter,
+  TIMESTAMP_FORMAT,
+} from "./log_format.ts";
 
 // A fixed instant so timestamp assertions are deterministic:
 // 2026-07-15T10:18:15.912Z.
@@ -63,4 +67,33 @@ Deno.test("textFormatter: emits no ANSI escape codes", () => {
     makeRecord(["model", "method", "run"], "acquiring lock", "warning"),
   );
   assertNotMatch(line, ANSI);
+});
+
+Deno.test("serveTextFormatter: renders system pipe prefix with message only", () => {
+  const fmt = serveTextFormatter(() => 6);
+  const line = fmt(makeRecord(["serve"], "Listening on https://0.0.0.0:9090"))
+    .trimEnd();
+  assertEquals(line, " system │ Listening on https://0.0.0.0:9090");
+});
+
+Deno.test("serveTextFormatter: omits timestamp, level, and category", () => {
+  const fmt = serveTextFormatter(() => 6);
+  const line = fmt(
+    makeRecord(["serve", "token-auth"], "authenticated", "debug"),
+  )
+    .trimEnd();
+  assertNotMatch(line, RFC3339);
+  assertNotMatch(line, /\[DBG\]/);
+  assertNotMatch(line, /token-auth/);
+  assertEquals(line, " system │ authenticated");
+});
+
+Deno.test("serveTextFormatter: respects dynamic pipe width", () => {
+  let width = 8;
+  const fmt = serveTextFormatter(() => width);
+  const line1 = fmt(makeRecord(["serve"], "msg")).trimEnd();
+  assertEquals(line1, "   system │ msg");
+  width = 6;
+  const line2 = fmt(makeRecord(["serve"], "msg")).trimEnd();
+  assertEquals(line2, " system │ msg");
 });
