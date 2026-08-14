@@ -69,7 +69,10 @@ import { DispatchRegistry } from "../../serve/dispatch_registry.ts";
 import { BundleRegistry } from "../../serve/bundle_registry.ts";
 import { DataPlane } from "../../serve/data_plane.ts";
 import { setRemoteStepDispatcher } from "../../domain/remote/remote_dispatch.ts";
-import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import {
+  enableServeOutput,
+  getSwampLogger,
+} from "../../infrastructure/logging/logger.ts";
 import {
   createServiceScheduler,
   resolveServiceMode,
@@ -1016,6 +1019,9 @@ export const serveCommand = new Command()
     const ctx = createContext(options as GlobalOptions, ["serve"]);
     const repoDir = resolveRepoDir(options.repoDir as string | undefined);
     const isJson = ctx.outputMode === "json";
+    if (!isJson) {
+      enableServeOutput();
+    }
 
     // Load config file and merge with CLI flags (four-level priority:
     // CLI flag > env var > config file > default)

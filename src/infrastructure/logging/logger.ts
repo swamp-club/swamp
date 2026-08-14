@@ -23,9 +23,14 @@ import {
   getLogger,
   type LogLevel,
   type Sink,
+  type TextFormatter,
 } from "@logtape/logtape";
 import { getPrettyFormatter } from "@logtape/pretty";
-import { textFormatter, TIMESTAMP_FORMAT } from "./log_format.ts";
+import {
+  serveTextFormatter,
+  textFormatter,
+  TIMESTAMP_FORMAT,
+} from "./log_format.ts";
 import { runFileSink } from "./run_file_sink.ts";
 import { initLogs, type InitLogsConfig } from "../tracing/mod.ts";
 import { createOtelLogRecordSink } from "./otel_log_sink.ts";
@@ -62,6 +67,7 @@ function createStderrSink(): Sink {
 
 let isInitialized = false;
 let systemPipeWidth = 6;
+let serveFormatEnabled = false;
 
 export function setSystemPipeWidth(width: number): void {
   systemPipeWidth = Math.max(width, 6);
@@ -69,6 +75,22 @@ export function setSystemPipeWidth(width: number): void {
 
 export function getSystemPipeWidth(): number {
   return systemPipeWidth;
+}
+
+/**
+ * Switch the console sink to the `" system │ message"` format used by
+ * workflow and model-method runs. Call once at serve startup (non-JSON
+ * mode) — all subsequent LogTape console output will use the new style.
+ */
+export function enableServeOutput(): void {
+  serveFormatEnabled = true;
+}
+
+function createDynamicFormatter(
+  normalFmt: TextFormatter,
+): TextFormatter {
+  const serveFmt = serveTextFormatter(() => systemPipeWidth);
+  return (record) => serveFormatEnabled ? serveFmt(record) : normalFmt(record);
 }
 
 export async function initializeLogging(
@@ -87,9 +109,14 @@ export async function initializeLogging(
   // non-interactive contexts (piped, redirected, `--no-color`, non-TTY stdin),
   // where ANSI escape codes would pollute the output. Colored output is the
   // pretty sink's job, selected only when stdin is a TTY.
+  //
+  // Both sinks use a dynamic formatter that switches to the serve-style
+  // " system │ message" format when enableServeOutput() is called.
   const consoleSink: Sink = options.stderrOnly
     ? createStderrSink()
-    : getConsoleSink({ formatter: textFormatter() });
+    : getConsoleSink({
+      formatter: createDynamicFormatter(textFormatter()),
+    });
 
   const sinks: Record<string, Sink | (Sink & Disposable)> = {
     console: consoleSink,
@@ -121,7 +148,9 @@ export async function initializeLogging(
       inspectOptions: { colors: useColors },
     });
 
-    sinks["pretty"] = getConsoleSink({ formatter: prettyFormat });
+    sinks["pretty"] = getConsoleSink({
+      formatter: createDynamicFormatter(prettyFormat),
+    });
   }
 
   // Initialize the OTel logs signal. When OTLP logs export is enabled (same

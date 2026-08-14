@@ -45,3 +45,24 @@ export const TIMESTAMP_FORMAT = "rfc3339" as const;
 export function textFormatter(): TextFormatter {
   return getTextFormatter({ timestamp: TIMESTAMP_FORMAT });
 }
+
+/**
+ * Serve-mode formatter: renders log records as `" system │ message"`,
+ * matching the pipe-prefix style used by workflow and model-method runs.
+ * No timestamp, level, or category — just the message with a fixed
+ * "system" prefix padded to the current pipe width.
+ *
+ * Accepts a width getter so the caller (logger.ts) owns the mutable
+ * width state and this module stays a leaf.
+ */
+export function serveTextFormatter(
+  getWidth: () => number,
+): TextFormatter {
+  return getTextFormatter({
+    timestamp: "none",
+    format: (values) => {
+      const padded = "system".padStart(getWidth() + 1);
+      return `${padded} │ ${values.message}`;
+    },
+  });
+}
