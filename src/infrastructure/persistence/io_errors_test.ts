@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { isIoError } from "./io_errors.ts";
+import {
+  isIoError,
+  isSqliteTransientError,
+  isTransientError,
+} from "./io_errors.ts";
 
 Deno.test("isIoError: returns true for EMFILE error with code property", () => {
   const error = Object.assign(new Error("Too many open files"), {
@@ -109,4 +113,49 @@ Deno.test("isIoError: returns true for EROFS error with code property", () => {
     code: "EROFS",
   });
   assertEquals(isIoError(error), true);
+});
+
+Deno.test("isSqliteTransientError: returns true for 'database is locked'", () => {
+  assertEquals(isSqliteTransientError(new Error("database is locked")), true);
+});
+
+Deno.test("isSqliteTransientError: returns true for 'database is busy'", () => {
+  assertEquals(isSqliteTransientError(new Error("database is busy")), true);
+});
+
+Deno.test("isSqliteTransientError: case-insensitive match", () => {
+  assertEquals(
+    isSqliteTransientError(new Error("Error: Database Is Locked")),
+    true,
+  );
+});
+
+Deno.test("isSqliteTransientError: returns false for parse errors", () => {
+  assertEquals(
+    isSqliteTransientError(new SyntaxError("Unexpected token")),
+    false,
+  );
+});
+
+Deno.test("isSqliteTransientError: returns false for null", () => {
+  assertEquals(isSqliteTransientError(null), false);
+});
+
+Deno.test("isSqliteTransientError: returns false for non-object", () => {
+  assertEquals(isSqliteTransientError("database is locked"), false);
+});
+
+Deno.test("isTransientError: returns true for I/O errors", () => {
+  const error = Object.assign(new Error("Too many open files"), {
+    code: "EMFILE",
+  });
+  assertEquals(isTransientError(error), true);
+});
+
+Deno.test("isTransientError: returns true for SQLite transient errors", () => {
+  assertEquals(isTransientError(new Error("database is locked")), true);
+});
+
+Deno.test("isTransientError: returns false for parse errors", () => {
+  assertEquals(isTransientError(new SyntaxError("Unexpected token")), false);
 });

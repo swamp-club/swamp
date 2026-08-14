@@ -785,7 +785,7 @@ export class ExtensionCatalogStore {
       updateClauses.push("last_error         = excluded.last_error");
     }
 
-    const stmt = this.db.prepare(`
+    const sql = `
       INSERT INTO bundle_types (
         source_path, type_normalized, kind, bundle_path,
         version, description, extends_type, source_mtime,
@@ -793,8 +793,8 @@ export class ExtensionCatalogStore {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(source_path) DO UPDATE SET
         ${updateClauses.join(",\n        ")}
-    `);
-    stmt.run(
+    `;
+    const params = [
       canonicalizePath(row.source_path),
       row.type_normalized,
       row.kind,
@@ -806,7 +806,31 @@ export class ExtensionCatalogStore {
       row.source_fingerprint ?? "",
       row.state ?? "Indexed",
       row.last_error ?? "",
-    );
+    ];
+
+    const MAX_RETRIES = 5;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const stmt = this.db.prepare(sql);
+        stmt.run(...params);
+        return;
+      } catch (error: unknown) {
+        const isLock = error instanceof Error &&
+          /database is (locked|busy)/i.test(error.message);
+        if (isLock && attempt < MAX_RETRIES) {
+          const delay = 100 * Math.pow(2, attempt) +
+            Math.floor(Math.random() * 50);
+          Atomics.wait(
+            new Int32Array(new SharedArrayBuffer(4)),
+            0,
+            0,
+            delay,
+          );
+          continue;
+        }
+        throw error;
+      }
+    }
   }
 
   /**

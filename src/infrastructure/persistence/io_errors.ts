@@ -50,3 +50,27 @@ export function isIoError(error: unknown): boolean {
 
   return false;
 }
+
+const SQLITE_TRANSIENT_RE = /database is (locked|busy)/i;
+
+/**
+ * Matches SQLite transient contention errors — "database is locked" or
+ * "database is busy" — that arise when another process holds a write lock
+ * past the busy_timeout.
+ */
+export function isSqliteTransientError(error: unknown): boolean {
+  if (error == null || typeof error !== "object") return false;
+  const e = error as Record<string, unknown>;
+  if (typeof e.message === "string" && SQLITE_TRANSIENT_RE.test(e.message)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Combined check for any transient error that should not be silently
+ * swallowed: I/O resource-exhaustion errors OR SQLite lock contention.
+ */
+export function isTransientError(error: unknown): boolean {
+  return isIoError(error) || isSqliteTransientError(error);
+}
