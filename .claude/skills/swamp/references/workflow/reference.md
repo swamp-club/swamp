@@ -130,6 +130,34 @@ the verified payload before input validation, so a payload field can satisfy a
 `has(x) ? x : y`. See `design/workflow.md` for full semantics and the security
 caveat on headers.
 
+### Trigger overrides
+
+Extension-bundled workflows are read-only — their YAML cannot be edited to add
+or change a trigger. Use the `trigger` subcommands to manage per-workflow
+overrides in `.swamp/serve.yaml`:
+
+```bash
+# Set a trigger override (replace semantics — writes the full entry)
+swamp workflow trigger set @swamp/cve/researcher --schedule "0 3 * * *" --input channel=#security
+
+# Show built-in trigger, override, and effective (merged) trigger
+swamp workflow trigger get @swamp/cve/researcher
+
+# Remove a trigger override
+swamp workflow trigger remove @swamp/cve/researcher
+```
+
+All three commands support `--server` for remote execution against a running
+`swamp serve` instance. Overrides are read at startup — the running serve
+instance must be restarted for changes to take effect.
+
+**`set` behavior:** `--schedule` is required. Each call replaces the entire
+override entry (not a merge). To keep existing inputs, re-specify them.
+
+**`get` output:** Shows three sections — built-in (from workflow YAML), override
+(from serve.yaml), and effective (merged). Override schedule wins over built-in;
+override inputs are merged on top of built-in inputs.
+
 The signature scheme is set per endpoint on `swamp serve`'s `--webhook` flag:
 `<route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]`, where `scheme`
 is `github` (default), `linear`, `stripe`, `slack`, or `generic` (requires
