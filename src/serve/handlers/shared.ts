@@ -42,6 +42,7 @@ import {
 } from "../../domain/access/principal.ts";
 import type { Action } from "../../domain/access/action.ts";
 import type { AccessResource } from "../../domain/access/access_decision_service.ts";
+import type { ScheduledExecutionService } from "../../libswamp/mod.ts";
 
 export const MAX_CLIENT_ERROR_LENGTH = 200;
 
@@ -109,6 +110,8 @@ export interface ConnectionContext {
   grantsDir?: string;
   /** Whether --hot-reload is enabled — gates serve.reload over WebSocket. */
   hotReload?: boolean;
+  /** Scheduled execution service — used by serve.reload to update trigger overrides. */
+  scheduledExecution?: ScheduledExecutionService;
   /** Inverted resolvedAdmins map: OAuth sub → username. Populated at startup in OAuth mode. */
   resolvedUserNames?: Record<string, string>;
 }

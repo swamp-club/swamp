@@ -2564,6 +2564,7 @@ export const serveCommand = new Command()
           }
         }
       });
+      connectionCtx.scheduledExecution = scheduledExecution;
     }
 
     // Parse group refresh interval and construct service
@@ -3440,10 +3441,30 @@ export const serveCommand = new Command()
           return;
         }
         logger.info("SIGHUP received, reloading pulled extensions...");
-        performServeReload(resolvedRepoDir, extensionLockfilePath)
+        const reloadOptions = scheduledExecution
+          ? {
+            triggerOverrideUpdater: (
+              overrides: ReadonlyMap<string, TriggerOverride>,
+            ) => scheduledExecution!.updateTriggerOverrides(overrides),
+          }
+          : undefined;
+        performServeReload(
+          resolvedRepoDir,
+          extensionLockfilePath,
+          reloadOptions,
+        )
           .then((result) => {
             if (result.success) {
               logger.info`Hot-reloaded ${result.reloadedCount} type(s)`;
+              if (
+                result.triggerOverridesChanged &&
+                result.triggerOverridesChanged > 0
+              ) {
+                logger.info(
+                  "Reloaded {count} trigger override(s) from serve.yaml",
+                  { count: result.triggerOverridesChanged },
+                );
+              }
               if (result.errors.length > 0) {
                 for (const err of result.errors) {
                   logger.warn`${err}`;
