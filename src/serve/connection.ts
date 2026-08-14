@@ -80,6 +80,9 @@ import {
   handleWorkflowRunSearch,
   handleWorkflowSchema,
   handleWorkflowSearch,
+  handleWorkflowTriggerGet,
+  handleWorkflowTriggerRemove,
+  handleWorkflowTriggerSet,
   handleWorkflowValidate,
 } from "./handlers/workflow_handlers.ts";
 import {
@@ -992,6 +995,32 @@ const WorkflowEvaluateRequestSchema = z.object({
   }).optional(),
 });
 
+const WorkflowTriggerSetRequestSchema = z.object({
+  type: z.literal("workflow.trigger.set"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    workflowName: z.string().min(1),
+    schedule: z.string().min(1),
+    inputs: z.record(z.string(), z.unknown()).optional(),
+  }),
+});
+
+const WorkflowTriggerGetRequestSchema = z.object({
+  type: z.literal("workflow.trigger.get"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    workflowName: z.string().min(1),
+  }),
+});
+
+const WorkflowTriggerRemoveRequestSchema = z.object({
+  type: z.literal("workflow.trigger.remove"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    workflowName: z.string().min(1),
+  }),
+});
+
 const VaultCreateRequestSchema = z.object({
   type: z.literal("vault.create"),
   id: z.string().min(1).max(256),
@@ -1199,6 +1228,9 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   WorkflowEditRequestSchema,
   WorkflowValidateRequestSchema,
   WorkflowEvaluateRequestSchema,
+  WorkflowTriggerSetRequestSchema,
+  WorkflowTriggerGetRequestSchema,
+  WorkflowTriggerRemoveRequestSchema,
   VaultCreateRequestSchema,
   VaultEditRequestSchema,
   VaultAuditTrailRequestSchema,
@@ -2217,6 +2249,36 @@ export function handleMessage(
       break;
     case "workflow.evaluate":
       task = handleWorkflowEvaluate(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
+    case "workflow.trigger.set":
+      task = handleWorkflowTriggerSet(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
+    case "workflow.trigger.get":
+      task = handleWorkflowTriggerGet(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
+    case "workflow.trigger.remove":
+      task = handleWorkflowTriggerRemove(
         socket,
         ctx,
         request.id,

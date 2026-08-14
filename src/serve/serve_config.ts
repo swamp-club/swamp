@@ -17,9 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { parse as parseYaml } from "@std/yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { join } from "@std/path";
 import { Cron } from "croner";
+import { atomicWriteTextFile } from "../infrastructure/persistence/atomic_write.ts";
 import { UserError } from "../domain/errors.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { resolveSecret, type WebhookEndpoint } from "./webhook.ts";
@@ -467,7 +468,7 @@ function validateWebhookEntry(
 
 const KNOWN_TRIGGER_OVERRIDE_KEYS = new Set(["schedule", "inputs"]);
 
-function validateTriggerOverrideEntry(
+export function validateTriggerOverrideEntry(
   entry: unknown,
   path: string,
   workflowName: string,
@@ -998,4 +999,63 @@ export function mergeServeOptions(
     hydrationTimeout,
     enableInternalApi,
   };
+}
+
+// ── Serve Config Write ──────────────────────────────────────────────
+
+export const SERVE_CONFIG_PATH = DEFAULT_CONFIG_PATH;
+
+export async function readServeConfigFile(
+  repoDir: string,
+): Promise<ServeConfigFile | null> {
+  const path = join(repoDir, DEFAULT_CONFIG_PATH);
+  let content: string;
+  try {
+    content = await Deno.readTextFile(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      return null;
+    }
+    throw new UserError(`Failed to read serve config file ${path}: ${error}`);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = parseYaml(content);
+  } catch (cause) {
+    throw new UserError(
+      `Invalid YAML in serve config file ${path}: ${cause}`,
+    );
+  }
+
+  if (parsed === null || parsed === undefined) {
+    return null;
+  }
+
+  if (typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new UserError(
+      `Serve config file ${path} must be a YAML mapping, got ${
+        Array.isArray(parsed) ? "array" : typeof parsed
+      }`,
+    );
+  }
+
+  return parsed as ServeConfigFile;
+}
+
+export async function writeServeConfigFile(
+  repoDir: string,
+  config: ServeConfigFile,
+): Promise<void> {
+  const path = join(repoDir, DEFAULT_CONFIG_PATH);
+  const dir = join(repoDir, ".swamp");
+  try {
+    await Deno.mkdir(dir, { recursive: true });
+  } catch {
+    // Directory already exists
+  }
+  const content = stringifyYaml(
+    config as unknown as Record<string, unknown>,
+  );
+  await atomicWriteTextFile(path, content);
 }

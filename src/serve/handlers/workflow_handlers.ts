@@ -76,6 +76,9 @@ import type {
   WorkflowRunSearchPayload,
   WorkflowSchemaPayload,
   WorkflowSearchPayload,
+  WorkflowTriggerGetPayload,
+  WorkflowTriggerRemovePayload,
+  WorkflowTriggerSetPayload,
   WorkflowValidatePayload,
 } from "../protocol.ts";
 import { acquireModelLocks } from "../../cli/repo_context.ts";
@@ -1562,5 +1565,167 @@ export async function handleWorkflowEvaluate(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "workflow_evaluate_failed", message);
+  }
+}
+
+// ── Workflow trigger override handlers ──────────────────────────────
+
+import {
+  readServeConfigFile,
+  type TriggerOverrideEntry,
+  validateTriggerOverrideEntry,
+  writeServeConfigFile,
+} from "../serve_config.ts";
+
+export async function handleWorkflowTriggerSet(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: WorkflowTriggerSetPayload,
+  _controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "write", {
+      kind: "workflow",
+      name: payload.workflowName,
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const entry: TriggerOverrideEntry = {
+      schedule: payload.schedule,
+      ...(payload.inputs && Object.keys(payload.inputs).length > 0
+        ? { inputs: payload.inputs }
+        : {}),
+    };
+
+    const configPath = `${ctx.repoDir}/.swamp/serve.yaml`;
+    validateTriggerOverrideEntry(entry, configPath, payload.workflowName);
+
+    const config = await readServeConfigFile(ctx.repoDir) ?? {};
+    const triggers = config.triggers ?? {};
+    triggers[payload.workflowName] = entry;
+    config.triggers = triggers;
+    await writeServeConfigFile(ctx.repoDir, config);
+
+    send(socket, {
+      type: "workflow.trigger.set",
+      id: requestId,
+      payload: {
+        data: { workflowName: payload.workflowName, entry },
+      },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "workflow_trigger_set_failed", message);
+  }
+}
+
+export async function handleWorkflowTriggerGet(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: WorkflowTriggerGetPayload,
+  _controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "workflow",
+      name: payload.workflowName,
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const config = await readServeConfigFile(ctx.repoDir);
+    const override: TriggerOverrideEntry | null =
+      config?.triggers?.[payload.workflowName] ?? null;
+
+    let builtIn:
+      | { schedule: string | null; inputs: Record<string, unknown> }
+      | null = null;
+    const workflow = await ctx.repoContext.workflowRepo.findByName(
+      payload.workflowName,
+    );
+    if (workflow) {
+      builtIn = {
+        schedule: workflow.schedule ?? null,
+        inputs: workflow.triggerInputs ?? {},
+      };
+    }
+
+    const effective = {
+      schedule: override?.schedule ?? builtIn?.schedule ?? null,
+      inputs: {
+        ...(builtIn?.inputs ?? {}),
+        ...(override?.inputs ?? {}),
+      },
+    };
+
+    send(socket, {
+      type: "workflow.trigger.get",
+      id: requestId,
+      payload: {
+        data: {
+          workflowName: payload.workflowName,
+          builtIn,
+          override,
+          effective,
+        },
+      },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "workflow_trigger_get_failed", message);
+  }
+}
+
+export async function handleWorkflowTriggerRemove(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: WorkflowTriggerRemovePayload,
+  _controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "write", {
+      kind: "workflow",
+      name: payload.workflowName,
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const config = await readServeConfigFile(ctx.repoDir);
+    if (!config?.triggers?.[payload.workflowName]) {
+      sendError(
+        socket,
+        requestId,
+        "not_found",
+        `No trigger override found for workflow '${payload.workflowName}' in serve.yaml`,
+      );
+      return;
+    }
+
+    delete config.triggers[payload.workflowName];
+    if (Object.keys(config.triggers).length === 0) {
+      delete config.triggers;
+    }
+    await writeServeConfigFile(ctx.repoDir, config);
+
+    send(socket, {
+      type: "workflow.trigger.remove",
+      id: requestId,
+      payload: {
+        data: { workflowName: payload.workflowName },
+      },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "workflow_trigger_remove_failed", message);
   }
 }

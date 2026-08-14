@@ -473,7 +473,23 @@ future daemon, or programmatic use) can use the same scheduling infrastructure.
 
 Extension-bundled workflows are read-only — users cannot modify their YAML to
 add or change a trigger. The `triggers` section in `.swamp/serve.yaml` provides
-per-workflow overrides that survive extension updates:
+per-workflow overrides that survive extension updates.
+
+Overrides can be managed via the CLI or by editing `serve.yaml` directly:
+
+```bash
+# Set a trigger override (replace semantics — writes the full entry)
+swamp workflow trigger set @swamp/cve/researcher/scan --schedule "0 3 * * *" --input channel=#security
+swamp workflow trigger set daily-report --schedule "0 8 * * 1-5"
+
+# Show the effective trigger (built-in merged with override)
+swamp workflow trigger get @swamp/cve/researcher/scan
+
+# Remove a trigger override
+swamp workflow trigger remove daily-report
+```
+
+The equivalent `serve.yaml` representation:
 
 ```yaml
 # .swamp/serve.yaml
