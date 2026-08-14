@@ -110,6 +110,7 @@ export {
   type ScheduledExecutionEvent,
   type ScheduledExecutionEventHandler,
   ScheduledExecutionService,
+  type TriggerOverride,
   type WorkflowExecutor,
 } from "./workflows/scheduled_execution.ts";
 export { workflowsDir, WorkflowWatcher } from "./workflows/watcher.ts";
