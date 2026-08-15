@@ -123,6 +123,7 @@ import { setAutoResolver } from "./auto_resolver_context.ts";
 import {
   createAutoResolveInstallerAdapter,
   createAutoResolveOutputAdapter,
+  isBundleArtifactPath,
 } from "./auto_resolver_adapters.ts";
 import { TelemetryService } from "../domain/telemetry/telemetry_service.ts";
 import { JsonTelemetryRepository } from "../infrastructure/persistence/json_telemetry_repository.ts";
@@ -468,10 +469,15 @@ export async function configureExtensionLoaders(
     )
   );
 
-  await checkForMissingPulledExtensions(repoDir, marker, deferredWarnings);
-  await checkForSupersededSkills(repoDir, marker, deferredWarnings);
-  await checkForLocalBundledSkills(repoDir, marker, deferredWarnings);
-  await checkForStaleExtensions(repoDir, marker, lockfilePath, quiet);
+  // Skip local filesystem checks when commands route to a remote serve
+  // instance — the local repo may be a thin checkout whose lockfile
+  // references files that only exist on the server.
+  if (!Deno.env.get("SWAMP_SERVE_URL")) {
+    await checkForMissingPulledExtensions(repoDir, marker, deferredWarnings);
+    await checkForSupersededSkills(repoDir, marker, deferredWarnings);
+    await checkForLocalBundledSkills(repoDir, marker, deferredWarnings);
+    await checkForStaleExtensions(repoDir, marker, lockfilePath, quiet);
+  }
 }
 
 /**
@@ -991,20 +997,22 @@ async function checkForMissingPulledExtensions(
     const extensionNames = Object.keys(upstream);
     if (extensionNames.length === 0) return;
 
-    // Check for any missing source files (skip bundle files — they're cached)
+    // Check for any missing source files (skip bundle artifacts — they're
+    // regenerable cache output). Uses the same isBundleArtifactPath filter
+    // as inspectInstallation in auto_resolver_adapters.ts.
     const missingExtensions: string[] = [];
+    const missingFiles: string[] = [];
     for (const [name, entry] of Object.entries(upstream)) {
       if (!entry.files) continue;
-      const sourceFiles = entry.files.filter((f) =>
-        !f.endsWith(".js") && !f.endsWith(".md") && !f.endsWith(".txt")
-      );
-      for (const file of sourceFiles) {
+      for (const file of entry.files) {
+        if (isBundleArtifactPath(file)) continue;
         const absolutePath = join(repoDir, file);
         try {
           await Deno.stat(absolutePath);
         } catch (error) {
           if (error instanceof Deno.errors.NotFound) {
             missingExtensions.push(name);
+            missingFiles.push(file);
             break; // One missing file is enough to flag this extension
           }
         }
@@ -1012,13 +1020,16 @@ async function checkForMissingPulledExtensions(
     }
 
     if (missingExtensions.length > 0) {
+      const detail = missingFiles.length <= 3
+        ? ` (e.g. ${missingFiles.join(", ")})`
+        : ` (e.g. ${missingFiles.slice(0, 3).join(", ")})`;
       deferredWarnings.push({
         kind: "extensions",
         file: lockfilePath,
         error:
           `${missingExtensions.length} pulled extension(s) have missing source files: ${
             missingExtensions.join(", ")
-          }. Run 'swamp extension install' to restore them.`,
+          }${detail}. Run 'swamp extension install' to restore them.`,
       });
     }
   } catch {
