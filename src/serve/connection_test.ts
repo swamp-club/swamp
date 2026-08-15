@@ -19,6 +19,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  extractRequestId,
   handleMessage,
   sanitizeErrorForClient,
   validateServerRequest,
@@ -127,6 +128,24 @@ Deno.test("validateServerRequest rejects missing methodName for model.method.run
   assertEquals(typeof result, "string");
 });
 
+// ── extractRequestId ────────────────────────────────────────────────────
+
+Deno.test("extractRequestId: returns id when present", () => {
+  assertEquals(extractRequestId({ type: "foo", id: "req-1" }), "req-1");
+});
+
+Deno.test("extractRequestId: returns 'unknown' when id is missing", () => {
+  assertEquals(extractRequestId({ type: "foo" }), "unknown");
+});
+
+Deno.test("extractRequestId: returns 'unknown' for non-string id", () => {
+  assertEquals(extractRequestId({ type: "foo", id: 123 }), "unknown");
+});
+
+Deno.test("extractRequestId: returns 'unknown' for null data", () => {
+  assertEquals(extractRequestId(null), "unknown");
+});
+
 // ── handleMessage: invalid JSON ─────────────────────────────────────────
 
 Deno.test("handleMessage sends error for invalid JSON", () => {
@@ -162,6 +181,63 @@ Deno.test("handleMessage sends error for invalid request shape", () => {
   assertEquals(mock.sent.length, 1);
   const msg = parseSent(mock);
   assertEquals(msg.type, "error");
+  assertEquals(msg.id, "x");
+  assertEquals((msg.error as Record<string, unknown>).code, "invalid_request");
+});
+
+Deno.test("handleMessage echoes request id on validation failure", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    stubCtx,
+    active,
+    makeEvent(JSON.stringify({ type: "bad", id: "req-42" })),
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals(msg.id, "req-42");
+});
+
+Deno.test("handleMessage uses 'unknown' id when id is missing", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    stubCtx,
+    active,
+    makeEvent(JSON.stringify({ type: "bad" })),
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals(msg.id, "unknown");
+});
+
+Deno.test("handleMessage echoes id for valid type with invalid payload", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    stubCtx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "workflow.trigger.set",
+      id: "client-uuid-123",
+      payload: { workflowName: "", schedule: "" },
+    })),
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals(msg.id, "client-uuid-123");
   assertEquals((msg.error as Record<string, unknown>).code, "invalid_request");
 });
 

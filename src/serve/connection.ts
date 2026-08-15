@@ -1262,6 +1262,23 @@ export function validateServerRequest(
   return `Invalid request: ${issues}`;
 }
 
+/**
+ * Best-effort extraction of the request `id` from a parsed message
+ * BEFORE schema validation. When validation fails, the validated
+ * request object is unavailable, but the client still needs the id
+ * echoed back so it can match the error to its pending request.
+ * Falls back to `"unknown"` when the id is absent or not a string.
+ */
+export function extractRequestId(data: unknown): string {
+  if (
+    typeof data === "object" && data !== null &&
+    "id" in data && typeof (data as Record<string, unknown>).id === "string"
+  ) {
+    return (data as Record<string, unknown>).id as string;
+  }
+  return "unknown";
+}
+
 const logger = getSwampLogger(["serve", "connection"]);
 
 export function handleConnection(
@@ -1332,9 +1349,11 @@ export function handleMessage(
     return;
   }
 
+  const requestId = extractRequestId(parsed);
+
   const validated = validateServerRequest(parsed);
   if (typeof validated === "string") {
-    sendError(socket, "unknown", "invalid_request", validated);
+    sendError(socket, requestId, "invalid_request", validated);
     return;
   }
 
