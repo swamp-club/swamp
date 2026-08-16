@@ -1375,13 +1375,6 @@ export class ExtensionCatalogStore {
     stmt.run(sourcePath);
   }
 
-  /**
-   * Returns every row in `bundle_types`, ordered by source_path so the
-   * output is stable across runs. Used by ExtensionRepository.loadAll
-   * (which groups by extension identity) and by I-Repo-1 verification
-   * (which scans the post-save state for cross-aggregate (kind, type)
-   * collisions).
-   */
   getFailedLocalSourcePaths(): string[] {
     const stmt = this.db.prepare(
       "SELECT source_path FROM bundle_types WHERE state IN ('BundleBuildFailed', 'ValidationFailed') AND extension_name LIKE '@local/%'",
@@ -1389,6 +1382,13 @@ export class ExtensionCatalogStore {
     return (stmt.all() as { source_path: string }[]).map((r) => r.source_path);
   }
 
+  /**
+   * Returns every row in `bundle_types`, ordered by source_path so the
+   * output is stable across runs. Used by ExtensionRepository.loadAll
+   * (which groups by extension identity) and by I-Repo-1 verification
+   * (which scans the post-save state for cross-aggregate (kind, type)
+   * collisions).
+   */
   findAll(): ExtensionTypeRow[] {
     const stmt = this.db.prepare(
       "SELECT * FROM bundle_types ORDER BY source_path",
