@@ -257,6 +257,19 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
     assertStringIncludes(error.message, "vault.get(missing-vault, key)");
   });
 
+  await t.step(
+    "resolveVaultExpressions: flattens multi-line vault errors into single line",
+    async () => {
+      const resolver = createResolverWithMockVault({});
+      const error = await assertRejects(
+        () => resolver.resolveVaultExpressions("vault.get(missing-vault, key)"),
+        Error,
+      );
+      assertEquals(error.message.includes("\n"), false);
+      assertStringIncludes(error.message, " — ");
+    },
+  );
+
   await t.step("should throw error for missing secret key", async () => {
     const resolver = createResolverWithMockVault({ "existing-key": "value" });
     const error = await assertRejects(

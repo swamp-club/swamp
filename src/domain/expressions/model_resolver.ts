@@ -1158,10 +1158,10 @@ export class ModelResolver {
 
         resolvedValue = resolvedValue.split(fullMatch).join(celReplacement);
       } catch (error) {
+        const msg = (error instanceof Error ? error.message : String(error))
+          .replace(/\n\s*/g, " — ");
         throw new Error(
-          `Failed to resolve vault expression ${fullMatch}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+          `Failed to resolve vault expression ${fullMatch}: ${msg}`,
         );
       }
     }
