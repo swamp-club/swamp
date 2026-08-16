@@ -65,6 +65,9 @@ function createMockOutput(): AutoResolveOutputPort & { calls: string[] } {
     collectiveNotTrusted(collective: string, type: string) {
       calls.push(`collectiveNotTrusted:${collective}:${type}`);
     },
+    localSourceFailed(type: string) {
+      calls.push(`localSourceFailed:${type}`);
+    },
     noStableVersion(extension: string) {
       calls.push(`noStableVersion:${extension}`);
     },
@@ -102,6 +105,7 @@ function createMockInstaller(
   shouldSucceed = true,
   version = "2026.03.16.1",
   inspection: InstallationInspection = { state: "missing" },
+  failedLocalSourceTypes: string[] = [],
 ): ExtensionInstallerPort & {
   installCalls: string[];
   inspectCalls: string[];
@@ -128,6 +132,11 @@ function createMockInstaller(
     },
     hotLoadDatastores() {
       return Promise.resolve();
+    },
+    failedLocalSourceMatchesType(typeNormalized: string) {
+      return failedLocalSourceTypes.some((t) =>
+        typeNormalized.includes(t) || t.includes(typeNormalized)
+      );
     },
   };
 }
@@ -683,6 +692,70 @@ Deno.test("ExtensionAutoResolver - untrusted collective hint is emitted once per
   await resolver.resolve("@myorg/utils/helper");
 
   // One hint for the whole collective, not one per referenced type.
+  assertEquals(output.calls, [
+    "collectiveNotTrusted:myorg:@myorg/tools/widget",
+  ]);
+});
+
+Deno.test("ExtensionAutoResolver - untrusted collective with matching failed local source emits localSourceFailed", async () => {
+  const output = createMockOutput();
+  const installer = createMockInstaller(
+    true,
+    "2026.03.16.1",
+    { state: "missing" },
+    ["myorg/tools"],
+  );
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup(),
+    extensionInstaller: installer,
+    output,
+  });
+
+  const result = await resolver.resolve("@myorg/tools/widget");
+  assertEquals(result, false);
+  assertEquals(output.calls, ["localSourceFailed:@myorg/tools/widget"]);
+});
+
+Deno.test("ExtensionAutoResolver - untrusted collective with non-matching failed local source emits collectiveNotTrusted", async () => {
+  const output = createMockOutput();
+  const installer = createMockInstaller(
+    true,
+    "2026.03.16.1",
+    { state: "missing" },
+    ["other/unrelated"],
+  );
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup(),
+    extensionInstaller: installer,
+    output,
+  });
+
+  const result = await resolver.resolve("@myorg/tools/widget");
+  assertEquals(result, false);
+  assertEquals(output.calls, [
+    "collectiveNotTrusted:myorg:@myorg/tools/widget",
+  ]);
+});
+
+Deno.test("ExtensionAutoResolver - untrusted collective without any failed local sources emits collectiveNotTrusted", async () => {
+  const output = createMockOutput();
+  const installer = createMockInstaller(
+    true,
+    "2026.03.16.1",
+    { state: "missing" },
+    [],
+  );
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup(),
+    extensionInstaller: installer,
+    output,
+  });
+
+  const result = await resolver.resolve("@myorg/tools/widget");
+  assertEquals(result, false);
   assertEquals(output.calls, [
     "collectiveNotTrusted:myorg:@myorg/tools/widget",
   ]);

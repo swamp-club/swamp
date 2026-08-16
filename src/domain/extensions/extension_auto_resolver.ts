@@ -106,6 +106,14 @@ export interface ExtensionInstallerPort {
   hotLoadModels(): Promise<number>;
   hotLoadVaults(): Promise<void>;
   hotLoadDatastores(): Promise<void>;
+  /**
+   * Checks whether any local source extension that failed to index
+   * (`BundleBuildFailed` or `ValidationFailed`) contains the given
+   * type string in its source file. Used by the auto-resolver to
+   * distinguish a local indexing failure from a genuinely untrusted
+   * registry collective (swamp-club#1672).
+   */
+  failedLocalSourceMatchesType(typeNormalized: string): boolean;
 }
 
 /**
@@ -150,6 +158,14 @@ export interface AutoResolveOutputPort {
    * caller fail with an opaque "unknown type" error.
    */
   collectiveNotTrusted(collective: string, type: string): void;
+  /**
+   * Emitted when a type cannot be resolved and a local source extension
+   * that provides it failed to index. Surfaces the real cause (bundling
+   * or validation failure) with actionable `swamp doctor extensions`
+   * guidance instead of the misleading `collectiveNotTrusted` hint
+   * (swamp-club#1672).
+   */
+  localSourceFailed(type: string): void;
   noStableVersion(extension: string): void;
 }
 
@@ -211,18 +227,20 @@ export class ExtensionAutoResolver {
     if (!this.config.allowedCollectives.includes(collective)) {
       logger
         .debug`Collective '${collective}' not in trusted list, skipping auto-resolution`;
-      // Surface an actionable trust hint for `@collective/*` references so the
-      // caller doesn't dead-end on an opaque "unknown type" error. Restricted
-      // to user-namespace (`@`) types to avoid false positives on local or
-      // built-in `a/b` type names, and emitted once per collective per process
-      // so multiple types from the same collective don't repeat it
-      // (swamp-club#465).
       if (
         ModelType.isUserNamespace(normalizedType) &&
         !this.warnedUntrusted.has(collective)
       ) {
         this.warnedUntrusted.add(collective);
-        this.config.output.collectiveNotTrusted(collective, normalizedType);
+        if (
+          this.config.extensionInstaller.failedLocalSourceMatchesType(
+            normalizedType,
+          )
+        ) {
+          this.config.output.localSourceFailed(normalizedType);
+        } else {
+          this.config.output.collectiveNotTrusted(collective, normalizedType);
+        }
       }
       return false;
     }
