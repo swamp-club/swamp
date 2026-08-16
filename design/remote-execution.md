@@ -209,8 +209,8 @@ management is through `swamp access token mint/list/revoke`.
 When `--auth-mode oauth` is active, users authenticate via the OAuth device
 grant flow (RFC 8628) against swamp-club. The server acts as an OAuth client
 relay — it holds client credentials (auto-registered on first start or
-supplied via `--oauth-client-id`) and proxies the device authorization flow.
-The flow:
+supplied via `--oauth-client-id` or via headless API key bootstrap) and
+proxies the device authorization flow. The flow:
 
 1. User runs `swamp auth login --server <url>`
 2. CLI calls `GET /auth/info` on the serve instance to discover auth mode
@@ -238,13 +238,22 @@ token record (via a per-connection WeakMap set at upgrade time), enabling
 `idp-group:` grants to match for OAuth-authenticated users.
 
 Auto-registration: on first start with `--auth-mode oauth`, if no client
-credentials are stored, the serve instance reads the admin's swamp-club API
-key from `~/.config/swamp/auth.json`, calls
-`POST /api/auth/oauth2/register`, and stores the returned `client_id` and
+credentials are stored, the serve instance registers an OAuth client via
+`POST /api/auth/oauth2/register` and stores the returned `client_id` and
 `client_secret` in the vault (keys: `oauth-client-id`,
-`oauth-client-secret`). Subsequent starts read from the vault. If the admin
-hasn't run `swamp auth login`, the server refuses to start. If no vault is
-initialized, the server refuses to start.
+`oauth-client-secret`). Subsequent starts read from the vault. Two
+registration paths exist:
+
+- **Headless (SWAMP_API_KEY)**: when the `SWAMP_API_KEY` env var is set
+  (a collective API token with `oauth:manage` scope), the server validates
+  the key against `/api/whoami`, uses it as a bearer token for client
+  registration and admin/allowed-user username resolution. The API key
+  is never persisted in the vault — it is read fresh from the environment
+  on each boot, so key rotation is transparent.
+- **Interactive (device grant)**: when `SWAMP_API_KEY` is not set, the
+  server initiates a device grant flow (RFC 8628) and waits for the
+  admin to approve in a browser. The device grant access token is
+  stored in the vault for subsequent admin resolution.
 
 Collectives are snapshotted at login time and become stale if the user's
 collective membership changes in swamp-club. Refresh is a later phase.
