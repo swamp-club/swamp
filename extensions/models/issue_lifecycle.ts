@@ -74,7 +74,7 @@ async function readState(
 
 export const model = {
   type: "@swamp/issue-lifecycle",
-  version: "2026.07.30.1",
+  version: "2026.08.16.1",
   globalArguments: GlobalArgsSchema,
 
   upgrades: [
@@ -172,6 +172,11 @@ export const model = {
         "Session summary — new summarizing phase between notify and done; " +
         "notify/skip_notify transition to summarizing, new summarize method " +
         "records problem/outcome before closing. No globalArguments changes.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.08.16.1",
+      description: "Change Swamp Club API Health Endpoint",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],

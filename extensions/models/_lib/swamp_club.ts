@@ -399,7 +399,7 @@ export async function createSwampClubClient(
 
   // Reachability check — verify the swamp-club URL is accessible before proceeding
   try {
-    const healthUrl = `${url}/api/health`;
+    const healthUrl = `${url}/healthz`;
     const res = await fetch(healthUrl, {
       method: "GET",
       signal: AbortSignal.timeout(5_000),
