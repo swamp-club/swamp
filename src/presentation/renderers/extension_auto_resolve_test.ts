@@ -24,6 +24,7 @@ import {
   renderAutoResolveCollectiveNotTrusted,
   renderAutoResolveInstalled,
   renderAutoResolveInstalling,
+  renderAutoResolveLocalSourceFailed,
   renderAutoResolveNetworkError,
   renderAutoResolveNoStableVersion,
   renderAutoResolveNotFound,
@@ -211,6 +212,34 @@ Deno.test("renderAutoResolveTruncated: json mode emits failed status", () => {
     const parsed = JSON.parse(logs[0]);
     assertEquals(parsed.status, "failed");
     assertEquals(parsed.reason, "truncated");
+  } finally {
+    console.log = origLog;
+  }
+});
+
+// --- renderAutoResolveLocalSourceFailed ---
+
+Deno.test("renderAutoResolveLocalSourceFailed: log mode shows Error with doctor suggestion", () => {
+  const lines = captureOutput(() => {
+    renderAutoResolveLocalSourceFailed("@acme/widget", "log");
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "Error");
+  assertStringIncludes(output, "local source extension failed to index");
+  assertStringIncludes(output, "swamp doctor extensions");
+});
+
+Deno.test("renderAutoResolveLocalSourceFailed: json mode emits local_source_failed reason", () => {
+  const logs: string[] = [];
+  const origLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+  try {
+    renderAutoResolveLocalSourceFailed("@acme/widget", "json");
+    assertEquals(logs.length, 1);
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.status, "failed");
+    assertEquals(parsed.reason, "local_source_failed");
+    assertEquals(parsed.type, "@acme/widget");
   } finally {
     console.log = origLog;
   }

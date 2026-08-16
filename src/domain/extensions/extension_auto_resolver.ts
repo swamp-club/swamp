@@ -106,6 +106,7 @@ export interface ExtensionInstallerPort {
   hotLoadModels(): Promise<number>;
   hotLoadVaults(): Promise<void>;
   hotLoadDatastores(): Promise<void>;
+  failedLocalSourceMatchesType(typeNormalized: string): boolean;
 }
 
 /**
@@ -150,6 +151,7 @@ export interface AutoResolveOutputPort {
    * caller fail with an opaque "unknown type" error.
    */
   collectiveNotTrusted(collective: string, type: string): void;
+  localSourceFailed(type: string): void;
   noStableVersion(extension: string): void;
 }
 
@@ -211,18 +213,20 @@ export class ExtensionAutoResolver {
     if (!this.config.allowedCollectives.includes(collective)) {
       logger
         .debug`Collective '${collective}' not in trusted list, skipping auto-resolution`;
-      // Surface an actionable trust hint for `@collective/*` references so the
-      // caller doesn't dead-end on an opaque "unknown type" error. Restricted
-      // to user-namespace (`@`) types to avoid false positives on local or
-      // built-in `a/b` type names, and emitted once per collective per process
-      // so multiple types from the same collective don't repeat it
-      // (swamp-club#465).
       if (
         ModelType.isUserNamespace(normalizedType) &&
         !this.warnedUntrusted.has(collective)
       ) {
         this.warnedUntrusted.add(collective);
-        this.config.output.collectiveNotTrusted(collective, normalizedType);
+        if (
+          this.config.extensionInstaller.failedLocalSourceMatchesType(
+            normalizedType,
+          )
+        ) {
+          this.config.output.localSourceFailed(normalizedType);
+        } else {
+          this.config.output.collectiveNotTrusted(collective, normalizedType);
+        }
       }
       return false;
     }

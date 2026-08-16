@@ -513,7 +513,7 @@ export class DefaultWorkflowValidationService
           WorkflowValidationResult.fail(
             checkName,
             `Model type '${resolution.modelType}' could not be resolved — ` +
-              `ensure the extension is pulled and available so its step ` +
+              `ensure the extension is available so its step ` +
               `inputs can be validated`,
           ),
         ];

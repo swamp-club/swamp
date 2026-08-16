@@ -50,6 +50,7 @@ import {
   renderAutoResolveCollectiveNotTrusted,
   renderAutoResolveInstalled,
   renderAutoResolveInstalling,
+  renderAutoResolveLocalSourceFailed,
   renderAutoResolveNetworkError,
   renderAutoResolveNoStableVersion,
   renderAutoResolveNotFound,
@@ -342,6 +343,20 @@ export function createAutoResolveInstallerAdapter(
         additionalDirs: rest,
       });
     },
+
+    failedLocalSourceMatchesType(typeNormalized: string): boolean {
+      if (!repository) return false;
+      const paths = repository.getCatalogStore().getFailedLocalSourcePaths();
+      for (const sourcePath of paths) {
+        try {
+          const source = Deno.readTextFileSync(sourcePath);
+          if (source.includes(typeNormalized)) return true;
+        } catch {
+          // Source unreadable — skip this file
+        }
+      }
+      return false;
+    },
   };
 }
 
@@ -384,6 +399,9 @@ export function createAutoResolveOutputAdapter(
     },
     collectiveNotTrusted(collective: string, type: string) {
       renderAutoResolveCollectiveNotTrusted(collective, type, mode);
+    },
+    localSourceFailed(type: string) {
+      renderAutoResolveLocalSourceFailed(type, mode);
     },
     noStableVersion(extension: string) {
       renderAutoResolveNoStableVersion(extension, mode);

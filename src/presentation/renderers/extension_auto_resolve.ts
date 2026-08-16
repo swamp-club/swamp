@@ -219,6 +219,33 @@ export function renderAutoResolveCollectiveNotTrusted(
   }
 }
 
+export function renderAutoResolveLocalSourceFailed(
+  type: string,
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(
+      JSON.stringify({
+        event: "auto_resolve",
+        status: "failed",
+        type,
+        reason: "local_source_failed",
+      }),
+    );
+  } else {
+    writeOutput(
+      gutterLine(
+        "Error",
+        STATUS_COLORS.error,
+        `${type} could not be loaded — a local source extension failed to index`,
+      ),
+    );
+    writeContentLine(
+      `Run: swamp doctor extensions — to diagnose and re-index`,
+    );
+  }
+}
+
 export function renderAutoResolveNetworkError(
   type: string,
   error: string,
