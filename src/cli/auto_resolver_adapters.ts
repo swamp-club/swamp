@@ -72,7 +72,7 @@ const BUNDLE_ARTIFACT_PREFIXES: readonly string[] = [
   SWAMP_SUBDIRS.reportBundles,
 ].map((subdir) => `.swamp/${subdir}/`);
 
-function isBundleArtifactPath(relPath: string): boolean {
+export function isBundleArtifactPath(relPath: string): boolean {
   return BUNDLE_ARTIFACT_PREFIXES.some((prefix) => relPath.startsWith(prefix));
 }
 
