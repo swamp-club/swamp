@@ -23,7 +23,11 @@ import { Cron } from "croner";
 import { atomicWriteTextFile } from "../infrastructure/persistence/atomic_write.ts";
 import { UserError } from "../domain/errors.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
-import { resolveSecret, type WebhookEndpoint } from "./webhook.ts";
+import {
+  resolveSecret,
+  type VaultSecretResolver,
+  type WebhookEndpoint,
+} from "./webhook.ts";
 import { WEBHOOK_SCHEMES, type WebhookScheme } from "./webhook_verifiers.ts";
 import type { VerifierConfig } from "./webhook_verifiers.ts";
 
@@ -522,8 +526,11 @@ export function validateTriggerOverrideEntry(
 
 // ── Webhook Config to WebhookEndpoint ─────────────────────────────────
 
-export function parseWebhookConfig(entry: WebhookConfigEntry): WebhookEndpoint {
-  const secret = resolveSecret(entry.secret);
+export async function parseWebhookConfig(
+  entry: WebhookConfigEntry,
+  vault?: VaultSecretResolver,
+): Promise<WebhookEndpoint> {
+  const secret = await resolveSecret(entry.secret, vault);
   const scheme = (entry.scheme ?? "github") as WebhookScheme;
 
   let verifier: VerifierConfig;
@@ -589,7 +596,7 @@ export interface MergedServeOptions {
   grantsDir?: string;
   grantReload: string;
   webhook?: string[];
-  webhookEndpoints?: WebhookEndpoint[];
+  webhookConfigs?: WebhookConfigEntry[];
   authMode: string;
   admins?: string;
   allowedCollectives?: string;
@@ -945,14 +952,16 @@ export function mergeServeOptions(
     false,
   );
 
-  // Webhooks: CLI --webhook flags replace config file webhooks entirely
+  // Webhooks: CLI --webhook flags replace config file webhooks entirely.
+  // Config-file webhooks are passed as raw entries — secret resolution
+  // (which may need async vault access) happens later at startup.
   let webhook: string[] | undefined;
-  let webhookEndpoints: WebhookEndpoint[] | undefined;
+  let webhookConfigs: WebhookConfigEntry[] | undefined;
 
   if (explicitFlags.has("webhook")) {
     webhook = cliOptions.webhook as string[] | undefined;
   } else if (config?.webhooks && config.webhooks.length > 0) {
-    webhookEndpoints = config.webhooks.map(parseWebhookConfig);
+    webhookConfigs = config.webhooks;
   }
 
   // Trigger overrides: serve.yaml only (no CLI flag or env var in v1)
@@ -971,7 +980,7 @@ export function mergeServeOptions(
     grantsDir,
     grantReload,
     webhook,
-    webhookEndpoints,
+    webhookConfigs,
     authMode,
     admins,
     allowedCollectives,

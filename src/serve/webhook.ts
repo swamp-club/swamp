@@ -110,8 +110,16 @@ export function buildWebhookPayload(
 
 const ENV_PREFIX = "@env=";
 const FILE_PREFIX = "@file=";
+const VAULT_PREFIX = "@vault=";
 
-export function resolveSecret(raw: string): string {
+export interface VaultSecretResolver {
+  get(vaultName: string, secretKey: string): Promise<string>;
+}
+
+export async function resolveSecret(
+  raw: string,
+  vault?: VaultSecretResolver,
+): Promise<string> {
   if (raw.startsWith(ENV_PREFIX)) {
     const varName = raw.slice(ENV_PREFIX.length);
     const value = Deno.env.get(varName);
@@ -142,6 +150,47 @@ export function resolveSecret(raw: string): string {
       );
     }
     return content;
+  }
+
+  if (raw.startsWith(VAULT_PREFIX)) {
+    const ref = raw.slice(VAULT_PREFIX.length);
+    const colonIdx = ref.indexOf(":");
+    if (colonIdx < 1) {
+      throw new UserError(
+        `Webhook secret uses ${VAULT_PREFIX} but the format is invalid: ` +
+          `expected '@vault=<vault-name>:<key>', got '${raw}'`,
+      );
+    }
+    const vaultName = ref.slice(0, colonIdx);
+    const secretKey = ref.slice(colonIdx + 1);
+    if (!secretKey) {
+      throw new UserError(
+        `Webhook secret uses ${VAULT_PREFIX} but the key is empty: ` +
+          `expected '@vault=<vault-name>:<key>', got '${raw}'`,
+      );
+    }
+    if (!vault) {
+      throw new UserError(
+        `Webhook secret references vault '${vaultName}' ` +
+          `(via ${VAULT_PREFIX}), but no vault service is available. ` +
+          `Ensure a vault is configured in your repo (see 'swamp vault create')`,
+      );
+    }
+    try {
+      const value = await vault.get(vaultName, secretKey);
+      if (!value) {
+        throw new UserError(
+          `Vault '${vaultName}' returned an empty value for key '${secretKey}'`,
+        );
+      }
+      return value;
+    } catch (cause) {
+      if (cause instanceof UserError) throw cause;
+      throw new UserError(
+        `Webhook secret could not be resolved from vault '${vaultName}', ` +
+          `key '${secretKey}' (via ${VAULT_PREFIX}): ${cause}`,
+      );
+    }
   }
 
   return raw;
@@ -175,7 +224,10 @@ export interface WebhookEndpoint {
  * given, the remaining fields are positional: `generic` requires a header name
  * (fifth field) and accepts an optional value prefix (sixth field).
  */
-export function parseWebhookFlag(flag: string): WebhookEndpoint {
+export async function parseWebhookFlag(
+  flag: string,
+  vault?: VaultSecretResolver,
+): Promise<WebhookEndpoint> {
   const fields = flag.split(":");
   const usage =
     "expected '<route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]' " +
@@ -217,7 +269,7 @@ export function parseWebhookFlag(flag: string): WebhookEndpoint {
     verifier = { scheme: "github" };
   }
 
-  secret = resolveSecret(secret);
+  secret = await resolveSecret(secret, vault);
 
   if (!route || !workflowIdOrName || !secret) {
     throw new UserError(

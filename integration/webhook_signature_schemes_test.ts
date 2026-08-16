@@ -107,7 +107,7 @@ async function withService(
       repoDir: resolvedRepoDir,
       repoContext,
       datastoreConfig,
-      endpoints: [parseWebhookFlag(flag)],
+      endpoints: [await parseWebhookFlag(flag)],
       syncService,
     });
 

@@ -307,31 +307,31 @@ Deno.test("loadServeConfig: empty file returns null", () => {
   });
 });
 
-Deno.test("parseWebhookConfig: parses github scheme webhook", () => {
+Deno.test("parseWebhookConfig: parses github scheme webhook", async () => {
   const entry: WebhookConfigEntry = {
     route: "/hooks/ci",
     workflow: "deploy-pipeline",
     secret: "my-secret",
   };
-  const endpoint = parseWebhookConfig(entry);
+  const endpoint = await parseWebhookConfig(entry);
   assertEquals(endpoint.route, "/hooks/ci");
   assertEquals(endpoint.workflowIdOrName, "deploy-pipeline");
   assertEquals(endpoint.secret, "my-secret");
   assertEquals(endpoint.verifier, { scheme: "github" });
 });
 
-Deno.test("parseWebhookConfig: parses linear scheme webhook", () => {
+Deno.test("parseWebhookConfig: parses linear scheme webhook", async () => {
   const entry: WebhookConfigEntry = {
     route: "/hooks/linear",
     workflow: "triage",
     secret: "linear-secret",
     scheme: "linear",
   };
-  const endpoint = parseWebhookConfig(entry);
+  const endpoint = await parseWebhookConfig(entry);
   assertEquals(endpoint.verifier, { scheme: "linear" });
 });
 
-Deno.test("parseWebhookConfig: parses generic scheme with header and prefix", () => {
+Deno.test("parseWebhookConfig: parses generic scheme with header and prefix", async () => {
   const entry: WebhookConfigEntry = {
     route: "/hooks/custom",
     workflow: "process",
@@ -340,7 +340,7 @@ Deno.test("parseWebhookConfig: parses generic scheme with header and prefix", ()
     header: "X-Signature",
     prefix: "sha256=",
   };
-  const endpoint = parseWebhookConfig(entry);
+  const endpoint = await parseWebhookConfig(entry);
   assertEquals(endpoint.verifier, {
     scheme: "generic",
     header: "X-Signature",
@@ -486,10 +486,10 @@ Deno.test("mergeServeOptions: CLI webhooks replace config webhooks", () => {
     envLookup,
   );
   assertEquals(merged.webhook, ["/hooks/cli:cli-wf:cli-secret"]);
-  assertEquals(merged.webhookEndpoints, undefined);
+  assertEquals(merged.webhookConfigs, undefined);
 });
 
-Deno.test("mergeServeOptions: config webhooks used when no CLI webhooks", () => {
+Deno.test("mergeServeOptions: config webhooks passed as raw entries for deferred resolution", () => {
   const config: ServeConfigFile = {
     webhooks: [{
       route: "/hooks/config",
@@ -508,10 +508,10 @@ Deno.test("mergeServeOptions: config webhooks used when no CLI webhooks", () => 
     envLookup,
   );
   assertEquals(merged.webhook, undefined);
-  assertNotEquals(merged.webhookEndpoints, undefined);
-  assertEquals(merged.webhookEndpoints!.length, 1);
-  assertEquals(merged.webhookEndpoints![0].route, "/hooks/config");
-  assertEquals(merged.webhookEndpoints![0].workflowIdOrName, "config-wf");
+  assertNotEquals(merged.webhookConfigs, undefined);
+  assertEquals(merged.webhookConfigs!.length, 1);
+  assertEquals(merged.webhookConfigs![0].route, "/hooks/config");
+  assertEquals(merged.webhookConfigs![0].workflow, "config-wf");
 });
 
 Deno.test("mergeServeOptions: env var fallback works with no config file (backwards compat)", () => {

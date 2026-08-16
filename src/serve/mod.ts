@@ -34,6 +34,7 @@ export {
 } from "./deps.ts";
 export {
   parseWebhookFlag,
+  type VaultSecretResolver,
   type WebhookEndpoint,
   type WebhookEndpointInfo,
   type WebhookEvent,
