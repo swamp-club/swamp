@@ -134,6 +134,7 @@ async function copyDirectory(
           await Deno.symlink(target, destPath, { type: linkType });
         }
         result.filesCopied++;
+        result.bytesCopied += target.length;
       } catch (error) {
         result.errors.push(
           `Failed to migrate symlink ${entry.name}: ${

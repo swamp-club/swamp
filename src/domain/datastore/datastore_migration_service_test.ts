@@ -103,6 +103,47 @@ Deno.test("migrateDatastore: does not migrate secrets directory", async () => {
   });
 });
 
+Deno.test("migrateDatastore: counts bytesCopied for symlinks and regular files", async () => {
+  await withTempDir(async (tmpDir) => {
+    const sourceDir = join(tmpDir, "source");
+    const destDir = join(tmpDir, "dest");
+
+    await Deno.mkdir(join(sourceDir, "data", "model"), { recursive: true });
+    await Deno.mkdir(destDir, { recursive: true });
+
+    const fileContent = '{"key": "value"}';
+    await Deno.writeTextFile(
+      join(sourceDir, "data", "model", "output.json"),
+      fileContent,
+    );
+
+    // Numeric symlink (converted to text file during migration)
+    await Deno.symlink(
+      "3",
+      join(sourceDir, "data", "model", "latest"),
+      { type: "file" },
+    );
+
+    const config: FilesystemDatastoreConfig = {
+      type: "filesystem",
+      path: destDir,
+    };
+
+    const result = await migrateDatastore(sourceDir, destDir, config);
+
+    assertEquals(
+      result.filesCopied,
+      2,
+      "should count both regular file and symlink",
+    );
+    assertEquals(
+      result.bytesCopied,
+      fileContent.length + "3".length,
+      "bytesCopied should include regular file size and symlink target length",
+    );
+  });
+});
+
 Deno.test("migrateDatastore: secrets survives full migration-then-cleanup cycle", async () => {
   await withTempDir(async (tmpDir) => {
     const sourceDir = join(tmpDir, "source");
