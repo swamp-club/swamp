@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import {
   buildWebhookPayload,
   isSensitiveHeader,
@@ -25,6 +25,7 @@ import {
   resolveSecret,
   WebhookService,
 } from "./webhook.ts";
+import type { VaultSecretResolver } from "./webhook.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 
 await initializeLogging({});
@@ -90,8 +91,8 @@ Deno.test("buildWebhookPayload: drops the scheme-specific signature header", () 
 
 // ── parseWebhookFlag ───────────────────────────────────────────────────
 
-Deno.test("parseWebhookFlag: parses valid flag", () => {
-  const result = parseWebhookFlag("/hooks/github:my-workflow:mysecret");
+Deno.test("parseWebhookFlag: parses valid flag", async () => {
+  const result = await parseWebhookFlag("/hooks/github:my-workflow:mysecret");
   assertEquals(result, {
     route: "/hooks/github",
     workflowIdOrName: "my-workflow",
@@ -100,13 +101,13 @@ Deno.test("parseWebhookFlag: parses valid flag", () => {
   });
 });
 
-Deno.test("parseWebhookFlag: three-field form defaults to github", () => {
-  const result = parseWebhookFlag("/hooks/gh:deploy:mysecret");
+Deno.test("parseWebhookFlag: three-field form defaults to github", async () => {
+  const result = await parseWebhookFlag("/hooks/gh:deploy:mysecret");
   assertEquals(result.verifier, { scheme: "github" });
 });
 
-Deno.test("parseWebhookFlag: secret can contain colons (legacy 3-field form)", () => {
-  const result = parseWebhookFlag(
+Deno.test("parseWebhookFlag: secret can contain colons (legacy 3-field form)", async () => {
+  const result = await parseWebhookFlag(
     "/hooks/gh:deploy:secret:with:colons",
   );
   assertEquals(result.route, "/hooks/gh");
@@ -115,25 +116,25 @@ Deno.test("parseWebhookFlag: secret can contain colons (legacy 3-field form)", (
   assertEquals(result.verifier, { scheme: "github" });
 });
 
-Deno.test("parseWebhookFlag: parses an explicit linear scheme", () => {
-  const result = parseWebhookFlag("/hooks/linear:wf:mysecret:linear");
+Deno.test("parseWebhookFlag: parses an explicit linear scheme", async () => {
+  const result = await parseWebhookFlag("/hooks/linear:wf:mysecret:linear");
   assertEquals(result.secret, "mysecret");
   assertEquals(result.verifier, { scheme: "linear" });
 });
 
-Deno.test("parseWebhookFlag: parses stripe and slack schemes", () => {
+Deno.test("parseWebhookFlag: parses stripe and slack schemes", async () => {
   assertEquals(
-    parseWebhookFlag("/hooks/s:wf:sec:stripe").verifier,
+    (await parseWebhookFlag("/hooks/s:wf:sec:stripe")).verifier,
     { scheme: "stripe" },
   );
   assertEquals(
-    parseWebhookFlag("/hooks/s:wf:sec:slack").verifier,
+    (await parseWebhookFlag("/hooks/s:wf:sec:slack")).verifier,
     { scheme: "slack" },
   );
 });
 
-Deno.test("parseWebhookFlag: parses generic scheme with header and prefix", () => {
-  const result = parseWebhookFlag(
+Deno.test("parseWebhookFlag: parses generic scheme with header and prefix", async () => {
+  const result = await parseWebhookFlag(
     "/hooks/x:wf:sec:generic:X-Signature:sha256=",
   );
   assertEquals(result.verifier, {
@@ -143,8 +144,8 @@ Deno.test("parseWebhookFlag: parses generic scheme with header and prefix", () =
   });
 });
 
-Deno.test("parseWebhookFlag: generic prefix defaults to empty", () => {
-  const result = parseWebhookFlag("/hooks/x:wf:sec:generic:X-Signature");
+Deno.test("parseWebhookFlag: generic prefix defaults to empty", async () => {
+  const result = await parseWebhookFlag("/hooks/x:wf:sec:generic:X-Signature");
   assertEquals(result.verifier, {
     scheme: "generic",
     header: "X-Signature",
@@ -152,64 +153,64 @@ Deno.test("parseWebhookFlag: generic prefix defaults to empty", () => {
   });
 });
 
-Deno.test("parseWebhookFlag: a non-scheme 4th field stays part of a colon-secret", () => {
+Deno.test("parseWebhookFlag: a non-scheme 4th field stays part of a colon-secret", async () => {
   // 'nope' is not a known scheme, so the legacy interpretation wins: the secret
   // is everything after the 2nd colon and the scheme defaults to github.
-  const result = parseWebhookFlag("/hooks/x:wf:sec:nope");
+  const result = await parseWebhookFlag("/hooks/x:wf:sec:nope");
   assertEquals(result.secret, "sec:nope");
   assertEquals(result.verifier, { scheme: "github" });
 });
 
-Deno.test("parseWebhookFlag: rejects generic without a header", () => {
-  assertThrows(
+Deno.test("parseWebhookFlag: rejects generic without a header", async () => {
+  await assertRejects(
     () => parseWebhookFlag("/hooks/x:wf:sec:generic"),
     Error,
     "'generic' scheme requires a header",
   );
 });
 
-Deno.test("parseWebhookFlag: rejects missing first colon", () => {
-  assertThrows(
+Deno.test("parseWebhookFlag: rejects missing first colon", async () => {
+  await assertRejects(
     () => parseWebhookFlag("/hooks/github"),
     Error,
     "Invalid --webhook format",
   );
 });
 
-Deno.test("parseWebhookFlag: rejects missing second colon", () => {
-  assertThrows(
+Deno.test("parseWebhookFlag: rejects missing second colon", async () => {
+  await assertRejects(
     () => parseWebhookFlag("/hooks/github:my-workflow"),
     Error,
     "Invalid --webhook format",
   );
 });
 
-Deno.test("parseWebhookFlag: rejects empty route", () => {
-  assertThrows(
+Deno.test("parseWebhookFlag: rejects empty route", async () => {
+  await assertRejects(
     () => parseWebhookFlag(":my-workflow:secret"),
     Error,
     "must all be non-empty",
   );
 });
 
-Deno.test("parseWebhookFlag: rejects empty workflow", () => {
-  assertThrows(
+Deno.test("parseWebhookFlag: rejects empty workflow", async () => {
+  await assertRejects(
     () => parseWebhookFlag("/hooks/github::secret"),
     Error,
     "must all be non-empty",
   );
 });
 
-Deno.test("parseWebhookFlag: rejects empty secret", () => {
-  assertThrows(
+Deno.test("parseWebhookFlag: rejects empty secret", async () => {
+  await assertRejects(
     () => parseWebhookFlag("/hooks/github:my-workflow:"),
     Error,
     "must all be non-empty",
   );
 });
 
-Deno.test("parseWebhookFlag: rejects route without leading slash", () => {
-  assertThrows(
+Deno.test("parseWebhookFlag: rejects route without leading slash", async () => {
+  await assertRejects(
     () => parseWebhookFlag("hooks/github:my-workflow:secret"),
     Error,
     "must start with '/'",
@@ -218,15 +219,15 @@ Deno.test("parseWebhookFlag: rejects route without leading slash", () => {
 
 // ── resolveSecret ─────────────────────────────────────────────────────
 
-Deno.test("resolveSecret: returns a literal string unchanged", () => {
-  assertEquals(resolveSecret("mysecretvalue"), "mysecretvalue");
+Deno.test("resolveSecret: returns a literal string unchanged", async () => {
+  assertEquals(await resolveSecret("mysecretvalue"), "mysecretvalue");
 });
 
-Deno.test("resolveSecret: reads from an environment variable via @env=", () => {
+Deno.test("resolveSecret: reads from an environment variable via @env=", async () => {
   Deno.env.set("TEST_WEBHOOK_SECRET_758", "env-secret-value");
   try {
     assertEquals(
-      resolveSecret("@env=TEST_WEBHOOK_SECRET_758"),
+      await resolveSecret("@env=TEST_WEBHOOK_SECRET_758"),
       "env-secret-value",
     );
   } finally {
@@ -234,19 +235,19 @@ Deno.test("resolveSecret: reads from an environment variable via @env=", () => {
   }
 });
 
-Deno.test("resolveSecret: throws for an unset environment variable", () => {
+Deno.test("resolveSecret: throws for an unset environment variable", async () => {
   Deno.env.delete("NONEXISTENT_WEBHOOK_VAR_758");
-  assertThrows(
+  await assertRejects(
     () => resolveSecret("@env=NONEXISTENT_WEBHOOK_VAR_758"),
     Error,
     "not set or is empty",
   );
 });
 
-Deno.test("resolveSecret: throws for an empty environment variable", () => {
+Deno.test("resolveSecret: throws for an empty environment variable", async () => {
   Deno.env.set("EMPTY_WEBHOOK_VAR_758", "");
   try {
-    assertThrows(
+    await assertRejects(
       () => resolveSecret("@env=EMPTY_WEBHOOK_VAR_758"),
       Error,
       "not set or is empty",
@@ -256,39 +257,39 @@ Deno.test("resolveSecret: throws for an empty environment variable", () => {
   }
 });
 
-Deno.test("resolveSecret: reads from a file via @file=", () => {
+Deno.test("resolveSecret: reads from a file via @file=", async () => {
   const tmpFile = Deno.makeTempFileSync();
   try {
     Deno.writeTextFileSync(tmpFile, "file-secret-value\n");
-    assertEquals(resolveSecret(`@file=${tmpFile}`), "file-secret-value");
+    assertEquals(await resolveSecret(`@file=${tmpFile}`), "file-secret-value");
   } finally {
     Deno.removeSync(tmpFile);
   }
 });
 
-Deno.test("resolveSecret: trims trailing CRLF from file", () => {
+Deno.test("resolveSecret: trims trailing CRLF from file", async () => {
   const tmpFile = Deno.makeTempFileSync();
   try {
     Deno.writeTextFileSync(tmpFile, "file-secret\r\n");
-    assertEquals(resolveSecret(`@file=${tmpFile}`), "file-secret");
+    assertEquals(await resolveSecret(`@file=${tmpFile}`), "file-secret");
   } finally {
     Deno.removeSync(tmpFile);
   }
 });
 
-Deno.test("resolveSecret: throws for a missing file", () => {
-  assertThrows(
+Deno.test("resolveSecret: throws for a missing file", async () => {
+  await assertRejects(
     () => resolveSecret("@file=/tmp/nonexistent-webhook-secret-758"),
     Error,
     "could not be read",
   );
 });
 
-Deno.test("resolveSecret: throws for an empty file", () => {
+Deno.test("resolveSecret: throws for an empty file", async () => {
   const tmpFile = Deno.makeTempFileSync();
   try {
     Deno.writeTextFileSync(tmpFile, "");
-    assertThrows(
+    await assertRejects(
       () => resolveSecret(`@file=${tmpFile}`),
       Error,
       "is empty",
@@ -298,11 +299,11 @@ Deno.test("resolveSecret: throws for an empty file", () => {
   }
 });
 
-Deno.test("resolveSecret: throws for a file containing only a newline", () => {
+Deno.test("resolveSecret: throws for a file containing only a newline", async () => {
   const tmpFile = Deno.makeTempFileSync();
   try {
     Deno.writeTextFileSync(tmpFile, "\n");
-    assertThrows(
+    await assertRejects(
       () => resolveSecret(`@file=${tmpFile}`),
       Error,
       "is empty",
@@ -310,14 +311,81 @@ Deno.test("resolveSecret: throws for a file containing only a newline", () => {
   } finally {
     Deno.removeSync(tmpFile);
   }
+});
+
+// ── resolveSecret: @vault= ──────────────────────────────────────────
+
+function createMockVault(
+  secrets: Record<string, Record<string, string>>,
+): VaultSecretResolver {
+  return {
+    get(vaultName: string, secretKey: string): Promise<string> {
+      const vault = secrets[vaultName];
+      if (!vault) {
+        return Promise.reject(new Error(`Vault '${vaultName}' not found`));
+      }
+      const value = vault[secretKey];
+      if (value === undefined) {
+        return Promise.reject(
+          new Error(`Key '${secretKey}' not found in vault '${vaultName}'`),
+        );
+      }
+      return Promise.resolve(value);
+    },
+  };
+}
+
+Deno.test("resolveSecret: resolves @vault= from vault service", async () => {
+  const vault = createMockVault({
+    forgejo: { "webhook-secret": "vault-value" },
+  });
+  assertEquals(
+    await resolveSecret("@vault=forgejo:webhook-secret", vault),
+    "vault-value",
+  );
+});
+
+Deno.test("resolveSecret: throws for @vault= with no vault service", async () => {
+  await assertRejects(
+    () => resolveSecret("@vault=forgejo:webhook-secret"),
+    Error,
+    "no vault service is available",
+  );
+});
+
+Deno.test("resolveSecret: throws for @vault= with missing colon separator", async () => {
+  const vault = createMockVault({});
+  await assertRejects(
+    () => resolveSecret("@vault=forgejo", vault),
+    Error,
+    "expected '@vault=<vault-name>:<key>'",
+  );
+});
+
+Deno.test("resolveSecret: throws for @vault= with empty key", async () => {
+  const vault = createMockVault({});
+  await assertRejects(
+    () => resolveSecret("@vault=forgejo:", vault),
+    Error,
+    "key is empty",
+  );
+});
+
+Deno.test("resolveSecret: throws for @vault= when vault get fails", async () => {
+  const vault = createMockVault({});
+  await assertRejects(
+    () => resolveSecret("@vault=nonexistent:key", vault),
+    Error,
+    "could not be resolved from vault",
+  );
 });
 
 // ── parseWebhookFlag with secret indirection ──────────────────────────
 
-Deno.test("parseWebhookFlag: resolves @env= secret in legacy form", () => {
+Deno.test("parseWebhookFlag: resolves @env= secret in legacy form", async () => {
   Deno.env.set("TEST_WH_SECRET_LEGACY_758", "resolved-secret");
   try {
-    const result = parseWebhookFlag(
+    const result = await parseWebhookFlag(
       "/hooks/gh:wf:@env=TEST_WH_SECRET_LEGACY_758",
     );
     assertEquals(result.secret, "resolved-secret");
@@ -327,10 +395,10 @@ Deno.test("parseWebhookFlag: resolves @env= secret in legacy form", () => {
   }
 });
 
-Deno.test("parseWebhookFlag: resolves @env= secret in scheme-qualified form", () => {
+Deno.test("parseWebhookFlag: resolves @env= secret in scheme-qualified form", async () => {
   Deno.env.set("TEST_WH_SECRET_SCHEME_758", "resolved-secret");
   try {
-    const result = parseWebhookFlag(
+    const result = await parseWebhookFlag(
       "/hooks/linear:wf:@env=TEST_WH_SECRET_SCHEME_758:linear",
     );
     assertEquals(result.secret, "resolved-secret");
@@ -340,11 +408,11 @@ Deno.test("parseWebhookFlag: resolves @env= secret in scheme-qualified form", ()
   }
 });
 
-Deno.test("parseWebhookFlag: resolves @file= secret", () => {
+Deno.test("parseWebhookFlag: resolves @file= secret", async () => {
   const tmpFile = Deno.makeTempFileSync();
   try {
     Deno.writeTextFileSync(tmpFile, "file-resolved\n");
-    const result = parseWebhookFlag(`/hooks/gh:wf:@file=${tmpFile}`);
+    const result = await parseWebhookFlag(`/hooks/gh:wf:@file=${tmpFile}`);
     assertEquals(result.secret, "file-resolved");
   } finally {
     Deno.removeSync(tmpFile);
@@ -353,18 +421,18 @@ Deno.test("parseWebhookFlag: resolves @file= secret", () => {
 
 // ── listEndpoints ─────────────────────────────────────────────────────
 
-Deno.test("listEndpoints: includes scheme from each endpoint verifier", () => {
+Deno.test("listEndpoints: includes scheme from each endpoint verifier", async () => {
   const service = new WebhookService({
     repoDir: "/tmp/fake",
     // deno-lint-ignore no-explicit-any
     repoContext: {} as any,
     // deno-lint-ignore no-explicit-any
     datastoreConfig: {} as any,
-    endpoints: [
+    endpoints: await Promise.all([
       parseWebhookFlag("/hooks/gh:deploy:secret"),
       parseWebhookFlag("/hooks/stripe:billing:secret:stripe"),
       parseWebhookFlag("/hooks/custom:wf:secret:generic:X-Sig:sha256="),
-    ],
+    ]),
   });
 
   const infos = service.listEndpoints();

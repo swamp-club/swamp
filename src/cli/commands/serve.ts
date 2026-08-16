@@ -98,6 +98,7 @@ import {
   loadServeConfig,
   mergeServeOptions,
   parseExplicitFlags,
+  parseWebhookConfig,
 } from "../../serve/serve_config.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
@@ -2762,11 +2763,28 @@ export const serveCommand = new Command()
       clubHeartbeatService.start();
     }
 
-    // Parse and initialize webhook endpoints
+    // Parse and initialize webhook endpoints — resolve secrets (including
+    // @vault= references) now that the vault type registry is loaded.
     let webhookService: WebhookService | null = null;
-    const webhookEndpoints = webhookFlags.length > 0
-      ? webhookFlags.map(parseWebhookFlag)
-      : merged.webhookEndpoints ?? [];
+    const hasWebhooks = webhookFlags.length > 0 ||
+      (merged.webhookConfigs && merged.webhookConfigs.length > 0);
+    let webhookEndpoints: import("../../serve/webhook.ts").WebhookEndpoint[] =
+      [];
+    if (hasWebhooks) {
+      const vaultService = await VaultService.fromRepository(
+        resolvedRepoDir,
+        { defaultVaultName: repoMarker?.defaultVault },
+      );
+      webhookEndpoints = webhookFlags.length > 0
+        ? await Promise.all(
+          webhookFlags.map((f) => parseWebhookFlag(f, vaultService)),
+        )
+        : await Promise.all(
+          merged.webhookConfigs!.map((e) =>
+            parseWebhookConfig(e, vaultService)
+          ),
+        );
+    }
     if (webhookEndpoints.length > 0) {
       const endpoints = webhookEndpoints;
       webhookService = new WebhookService({
