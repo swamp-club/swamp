@@ -57,7 +57,7 @@ export interface OAuthRegistrationDeps {
   ) => Promise<{
     clientId: string;
     clientSecret: string;
-    accessToken: string;
+    accessToken: string | null;
   }>;
 }
 
@@ -123,11 +123,13 @@ export async function resolveOAuthClientCredentials(
     OAUTH_CLIENT_SECRET_KEY,
     result.clientSecret,
   );
-  await deps.putVaultSecret(
-    vaultName,
-    OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY,
-    result.accessToken,
-  );
+  if (result.accessToken) {
+    await deps.putVaultSecret(
+      vaultName,
+      OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY,
+      result.accessToken,
+    );
+  }
 
   logger.info(
     "Registered OAuth client {clientId} and stored credentials in vault",
@@ -139,6 +141,71 @@ export async function resolveOAuthClientCredentials(
     clientSecret: result.clientSecret,
     accessToken: result.accessToken,
     resolvedAdmins: null,
+  };
+}
+
+export async function registerClientWithApiKey(
+  providerUrl: string,
+  apiKey: string,
+  signal: AbortSignal,
+): Promise<{ clientId: string; clientSecret: string }> {
+  const verifyResp = await fetch(`${providerUrl}/api/whoami`, {
+    headers: { "authorization": `Bearer ${apiKey}` },
+    signal,
+  });
+  if (!verifyResp.ok) {
+    const body = await verifyResp.text().catch(() => "");
+    throw new Error(
+      `SWAMP_API_KEY validation failed: ${verifyResp.status} ${verifyResp.statusText}${
+        body ? ` — ${body}` : ""
+      }`,
+    );
+  }
+  const whoami = await verifyResp.json() as {
+    scopes?: string[];
+  };
+  const scopes = whoami.scopes ?? [];
+  if (!scopes.includes("oauth:manage")) {
+    throw new Error(
+      `SWAMP_API_KEY is missing the "oauth:manage" scope required for headless OAuth client registration. ` +
+        `Generate a new collective API token that includes "oauth:manage".`,
+    );
+  }
+
+  logger.info(
+    "SWAMP_API_KEY verified with oauth:manage scope — registering OAuth client (headless)",
+  );
+
+  const resp = await fetch(`${providerUrl}/api/auth/oauth2/register`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "authorization": `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      client_name: `swamp-serve-${crypto.randomUUID().slice(0, 8)}`,
+      redirect_uris: ["http://localhost"],
+      grant_types: ["authorization_code"],
+      scope: "openid profile email collectives",
+    }),
+    signal,
+  });
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => "");
+    throw new Error(
+      `OAuth client registration via API key failed: ${resp.status} ${resp.statusText}${
+        body ? ` — ${body}` : ""
+      }`,
+    );
+  }
+  const data = await resp.json();
+  logger.info(
+    "Registered OAuth client {clientId} via SWAMP_API_KEY (headless)",
+    { clientId: data.client_id },
+  );
+  return {
+    clientId: data.client_id as string,
+    clientSecret: data.client_secret as string,
   };
 }
 

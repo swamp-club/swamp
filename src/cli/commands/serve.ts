@@ -1587,6 +1587,8 @@ export const serveCommand = new Command()
       knownUndecryptable: new Set(healthResult.undecryptable),
     });
 
+    const clubApiKey = Deno.env.get("SWAMP_API_KEY") ?? null;
+
     let oauthClientSecret = "";
     const resolvedUserNames: Record<string, string> = {};
     if (authConfig.mode === "oauth") {
@@ -1627,6 +1629,22 @@ export const serveCommand = new Command()
             putVaultSecret: (_v, k, val) =>
               oauthVaultService.put(TOKEN_SECRETS_VAULT_NAME, k, val),
             registerClient: async (providerUrl, signal) => {
+              if (clubApiKey) {
+                const { registerClientWithApiKey } = await import(
+                  "../../serve/oauth_registration.ts"
+                );
+                const result = await registerClientWithApiKey(
+                  providerUrl,
+                  clubApiKey,
+                  signal,
+                );
+                return {
+                  clientId: result.clientId,
+                  clientSecret: result.clientSecret,
+                  accessToken: null,
+                };
+              }
+
               const { startDeviceGrant, pollForToken } = await import(
                 "../../serve/oauth_client.ts"
               );
@@ -1763,77 +1781,91 @@ export const serveCommand = new Command()
         const missingAllowed = authConfig.allowedUsers
           .map((e) => e.startsWith("user:") ? e.slice(5) : e)
           .filter((u) => !cachedMap[`allowed:${u}`]);
-        logger.info(
-          "OAuth user config changed — device grant required to resolve: {admins}",
-          {
-            admins: [
-              ...missingAdmins,
-              ...missingAllowed.map((u) => `allowed:${u}`),
-            ].join(", "),
-          },
-        );
 
-        const { startDeviceGrant, pollForToken, DeviceGrantPollError } =
-          await import(
-            "../../serve/oauth_client.ts"
+        if (clubApiKey) {
+          logger.info(
+            "Using SWAMP_API_KEY to resolve admin/allowed-user usernames: {admins}",
+            {
+              admins: [
+                ...missingAdmins,
+                ...missingAllowed.map((u) => `allowed:${u}`),
+              ].join(", "),
+            },
           );
-        const { BOOTSTRAP_CLIENT_ID } = await import(
-          "../../serve/oauth_registration.ts"
-        );
-        const grantSignal = AbortSignal.timeout(300_000);
-        const grant = await startDeviceGrant(
-          authConfig.oauthProvider,
-          BOOTSTRAP_CLIENT_ID,
-          grantSignal,
-        );
+          accessToken = clubApiKey;
+        } else {
+          logger.info(
+            "OAuth user config changed — device grant required to resolve: {admins}",
+            {
+              admins: [
+                ...missingAdmins,
+                ...missingAllowed.map((u) => `allowed:${u}`),
+              ].join(", "),
+            },
+          );
 
-        const verifyUrl = grant.verificationUriComplete ||
-          grant.verificationUri;
-        logger.info(
-          "Visit {uri} and verify code: {code}",
-          { uri: verifyUrl, code: grant.userCode },
-        );
-
-        let currentIntervalMs = (grant.interval || 5) * 1000;
-        const deadline = Date.now() + grant.expiresIn * 1000;
-        let tokenResponse;
-        while (Date.now() < deadline) {
-          try {
-            tokenResponse = await pollForToken(
-              authConfig.oauthProvider,
-              BOOTSTRAP_CLIENT_ID,
-              "",
-              grant.deviceCode,
-              grantSignal,
+          const { startDeviceGrant, pollForToken, DeviceGrantPollError } =
+            await import(
+              "../../serve/oauth_client.ts"
             );
-            break;
-          } catch (err) {
-            if (err instanceof DeviceGrantPollError) {
-              if (err.code === "slow_down") {
-                currentIntervalMs += 5000;
-              }
-              if (
-                err.code === "authorization_pending" ||
-                err.code === "slow_down"
-              ) {
-                await new Promise((resolve) =>
-                  setTimeout(resolve, currentIntervalMs)
-                );
-                continue;
-              }
-              throw new UserError(
-                `OAuth re-registration failed: ${err.message}`,
-              );
-            }
-            throw err;
-          }
-        }
-        if (!tokenResponse) {
-          throw new UserError(
-            "OAuth re-registration failed: device grant timed out",
+          const { BOOTSTRAP_CLIENT_ID } = await import(
+            "../../serve/oauth_registration.ts"
           );
+          const grantSignal = AbortSignal.timeout(300_000);
+          const grant = await startDeviceGrant(
+            authConfig.oauthProvider,
+            BOOTSTRAP_CLIENT_ID,
+            grantSignal,
+          );
+
+          const verifyUrl = grant.verificationUriComplete ||
+            grant.verificationUri;
+          logger.info(
+            "Visit {uri} and verify code: {code}",
+            { uri: verifyUrl, code: grant.userCode },
+          );
+
+          let currentIntervalMs = (grant.interval || 5) * 1000;
+          const deadline = Date.now() + grant.expiresIn * 1000;
+          let tokenResponse;
+          while (Date.now() < deadline) {
+            try {
+              tokenResponse = await pollForToken(
+                authConfig.oauthProvider,
+                BOOTSTRAP_CLIENT_ID,
+                "",
+                grant.deviceCode,
+                grantSignal,
+              );
+              break;
+            } catch (err) {
+              if (err instanceof DeviceGrantPollError) {
+                if (err.code === "slow_down") {
+                  currentIntervalMs += 5000;
+                }
+                if (
+                  err.code === "authorization_pending" ||
+                  err.code === "slow_down"
+                ) {
+                  await new Promise((resolve) =>
+                    setTimeout(resolve, currentIntervalMs)
+                  );
+                  continue;
+                }
+                throw new UserError(
+                  `OAuth re-registration failed: ${err.message}`,
+                );
+              }
+              throw err;
+            }
+          }
+          if (!tokenResponse) {
+            throw new UserError(
+              "OAuth re-registration failed: device grant timed out",
+            );
+          }
+          accessToken = tokenResponse.accessToken;
         }
-        accessToken = tokenResponse.accessToken;
       }
 
       const resolvedMap: Record<string, string> = {};
@@ -2168,8 +2200,6 @@ export const serveCommand = new Command()
     }
 
     const instanceId = crypto.randomUUID();
-
-    const clubApiKey = Deno.env.get("SWAMP_API_KEY") ?? null;
     if (
       authConfig.mode === "oauth" &&
       authConfig.oauthClientId &&
