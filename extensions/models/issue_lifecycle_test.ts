@@ -319,8 +319,8 @@ Deno.test("model: exposes the new link_pr method definition", () => {
   );
 });
 
-Deno.test("model: version is 2026.07.30.1", () => {
-  assertEquals(model.version, "2026.07.30.1");
+Deno.test("model: version is 2026.08.16.1", () => {
+  assertEquals(model.version, "2026.08.16.1");
 });
 
 // ---------------------------------------------------------------------------
@@ -644,8 +644,8 @@ function happyRoutes(opts: {
 }): FetchStubRoute[] {
   return [
     {
-      urlIncludes: "/api/health",
-      response: { status: 200, body: { ok: true } },
+      urlIncludes: "/healthz",
+      response: { status: 200, body: "" },
     },
     {
       urlIncludes: `/api/v1/lab/issues/${opts.issueNumber}`,
@@ -856,8 +856,8 @@ Deno.test("start: persists author in context-main", async () => {
     authUsername: "alice",
     routes: [
       {
-        urlIncludes: "/api/health",
-        response: { status: 200, body: { ok: true } },
+        urlIncludes: "/healthz",
+        response: { status: 200, body: "" },
       },
       {
         urlIncludes: "/api/v1/lab/issues/99",
