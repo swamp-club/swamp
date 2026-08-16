@@ -198,14 +198,22 @@ export async function registerClientWithApiKey(
       }`,
     );
   }
-  const data = await resp.json();
+  const data = await resp.json() as Record<string, unknown>;
+  if (
+    typeof data.client_id !== "string" ||
+    typeof data.client_secret !== "string"
+  ) {
+    throw new Error(
+      "OAuth registration response missing client_id or client_secret",
+    );
+  }
   logger.info(
     "Registered OAuth client {clientId} via SWAMP_API_KEY (headless)",
     { clientId: data.client_id },
   );
   return {
-    clientId: data.client_id as string,
-    clientSecret: data.client_secret as string,
+    clientId: data.client_id,
+    clientSecret: data.client_secret,
   };
 }
 

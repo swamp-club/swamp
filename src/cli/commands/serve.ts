@@ -555,7 +555,9 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--oauth-client-id <id:string>",
-    "OAuth client ID — auto-registered on first start if omitted",
+    "OAuth client ID — auto-registered on first start if omitted. " +
+      "Set SWAMP_API_KEY (a collective API token with oauth:manage scope) " +
+      "for headless registration without browser interaction.",
   )
   .option(
     "--groups-field <field:string>",
@@ -821,6 +823,10 @@ export const serveCommand = new Command()
     "Bind to all interfaces (TLS + auth required)",
     "swamp serve --host 0.0.0.0 --port 3000 --cert-file server.crt --key-file server.key --auth-mode token",
   )
+  .example(
+    "Headless OAuth (CI / container)",
+    "SWAMP_API_KEY=<token> swamp serve --auth-mode oauth --admins dmc --allowed-collectives my-org",
+  )
   .option(
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
@@ -885,7 +891,9 @@ export const serveCommand = new Command()
   )
   .option(
     "--oauth-client-id <id:string>",
-    "OAuth client ID — auto-registered on first start if omitted",
+    "OAuth client ID — auto-registered on first start if omitted. " +
+      "Set SWAMP_API_KEY (a collective API token with oauth:manage scope) " +
+      "for headless registration without browser interaction.",
   )
   .option(
     "--groups-field <field:string>",
@@ -1751,7 +1759,7 @@ export const serveCommand = new Command()
       } catch (err) {
         if (err instanceof UserError) throw err;
         throw new UserError(
-          `OAuth bootstrap failed: ${
+          `OAuth bootstrap: ${
             err instanceof Error ? err.message : String(err)
           }`,
         );

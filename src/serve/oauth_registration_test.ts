@@ -53,6 +53,11 @@ function stubFetch(
     if (!stub) {
       throw new Error(`stubFetch: unexpected call #${callIndex} to ${url}`);
     }
+    if (url !== stub.url) {
+      throw new Error(
+        `stubFetch: call #${callIndex} expected ${stub.url} but got ${url}`,
+      );
+    }
     return Promise.resolve(
       new Response(stub.body, {
         status: stub.status,
