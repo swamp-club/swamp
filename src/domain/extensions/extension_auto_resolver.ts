@@ -488,11 +488,25 @@ export async function resolveModelType(
   await modelRegistry.ensureTypeLoaded(type);
   const def = modelRegistry.get(type);
   if (def) return def;
-  if (!resolver) return undefined;
 
+  // Internal types (swamp/grant, swamp/server-token, etc.) are registered
+  // without the @ prefix, but the CLI prefixes @ for direct type execution.
+  // Check the stripped form against the internal allow list before triggering
+  // auto-resolution — these types are compiled into the binary and must
+  // never cause a registry fetch.
   const normalized = typeof type === "string"
     ? ModelType.create(type).normalized
     : type.normalized;
+  if (normalized.startsWith("@")) {
+    const stripped = normalized.slice(1);
+    if (modelRegistry.isInternal(stripped)) {
+      await modelRegistry.ensureTypeLoaded(stripped);
+      const internalDef = modelRegistry.get(stripped);
+      if (internalDef) return internalDef;
+    }
+  }
+
+  if (!resolver) return undefined;
   const resolved = await resolver.resolve(normalized);
   if (resolved) return modelRegistry.get(type);
   return undefined;
