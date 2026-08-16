@@ -172,7 +172,8 @@ export async function resolveSecret(
     if (!vault) {
       throw new UserError(
         `Webhook secret references vault '${vaultName}' ` +
-          `(via ${VAULT_PREFIX}), but no vault service is available`,
+          `(via ${VAULT_PREFIX}), but no vault service is available. ` +
+          `Ensure a vault is configured in your repo (see 'swamp vault create')`,
       );
     }
     try {

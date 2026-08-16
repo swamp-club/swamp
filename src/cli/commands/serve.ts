@@ -92,6 +92,7 @@ import {
 import {
   isSensitiveHeader,
   parseWebhookFlag,
+  type WebhookEndpoint,
   WebhookService,
 } from "../../serve/webhook.ts";
 import {
@@ -529,8 +530,9 @@ const daemonEnableCommand = new Command()
   .option(
     "--webhook <spec:string>",
     "Register a webhook endpoint: <route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]. " +
-      "Secret may use @env=VAR to read from an environment variable or " +
-      "@file=/path to read from a file (avoids secrets in argv)",
+      "Secret may use @env=VAR to read from an environment variable, " +
+      "@file=/path to read from a file, or @vault=<vault>:<key> to read " +
+      "from a configured vault (avoids secrets in argv)",
     { collect: true },
   )
   .option(
@@ -859,8 +861,9 @@ export const serveCommand = new Command()
     "Register a webhook endpoint: <route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]. " +
       "scheme is one of github (default), linear, stripe, slack, generic; " +
       "generic requires a header name and accepts an optional value prefix. " +
-      "Secret may use @env=VAR to read from an environment variable or " +
-      "@file=/path to read from a file (avoids secrets in argv)",
+      "Secret may use @env=VAR to read from an environment variable, " +
+      "@file=/path to read from a file, or @vault=<vault>:<key> to read " +
+      "from a configured vault (avoids secrets in argv)",
     { collect: true },
   )
   .option(
@@ -1006,6 +1009,10 @@ export const serveCommand = new Command()
   .example(
     "Webhook (secret from file)",
     "swamp serve --webhook '/hooks/github:my-workflow:@file=/run/secrets/webhook'",
+  )
+  .example(
+    "Webhook (secret from vault)",
+    "swamp serve --webhook '/hooks/github:my-workflow:@vault=production:webhook-secret'",
   )
   .example(
     "Webhook with a provider scheme",
@@ -2768,8 +2775,7 @@ export const serveCommand = new Command()
     let webhookService: WebhookService | null = null;
     const hasWebhooks = webhookFlags.length > 0 ||
       (merged.webhookConfigs && merged.webhookConfigs.length > 0);
-    let webhookEndpoints: import("../../serve/webhook.ts").WebhookEndpoint[] =
-      [];
+    let webhookEndpoints: WebhookEndpoint[] = [];
     if (hasWebhooks) {
       const vaultService = await VaultService.fromRepository(
         resolvedRepoDir,

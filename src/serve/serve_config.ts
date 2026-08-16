@@ -596,7 +596,6 @@ export interface MergedServeOptions {
   grantsDir?: string;
   grantReload: string;
   webhook?: string[];
-  webhookEndpoints?: WebhookEndpoint[];
   webhookConfigs?: WebhookConfigEntry[];
   authMode: string;
   admins?: string;

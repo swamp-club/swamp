@@ -349,7 +349,7 @@ Deno.test("resolveSecret: throws for @vault= with no vault service", async () =>
   await assertRejects(
     () => resolveSecret("@vault=forgejo:webhook-secret"),
     Error,
-    "no vault service is available",
+    "no vault service is available. Ensure a vault is configured",
   );
 });
 
