@@ -141,7 +141,7 @@ export class LockfileRepository {
       current[name] = {
         version,
         pulledAt: options?.pulledAt ?? new Date().toISOString(),
-        files,
+        files: [...files].sort(),
         ...(options?.include && options.include.length > 0
           ? { include: options.include }
           : {}),
