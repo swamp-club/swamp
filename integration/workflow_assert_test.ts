@@ -25,6 +25,9 @@ import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
+import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
+import { Definition } from "../src/domain/definitions/definition.ts";
+import { SHELL_MODEL_TYPE } from "../src/domain/models/command/shell/shell_model.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-assert-" });
@@ -300,5 +303,85 @@ Deno.test("workflow assert: --fail-on rejects invalid values", async () => {
 
     assertEquals(result.code, 1);
     assertStringIncludes(result.stderr, "Invalid --fail-on");
+  });
+});
+
+Deno.test("workflow assert: model.method() in expr passes when method returns truthy", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const model = Definition.create({
+      name: "status-checker",
+      methods: { execute: { arguments: { run: "echo healthy" } } },
+    });
+    await definitionRepo.save(SHELL_MODEL_TYPE, model);
+
+    const workflow = Workflow.create({
+      name: "assert-method-pass",
+      jobs: [
+        Job.create({
+          name: "verify",
+          steps: [
+            Step.create({
+              name: "check-stdout",
+              task: StepTask.assert(
+                'model.method("status-checker", "execute").stdout == "healthy"',
+                "Expected healthy stdout",
+                "high",
+              ),
+            }),
+          ],
+        }),
+      ],
+    });
+    await saveWorkflow(repoDir, workflow);
+
+    const result = await runCliCommand(
+      ["workflow", "run", "assert-method-pass", "--repo-dir", repoDir],
+      Deno.cwd(),
+    );
+
+    assertEquals(result.code, 0, `stderr: ${result.stderr}`);
+  });
+});
+
+Deno.test("workflow assert: model.method() in expr fails when check does not match", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const model = Definition.create({
+      name: "status-checker",
+      methods: { execute: { arguments: { run: "echo healthy" } } },
+    });
+    await definitionRepo.save(SHELL_MODEL_TYPE, model);
+
+    const workflow = Workflow.create({
+      name: "assert-method-fail",
+      jobs: [
+        Job.create({
+          name: "verify",
+          steps: [
+            Step.create({
+              name: "check-wrong-value",
+              task: StepTask.assert(
+                'model.method("status-checker", "execute").stdout == "unhealthy"',
+                "Stdout mismatch",
+                "high",
+              ),
+            }),
+          ],
+        }),
+      ],
+    });
+    await saveWorkflow(repoDir, workflow);
+
+    const result = await runCliCommand(
+      ["workflow", "run", "assert-method-fail", "--repo-dir", repoDir],
+      Deno.cwd(),
+    );
+
+    assertEquals(result.code, 1, `Expected failure but got: ${result.stdout}`);
   });
 });

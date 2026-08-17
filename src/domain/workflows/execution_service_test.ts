@@ -4621,3 +4621,142 @@ Deno.test("guard: model.method() guard executes step when method returns falsy",
     );
   });
 });
+
+Deno.test("assert: model.method() in expr passes when method returns truthy", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    class TruthyAssertMethodExecutor implements StepExecutor {
+      executedSteps: string[] = [];
+
+      execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        this.executedSteps.push(`${ctx.jobName}/${ctx.stepName}`);
+        if (ctx.stepName.startsWith("__assert_")) {
+          return Promise.resolve({ running: true });
+        }
+        return Promise.resolve({ executed: true });
+      }
+    }
+    const executor = new TruthyAssertMethodExecutor();
+
+    const workflow = Workflow.create({
+      name: "assert-model-method-pass",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "verify-status",
+              task: StepTask.assert(
+                'model.method("infra", "check-status").running',
+                "Instance is not running",
+                "high",
+              ),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const events: Array<{
+      kind: string;
+      passed?: boolean;
+      message?: string;
+    }> = [];
+    for await (const event of service.run(workflow.name)) {
+      if (event.kind === "assert_result") {
+        const e = event as { kind: string; passed: boolean; message: string };
+        events.push({ kind: e.kind, passed: e.passed, message: e.message });
+      }
+    }
+
+    assertEquals(
+      executor.executedSteps,
+      ["job1/__assert_verify-status"],
+    );
+    assertEquals(events.length, 1);
+    assertEquals(events[0].passed, true);
+  });
+});
+
+Deno.test("assert: model.method() in expr fails when method returns falsy", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    class FalsyAssertMethodExecutor implements StepExecutor {
+      executedSteps: string[] = [];
+
+      execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        this.executedSteps.push(`${ctx.jobName}/${ctx.stepName}`);
+        if (ctx.stepName.startsWith("__assert_")) {
+          return Promise.resolve(null);
+        }
+        return Promise.resolve({ executed: true });
+      }
+    }
+    const executor = new FalsyAssertMethodExecutor();
+
+    const workflow = Workflow.create({
+      name: "assert-model-method-fail",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "verify-status",
+              task: StepTask.assert(
+                'model.method("infra", "check-status")',
+                "Instance check failed",
+                "high",
+              ),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const events: Array<{
+      kind: string;
+      passed?: boolean;
+      message?: string;
+    }> = [];
+    for await (const event of service.run(workflow.name)) {
+      if (event.kind === "assert_result") {
+        const e = event as { kind: string; passed: boolean; message: string };
+        events.push({ kind: e.kind, passed: e.passed, message: e.message });
+      }
+    }
+
+    assertEquals(
+      executor.executedSteps,
+      ["job1/__assert_verify-status"],
+    );
+    assertEquals(events.length, 1);
+    assertEquals(events[0].passed, false);
+    assertEquals(events[0].message, "Instance check failed");
+  });
+});
