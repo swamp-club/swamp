@@ -120,6 +120,34 @@ Deno.test("LockfileRepository.writeEntry: creates file and updates own cache", a
   });
 });
 
+Deno.test("LockfileRepository.writeEntry: sorts files[] for deterministic output", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "upstream_extensions.json");
+    const repo = await LockfileRepository.create(path);
+
+    const unsorted = [
+      "models/z.ts",
+      ".swamp/bundles/abc/x.js",
+      "models/a.ts",
+      ".claude/skills/my-skill",
+      "models/_lib/b.ts",
+    ];
+    await repo.writeEntry("@scope/foo", "1.0.0", unsorted);
+
+    const sorted = [
+      ".claude/skills/my-skill",
+      ".swamp/bundles/abc/x.js",
+      "models/_lib/b.ts",
+      "models/a.ts",
+      "models/z.ts",
+    ];
+    assertEquals(repo.getEntry("@scope/foo")?.files, sorted);
+
+    const onDisk = JSON.parse(await Deno.readTextFile(path));
+    assertEquals(onDisk["@scope/foo"].files, sorted);
+  });
+});
+
 Deno.test("LockfileRepository.writeEntry: omits empty/undefined optional fields", async () => {
   await withTempDir(async (dir) => {
     const path = join(dir, "upstream_extensions.json");
