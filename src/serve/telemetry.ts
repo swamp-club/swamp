@@ -18,14 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Telemetry for workflow runs that `swamp serve` executes on its own —
- * scheduled fires, verified webhooks, and API/WebSocket requests.
+ * Telemetry for runs that `swamp serve` executes — scheduled fires, verified
+ * webhooks, and API/WebSocket requests for both workflow and model method runs.
  *
- * The interactive `swamp workflow run` command binds the active
- * TelemetryService as a sink so each method invocation inside the run is
- * recorded (see cli/commands/workflow_run.ts). Serve never did, so every
- * run it executed was invisible: no parent entry, no child entries, nothing
- * to flush. This is the serve-side counterpart of that binding.
+ * The interactive CLI commands bind the active TelemetryService as a sink so
+ * each invocation is recorded. Serve never did, so every run it executed was
+ * invisible. This is the serve-side counterpart of that binding.
  */
 
 import type { WorkflowTelemetrySink } from "../libswamp/mod.ts";
@@ -72,6 +70,54 @@ function buildRunInvocation(): CommandInvocationData {
 }
 
 /**
+ * Telemetry scoped to a single serve-executed command (model method run).
+ */
+export interface CommandTelemetry {
+  finish(error: Error | null): Promise<void>;
+}
+
+function buildMethodRunInvocation(): CommandInvocationData {
+  return {
+    command: "model",
+    subcommand: "method run",
+    args: ["<REDACTED>", "<REDACTED>"],
+    optionKeys: [],
+    globalOptions: [],
+  };
+}
+
+/**
+ * Creates telemetry for one serve-executed model method run, or `undefined`
+ * when telemetry is disabled.
+ *
+ * @param initiatedBy - The principal who triggered this run
+ * @param startedAt - When the run began; defaults to now
+ */
+export function createCommandTelemetry(
+  initiatedBy?: string,
+  startedAt: Date = new Date(),
+): CommandTelemetry | undefined {
+  const service = getActiveTelemetryService();
+  if (!service) return undefined;
+
+  const runService = service.forkForRun("api", initiatedBy);
+
+  return {
+    finish: async (error: Error | null): Promise<void> => {
+      if (error) {
+        await runService.recordError(
+          buildMethodRunInvocation(),
+          startedAt,
+          error,
+        );
+      } else {
+        await runService.recordSuccess(buildMethodRunInvocation(), startedAt);
+      }
+    },
+  };
+}
+
+/**
  * Creates telemetry for one serve-executed workflow run, or `undefined` when
  * telemetry is disabled for this process — `--no-telemetry`, the repo
  * marker's `telemetryDisabled`, the user-level opt-out, or an initialization
@@ -84,16 +130,17 @@ function buildRunInvocation(): CommandInvocationData {
  * that is not written until serve exits — possibly weeks later.
  *
  * @param triggerSource - What caused this run (schedule, webhook, or api)
- * @param startedAt - When the run began; defaults to now
+ * @param options - Optional initiatedBy and startedAt overrides
  */
 export function createRunTelemetry(
   triggerSource: WorkflowTriggerSource,
-  startedAt: Date = new Date(),
+  options?: { initiatedBy?: string; startedAt?: Date },
 ): RunTelemetry | undefined {
   const service = getActiveTelemetryService();
   if (!service) return undefined;
 
-  const runService = service.forkForRun(triggerSource);
+  const startedAt = options?.startedAt ?? new Date();
+  const runService = service.forkForRun(triggerSource, options?.initiatedBy);
 
   return {
     sink: {

@@ -444,3 +444,49 @@ Deno.test("TelemetryEntry.fromData drops an unrecognised triggerSource", () => {
 
   assertEquals(TelemetryEntry.fromData(data).triggerSource, undefined);
 });
+
+Deno.test("TelemetryEntry round-trips initiatedBy through toData/fromData", () => {
+  const entry = TelemetryEntry.create({
+    invocation: {
+      command: "model",
+      subcommand: "method run",
+      args: ["<REDACTED>", "<REDACTED>"],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    result: { status: "success", exitCode: 0 },
+    startedAt: new Date("2026-02-05T12:00:00.000Z"),
+    completedAt: new Date("2026-02-05T12:00:05.000Z"),
+    swampVersion: "1.0.0",
+    denoVersion: "2.1.0",
+    platform: "linux",
+    triggerSource: "api",
+    initiatedBy: "user:abc-123",
+  });
+
+  assertEquals(entry.initiatedBy, "user:abc-123");
+  const data = entry.toData();
+  assertEquals(data.initiatedBy, "user:abc-123");
+  assertEquals(TelemetryEntry.fromData(data).initiatedBy, "user:abc-123");
+});
+
+Deno.test("TelemetryEntry omits initiatedBy for CLI invocations", () => {
+  const entry = TelemetryEntry.create({
+    invocation: {
+      command: "model",
+      subcommand: "create",
+      args: [],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    result: { status: "success", exitCode: 0 },
+    startedAt: new Date("2026-02-05T12:00:00.000Z"),
+    completedAt: new Date("2026-02-05T12:00:01.000Z"),
+    swampVersion: "1.0.0",
+    denoVersion: "2.1.0",
+    platform: "linux",
+  });
+
+  assertEquals(entry.initiatedBy, undefined);
+  assertEquals("initiatedBy" in entry.toData(), false);
+});

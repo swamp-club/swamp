@@ -666,6 +666,48 @@ Deno.test("TelemetryService.forkForRun returns a distinct identity over the same
   assertEquals(repo.savedEntries[0].triggerSource, "webhook");
 });
 
+Deno.test("TelemetryService.forkForRun stamps initiatedBy on entries", async () => {
+  const repo = new MockTelemetryRepository();
+  const service = new TelemetryService(repo, "1.0.0");
+
+  const fork = service.forkForRun("api", "user:abc-123");
+
+  await fork.recordSuccess(
+    {
+      command: "model",
+      subcommand: "method run",
+      args: ["<REDACTED>", "<REDACTED>"],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    new Date(),
+  );
+
+  assertEquals(repo.savedEntries.length, 1);
+  assertEquals(repo.savedEntries[0].initiatedBy, "user:abc-123");
+});
+
+Deno.test("TelemetryService.forkForRun omits initiatedBy when not provided", async () => {
+  const repo = new MockTelemetryRepository();
+  const service = new TelemetryService(repo, "1.0.0");
+
+  const fork = service.forkForRun("schedule");
+
+  await fork.recordSuccess(
+    {
+      command: "workflow",
+      subcommand: "run",
+      args: ["<REDACTED>"],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    new Date(),
+  );
+
+  assertEquals(repo.savedEntries.length, 1);
+  assertEquals(repo.savedEntries[0].initiatedBy, undefined);
+});
+
 Deno.test("TelemetryService.pruneFlushedTelemetry never deletes unflushed entries", async () => {
   // The executable form of the daemon retention decision. cleanupOldTelemetry
   // also applies the hard cap, which deletes UNFLUSHED entries — safe for a
