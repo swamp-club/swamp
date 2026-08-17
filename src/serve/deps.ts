@@ -324,6 +324,7 @@ export async function executeWorkflowWithLocks(
      * produce no telemetry — the pre-existing behaviour.
      */
     triggerSource?: WorkflowTriggerSource;
+    initiatedBy?: string;
   },
 ): Promise<void> {
   // Pre-lookup workflow for trigger.inputs resolution
@@ -350,7 +351,9 @@ export async function executeWorkflowWithLocks(
   // when telemetry is disabled for this process, in which case the run
   // produces no telemetry at all — exactly as before this was wired.
   const runTelemetry = options?.triggerSource
-    ? createRunTelemetry(options.triggerSource)
+    ? createRunTelemetry(options.triggerSource, {
+      initiatedBy: options.initiatedBy,
+    })
     : undefined;
 
   const deps = await createWorkflowRunDeps(

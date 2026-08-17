@@ -67,6 +67,7 @@ export interface CreateTelemetryEntryProps {
   parentInvocationId?: string;
   workflowContext?: WorkflowContextData;
   triggerSource?: WorkflowTriggerSource;
+  initiatedBy?: string;
 }
 
 /**
@@ -90,6 +91,7 @@ export interface TelemetryEntryData {
   parentInvocationId?: string;
   workflowContext?: WorkflowContextData;
   triggerSource?: WorkflowTriggerSource;
+  initiatedBy?: string;
 }
 
 /**
@@ -110,6 +112,7 @@ export class TelemetryEntry {
     readonly parentInvocationId?: TelemetryId,
     readonly workflowContext?: WorkflowContext,
     readonly triggerSource?: WorkflowTriggerSource,
+    readonly initiatedBy?: string,
   ) {}
 
   /**
@@ -139,6 +142,7 @@ export class TelemetryEntry {
         ? workflowContextFromData(props.workflowContext)
         : undefined,
       props.triggerSource,
+      props.initiatedBy,
     );
   }
 
@@ -165,11 +169,10 @@ export class TelemetryEntry {
       data.workflowContext
         ? workflowContextFromData(data.workflowContext)
         : undefined,
-      // Spool files are on disk and may be hand-edited or written by a newer
-      // version, so an unrecognised value is dropped rather than trusted.
       isWorkflowTriggerSource(data.triggerSource)
         ? data.triggerSource
         : undefined,
+      data.initiatedBy,
     );
   }
 
@@ -199,6 +202,9 @@ export class TelemetryEntry {
     }
     if (this.triggerSource) {
       data.triggerSource = this.triggerSource;
+    }
+    if (this.initiatedBy) {
+      data.initiatedBy = this.initiatedBy;
     }
     return data;
   }

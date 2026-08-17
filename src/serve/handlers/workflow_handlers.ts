@@ -200,7 +200,7 @@ export async function handleWorkflowRun(
         },
         ctx.syncService,
         ctx.runTracker,
-        { triggerSource: "api" },
+        { triggerSource: "api", initiatedBy },
       );
       send(socket, { type: "done", id: requestId });
     } catch (error) {
@@ -310,7 +310,7 @@ export async function handleWorkflowRun(
         },
         ctx.syncService,
         ctx.runTracker,
-        { triggerSource: "api" },
+        { triggerSource: "api", initiatedBy },
       );
       buffer.finish({ kind: "done" });
     } catch (error) {

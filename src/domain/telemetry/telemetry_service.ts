@@ -167,6 +167,7 @@ export class TelemetryService {
     private readonly invocationContext?: InvocationContextData,
     invocationId?: TelemetryId,
     private readonly triggerSource?: WorkflowTriggerSource,
+    private readonly initiatedBy?: string,
   ) {
     this.invocationId = invocationId ?? generateTelemetryId();
   }
@@ -189,13 +190,17 @@ export class TelemetryService {
    * twice. If a fork ever needs to flush, move the lock down to the
    * repository first.
    */
-  forkForRun(triggerSource?: WorkflowTriggerSource): TelemetryService {
+  forkForRun(
+    triggerSource?: WorkflowTriggerSource,
+    initiatedBy?: string,
+  ): TelemetryService {
     return new TelemetryService(
       this.repository,
       this.swampVersion,
       this.invocationContext,
       generateTelemetryId(),
       triggerSource ?? this.triggerSource,
+      initiatedBy,
     );
   }
 
@@ -220,6 +225,7 @@ export class TelemetryService {
       platform: Deno.build.os,
       invocationContext: this.invocationContext,
       triggerSource: this.triggerSource,
+      initiatedBy: this.initiatedBy,
     });
 
     await this.repository.save(entry);
@@ -253,6 +259,7 @@ export class TelemetryService {
       platform: Deno.build.os,
       invocationContext: this.invocationContext,
       triggerSource: this.triggerSource,
+      initiatedBy: this.initiatedBy,
     });
 
     await this.repository.save(entry);
@@ -309,6 +316,7 @@ export class TelemetryService {
       parentInvocationId,
       workflowContext,
       triggerSource: this.triggerSource,
+      initiatedBy: this.initiatedBy,
     });
 
     await this.repository.save(entry);

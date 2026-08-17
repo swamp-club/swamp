@@ -58,6 +58,7 @@ import {
   type TypeSearchDeps,
 } from "../../libswamp/mod.ts";
 import { createModelMethodRunDeps } from "../deps.ts";
+import { createCommandTelemetry } from "../telemetry.ts";
 import { serializeEvent } from "../serializer.ts";
 import type {
   ModelCreatePayload,
@@ -121,6 +122,8 @@ export async function handleModelMethodRun(
   const registry = ctx.activeRunRegistry;
   if (!registry) {
     let flushLocks: (() => Promise<void>) | null = null;
+    const initiatedBy = principal ? principalToString(principal) : "ghost";
+    const telemetry = createCommandTelemetry(initiatedBy);
     try {
       const preResult = await findDefinitionByIdOrName(
         ctx.repoContext.definitionRepo,
@@ -204,7 +207,6 @@ export async function handleModelMethodRun(
         ctx.cancelRegistry.register("method-run", requestId, controller);
       }
 
-      const initiatedBy = principal ? principalToString(principal) : "ghost";
       const runMethod = async () => {
         for await (
           const event of modelMethodRun(libCtx, deps, {
@@ -247,6 +249,7 @@ export async function handleModelMethodRun(
       } else {
         await runMethod();
       }
+      await telemetry?.finish(null);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         sendError(socket, requestId, "cancelled", "Operation was cancelled");
@@ -254,6 +257,9 @@ export async function handleModelMethodRun(
         const message = sanitizeErrorForClient(error);
         sendError(socket, requestId, "method_execution_failed", message);
       }
+      await telemetry?.finish(
+        error instanceof Error ? error : new Error(String(error)),
+      );
     } finally {
       if (ctx.cancelRegistry) {
         ctx.cancelRegistry.deregister("method-run", requestId);
@@ -373,6 +379,8 @@ export async function handleModelMethodRun(
     return;
   }
 
+  const detachedTelemetry = createCommandTelemetry(initiatedBy);
+
   (async () => {
     let flushLocks: (() => Promise<void>) | null = null;
     try {
@@ -447,7 +455,11 @@ export async function handleModelMethodRun(
       }
 
       buffer.finish({ kind: "done" });
+      await detachedTelemetry?.finish(null);
     } catch (error) {
+      await detachedTelemetry?.finish(
+        error instanceof Error ? error : new Error(String(error)),
+      );
       if (error instanceof DOMException && error.name === "AbortError") {
         buffer.finish({
           kind: "error",

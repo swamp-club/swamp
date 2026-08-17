@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertExists } from "@std/assert";
-import { createRunTelemetry } from "./telemetry.ts";
+import { createCommandTelemetry, createRunTelemetry } from "./telemetry.ts";
 import { TelemetryService } from "../domain/telemetry/telemetry_service.ts";
 import type { TelemetryEntry } from "../domain/telemetry/telemetry_entry.ts";
 import type { TelemetryRepository } from "../domain/telemetry/repositories.ts";
@@ -163,9 +163,6 @@ Deno.test("createRunTelemetry: each run gets a distinct parent identity", async 
 });
 
 Deno.test("createRunTelemetry: the parent entry redacts the workflow name", async () => {
-  // Serve-side entries are generated with no human present, so redaction
-  // cannot be reviewed at authoring time. This matches what the interactive
-  // path records for the same command.
   await withActiveService(async (repo) => {
     const telemetry = createRunTelemetry("schedule");
     assertExists(telemetry);
@@ -173,5 +170,87 @@ Deno.test("createRunTelemetry: the parent entry redacts the workflow name", asyn
     await telemetry.finish(null);
 
     assertEquals(repo.saved[0].invocation.args, ["<REDACTED>"]);
+  });
+});
+
+Deno.test("createRunTelemetry: stamps initiatedBy on parent and child entries", async () => {
+  await withActiveService(async (repo) => {
+    const telemetry = createRunTelemetry("api", {
+      initiatedBy: "user:abc-123",
+    });
+    assertExists(telemetry);
+
+    await telemetry.sink.recordChildInvocation(
+      {
+        command: "model",
+        subcommand: "method",
+        args: ["run", "<REDACTED>", "enrich"],
+        optionKeys: [],
+        globalOptions: [],
+      },
+      new Date(),
+      new Date(),
+      null,
+      telemetry.sink.parentInvocationId,
+      {
+        workflowName: "nightly",
+        runId: "run-1",
+        jobName: "main",
+        stepName: "enrich",
+      },
+    );
+    await telemetry.finish(null);
+
+    const child = repo.saved[0];
+    const parent = repo.saved[1];
+    assertEquals(parent.initiatedBy, "user:abc-123");
+    assertEquals(child.initiatedBy, "user:abc-123");
+  });
+});
+
+Deno.test("createRunTelemetry: omits initiatedBy when not provided", async () => {
+  await withActiveService(async (repo) => {
+    const telemetry = createRunTelemetry("schedule");
+    assertExists(telemetry);
+
+    await telemetry.finish(null);
+
+    assertEquals(repo.saved[0].initiatedBy, undefined);
+  });
+});
+
+Deno.test("createCommandTelemetry: returns undefined when telemetry is disabled", () => {
+  clearActiveTelemetryService();
+  assertEquals(createCommandTelemetry("user:test"), undefined);
+});
+
+Deno.test("createCommandTelemetry: records a success entry with initiatedBy", async () => {
+  await withActiveService(async (repo) => {
+    const telemetry = createCommandTelemetry("user:abc-123");
+    assertExists(telemetry);
+
+    await telemetry.finish(null);
+
+    assertEquals(repo.saved.length, 1);
+    const entry = repo.saved[0];
+    assertEquals(entry.invocation.command, "model");
+    assertEquals(entry.invocation.subcommand, "method run");
+    assertEquals(entry.result.status, "success");
+    assertEquals(entry.initiatedBy, "user:abc-123");
+    assertEquals(entry.triggerSource, "api");
+  });
+});
+
+Deno.test("createCommandTelemetry: records an error entry with initiatedBy", async () => {
+  await withActiveService(async (repo) => {
+    const telemetry = createCommandTelemetry("user:abc-123");
+    assertExists(telemetry);
+
+    await telemetry.finish(new Error("method failed"));
+
+    assertEquals(repo.saved.length, 1);
+    assertEquals(repo.saved[0].result.status, "error");
+    assertEquals(repo.saved[0].result.errorMessage, "method failed");
+    assertEquals(repo.saved[0].initiatedBy, "user:abc-123");
   });
 });
