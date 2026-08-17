@@ -1754,6 +1754,33 @@ Deno.test("validate: no warning when queueTimeout is inherited from workflow wit
   assertEquals(warning, undefined);
 });
 
+Deno.test("validate: warns when job clears inherited placement but queueTimeout is still inherited", async () => {
+  const workflow = Workflow.create({
+    name: "orphaned-queue-timeout",
+    labels: { pool: "gke" },
+    queueTimeout: 30,
+    jobs: [
+      Job.create({
+        name: "main",
+        labels: {},
+        steps: [
+          Step.create({
+            name: "orphaned",
+            task: StepTask.model("test-model", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const warning = results.find((r) =>
+    r.name.includes("queueTimeout without placement")
+  );
+  assertEquals(warning?.passed, true);
+  assertEquals(warning?.warning, true);
+});
+
 // --- Assert expr interpolation validation tests ---
 
 Deno.test("validate: fails when assert expr is wrapped in interpolation syntax", async () => {

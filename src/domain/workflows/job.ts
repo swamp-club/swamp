@@ -75,8 +75,7 @@ const JobObjectSchema = z.object({
 /**
  * Zod schema for Job entity. Rejects the removed `driver`/`driverConfig`
  * fields with an actionable error (see design/remote-execution.md), and
- * rejects unknown keys — Zod's silent stripping would otherwise discard
- * misplaced placement blocks like a job-level `labels:` (swamp-club#1240).
+ * rejects unknown keys with did-you-mean suggestions (swamp-club#1240).
  */
 export const JobSchema = z.preprocess(
   rejectRemovedDriverFields,
