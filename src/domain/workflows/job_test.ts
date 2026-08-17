@@ -238,31 +238,99 @@ Deno.test("Job.fromData and toData roundtrip correctly", () => {
   assertEquals(restored.weight, original.weight);
 });
 
-// Unknown-key rejection tests (swamp-club#1240)
+// Placement inheritance tests (swamp-club#1685)
 
-Deno.test("JobSchema rejects job-level labels with step-property message", () => {
-  // Exact shape from swamp-club#1240 variant A: the labels block sits on
-  // the job, which previously passed and was silently dropped.
-  const error = assertThrows(
-    () =>
-      JobSchema.parse({
-        name: "placed",
-        labels: { fb28: "probe" },
-        steps: [{
-          name: "echo",
-          task: {
-            type: "model_method",
-            modelIdOrName: "fb28-probe",
-            methodName: "execute",
-            inputs: { run: 'echo "hello"' },
-          },
-        }],
-      }),
-    Error,
-  );
-  assertStringIncludes(error.message, "'labels' is a step property");
-  assertStringIncludes(error.message, "job 'placed'");
-  assertStringIncludes(error.message, "Move it onto the step");
+Deno.test("JobSchema accepts job-level placement fields", () => {
+  const data = JobSchema.parse({
+    name: "placed",
+    labels: { pool: "gke", fleet: "v3" },
+    target: "worker-1",
+    platform: "linux/amd64",
+    queueTimeout: 30,
+    steps: [{
+      name: "echo",
+      task: {
+        type: "model_method",
+        modelIdOrName: "my-model",
+        methodName: "run",
+      },
+    }],
+  });
+  assertEquals(data.labels, { pool: "gke", fleet: "v3" });
+  assertEquals(data.target, "worker-1");
+  assertEquals(data.platform, "linux/amd64");
+  assertEquals(data.queueTimeout, 30);
+});
+
+Deno.test("Job placement: round-trips through toData/fromData", () => {
+  const job = Job.fromData({
+    name: "remote-job",
+    labels: { env: "prod", region: "us-east" },
+    platform: "linux",
+    steps: [{
+      name: "step1",
+      task: {
+        type: "model_method" as const,
+        modelIdOrName: "my-model",
+        methodName: "run",
+      },
+    }],
+  });
+  assertEquals(job.labels, { env: "prod", region: "us-east" });
+  assertEquals(job.platform, "linux");
+  assertEquals(job.target, undefined);
+
+  const data = job.toData();
+  assertEquals(data.labels, { env: "prod", region: "us-east" });
+  assertEquals(data.platform, "linux");
+
+  const restored = Job.fromData(data);
+  assertEquals(restored.labels, job.labels);
+  assertEquals(restored.platform, job.platform);
+});
+
+Deno.test("Job placementFields: returns all placement fields", () => {
+  const job = Job.fromData({
+    name: "placed",
+    target: "w1",
+    labels: { env: "prod" },
+    platform: "linux",
+    queueTimeout: 60,
+    steps: [{
+      name: "step1",
+      task: {
+        type: "model_method" as const,
+        modelIdOrName: "my-model",
+        methodName: "run",
+      },
+    }],
+  });
+  assertEquals(job.placementFields, {
+    target: "w1",
+    labels: { env: "prod" },
+    platform: "linux",
+    queueTimeout: 60,
+  });
+});
+
+Deno.test("Job placement: undefined when not set", () => {
+  const job = Job.fromData({
+    name: "local-job",
+    steps: [{
+      name: "step1",
+      task: {
+        type: "model_method" as const,
+        modelIdOrName: "my-model",
+        methodName: "run",
+      },
+    }],
+  });
+  assertEquals(job.placementFields, {
+    target: undefined,
+    labels: undefined,
+    platform: undefined,
+    queueTimeout: undefined,
+  });
 });
 
 Deno.test("JobSchema rejects unknown key with did-you-mean suggestion", () => {

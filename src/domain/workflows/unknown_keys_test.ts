@@ -27,6 +27,10 @@ const JOB_KEYS = [
   "dependsOn",
   "weight",
   "concurrency",
+  "target",
+  "labels",
+  "platform",
+  "queueTimeout",
 ];
 
 Deno.test("rejectUnknownKeys: passes through objects with only known keys", () => {
@@ -45,26 +49,32 @@ Deno.test("rejectUnknownKeys: passes through non-object values", () => {
   assertEquals(hook(arr), arr);
 });
 
-Deno.test("rejectUnknownKeys: rejects job-level labels as a misplaced step property", () => {
+Deno.test("rejectUnknownKeys: accepts placement keys on job", () => {
   const hook = rejectUnknownKeys("job", JOB_KEYS);
-  const error = assertThrows(
-    () => hook({ name: "placed", labels: { fb28: "probe" }, steps: [] }),
-    Error,
-  );
-  assertStringIncludes(error.message, "'labels' is a step property");
-  assertStringIncludes(error.message, "job 'placed'");
-  assertStringIncludes(error.message, "Move it onto the step");
+  const data = {
+    name: "placed",
+    labels: { fb28: "probe" },
+    target: "w1",
+    platform: "linux",
+    queueTimeout: 30,
+    steps: [],
+  };
+  assertEquals(hook(data), data);
 });
 
-Deno.test("rejectUnknownKeys: rejects all placement keys on non-step entities", () => {
-  const hook = rejectUnknownKeys("workflow", ["name", "jobs"]);
+Deno.test("rejectUnknownKeys: accepts placement keys on workflow", () => {
+  const WORKFLOW_KEYS = [
+    "name",
+    "jobs",
+    "target",
+    "labels",
+    "platform",
+    "queueTimeout",
+  ];
+  const hook = rejectUnknownKeys("workflow", WORKFLOW_KEYS);
   for (const key of ["labels", "target", "platform", "queueTimeout"]) {
-    const error = assertThrows(
-      () => hook({ name: "wf", jobs: [], [key]: "x" }),
-      Error,
-    );
-    assertStringIncludes(error.message, `'${key}' is a step property`);
-    assertStringIncludes(error.message, "workflow 'wf'");
+    const data = { name: "wf", jobs: [], [key]: "x" };
+    assertEquals(hook(data), data);
   }
 });
 
@@ -90,7 +100,7 @@ Deno.test("rejectUnknownKeys: unknown key without close match lists valid keys",
   assertStringIncludes(error.message, "Unknown key 'zzz_bogus_zzz'");
   assertStringIncludes(
     error.message,
-    "Valid job keys: name, description, steps, dependsOn, weight, concurrency",
+    "Valid job keys: name, description, steps, dependsOn, weight, concurrency, target, labels, platform, queueTimeout",
   );
 });
 
@@ -105,8 +115,8 @@ Deno.test("rejectUnknownKeys: leaves driver/driverConfig for the removed-fields 
 Deno.test("rejectUnknownKeys: omits entity name when data has no string name", () => {
   const hook = rejectUnknownKeys("job", JOB_KEYS);
   const error = assertThrows(
-    () => hook({ steps: [], labels: {} }),
+    () => hook({ steps: [], zzz_bogus: true }),
     Error,
   );
-  assertStringIncludes(error.message, "found on a job");
+  assertStringIncludes(error.message, "Unknown key 'zzz_bogus' on job");
 });

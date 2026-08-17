@@ -272,11 +272,10 @@ Deno.test("workflowRun surfaces the parse error for a schema-rejected workflow f
       ),
       `
 id: 74ae52ba-5f3f-4937-a4fd-c1de950572e7
-name: variant-a-job-labels
+name: broken-unknown-key
 jobs:
   - name: placed
-    labels:
-      fb28: probe
+    environmnet: prod
     steps:
       - name: echo
         task:
@@ -289,14 +288,14 @@ jobs:
     const deps = { ...createTestDeps(null, []), repoDir };
     const ctx = createLibSwampContext();
     const events = await collect(workflowRun(ctx, deps, {
-      workflowIdOrName: "variant-a-job-labels",
+      workflowIdOrName: "broken-unknown-key",
     }));
 
     const last = events[events.length - 1];
     assertEquals(last.kind, "error");
     if (last.kind === "error") {
       assertEquals(last.error.code, "workflow_load_failed");
-      assertStringIncludes(last.error.message, "'labels' is a step property");
+      assertStringIncludes(last.error.message, "Unknown key 'environmnet'");
     }
   } finally {
     await Deno.remove(repoDir, { recursive: true }).catch(() => {});

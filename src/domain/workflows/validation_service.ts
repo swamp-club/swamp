@@ -20,6 +20,7 @@
 import type { Workflow } from "./workflow.ts";
 import { WorkflowSchema } from "./workflow.ts";
 import type { WorkflowRepository } from "./repositories.ts";
+import { mergePlacementFields, resolvePlacement } from "./placement.ts";
 import { createWorkflowId } from "./workflow_id.ts";
 import {
   CyclicDependencyError,
@@ -183,11 +184,23 @@ export class DefaultWorkflowValidationService
     const results: WorkflowValidationResult[] = [];
     for (const job of workflow.jobs) {
       for (const step of job.steps) {
-        if (step.queueTimeout !== undefined && step.placement === undefined) {
+        const effectiveFields = mergePlacementFields(
+          mergePlacementFields(
+            workflow.placementFields,
+            job.placementFields,
+          ),
+          step.placementFields,
+        );
+        const effectiveQueueTimeout = step.queueTimeout ??
+          job.queueTimeout ?? workflow.queueTimeout;
+        if (
+          effectiveQueueTimeout !== undefined &&
+          resolvePlacement(effectiveFields) === undefined
+        ) {
           results.push(
             WorkflowValidationResult.warning(
               `queueTimeout without placement in job '${job.name}' step '${step.name}'`,
-              `Step '${step.name}' sets queueTimeout but has no target, labels, or platform — ` +
+              `Step '${step.name}' has queueTimeout (directly or inherited) but no effective target, labels, or platform — ` +
                 `queueTimeout only applies to remote-execution steps with placement requirements`,
             ),
           );

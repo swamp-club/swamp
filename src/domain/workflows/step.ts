@@ -28,6 +28,12 @@ import { DataOutputOverrideSchema } from "../models/data_output_override.ts";
 import type { DataOutputOverride } from "../models/data_output_override.ts";
 import { rejectRemovedDriverFields } from "../removed_driver_fields.ts";
 import { rejectUnknownKeys } from "./unknown_keys.ts";
+import {
+  type PlacementFields,
+  PlacementFieldsSchema,
+  type ResolvedPlacement,
+  resolvePlacement,
+} from "./placement.ts";
 
 /**
  * Schema for step dependency with condition.
@@ -86,13 +92,7 @@ const StepObjectSchema = z.object({
   concurrency: z.number().int().nonnegative().optional(),
   dataOutputOverrides: z.array(DataOutputOverrideSchema).optional(),
   allowFailure: z.boolean().default(false),
-  // Remote-execution placement (see design/remote-execution.md): a step
-  // declaring any of these dispatches to a matching worker instead of the
-  // loopback executor.
-  target: z.string().optional(),
-  labels: z.record(z.string(), z.string()).optional(),
-  platform: z.string().optional(),
-  queueTimeout: z.number().nonnegative().optional(),
+  ...PlacementFieldsSchema.shape,
   guard: z.string().optional(),
 });
 
@@ -320,31 +320,22 @@ export class Step {
     };
   }
 
-  /**
-   * The step's remote-execution placement, or undefined when it has none —
-   * placement-free steps run on the loopback executor.
-   */
-  get placement():
-    | {
-      target?: string;
-      labels?: Record<string, string>;
-      platform?: string;
-      queueTimeoutMs?: number;
-    }
-    | undefined {
-    if (
-      this.target === undefined && this.platform === undefined &&
-      (this.labels === undefined || Object.keys(this.labels).length === 0)
-    ) {
-      return undefined;
-    }
+  get placementFields(): PlacementFields {
     return {
       target: this.target,
       labels: this.labels,
       platform: this.platform,
-      queueTimeoutMs: this.queueTimeout !== undefined
-        ? this.queueTimeout * 1000
-        : undefined,
+      queueTimeout: this.queueTimeout,
     };
+  }
+
+  /**
+   * The step's own remote-execution placement, or undefined when it has none —
+   * placement-free steps run on the loopback executor. Does not include
+   * inherited placement from job or workflow; use resolvePlacement with
+   * mergePlacementFields for the effective placement.
+   */
+  get placement(): ResolvedPlacement | undefined {
+    return resolvePlacement(this.placementFields);
   }
 }

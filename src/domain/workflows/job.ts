@@ -26,6 +26,7 @@ import {
 import { Step, type StepData, StepSchema } from "./step.ts";
 import { rejectRemovedDriverFields } from "../removed_driver_fields.ts";
 import { rejectUnknownKeys } from "./unknown_keys.ts";
+import { type PlacementFields, PlacementFieldsSchema } from "./placement.ts";
 
 /**
  * Schema for job dependency with condition.
@@ -68,6 +69,7 @@ const JobObjectSchema = z.object({
   dependsOn: JobDependencyFieldSchema,
   weight: z.number().default(0),
   concurrency: z.number().int().nonnegative().optional(),
+  ...PlacementFieldsSchema.shape,
 });
 
 /**
@@ -112,6 +114,10 @@ export interface CreateJobProps {
   dependsOn?: JobDependency[];
   weight?: number;
   concurrency?: number;
+  target?: string;
+  labels?: Record<string, string>;
+  platform?: string;
+  queueTimeout?: number;
 }
 
 /**
@@ -132,6 +138,10 @@ export class Job {
     private _dependsOn: JobDependency[],
     readonly weight: number,
     readonly concurrency: number | undefined,
+    readonly target: string | undefined,
+    readonly labels: Record<string, string> | undefined,
+    readonly platform: string | undefined,
+    readonly queueTimeout: number | undefined,
   ) {}
 
   /**
@@ -152,6 +162,10 @@ export class Job {
       })),
       weight: props.weight ?? 0,
       concurrency: props.concurrency,
+      target: props.target,
+      labels: props.labels,
+      platform: props.platform,
+      queueTimeout: props.queueTimeout,
     });
 
     return Job.fromData(data);
@@ -175,6 +189,10 @@ export class Job {
       dependsOn,
       validated.weight,
       validated.concurrency,
+      validated.target,
+      validated.labels,
+      validated.platform,
+      validated.queueTimeout,
     );
   }
 
@@ -206,6 +224,15 @@ export class Job {
     return this._steps.find((s) => s.name === name);
   }
 
+  get placementFields(): PlacementFields {
+    return {
+      target: this.target,
+      labels: this.labels,
+      platform: this.platform,
+      queueTimeout: this.queueTimeout,
+    };
+  }
+
   /**
    * Converts to plain data for persistence.
    */
@@ -220,6 +247,10 @@ export class Job {
       })),
       weight: this.weight,
       concurrency: this.concurrency,
+      target: this.target,
+      labels: this.labels,
+      platform: this.platform,
+      queueTimeout: this.queueTimeout,
     };
   }
 }
