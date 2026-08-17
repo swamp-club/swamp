@@ -76,9 +76,13 @@ export async function queryGrants(
     `modelType == "${GRANT_MODEL_TYPE.normalized}"`,
     { loadAttributes: true },
   );
+  const orphanedRecords = await repoContext.dataQueryService.query(
+    `modelType == "@${GRANT_MODEL_TYPE.normalized}"`,
+    { loadAttributes: true },
+  );
 
   const results: { grant: Grant; instanceName: string }[] = [];
-  for (const record of records) {
+  for (const record of [...records, ...orphanedRecords]) {
     const dataRecord = record as DataRecord;
     const parsed = GrantSchema.safeParse(dataRecord.attributes);
     if (parsed.success) {

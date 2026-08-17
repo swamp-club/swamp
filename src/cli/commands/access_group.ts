@@ -80,9 +80,13 @@ async function queryGroups(
     `modelType == "${GROUP_MODEL_TYPE.normalized}"`,
     { loadAttributes: true },
   );
+  const orphanedRecords = await repoContext.dataQueryService.query(
+    `modelType == "@${GROUP_MODEL_TYPE.normalized}"`,
+    { loadAttributes: true },
+  );
 
   const results: { group: Group; instanceName: string }[] = [];
-  for (const record of records) {
+  for (const record of [...records, ...orphanedRecords]) {
     const dataRecord = record as DataRecord;
     const parsed = GroupSchema.safeParse(dataRecord.attributes);
     if (parsed.success) {

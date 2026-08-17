@@ -49,6 +49,7 @@ import {
   GRANT_MODEL_TYPE,
   GrantSchema,
 } from "../../domain/models/access/grant_model.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
 import {
   type Group,
   GROUP_MODEL_TYPE,
@@ -106,9 +107,13 @@ export async function handleAccessGrantList(
 
   try {
     await modelRegistry.ensureLoaded();
-    const dataItems = await ctx.repoContext.unifiedDataRepo.findAllForType(
-      GRANT_MODEL_TYPE,
-    );
+    const [canonicalItems, orphanedItems] = await Promise.all([
+      ctx.repoContext.unifiedDataRepo.findAllForType(GRANT_MODEL_TYPE),
+      ctx.repoContext.unifiedDataRepo.findAllForType(
+        ModelType.create(`@${GRANT_MODEL_TYPE.normalized}`),
+      ).catch(() => []),
+    ]);
+    const dataItems = [...canonicalItems, ...orphanedItems];
 
     let results: { grant: Grant; instanceName: string }[] = [];
     for (const { data, modelType, modelId } of dataItems) {
@@ -224,9 +229,13 @@ export async function handleAccessGroupList(
 
   try {
     await modelRegistry.ensureLoaded();
-    const dataItems = await ctx.repoContext.unifiedDataRepo.findAllForType(
-      GROUP_MODEL_TYPE,
-    );
+    const [canonicalGroupItems, orphanedGroupItems] = await Promise.all([
+      ctx.repoContext.unifiedDataRepo.findAllForType(GROUP_MODEL_TYPE),
+      ctx.repoContext.unifiedDataRepo.findAllForType(
+        ModelType.create(`@${GROUP_MODEL_TYPE.normalized}`),
+      ).catch(() => []),
+    ]);
+    const dataItems = [...canonicalGroupItems, ...orphanedGroupItems];
 
     let groups: Group[] = [];
     for (const { data, modelType, modelId } of dataItems) {

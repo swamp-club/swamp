@@ -142,6 +142,7 @@ export async function createWorkflowRunDeps(
         if (!modelDef) {
           throw new Error(`Unknown model type: ${resolvedType.normalized}`);
         }
+        resolvedType = modelDef.type;
         const autoDefRepo = new YamlDefinitionRepository(
           dir,
           repoContext.eventBus,
