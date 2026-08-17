@@ -324,10 +324,10 @@ Deno.test("workflow assert: model.method() in expr passes when method returns tr
           name: "verify",
           steps: [
             Step.create({
-              name: "check-stdout",
+              name: "check-exit-code",
               task: StepTask.assert(
-                'model.method("status-checker", "execute").stdout == "healthy"',
-                "Expected healthy stdout",
+                'model.method("status-checker", "execute").exitCode == 0',
+                "Expected exit code 0",
                 "high",
               ),
             }),
@@ -364,10 +364,10 @@ Deno.test("workflow assert: model.method() in expr fails when check does not mat
           name: "verify",
           steps: [
             Step.create({
-              name: "check-wrong-value",
+              name: "check-wrong-exit-code",
               task: StepTask.assert(
-                'model.method("status-checker", "execute").stdout == "unhealthy"',
-                "Stdout mismatch",
+                'model.method("status-checker", "execute").exitCode == 99',
+                "Exit code mismatch",
                 "high",
               ),
             }),
