@@ -70,6 +70,12 @@ const DATA_FUNCTION_PATTERN =
 const FILE_CONTENTS_PATTERN = /file\.contents\s*\(\s*['"]([^'"]+)['"]/g;
 
 /**
+ * Pattern to match model.method() calls in CEL expressions.
+ * Matches: model.method('modelName', 'methodName') or model.method("modelName", "methodName", inputs)
+ */
+const MODEL_METHOD_PATTERN = /model\.method\s*\(\s*['"]([^'"]+)['"]/g;
+
+/**
  * Extracts model dependencies from a CEL expression.
  *
  * @param expression - The CEL expression to analyze
@@ -124,6 +130,12 @@ export function extractModelRefs(expression: string): string[] {
   // Extract from file.contents('model', ...)
   const fileContentsMatches = expression.matchAll(FILE_CONTENTS_PATTERN);
   for (const match of fileContentsMatches) {
+    refs.add(match[1]);
+  }
+
+  // Extract from model.method('model', ...)
+  const methodMatches = expression.matchAll(MODEL_METHOD_PATTERN);
+  for (const match of methodMatches) {
     refs.add(match[1]);
   }
 

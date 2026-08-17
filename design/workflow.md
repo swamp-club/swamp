@@ -228,7 +228,8 @@ instead.
 ### Assert (`assert`)
 
 Evaluates a CEL predicate over prior step data, records a pass/fail result, and
-fails the step when the predicate is false. No model-method required.
+fails the step when the predicate is false. Can optionally invoke model methods
+via `model.method()` to check external state as part of the assertion.
 
 ```yaml
 steps:
@@ -244,7 +245,8 @@ steps:
 
 - `expr` (required, string) — CEL expression evaluated via `evaluateAsync()`.
   Has access to the full expression context including `data.latest()`,
-  `inputs.*`, and `self.*`.
+  `inputs.*`, `self.*`, and `model.method()` (see
+  [model.method() in guards](#modelmethod-in-guards) for syntax).
 - `message` (required, string) — human-readable message. Supports `${{ }}`
   expression interpolation. Displayed on failure and included in JUnit XML
   output.
@@ -264,6 +266,23 @@ under `--fail-on high` is recorded but does not affect the exit code.
 **JUnit XML output (`--junit`):** `swamp workflow run --junit [--out <file>]`
 emits one `<testcase>` per assert step, with a `<failure>` element on false.
 Non-assert steps are omitted from the JUnit output.
+
+**model.method() in assert:** Assert expressions can invoke model methods using
+`model.method(modelName, methodName)` or
+`model.method(modelName, methodName, inputs)`, with the same semantics as
+[guard expressions](#modelmethod-in-guards). The method executes through the step
+executor, and the return value is the parsed data output content. This enables
+assertions that check external state:
+
+```yaml
+steps:
+  - name: verify-instance-running
+    task:
+      type: assert
+      expr: model.method("infra", "check-status", {"name": inputs.instanceName}).stdout == "running"
+      message: "Instance ${{ inputs.instanceName }} is not running"
+      severity: high
+```
 
 **forEach compatibility:** Assert steps support `forEach` expansion. Each
 expanded iteration produces its own assert result and JUnit `<testcase>`.

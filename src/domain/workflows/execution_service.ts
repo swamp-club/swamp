@@ -2692,64 +2692,15 @@ export class WorkflowExecutionService {
         const guardContext: Record<string, unknown> = {
           ...(stepExprContext ?? {}),
         };
-        guardContext["modelMethod"] = {
-          method: async (
-            modelName: string,
-            methodName: string,
-            inputs?: Record<string, unknown>,
-          ) => {
-            const guardStep = Step.create({
-              name: `__guard_${stepName}`,
-              task: StepTask.model(modelName, methodName, inputs),
-            });
-            const result = await this.executor.execute(guardStep, {
-              workflowId: workflow.id,
-              workflowRunId: run.id,
-              workflowName: workflow.name,
-              jobName: job.name,
-              stepName: `__guard_${stepName}`,
-              repoDir: this.repoDir,
-              signal: options.signal ?? AbortSignal.timeout(30_000),
-              expressionContext: stepExprContext,
-              catalogStore: this.catalogStore,
-              dataBaseDir: this.dataBaseDir,
-              runtimeTags: options.runtimeTags,
-              secretRedactor: options.secretRedactor,
-            });
-            const methodResult = result as {
-              dataHandles?: Array<{
-                specName: string;
-                kind: string;
-              }>;
-            };
-            if (methodResult?.dataHandles?.length) {
-              const resourceHandle = methodResult.dataHandles.find(
-                (h) => h.kind === "resource",
-              );
-              if (resourceHandle) {
-                const def = await findDefinitionByIdOrName(
-                  this.definitionRepo,
-                  modelName,
-                );
-                if (def) {
-                  const raw = await this.dataRepo.getContent(
-                    def.type,
-                    def.definition.id,
-                    resourceHandle.specName,
-                  );
-                  if (raw) {
-                    try {
-                      return JSON.parse(new TextDecoder().decode(raw));
-                    } catch {
-                      return new TextDecoder().decode(raw);
-                    }
-                  }
-                }
-              }
-            }
-            return result;
-          },
-        };
+        guardContext["modelMethod"] = this.buildModelMethodDelegate(
+          workflow,
+          run,
+          job,
+          stepName,
+          "__guard_",
+          stepExprContext,
+          options,
+        );
         const guardResult = await celEvaluator.evaluateAsync(
           guardCel,
           guardContext,
@@ -2832,10 +2783,22 @@ export class WorkflowExecutionService {
       // Handle assert tasks — evaluate CEL predicate, record pass/fail
       if (task.type === "assert") {
         const celEvaluator = new CelEvaluator();
+        const assertContext: Record<string, unknown> = {
+          ...(stepExprContext ?? {}),
+        };
+        assertContext["modelMethod"] = this.buildModelMethodDelegate(
+          workflow,
+          run,
+          job,
+          stepName,
+          "__assert_",
+          stepExprContext,
+          options,
+        );
         try {
           const result = await celEvaluator.evaluateAsync(
             task.expr,
-            stepExprContext ?? {},
+            assertContext,
           );
           const passed = !!result;
 
@@ -2848,7 +2811,7 @@ export class WorkflowExecutionService {
             try {
               const value = await celEvaluator.evaluateAsync(
                 celExpr,
-                stepExprContext ?? {},
+                assertContext,
               );
               resolvedMessage = resolvedMessage.replace(
                 match[0],
@@ -3372,6 +3335,76 @@ export class WorkflowExecutionService {
       status: childRun.status,
     });
     yield { kind: "step_completed", jobId: job.name, stepId: stepName };
+  }
+
+  private buildModelMethodDelegate(
+    workflow: Workflow,
+    run: WorkflowRun,
+    job: Job,
+    stepName: string,
+    prefix: string,
+    stepExprContext: ExpressionContext | undefined,
+    options: StepOptions,
+  ): Record<string, unknown> {
+    return {
+      method: async (
+        modelName: string,
+        methodName: string,
+        inputs?: Record<string, unknown>,
+      ) => {
+        const syntheticName = `${prefix}${stepName}`;
+        const syntheticStep = Step.create({
+          name: syntheticName,
+          task: StepTask.model(modelName, methodName, inputs),
+        });
+        const result = await this.executor.execute(syntheticStep, {
+          workflowId: workflow.id,
+          workflowRunId: run.id,
+          workflowName: workflow.name,
+          jobName: job.name,
+          stepName: syntheticName,
+          repoDir: this.repoDir,
+          signal: options.signal ?? AbortSignal.timeout(30_000),
+          expressionContext: stepExprContext,
+          catalogStore: this.catalogStore,
+          dataBaseDir: this.dataBaseDir,
+          runtimeTags: options.runtimeTags,
+          secretRedactor: options.secretRedactor,
+        });
+        const methodResult = result as {
+          dataHandles?: Array<{
+            specName: string;
+            kind: string;
+          }>;
+        };
+        if (methodResult?.dataHandles?.length) {
+          const resourceHandle = methodResult.dataHandles.find(
+            (h) => h.kind === "resource",
+          );
+          if (resourceHandle) {
+            const def = await findDefinitionByIdOrName(
+              this.definitionRepo,
+              modelName,
+            );
+            if (def) {
+              const raw = await this.dataRepo.getContent(
+                def.type,
+                def.definition.id,
+                resourceHandle.specName,
+              );
+              if (raw) {
+                try {
+                  return JSON.parse(new TextDecoder().decode(raw));
+                } catch {
+                  return new TextDecoder().decode(raw);
+                }
+              }
+            }
+          }
+        }
+        return result;
+      },
+    };
   }
 
   private shouldJobRun(job: Job, run: WorkflowRun): boolean {

@@ -451,3 +451,24 @@ Deno.test("extractArtifactDependencies strips namespace prefix from data calls",
   assertEquals(deps[0].modelRef, "scanner");
   assertEquals(deps[0].type, "data");
 });
+
+Deno.test("extractModelRefs extracts model name from model.method()", () => {
+  const expr = 'model.method("infra", "check-status").stdout == "healthy"';
+  const refs = extractModelRefs(expr);
+  assertEquals(refs.length, 1);
+  assertEquals(refs.includes("infra"), true);
+});
+
+Deno.test("extractModelRefs extracts model name from model.method() with single quotes", () => {
+  const expr = "model.method('status-checker', 'execute').exitCode == 0";
+  const refs = extractModelRefs(expr);
+  assertEquals(refs.length, 1);
+  assertEquals(refs.includes("status-checker"), true);
+});
+
+Deno.test("extractModelRefs extracts model.method() alongside data refs", () => {
+  const expr =
+    'model.method("infra", "check").stdout == "ok" && data.latest("infra", "state").attributes.id';
+  const refs = extractModelRefs(expr);
+  assertEquals(refs.includes("infra"), true);
+});
