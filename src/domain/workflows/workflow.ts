@@ -32,6 +32,7 @@ import {
   ReportSelectionSchema,
 } from "../reports/report_selection.ts";
 import { Cron } from "croner";
+import { type PlacementFields, PlacementFieldsSchema } from "./placement.ts";
 
 const WORKFLOW_NAME_MAX_LENGTH = 64;
 const WORKFLOW_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
@@ -104,6 +105,7 @@ const WorkflowObjectSchema = z.object({
   version: z.number().int().positive().default(1),
   concurrency: z.number().int().nonnegative().optional(),
   reports: ReportSelectionSchema,
+  ...PlacementFieldsSchema.shape,
 });
 
 /**
@@ -145,6 +147,10 @@ export interface CreateWorkflowProps {
   version?: number;
   concurrency?: number;
   reports?: ReportSelection;
+  target?: string;
+  labels?: Record<string, string>;
+  platform?: string;
+  queueTimeout?: number;
 }
 
 /**
@@ -171,6 +177,10 @@ export class Workflow {
     readonly version: number,
     readonly concurrency: number | undefined,
     readonly reports: ReportSelection | undefined,
+    readonly target: string | undefined,
+    readonly labels: Record<string, string> | undefined,
+    readonly platform: string | undefined,
+    readonly queueTimeout: number | undefined,
   ) {}
 
   /**
@@ -194,6 +204,10 @@ export class Workflow {
       version,
       concurrency: props.concurrency,
       reports: props.reports,
+      target: props.target,
+      labels: props.labels,
+      platform: props.platform,
+      queueTimeout: props.queueTimeout,
     };
 
     // Scoped @collective/name is validated by workflowNameBase (in the schema);
@@ -220,6 +234,10 @@ export class Workflow {
       data.version,
       data.concurrency,
       data.reports,
+      data.target,
+      data.labels,
+      data.platform,
+      data.queueTimeout,
     );
   }
 
@@ -241,6 +259,10 @@ export class Workflow {
       validated.version,
       validated.concurrency,
       validated.reports,
+      validated.target,
+      validated.labels,
+      validated.platform,
+      validated.queueTimeout,
     );
   }
 
@@ -313,6 +335,15 @@ export class Workflow {
     this._jobs.push(job);
   }
 
+  get placementFields(): PlacementFields {
+    return {
+      target: this.target,
+      labels: this.labels,
+      platform: this.platform,
+      queueTimeout: this.queueTimeout,
+    };
+  }
+
   /**
    * Converts to plain data for persistence.
    */
@@ -328,6 +359,10 @@ export class Workflow {
       version: this.version,
       concurrency: this.concurrency,
       reports: this.reports,
+      target: this.target,
+      labels: this.labels,
+      platform: this.platform,
+      queueTimeout: this.queueTimeout,
     };
   }
 }

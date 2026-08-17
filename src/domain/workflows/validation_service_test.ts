@@ -1704,6 +1704,56 @@ Deno.test("validate: no warning when queueTimeout is set with placement", async 
   assertEquals(warning, undefined);
 });
 
+Deno.test("validate: no warning when queueTimeout is on step but placement is inherited from job", async () => {
+  const workflow = Workflow.create({
+    name: "queue-timeout-inherited",
+    jobs: [
+      Job.create({
+        name: "main",
+        labels: { pool: "gke" },
+        steps: [
+          Step.create({
+            name: "inherits",
+            task: StepTask.model("test-model", "run"),
+            queueTimeout: 30,
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const warning = results.find((r) =>
+    r.name.includes("queueTimeout without placement")
+  );
+  assertEquals(warning, undefined);
+});
+
+Deno.test("validate: no warning when queueTimeout is inherited from workflow with placement", async () => {
+  const workflow = Workflow.create({
+    name: "queue-timeout-workflow",
+    labels: { pool: "gke" },
+    queueTimeout: 30,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "inherits",
+            task: StepTask.model("test-model", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const warning = results.find((r) =>
+    r.name.includes("queueTimeout without placement")
+  );
+  assertEquals(warning, undefined);
+});
+
 // --- Assert expr interpolation validation tests ---
 
 Deno.test("validate: fails when assert expr is wrapped in interpolation syntax", async () => {

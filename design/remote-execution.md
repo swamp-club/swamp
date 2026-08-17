@@ -887,9 +887,13 @@ dispatches at the **step** granularity, which is what yields fan-out *across*
 workers; shipping a whole workflow to one worker is just the degenerate
 single-worker case.
 
-A step declares its requirements in workflow YAML with three new fields —
+A step declares its requirements in workflow YAML with three placement fields —
 `target:` (worker name or `instanceUuid`), `labels:` (selector map), and
-`platform:` — alongside the existing step fields; none of these exist today.
+`platform:`. These fields can be set at the **workflow**, **job**, or **step**
+level with inheritance: workflow-level placement applies to all steps as a
+default, job-level overrides workflow, and step-level overrides job. An explicit
+empty value (e.g., `labels: {}`) at any level clears the inherited value,
+causing the step to run locally. Omitting a field inherits from the parent.
 **`forEach` is the fan-out construct**: it already expands one step template
 into N parallel instances (`ForEachExpansionService`), so `forEach` over a list
 plus a label selector *is* "fan out across the fleet," with the existing

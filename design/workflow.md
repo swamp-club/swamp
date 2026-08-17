@@ -369,11 +369,11 @@ actionable error (swamp-club#1240). Zod's default unknown-key stripping is
 disabled by a `rejectUnknownKeys` preprocess hook (chained after the
 removed-driver-fields guard, which keeps its specific migration message):
 
-- A step-level placement property (`labels`, `target`, `platform`,
-  `queueTimeout`) found on a job or workflow names the misplaced key and shows
-  the step-level form. Silent stripping here failed open: the placement intent
-  was discarded and the work ran on the orchestrator.
-- Any other unknown key gets a did-you-mean suggestion (Levenshtein) plus the
+- Placement properties (`labels`, `target`, `platform`, `queueTimeout`) are
+  valid at the workflow, job, and step level (swamp-club#1685). Workflow-level
+  placement applies to all steps as a default, job-level overrides workflow,
+  and step-level overrides job.
+- Any unknown key gets a did-you-mean suggestion (Levenshtein) plus the
   list of valid keys for that entity.
 
 Because a schema-rejected file is invisible to the repository loader (it is

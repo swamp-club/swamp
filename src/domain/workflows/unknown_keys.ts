@@ -36,38 +36,10 @@ import { findClosestMatch } from "../string_distance.ts";
 export type WorkflowEntity = "workflow" | "job" | "step";
 
 /**
- * Step-level remote-placement properties (see design/remote-execution.md).
- * Misplacing these on a job or workflow is the dangerous authoring mistake:
- * the placement intent is silently dropped and the step runs locally.
- */
-const STEP_PLACEMENT_KEYS = ["labels", "target", "platform", "queueTimeout"];
-
-/**
  * Fields owned by rejectRemovedDriverFields, which runs before this hook
  * and produces its own migration message.
  */
 const REMOVED_DRIVER_FIELDS = ["driver", "driverConfig"];
-
-/**
- * Builds the error message for a step placement property found on a
- * workflow or job.
- */
-export function misplacedPlacementKeyMessage(
-  field: string,
-  entity: WorkflowEntity,
-  entityName: string | undefined,
-): string {
-  const where = entityName ? `${entity} '${entityName}'` : `a ${entity}`;
-  return `'${field}' is a step property, not a ${entity} property — ` +
-    `remote placement is declared per step (see design/remote-execution.md). ` +
-    `The key was found on ${where}.\n\n` +
-    `Move it onto the step:\n` +
-    `  steps:\n` +
-    `    - name: <step-name>\n` +
-    `      ${field}: ...\n` +
-    `      task:\n` +
-    `        ...`;
-}
 
 /**
  * Builds the error message for an unknown key, with a did-you-mean
@@ -109,11 +81,6 @@ export function rejectUnknownKeys(
     for (const field of Object.keys(record)) {
       if (known.has(field) || REMOVED_DRIVER_FIELDS.includes(field)) {
         continue;
-      }
-      if (entity !== "step" && STEP_PLACEMENT_KEYS.includes(field)) {
-        throw new Error(
-          misplacedPlacementKeyMessage(field, entity, entityName),
-        );
       }
       throw new Error(unknownKeyMessage(field, entity, entityName, knownKeys));
     }

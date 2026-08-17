@@ -20,6 +20,7 @@
 import type { Workflow } from "./workflow.ts";
 import type { Job } from "./job.ts";
 import { Step } from "./step.ts";
+import { mergePlacementFields, resolvePlacement } from "./placement.ts";
 import { StepTask } from "./step_task.ts";
 import type { AssertSeverity } from "./step_task.ts";
 import { severityAtOrAbove } from "./assert_severity.ts";
@@ -297,6 +298,10 @@ export interface StepExecutionContext {
   workflowRunRepo?: WorkflowRunRepository;
   workflowGateService?:
     import("../models/workflow_gate_service.ts").WorkflowGateService;
+  /** Workflow-level placement defaults (inherited by all steps unless overridden) */
+  workflowPlacement?: import("./placement.ts").PlacementFields;
+  /** Job-level placement defaults (inherited by steps in this job unless overridden) */
+  jobPlacement?: import("./placement.ts").PlacementFields;
 }
 
 /**
@@ -560,13 +565,23 @@ export class DefaultStepExecutor implements StepExecutor {
       executionService.workflowGateService = ctx.workflowGateService;
     }
 
+    // Compute effective placement by merging workflow → job → step defaults.
+    // Each level inherits from its parent; explicit values (including {})
+    // override inherited ones. The merge happens here — after forEach
+    // expansion but before expression resolution — so inherited fields are
+    // available for expression resolution.
+    const effectiveFields = mergePlacementFields(
+      mergePlacementFields(ctx.workflowPlacement, ctx.jobPlacement),
+      ctx.step?.placementFields,
+    );
+    let resolvedPlacement = resolvePlacement(effectiveFields);
+
     // Resolve every available expression (self.* from the forEach variable,
     // run.*, etc.) anywhere in the task and placement fields before model
     // lookup. The expression context has self populated with the forEach
     // variable by runStep(). resolveAvailableExpressions defers vault/env and
     // step-output kinds to their dedicated stages — see
     // available_expression_resolver.ts.
-    let resolvedPlacement = ctx.step?.placement;
     if (ctx.expressionContext) {
       const celEvaluator = new CelEvaluator();
       const evaluate = (expr: string, context: Record<string, unknown>) =>
@@ -3013,6 +3028,8 @@ export class WorkflowExecutionService {
           workflowRepo: this.workflowRepo,
           workflowRunRepo: this.runRepo,
           workflowGateService: this.workflowGateService,
+          workflowPlacement: workflow.placementFields,
+          jobPlacement: job.placementFields,
         };
         return this.executor.execute(step, ctx);
       });

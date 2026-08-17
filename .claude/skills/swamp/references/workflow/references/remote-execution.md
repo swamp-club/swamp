@@ -36,8 +36,40 @@ inspect the pool with `swamp worker list`.
 
 ## Placing steps on workers
 
-A step declaring any placement field dispatches to a matching worker instead of
-running locally; steps without placement are unaffected:
+Placement fields (`target`, `labels`, `platform`, `queueTimeout`) can be set at
+the **workflow**, **job**, or **step** level. Steps without any effective
+placement run locally; steps with placement dispatch to a matching worker.
+
+Inheritance: workflow-level placement applies to all steps as a default,
+job-level overrides workflow, step-level overrides job. An explicit empty value
+(e.g., `labels: {}`) clears inherited placement for that field.
+
+```yaml
+name: deploy-pipeline
+labels:
+  pool: gke
+  fleet: platform-fleet-v3
+
+jobs:
+  - name: build
+    steps:
+      - name: compile
+        task: ... # inherits workflow labels
+      - name: test
+        task: ... # inherits workflow labels
+  - name: report
+    labels: {} # override: run all steps locally
+    steps:
+      - name: summarize
+        task: ... # no placement — runs locally
+  - name: gpu-work
+    steps:
+      - name: train
+        target: gpu-box-1 # step overrides: pin to specific worker
+        task: ...
+```
+
+Step-level placement:
 
 ```yaml
 steps:
@@ -56,11 +88,6 @@ Matching order: `target` → `labels` → `platform`; idle eligible workers win,
 all-busy queues the step, and no eligible worker fails the step fast. `forEach`
 is the fan-out construct — expand a step over a list and the instances spread
 across matching workers (each worker runs one dispatch at a time).
-
-Placement fields are step properties only. Placing them on a job or at the
-workflow top level fails schema validation with an error naming the misplaced
-key and showing the step-level form — as does any other unknown key (with a
-did-you-mean suggestion).
 
 ## Running workflows through the orchestrator
 

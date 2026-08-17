@@ -53,13 +53,12 @@ jobs:
           methodName: run
 `;
 
-const JOB_LABELS_WORKFLOW = `
+const BROKEN_UNKNOWN_KEY_WORKFLOW = `
 id: 74ae52ba-5f3f-4937-a4fd-c1de950572e7
-name: variant-a-job-labels
+name: broken-unknown-key
 jobs:
   - name: placed
-    labels:
-      fb28: probe
+    environmnet: prod
     steps:
       - name: echo
         task:
@@ -89,7 +88,7 @@ Deno.test("listBrokenWorkflows: skips valid files and reports schema-rejected on
     );
     await Deno.writeTextFile(
       join(dir, "workflow-74ae52ba-5f3f-4937-a4fd-c1de950572e7.yaml"),
-      JOB_LABELS_WORKFLOW,
+      BROKEN_UNKNOWN_KEY_WORKFLOW,
     );
     // Files without the workflow- prefix are not loaded by the repository
     // and must not be scanned.
@@ -97,9 +96,9 @@ Deno.test("listBrokenWorkflows: skips valid files and reports schema-rejected on
 
     const broken = await listBrokenWorkflows(dir);
     assertEquals(broken.length, 1);
-    assertEquals(broken[0].name, "variant-a-job-labels");
+    assertEquals(broken[0].name, "broken-unknown-key");
     assertEquals(broken[0].id, "74ae52ba-5f3f-4937-a4fd-c1de950572e7");
-    assertStringIncludes(broken[0].error, "'labels' is a step property");
+    assertStringIncludes(broken[0].error, "Unknown key 'environmnet'");
   });
 });
 
@@ -119,11 +118,11 @@ Deno.test("findBrokenWorkflow: matches by raw name and by raw id", async () => {
   await withTempDir(async (dir) => {
     await Deno.writeTextFile(
       join(dir, "workflow-74ae52ba-5f3f-4937-a4fd-c1de950572e7.yaml"),
-      JOB_LABELS_WORKFLOW,
+      BROKEN_UNKNOWN_KEY_WORKFLOW,
     );
 
-    const byName = await findBrokenWorkflow(dir, "variant-a-job-labels");
-    assertEquals(byName?.name, "variant-a-job-labels");
+    const byName = await findBrokenWorkflow(dir, "broken-unknown-key");
+    assertEquals(byName?.name, "broken-unknown-key");
 
     const byId = await findBrokenWorkflow(
       dir,

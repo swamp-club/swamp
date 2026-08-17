@@ -647,21 +647,52 @@ Deno.test("WorkflowSchema rejects removed driverConfig field with actionable err
   );
 });
 
-// Unknown-key rejection tests (swamp-club#1240)
+// Placement inheritance tests (swamp-club#1685)
 
-Deno.test("WorkflowSchema rejects workflow-level labels with step-property message", () => {
-  const error = assertThrows(
-    () =>
-      Workflow.fromData({
-        id: "550e8400-e29b-41d4-a716-446655440000",
-        name: "test-workflow",
-        labels: { env: "prod" },
-        jobs: [createTestJob("job1").toData()],
-      } as unknown as WorkflowInput),
-    Error,
-  );
-  assertStringIncludes(error.message, "'labels' is a step property");
-  assertStringIncludes(error.message, "workflow 'test-workflow'");
+Deno.test("WorkflowSchema accepts workflow-level placement fields", () => {
+  const workflow = Workflow.fromData({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "test-workflow",
+    labels: { env: "prod" },
+    target: "worker-1",
+    platform: "linux/amd64",
+    queueTimeout: 30,
+    jobs: [createTestJob("job1").toData()],
+  } as unknown as WorkflowInput);
+  assertEquals(workflow.labels, { env: "prod" });
+  assertEquals(workflow.target, "worker-1");
+  assertEquals(workflow.platform, "linux/amd64");
+  assertEquals(workflow.queueTimeout, 30);
+});
+
+Deno.test("Workflow placement: round-trips through toData", () => {
+  const workflow = Workflow.fromData({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "test-workflow",
+    labels: { pool: "gke", fleet: "v3" },
+    platform: "linux",
+    jobs: [createTestJob("job1").toData()],
+  } as unknown as WorkflowInput);
+  const data = workflow.toData();
+  assertEquals(data.labels, { pool: "gke", fleet: "v3" });
+  assertEquals(data.platform, "linux");
+  const restored = Workflow.fromData(data);
+  assertEquals(restored.labels, workflow.labels);
+  assertEquals(restored.platform, workflow.platform);
+});
+
+Deno.test("Workflow placement: undefined when not set", () => {
+  const workflow = Workflow.fromData({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "test-workflow",
+    jobs: [createTestJob("job1").toData()],
+  } as unknown as WorkflowInput);
+  assertEquals(workflow.placementFields, {
+    target: undefined,
+    labels: undefined,
+    platform: undefined,
+    queueTimeout: undefined,
+  });
 });
 
 Deno.test("WorkflowSchema rejects unknown top-level key with did-you-mean suggestion", () => {
@@ -679,9 +710,8 @@ Deno.test("WorkflowSchema rejects unknown top-level key with did-you-mean sugges
   assertStringIncludes(error.message, "Did you mean 'version'?");
 });
 
-Deno.test("Workflow YAML with job-level labels fails to parse naming the key", () => {
-  // swamp-club#1240 variant A verbatim: previously passed validation and
-  // silently ran locally, discarding the placement intent.
+Deno.test("Workflow YAML with job-level labels parses and preserves placement", () => {
+  // swamp-club#1685: job-level placement is now supported with inheritance.
   const yaml = `
 id: 550e8400-e29b-41d4-a716-446655440000
 name: variant-a-job-labels
@@ -699,12 +729,9 @@ jobs:
             run: echo "hello"
 `;
   const data = parseYaml(yaml);
-  const error = assertThrows(
-    () => Workflow.fromData(data as WorkflowInput),
-    Error,
-  );
-  assertStringIncludes(error.message, "'labels' is a step property");
-  assertStringIncludes(error.message, "job 'placed'");
+  const workflow = Workflow.fromData(data as WorkflowInput);
+  const job = workflow.getJob("placed");
+  assertEquals(job?.labels, { fb28: "probe" });
 });
 
 // Reports field tests
