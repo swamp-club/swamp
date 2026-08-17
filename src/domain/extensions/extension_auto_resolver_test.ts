@@ -498,6 +498,48 @@ Deno.test("resolveModelType - returns undefined for unknown type without resolve
   assertEquals(result, undefined);
 });
 
+Deno.test("resolveModelType - finds internal type via @-prefixed lookup without auto-resolver", async () => {
+  const testType = ModelType.create("test-internal/grant-repro");
+  if (!modelRegistry.has(testType)) {
+    modelRegistry.register({
+      type: testType,
+      version: "2026.08.16.1",
+      methods: {
+        create: {
+          description: "test",
+          arguments: z.object({}),
+          execute: () => Promise.resolve({ dataHandles: [] }),
+        },
+      },
+    });
+  }
+  modelRegistry.markInternal("test-internal/grant-repro");
+
+  const result = await resolveModelType("@test-internal/grant-repro", null);
+  assertEquals(result !== undefined, true);
+  assertEquals(result?.type.normalized, "test-internal/grant-repro");
+});
+
+Deno.test("resolveModelType - does not strip @ for non-internal types", async () => {
+  const testType = ModelType.create("test-non-internal/widget");
+  if (!modelRegistry.has(testType)) {
+    modelRegistry.register({
+      type: testType,
+      version: "2026.08.16.1",
+      methods: {
+        run: {
+          description: "test",
+          arguments: z.object({}),
+          execute: () => Promise.resolve({ dataHandles: [] }),
+        },
+      },
+    });
+  }
+
+  const result = await resolveModelType("@test-non-internal/widget", null);
+  assertEquals(result, undefined);
+});
+
 Deno.test("resolveVaultType - returns true for existing vault type", async () => {
   // Register a test vault type if needed
   if (!vaultTypeRegistry.has("test-resolve-vault")) {
