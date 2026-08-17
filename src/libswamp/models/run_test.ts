@@ -671,6 +671,58 @@ Deno.test("modelMethodRun: direct execution resolves @-prefixed type from regist
   }
 });
 
+Deno.test("modelMethodRun: direct execution uses canonical type when getModelDef resolves @-prefixed internal type", async () => {
+  // Simulates the #1676 fix: getModelDef("@swamp/grant") returns the model def
+  // (because resolveModelType strips @ for internal types), but the model's
+  // canonical type is "swamp/grant" (without @). Data must be stored under
+  // the canonical type to be discoverable by findAllForType.
+  const canonicalType = ModelType.create("swamp/grant");
+  const modelDef: ModelDefinition = {
+    type: canonicalType,
+    version: "2026.06.17.1",
+    methods: {
+      create: {
+        description: "Create a grant",
+        arguments: z.object({}),
+        execute: (_args, _ctx) => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  };
+
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(null, undefined),
+    getModelDef: (type) => {
+      const key = typeof type === "string"
+        ? ModelType.create(type).normalized
+        : type.normalized;
+      // Matches both "@swamp/grant" and "swamp/grant" — just like
+      // resolveModelType after the #1676 fix
+      if (key === "@swamp/grant" || key === "swamp/grant") return modelDef;
+      return undefined;
+    },
+    createAndSaveDefinition: async (_type, _def) => {},
+    getDefinitionPath: (_type, id) => `/tmp/auto/${id}.yaml`,
+  };
+
+  const ctx = createLibSwampContext();
+  const events = await collect(
+    modelMethodRun(ctx, deps, {
+      modelIdOrName: "@swamp/grant",
+      methodName: "create",
+      inputs: {},
+      lastEvaluated: false,
+      typeArg: "@swamp/grant",
+      definitionName: "grant-abc123",
+    }),
+  );
+
+  const autoCreated = events.find((e) => e.kind === "auto_created");
+  assertEquals(autoCreated !== undefined, true);
+  if (autoCreated && autoCreated.kind === "auto_created") {
+    assertEquals(autoCreated.modelType, "swamp/grant");
+  }
+});
+
 Deno.test("modelMethodRun: direct execution strips @ fallback for repo-local types", async () => {
   const localType = ModelType.create("sandbox/coder-server");
   const modelDef: ModelDefinition = {

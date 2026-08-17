@@ -38,7 +38,8 @@ import {
   GROUP_MODEL_TYPE,
   GroupSchema,
 } from "../models/access/group_model.ts";
-import type { ModelType } from "../models/model_type.ts";
+import { ModelType } from "../models/model_type.ts";
+import type { Data } from "../data/data.ts";
 import type { PrincipalContext } from "./principal_context.ts";
 import type { ConditionEvaluator } from "./policy_snapshot.ts";
 import { PolicySnapshot } from "./policy_snapshot.ts";
@@ -210,8 +211,8 @@ export class PolicySnapshotLoader {
     groupCount: number;
   }> {
     const [grantDataItems, groupDataItems] = await Promise.all([
-      this.#dataRepo.findAllForType(GRANT_MODEL_TYPE),
-      this.#dataRepo.findAllForType(GROUP_MODEL_TYPE),
+      this.#findAllIncludingOrphaned(GRANT_MODEL_TYPE),
+      this.#findAllIncludingOrphaned(GROUP_MODEL_TYPE),
     ]);
 
     const grants: Grant[] = [];
@@ -264,6 +265,20 @@ export class PolicySnapshotLoader {
         .warn`Skipping ${modelType.normalized}/${modelId}/${dataName}: failed to parse JSON content: ${error}`;
       return null;
     }
+  }
+
+  async #findAllIncludingOrphaned(
+    type: ModelType,
+  ): Promise<Array<{ data: Data; modelType: ModelType; modelId: string }>> {
+    const canonical = await this.#dataRepo.findAllForType(type);
+    const orphanedType = ModelType.create(`@${type.normalized}`);
+    let orphaned: Array<{ data: Data; modelType: ModelType; modelId: string }>;
+    try {
+      orphaned = await this.#dataRepo.findAllForType(orphanedType);
+    } catch {
+      orphaned = [];
+    }
+    return [...canonical, ...orphaned];
   }
 
   #scheduleRebuild(): void {

@@ -32,7 +32,7 @@ import type { AuthMode } from "./serve_auth_config.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { Definition } from "../definitions/definition.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
-import type { ModelType } from "../models/model_type.ts";
+import { ModelType } from "../models/model_type.ts";
 import { createResourceWriter } from "../models/data_writer.ts";
 
 const logger = getLogger(["swamp", "admin-materializer"]);
@@ -94,7 +94,13 @@ export function createAdminGrantStore(
 ): AdminGrantStore {
   return {
     async queryConfigGrants() {
-      const grantDataItems = await dataRepo.findAllForType(GRANT_MODEL_TYPE);
+      const [canonical, orphaned] = await Promise.all([
+        dataRepo.findAllForType(GRANT_MODEL_TYPE),
+        dataRepo.findAllForType(
+          ModelType.create(`@${GRANT_MODEL_TYPE.normalized}`),
+        ).catch(() => []),
+      ]);
+      const grantDataItems = [...canonical, ...orphaned];
 
       const configGrants = new Map<
         string,

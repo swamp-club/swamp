@@ -375,6 +375,7 @@ export const workflowRunCommand = new Command()
                 `Unknown model type: ${resolvedType.normalized}`,
               );
             }
+            resolvedType = modelDef.type;
             const autoDefRepo = new YamlDefinitionRepository(
               dir,
               undefined,

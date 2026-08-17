@@ -311,6 +311,13 @@ export async function* modelMethodRun(
             }
           }
 
+          // Use the model definition's canonical type so data is stored
+          // under the registered type path, not the caller's @-prefixed
+          // syntax marker (e.g. swamp/grant, not @swamp/grant).
+          if (resolvedModelDef) {
+            resolvedType = resolvedModelDef.type;
+          }
+
           if (!resolvedModelDef) {
             yield {
               kind: "error",
