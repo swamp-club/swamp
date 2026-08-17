@@ -22,12 +22,10 @@
  * and step objects.
  *
  * Zod strips unknown keys silently by default, which turns authoring
- * mistakes into fail-open behavior: a `labels:` block placed on a job
- * instead of a step passes validation and the placement intent is
- * discarded, so the work runs on the orchestrator (swamp-club#1240).
- * Like removed_driver_fields.ts, this hook runs in a `z.preprocess`
- * wrapper so the raw keys are seen before unknown-key stripping drops
- * them.
+ * mistakes into fail-open behavior — a typo'd key passes validation and
+ * the intended field is silently ignored (swamp-club#1240). Like
+ * removed_driver_fields.ts, this hook runs in a `z.preprocess` wrapper
+ * so the raw keys are seen before unknown-key stripping drops them.
  */
 
 import { findClosestMatch } from "../string_distance.ts";
