@@ -105,6 +105,7 @@ const WorkflowObjectSchema = z.object({
   version: z.number().int().positive().default(1),
   concurrency: z.number().int().nonnegative().optional(),
   reports: ReportSelectionSchema,
+  affinity: z.boolean().optional(),
   ...PlacementFieldsSchema.shape,
 });
 
@@ -147,6 +148,7 @@ export interface CreateWorkflowProps {
   version?: number;
   concurrency?: number;
   reports?: ReportSelection;
+  affinity?: boolean;
   target?: string;
   labels?: Record<string, string>;
   platform?: string;
@@ -177,6 +179,7 @@ export class Workflow {
     readonly version: number,
     readonly concurrency: number | undefined,
     readonly reports: ReportSelection | undefined,
+    readonly affinity: boolean | undefined,
     readonly target: string | undefined,
     readonly labels: Record<string, string> | undefined,
     readonly platform: string | undefined,
@@ -204,6 +207,7 @@ export class Workflow {
       version,
       concurrency: props.concurrency,
       reports: props.reports,
+      affinity: props.affinity,
       target: props.target,
       labels: props.labels,
       platform: props.platform,
@@ -234,6 +238,7 @@ export class Workflow {
       data.version,
       data.concurrency,
       data.reports,
+      data.affinity,
       data.target,
       data.labels,
       data.platform,
@@ -259,6 +264,7 @@ export class Workflow {
       validated.version,
       validated.concurrency,
       validated.reports,
+      validated.affinity,
       validated.target,
       validated.labels,
       validated.platform,
@@ -359,6 +365,7 @@ export class Workflow {
       version: this.version,
       concurrency: this.concurrency,
       reports: this.reports,
+      affinity: this.affinity,
       target: this.target,
       labels: this.labels,
       platform: this.platform,

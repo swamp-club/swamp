@@ -122,6 +122,7 @@ import { withEventBridge } from "../../infrastructure/stream/event_bridge.ts";
 import type { ReportFilterOptions } from "../reports/report_execution_service.ts";
 import { getTracer, SpanStatusCode } from "../../infrastructure/tracing/mod.ts";
 import { extractSensitiveFieldValues } from "../models/sensitive_field_extractor.ts";
+import { getRemoteStepDispatcher } from "../remote/remote_dispatch.ts";
 
 /**
  * Resolves a task field that may be a record, an expression string, or a
@@ -302,6 +303,11 @@ export interface StepExecutionContext {
   workflowPlacement?: import("./placement.ts").PlacementFields;
   /** Job-level placement defaults (inherited by steps in this job unless overridden) */
   jobPlacement?: import("./placement.ts").PlacementFields;
+  /**
+   * Worker affinity key. When set, all steps sharing this key are pinned
+   * to the same remote worker. Computed from workflow/job affinity settings.
+   */
+  affinityKey?: string;
 }
 
 /**
@@ -598,6 +604,13 @@ export class DefaultStepExecutor implements StepExecutor {
           evaluate,
         ) as typeof resolvedPlacement;
       }
+    }
+
+    if (resolvedPlacement && ctx.affinityKey) {
+      resolvedPlacement = {
+        ...resolvedPlacement,
+        affinityKey: ctx.affinityKey,
+      };
     }
 
     // Resolve whole-field expression strings for inputs/globalArgs that survived
@@ -1002,6 +1015,7 @@ export class DefaultStepExecutor implements StepExecutor {
       labels?: Record<string, string>;
       platform?: string;
       queueTimeoutMs?: number;
+      affinityKey?: string;
     };
   }): Promise<MethodResult> {
     const {
@@ -1614,6 +1628,7 @@ export class WorkflowExecutionService {
     });
 
     let workflowRun: WorkflowRun | undefined;
+    let workflowAffinityKey: string | undefined;
     let workflowLogHandle: string | undefined;
     let wfHeartbeatInterval: ReturnType<typeof setInterval> | undefined;
     try {
@@ -1692,6 +1707,9 @@ export class WorkflowExecutionService {
           run.captureInputs(options.inputs);
         }
         workflowRun = run;
+        if (workflow.affinity) {
+          workflowAffinityKey = run.id;
+        }
 
         // workflowRunId is set here for backward compat; the structured
         // run namespace is populated after run.start() below so that
@@ -1998,6 +2016,9 @@ export class WorkflowExecutionService {
       });
       throw error;
     } finally {
+      if (workflowAffinityKey) {
+        getRemoteStepDispatcher()?.releaseAffinity(workflowAffinityKey);
+      }
       // Always release the per-run log file sink when the generator is
       // disposed — including early abandonment via generator.return() (e.g. a
       // streaming consumer that breaks on socket close). Cleanup placed after a
@@ -2585,6 +2606,12 @@ export class WorkflowExecutionService {
       });
       throw error;
     } finally {
+      const job = workflow.getJob(jobName);
+      if (job?.affinity && !workflow.affinity) {
+        getRemoteStepDispatcher()?.releaseAffinity(
+          `${run.id}:${jobName}`,
+        );
+      }
       jobSpan.end();
     }
   }
@@ -3000,6 +3027,11 @@ export class WorkflowExecutionService {
           workflowGateService: this.workflowGateService,
           workflowPlacement: workflow.placementFields,
           jobPlacement: job.placementFields,
+          affinityKey: workflow.affinity
+            ? run.id
+            : job.affinity
+            ? `${run.id}:${job.name}`
+            : undefined,
         };
         return this.executor.execute(step, ctx);
       });

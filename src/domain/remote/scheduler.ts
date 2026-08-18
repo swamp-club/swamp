@@ -38,6 +38,12 @@ export interface StepPlacement {
   platform?: string;
   /** Per-step queue timeout in milliseconds; overrides the serve-level default. */
   queueTimeoutMs?: number;
+  /**
+   * When set, all steps sharing the same key are pinned to the worker that
+   * executed the first step in the group. The dispatch service maintains
+   * the key→worker mapping and fails steps whose pinned worker disconnects.
+   */
+  affinityKey?: string;
 }
 
 /** The slice of worker state scheduling looks at. */

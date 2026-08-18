@@ -333,6 +333,42 @@ Deno.test("Job placement: undefined when not set", () => {
   });
 });
 
+Deno.test("Job affinity: round-trips through toData/fromData", () => {
+  const job = Job.fromData({
+    name: "build",
+    affinity: true,
+    labels: { gpu: "true" },
+    steps: [{
+      name: "step1",
+      task: {
+        type: "model_method" as const,
+        modelIdOrName: "my-model",
+        methodName: "run",
+      },
+    }],
+  });
+  assertEquals(job.affinity, true);
+  const data = job.toData();
+  assertEquals(data.affinity, true);
+  const restored = Job.fromData(data);
+  assertEquals(restored.affinity, true);
+});
+
+Deno.test("Job affinity: undefined when not set", () => {
+  const job = Job.fromData({
+    name: "local-job",
+    steps: [{
+      name: "step1",
+      task: {
+        type: "model_method" as const,
+        modelIdOrName: "my-model",
+        methodName: "run",
+      },
+    }],
+  });
+  assertEquals(job.affinity, undefined);
+});
+
 Deno.test("JobSchema rejects unknown key with did-you-mean suggestion", () => {
   const error = assertThrows(
     () =>

@@ -879,13 +879,31 @@ steps for unavailable workers. The early warning only fires for workers still
 in the in-memory grace window; workers already removed from the pool are not
 checked.
 
-Label + platform matching plus direct targeting is the whole affinity story for
-v1; data-locality affinity is explicitly not pursued yet. Because every capability
-proxies home, **compute location and state location are fully decoupled** — a
-step's data lives at the orchestrator regardless of which worker runs it. v1
-dispatches at the **step** granularity, which is what yields fan-out *across*
-workers; shipping a whole workflow to one worker is just the degenerate
+Label + platform matching, direct targeting, and **worker affinity** are the
+placement and co-location story. Data-locality affinity is not pursued — because
+every capability proxies home, **compute location and state location are fully
+decoupled** — a step's data lives at the orchestrator regardless of which worker
+runs it. v1 dispatches at the **step** granularity, which is what yields fan-out
+*across* workers; shipping a whole workflow to one worker is just the degenerate
 single-worker case.
+
+#### Worker affinity
+
+`affinity: true` can be set at the **workflow** or **job** level. When set, the
+dispatch service pins all remote steps in that scope to the same worker: the
+first step scheduled via the normal label/platform matching picks a worker, and
+all subsequent steps in the group are forced to that worker via an internal
+target override. Workflow-level affinity scopes the group to the entire run;
+job-level scopes it to the job.
+
+If the pinned worker disconnects mid-group — whether between steps or during a
+dispatch — the step fails with a `WorkerAffinityLostError` instead of
+re-dispatching. This preserves the co-location guarantee: silent re-dispatch to
+another worker would violate the contract the author opted into.
+
+The dispatch service maintains the pins in an in-memory `affinityKey → worker`
+map, keyed by `runId` (workflow-level) or `runId:jobName` (job-level). Pins are
+released when the group completes.
 
 A step declares its requirements in workflow YAML with three placement fields —
 `target:` (worker name or `instanceUuid`), `labels:` (selector map), and
@@ -1108,7 +1126,8 @@ Explicit non-goals for v1:
 - **Remote datastore configuration for workers.** Workers never hold datastore
   config; all data terminates at the orchestrator. Revisit only if the ceiling
   bites.
-- **Data-locality scheduler affinity.** Label/platform/direct targeting only.
+- **Data-locality scheduler affinity.** Worker affinity (`affinity: true`)
+  provides explicit co-location; automatic data-locality routing is not pursued.
 - **Shipping cloud/k8s launch integrations.** swamp ships the mint model and
   dial-home contract; the launch models are user-authored extensions.
 

@@ -175,6 +175,9 @@ export class DefaultWorkflowValidationService
     // 11. Assert expr must not be wrapped in ${{ }}
     results.push(...this.validateAssertExprNotInterpolated(workflow));
 
+    // 12. affinity without placement is a no-op
+    results.push(...this.validateAffinityPlacement(workflow));
+
     return results;
   }
 
@@ -207,6 +210,64 @@ export class DefaultWorkflowValidationService
         }
       }
     }
+    return results;
+  }
+
+  private validateAffinityPlacement(
+    workflow: Workflow,
+  ): WorkflowValidationResult[] {
+    const results: WorkflowValidationResult[] = [];
+
+    if (workflow.affinity) {
+      const hasAnyPlacement = workflow.jobs.some((job) => {
+        const wfFields = mergePlacementFields(
+          workflow.placementFields,
+          job.placementFields,
+        );
+        return job.steps.some((step) => {
+          const effective = mergePlacementFields(
+            wfFields,
+            step.placementFields,
+          );
+          return resolvePlacement(effective) !== undefined;
+        });
+      });
+      if (!hasAnyPlacement) {
+        results.push(
+          WorkflowValidationResult.warning(
+            `affinity without placement at workflow level`,
+            `Workflow has 'affinity: true' but no steps resolve to remote placement — ` +
+              `affinity only applies to remote-execution steps with placement requirements`,
+          ),
+        );
+      }
+    }
+
+    for (const job of workflow.jobs) {
+      if (job.affinity) {
+        const wfFields = mergePlacementFields(
+          workflow.placementFields,
+          job.placementFields,
+        );
+        const hasAnyPlacement = job.steps.some((step) => {
+          const effective = mergePlacementFields(
+            wfFields,
+            step.placementFields,
+          );
+          return resolvePlacement(effective) !== undefined;
+        });
+        if (!hasAnyPlacement) {
+          results.push(
+            WorkflowValidationResult.warning(
+              `affinity without placement in job '${job.name}'`,
+              `Job '${job.name}' has 'affinity: true' but no steps resolve to remote placement — ` +
+                `affinity only applies to remote-execution steps with placement requirements`,
+            ),
+          );
+        }
+      }
+    }
+
     return results;
   }
 

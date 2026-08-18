@@ -87,6 +87,7 @@ export interface RemoteStepResult {
 
 export interface RemoteStepDispatcher {
   executeRemote(request: RemoteStepRequest): Promise<RemoteStepResult>;
+  releaseAffinity(key: string): void;
 }
 
 let activeDispatcher: RemoteStepDispatcher | null = null;

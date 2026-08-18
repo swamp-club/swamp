@@ -3225,6 +3225,7 @@ Deno.test("executeWorkflow - placed steps rebuild full handles from durable reco
         durationMs: 5,
         workerName: "gpu-box-1",
       }),
+    releaseAffinity: () => {},
   });
   try {
     const { context } = createTestContext({
@@ -3285,6 +3286,7 @@ Deno.test("executeWorkflow - placed step with a vanished output record fails lou
         logs: [],
         durationMs: 1,
       }),
+    releaseAffinity: () => {},
   });
   try {
     const { context } = createTestContext({

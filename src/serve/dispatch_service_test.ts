@@ -23,6 +23,7 @@ import {
   BUILTIN_BUNDLE_PREFIX,
   type DispatchGateway,
   DispatchService,
+  WorkerAffinityLostError,
 } from "./dispatch_service.ts";
 import { DispatchRegistry } from "./dispatch_registry.ts";
 import { BundleRegistry } from "./bundle_registry.ts";
@@ -609,4 +610,196 @@ Deno.test("executeRemote: no target_disconnected event without explicit target",
     (e) => e.kind === "target_disconnected",
   );
   assertEquals(disconnectedEvents.length, 0);
+});
+
+// --- Worker affinity ---
+
+Deno.test("executeRemote: affinity pins subsequent steps to the same worker", async () => {
+  const h = createHarness({
+    workers: [
+      snapshot({ name: "w1" }),
+      snapshot({ name: "w2" }),
+    ],
+  });
+  const affinityKey = "run-1:job-build";
+
+  const r1 = await h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey },
+    stepName: "step-1",
+  }));
+
+  const r2 = await h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey },
+    stepName: "step-2",
+  }));
+
+  assertEquals(r1.workerName, r2.workerName);
+  assertEquals(h.dispatchCalls[0].name, h.dispatchCalls[1].name);
+});
+
+Deno.test("executeRemote: affinity fails when pinned worker disconnects", async () => {
+  const h = createHarness({
+    workers: [
+      snapshot({ name: "w1" }),
+      snapshot({ name: "w2" }),
+    ],
+  });
+  const affinityKey = "run-2:job-deploy";
+
+  await h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey },
+    stepName: "step-1",
+  }));
+
+  const pinnedWorker = h.dispatchCalls[0].name;
+  const entry = h.pool.get(pinnedWorker)!;
+  h.pool.set(pinnedWorker, { ...entry, connected: false });
+
+  const error = await assertRejects(
+    () =>
+      h.service.executeRemote(stepRequest({
+        placement: { labels: {}, platform: "linux", affinityKey },
+        stepName: "step-2",
+      })),
+    WorkerAffinityLostError,
+  );
+  assertStringIncludes(error.message, "affinity group");
+  assertStringIncludes(error.message, affinityKey);
+});
+
+Deno.test("executeRemote: releaseAffinity clears pin", async () => {
+  const h = createHarness({
+    workers: [
+      snapshot({ name: "w1" }),
+      snapshot({ name: "w2" }),
+    ],
+  });
+  const affinityKey = "run-3:job-test";
+
+  await h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey },
+  }));
+
+  h.service.releaseAffinity(affinityKey);
+
+  const r2 = await h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey },
+  }));
+
+  assertEquals(typeof r2.workerName, "string");
+});
+
+Deno.test("executeRemote: affinity worker lost mid-dispatch fails instead of re-dispatching", async () => {
+  const h = createHarness({
+    workers: [
+      snapshot({ name: "w1" }),
+      snapshot({ name: "w2" }),
+    ],
+  });
+  const affinityKey = "run-4:job-build";
+
+  let callCount = 0;
+  h.setBehavior((_name, _params) => {
+    callCount++;
+    if (callCount === 1) {
+      throw new ChannelClosedError("socket dropped");
+    }
+    return Promise.resolve({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+
+  await assertRejects(
+    () =>
+      h.service.executeRemote(stepRequest({
+        placement: { labels: {}, platform: "linux", affinityKey },
+        stepName: "step-1",
+      })),
+    WorkerAffinityLostError,
+  );
+  assertEquals(callCount, 1);
+});
+
+Deno.test("executeRemote: steps without affinity key are unaffected", async () => {
+  const h = createHarness({
+    workers: [
+      snapshot({ name: "w1" }),
+      snapshot({ name: "w2" }),
+    ],
+  });
+
+  await h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux" },
+    stepName: "step-1",
+  }));
+
+  await h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux" },
+    stepName: "step-2",
+  }));
+
+  assertEquals(h.dispatchCalls.length, 2);
+});
+
+Deno.test("executeRemote: concurrent affinity steps pin to the same worker", async () => {
+  const h = createHarness({
+    workers: [
+      snapshot({ name: "w1" }),
+      snapshot({ name: "w2" }),
+    ],
+  });
+  const affinityKey = "run-5:job-concurrent";
+
+  const [r1, r2] = await Promise.all([
+    h.service.executeRemote(stepRequest({
+      placement: { labels: {}, platform: "linux", affinityKey },
+      stepName: "step-a",
+    })),
+    h.service.executeRemote(stepRequest({
+      placement: { labels: {}, platform: "linux", affinityKey },
+      stepName: "step-b",
+    })),
+  ]);
+
+  assertEquals(r1.workerName, r2.workerName);
+});
+
+Deno.test("executeRemote: concurrent affinity step rejects when first step fails", async () => {
+  const h = createHarness({
+    workers: [
+      snapshot({ name: "w1" }),
+      snapshot({ name: "w2" }),
+    ],
+    queueTimeoutMs: 500,
+  });
+  const affinityKey = "run-6:job-fail-race";
+
+  let callCount = 0;
+  h.setBehavior(() => {
+    callCount++;
+    return new Promise((_resolve, reject) => {
+      setTimeout(
+        () => reject(new ChannelClosedError("socket dropped")),
+        50,
+      );
+    });
+  });
+
+  const results = await Promise.allSettled([
+    h.service.executeRemote(stepRequest({
+      placement: { labels: {}, platform: "linux", affinityKey },
+      stepName: "step-a",
+    })),
+    h.service.executeRemote(stepRequest({
+      placement: { labels: {}, platform: "linux", affinityKey },
+      stepName: "step-b",
+    })),
+  ]);
+
+  assertEquals(results[0].status, "rejected");
+  assertEquals(results[1].status, "rejected");
+  assertEquals(callCount, 1);
 });
