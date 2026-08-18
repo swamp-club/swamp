@@ -147,6 +147,7 @@ export async function resolveOAuthClientCredentials(
 export async function registerClientWithApiKey(
   providerUrl: string,
   apiKey: string,
+  clientName: string,
   signal: AbortSignal,
 ): Promise<{ clientId: string; clientSecret: string }> {
   const verifyResp = await fetch(`${providerUrl}/api/whoami`, {
@@ -183,7 +184,7 @@ export async function registerClientWithApiKey(
       "authorization": `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      client_name: `swamp-serve-${crypto.randomUUID().slice(0, 8)}`,
+      client_name: clientName,
       redirect_uris: ["http://localhost"],
       grant_types: ["authorization_code"],
       scope: "openid profile email collectives",

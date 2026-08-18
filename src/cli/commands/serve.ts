@@ -163,7 +163,7 @@ import {
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { GRANT_MODEL_TYPE } from "../../domain/models/access/grant_model.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
-import { isAbsolute, join, resolve } from "@std/path";
+import { basename, isAbsolute, join, resolve } from "@std/path";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
 import {
   RepoMarkerRepository,
@@ -342,6 +342,9 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   }
   if (options.oauthClientId) {
     args.push("--oauth-client-id", options.oauthClientId as string);
+  }
+  if (options.oauthClientName) {
+    args.push("--oauth-client-name", options.oauthClientName as string);
   }
   if (options.groupsField) {
     args.push("--groups-field", options.groupsField as string);
@@ -561,6 +564,11 @@ const daemonEnableCommand = new Command()
     "OAuth client ID — auto-registered on first start if omitted. " +
       "Set SWAMP_API_KEY (a collective API token with oauth:manage scope) " +
       "for headless registration without browser interaction.",
+  )
+  .option(
+    "--oauth-client-name <name:string>",
+    "OAuth client name used during registration (env: SWAMP_OAUTH_CLIENT_NAME). " +
+      "Defaults to swamp-serve-{repoName}-{hostname}.",
   )
   .option(
     "--groups-field <field:string>",
@@ -898,6 +906,11 @@ export const serveCommand = new Command()
     "OAuth client ID — auto-registered on first start if omitted. " +
       "Set SWAMP_API_KEY (a collective API token with oauth:manage scope) " +
       "for headless registration without browser interaction.",
+  )
+  .option(
+    "--oauth-client-name <name:string>",
+    "OAuth client name used during registration (env: SWAMP_OAUTH_CLIENT_NAME). " +
+      "Defaults to swamp-serve-{repoName}-{hostname}.",
   )
   .option(
     "--groups-field <field:string>",
@@ -1604,6 +1617,11 @@ export const serveCommand = new Command()
     });
 
     const clubApiKey = Deno.env.get("SWAMP_API_KEY") ?? null;
+    const oauthClientName = merged.oauthClientName ??
+      `swamp-serve-${basename(resolvedRepoDir)}-${Deno.hostname()}`.slice(
+        0,
+        128,
+      );
 
     let oauthClientSecret = "";
     const resolvedUserNames: Record<string, string> = {};
@@ -1652,6 +1670,7 @@ export const serveCommand = new Command()
                 const result = await registerClientWithApiKey(
                   providerUrl,
                   clubApiKey,
+                  oauthClientName,
                   signal,
                 );
                 return {
@@ -1733,9 +1752,7 @@ export const serveCommand = new Command()
                     "authorization": `Bearer ${tokenResponse.accessToken}`,
                   },
                   body: JSON.stringify({
-                    client_name: `swamp-serve-${
-                      crypto.randomUUID().slice(0, 8)
-                    }`,
+                    client_name: oauthClientName,
                     redirect_uris: ["http://localhost"],
                     grant_types: ["authorization_code"],
                     scope: "openid profile email collectives",

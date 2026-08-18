@@ -38,6 +38,7 @@ const logger = getSwampLogger(["serve", "config"]);
 export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   certFile: "SWAMP_SERVE_CERT_FILE",
   keyFile: "SWAMP_SERVE_KEY_FILE",
+  oauthClientName: "SWAMP_OAUTH_CLIENT_NAME",
   grantsFile: "SWAMP_GRANTS_FILE",
   grantsDir: "SWAMP_GRANTS_DIR",
   wsIdleTimeout: "SWAMP_WS_IDLE_TIMEOUT",
@@ -85,6 +86,7 @@ export interface ServeConfigFile {
     "allowed-users"?: string[];
     "oauth-provider"?: string;
     "oauth-client-id"?: string;
+    "oauth-client-name"?: string;
     "groups-field"?: string;
     "restricted-model-types"?: string[];
     "restricted-commands"?: string[];
@@ -154,6 +156,7 @@ const KNOWN_AUTH_KEYS = new Set([
   "allowed-users",
   "oauth-provider",
   "oauth-client-id",
+  "oauth-client-name",
   "groups-field",
   "restricted-model-types",
   "restricted-commands",
@@ -355,6 +358,7 @@ function validateConfigValues(
       ["auth.mode", authObj.mode],
       ["auth.oauth-provider", authObj["oauth-provider"]],
       ["auth.oauth-client-id", authObj["oauth-client-id"]],
+      ["auth.oauth-client-name", authObj["oauth-client-name"]],
       ["auth.groups-field", authObj["groups-field"]],
       ["auth.group-refresh-interval", authObj["group-refresh-interval"]],
     ];
@@ -603,6 +607,7 @@ export interface MergedServeOptions {
   allowedUsers?: string;
   oauthProvider?: string;
   oauthClientId?: string;
+  oauthClientName?: string;
   groupsField?: string;
   restrictedModelTypes?: string;
   restrictedCommands?: string;
@@ -821,6 +826,13 @@ export function mergeServeOptions(
     undefined,
   );
 
+  const oauthClientName = resolveString(
+    "oauth-client-name",
+    cliOptions.oauthClientName as string | undefined,
+    config?.auth?.["oauth-client-name"],
+    undefined,
+  );
+
   const groupsField = resolveString(
     "groups-field",
     cliOptions.groupsField as string | undefined,
@@ -987,6 +999,7 @@ export function mergeServeOptions(
     allowedUsers,
     oauthProvider,
     oauthClientId,
+    oauthClientName,
     groupsField,
     restrictedModelTypes,
     restrictedCommands,
