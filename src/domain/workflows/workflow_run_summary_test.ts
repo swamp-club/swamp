@@ -85,16 +85,24 @@ Deno.test("parseWorkflowRunSummary: never retains the heavy jobs/output subtree"
     !("workflowDataArtifacts" in summary),
     "summary must not carry data artifacts",
   );
-  assertEquals(Object.keys(summary).sort(), [
-    "completedAt",
+  const allowedKeys = new Set([
     "id",
-    "inputs",
-    "startedAt",
-    "status",
-    "tags",
     "workflowId",
     "workflowName",
+    "status",
+    "startedAt",
+    "completedAt",
+    "tags",
+    "inputs",
+    "instanceId",
+    "triggerSource",
+    "failedStep",
+    "failureReason",
+    "stepProgress",
   ]);
+  for (const key of Object.keys(summary)) {
+    assert(allowedKeys.has(key), `unexpected key "${key}" on summary`);
+  }
 });
 
 Deno.test("parseWorkflowRunSummary: succeeds even when the jobs subtree is malformed", () => {
@@ -113,6 +121,42 @@ Deno.test("parseWorkflowRunSummary: succeeds even when the jobs subtree is malfo
 
   assertEquals(summary.id, "run-1");
   assertEquals(summary.status, "succeeded");
+});
+
+Deno.test("parseWorkflowRunSummary: projects instanceId, triggerSource, and failure fields", () => {
+  const summary = parseWorkflowRunSummary({
+    id: "run-1",
+    workflowId: "wf-1",
+    workflowName: "deploy",
+    status: "failed",
+    startedAt: "2026-01-01T00:00:00.000Z",
+    instanceId: "inst-abc",
+    triggerSource: "schedule",
+    failedStep: "build",
+    failureReason: "exit code 1",
+    stepProgress: { completed: 2, total: 5 },
+  });
+
+  assertEquals(summary.instanceId, "inst-abc");
+  assertEquals(summary.triggerSource, "schedule");
+  assertEquals(summary.failedStep, "build");
+  assertEquals(summary.failureReason, "exit code 1");
+  assertEquals(summary.stepProgress, { completed: 2, total: 5 });
+});
+
+Deno.test("parseWorkflowRunSummary: new fields default to undefined when absent", () => {
+  const summary = parseWorkflowRunSummary({
+    id: "run-1",
+    workflowId: "wf-1",
+    workflowName: "deploy",
+    status: "succeeded",
+  });
+
+  assertEquals(summary.instanceId, undefined);
+  assertEquals(summary.triggerSource, undefined);
+  assertEquals(summary.failedStep, undefined);
+  assertEquals(summary.failureReason, undefined);
+  assertEquals(summary.stepProgress, undefined);
 });
 
 Deno.test("parseWorkflowRunSummary: rejects records missing required identity fields", () => {

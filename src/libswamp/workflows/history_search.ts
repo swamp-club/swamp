@@ -57,6 +57,11 @@ export interface WorkflowHistorySearchDeps {
       duration?: number;
       tags: Record<string, string>;
       inputs: Record<string, unknown>;
+      instanceId?: string;
+      triggerSource?: string;
+      failedStep?: string;
+      failureReason?: string;
+      stepProgress?: { completed: number; total: number };
     }>
   >;
 }
@@ -128,6 +133,11 @@ export async function* workflowHistorySearch(
           duration: startTime && endTime ? endTime - startTime : undefined,
           tags,
           inputs,
+          instanceId: run.instanceId,
+          triggerSource: run.triggerSource,
+          failedStep: run.failedStep,
+          failureReason: run.failureReason,
+          stepProgress: run.stepProgress,
         };
       });
 

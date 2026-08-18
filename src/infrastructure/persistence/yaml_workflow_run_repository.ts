@@ -837,6 +837,11 @@ function summaryToIndexEntry(
     completedAt: summary.completedAt?.toISOString(),
     tags: summary.tags,
     inputs: summary.inputs as Record<string, unknown>,
+    instanceId: summary.instanceId,
+    triggerSource: summary.triggerSource,
+    failedStep: summary.failedStep,
+    failureReason: summary.failureReason,
+    stepProgress: summary.stepProgress,
   };
 }
 
@@ -852,6 +857,11 @@ function indexToSummaries(index: WorkflowRunIndex): WorkflowRunSummary[] {
       completedAt: entry.completedAt ? new Date(entry.completedAt) : undefined,
       tags: entry.tags,
       inputs: entry.inputs,
+      instanceId: entry.instanceId,
+      triggerSource: entry.triggerSource,
+      failedStep: entry.failedStep,
+      failureReason: entry.failureReason,
+      stepProgress: entry.stepProgress,
     });
   }
   return summaries.sort((a, b) => {

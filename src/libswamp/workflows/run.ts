@@ -321,6 +321,8 @@ export interface WorkflowRunInput {
   initiatedBy?: string;
   /** Serve instance identity for cross-machine run reconciliation. */
   instanceId?: string;
+  /** How this run was triggered (schedule, webhook, api). */
+  triggerSource?: string;
 }
 
 /**
@@ -666,6 +668,7 @@ export async function* workflowRun(
               assertFailOnSeverity: resolvedInput.assertFailOnSeverity,
               initiatedBy: resolvedInput.initiatedBy,
               instanceId: resolvedInput.instanceId,
+              triggerSource: resolvedInput.triggerSource,
             })
           ) {
             if (event.kind === "report_completed") {

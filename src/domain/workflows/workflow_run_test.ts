@@ -1172,3 +1172,129 @@ Deno.test("WorkflowRun: absent initiatedBy deserializes as undefined", () => {
   const restored = WorkflowRun.fromData(data);
   assertEquals(restored.initiatedBy, undefined);
 });
+
+// triggerSource tests
+
+Deno.test("WorkflowRun.create: accepts triggerSource", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf, {}, undefined, "schedule");
+
+  assertEquals(run.triggerSource, "schedule");
+});
+
+Deno.test("WorkflowRun.create: triggerSource defaults to undefined", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+
+  assertEquals(run.triggerSource, undefined);
+});
+
+Deno.test("WorkflowRun: triggerSource round-trips through serialization", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf, {}, undefined, "webhook");
+  run.start();
+
+  const data = run.toData();
+  assertEquals(data.triggerSource, "webhook");
+
+  const restored = WorkflowRun.fromData(data);
+  assertEquals(restored.triggerSource, "webhook");
+});
+
+// failedStep / failureReason tests
+
+Deno.test("WorkflowRun.toData: includes failedStep and failureReason when a step fails", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+  run.start();
+
+  const job = run.jobs[0];
+  job.start();
+  job.steps[0].start();
+  job.steps[0].succeed(undefined);
+  job.steps[1].start();
+  job.steps[1].fail("connection refused");
+  job.fail();
+
+  run.complete();
+
+  const data = run.toData();
+  assertEquals(data.failedStep, "step2");
+  assertEquals(data.failureReason, "connection refused");
+});
+
+Deno.test("WorkflowRun.toData: omits failedStep when all steps succeed", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+  run.start();
+
+  for (const job of run.jobs) {
+    job.start();
+    for (const step of job.steps) {
+      step.start();
+      step.succeed(undefined);
+    }
+    job.succeed();
+  }
+
+  run.complete();
+
+  const data = run.toData();
+  assertEquals(data.failedStep, undefined);
+  assertEquals(data.failureReason, undefined);
+});
+
+// stepProgress tests
+
+Deno.test("WorkflowRun.toData: includes stepProgress reflecting completion state", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+  run.start();
+
+  const job1 = run.jobs[0];
+  job1.start();
+  job1.steps[0].start();
+  job1.steps[0].succeed(undefined);
+
+  const data = run.toData();
+  assertEquals(data.stepProgress, { completed: 1, total: 3 });
+});
+
+Deno.test("WorkflowRun.toData: stepProgress shows all completed after success", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+  run.start();
+
+  for (const job of run.jobs) {
+    job.start();
+    for (const step of job.steps) {
+      step.start();
+      step.succeed(undefined);
+    }
+    job.succeed();
+  }
+
+  run.complete();
+
+  const data = run.toData();
+  assertEquals(data.stepProgress, { completed: 3, total: 3 });
+});
+
+Deno.test("WorkflowRun.toData: stepProgress counts failed steps as completed", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+  run.start();
+
+  const job1 = run.jobs[0];
+  job1.start();
+  job1.steps[0].start();
+  job1.steps[0].succeed(undefined);
+  job1.steps[1].start();
+  job1.steps[1].fail("error");
+  job1.fail();
+
+  run.complete();
+
+  const data = run.toData();
+  assertEquals(data.stepProgress, { completed: 2, total: 3 });
+});

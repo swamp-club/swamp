@@ -134,6 +134,13 @@ export const WorkflowRunSchema = z.object({
   resumeInputs: z.array(z.string()).optional(),
   initiatedBy: z.string().optional(),
   instanceId: z.string().optional(),
+  triggerSource: z.string().optional(),
+  failedStep: z.string().optional(),
+  failureReason: z.string().optional(),
+  stepProgress: z.object({
+    completed: z.number().int().nonnegative(),
+    total: z.number().int().nonnegative(),
+  }).optional(),
 });
 
 /**
@@ -553,6 +560,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
     private _pid: number | undefined = undefined,
     private _initiatedBy: string | undefined = undefined,
     private _instanceId: string | undefined = undefined,
+    private _triggerSource: string | undefined = undefined,
   ) {}
 
   /**
@@ -562,6 +570,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
     workflow: Workflow,
     tags?: Record<string, string>,
     initiatedBy?: string,
+    triggerSource?: string,
   ): WorkflowRun {
     const id = crypto.randomUUID();
     const jobs = workflow.jobs.map((job) =>
@@ -586,6 +595,8 @@ export class WorkflowRun implements TriggerEvaluationContext {
       [],
       undefined,
       initiatedBy,
+      undefined,
+      triggerSource,
     );
   }
 
@@ -612,6 +623,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
       validated.pid,
       validated.initiatedBy,
       validated.instanceId,
+      validated.triggerSource,
     );
   }
 
@@ -639,6 +651,10 @@ export class WorkflowRun implements TriggerEvaluationContext {
 
   get instanceId(): string | undefined {
     return this._instanceId;
+  }
+
+  get triggerSource(): string | undefined {
+    return this._triggerSource;
   }
 
   get pid(): number | undefined {
@@ -897,6 +913,60 @@ export class WorkflowRun implements TriggerEvaluationContext {
     if (this._instanceId !== undefined) {
       data.instanceId = this._instanceId;
     }
+    if (this._triggerSource !== undefined) {
+      data.triggerSource = this._triggerSource;
+    }
+
+    const { failedStep, failureReason } = this.computeFailureInfo();
+    if (failedStep !== undefined) {
+      data.failedStep = failedStep;
+    }
+    if (failureReason !== undefined) {
+      data.failureReason = failureReason;
+    }
+
+    const stepProgress = this.computeStepProgress();
+    if (stepProgress !== undefined) {
+      data.stepProgress = stepProgress;
+    }
+
     return data;
+  }
+
+  private computeFailureInfo(): {
+    failedStep: string | undefined;
+    failureReason: string | undefined;
+  } {
+    for (const job of this._jobs) {
+      for (const step of job.steps) {
+        if (step.status === "failed" && !step.allowedFailure) {
+          return {
+            failedStep: step.stepName,
+            failureReason: step.error,
+          };
+        }
+      }
+    }
+    return { failedStep: undefined, failureReason: undefined };
+  }
+
+  private computeStepProgress():
+    | { completed: number; total: number }
+    | undefined {
+    let completed = 0;
+    let total = 0;
+    for (const job of this._jobs) {
+      for (const step of job.steps) {
+        total++;
+        if (
+          step.status === "succeeded" || step.status === "skipped" ||
+          step.status === "failed"
+        ) {
+          completed++;
+        }
+      }
+    }
+    if (total === 0) return undefined;
+    return { completed, total };
   }
 }
