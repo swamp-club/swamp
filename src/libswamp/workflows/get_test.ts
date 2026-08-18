@@ -38,6 +38,7 @@ const testWorkflow = {
     },
     required: [],
   },
+  trigger: { schedule: "0 3 * * *", inputs: { env: "prod" } },
   tags: { env: "staging" },
   reports: { require: ["junit"] },
   jobs: [{
@@ -96,6 +97,7 @@ Deno.test("workflowGet yields resolving -> completed with workflow data on succe
           },
           required: [],
         },
+        trigger: { schedule: "0 3 * * *", inputs: { env: "prod" } },
         tags: { env: "staging" },
         reports: { require: ["junit"] },
         jobs: [{
