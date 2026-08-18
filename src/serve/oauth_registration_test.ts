@@ -37,18 +37,23 @@ interface StubResponse {
 
 function stubFetch(
   responses: StubResponse[],
-): { [Symbol.dispose]: () => void } {
+): {
+  [Symbol.dispose]: () => void;
+  calls: { url: string; init?: RequestInit }[];
+} {
   const originalFetch = globalThis.fetch;
   let callIndex = 0;
+  const calls: { url: string; init?: RequestInit }[] = [];
   globalThis.fetch = (
     input: string | URL | Request,
-    _init?: RequestInit,
+    init?: RequestInit,
   ): Promise<Response> => {
     const url = typeof input === "string"
       ? input
       : input instanceof URL
       ? input.href
       : input.url;
+    calls.push({ url, init });
     const stub = responses[callIndex++];
     if (!stub) {
       throw new Error(`stubFetch: unexpected call #${callIndex} to ${url}`);
@@ -66,6 +71,7 @@ function stubFetch(
     );
   };
   return {
+    calls,
     [Symbol.dispose]: () => {
       globalThis.fetch = originalFetch;
     },
@@ -243,7 +249,7 @@ Deno.test("resolveOAuthClientCredentials: does not store null access token in va
 });
 
 Deno.test("registerClientWithApiKey: registers client and returns credentials without accessToken", async () => {
-  using _fetch = stubFetch([
+  using stub = stubFetch([
     {
       url: "https://swamp-club.com/api/whoami",
       status: 200,
@@ -261,11 +267,14 @@ Deno.test("registerClientWithApiKey: registers client and returns credentials wi
   const result = await registerClientWithApiKey(
     "https://swamp-club.com",
     "test-api-key",
+    "swamp-serve-myrepo-myhost",
     AbortSignal.timeout(5000),
   );
   assertEquals(result.clientId, "headless-client-id");
   assertEquals(result.clientSecret, "headless-client-secret");
   assertEquals("accessToken" in result, false);
+  const registerBody = JSON.parse(stub.calls[1].init?.body as string);
+  assertEquals(registerBody.client_name, "swamp-serve-myrepo-myhost");
 });
 
 Deno.test("registerClientWithApiKey: throws on invalid API key", async () => {
@@ -281,6 +290,7 @@ Deno.test("registerClientWithApiKey: throws on invalid API key", async () => {
       registerClientWithApiKey(
         "https://swamp-club.com",
         "bad-key",
+        "swamp-serve-myrepo-myhost",
         AbortSignal.timeout(5000),
       ),
     Error,
@@ -301,6 +311,7 @@ Deno.test("registerClientWithApiKey: throws when token is missing oauth:manage s
       registerClientWithApiKey(
         "https://swamp-club.com",
         "no-oauth-scope-key",
+        "swamp-serve-myrepo-myhost",
         AbortSignal.timeout(5000),
       ),
     Error,
@@ -326,6 +337,7 @@ Deno.test("registerClientWithApiKey: throws on registration failure", async () =
       registerClientWithApiKey(
         "https://swamp-club.com",
         "test-api-key",
+        "swamp-serve-myrepo-myhost",
         AbortSignal.timeout(5000),
       ),
     Error,
