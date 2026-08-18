@@ -68,7 +68,10 @@ import { DispatchService } from "../../serve/dispatch_service.ts";
 import { DispatchRegistry } from "../../serve/dispatch_registry.ts";
 import { BundleRegistry } from "../../serve/bundle_registry.ts";
 import { DataPlane } from "../../serve/data_plane.ts";
-import { setRemoteStepDispatcher } from "../../domain/remote/remote_dispatch.ts";
+import {
+  setRemoteOnlyMode,
+  setRemoteStepDispatcher,
+} from "../../domain/remote/remote_dispatch.ts";
 import {
   enableServeOutput,
   getSwampLogger,
@@ -397,6 +400,9 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   if (options.hydrationTimeout) {
     args.push("--hydration-timeout", options.hydrationTimeout as string);
   }
+  if (options.remoteOnly) {
+    args.push("--remote-only");
+  }
   return args;
 }
 
@@ -620,6 +626,11 @@ const daemonEnableCommand = new Command()
   .option(
     "--hydration-timeout <duration:string>",
     "Startup cache hydration timeout (default: 60s, env: SWAMP_HYDRATION_TIMEOUT)",
+  )
+  .option(
+    "--remote-only",
+    "Disable local (loopback) execution — all steps must declare placement " +
+      "(env: SWAMP_REMOTE_ONLY)",
   )
   .example("Enable daemon", "swamp serve daemon enable")
   .example(
@@ -1011,6 +1022,12 @@ export const serveCommand = new Command()
     "Enable the /internal/runs endpoint for full run history access " +
       "(env: SWAMP_ENABLE_INTERNAL_API)",
   )
+  .option(
+    "--remote-only",
+    "Disable local (loopback) execution — all steps must declare placement " +
+      "and be dispatched to remote workers. Steps without placement will error " +
+      "(env: SWAMP_REMOTE_ONLY)",
+  )
   .example(
     "Enable TLS",
     "swamp serve --cert-file server.crt --key-file server.key",
@@ -1311,6 +1328,12 @@ export const serveCommand = new Command()
     });
     dispatchService.bindGateway(workerGateway);
     setRemoteStepDispatcher(dispatchService);
+    if (merged.remoteOnly) {
+      setRemoteOnlyMode(true);
+      logger.info(
+        "Remote-only mode enabled — all steps require explicit placement",
+      );
+    }
     const dataPlane = new DataPlane({
       repoDir: resolvedRepoDir,
       repoContext,
@@ -2971,6 +2994,7 @@ export const serveCommand = new Command()
       scheduleProvider: scheduledExecution,
       scheduleEnabled: enableSchedule,
       webhookProvider: webhookService ?? null,
+      remoteOnly: merged.remoteOnly,
     });
 
     const adminAuthDeps: AdminAuthDeps = {
@@ -3494,6 +3518,7 @@ export const serveCommand = new Command()
             return Response.json({
               status: "ok",
               version: "1",
+              remoteOnly: merged.remoteOnly,
               scheduling: {
                 enabled: enableSchedule,
                 schedules,
@@ -3690,6 +3715,7 @@ export const serveCommand = new Command()
       }
       rejectionGuard.dispose();
       setRemoteStepDispatcher(null);
+      setRemoteOnlyMode(false);
       ac.abort();
       if (pidPath) {
         try {

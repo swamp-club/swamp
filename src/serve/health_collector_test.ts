@@ -40,6 +40,7 @@ function makeDeps(
     scheduleProvider: null,
     scheduleEnabled: false,
     webhookProvider: null,
+    remoteOnly: false,
     ...overrides,
   };
 }
@@ -51,6 +52,7 @@ Deno.test("HealthCollector: collects minimal snapshot with no subsystems", async
 
   assertEquals(snapshot.instanceId, "test-instance-id");
   assertEquals(snapshot.deploymentMode, "standalone");
+  assertEquals(snapshot.remoteOnly, false);
   assertEquals(snapshot.ready, true);
   assertGreater(snapshot.uptimeMs, 0);
   assertEquals(snapshot.activeRuns, []);

@@ -52,6 +52,7 @@ export interface HealthSnapshotWebhook {
 export interface HealthSnapshot {
   readonly instanceId: string;
   readonly deploymentMode: string;
+  readonly remoteOnly: boolean;
   readonly uptimeMs: number;
   readonly ready: boolean;
   readonly activeRuns: HealthSnapshotRun[];
@@ -98,6 +99,7 @@ export interface HealthCollectorDeps {
   readonly scheduleProvider: ScheduleProvider | null;
   readonly scheduleEnabled: boolean;
   readonly webhookProvider: WebhookProvider | null;
+  readonly remoteOnly: boolean;
 }
 
 export class HealthCollector {
@@ -159,6 +161,7 @@ export class HealthCollector {
     return {
       instanceId: this.#deps.instanceId,
       deploymentMode: this.#deps.deploymentMode,
+      remoteOnly: this.#deps.remoteOnly,
       uptimeMs: now - this.#deps.startedAt,
       ready: this.#deps.isReady(),
       activeRuns,
