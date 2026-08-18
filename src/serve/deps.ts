@@ -387,15 +387,18 @@ export async function executeWorkflowWithLocks(
     });
   }
 
-  const effectiveInput = workflow
-    ? {
-      ...input,
-      inputs: workflow.baselineInputs(
-        input.inputs ?? {},
-        resolvedTriggerInputs,
-      ),
-    }
-    : input;
+  const effectiveInput: WorkflowRunInput = {
+    ...(workflow
+      ? {
+        ...input,
+        inputs: workflow.baselineInputs(
+          input.inputs ?? {},
+          resolvedTriggerInputs,
+        ),
+      }
+      : input),
+    triggerSource: options?.triggerSource,
+  };
 
   // A workflow run reports failure through the event stream, not by
   // throwing: input validation, a failed step, and a cancellation all

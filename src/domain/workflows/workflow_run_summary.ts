@@ -41,6 +41,11 @@ export interface WorkflowRunSummary {
   completedAt?: Date;
   tags: Record<string, string>;
   inputs: Record<string, unknown>;
+  instanceId?: string;
+  triggerSource?: string;
+  failedStep?: string;
+  failureReason?: string;
+  stepProgress?: { completed: number; total: number };
 }
 
 /**
@@ -64,6 +69,14 @@ const WorkflowRunSummarySchema = z.object({
   completedAt: z.string().optional(),
   tags: z.record(z.string(), z.string()).default({}),
   inputs: z.record(z.string(), z.unknown()).default({}),
+  instanceId: z.string().optional(),
+  triggerSource: z.string().optional(),
+  failedStep: z.string().optional(),
+  failureReason: z.string().optional(),
+  stepProgress: z.object({
+    completed: z.number().int().nonnegative(),
+    total: z.number().int().nonnegative(),
+  }).optional(),
 });
 
 /**
@@ -93,6 +106,11 @@ export function parseWorkflowRunSummary(data: unknown): WorkflowRunSummary {
       status: v.status,
       tags: v.tags,
       inputs: v.inputs,
+      instanceId: v.instanceId,
+      triggerSource: v.triggerSource,
+      failedStep: v.failedStep,
+      failureReason: v.failureReason,
+      stepProgress: v.stepProgress,
     }),
   ) as {
     id: string;
@@ -101,6 +119,11 @@ export function parseWorkflowRunSummary(data: unknown): WorkflowRunSummary {
     status: string;
     tags: Record<string, string>;
     inputs: Record<string, unknown>;
+    instanceId?: string;
+    triggerSource?: string;
+    failedStep?: string;
+    failureReason?: string;
+    stepProgress?: { completed: number; total: number };
   };
   return {
     id: detached.id,
@@ -111,5 +134,10 @@ export function parseWorkflowRunSummary(data: unknown): WorkflowRunSummary {
     completedAt: v.completedAt ? new Date(v.completedAt) : undefined,
     tags: detached.tags,
     inputs: detached.inputs,
+    instanceId: detached.instanceId,
+    triggerSource: detached.triggerSource,
+    failedStep: detached.failedStep,
+    failureReason: detached.failureReason,
+    stepProgress: detached.stepProgress,
   };
 }

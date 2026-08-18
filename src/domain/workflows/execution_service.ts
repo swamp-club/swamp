@@ -1604,6 +1604,8 @@ export class WorkflowExecutionService {
       initiatedBy?: string;
       /** Serve instance identity for cross-machine reconciliation */
       instanceId?: string;
+      /** How this run was triggered (schedule, webhook, api) */
+      triggerSource?: string;
     },
   ): AsyncGenerator<WorkflowExecutionEvent> {
     const tracer = getTracer();
@@ -1680,7 +1682,12 @@ export class WorkflowExecutionService {
           ...(workflow.tags ?? {}),
           ...(options?.runtimeTags ?? {}),
         };
-        run = WorkflowRun.create(workflow, mergedTags, options?.initiatedBy);
+        run = WorkflowRun.create(
+          workflow,
+          mergedTags,
+          options?.initiatedBy,
+          options?.triggerSource,
+        );
         if (options?.inputs) {
           run.captureInputs(options.inputs);
         }

@@ -30,6 +30,11 @@ export interface WorkflowRunIndexEntry {
   completedAt?: string;
   tags: Record<string, string>;
   inputs: Record<string, unknown>;
+  instanceId?: string;
+  triggerSource?: string;
+  failedStep?: string;
+  failureReason?: string;
+  stepProgress?: { completed: number; total: number };
 }
 
 export type WorkflowRunIndex = Record<string, WorkflowRunIndexEntry>;
