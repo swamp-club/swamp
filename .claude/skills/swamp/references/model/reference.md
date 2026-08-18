@@ -6,17 +6,29 @@ type:
 ```
 models/
   {normalized-type}/
-    {model-id}.yaml
+    {name}.yaml              # default for new models
+    {uuid}.yaml              # legacy format, still supported
 ```
 
 Internal data (evaluated definitions, data artifacts, outputs) lives in
 `.swamp/`:
 
 ```
-.swamp/definitions-evaluated/{normalized-type}/{model-id}.yaml
+.swamp/definitions-evaluated/{normalized-type}/{name}.yaml
 .swamp/data/{normalized-type}/{model-id}/{data-name}/{version}/raw
 .swamp/outputs/{normalized-type}/{model-id}/{output-id}.yaml
 ```
+
+## Finding Model Files
+
+Model files may be named `{name}.yaml` or `{uuid}.yaml` (legacy). **Never guess
+the filename** — use the CLI to get the actual path:
+
+```bash
+swamp model get <name_or_id> --json   # creation path is in `model create --json` output
+```
+
+This works for both naming conventions.
 
 ## Search for Model Types
 
@@ -238,7 +250,7 @@ swamp model delete my-shell --json
     "id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
     "name": "my-shell",
     "type": "command/shell",
-    "inputPath": "models/command/shell/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d.yaml"
+    "inputPath": "models/command/shell/my-shell.yaml"
   },
   "resourceDeleted": false,
   "outputsDeleted": 0,

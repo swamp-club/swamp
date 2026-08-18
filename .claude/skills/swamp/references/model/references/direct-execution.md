@@ -28,7 +28,7 @@ ambiguous keys, unknown keys are rejected.
 
 ## Storage
 
-Auto-created definitions live in `.swamp/auto-definitions/{type}/{id}.yaml`.
+Auto-created definitions live in `.swamp/auto-definitions/{type}/{name}.yaml`.
 They exist for data ownership boundaries — giving model data a home without
 requiring a hand-authored definition file.
 

@@ -34,7 +34,7 @@ Model definitions, workflow definitions, and vault configurations are stored in
 top-level directories that are tracked in git:
 
 - **`models/`** — Model definitions organized by normalized type:
-  `models/{type}/{id}.yaml`
+  `models/{type}/{name}.yaml` (legacy `{uuid}.yaml` also supported)
 - **`workflows/`** — Workflow definitions: `workflows/workflow-{name}.yaml`
   (legacy `workflow-{uuid}.yaml` also supported)
 - **`vaults/`** — Vault configurations: `vaults/{vault-type}/{id}.yaml`

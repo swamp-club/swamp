@@ -31,6 +31,9 @@ definitions referenced across multiple workflows.
 
 ## Model Creation Rules (when using `model create`)
 
+- **Model names must be lowercase alphanumeric with hyphens or underscores**
+  (e.g. `my-server`, `prod_vpc`). Max 64 characters. Names are used as the
+  filename on disk (`models/{type}/my-server.yaml`).
 - **Never generate model IDs** — no `uuidgen`, `crypto.randomUUID()`, or manual
   UUIDs. Swamp assigns IDs automatically via `swamp model create`.
 - **Never write a model YAML file from scratch** — always use

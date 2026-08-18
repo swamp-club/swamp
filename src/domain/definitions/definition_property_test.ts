@@ -21,17 +21,17 @@ import { assert, assertEquals, assertThrows } from "@std/assert";
 import fc from "fast-check";
 import { Definition } from "./definition.ts";
 
-// Arbitrary for safe definition names (no path traversal chars)
+// Arbitrary for strict definition names (matching create() validation)
 const arbSafeName = fc
   .stringOf(
     fc.oneof(
-      fc.char().filter((c) =>
-        c !== "/" && c !== "\\" && c !== "\0" && c !== "."
-      ),
+      fc.constantFrom(..."abcdefghijklmnopqrstuvwxyz0123456789".split("")),
+      fc.constant("-"),
+      fc.constant("_"),
     ),
     { minLength: 1, maxLength: 30 },
   )
-  .filter((s) => !s.includes(".."));
+  .filter((s) => /^[a-z0-9][a-z0-9_-]*$/.test(s));
 
 // Arbitrary for names that contain path traversal characters
 const arbPathTraversalName = fc.oneof(

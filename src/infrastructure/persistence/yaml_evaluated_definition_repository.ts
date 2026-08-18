@@ -30,6 +30,7 @@ import {
   Definition,
   type DefinitionData,
   type DefinitionId,
+  isFilenameSafeDefinitionName,
 } from "../../domain/definitions/definition.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
@@ -38,13 +39,15 @@ import { modelRegistry } from "../../domain/models/model.ts";
  * YAML-based repository for evaluated definitions.
  *
  * Stores definitions with CEL expressions already evaluated in the directory structure:
- * {repoDir}/.swamp/definitions-evaluated/{normalized-type}/{id}.yaml
+ * {repoDir}/.swamp/definitions-evaluated/{normalized-type}/{name}.yaml
+ * (or {uuid}.yaml for legacy/non-filename-safe names).
  *
  * This directory is gitignored as evaluated definitions are derived data
  * that can be regenerated from the source definitions.
  */
 export class YamlEvaluatedDefinitionRepository {
   private readonly baseDir: string;
+  private readonly idToActualPath = new Map<DefinitionId, string>();
 
   constructor(
     private readonly repoDir: string,
@@ -70,17 +73,37 @@ export class YamlEvaluatedDefinitionRepository {
     type: ModelType,
     id: DefinitionId,
   ): Promise<Definition | null> {
-    const path = this.getPath(type, id);
+    // Fast path: try UUID-based filename (legacy)
+    const legacyPath = this.getLegacyPath(type, id);
     try {
-      const content = await Deno.readTextFile(path);
+      const content = await Deno.readTextFile(legacyPath);
       const data = parseYaml(content) as DefinitionData;
-      return Definition.fromData(data);
+      const definition = Definition.fromData(data);
+      this.idToActualPath.set(id, legacyPath);
+      return definition;
     } catch (error) {
-      if (error instanceof Deno.errors.NotFound) {
-        return null;
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
       }
-      throw error;
     }
+
+    // Try cached path
+    const cachedPath = this.idToActualPath.get(id);
+    if (cachedPath && cachedPath !== legacyPath) {
+      try {
+        const content = await Deno.readTextFile(cachedPath);
+        const data = parseYaml(content) as DefinitionData;
+        return Definition.fromData(data);
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          throw error;
+        }
+      }
+    }
+
+    // Slow path: scan all files
+    const definitions = await this.findAll(type);
+    return definitions.find((d) => d.id === id) ?? null;
   }
 
   /**
@@ -99,7 +122,9 @@ export class YamlEvaluatedDefinitionRepository {
           const path = join(dir, entry.name);
           const content = await Deno.readTextFile(path);
           const data = parseYaml(content) as DefinitionData;
-          definitions.push(Definition.fromData(data));
+          const definition = Definition.fromData(data);
+          this.idToActualPath.set(definition.id as DefinitionId, path);
+          definitions.push(definition);
         }
       }
     } catch (error) {
@@ -120,6 +145,25 @@ export class YamlEvaluatedDefinitionRepository {
    * @returns The evaluated definition if found, or null
    */
   async findByName(type: ModelType, name: string): Promise<Definition | null> {
+    if (isFilenameSafeDefinitionName(name)) {
+      const namePath = this.getNamePath(type, name);
+      try {
+        const content = await Deno.readTextFile(namePath);
+        const data = parseYaml(content) as DefinitionData;
+        const definition = Definition.fromData(data);
+        if (definition.name !== name) {
+          // File content doesn't match filename — fall through to slow path
+        } else {
+          this.idToActualPath.set(definition.id as DefinitionId, namePath);
+          return definition;
+        }
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          throw error;
+        }
+      }
+    }
+
     const definitions = await this.findAll(type);
     return definitions.find((def) => def.name === name) ?? null;
   }
@@ -156,6 +200,7 @@ export class YamlEvaluatedDefinitionRepository {
           const definition = Definition.fromData(data);
 
           if (definition.name === name) {
+            this.idToActualPath.set(definition.id as DefinitionId, fullPath);
             // Reconstruct the model type from the path segments
             const typeStr = pathSegments.join("/");
             return { definition, type: ModelType.create(typeStr) };
@@ -214,6 +259,7 @@ export class YamlEvaluatedDefinitionRepository {
           const data = parseYaml(content) as DefinitionData;
           const definition = Definition.fromData(data);
 
+          this.idToActualPath.set(definition.id as DefinitionId, fullPath);
           // Reconstruct the model type from the path segments
           const typeStr = pathSegments.join("/");
           results.push({ definition, type: ModelType.create(typeStr) });
@@ -240,8 +286,8 @@ export class YamlEvaluatedDefinitionRepository {
    * @param definition - The evaluated definition to save
    */
   async save(type: ModelType, definition: Definition): Promise<void> {
-    const path = this.getPath(type, definition.id);
-    await this.notifyDirty(path);
+    const targetPath = this.resolveWritePath(type, definition);
+    await this.notifyDirty(targetPath);
 
     const dir = this.getTypeDir(type);
     await assertSafePath(dir, this.baseDir);
@@ -256,7 +302,33 @@ export class YamlEvaluatedDefinitionRepository {
     // Remove undefined values since YAML can't stringify them
     const cleanData = JSON.parse(JSON.stringify(data));
     const content = stringifyYaml(cleanData as Record<string, unknown>);
-    await atomicWriteTextFile(path, content);
+    await atomicWriteTextFile(targetPath, content);
+
+    // Clean up old file if it's at a different path
+    const previousPath = this.idToActualPath.get(definition.id);
+    if (previousPath && previousPath !== targetPath) {
+      try {
+        await Deno.remove(previousPath);
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          throw error;
+        }
+      }
+    }
+
+    // Also check legacy UUID path
+    const legacyPath = this.getLegacyPath(type, definition.id);
+    if (targetPath !== legacyPath && previousPath !== legacyPath) {
+      try {
+        await Deno.remove(legacyPath);
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          throw error;
+        }
+      }
+    }
+
+    this.idToActualPath.set(definition.id, targetPath);
   }
 
   /**
@@ -266,23 +338,38 @@ export class YamlEvaluatedDefinitionRepository {
    * @param id - The definition ID
    */
   async delete(type: ModelType, id: DefinitionId): Promise<void> {
-    const path = this.getPath(type, id);
-    await this.notifyDirty(path);
+    // Populate cache so we discover name-based files on a cold instance
+    const definition = await this.findById(type, id);
 
-    try {
-      await Deno.remove(path);
+    const pathsToTry = new Set([this.getLegacyPath(type, id)]);
+    const cachedPath = this.idToActualPath.get(id);
+    if (cachedPath) pathsToTry.add(cachedPath);
+    if (definition && isFilenameSafeDefinitionName(definition.name)) {
+      pathsToTry.add(this.getNamePath(type, definition.name));
+    }
 
-      // Clean up empty parent directories
-      const definitionsDir = swampPath(
-        this.repoDir,
-        SWAMP_SUBDIRS.definitionsEvaluated,
-      );
-      await cleanupEmptyParentDirs(path, definitionsDir);
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
-        throw error;
+    const resolvedPath = this.idToActualPath.get(id) ??
+      this.getLegacyPath(type, id);
+    await this.notifyDirty(resolvedPath);
+
+    for (const path of pathsToTry) {
+      try {
+        await Deno.remove(path);
+
+        // Clean up empty parent directories
+        const definitionsDir = swampPath(
+          this.repoDir,
+          SWAMP_SUBDIRS.definitionsEvaluated,
+        );
+        await cleanupEmptyParentDirs(path, definitionsDir);
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          throw error;
+        }
       }
     }
+
+    this.idToActualPath.delete(id);
   }
 
   /**
@@ -300,6 +387,24 @@ export class YamlEvaluatedDefinitionRepository {
    * @returns The file path
    */
   getPath(type: ModelType, id: DefinitionId): string {
+    return this.idToActualPath.get(id) ?? this.getLegacyPath(type, id);
+  }
+
+  private resolveWritePath(
+    type: ModelType,
+    definition: Definition,
+  ): string {
+    if (isFilenameSafeDefinitionName(definition.name)) {
+      return this.getNamePath(type, definition.name);
+    }
+    return this.getLegacyPath(type, definition.id);
+  }
+
+  private getNamePath(type: ModelType, name: string): string {
+    return join(this.getTypeDir(type), `${name}.yaml`);
+  }
+
+  private getLegacyPath(type: ModelType, id: DefinitionId): string {
     return join(this.getTypeDir(type), `${id}.yaml`);
   }
 
@@ -322,5 +427,6 @@ export class YamlEvaluatedDefinitionRepository {
         throw error;
       }
     }
+    this.idToActualPath.clear();
   }
 }

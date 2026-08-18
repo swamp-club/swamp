@@ -77,16 +77,20 @@ Deno.test("CLI: model evaluate persists single model to definitions-evaluated", 
 
     assertEquals(result.code, 0, `Should succeed. stderr: ${result.stderr}`);
 
-    // Check that evaluated definition was persisted
-    const evaluatedPath = join(
+    // Check that evaluated definition was persisted (name-based or UUID filename)
+    const evaluatedDir = join(
       repoDir,
       ".swamp/definitions-evaluated/command/shell",
-      `${definition.id}.yaml`,
     );
+    const evaluatedNamePath = join(evaluatedDir, "eval-persist-test.yaml");
+    const evaluatedUuidPath = join(evaluatedDir, `${definition.id}.yaml`);
+    const evaluatedPath = existsSync(evaluatedNamePath)
+      ? evaluatedNamePath
+      : evaluatedUuidPath;
     assertEquals(
       existsSync(evaluatedPath),
       true,
-      `Evaluated definition should be persisted at ${evaluatedPath}`,
+      `Evaluated definition should be persisted at ${evaluatedNamePath} or ${evaluatedUuidPath}`,
     );
 
     // Verify the persisted content has evaluated expressions
@@ -200,12 +204,16 @@ Deno.test("CLI: model evaluate preserves vault expressions as raw strings", asyn
 
     assertEquals(result.code, 0, `Should succeed. stderr: ${result.stderr}`);
 
-    // Read the persisted evaluated definition
-    const evaluatedPath = join(
+    // Read the persisted evaluated definition (name-based or UUID filename)
+    const evalDir = join(
       repoDir,
       ".swamp/definitions-evaluated/command/shell",
-      `${definition.id}.yaml`,
     );
+    const evalNamePath = join(evalDir, "vault-preserve-test.yaml");
+    const evalUuidPath = join(evalDir, `${definition.id}.yaml`);
+    const evaluatedPath = existsSync(evalNamePath)
+      ? evalNamePath
+      : evalUuidPath;
     const content = await Deno.readTextFile(evaluatedPath);
 
     // Vault expression should still be present as raw string
