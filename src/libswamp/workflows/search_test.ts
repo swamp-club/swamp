@@ -42,6 +42,7 @@ function makeDeps(
               target: { type: "string", default: "prod" },
             },
           },
+          trigger: { schedule: "0 8 * * 1-5" },
         },
         {
           id: "wf-2",
@@ -73,11 +74,13 @@ Deno.test("workflowSearch: returns all workflows with no query", async () => {
   assertEquals(completed.data.results[0].description, "Deploy to production");
   assertEquals(completed.data.results[0].jobCount, 2);
   assertEquals(completed.data.results[0].hasInputs, true);
+  assertEquals(completed.data.results[0].trigger, { schedule: "0 8 * * 1-5" });
   assertEquals(completed.data.results[1].id, "wf-2");
   assertEquals(completed.data.results[1].name, "test");
   assertEquals(completed.data.results[1].description, undefined);
   assertEquals(completed.data.results[1].jobCount, 1);
   assertEquals(completed.data.results[1].hasInputs, false);
+  assertEquals(completed.data.results[1].trigger, undefined);
 });
 
 Deno.test("workflowSearch: passes query through in data", async () => {

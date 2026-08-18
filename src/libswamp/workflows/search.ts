@@ -30,6 +30,7 @@ export interface WorkflowSearchItem {
   description?: string;
   jobCount: number;
   hasInputs: boolean;
+  trigger?: { schedule?: string; inputs?: Record<string, unknown> };
 }
 
 /**
@@ -56,6 +57,7 @@ export interface WorkflowSearchDeps {
       description?: string;
       jobs: readonly unknown[];
       inputs?: { properties?: Record<string, unknown> };
+      trigger?: { schedule?: string; inputs?: Record<string, unknown> };
     }>
   >;
 }
@@ -91,6 +93,7 @@ export async function* workflowSearch(
         description: w.description,
         jobCount: w.jobs.length,
         hasInputs: Object.keys(w.inputs?.properties ?? {}).length > 0,
+        trigger: w.trigger,
       }));
 
       yield {

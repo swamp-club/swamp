@@ -51,6 +51,7 @@ export interface WorkflowGetData {
   description?: string;
   version: number;
   inputs?: InputsSchema;
+  trigger?: { schedule?: string; inputs?: Record<string, unknown> };
   tags: Record<string, string>;
   reports?: ReportSelection;
   jobs: {
@@ -127,6 +128,7 @@ export async function* workflowGet(
         description: workflow.description,
         version: workflow.version,
         inputs: workflow.inputs,
+        trigger: workflow.trigger,
         tags: workflow.tags,
         reports: workflow.reports,
         jobs: workflow.jobs.map((job) => ({
