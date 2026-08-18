@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 import { DenoVersion } from "../../domain/runtime/deno_version.ts";
@@ -98,11 +98,12 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
         await Deno.stat(targetBinary);
         logger
           .debug`Deno ${embeddedVersion} already extracted at ${targetBinary}`;
-        if (await this.healthCheck(targetBinary)) {
+        const check = await this.healthCheck(targetBinary);
+        if (check.ok) {
           return targetBinary;
         }
         logger
-          .warn`Extracted deno at ${targetBinary} failed health check — re-extracting`;
+          .warn`Extracted deno at ${targetBinary} failed health check — re-extracting: ${check.stderr}`;
       }
     } catch {
       // Version marker missing or binary missing — need to extract
@@ -134,13 +135,14 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
     logger
       .debug`Extracted deno ${embeddedVersion} (${embeddedBinary.length} bytes)`;
 
-    if (await this.healthCheck(targetBinary)) {
+    const postExtract = await this.healthCheck(targetBinary);
+    if (postExtract.ok) {
       return targetBinary;
     }
 
     // Extracted binary still unhealthy — fall back to system deno in PATH.
     logger
-      .warn`Embedded deno at ${targetBinary} failed health check after extraction — falling back to system deno`;
+      .warn`Embedded deno at ${targetBinary} failed health check after extraction — falling back to system deno: ${postExtract.stderr}`;
     const systemDeno = await this.findSystemDeno();
     if (systemDeno) {
       logger.warn`Using system deno at ${systemDeno}`;
@@ -149,24 +151,33 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
 
     throw new Error(
       `Embedded deno at ${targetBinary} failed health check and no system deno found in PATH. ` +
-        `Try: xattr -c ${targetBinary}`,
+        this.platformHint(targetBinary) +
+        (postExtract.stderr ? ` Detail: ${postExtract.stderr}` : ""),
     );
   }
 
   /**
    * Returns true if the binary at the given path executes cleanly.
+   * Uses an explicit cwd so the child process doesn't inherit an
+   * inaccessible working directory (e.g. when invoked via sudo -u
+   * from another user's restricted home).
    */
-  private async healthCheck(binaryPath: string): Promise<boolean> {
+  private async healthCheck(
+    binaryPath: string,
+  ): Promise<{ ok: boolean; stderr: string }> {
     try {
       const result = await new Deno.Command(binaryPath, {
         args: ["--version"],
         stdout: "null",
-        stderr: "null",
+        stderr: "piped",
+        cwd: dirname(binaryPath),
         env: this.getDenoEnv(),
       }).output();
-      return result.success;
-    } catch {
-      return false;
+      const stderr = new TextDecoder().decode(result.stderr).trim()
+        .slice(0, 500);
+      return { ok: result.success, stderr };
+    } catch (e) {
+      return { ok: false, stderr: String(e).slice(0, 500) };
     }
   }
 
@@ -187,6 +198,7 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
         args: ["-c", binaryPath],
         stdout: "null",
         stderr: "null",
+        cwd: dirname(binaryPath),
       }).output();
       logger.debug`Cleared macOS extended attributes on ${binaryPath}`;
     } catch {
@@ -236,6 +248,19 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
    */
   private getSwampDenoDir(): string {
     return join(getSwampDataDir(), "deno");
+  }
+
+  private platformHint(binaryPath: string): string {
+    if (Deno.build.os === "darwin") {
+      return `Try: xattr -c ${binaryPath}`;
+    }
+    if (Deno.build.os === "linux") {
+      return (
+        `Ensure the working directory is accessible to the running user, ` +
+        `or set SWAMP_HOME to a writable location.`
+      );
+    }
+    return `Check file permissions on ${binaryPath}`;
   }
 
   /**

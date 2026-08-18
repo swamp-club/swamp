@@ -57,6 +57,7 @@ const defaultLookupRunner: CommandLookupRunner = async (tool, name) => {
       args: [name],
       stdout: "piped",
       stderr: "piped",
+      cwd: safeCwd(),
     });
     const output = await cmd.output();
     return { success: output.success, stdout: output.stdout };
@@ -65,6 +66,20 @@ const defaultLookupRunner: CommandLookupRunner = async (tool, name) => {
     return { success: false, stdout: new Uint8Array() };
   }
 };
+
+/**
+ * Returns an accessible cwd for subprocess spawning. Falls back to the OS
+ * temp dir or root if the process's working directory is inaccessible (e.g.
+ * when invoked via `sudo -u` from another user's restricted home).
+ */
+function safeCwd(): string {
+  try {
+    Deno.cwd();
+    return Deno.cwd();
+  } catch {
+    return Deno.env.get("TMPDIR") ?? Deno.env.get("TMP") ?? "/";
+  }
+}
 
 /** Picks the platform-appropriate lookup tool name. */
 function lookupTool(): "which" | "where" {
