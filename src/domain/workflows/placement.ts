@@ -33,6 +33,7 @@ export interface ResolvedPlacement {
   labels?: Record<string, string>;
   platform?: string;
   queueTimeoutMs?: number;
+  affinityKey?: string;
 }
 
 /**

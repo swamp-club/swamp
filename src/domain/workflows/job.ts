@@ -69,6 +69,7 @@ const JobObjectSchema = z.object({
   dependsOn: JobDependencyFieldSchema,
   weight: z.number().default(0),
   concurrency: z.number().int().nonnegative().optional(),
+  affinity: z.boolean().optional(),
   ...PlacementFieldsSchema.shape,
 });
 
@@ -113,6 +114,7 @@ export interface CreateJobProps {
   dependsOn?: JobDependency[];
   weight?: number;
   concurrency?: number;
+  affinity?: boolean;
   target?: string;
   labels?: Record<string, string>;
   platform?: string;
@@ -137,6 +139,7 @@ export class Job {
     private _dependsOn: JobDependency[],
     readonly weight: number,
     readonly concurrency: number | undefined,
+    readonly affinity: boolean | undefined,
     readonly target: string | undefined,
     readonly labels: Record<string, string> | undefined,
     readonly platform: string | undefined,
@@ -161,6 +164,7 @@ export class Job {
       })),
       weight: props.weight ?? 0,
       concurrency: props.concurrency,
+      affinity: props.affinity,
       target: props.target,
       labels: props.labels,
       platform: props.platform,
@@ -188,6 +192,7 @@ export class Job {
       dependsOn,
       validated.weight,
       validated.concurrency,
+      validated.affinity,
       validated.target,
       validated.labels,
       validated.platform,
@@ -246,6 +251,7 @@ export class Job {
       })),
       weight: this.weight,
       concurrency: this.concurrency,
+      affinity: this.affinity,
       target: this.target,
       labels: this.labels,
       platform: this.platform,

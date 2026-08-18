@@ -145,6 +145,19 @@ export class DispatchService {
   #poolWaiters: Array<() => void> = [];
   /** Serializes lease transitions (sole-writer rule, like the gateway). */
   #transitionTail: Promise<unknown> = Promise.resolve();
+  /**
+   * Worker affinity pins: maps an affinity key to the worker that
+   * executed the first step in the group. Subsequent steps with the
+   * same key are forced onto that worker; if the worker disconnects,
+   * the step fails with a WorkerAffinityLostError.
+   */
+  readonly #affinityPins = new Map<string, string>();
+  /**
+   * In-flight affinity resolution: when the first step for a key is
+   * being scheduled, concurrent steps with the same key await this
+   * promise to learn which worker was pinned.
+   */
+  readonly #affinityInflight = new Map<string, Promise<string>>();
 
   constructor(options: DispatchServiceOptions) {
     this.#options = options;
@@ -193,6 +206,12 @@ export class DispatchService {
   /** Gateway hook: a worker started draining — wake queued steps to re-evaluate. */
   notifyWorkerDraining(_worker: WorkerSnapshot): void {
     this.#wakePoolWaiters();
+  }
+
+  /** Release a previously-pinned affinity key (e.g. when a job completes). */
+  releaseAffinity(key: string): void {
+    this.#affinityPins.delete(key);
+    this.#affinityInflight.delete(key);
   }
 
   /**
@@ -264,34 +283,67 @@ export class DispatchService {
     const onAbort = () => endQueue("cancel");
     request.signal?.addEventListener("abort", onAbort, { once: true });
 
+    let affinityResolve: ((name: string) => void) | null = null;
     try {
-      if (request.placement.target) {
+      const affinityKey = request.placement.affinityKey;
+      let effectivePlacement = request.placement;
+
+      if (affinityKey) {
+        let pinnedWorker = this.#affinityPins.get(affinityKey);
+        if (!pinnedWorker) {
+          const inflight = this.#affinityInflight.get(affinityKey);
+          if (inflight) {
+            pinnedWorker = await inflight;
+          } else {
+            const { promise, resolve } = Promise.withResolvers<string>();
+            this.#affinityInflight.set(affinityKey, promise);
+            affinityResolve = resolve;
+          }
+        }
+        if (pinnedWorker) {
+          const pool = this.#poolSnapshot();
+          const worker = pool.find((w) => w.name === pinnedWorker);
+          if (!worker || !worker.connected) {
+            throw new WorkerAffinityLostError(pinnedWorker, affinityKey);
+          }
+          effectivePlacement = { ...request.placement, target: pinnedWorker };
+        }
+      }
+
+      if (effectivePlacement.target) {
         const pool = this.#poolSnapshot();
         const targetWorker = pool.find(
           (w) =>
-            w.name === request.placement.target ||
-            w.instanceUuid === request.placement.target,
+            w.name === effectivePlacement.target ||
+            w.instanceUuid === effectivePlacement.target,
         );
         if (targetWorker && !targetWorker.connected) {
+          if (affinityKey) {
+            throw new WorkerAffinityLostError(
+              effectivePlacement.target,
+              affinityKey,
+            );
+          }
           request.onEvent?.({
             kind: "target_disconnected",
-            target: request.placement.target,
+            target: effectivePlacement.target,
           });
           logger.warn(
             "Step targets worker {target} which is disconnected " +
               "(within grace window); use workers.connected() to " +
               "filter dispatchable workers",
-            { target: request.placement.target },
+            { target: effectivePlacement.target },
           );
         }
       }
 
       while (true) {
         request.signal?.throwIfAborted();
-        const workerName = request.skipScheduler && request.placement.target
-          ? request.placement.target
+        const workerName = request.skipScheduler &&
+            effectivePlacement.target
+          ? effectivePlacement.target
           : await this.#acquireWorker(
-            request.placement,
+            effectivePlacement,
             request.signal,
             deadline,
             emitQueued,
@@ -300,9 +352,23 @@ export class DispatchService {
           const result = await this.#dispatchOnce(workerName, request);
           lastDispatchId = result.dispatchId;
           endQueue("mark_dispatched", { dispatchId: result.dispatchId });
+          if (affinityKey && !this.#affinityPins.has(affinityKey)) {
+            this.#affinityPins.set(affinityKey, workerName);
+            if (affinityResolve) {
+              affinityResolve(workerName);
+              this.#affinityInflight.delete(affinityKey);
+              affinityResolve = null;
+            }
+          }
           return result;
         } catch (error) {
           if (error instanceof WorkerLostError) {
+            if (affinityKey) {
+              endQueue("mark_dispatched", {
+                dispatchId: error.dispatchId ?? "unknown",
+              });
+              throw new WorkerAffinityLostError(workerName, affinityKey);
+            }
             if (error.hadWrites) {
               endQueue("mark_dispatched", {
                 dispatchId: error.dispatchId ?? "unknown",
@@ -365,6 +431,9 @@ export class DispatchService {
       }
       throw error;
     } finally {
+      if (affinityResolve && request.placement.affinityKey) {
+        this.#affinityInflight.delete(request.placement.affinityKey);
+      }
       request.signal?.removeEventListener("abort", onAbort);
     }
   }
@@ -699,6 +768,22 @@ export class DispatchService {
         throw new Error(message);
       }
     }
+  }
+}
+
+/** A step's affinity-pinned worker is no longer reachable. */
+export class WorkerAffinityLostError extends Error {
+  readonly workerName: string;
+  readonly affinityKey: string;
+
+  constructor(workerName: string, affinityKey: string) {
+    super(
+      `Worker '${workerName}' required by affinity group '${affinityKey}' ` +
+        `is no longer connected — failing step to preserve co-location guarantee`,
+    );
+    this.name = "WorkerAffinityLostError";
+    this.workerName = workerName;
+    this.affinityKey = affinityKey;
   }
 }
 

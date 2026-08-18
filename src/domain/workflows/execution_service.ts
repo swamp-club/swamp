@@ -302,6 +302,11 @@ export interface StepExecutionContext {
   workflowPlacement?: import("./placement.ts").PlacementFields;
   /** Job-level placement defaults (inherited by steps in this job unless overridden) */
   jobPlacement?: import("./placement.ts").PlacementFields;
+  /**
+   * Worker affinity key. When set, all steps sharing this key are pinned
+   * to the same remote worker. Computed from workflow/job affinity settings.
+   */
+  affinityKey?: string;
 }
 
 /**
@@ -598,6 +603,13 @@ export class DefaultStepExecutor implements StepExecutor {
           evaluate,
         ) as typeof resolvedPlacement;
       }
+    }
+
+    if (resolvedPlacement && ctx.affinityKey) {
+      resolvedPlacement = {
+        ...resolvedPlacement,
+        affinityKey: ctx.affinityKey,
+      };
     }
 
     // Resolve whole-field expression strings for inputs/globalArgs that survived
@@ -1002,6 +1014,7 @@ export class DefaultStepExecutor implements StepExecutor {
       labels?: Record<string, string>;
       platform?: string;
       queueTimeoutMs?: number;
+      affinityKey?: string;
     };
   }): Promise<MethodResult> {
     const {
@@ -2993,6 +3006,11 @@ export class WorkflowExecutionService {
           workflowGateService: this.workflowGateService,
           workflowPlacement: workflow.placementFields,
           jobPlacement: job.placementFields,
+          affinityKey: workflow.affinity
+            ? run.id
+            : job.affinity
+            ? `${run.id}:${job.name}`
+            : undefined,
         };
         return this.executor.execute(step, ctx);
       });

@@ -1853,3 +1853,78 @@ Deno.test("validate: fails when assert expr uses multiline interpolation", async
   const assertResult = results.find((r) => r.name.includes("Assert expr"));
   assertEquals(assertResult?.passed, false);
 });
+
+Deno.test("validate: warns when workflow affinity is set without placement", async () => {
+  const workflow = Workflow.create({
+    name: "affinity-no-placement",
+    affinity: true,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "local-step",
+            task: StepTask.model("test-model", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const warning = results.find((r) =>
+    r.name.includes("affinity without placement")
+  );
+  assertEquals(warning?.passed, true);
+  assertEquals(warning?.warning, true);
+});
+
+Deno.test("validate: no warning when workflow affinity is set with placement", async () => {
+  const workflow = Workflow.create({
+    name: "affinity-with-placement",
+    affinity: true,
+    labels: { pool: "gpu" },
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "remote-step",
+            task: StepTask.model("test-model", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const warning = results.find((r) =>
+    r.name.includes("affinity without placement")
+  );
+  assertEquals(warning, undefined);
+});
+
+Deno.test("validate: warns when job affinity is set without placement", async () => {
+  const workflow = Workflow.create({
+    name: "job-affinity-no-placement",
+    jobs: [
+      Job.create({
+        name: "main",
+        affinity: true,
+        steps: [
+          Step.create({
+            name: "local-step",
+            task: StepTask.model("test-model", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const warning = results.find((r) =>
+    r.name.includes("affinity without placement in job")
+  );
+  assertEquals(warning?.passed, true);
+  assertEquals(warning?.warning, true);
+});

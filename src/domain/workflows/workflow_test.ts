@@ -695,6 +695,30 @@ Deno.test("Workflow placement: undefined when not set", () => {
   });
 });
 
+Deno.test("Workflow affinity: round-trips through toData", () => {
+  const workflow = Workflow.fromData({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "test-workflow",
+    affinity: true,
+    labels: { pool: "gpu" },
+    jobs: [createTestJob("job1").toData()],
+  } as unknown as WorkflowInput);
+  assertEquals(workflow.affinity, true);
+  const data = workflow.toData();
+  assertEquals(data.affinity, true);
+  const restored = Workflow.fromData(data);
+  assertEquals(restored.affinity, true);
+});
+
+Deno.test("Workflow affinity: undefined when not set", () => {
+  const workflow = Workflow.fromData({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "test-workflow",
+    jobs: [createTestJob("job1").toData()],
+  } as unknown as WorkflowInput);
+  assertEquals(workflow.affinity, undefined);
+});
+
 Deno.test("WorkflowSchema rejects unknown top-level key with did-you-mean suggestion", () => {
   const error = assertThrows(
     () =>
