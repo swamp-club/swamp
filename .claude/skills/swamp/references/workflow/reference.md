@@ -487,6 +487,60 @@ Placement requires running under `swamp serve`. See
 [references/remote-execution.md](references/remote-execution.md) for worker
 provisioning, matching semantics, and full examples.
 
+## Affinity (Worker Co-location)
+
+Add `affinity: true` at the **workflow** or **job** level to guarantee all
+remote steps in that scope run on the same worker. The first dispatched step
+picks a worker via normal label/platform matching; all subsequent steps in the
+group are pinned to that worker.
+
+```yaml
+# Workflow-level: all remote steps in the run share one worker
+name: full-pipeline
+affinity: true
+labels:
+  pool: build
+jobs:
+  - name: build
+    steps:
+      - name: compile
+        task: ...
+      - name: test
+        task: ...
+  - name: deploy
+    steps:
+      - name: push
+        task: ...
+```
+
+```yaml
+# Job-level: steps within each job share a worker, but different jobs may land
+# on different workers
+jobs:
+  - name: build-and-test
+    affinity: true
+    labels: { gpu: "true" }
+    steps:
+      - name: checkout
+        task: ...
+      - name: build
+        task: ...
+  - name: deploy
+    steps:
+      - name: push
+        task: ... # no affinity — dispatched independently
+```
+
+**Key behaviors:**
+
+- Workflow-level affinity scopes to the entire run; job-level scopes to the job
+- If the pinned worker disconnects mid-group, steps fail with a
+  `WorkerAffinityLostError` instead of silently re-dispatching — preserving the
+  co-location guarantee
+- Validation warns when `affinity: true` is set without any placement (a no-op
+  since there are no remote steps to co-locate)
+- Requires `swamp serve` (same as all placement features)
+
 ## Concurrency Limits
 
 Add `concurrency: N` at the workflow, job, or step level to cap parallel
