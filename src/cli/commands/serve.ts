@@ -2490,6 +2490,7 @@ export const serveCommand = new Command()
         ...(Object.keys(resolvedUserNames).length > 0
           ? { resolvedUserNames }
           : {}),
+        serveOptions: merged,
       };
 
     const ac = new AbortController();
@@ -2997,6 +2998,8 @@ export const serveCommand = new Command()
       remoteOnly: merged.remoteOnly,
     });
 
+    connectionCtx.healthCollector = healthCollector;
+
     const adminAuthDeps: AdminAuthDeps = {
       authMode: authConfig.mode,
       repoDir: resolvedRepoDir,
@@ -3381,6 +3384,115 @@ export const serveCommand = new Command()
                 "x-health-interval": String(intervalMs),
               },
             });
+          }
+
+          // Cluster instances endpoint (authenticated + authorized)
+          if (url.pathname === "/api/v1/cluster/instances") {
+            const auth = await authenticateAdmin(
+              req,
+              info.remoteAddr.hostname,
+              adminAuthDeps,
+            );
+            if (!auth.ok) return auth.response;
+
+            const instances: Record<string, unknown>[] = [];
+            const resolvedStaleTtlMs = staleTtlMs ?? 90_000;
+            const degradedThresholdMs = resolvedStaleTtlMs * 2 / 3;
+
+            if (controlPlaneStore) {
+              const keys = await controlPlaneStore.list("heartbeats/");
+              for (const key of keys) {
+                const data = await controlPlaneStore.get(key);
+                if (!data) continue;
+                const record = InstanceHeartbeatService.parseRecord(data);
+                if (!record) continue;
+
+                const isLocal = record.instanceId === instanceId;
+                const age = Date.now() -
+                  new Date(record.heartbeatAt).getTime();
+                let status: string;
+                if (isNaN(age)) {
+                  status = "unreachable";
+                } else if (age <= degradedThresholdMs) {
+                  status = "healthy";
+                } else if (age <= resolvedStaleTtlMs) {
+                  status = "degraded";
+                } else {
+                  status = "unreachable";
+                }
+
+                const entry: Record<string, unknown> = {
+                  instanceId: record.instanceId,
+                  hostname: record.hostname,
+                  pid: record.pid,
+                  startedAt: record.startedAt,
+                  lastHeartbeatAt: record.heartbeatAt,
+                  status,
+                  address: record.address ?? null,
+                };
+
+                if (isLocal) {
+                  const snapshot = await healthCollector.collect(ac.signal);
+                  entry.health = snapshot;
+                }
+
+                instances.push(entry);
+              }
+            } else {
+              const entry: Record<string, unknown> = {
+                instanceId,
+                hostname: Deno.hostname(),
+                pid: Deno.pid,
+                startedAt: null,
+                lastHeartbeatAt: null,
+                status: "healthy",
+                address: null,
+              };
+              const snapshot = await healthCollector.collect(ac.signal);
+              entry.health = snapshot;
+              instances.push(entry);
+            }
+
+            return Response.json({ instances });
+          }
+
+          // Serve config endpoint (authenticated + authorized)
+          if (url.pathname === "/api/v1/config") {
+            const auth = await authenticateAdmin(
+              req,
+              info.remoteAddr.hostname,
+              adminAuthDeps,
+            );
+            if (!auth.ok) return auth.response;
+
+            const config = {
+              port: merged.port,
+              host: merged.host,
+              tls: {
+                enabled: merged.certFile !== undefined &&
+                  merged.keyFile !== undefined,
+                certFile: merged.certFile ?? null,
+              },
+              authMode: merged.authMode,
+              scheduling: { enabled: merged.schedule },
+              dashboard: { enabled: true },
+              webhooks: (merged.webhookConfigs ?? []).map((wh) => ({
+                route: wh.route,
+                workflow: wh.workflow,
+                scheme: wh.scheme ?? "github",
+              })),
+              maxConcurrentRuns: merged.maxConcurrentRuns ?? null,
+              maxRunsPerPrincipal: merged.maxRunsPerPrincipal ?? null,
+              maxRunDuration: merged.maxRunDuration ?? null,
+              enableInternalApi: merged.enableInternalApi,
+              detachRuns: merged.detachRuns,
+              hotReload: merged.hotReload,
+              remoteOnly: merged.remoteOnly,
+              trustProxy: merged.trustProxy,
+              verifyOnEnroll: merged.verifyOnEnroll,
+            };
+
+            return Response.json({ config });
           }
 
           // Internal runs endpoint (opt-in, authenticated + authorized)
@@ -3796,10 +3908,15 @@ export const serveCommand = new Command()
     }
 
     if (hasRemoteControlPlane) {
+      const scheme = tlsEnabled ? "https" : "http";
+      const serveAddress = `${scheme}://${host}:${port}`;
       heartbeatService = new InstanceHeartbeatService(
         controlPlaneStore,
         instanceId,
-        heartbeatIntervalMs ? { intervalMs: heartbeatIntervalMs } : undefined,
+        {
+          ...(heartbeatIntervalMs ? { intervalMs: heartbeatIntervalMs } : {}),
+          address: serveAddress,
+        },
       );
       await heartbeatService.start();
       logger.info`Instance heartbeat started (id: ${instanceId})`;
