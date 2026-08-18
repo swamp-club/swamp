@@ -122,6 +122,7 @@ import { withEventBridge } from "../../infrastructure/stream/event_bridge.ts";
 import type { ReportFilterOptions } from "../reports/report_execution_service.ts";
 import { getTracer, SpanStatusCode } from "../../infrastructure/tracing/mod.ts";
 import { extractSensitiveFieldValues } from "../models/sensitive_field_extractor.ts";
+import { getRemoteStepDispatcher } from "../remote/remote_dispatch.ts";
 
 /**
  * Resolves a task field that may be a record, an expression string, or a
@@ -1625,6 +1626,7 @@ export class WorkflowExecutionService {
     });
 
     let workflowRun: WorkflowRun | undefined;
+    let workflowAffinityKey: string | undefined;
     let workflowLogHandle: string | undefined;
     let wfHeartbeatInterval: ReturnType<typeof setInterval> | undefined;
     try {
@@ -1698,6 +1700,9 @@ export class WorkflowExecutionService {
           run.captureInputs(options.inputs);
         }
         workflowRun = run;
+        if (workflow.affinity) {
+          workflowAffinityKey = run.id;
+        }
 
         // workflowRunId is set here for backward compat; the structured
         // run namespace is populated after run.start() below so that
@@ -2004,6 +2009,9 @@ export class WorkflowExecutionService {
       });
       throw error;
     } finally {
+      if (workflowAffinityKey) {
+        getRemoteStepDispatcher()?.releaseAffinity(workflowAffinityKey);
+      }
       // Always release the per-run log file sink when the generator is
       // disposed — including early abandonment via generator.return() (e.g. a
       // streaming consumer that breaks on socket close). Cleanup placed after a
@@ -2591,6 +2599,12 @@ export class WorkflowExecutionService {
       });
       throw error;
     } finally {
+      const job = workflow.getJob(jobName);
+      if (job?.affinity && !workflow.affinity) {
+        getRemoteStepDispatcher()?.releaseAffinity(
+          `${run.id}:${jobName}`,
+        );
+      }
       jobSpan.end();
     }
   }

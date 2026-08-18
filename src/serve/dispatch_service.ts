@@ -284,6 +284,7 @@ export class DispatchService {
     request.signal?.addEventListener("abort", onAbort, { once: true });
 
     let affinityResolve: ((name: string) => void) | null = null;
+    let affinityReject: ((err: Error) => void) | null = null;
     try {
       const affinityKey = request.placement.affinityKey;
       let effectivePlacement = request.placement;
@@ -295,9 +296,13 @@ export class DispatchService {
           if (inflight) {
             pinnedWorker = await inflight;
           } else {
-            const { promise, resolve } = Promise.withResolvers<string>();
+            const { promise, resolve, reject } = Promise.withResolvers<
+              string
+            >();
+            promise.catch(() => {});
             this.#affinityInflight.set(affinityKey, promise);
             affinityResolve = resolve;
+            affinityReject = reject;
           }
         }
         if (pinnedWorker) {
@@ -358,6 +363,7 @@ export class DispatchService {
               affinityResolve(workerName);
               this.#affinityInflight.delete(affinityKey);
               affinityResolve = null;
+              affinityReject = null;
             }
           }
           return result;
@@ -431,8 +437,14 @@ export class DispatchService {
       }
       throw error;
     } finally {
-      if (affinityResolve && request.placement.affinityKey) {
+      if (affinityReject && request.placement.affinityKey) {
         this.#affinityInflight.delete(request.placement.affinityKey);
+        affinityReject(
+          new WorkerAffinityLostError(
+            "unknown",
+            request.placement.affinityKey,
+          ),
+        );
       }
       request.signal?.removeEventListener("abort", onAbort);
     }

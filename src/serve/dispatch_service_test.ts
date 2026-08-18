@@ -766,3 +766,40 @@ Deno.test("executeRemote: concurrent affinity steps pin to the same worker", asy
 
   assertEquals(r1.workerName, r2.workerName);
 });
+
+Deno.test("executeRemote: concurrent affinity step rejects when first step fails", async () => {
+  const h = createHarness({
+    workers: [
+      snapshot({ name: "w1" }),
+      snapshot({ name: "w2" }),
+    ],
+    queueTimeoutMs: 500,
+  });
+  const affinityKey = "run-6:job-fail-race";
+
+  let callCount = 0;
+  h.setBehavior(() => {
+    callCount++;
+    return new Promise((_resolve, reject) => {
+      setTimeout(
+        () => reject(new ChannelClosedError("socket dropped")),
+        50,
+      );
+    });
+  });
+
+  const results = await Promise.allSettled([
+    h.service.executeRemote(stepRequest({
+      placement: { labels: {}, platform: "linux", affinityKey },
+      stepName: "step-a",
+    })),
+    h.service.executeRemote(stepRequest({
+      placement: { labels: {}, platform: "linux", affinityKey },
+      stepName: "step-b",
+    })),
+  ]);
+
+  assertEquals(results[0].status, "rejected");
+  assertEquals(results[1].status, "rejected");
+  assertEquals(callCount, 1);
+});
