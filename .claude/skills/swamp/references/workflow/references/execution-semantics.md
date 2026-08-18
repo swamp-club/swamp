@@ -65,7 +65,10 @@ follows this sequence:
    evaluated. A truthy result skips the step with reason `"guarded"` (already
    done). A falsy result proceeds to execution. A CEL error fails the step.
    Guards see writes made by earlier steps in the same run.
-4. **Task execution** — the step's task runs (model method, nested workflow,
+4. **Placement resolution** — effective placement is computed by merging
+   workflow → job → step placement fields (child wins). If placement is active,
+   the step dispatches to a matching worker; otherwise it runs locally.
+5. **Task execution** — the step's task runs (model method, nested workflow,
    manual approval, or assert).
 
 Guard evaluation happens after dependency checks but before task execution. This

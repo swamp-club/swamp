@@ -10,6 +10,7 @@ End-to-end scenarios showing how to build workflows for common use cases.
 - [Scenario 4: Conditional Cleanup](#scenario-4-conditional-cleanup)
 - [Scenario 5: Nested Workflows](#scenario-5-nested-workflows)
 - [Scenario 6: Idempotent Provisioning with Guards](#scenario-6-idempotent-provisioning-with-guards)
+- [Scenario 7: Remote Execution with Placement Inheritance](#scenario-7-remote-execution-with-placement-inheritance)
 
 ---
 
@@ -723,6 +724,116 @@ jobs:
           modelIdOrName: api-client
           methodName: fetch
 ```
+
+---
+
+## Scenario 7: Remote Execution with Placement Inheritance
+
+### User Request
+
+> "I want all my workflow steps to run on a remote worker pool, except the
+> reporting job which should run locally."
+
+### What You'll Build
+
+- 1 workflow with workflow-level `labels` for default remote placement
+- A job that clears labels to run locally
+- A step that overrides to target a specific worker
+
+### Decision Tree
+
+```
+All steps remote by default → Workflow-level labels
+One job runs locally → Job-level labels: {} override
+Pin one step to specific worker → Step-level target override
+```
+
+### Step-by-Step
+
+**1. Provision workers with labels**
+
+```bash
+swamp worker token create build-runner --duration 24h
+swamp worker connect ws://orchestrator:4000 \
+  --token <name>.<secret> \
+  --label pool=ci --label arch=x86_64
+```
+
+**2. Create the workflow with placement inheritance**
+
+```bash
+swamp workflow create build-test-report --json
+```
+
+```yaml
+id: d1e2f3a4-b5c6-4d7e-8f9a-0b1c2d3e4f5g
+name: build-test-report
+description: Build and test on remote workers, report locally
+version: 1
+labels:
+  pool: ci
+jobs:
+  - name: build
+    steps:
+      - name: compile
+        task:
+          type: model_method
+          modelIdOrName: builder
+          methodName: compile
+      - name: test
+        task:
+          type: model_method
+          modelIdOrName: builder
+          methodName: test
+
+  - name: gpu-test
+    steps:
+      - name: train-smoke
+        target: gpu-box-1
+        task:
+          type: model_method
+          modelIdOrName: ml-runner
+          methodName: smoke-test
+
+  - name: report
+    labels: {}
+    dependsOn:
+      - job: build
+        condition:
+          type: succeeded
+      - job: gpu-test
+        condition:
+          type: any_completed
+    steps:
+      - name: summarize
+        task:
+          type: model_method
+          modelIdOrName: reporter
+          methodName: summarize
+```
+
+**3. Run through the orchestrator**
+
+```bash
+swamp workflow run build-test-report --server ws://orchestrator:4000
+```
+
+### Placement Resolution
+
+| Step        | Effective Placement            | Runs On              |
+| ----------- | ------------------------------ | -------------------- |
+| compile     | `labels: {pool: ci}` (inherit) | Any `pool=ci` worker |
+| test        | `labels: {pool: ci}` (inherit) | Any `pool=ci` worker |
+| train-smoke | `target: gpu-box-1` (step)     | Specific GPU worker  |
+| summarize   | None (`labels: {}` clears)     | Local (orchestrator) |
+
+### Inheritance Rules
+
+- **Omitting** a placement field inherits from the parent level
+- **Setting** a field overrides the parent's value for that field
+- **Explicit empty** (`labels: {}`) clears the inherited value — the step runs
+  locally
+- Resolution order: step > job > workflow
 
 ---
 
