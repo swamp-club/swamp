@@ -73,7 +73,8 @@ removes the superseded directories via `removeSupersededSkills()`.
 
 Source-of-truth files live in top-level directories tracked in git:
 
-- **`models/`** — Model definitions: `models/{normalized-type}/{id}.yaml`
+- **`models/`** — Model definitions: `models/{normalized-type}/{name}.yaml`
+  (legacy `{uuid}.yaml` also supported)
 - **`workflows/`** — Workflow definitions: `workflows/workflow-{name}.yaml`
   (legacy `workflow-{uuid}.yaml` also supported)
 - **`vaults/`** — Vault configurations: `vaults/{vault-type}/{id}.yaml`
@@ -192,10 +193,11 @@ When an aggregate repository emits an event:
 **Model definitions (`models/`):**
 
 ```
-models/{normalized-type}/{id}.yaml
+models/{normalized-type}/{name}.yaml
 ```
 
-These are real files (not symlinks) tracked in git.
+These are real files (not symlinks) tracked in git. Legacy `{uuid}.yaml` files
+are also supported and lazily migrated to name-based filenames on save.
 
 **Workflow definitions (`workflows/`):**
 

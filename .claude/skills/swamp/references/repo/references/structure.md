@@ -14,10 +14,10 @@ my-swamp-repo/
 │   ├── definitions/             # Model definitions by normalized type
 │   │   ├── command/
 │   │   │   └── shell/
-│   │   │       └── {model-id}.yaml
+│   │   │       └── {name}.yaml  # (legacy: {uuid}.yaml also supported)
 │   │   └── @user/
 │   │       └── my-type/
-│   │           └── {model-id}.yaml
+│   │           └── {name}.yaml
 │   │
 │   ├── definitions-evaluated/   # Evaluated model definitions (expressions resolved)
 │   │   └── (same structure as definitions/)
@@ -61,7 +61,7 @@ my-swamp-repo/
 │
 ├── models/                      # Model definitions by type
 │   └── {normalized-type}/
-│       └── {model-id}.yaml
+│       └── {name}.yaml          # (legacy: {uuid}.yaml also supported)
 │
 ├── workflows/                   # Workflow definitions (flat files)
 │   └── workflow-{name}.yaml     # (legacy: workflow-{uuid}.yaml also supported)
@@ -179,10 +179,10 @@ methods:
       run: "echo 'Hello'"
 ```
 
-**Path pattern**: `.swamp/definitions/{normalized-type}/{model-id}.yaml`
+**Path pattern**: `.swamp/definitions/{normalized-type}/{name}.yaml`
 
 - `normalized-type`: e.g., `command/shell`, `@user/my-type`
-- `model-id`: UUID assigned at creation
+- `name`: model name (e.g. `my-server`); legacy files may use UUID instead
 
 ### Model Data (.swamp/data/)
 
