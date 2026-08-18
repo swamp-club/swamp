@@ -2081,7 +2081,9 @@ export async function handleClusterInstances(
 
         instances.push(entry);
       }
-    } else if (ctx.instanceId) {
+    }
+
+    if (instances.length === 0 && ctx.instanceId) {
       const entry: Record<string, unknown> = {
         instanceId: ctx.instanceId,
         hostname: Deno.hostname(),

@@ -3399,46 +3399,47 @@ export const serveCommand = new Command()
             const resolvedStaleTtlMs = staleTtlMs ?? 90_000;
             const degradedThresholdMs = resolvedStaleTtlMs * 2 / 3;
 
-            if (controlPlaneStore) {
-              const keys = await controlPlaneStore.list("heartbeats/");
-              for (const key of keys) {
-                const data = await controlPlaneStore.get(key);
-                if (!data) continue;
-                const record = InstanceHeartbeatService.parseRecord(data);
-                if (!record) continue;
+            const keys = await controlPlaneStore.list("heartbeats/");
+            for (const key of keys) {
+              const data = await controlPlaneStore.get(key);
+              if (!data) continue;
+              const record = InstanceHeartbeatService.parseRecord(data);
+              if (!record) continue;
 
-                const isLocal = record.instanceId === instanceId;
-                const age = Date.now() -
-                  new Date(record.heartbeatAt).getTime();
-                let status: string;
-                if (isNaN(age)) {
-                  status = "unreachable";
-                } else if (age <= degradedThresholdMs) {
-                  status = "healthy";
-                } else if (age <= resolvedStaleTtlMs) {
-                  status = "degraded";
-                } else {
-                  status = "unreachable";
-                }
-
-                const entry: Record<string, unknown> = {
-                  instanceId: record.instanceId,
-                  hostname: record.hostname,
-                  pid: record.pid,
-                  startedAt: record.startedAt,
-                  lastHeartbeatAt: record.heartbeatAt,
-                  status,
-                  address: record.address ?? null,
-                };
-
-                if (isLocal) {
-                  const snapshot = await healthCollector.collect(ac.signal);
-                  entry.health = snapshot;
-                }
-
-                instances.push(entry);
+              const isLocal = record.instanceId === instanceId;
+              const age = Date.now() -
+                new Date(record.heartbeatAt).getTime();
+              let status: string;
+              if (isNaN(age)) {
+                status = "unreachable";
+              } else if (age <= degradedThresholdMs) {
+                status = "healthy";
+              } else if (age <= resolvedStaleTtlMs) {
+                status = "degraded";
+              } else {
+                status = "unreachable";
               }
-            } else {
+
+              const entry: Record<string, unknown> = {
+                instanceId: record.instanceId,
+                hostname: record.hostname,
+                pid: record.pid,
+                startedAt: record.startedAt,
+                lastHeartbeatAt: record.heartbeatAt,
+                status,
+                address: record.address ?? null,
+              };
+
+              if (isLocal) {
+                const snapshot = await healthCollector.collect(ac.signal);
+                entry.health = snapshot;
+              }
+
+              instances.push(entry);
+            }
+
+            if (instances.length === 0) {
+              const localScheme = tlsEnabled ? "https" : "http";
               const entry: Record<string, unknown> = {
                 instanceId,
                 hostname: Deno.hostname(),
@@ -3446,7 +3447,7 @@ export const serveCommand = new Command()
                 startedAt: null,
                 lastHeartbeatAt: null,
                 status: "healthy",
-                address: null,
+                address: `${localScheme}://${host}:${port}`,
               };
               const snapshot = await healthCollector.collect(ac.signal);
               entry.health = snapshot;
