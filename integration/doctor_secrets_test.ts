@@ -60,8 +60,19 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 
 async function findYamlForId(dir: string, id: string): Promise<string> {
   for await (const entry of walk(dir, { exts: [".yaml"] })) {
-    if (entry.isFile && entry.name === `${id}.yaml`) {
-      return entry.path;
+    if (entry.isFile) {
+      // Check both filename and YAML content for the ID
+      if (entry.name === `${id}.yaml`) {
+        return entry.path;
+      }
+      try {
+        const content = await Deno.readTextFile(entry.path);
+        if (content.includes(`id: ${id}`) || content.includes(`id: "${id}"`)) {
+          return entry.path;
+        }
+      } catch {
+        // skip unreadable files
+      }
     }
   }
   throw new Error(`no yaml for id ${id} under ${dir}`);

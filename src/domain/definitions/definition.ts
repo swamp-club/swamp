@@ -152,6 +152,53 @@ export type ResourceOverride = z.infer<typeof ResourceOverrideSchema>;
 
 export type ResourceOverrides = Record<string, ResourceOverride>;
 
+const DEFINITION_NAME_MAX_LENGTH = 64;
+const DEFINITION_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]*$/;
+
+/**
+ * Returns true when a definition name is safe for direct use in a filename
+ * (i.e. `{name}.yaml`). Legacy names that don't match the strict
+ * pattern will fall back to UUID-based filenames.
+ */
+export function isFilenameSafeDefinitionName(name: string): boolean {
+  return (
+    DEFINITION_NAME_PATTERN.test(name) &&
+    name.length <= DEFINITION_NAME_MAX_LENGTH
+  );
+}
+
+const definitionNameBase = z.string().min(1).refine(
+  (name) => {
+    if (name.includes("..") || name.includes("\\") || name.includes("\0")) {
+      return false;
+    }
+    if (name.includes("/")) {
+      return /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/.test(name);
+    }
+    return true;
+  },
+  {
+    message:
+      "Definition name must not contain '..', '\\', or null bytes (path traversal). '/' is only allowed in scoped @collective/name patterns.",
+  },
+);
+
+const definitionNameStrict = definitionNameBase
+  .refine(
+    (name) => name.includes("/") || DEFINITION_NAME_PATTERN.test(name),
+    {
+      message:
+        "Definition name must be lowercase alphanumeric with hyphens or underscores (e.g. 'my-server'). Must start with a letter or number.",
+    },
+  )
+  .refine(
+    (name) => name.length <= DEFINITION_NAME_MAX_LENGTH,
+    {
+      message:
+        `Definition name must be at most ${DEFINITION_NAME_MAX_LENGTH} characters.`,
+    },
+  );
+
 const DefinitionObjectSchema = z.object({
   type: z.string().optional(),
   typeVersion: z.preprocess(
@@ -159,22 +206,25 @@ const DefinitionObjectSchema = z.object({
     z.string().optional(),
   ),
   id: z.string().uuid(),
-  name: z.string().min(1).refine(
-    (name) => {
-      if (name.includes("..") || name.includes("\\") || name.includes("\0")) {
-        return false;
-      }
-      if (name.includes("/")) {
-        // Allow '/' only in scoped @collective/name extension names
-        return /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/.test(name);
-      }
-      return true;
-    },
-    {
-      message:
-        "Definition name must not contain '..', '\\', or null bytes (path traversal). '/' is only allowed in scoped @collective/name patterns.",
-    },
+  name: definitionNameBase,
+  version: z.number().int().positive(),
+  tags: z.record(z.string(), z.string()).default({}),
+  globalArguments: z.record(z.string(), z.unknown()).default({}),
+  methods: z.record(z.string(), MethodDataSchema).default({}),
+  inputs: InputsSchemaSchema,
+  checks: CheckSelectionSchema,
+  reports: ReportSelectionSchema,
+  resources: z.record(z.string(), ResourceOverrideSchema).optional(),
+});
+
+const DefinitionStrictObjectSchema = z.object({
+  type: z.string().optional(),
+  typeVersion: z.preprocess(
+    (val) => (typeof val === "number" ? undefined : val),
+    z.string().optional(),
   ),
+  id: z.string().uuid(),
+  name: definitionNameStrict,
   version: z.number().int().positive(),
   tags: z.record(z.string(), z.string()).default({}),
   globalArguments: z.record(z.string(), z.unknown()).default({}),
@@ -188,10 +238,19 @@ const DefinitionObjectSchema = z.object({
 /**
  * Zod schema for Definition. Rejects the removed `driver`/`driverConfig`
  * fields with an actionable error (see design/remote-execution.md).
+ * Uses permissive name validation for loading existing definitions.
  */
 export const DefinitionSchema = z.preprocess(
   rejectRemovedDriverFields,
   DefinitionObjectSchema,
+);
+
+/**
+ * Strict schema for new definitions. Enforces kebab-case naming.
+ */
+const DefinitionStrictSchema = z.preprocess(
+  rejectRemovedDriverFields,
+  DefinitionStrictObjectSchema,
 );
 
 /**
@@ -260,7 +319,7 @@ export class Definition {
     const id = props.id ?? crypto.randomUUID();
     const version = props.version ?? 1;
 
-    const validated = DefinitionSchema.parse({
+    const validated = DefinitionStrictSchema.parse({
       type: props.type,
       typeVersion: props.typeVersion,
       id,

@@ -662,6 +662,194 @@ Deno.test("YamlDefinitionRepository.save passes through an unregistered type (sc
   });
 });
 
+// --- Name-based filename tests ---
+
+Deno.test("YamlDefinitionRepository.save writes name-based filename for kebab-case names", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const definition = createTestDefinition("my-server");
+
+    await repo.save(testType, definition);
+
+    // File should be at {name}.yaml, not {uuid}.yaml
+    const namePath = join(
+      dir,
+      "models",
+      testType.toDirectoryPath(),
+      "my-server.yaml",
+    );
+    const stat = await Deno.stat(namePath);
+    assertEquals(stat.isFile, true);
+
+    // UUID path should not exist
+    const uuidPath = join(
+      dir,
+      "models",
+      testType.toDirectoryPath(),
+      `${definition.id}.yaml`,
+    );
+    try {
+      await Deno.stat(uuidPath);
+      assertEquals(true, false, "UUID file should not exist");
+    } catch (error) {
+      assertEquals(error instanceof Deno.errors.NotFound, true);
+    }
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save migrates UUID file to name-based on edit", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const definition = createTestDefinition("migrate-me");
+
+    // Manually write a UUID-named file (simulating legacy)
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    await ensureDir(typeDir);
+    const uuidPath = join(typeDir, `${definition.id}.yaml`);
+    const data = definition.toData();
+    data.type = testType.normalized;
+    await Deno.writeTextFile(uuidPath, toCleanYaml(data));
+
+    // Now save via repo — should migrate to name-based
+    const loaded = await repo.findById(testType, definition.id);
+    assertNotEquals(loaded, null);
+    await repo.save(testType, loaded!);
+
+    // Name-based file should exist
+    const namePath = join(typeDir, "migrate-me.yaml");
+    const stat = await Deno.stat(namePath);
+    assertEquals(stat.isFile, true);
+
+    // UUID file should be gone
+    try {
+      await Deno.stat(uuidPath);
+      assertEquals(true, false, "UUID file should have been removed");
+    } catch (error) {
+      assertEquals(error instanceof Deno.errors.NotFound, true);
+    }
+  });
+});
+
+Deno.test("YamlDefinitionRepository.getPath returns name-based path after save", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const definition = createTestDefinition("path-test");
+
+    await repo.save(testType, definition);
+
+    const path = repo.getPath(testType, definition.id);
+    assertStringIncludes(path, "path-test.yaml");
+  });
+});
+
+Deno.test("YamlDefinitionRepository.getPath returns UUID path for legacy files", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const definition = createTestDefinition("legacy-file");
+
+    // Manually write a UUID-named file (no save through repo)
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    await ensureDir(typeDir);
+    const uuidPath = join(typeDir, `${definition.id}.yaml`);
+    const data = definition.toData();
+    data.type = testType.normalized;
+    await Deno.writeTextFile(uuidPath, toCleanYaml(data));
+
+    // findById populates cache with actual path
+    await repo.findById(testType, definition.id);
+    const path = repo.getPath(testType, definition.id);
+    assertStringIncludes(path, `${definition.id}.yaml`);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findByName fast path works for name-based files", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const definition = createTestDefinition("fast-lookup");
+
+    await repo.save(testType, definition);
+
+    const found = await repo.findByName(testType, "fast-lookup");
+    assertNotEquals(found, null);
+    assertEquals(found!.id, definition.id);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findByName falls through when file name diverges from content name", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+
+    // Create two definitions
+    const def1 = createTestDefinition("original");
+    const def2 = createTestDefinition("renamed");
+
+    await repo.save(testType, def1);
+    await repo.save(testType, def2);
+
+    // Manually swap the content of renamed.yaml to have name "original"
+    // (simulating someone editing the YAML name without renaming the file)
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    const renamedPath = join(typeDir, "renamed.yaml");
+    const data = def2.toData();
+    data.name = "original";
+    data.type = testType.normalized;
+    await Deno.writeTextFile(renamedPath, toCleanYaml(data));
+
+    // findByName("renamed") should fall through to slow path since
+    // the file content says "original", not "renamed"
+    const found = await repo.findByName(testType, "renamed");
+    assertEquals(found, null);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.delete handles name-based files", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const definition = createTestDefinition("delete-named");
+
+    await repo.save(testType, definition);
+
+    // Verify it exists
+    assertNotEquals(await repo.findById(testType, definition.id), null);
+
+    // Delete it
+    await repo.delete(testType, definition.id);
+
+    // Should be gone
+    assertEquals(await repo.findById(testType, definition.id), null);
+
+    // File should not exist
+    const namePath = join(
+      dir,
+      "models",
+      testType.toDirectoryPath(),
+      "delete-named.yaml",
+    );
+    try {
+      await Deno.stat(namePath);
+      assertEquals(true, false, "File should have been removed");
+    } catch (error) {
+      assertEquals(error instanceof Deno.errors.NotFound, true);
+    }
+  });
+});
+
+Deno.test("YamlDefinitionRepository.delete handles cold cache with name-based files", async () => {
+  await withTempDir(async (dir) => {
+    // Save definition with one repo instance
+    const repo1 = new YamlDefinitionRepository(dir);
+    const definition = createTestDefinition("cold-delete");
+    await repo1.save(testType, definition);
+
+    // Delete with a fresh repo instance (cold cache)
+    const repo2 = new YamlDefinitionRepository(dir);
+    await repo2.delete(testType, definition.id);
+
+    // Should be gone
+    assertEquals(await repo2.findById(testType, definition.id), null);
+  });
+});
+
 // --- I/O error propagation tests ---
 
 Deno.test("YamlDefinitionRepository.findAll throws UserError on EMFILE", async () => {

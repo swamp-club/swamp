@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { ensureDir } from "@std/fs";
-import { join } from "@std/path";
+import { basename, join } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
@@ -33,6 +33,7 @@ import {
   Definition,
   type DefinitionData,
   type DefinitionId,
+  isFilenameSafeDefinitionName,
 } from "../../domain/definitions/definition.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import {
@@ -54,13 +55,15 @@ const logger = getLogger(["definition-repo"]);
  * YAML-based implementation of DefinitionRepository.
  *
  * Stores definitions as YAML files in the directory structure:
- * {repoDir}/models/{normalized-type}/{id}.yaml
+ * {repoDir}/models/{normalized-type}/{name}.yaml   (new default for filename-safe names)
+ * {repoDir}/models/{normalized-type}/{uuid}.yaml   (legacy, still discoverable)
  *
  * CEL expressions in attributes are preserved as-is (not evaluated on save).
  */
 export class YamlDefinitionRepository implements DefinitionRepository {
   private readonly baseDir: string;
   private readonly secondaryBaseDir: string | undefined;
+  private readonly idToActualPath = new Map<DefinitionId, string>();
 
   constructor(
     private readonly repoDir: string,
@@ -80,20 +83,44 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     type: ModelType,
     id: DefinitionId,
   ): Promise<Definition | null> {
-    const path = this.getPath(type, id);
+    // Fast path: try UUID-based filename (legacy)
+    const legacyPath = this.getLegacyPath(type, id);
     try {
-      const content = await Deno.readTextFile(path);
+      const content = await Deno.readTextFile(legacyPath);
       const data = parseYaml(content) as DefinitionData;
-      return Definition.fromData(data);
+      const definition = Definition.fromData(data);
+      this.idToActualPath.set(id, legacyPath);
+      return definition;
     } catch (error) {
-      if (error instanceof Deno.errors.NotFound) {
-        if (this.secondaryBaseDir) {
-          return this.findByIdInDir(this.secondaryBaseDir, type, id);
-        }
-        return null;
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
       }
-      throw error;
     }
+
+    // Try name-based filename from cache
+    const cachedPath = this.idToActualPath.get(id);
+    if (cachedPath && cachedPath !== legacyPath) {
+      try {
+        const content = await Deno.readTextFile(cachedPath);
+        const data = parseYaml(content) as DefinitionData;
+        return Definition.fromData(data);
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          throw error;
+        }
+      }
+    }
+
+    // Slow path: scan all definition files for this type
+    const definitions = await this.findAll(type);
+    const found = definitions.find((d) => d.id === id);
+    if (found) return found;
+
+    // Fall back to secondary dir
+    if (this.secondaryBaseDir) {
+      return this.findByIdInDir(this.secondaryBaseDir, type, id);
+    }
+    return null;
   }
 
   private async findByIdInDir(
@@ -101,17 +128,43 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     type: ModelType,
     id: DefinitionId,
   ): Promise<Definition | null> {
+    // Fast path: try UUID-based filename
     const path = join(dir, type.toDirectoryPath(), `${id}.yaml`);
     try {
       const content = await Deno.readTextFile(path);
       const data = parseYaml(content) as DefinitionData;
       return Definition.fromData(data);
     } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+
+    // Slow path: scan all files in the type directory for a matching ID
+    const typeDir = join(dir, type.toDirectoryPath());
+    try {
+      for await (const entry of Deno.readDir(typeDir)) {
+        if (entry.isFile && entry.name.endsWith(".yaml")) {
+          try {
+            const content = await Deno.readTextFile(join(typeDir, entry.name));
+            const data = parseYaml(content) as DefinitionData;
+            const definition = Definition.fromData(data);
+            if (definition.id === id) {
+              return definition;
+            }
+          } catch {
+            // Skip broken files
+          }
+        }
+      }
+    } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
         return null;
       }
       throw error;
     }
+
+    return null;
   }
 
   async findAll(type: ModelType): Promise<Definition[]> {
@@ -130,7 +183,12 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             }
             const content = await Deno.readTextFile(path);
             const data = parseYaml(content) as DefinitionData;
-            definitions.push(Definition.fromData(data));
+            const definition = Definition.fromData(data);
+            this.idToActualPath.set(
+              definition.id as DefinitionId,
+              path,
+            );
+            definitions.push(definition);
           } catch (error) {
             if (isIoError(error)) {
               throw new UserError(
@@ -155,6 +213,27 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   }
 
   async findByName(type: ModelType, name: string): Promise<Definition | null> {
+    // Fast path: try name-based filename directly
+    if (isFilenameSafeDefinitionName(name)) {
+      const namePath = this.getNamePath(type, name);
+      try {
+        const content = await Deno.readTextFile(namePath);
+        const data = parseYaml(content) as DefinitionData;
+        const definition = Definition.fromData(data);
+        if (definition.name !== name) {
+          // File content doesn't match filename — fall through to slow path
+        } else {
+          this.idToActualPath.set(definition.id as DefinitionId, namePath);
+          return definition;
+        }
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          throw error;
+        }
+      }
+    }
+
+    // Slow path: scan all definition files
     const definitions = await this.findAll(type);
     const found = definitions.find((def) => def.name === name);
     if (found) return found;
@@ -243,6 +322,10 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             const definition = Definition.fromData(data);
 
             if (definition.name === name) {
+              this.idToActualPath.set(
+                definition.id as DefinitionId,
+                fullPath,
+              );
               // Prefer the type from the YAML, fall back to path-based type
               const typeStr = definition.type ?? pathSegments.join("/");
               return { definition, type: ModelType.create(typeStr) };
@@ -315,6 +398,10 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             const data = parseYaml(content) as DefinitionData;
             const definition = Definition.fromData(data);
 
+            this.idToActualPath.set(
+              definition.id as DefinitionId,
+              fullPath,
+            );
             // Prefer the type from the YAML, fall back to path-based type
             const typeStr = definition.type ?? pathSegments.join("/");
             results.push({ definition, type: ModelType.create(typeStr) });
@@ -350,10 +437,14 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     await assertSafePath(dir, this.baseDir);
     await ensureDir(dir);
 
-    const path = this.getPath(type, definition.id);
+    const targetPath = this.resolveWritePath(type, definition);
+    const previousPath = this.idToActualPath.get(definition.id);
 
     // Check if this is a new definition or an update
-    const isNew = !(await this.exists(path));
+    const legacyPath = this.getLegacyPath(type, definition.id);
+    const isNew = !(await this.exists(targetPath)) &&
+      !(previousPath && await this.exists(previousPath)) &&
+      !(await this.exists(legacyPath));
 
     const data = definition.toData();
     // Ensure type metadata is always present in persisted YAML
@@ -397,7 +488,44 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     // Remove undefined values since YAML can't stringify them
     const cleanData = JSON.parse(JSON.stringify(data));
     const content = stringifyYaml(cleanData as Record<string, unknown>);
-    await atomicWriteTextFile(path, content);
+    await atomicWriteTextFile(targetPath, content);
+
+    // Clean up old file if we wrote to a different path
+    if (previousPath && previousPath !== targetPath) {
+      try {
+        await Deno.remove(previousPath);
+        logger.debug`Migrated definition file from ${
+          basename(previousPath)
+        } to ${basename(targetPath)}`;
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          logger.warn`Failed to remove old definition file ${previousPath}: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+        }
+      }
+    }
+
+    // Also check the legacy UUID path if it wasn't the previousPath
+    if (
+      targetPath !== legacyPath && previousPath !== legacyPath &&
+      await this.exists(legacyPath)
+    ) {
+      try {
+        await Deno.remove(legacyPath);
+        logger.debug`Migrated definition file from ${basename(legacyPath)} to ${
+          basename(targetPath)
+        }`;
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          logger.warn`Failed to remove legacy definition file ${legacyPath}: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+        }
+      }
+    }
+
+    this.idToActualPath.set(definition.id, targetPath);
 
     // Emit event
     if (this.eventBus) {
@@ -432,22 +560,36 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   }
 
   async delete(type: ModelType, id: DefinitionId): Promise<void> {
-    const path = this.getPath(type, id);
+    // Populate cache so we discover name-based files on a cold instance
+    const definition = await this.findById(type, id);
+    const definitionName = definition?.name;
 
-    // Get the definition name before deleting for the event
-    let definitionName: string | undefined;
-    if (this.eventBus) {
-      const definition = await this.findById(type, id);
-      definitionName = definition?.name;
+    // Try removing all possible file paths
+    const pathsToTry = new Set([this.getLegacyPath(type, id)]);
+    const cachedPath = this.idToActualPath.get(id);
+    if (cachedPath) pathsToTry.add(cachedPath);
+    if (definitionName && isFilenameSafeDefinitionName(definitionName)) {
+      pathsToTry.add(this.getNamePath(type, definitionName));
     }
 
-    try {
-      await Deno.remove(path);
+    let deleted = false;
+    for (const path of pathsToTry) {
+      try {
+        await Deno.remove(path);
+        deleted = true;
 
-      // Clean up empty parent directories
-      await cleanupEmptyParentDirs(path, this.baseDir);
+        // Clean up empty parent directories
+        await cleanupEmptyParentDirs(path, this.baseDir);
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          throw error;
+        }
+      }
+    }
 
-      // Emit event if we had a name
+    if (deleted) {
+      this.idToActualPath.delete(id);
+
       if (this.eventBus && definitionName) {
         const event = createDefinitionDeleted(
           type.normalized,
@@ -455,10 +597,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
           definitionName,
         );
         await this.eventBus.publish(event);
-      }
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
-        throw error;
       }
     }
   }
@@ -468,6 +606,24 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   }
 
   getPath(type: ModelType, id: DefinitionId): string {
+    return this.idToActualPath.get(id) ?? this.getLegacyPath(type, id);
+  }
+
+  private resolveWritePath(
+    type: ModelType,
+    definition: Definition,
+  ): string {
+    if (isFilenameSafeDefinitionName(definition.name)) {
+      return this.getNamePath(type, definition.name);
+    }
+    return this.getLegacyPath(type, definition.id);
+  }
+
+  private getNamePath(type: ModelType, name: string): string {
+    return join(this.getTypeDir(type), `${name}.yaml`);
+  }
+
+  private getLegacyPath(type: ModelType, id: DefinitionId): string {
     return join(this.getTypeDir(type), `${id}.yaml`);
   }
 

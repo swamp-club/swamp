@@ -22,6 +22,7 @@ import {
   createDefinitionId,
   Definition,
   type DefinitionData,
+  isFilenameSafeDefinitionName,
 } from "./definition.ts";
 
 Deno.test("Definition.create generates UUID if not provided", () => {
@@ -108,6 +109,53 @@ Deno.test("Definition.create throws on empty name", () => {
   );
 });
 
+Deno.test("Definition.create enforces strict naming", () => {
+  assertThrows(
+    () => Definition.create({ name: "My Server" }),
+    Error,
+  );
+  assertThrows(
+    () => Definition.create({ name: "ALLCAPS" }),
+    Error,
+  );
+  assertThrows(
+    () => Definition.create({ name: "-starts-with-hyphen" }),
+    Error,
+  );
+});
+
+Deno.test("Definition.create accepts underscores in names", () => {
+  const def = Definition.create({ name: "has_underscores" });
+  assertEquals(def.name, "has_underscores");
+});
+
+Deno.test("Definition.create rejects names exceeding 64 characters", () => {
+  const longName = "a".repeat(65);
+  assertThrows(
+    () => Definition.create({ name: longName }),
+    Error,
+  );
+});
+
+Deno.test("Definition.create accepts kebab-case names up to 64 characters", () => {
+  const maxName = "a".repeat(64);
+  const def = Definition.create({ name: maxName });
+  assertEquals(def.name, maxName);
+});
+
+Deno.test("Definition.fromData accepts legacy non-kebab-case names", () => {
+  const def = Definition.fromData({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "My Legacy Server",
+    version: 1,
+    tags: {},
+    globalArguments: {},
+    methods: {},
+    inputs: undefined,
+  });
+  assertEquals(def.name, "My Legacy Server");
+});
+
 Deno.test("Definition.create throws on name with forward slash", () => {
   assertThrows(
     () => Definition.create({ name: "/etc/passwd" }),
@@ -117,6 +165,32 @@ Deno.test("Definition.create throws on name with forward slash", () => {
     () => Definition.create({ name: "foo/bar" }),
     Error,
   );
+});
+
+// isFilenameSafeDefinitionName tests
+
+Deno.test("isFilenameSafeDefinitionName: accepts kebab-case names", () => {
+  assertEquals(isFilenameSafeDefinitionName("my-server"), true);
+  assertEquals(isFilenameSafeDefinitionName("prod-vpc"), true);
+  assertEquals(isFilenameSafeDefinitionName("a"), true);
+  assertEquals(isFilenameSafeDefinitionName("test123"), true);
+});
+
+Deno.test("isFilenameSafeDefinitionName: accepts underscores", () => {
+  assertEquals(isFilenameSafeDefinitionName("has_underscores"), true);
+  assertEquals(isFilenameSafeDefinitionName("my_server"), true);
+});
+
+Deno.test("isFilenameSafeDefinitionName: rejects unsafe names", () => {
+  assertEquals(isFilenameSafeDefinitionName("My Server"), false);
+  assertEquals(isFilenameSafeDefinitionName("ALLCAPS"), false);
+  assertEquals(isFilenameSafeDefinitionName("-starts-with-hyphen"), false);
+  assertEquals(isFilenameSafeDefinitionName("@scope/name"), false);
+});
+
+Deno.test("isFilenameSafeDefinitionName: rejects names exceeding 64 characters", () => {
+  assertEquals(isFilenameSafeDefinitionName("a".repeat(65)), false);
+  assertEquals(isFilenameSafeDefinitionName("a".repeat(64)), true);
 });
 
 Deno.test("Definition.create throws on name with backslash", () => {
