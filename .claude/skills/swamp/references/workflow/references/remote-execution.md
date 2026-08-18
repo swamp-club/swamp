@@ -89,6 +89,31 @@ all-busy queues the step, and no eligible worker fails the step fast. `forEach`
 is the fan-out construct — expand a step over a list and the instances spread
 across matching workers (each worker runs one dispatch at a time).
 
+## Affinity (worker co-location)
+
+Add `affinity: true` at the **workflow** or **job** level to pin all remote
+steps in that scope to the same worker. The first step dispatched via normal
+label/platform matching picks the worker; every subsequent step in the group is
+forced to that worker via an internal target override.
+
+```yaml
+jobs:
+  - name: build-and-test
+    affinity: true
+    labels: { gpu: "true" }
+    steps:
+      - name: checkout
+        task: ...
+      - name: build
+        task: ...
+```
+
+Workflow-level affinity scopes the pin to the entire run; job-level scopes it to
+the job. If the pinned worker disconnects mid-group, steps fail with a
+`WorkerAffinityLostError` rather than silently re-dispatching — the co-location
+contract is preserved. Validation warns when `affinity: true` is set without any
+placement fields (a no-op).
+
 ## Running workflows through the orchestrator
 
 `swamp serve` is the orchestrator, so placed workflows must run through it. From
