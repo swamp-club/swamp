@@ -54,6 +54,7 @@ import {
 } from "../../infrastructure/tracing/mod.ts";
 import {
   getRemoteStepDispatcher,
+  isRemoteOnlyMode,
   type RemoteStepResult,
 } from "../remote/remote_dispatch.ts";
 import type { RpcStreamEvent } from "../remote/protocol.ts";
@@ -864,6 +865,14 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
               .followUpActions as FollowUpAction[] | undefined,
             executor: remoteResult.workerName,
           };
+        } else if (isRemoteOnlyMode()) {
+          throw new UserError(
+            `Step '${methodName}' on model '${context.modelType.normalized}' ` +
+              `has no placement but the server is running in remote-only mode. ` +
+              `Add a placement block (target, labels, or platform) to the ` +
+              `workflow step, job, or workflow so it can be dispatched to a ` +
+              `remote worker.`,
+          );
         } else {
           // Execute in-process — the single-host path (see
           // design/remote-execution.md "No execution drivers").

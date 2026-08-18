@@ -1065,6 +1065,83 @@ Deno.test("writeServeConfigFile: replace semantics for trigger entries", async (
   }
 });
 
+// ── remote-only merge ─────────────────────────────────────────────────
+
+Deno.test("mergeServeOptions: remote-only defaults to false", () => {
+  const merged = mergeServeOptions(
+    null,
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.remoteOnly, false);
+});
+
+Deno.test("mergeServeOptions: remote-only CLI flag wins over config and env", () => {
+  const config: ServeConfigFile = { "remote-only": false };
+  const cliOptions = { remoteOnly: true };
+  const explicitFlags = new Set(["remote-only"]);
+  const envLookup = () => undefined;
+
+  const merged = mergeServeOptions(
+    config,
+    cliOptions,
+    explicitFlags,
+    envLookup,
+  );
+  assertEquals(merged.remoteOnly, true);
+});
+
+Deno.test("mergeServeOptions: remote-only env var wins over config when CLI not explicit", () => {
+  const config: ServeConfigFile = { "remote-only": false };
+  const cliOptions = {};
+  const explicitFlags = new Set<string>();
+  const envLookup = (name: string) =>
+    name === "SWAMP_REMOTE_ONLY" ? "true" : undefined;
+
+  const merged = mergeServeOptions(
+    config,
+    cliOptions,
+    explicitFlags,
+    envLookup,
+  );
+  assertEquals(merged.remoteOnly, true);
+});
+
+Deno.test("mergeServeOptions: remote-only from config when no CLI or env", () => {
+  const config: ServeConfigFile = { "remote-only": true };
+  const cliOptions = {};
+  const explicitFlags = new Set<string>();
+  const envLookup = () => undefined;
+
+  const merged = mergeServeOptions(
+    config,
+    cliOptions,
+    explicitFlags,
+    envLookup,
+  );
+  assertEquals(merged.remoteOnly, true);
+});
+
+Deno.test("loadServeConfig: non-boolean remote-only produces error", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { "remote-only": "yes" });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "Invalid remote-only",
+    );
+  });
+});
+
+Deno.test("loadServeConfig: boolean remote-only is accepted", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { "remote-only": true });
+    const config = loadServeConfig(undefined, dir);
+    assertEquals(config?.["remote-only"], true);
+  });
+});
+
 Deno.test("readServeConfigFile: returns null when file does not exist", async () => {
   const dir = await Deno.makeTempDir();
   try {

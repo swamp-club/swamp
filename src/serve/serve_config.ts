@@ -54,6 +54,7 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   maxRunsPerPrincipal: "SWAMP_MAX_RUNS_PER_PRINCIPAL",
   maxRunDuration: "SWAMP_MAX_RUN_DURATION",
   enableInternalApi: "SWAMP_ENABLE_INTERNAL_API",
+  remoteOnly: "SWAMP_REMOTE_ONLY",
 };
 
 // ── Webhook Config Types ──────────────────────────────────────────────
@@ -117,6 +118,7 @@ export interface ServeConfigFile {
   "max-run-duration"?: string;
   "hydration-timeout"?: string;
   "enable-internal-api"?: boolean;
+  "remote-only"?: boolean;
 }
 
 // ── Known Keys ────────────────────────────────────────────────────────
@@ -147,6 +149,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "max-run-duration",
   "hydration-timeout",
   "enable-internal-api",
+  "remote-only",
 ]);
 
 const KNOWN_AUTH_KEYS = new Set([
@@ -329,6 +332,17 @@ function validateConfigValues(
     throw new UserError(
       `Invalid verify-on-enroll in ${path}: expected boolean, got ${typeof raw[
         "verify-on-enroll"
+      ]}`,
+    );
+  }
+
+  if (
+    raw["remote-only"] !== undefined &&
+    typeof raw["remote-only"] !== "boolean"
+  ) {
+    throw new UserError(
+      `Invalid remote-only in ${path}: expected boolean, got ${typeof raw[
+        "remote-only"
       ]}`,
     );
   }
@@ -628,6 +642,7 @@ export interface MergedServeOptions {
   maxRunDuration?: string;
   hydrationTimeout?: string;
   enableInternalApi: boolean;
+  remoteOnly: boolean;
 }
 
 export function mergeServeOptions(
@@ -964,6 +979,13 @@ export function mergeServeOptions(
     false,
   );
 
+  const remoteOnly = resolveBoolean(
+    "remote-only",
+    cliOptions.remoteOnly as boolean,
+    config?.["remote-only"],
+    false,
+  );
+
   // Webhooks: CLI --webhook flags replace config file webhooks entirely.
   // Config-file webhooks are passed as raw entries — secret resolution
   // (which may need async vault access) happens later at startup.
@@ -1020,6 +1042,7 @@ export function mergeServeOptions(
     maxRunDuration,
     hydrationTimeout,
     enableInternalApi,
+    remoteOnly,
   };
 }
 

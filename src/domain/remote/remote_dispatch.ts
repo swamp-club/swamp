@@ -101,3 +101,14 @@ export function setRemoteStepDispatcher(
 export function getRemoteStepDispatcher(): RemoteStepDispatcher | null {
   return activeDispatcher;
 }
+
+let remoteOnlyMode = false;
+
+/** Called by the orchestrator at startup when --remote-only is set. */
+export function setRemoteOnlyMode(enabled: boolean): void {
+  remoteOnlyMode = enabled;
+}
+
+export function isRemoteOnlyMode(): boolean {
+  return remoteOnlyMode;
+}
