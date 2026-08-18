@@ -450,6 +450,43 @@ swamp workflow evaluate --all --json
 - Vault expressions (`${{ vault.get(...) }}`) remain raw for runtime resolution
 - Output saved to `.swamp/workflows-evaluated/` for `--last-evaluated` use
 
+## Placement (Remote Execution)
+
+Placement fields (`target`, `labels`, `platform`, `queueTimeout`) dispatch steps
+to remote workers. They can be set at the **workflow**, **job**, or **step**
+level with child-wins inheritance: workflow defaults apply to all steps, job
+overrides workflow, step overrides job. An explicit empty value (e.g.,
+`labels: {}`) clears inherited placement, causing the step to run locally.
+
+```yaml
+name: deploy-pipeline
+labels:
+  pool: gke
+  fleet: platform-fleet-v3
+
+jobs:
+  - name: build
+    steps:
+      - name: compile
+        task: ... # inherits workflow labels → remote
+      - name: test
+        task: ... # inherits workflow labels → remote
+  - name: report
+    labels: {} # override: clear inherited labels
+    steps:
+      - name: summarize
+        task: ... # no placement → runs locally
+  - name: gpu-work
+    steps:
+      - name: train
+        target: gpu-box-1 # step overrides workflow labels
+        task: ...
+```
+
+Placement requires running under `swamp serve`. See
+[references/remote-execution.md](references/remote-execution.md) for worker
+provisioning, matching semantics, and full examples.
+
 ## Concurrency Limits
 
 Add `concurrency: N` at the workflow, job, or step level to cap parallel
