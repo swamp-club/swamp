@@ -503,6 +503,7 @@ export const workflowRunCommand = new Command()
           ),
           assertFailOnSeverity: failOnSeverity,
           initiatedBy,
+          triggerSource: "manual",
         });
 
         const baseHandlers = renderer.handlers();

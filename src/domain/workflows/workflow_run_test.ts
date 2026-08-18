@@ -1279,3 +1279,22 @@ Deno.test("WorkflowRun.toData: stepProgress shows all completed after success", 
   const data = run.toData();
   assertEquals(data.stepProgress, { completed: 3, total: 3 });
 });
+
+Deno.test("WorkflowRun.toData: stepProgress counts failed steps as completed", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+  run.start();
+
+  const job1 = run.jobs[0];
+  job1.start();
+  job1.steps[0].start();
+  job1.steps[0].succeed(undefined);
+  job1.steps[1].start();
+  job1.steps[1].fail("error");
+  job1.fail();
+
+  run.complete();
+
+  const data = run.toData();
+  assertEquals(data.stepProgress, { completed: 2, total: 3 });
+});

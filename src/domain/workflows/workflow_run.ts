@@ -958,7 +958,10 @@ export class WorkflowRun implements TriggerEvaluationContext {
     for (const job of this._jobs) {
       for (const step of job.steps) {
         total++;
-        if (step.status === "succeeded" || step.status === "skipped") {
+        if (
+          step.status === "succeeded" || step.status === "skipped" ||
+          step.status === "failed"
+        ) {
           completed++;
         }
       }
