@@ -2772,7 +2772,7 @@ export class WorkflowExecutionService {
 
       // Handle manual approval tasks — suspend the workflow
       if (task.type === "manual_approval") {
-        stepRun.waitForApproval();
+        stepRun.waitForApproval(task.prompt);
         yield {
           kind: "approval_requested",
           runId: run.id,

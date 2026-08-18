@@ -123,8 +123,8 @@ export async function* workflowApprovals(
             }
           }
 
-          let prompt: string | undefined;
-          if (evaluatedWorkflow) {
+          let prompt: string | undefined = step?.approvalPrompt;
+          if (!prompt && evaluatedWorkflow) {
             const evalTaskData = evaluatedWorkflow.jobs
               .find((j) => j.name === waiting.jobName)?.steps
               .find((s) => s.name === waiting.stepName)?.task.data;

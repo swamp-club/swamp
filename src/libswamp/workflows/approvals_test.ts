@@ -74,10 +74,12 @@ function makeRun(overrides?: {
   stepStatus?: string;
   startedAt?: Date;
   inputs?: Record<string, unknown>;
+  approvalPrompt?: string;
 }): WorkflowRun {
   const stepStatus = overrides?.stepStatus ?? "waiting_approval";
   const startedAt = overrides?.startedAt ?? new Date();
   const inputs = overrides?.inputs ?? {};
+  const approvalPrompt = overrides?.approvalPrompt;
   return {
     id: overrides?.id ?? "run-1",
     status: overrides?.status ?? "suspended",
@@ -90,7 +92,9 @@ function makeRun(overrides?: {
       name === "main"
         ? {
           getStep: (sn: string) =>
-            sn === "gate" ? { startedAt, status: stepStatus } : undefined,
+            sn === "gate"
+              ? { startedAt, status: stepStatus, approvalPrompt }
+              : undefined,
         }
         : undefined,
   } as unknown as WorkflowRun;
@@ -279,5 +283,70 @@ Deno.test("workflowApprovals: falls back to raw prompt when findEvaluatedWorkflo
   if (completed?.kind === "completed") {
     assertEquals(completed.data.approvals.length, 1);
     assertEquals(completed.data.approvals[0].prompt, "Approve deployment");
+  }
+});
+
+Deno.test("workflowApprovals: each suspended run shows its own resolved prompt", async () => {
+  const wf = makeWorkflow({
+    stepType: "manual_approval",
+    prompt: "Approval marker: ${{ inputs.label }}",
+  });
+  const runOne = makeRun({
+    id: "run-marker-one",
+    inputs: { label: "marker-one" },
+    approvalPrompt: "Approval marker: marker-one",
+  });
+  const runTwo = makeRun({
+    id: "run-marker-two",
+    inputs: { label: "marker-two" },
+    approvalPrompt: "Approval marker: marker-two",
+  });
+  const evaluatedWf = makeWorkflow({
+    stepType: "manual_approval",
+    prompt: "Approval marker: marker-two",
+  });
+  const evaluatedWorkflows = new Map([[WF_ID as string, evaluatedWf]]);
+  const deps = makeDeps(
+    [wf],
+    new Map([[WF_ID as string, [runOne, runTwo]]]),
+    evaluatedWorkflows,
+  );
+  const events = await collect<WorkflowApprovalsEvent>(
+    workflowApprovals(ctx, deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind === "completed") {
+    assertEquals(completed.data.approvals.length, 2);
+    const approvalOne = completed.data.approvals.find((a) =>
+      a.runId === "run-marker-one"
+    );
+    const approvalTwo = completed.data.approvals.find((a) =>
+      a.runId === "run-marker-two"
+    );
+    assertEquals(approvalOne?.prompt, "Approval marker: marker-one");
+    assertEquals(approvalTwo?.prompt, "Approval marker: marker-two");
+  }
+});
+
+Deno.test("workflowApprovals: falls back to evaluated workflow prompt for runs without approvalPrompt", async () => {
+  const wf = makeWorkflow({ stepType: "manual_approval" });
+  const run = makeRun({ id: "run-legacy" });
+  const evaluatedWf = makeWorkflow({
+    stepType: "manual_approval",
+    prompt: "Evaluated prompt value",
+  });
+  const evaluatedWorkflows = new Map([[WF_ID as string, evaluatedWf]]);
+  const deps = makeDeps(
+    [wf],
+    new Map([[WF_ID as string, [run]]]),
+    evaluatedWorkflows,
+  );
+  const events = await collect<WorkflowApprovalsEvent>(
+    workflowApprovals(ctx, deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind === "completed") {
+    assertEquals(completed.data.approvals.length, 1);
+    assertEquals(completed.data.approvals[0].prompt, "Evaluated prompt value");
   }
 });
