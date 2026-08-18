@@ -70,6 +70,7 @@ export const StepRunSchema = z.object({
   dataArtifacts: z.array(DataArtifactRefSchema).optional(),
   allowedFailure: z.boolean().optional(),
   approvalDecision: ApprovalDecisionSchema.optional(),
+  approvalPrompt: z.string().optional(),
   assertResult: AssertResultSchema.optional(),
 });
 
@@ -159,6 +160,7 @@ export class StepRun {
     private _dataArtifacts: DataArtifactRef[] = [],
     private _allowedFailure: boolean = false,
     private _approvalDecision: ApprovalDecisionData | undefined = undefined,
+    private _approvalPrompt: string | undefined = undefined,
     private _assertResult: AssertResultData | undefined = undefined,
   ) {}
 
@@ -193,6 +195,7 @@ export class StepRun {
       validated.dataArtifacts ?? [],
       validated.allowedFailure ?? false,
       validated.approvalDecision,
+      validated.approvalPrompt,
       validated.assertResult,
     );
   }
@@ -235,6 +238,10 @@ export class StepRun {
     return this._approvalDecision;
   }
 
+  get approvalPrompt(): string | undefined {
+    return this._approvalPrompt;
+  }
+
   get assertResult(): AssertResultData | undefined {
     return this._assertResult;
   }
@@ -273,6 +280,7 @@ export class StepRun {
     this._dataArtifacts = [];
     this._allowedFailure = false;
     this._approvalDecision = undefined;
+    this._approvalPrompt = undefined;
     this._assertResult = undefined;
   }
 
@@ -287,8 +295,11 @@ export class StepRun {
   /**
    * Marks the step as waiting for manual approval.
    */
-  waitForApproval(): void {
+  waitForApproval(prompt?: string): void {
     this._status = "waiting_approval";
+    if (prompt !== undefined) {
+      this._approvalPrompt = prompt;
+    }
   }
 
   /**
@@ -339,6 +350,9 @@ export class StepRun {
     }
     if (this._approvalDecision) {
       data.approvalDecision = { ...this._approvalDecision };
+    }
+    if (this._approvalPrompt !== undefined) {
+      data.approvalPrompt = this._approvalPrompt;
     }
     if (this._assertResult) {
       data.assertResult = { ...this._assertResult };
