@@ -23,6 +23,11 @@
 
 import { isAbsolute, join, relative, resolve } from "@std/path";
 import {
+  DEFAULT_STALE_TTL_MS,
+  InstanceHeartbeatService,
+} from "../instance_heartbeat.ts";
+import type { MergedServeOptions } from "../serve_config.ts";
+import {
   type ActiveRun,
   STALE_TTL_MS,
 } from "../../domain/models/active_run.ts";
@@ -2015,4 +2020,196 @@ export async function handleDatastoreNamespaceList(
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "datastore_namespace_list_failed", message);
   }
+}
+
+export interface CollectClusterInstancesOptions {
+  controlPlaneStore?:
+    import("../../domain/datastore/control_plane_store.ts").ControlPlaneStore;
+  healthCollector?: import("../health_collector.ts").HealthCollector;
+  instanceId?: string;
+  staleTtlMs?: number;
+  serveOptions?: MergedServeOptions;
+  signal: AbortSignal;
+}
+
+export async function collectClusterInstances(
+  opts: CollectClusterInstancesOptions,
+): Promise<Record<string, unknown>[]> {
+  const instances: Record<string, unknown>[] = [];
+  const staleTtlMs = opts.staleTtlMs ?? DEFAULT_STALE_TTL_MS;
+  const degradedThresholdMs = staleTtlMs * 2 / 3;
+
+  if (opts.controlPlaneStore) {
+    const keys = await opts.controlPlaneStore.list("heartbeats/");
+    for (const key of keys) {
+      if (opts.signal.aborted) break;
+      const data = await opts.controlPlaneStore.get(key);
+      if (!data) continue;
+      const record = InstanceHeartbeatService.parseRecord(data);
+      if (!record) continue;
+
+      const isLocal = record.instanceId === opts.instanceId;
+      const age = Date.now() - new Date(record.heartbeatAt).getTime();
+      let status: string;
+      if (isNaN(age)) {
+        status = "unreachable";
+      } else if (age <= degradedThresholdMs) {
+        status = "healthy";
+      } else if (age <= staleTtlMs) {
+        status = "degraded";
+      } else {
+        status = "unreachable";
+      }
+
+      const entry: Record<string, unknown> = {
+        instanceId: record.instanceId,
+        hostname: record.hostname,
+        pid: record.pid,
+        startedAt: record.startedAt,
+        lastHeartbeatAt: record.heartbeatAt,
+        status,
+        address: record.address ?? null,
+      };
+
+      if (isLocal && opts.healthCollector) {
+        const snapshot = await opts.healthCollector.collect(opts.signal);
+        entry.health = snapshot;
+      }
+
+      instances.push(entry);
+    }
+  }
+
+  if (instances.length === 0 && opts.instanceId) {
+    let address: string | null = null;
+    if (opts.serveOptions) {
+      const scheme = opts.serveOptions.certFile !== undefined &&
+          opts.serveOptions.keyFile !== undefined
+        ? "https"
+        : "http";
+      address =
+        `${scheme}://${opts.serveOptions.host}:${opts.serveOptions.port}`;
+    }
+
+    const entry: Record<string, unknown> = {
+      instanceId: opts.instanceId,
+      hostname: Deno.hostname(),
+      pid: Deno.pid,
+      startedAt: null,
+      lastHeartbeatAt: null,
+      status: "healthy",
+      address,
+    };
+
+    if (opts.healthCollector) {
+      const snapshot = await opts.healthCollector.collect(opts.signal);
+      entry.health = snapshot;
+    }
+
+    instances.push(entry);
+  }
+
+  return instances;
+}
+
+export async function handleClusterInstances(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const instances = await collectClusterInstances({
+      controlPlaneStore: ctx.controlPlaneStore,
+      healthCollector: ctx.healthCollector,
+      instanceId: ctx.instanceId,
+      staleTtlMs: ctx.staleTtlMs,
+      serveOptions: ctx.serveOptions,
+      signal: controller.signal,
+    });
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "cluster.instances",
+      id: requestId,
+      payload: { instances },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "cluster_instances_failed", message);
+  }
+}
+
+export function redactServeOptions(
+  opts: MergedServeOptions,
+): Record<string, unknown> {
+  return {
+    port: opts.port,
+    host: opts.host,
+    tls: {
+      enabled: opts.certFile !== undefined && opts.keyFile !== undefined,
+      certFile: opts.certFile ?? null,
+    },
+    authMode: opts.authMode,
+    scheduling: { enabled: opts.schedule },
+    dashboard: { enabled: true },
+    webhooks: (opts.webhookConfigs ?? []).map((wh) => ({
+      route: wh.route,
+      workflow: wh.workflow,
+      scheme: wh.scheme ?? "github",
+    })),
+    maxConcurrentRuns: opts.maxConcurrentRuns ?? null,
+    maxRunsPerPrincipal: opts.maxRunsPerPrincipal ?? null,
+    maxRunDuration: opts.maxRunDuration ?? null,
+    enableInternalApi: opts.enableInternalApi,
+    detachRuns: opts.detachRuns,
+    hotReload: opts.hotReload,
+    remoteOnly: opts.remoteOnly,
+    trustProxy: opts.trustProxy,
+    verifyOnEnroll: opts.verifyOnEnroll,
+  };
+}
+
+export function handleServeConfig(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  principal: Principal | null,
+): void {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  if (!ctx.serveOptions) {
+    sendError(
+      socket,
+      requestId,
+      "not_available",
+      "Serve configuration not available",
+    );
+    return;
+  }
+
+  send(socket, {
+    type: "serve.config",
+    id: requestId,
+    payload: { config: redactServeOptions(ctx.serveOptions) },
+  });
 }

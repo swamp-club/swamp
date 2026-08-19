@@ -587,6 +587,12 @@ export interface RunGcPayload {
   outputRetentionDays?: number;
 }
 
+// ── Cluster / serve config ─────────────────────────────────────────
+
+export type ClusterInstancesPayload = Record<string, never>;
+
+export type ServeConfigPayload = Record<string, never>;
+
 // ── Datastore namespace ─────────────────────────────────────────────
 
 export type DatastoreNamespaceListPayload = Record<string, never>;
@@ -877,6 +883,16 @@ export type ServerRequest =
     type: "datastore.namespace.list";
     id: string;
     payload?: DatastoreNamespaceListPayload;
+  }
+  | {
+    type: "cluster.instances";
+    id: string;
+    payload?: ClusterInstancesPayload;
+  }
+  | {
+    type: "serve.config";
+    id: string;
+    payload?: ServeConfigPayload;
   };
 
 // ── Outbound (server → client) ───────────────────────────────────────────
@@ -1344,6 +1360,14 @@ export interface DatastoreNamespaceListResponse {
   data: Record<string, unknown>;
 }
 
+export interface ClusterInstancesResponse {
+  instances: Record<string, unknown>[];
+}
+
+export interface ServeConfigResponse {
+  config: Record<string, unknown>;
+}
+
 export interface RunHistoryPayload {
   active?: boolean;
   all?: boolean;
@@ -1651,4 +1675,14 @@ export type ServerMessage =
     type: "datastore.namespace.list";
     id: string;
     payload: DatastoreNamespaceListResponse;
+  }
+  | {
+    type: "cluster.instances";
+    id: string;
+    payload: ClusterInstancesResponse;
+  }
+  | {
+    type: "serve.config";
+    id: string;
+    payload: ServeConfigResponse;
   };

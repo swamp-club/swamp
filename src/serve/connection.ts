@@ -119,6 +119,7 @@ import {
 } from "./handlers/report_handlers.ts";
 import {
   handleAuditTimeline,
+  handleClusterInstances,
   handleDatastoreNamespaceList,
   handleDatastoreSetupExtension,
   handleDatastoreStatus,
@@ -137,6 +138,7 @@ import {
   handleExtensionUpdate,
   handleRunDoctor,
   handleRunHistory,
+  handleServeConfig,
   handleServeReload,
   handleVaultMigrate,
   handleWorkerList,
@@ -2422,6 +2424,25 @@ export function handleMessage(
         request.id,
         controller,
         principal,
+      );
+      break;
+    case "cluster.instances":
+      task = handleClusterInstances(
+        socket,
+        ctx,
+        request.id,
+        controller,
+        principal,
+      );
+      break;
+    case "serve.config":
+      task = Promise.resolve(
+        handleServeConfig(
+          socket,
+          ctx,
+          request.id,
+          principal,
+        ),
       );
       break;
     default: {

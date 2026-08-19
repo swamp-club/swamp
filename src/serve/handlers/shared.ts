@@ -43,6 +43,8 @@ import {
 import type { Action } from "../../domain/access/action.ts";
 import type { AccessResource } from "../../domain/access/access_decision_service.ts";
 import type { ScheduledExecutionService } from "../../libswamp/mod.ts";
+import type { MergedServeOptions } from "../serve_config.ts";
+import type { HealthCollector } from "../health_collector.ts";
 
 export const MAX_CLIENT_ERROR_LENGTH = 200;
 
@@ -114,6 +116,10 @@ export interface ConnectionContext {
   scheduledExecution?: ScheduledExecutionService;
   /** Inverted resolvedAdmins map: OAuth sub → username. Populated at startup in OAuth mode. */
   resolvedUserNames?: Record<string, string>;
+  /** Resolved serve options — used by serve.config endpoint. */
+  serveOptions?: MergedServeOptions;
+  /** Health collector — used by cluster.instances to enrich the local instance. */
+  healthCollector?: HealthCollector;
 }
 
 // SECURITY: Authorization must operate on canonical (normalized) model types,

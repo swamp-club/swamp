@@ -31,6 +31,7 @@ export interface HeartbeatRecord {
   pid: number;
   startedAt: string;
   heartbeatAt: string;
+  address?: string;
 }
 
 export class InstanceHeartbeatService {
@@ -40,12 +41,13 @@ export class InstanceHeartbeatService {
   readonly #pid: number;
   readonly #startedAt: string;
   readonly #intervalMs: number;
+  readonly #address: string | undefined;
   #timer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     store: ControlPlaneStore,
     instanceId: string,
-    options?: { intervalMs?: number },
+    options?: { intervalMs?: number; address?: string },
   ) {
     this.#store = store;
     this.#instanceId = instanceId;
@@ -53,6 +55,7 @@ export class InstanceHeartbeatService {
     this.#pid = Deno.pid;
     this.#startedAt = new Date().toISOString();
     this.#intervalMs = options?.intervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+    this.#address = options?.address;
   }
 
   get instanceId(): string {
@@ -93,6 +96,7 @@ export class InstanceHeartbeatService {
       pid: this.#pid,
       startedAt: this.#startedAt,
       heartbeatAt: new Date().toISOString(),
+      ...(this.#address !== undefined ? { address: this.#address } : {}),
     };
     await this.#store.put(
       `heartbeats/${this.#instanceId}`,
@@ -117,7 +121,8 @@ export class InstanceHeartbeatService {
         typeof parsed.hostname === "string" &&
         typeof parsed.pid === "number" &&
         typeof parsed.startedAt === "string" &&
-        typeof parsed.heartbeatAt === "string"
+        typeof parsed.heartbeatAt === "string" &&
+        (parsed.address === undefined || typeof parsed.address === "string")
       ) {
         return parsed as HeartbeatRecord;
       }

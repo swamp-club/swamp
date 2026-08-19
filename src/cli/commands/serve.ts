@@ -29,6 +29,10 @@ import { parseTimeout } from "../duration_parser.ts";
 import { buildServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
 import { handleConnection } from "../../serve/connection.ts";
 import {
+  collectClusterInstances,
+  redactServeOptions,
+} from "../../serve/handlers/admin_handlers.ts";
+import {
   closeConnectionsForPrincipal,
   removeConnection,
   setConnectionCollectives,
@@ -2490,6 +2494,7 @@ export const serveCommand = new Command()
         ...(Object.keys(resolvedUserNames).length > 0
           ? { resolvedUserNames }
           : {}),
+        serveOptions: merged,
       };
 
     const ac = new AbortController();
@@ -2997,6 +3002,8 @@ export const serveCommand = new Command()
       remoteOnly: merged.remoteOnly,
     });
 
+    connectionCtx.healthCollector = healthCollector;
+
     const adminAuthDeps: AdminAuthDeps = {
       authMode: authConfig.mode,
       repoDir: resolvedRepoDir,
@@ -3380,6 +3387,41 @@ export const serveCommand = new Command()
                 "x-accel-buffering": "no",
                 "x-health-interval": String(intervalMs),
               },
+            });
+          }
+
+          // Cluster instances endpoint (authenticated + authorized)
+          if (url.pathname === "/api/v1/cluster/instances") {
+            const auth = await authenticateAdmin(
+              req,
+              info.remoteAddr.hostname,
+              adminAuthDeps,
+            );
+            if (!auth.ok) return auth.response;
+
+            const instances = await collectClusterInstances({
+              controlPlaneStore,
+              healthCollector,
+              instanceId,
+              staleTtlMs,
+              serveOptions: merged,
+              signal: ac.signal,
+            });
+
+            return Response.json({ instances });
+          }
+
+          // Serve config endpoint (authenticated + authorized)
+          if (url.pathname === "/api/v1/serve/config") {
+            const auth = await authenticateAdmin(
+              req,
+              info.remoteAddr.hostname,
+              adminAuthDeps,
+            );
+            if (!auth.ok) return auth.response;
+
+            return Response.json({
+              config: redactServeOptions(merged),
             });
           }
 
@@ -3796,10 +3838,15 @@ export const serveCommand = new Command()
     }
 
     if (hasRemoteControlPlane) {
+      const scheme = tlsEnabled ? "https" : "http";
+      const serveAddress = `${scheme}://${host}:${port}`;
       heartbeatService = new InstanceHeartbeatService(
         controlPlaneStore,
         instanceId,
-        heartbeatIntervalMs ? { intervalMs: heartbeatIntervalMs } : undefined,
+        {
+          ...(heartbeatIntervalMs ? { intervalMs: heartbeatIntervalMs } : {}),
+          address: serveAddress,
+        },
       );
       await heartbeatService.start();
       logger.info`Instance heartbeat started (id: ${instanceId})`;
