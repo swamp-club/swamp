@@ -121,7 +121,8 @@ export class InstanceHeartbeatService {
         typeof parsed.hostname === "string" &&
         typeof parsed.pid === "number" &&
         typeof parsed.startedAt === "string" &&
-        typeof parsed.heartbeatAt === "string"
+        typeof parsed.heartbeatAt === "string" &&
+        (parsed.address === undefined || typeof parsed.address === "string")
       ) {
         return parsed as HeartbeatRecord;
       }

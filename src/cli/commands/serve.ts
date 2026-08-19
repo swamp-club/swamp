@@ -3412,7 +3412,7 @@ export const serveCommand = new Command()
           }
 
           // Serve config endpoint (authenticated + authorized)
-          if (url.pathname === "/api/v1/config") {
+          if (url.pathname === "/api/v1/serve/config") {
             const auth = await authenticateAdmin(
               req,
               info.remoteAddr.hostname,
