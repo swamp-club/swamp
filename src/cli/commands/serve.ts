@@ -407,6 +407,27 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   if (options.remoteOnly) {
     args.push("--remote-only");
   }
+  if (options.maxConcurrentRuns) {
+    args.push(
+      "--max-concurrent-runs",
+      String(options.maxConcurrentRuns),
+    );
+  }
+  if (options.maxRunsPerPrincipal) {
+    args.push(
+      "--max-runs-per-principal",
+      String(options.maxRunsPerPrincipal),
+    );
+  }
+  if (options.maxRunDuration) {
+    args.push("--max-run-duration", options.maxRunDuration as string);
+  }
+  if (options.hotReload) {
+    args.push("--hot-reload");
+  }
+  if (options.enableInternalApi) {
+    args.push("--enable-internal-api");
+  }
   return args;
 }
 
@@ -635,6 +656,39 @@ const daemonEnableCommand = new Command()
     "--remote-only",
     "Disable local (loopback) execution — all steps must declare placement " +
       "(env: SWAMP_REMOTE_ONLY)",
+  )
+  .option(
+    "--ws-idle-timeout <duration:string>",
+    "WebSocket idle timeout (env: SWAMP_WS_IDLE_TIMEOUT). Default: 30s",
+  )
+  .option(
+    "--queue-timeout <duration:string>",
+    "Queue timeout for placed steps (env: SWAMP_QUEUE_TIMEOUT). Default: 10m",
+  )
+  .option(
+    "--max-concurrent-runs <count:integer>",
+    "Maximum concurrent detached runs across all principals. Default: 100 " +
+      "(env: SWAMP_MAX_CONCURRENT_RUNS)",
+  )
+  .option(
+    "--max-runs-per-principal <count:integer>",
+    "Maximum concurrent detached runs per authenticated principal " +
+      "(env: SWAMP_MAX_RUNS_PER_PRINCIPAL)",
+  )
+  .option(
+    "--max-run-duration <duration:string>",
+    "Maximum wall-clock time a detached run may execute " +
+      "(env: SWAMP_MAX_RUN_DURATION)",
+  )
+  .option(
+    "--hot-reload",
+    "Enable SIGHUP-based hot-reload for pulled extension bundles. " +
+      "Writes a PID file to .swamp/serve.pid; use 'swamp serve reload' to trigger",
+  )
+  .option(
+    "--enable-internal-api",
+    "Enable the /internal/runs endpoint for full run history access " +
+      "(env: SWAMP_ENABLE_INTERNAL_API)",
   )
   .example("Enable daemon", "swamp serve daemon enable")
   .example(
