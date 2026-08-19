@@ -45,7 +45,7 @@ type AnyOptions = any;
 
 export async function workflowHistoryGetAction(
   options: AnyOptions,
-  workflowIdOrName: string,
+  runIdOrWorkflow: string,
 ): Promise<void> {
   const cliCtx = createContext(options as GlobalOptions, [
     "workflow",
@@ -63,7 +63,7 @@ export async function workflowHistoryGetAction(
       { server, token },
       {
         type: "workflow.history.get",
-        payload: { workflowIdOrName },
+        payload: { workflowIdOrName: runIdOrWorkflow },
       },
     );
     const renderer = createWorkflowHistoryGetRenderer(cliCtx.outputMode);
@@ -79,7 +79,7 @@ export async function workflowHistoryGetAction(
     return;
   }
 
-  cliCtx.logger.debug`Getting latest run for workflow: ${workflowIdOrName}`;
+  cliCtx.logger.debug`Getting run for: ${runIdOrWorkflow}`;
 
   const { repoDir, repoContext, datastoreResolver } =
     await requireInitializedRepoReadOnly(
@@ -98,7 +98,7 @@ export async function workflowHistoryGetAction(
 
   const renderer = createWorkflowHistoryGetRenderer(cliCtx.outputMode);
   await consumeStream(
-    workflowHistoryGet(ctx, deps, workflowIdOrName),
+    workflowHistoryGet(ctx, deps, runIdOrWorkflow),
     renderer.handlers(),
   );
 
@@ -108,12 +108,12 @@ export async function workflowHistoryGetAction(
 export const workflowHistoryGetCommand = withRemoteOptions(
   new Command()
     .name("get")
-    .description("Show the latest run for a workflow")
+    .description("Show a specific run by ID or the latest run for a workflow")
     .example("Show latest run", "swamp workflow history get deploy-pipeline")
-    .arguments("<workflow_id_or_name:workflow_name>")
+    .example("Show run by ID", "swamp workflow history get abc123")
+    .arguments("<run_id_or_workflow:string>")
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
     ),
-  // @ts-expect-error - Cliffy custom type returns unknown instead of string
 ).action(workflowHistoryGetAction);

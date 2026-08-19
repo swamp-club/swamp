@@ -551,7 +551,7 @@ export async function handleWorkflowHistoryGet(
     const libCtx = createLibSwampContext();
     const deps = createWorkflowHistoryGetDeps(
       ctx.repoDir,
-      undefined,
+      ctx.datastoreResolver,
       ctx.repoContext.workflowRepo,
     );
 
@@ -615,7 +615,7 @@ export async function handleWorkflowHistoryLogs(
     const libCtx = createLibSwampContext();
     const deps = createWorkflowHistoryLogsDeps(
       ctx.repoDir,
-      undefined,
+      ctx.datastoreResolver,
       ctx.repoContext.workflowRepo,
     );
 
