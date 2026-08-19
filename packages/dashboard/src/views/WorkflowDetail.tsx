@@ -1,5 +1,6 @@
 import { extractArray, extractObject } from "../client/extract";
 import { CodeBlock } from "../components/CodeBlock";
+import * as yaml from "js-yaml";
 import { useRequest } from "../client/useRequest";
 import { StatusDot } from "../components/StatusDot";
 import { StatusPill } from "../components/StatusPill";
@@ -245,7 +246,7 @@ export function WorkflowDetail(
                 </span>
               )}
             </div>
-            <CodeBlock code={JSON.stringify(workflow, null, 2)} />
+            <CodeBlock code={yaml.dump(workflow, { lineWidth: -1, noRefs: true })} language="yaml" />
           </div>
         )}
       </div>

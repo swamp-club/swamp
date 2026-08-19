@@ -9,11 +9,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "js-yaml": "^5.3.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
+    "@types/js-yaml": "^4.0.9",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^4.5.2",

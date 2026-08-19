@@ -1,6 +1,7 @@
 import { useRequest } from "../client/useRequest";
 import { extractObject } from "../client/extract";
 import { CodeBlock } from "../components/CodeBlock";
+import * as yaml from "js-yaml";
 
 interface ModelDetailProps {
   modelName: string;
@@ -74,7 +75,8 @@ export function ModelDetail({ modelName, onBack }: ModelDetailProps) {
             <span className="panel-count">{model.type}</span>
           </div>
           <CodeBlock
-            code={model.definition ?? JSON.stringify(model, null, 2)}
+            code={model.definition ?? yaml.dump(model, { lineWidth: -1, noRefs: true })}
+            language="yaml"
           />
         </div>
       )}

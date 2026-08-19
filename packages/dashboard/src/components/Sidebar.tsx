@@ -1,4 +1,5 @@
 import type { HealthSnapshot } from "../client/useHealthStream";
+import { Logo } from "./Logo";
 import { ThemeToggle } from "./ThemeToggle";
 
 export type View =
@@ -143,25 +144,16 @@ export function Sidebar({
           gap: 10,
         }}
       >
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-          <rect width="24" height="24" rx="6" fill="#10B981" />
-          <path
-            d="M7 12.5C7 10 9 8 12 8s5 2 5 4.5S15 17 12 17s-5-2-5-4.5z"
-            fill="#000"
-            opacity="0.3"
-          />
-          <circle cx="10" cy="11" r="1.5" fill="#fff" />
-          <circle cx="14" cy="11" r="1.5" fill="#fff" />
-        </svg>
+        <Logo size="md" />
         <span
           style={{
-            fontWeight: 700,
-            fontSize: "1rem",
-            color: "var(--sidebar-text-active)",
-            letterSpacing: "0.04em",
+            fontWeight: 600,
+            fontSize: "0.82rem",
+            color: "var(--sidebar-text)",
+            letterSpacing: "0.02em",
           }}
         >
-          swamp
+          Swamp
         </span>
       </div>
 
@@ -311,7 +303,7 @@ export function Sidebar({
             fontFamily: "inherit",
           }}
         >
-          Disconnect
+          Logout
         </button>
       </div>
     </nav>

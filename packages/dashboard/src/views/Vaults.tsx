@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { useSwamp } from "../client/SwampProvider";
 import { useRequest } from "../client/useRequest";
 import { extractArray, extractObject } from "../client/extract";
 
@@ -12,21 +11,26 @@ interface VaultDef {
 interface VaultDetail {
   name: string;
   type: string;
-  config?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
 interface VaultKey {
   key: string;
   labels?: Record<string, string>;
-  hasRefresh?: boolean;
+}
+
+interface AuditEntry {
+  timestamp: string;
+  action: string;
+  key?: string;
+  principal?: string;
+  [k: string]: unknown;
 }
 
 export function Vaults() {
-  const { request } = useSwamp();
   const { data } = useRequest("vault.search");
   const vaults = extractArray<VaultDef>(data);
-  const [selectedVault, setSelectedVault] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   return (
     <>
@@ -46,51 +50,45 @@ export function Vaults() {
         </div>
       </div>
 
-      {selectedVault
-        ? (
-          <VaultDetailView
-            vaultName={selectedVault}
-            onBack={() => setSelectedVault(null)}
-          />
-        )
-        : (
-          <div className="card-grid">
-            {vaults.map((v) => (
-              <div
-                className="card"
-                key={v.id}
-                onClick={() => setSelectedVault(v.name)}
-              >
-                <div className="card-header">
-                  <span className="card-name">{v.name}</span>
-                  <span
-                    className="cron-badge"
-                  >
-                    {v.type}
-                  </span>
-                </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {vaults.map((v) => (
+          <div key={v.id} className="panel">
+            <div
+              className="panel-header"
+              style={{ cursor: "pointer" }}
+              onClick={() =>
+                setExpanded(expanded === v.name ? null : v.name)}
+            >
+              <div className="panel-title">
+                <span
+                  style={{
+                    fontSize: "0.7rem",
+                    color: "var(--text-3)",
+                    transition: "transform 0.15s",
+                    display: "inline-block",
+                    transform: expanded === v.name
+                      ? "rotate(90deg)"
+                      : "rotate(0deg)",
+                  }}
+                >
+                  &#9654;
+                </span>
+                {v.name}
+                <span className="cron-badge">{v.type}</span>
               </div>
-            ))}
-            {vaults.length === 0 && (
-              <div className="loading">No vaults configured</div>
-            )}
+            </div>
+            {expanded === v.name && <VaultExpanded vaultName={v.name} />}
           </div>
+        ))}
+        {vaults.length === 0 && (
+          <div className="loading">No vaults configured</div>
         )}
+      </div>
     </>
   );
 }
 
-interface AuditEntry {
-  timestamp: string;
-  action: string;
-  key?: string;
-  principal?: string;
-  [k: string]: unknown;
-}
-
-function VaultDetailView(
-  { vaultName, onBack }: { vaultName: string; onBack: () => void },
-) {
+function VaultExpanded({ vaultName }: { vaultName: string }) {
   const { data: descData } = useRequest("vault.describe", {
     vaultNameOrId: vaultName,
   });
@@ -99,7 +97,7 @@ function VaultDetailView(
   });
   const { data: auditData } = useRequest("vault.audit-trail", {
     vaultName,
-    limit: 20,
+    limit: 10,
   });
 
   const vaultInfo = extractObject<VaultDetail>(descData);
@@ -107,183 +105,145 @@ function VaultDetailView(
   const auditEntries = extractArray<AuditEntry>(auditData);
 
   return (
-    <>
-      <div className="page-header">
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <button
-            type="button"
-            onClick={onBack}
+    <div style={{ borderTop: "1px solid var(--border)" }}>
+      {/* Keys */}
+      <div
+        style={{
+          padding: "10px 18px 6px",
+          fontSize: "0.7rem",
+          fontFamily: "'JetBrains Mono', monospace",
+          fontWeight: 500,
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+          color: "var(--text-3)",
+        }}
+      >
+        Keys ({keys.length})
+      </div>
+      {keys.length === 0
+        ? (
+          <div
             style={{
-              border: "1px solid var(--border)",
-              background: "var(--surface)",
-              borderRadius: 6,
-              padding: "4px 10px",
-              cursor: "pointer",
-              color: "var(--text-2)",
-              fontFamily: "inherit",
+              padding: "8px 18px 14px",
               fontSize: "0.82rem",
+              color: "var(--text-3)",
             }}
           >
-            &larr; Back
-          </button>
-          <h1>{vaultName}</h1>
-          {vaultInfo && <span className="cron-badge">{vaultInfo.type}</span>}
-        </div>
-      </div>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-        {/* Vault config */}
-        {vaultInfo && (
-          <div className="panel">
-            <div className="panel-header">
-              <div className="panel-title">Configuration</div>
-            </div>
-            <div style={{ padding: 0 }}>
-              {Object.entries(vaultInfo)
-                .filter(([k]) =>
-                  k !== "name" && k !== "type" && k !== "id" && k !== "version"
-                )
-                .map(([key, val]) => (
-                  <div key={key}>
-                    {typeof val === "object" && val !== null &&
-                        !Array.isArray(val)
-                      ? (
-                        <>
-                          <div
-                            style={{
-                              padding: "8px 18px",
-                              background: "var(--surface-inset)",
-                              fontSize: "0.78rem",
-                              fontWeight: 600,
-                              color: "var(--text-2)",
-                            }}
-                          >
-                            {key}
-                          </div>
-                          {Object.entries(val as Record<string, unknown>).map((
-                            [k, v],
-                          ) => (
-                            <div className="sys-row" style={{ padding: "5px 18px" }} key={k}>
-                              <span className="sys-key">{k}</span>
-                              <span className="sys-val">{String(v)}</span>
-                            </div>
-                          ))}
-                        </>
-                      )
-                      : (
-                        <div className="sys-row" style={{ padding: "5px 18px" }}>
-                          <span className="sys-key">{key}</span>
-                          <span className="sys-val">{String(val)}</span>
-                        </div>
-                      )}
-                  </div>
-                ))}
-            </div>
+            No keys stored
           </div>
-        )}
-
-        {/* Keys */}
-        <div className="panel">
-          <div className="panel-header">
-            <div className="panel-title">
-              Keys <span className="panel-count">{keys.length}</span>
-            </div>
-          </div>
-          <div>
-            {keys.length === 0 && (
-              <div className="loading">No keys stored</div>
-            )}
+        )
+        : (
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 6,
+              padding: "4px 18px 14px",
+            }}
+          >
             {keys.map((k) => (
-              <div
+              <span
+                className="cron-badge"
                 key={typeof k === "string" ? k : k.key}
-                style={{
-                  padding: "8px 18px",
-                  borderBottom: "1px solid var(--border-subtle)",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                }}
+                style={{ fontSize: "0.75rem" }}
               >
-                <span
-                  className="mono"
-                  style={{ fontSize: "0.82rem", fontWeight: 500 }}
-                >
-                  {typeof k === "string" ? k : k.key}
-                </span>
-                {typeof k === "object" && k.labels && (
-                  <div
-                    style={{
-                      display: "flex",
-                      gap: 4,
-                      marginLeft: "auto",
-                      flexWrap: "wrap",
-                    }}
-                  >
-                    {Object.entries(k.labels).map(([lk, lv]) => (
-                      <span className="cron-badge" key={lk}>
-                        {lk}: {lv}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
+                {typeof k === "string" ? k : k.key}
+              </span>
             ))}
           </div>
-        </div>
-
-        {/* Audit trail */}
-        {auditEntries.length > 0 && (
-          <div className="panel">
-            <div className="panel-header">
-              <div className="panel-title">
-                Audit Trail{" "}
-                <span className="panel-count">{auditEntries.length}</span>
-              </div>
-            </div>
-            <div className="table-wrap">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Time</th>
-                    <th>Action</th>
-                    <th>Key</th>
-                    <th>Principal</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {auditEntries.map((entry, i) => (
-                    <tr key={i}>
-                      <td
-                        className="mono"
-                        style={{ fontSize: "0.75rem", color: "var(--text-3)" }}
-                      >
-                        {entry.timestamp
-                          ? formatRelativeTime(entry.timestamp)
-                          : "—"}
-                      </td>
-                      <td>
-                        <span className="cron-badge">{entry.action}</span>
-                      </td>
-                      <td
-                        className="mono"
-                        style={{ fontSize: "0.78rem", fontWeight: 500 }}
-                      >
-                        {entry.key ?? "—"}
-                      </td>
-                      <td
-                        style={{ fontSize: "0.82rem", color: "var(--text-3)" }}
-                      >
-                        {entry.principal ?? "—"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
         )}
-      </div>
-    </>
+
+      {/* Config */}
+      {vaultInfo && (
+        <>
+          <div
+            style={{
+              padding: "6px 18px",
+              fontSize: "0.7rem",
+              fontFamily: "'JetBrains Mono', monospace",
+              fontWeight: 500,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              color: "var(--text-3)",
+              borderTop: "1px solid var(--border-subtle)",
+            }}
+          >
+            Configuration
+          </div>
+          {Object.entries(vaultInfo)
+            .filter(([k]) =>
+              k !== "name" && k !== "type" && k !== "id" && k !== "version"
+            )
+            .map(([key, val]) => (
+              <div className="sys-row" style={{ padding: "4px 18px" }} key={key}>
+                <span className="sys-key" style={{ fontSize: "0.78rem" }}>
+                  {key}
+                </span>
+                <span className="sys-val" style={{ fontSize: "0.75rem" }}>
+                  {typeof val === "object"
+                    ? JSON.stringify(val)
+                    : String(val)}
+                </span>
+              </div>
+            ))}
+        </>
+      )}
+
+      {/* Audit trail */}
+      {auditEntries.length > 0 && (
+        <>
+          <div
+            style={{
+              padding: "10px 18px 6px",
+              fontSize: "0.7rem",
+              fontFamily: "'JetBrains Mono', monospace",
+              fontWeight: 500,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              color: "var(--text-3)",
+              borderTop: "1px solid var(--border-subtle)",
+            }}
+          >
+            Recent Activity ({auditEntries.length})
+          </div>
+          {auditEntries.map((entry, i) => (
+            <div
+              key={i}
+              style={{
+                padding: "4px 18px",
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                fontSize: "0.78rem",
+                borderBottom: i < auditEntries.length - 1
+                  ? "1px solid var(--border-subtle)"
+                  : "none",
+              }}
+            >
+              <span className="cron-badge">{entry.action}</span>
+              <span
+                className="mono"
+                style={{ fontWeight: 500 }}
+              >
+                {entry.key ?? "—"}
+              </span>
+              <span
+                style={{
+                  marginLeft: "auto",
+                  color: "var(--text-3)",
+                  fontSize: "0.72rem",
+                }}
+              >
+                {entry.timestamp
+                  ? formatRelativeTime(entry.timestamp)
+                  : ""}
+              </span>
+            </div>
+          ))}
+        </>
+      )}
+      <div style={{ height: 8 }} />
+    </div>
   );
 }
 

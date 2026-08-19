@@ -3,6 +3,12 @@ import { extractObject } from "../client/extract";
 import { StatusPill } from "../components/StatusPill";
 import { StatusDot } from "../components/StatusDot";
 
+interface LogsData {
+  path?: string;
+  lines?: string[];
+  lineCount?: number;
+}
+
 interface StepRun {
   name: string;
   status: string;
@@ -47,8 +53,13 @@ export function RunDetail({ workflowName, runId, onBack }: RunDetailProps) {
     "workflow.history.get",
     { workflowIdOrName: runId ?? workflowName },
   );
+  const { data: logsData } = useRequest(
+    "workflow.history.logs",
+    { runIdOrWorkflow: runId ?? workflowName, tail: 200 },
+  );
 
   const run = error ? null : extractObject<WorkflowRun>(data);
+  const logs = extractLogs(logsData);
 
   return (
     <>
@@ -135,6 +146,7 @@ export function RunDetail({ workflowName, runId, onBack }: RunDetailProps) {
       {run && (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           {run.jobs.map((job) => (
+
             <div className="panel" key={job.name}>
               <div className="panel-header">
                 <div className="panel-title">
@@ -254,10 +266,87 @@ export function RunDetail({ workflowName, runId, onBack }: RunDetailProps) {
               </div>
             </div>
           ))}
+
+          {logs?.lines && logs.lines.length > 0 && (
+            <div className="panel">
+              <div className="panel-header">
+                <div className="panel-title">
+                  Execution Logs{" "}
+                  <span className="panel-count">
+                    {logs.lineCount ?? logs.lines.length} lines
+                  </span>
+                </div>
+              </div>
+              <pre
+                className="code-block"
+                style={{
+                  maxHeight: 400,
+                  overflowY: "auto",
+                  fontSize: "0.72rem",
+                  lineHeight: 1.5,
+                }}
+              >
+                {logs.lines.map((line, i) => {
+                  const isError = /\[ERR\]|\[error\]|failed|Error/i.test(line);
+                  const isWarn = /\[WRN\]|\[warning\]|warn/i.test(line);
+                  return (
+                    <span
+                      key={i}
+                      style={{
+                        display: "block",
+                        color: isError
+                          ? "var(--danger)"
+                          : isWarn
+                          ? "var(--warning)"
+                          : undefined,
+                      }}
+                    >
+                      {line}
+                    </span>
+                  );
+                })}
+              </pre>
+            </div>
+          )}
         </div>
       )}
     </>
   );
+}
+
+function extractLogs(payload: unknown): LogsData | null {
+  if (!payload || typeof payload !== "object") return null;
+  const obj = payload as Record<string, unknown>;
+
+  // payload.data.log.lines
+  if (obj.data && typeof obj.data === "object") {
+    const d = obj.data as Record<string, unknown>;
+    if (d.log && typeof d.log === "object") {
+      const log = d.log as Record<string, unknown>;
+      if (Array.isArray(log.lines)) {
+        return log as unknown as LogsData;
+      }
+    }
+    // payload.data.lines
+    if (Array.isArray(d.lines)) {
+      return d as unknown as LogsData;
+    }
+  }
+
+  // payload.log.lines
+  if (obj.log && typeof obj.log === "object") {
+    const log = obj.log as Record<string, unknown>;
+    if (Array.isArray(log.lines)) {
+      return log as unknown as LogsData;
+    }
+  }
+
+  // payload.lines
+  if (Array.isArray(obj.lines)) {
+    return obj as unknown as LogsData;
+  }
+
+  return null;
 }
 
 function formatDuration(ms: number | undefined): string {

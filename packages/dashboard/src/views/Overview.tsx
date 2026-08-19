@@ -39,7 +39,7 @@ interface OverviewProps {
 export function Overview({ health, onOpenRun }: OverviewProps) {
   const { request } = useSwamp();
 
-  const { data: runsData } = useRequest("workflow.run.search", { limit: 50 });
+  const { data: runsData } = useRequest("workflow.run.search", { limit: 500 });
   const { data: approvalsData } = useRequest("workflow.approvals");
 
   const runs = extractArray<WorkflowRunSearchItem>(runsData);

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSwamp } from "../client/SwampProvider";
+import { Logo } from "../components/Logo";
 
 export function Login() {
   const { authMode, login } = useSwamp();
@@ -55,21 +56,29 @@ function TokenLogin({ onToken }: { onToken: (t: string) => void }) {
 
   return (
     <div className="login-page">
-      <form className="login-card" onSubmit={handleSubmit}>
-        <h1>swamp dashboard</h1>
-        <p>Enter your serve token to connect.</p>
-        {error && <div className="login-error">{error}</div>}
-        <input
-          type="password"
-          placeholder="admin.xxxxxxxxxxxxxxxx"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          autoFocus
-        />
-        <button type="submit" disabled={checking}>
-          {checking ? "Connecting..." : "Connect"}
-        </button>
-      </form>
+      <div className="login-container">
+        <LoginBrand />
+        <form className="login-card" onSubmit={handleSubmit}>
+          <h2>Sign in to your dashboard</h2>
+          <p>Enter your serve token to connect to this instance.</p>
+          {error && <div className="login-error">{error}</div>}
+          <label className="login-label">Token</label>
+          <input
+            type="password"
+            placeholder="admin.xxxxxxxxxxxxxxxx"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            autoFocus
+          />
+          <button type="submit" disabled={checking}>
+            {checking ? "Connecting..." : "Sign in"}
+          </button>
+          <p className="login-hint">
+            Generate a token with{" "}
+            <code>swamp access token mint</code>
+          </p>
+        </form>
+      </div>
     </div>
   );
 }
@@ -83,31 +92,37 @@ interface DeviceGrant {
   interval: number;
 }
 
+type OAuthState = "idle" | "starting" | "waiting" | "error";
+
 function OAuthLogin({ onToken }: { onToken: (t: string) => void }) {
+  const [state, setState] = useState<OAuthState>("idle");
   const [grant, setGrant] = useState<DeviceGrant | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [polling, setPolling] = useState(false);
 
-  useEffect(() => {
+  const startLogin = useCallback(() => {
+    setState("starting");
+    setError(null);
+
     fetch("/auth/device", { method: "POST" })
       .then((r) => {
-        if (!r.ok) throw new Error("Failed to start device flow");
+        if (!r.ok) throw new Error("Failed to start login");
         return r.json();
       })
       .then((data: DeviceGrant) => {
         setGrant(data);
-        setPolling(true);
+        setState("waiting");
         if (data.verificationUriComplete) {
           globalThis.open(data.verificationUriComplete, "_blank");
         }
       })
-      .catch((err) =>
-        setError(err instanceof Error ? err.message : "Device flow failed")
-      );
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : "Login failed");
+        setState("error");
+      });
   }, []);
 
   useEffect(() => {
-    if (!grant || !polling) return;
+    if (!grant || state !== "waiting") return;
 
     const interval = setInterval(async () => {
       try {
@@ -119,11 +134,10 @@ function OAuthLogin({ onToken }: { onToken: (t: string) => void }) {
         const data = await resp.json();
 
         if (data.token) {
-          setPolling(false);
           onToken(data.token);
         } else if (data.error === "expired_token") {
-          setPolling(false);
-          setError("Device authorization expired. Refresh to try again.");
+          setError("Login expired. Please try again.");
+          setState("error");
         }
       } catch {
         // keep polling
@@ -131,46 +145,118 @@ function OAuthLogin({ onToken }: { onToken: (t: string) => void }) {
     }, (grant.interval || 5) * 1000);
 
     return () => clearInterval(interval);
-  }, [grant, polling, onToken]);
+  }, [grant, state, onToken]);
 
   return (
     <div className="login-page">
-      <div className="login-card">
-        <h1>swamp dashboard</h1>
-        <p>Authenticate via swamp-club to continue.</p>
-        {error && <div className="login-error">{error}</div>}
-        {grant
-          ? (
-            <div className="login-device">
-              <p style={{ color: "var(--text-2)", marginBottom: 8 }}>
-                A browser tab has been opened. Approve the request to continue.
+      <div className="login-container">
+        <LoginBrand />
+        <div className="login-card">
+          {state === "idle" && (
+            <>
+              <h2>Sign in to your dashboard</h2>
+              <p>
+                You'll be redirected to swamp-club.com to authenticate with your
+                account.
               </p>
-              <div className="code">{grant.userCode}</div>
-              <p style={{ color: "var(--text-3)", fontSize: "0.82rem" }}>
-                Waiting for authorization...
-              </p>
-              <p
+              <button
+                type="button"
+                onClick={startLogin}
                 style={{
-                  color: "var(--text-3)",
-                  fontSize: "0.78rem",
-                  marginTop: 12,
+                  width: "100%",
+                  padding: "10px",
+                  border: "none",
+                  borderRadius: 6,
+                  background: "var(--accent)",
+                  color: "#000",
+                  fontFamily: "inherit",
+                  fontSize: "0.88rem",
+                  fontWeight: 600,
+                  cursor: "pointer",
                 }}
               >
-                Didn't open?{" "}
+                Login with swamp-club
+              </button>
+            </>
+          )}
+
+          {state === "starting" && (
+            <>
+              <h2>Sign in to your dashboard</h2>
+              <div className="login-waiting">
+                <div className="login-spinner" />
+                Starting login...
+              </div>
+            </>
+          )}
+
+          {state === "waiting" && grant && (
+            <>
+              <h2>Complete login in your browser</h2>
+              <p>
+                A new tab has opened at swamp-club.com. Enter the code below to
+                confirm it's you.
+              </p>
+              <div className="login-code-block">
+                <div className="login-code-label">Confirmation code</div>
+                <div className="login-code">{grant.userCode}</div>
+              </div>
+              <div className="login-waiting">
+                <div className="login-spinner" />
+                Waiting for you to approve...
+              </div>
+              <p className="login-hint">
+                Tab didn't open?{" "}
                 <a
                   href={grant.verificationUriComplete}
                   target="_blank"
                   rel="noopener noreferrer"
                 >
-                  Click here
+                  Open swamp-club.com manually
                 </a>
               </p>
-            </div>
-          )
-          : (
-            !error && <div className="loading">Starting authorization...</div>
+            </>
           )}
+
+          {state === "error" && (
+            <>
+              <h2>Sign in to your dashboard</h2>
+              {error && <div className="login-error">{error}</div>}
+              <button
+                type="button"
+                onClick={() => {
+                  setState("idle");
+                  setGrant(null);
+                  setError(null);
+                }}
+                style={{
+                  width: "100%",
+                  padding: "10px",
+                  border: "none",
+                  borderRadius: 6,
+                  background: "var(--accent)",
+                  color: "#000",
+                  fontFamily: "inherit",
+                  fontSize: "0.88rem",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                Try again
+              </button>
+            </>
+          )}
+        </div>
       </div>
+    </div>
+  );
+}
+
+function LoginBrand() {
+  return (
+    <div className="login-brand">
+      <Logo size="lg" />
+      <h1>Swamp</h1>
     </div>
   );
 }
