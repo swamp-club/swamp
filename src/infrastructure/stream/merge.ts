@@ -89,8 +89,13 @@ export async function* merge<T>(
     if (abortHandler && signal) {
       signal.removeEventListener("abort", abortHandler);
     }
-    // Ensure all drain tasks complete (they may throw)
-    await Promise.allSettled(tasks);
+    // When the signal is aborted, skip waiting for drain tasks so the
+    // consumer can proceed to cancellation handling immediately. The
+    // drain tasks continue in the background until their generators
+    // finish — same trade-off as manual cancel.
+    if (!signal?.aborted) {
+      await Promise.allSettled(tasks);
+    }
   }
   if (firstStreamError !== undefined && !errorWasAbortInduced) {
     throw firstStreamError;
@@ -165,7 +170,9 @@ export async function* mergeWithConcurrency<T>(
     if (abortHandler && signal) {
       signal.removeEventListener("abort", abortHandler);
     }
-    await Promise.allSettled(tasks);
+    if (!signal?.aborted) {
+      await Promise.allSettled(tasks);
+    }
   }
   if (firstStreamError !== undefined && !errorWasAbortInduced) {
     throw firstStreamError;

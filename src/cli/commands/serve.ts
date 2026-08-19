@@ -1011,7 +1011,7 @@ export const serveCommand = new Command()
   )
   .option(
     "--max-run-duration <duration:string>",
-    "Maximum wall-clock time a detached run may execute before being aborted. " +
+    "Maximum wall-clock time a run may execute before being aborted. " +
       "Accepts seconds (3600), explicit units (1h, 30m). Unset by default (no limit). " +
       "(env: SWAMP_MAX_RUN_DURATION)",
   )

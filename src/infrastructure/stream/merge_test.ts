@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { merge, mergeWithConcurrency } from "./merge.ts";
 
 async function* fromArray<T>(items: T[]): AsyncGenerator<T> {
@@ -261,4 +261,68 @@ Deno.test("mergeWithConcurrency propagates error from one of multiple streams", 
     Error,
     "step exploded",
   );
+});
+
+// Abort-exits-promptly tests
+
+async function* slowStream(
+  durationMs: number,
+): AsyncGenerator<string> {
+  await new Promise((r) => setTimeout(r, durationMs));
+  yield "slow-done";
+}
+
+Deno.test("merge exits promptly when signal aborts during slow stream", async () => {
+  const controller = new AbortController();
+  const slowMs = 5_000;
+
+  setTimeout(() => controller.abort(), 50);
+
+  const start = performance.now();
+  const items = await collect(merge(
+    [fromArray(["fast"]), slowStream(slowMs)],
+    controller.signal,
+  ));
+  const elapsed = performance.now() - start;
+
+  assert(elapsed < 1_000, `Expected prompt exit, took ${elapsed}ms`);
+  assert(items.length <= 1, `Expected at most 1 item, got ${items.length}`);
+});
+
+Deno.test("mergeWithConcurrency exits promptly when signal aborts during slow stream", async () => {
+  const controller = new AbortController();
+  const slowMs = 5_000;
+
+  setTimeout(() => controller.abort(), 50);
+
+  const start = performance.now();
+  const items = await collect(mergeWithConcurrency(
+    [fromArray(["fast"]), slowStream(slowMs)],
+    1,
+    controller.signal,
+  ));
+  const elapsed = performance.now() - start;
+
+  assert(elapsed < 1_000, `Expected prompt exit, took ${elapsed}ms`);
+  assert(items.length <= 2, `Expected at most 2 items, got ${items.length}`);
+});
+
+Deno.test("merge does not throw stream error after abort", async () => {
+  const controller = new AbortController();
+
+  async function* abortThenSlow(): AsyncGenerator<number> {
+    controller.abort();
+    await new Promise((r) => setTimeout(r, 5_000));
+    yield 1;
+  }
+
+  const start = performance.now();
+  const items = await collect(merge(
+    [fromArray([10]), abortThenSlow()],
+    controller.signal,
+  ));
+  const elapsed = performance.now() - start;
+
+  assert(elapsed < 1_000, `Expected prompt exit, took ${elapsed}ms`);
+  assert(items.length <= 1);
 });
