@@ -141,6 +141,11 @@ Deno.test("buildServeService: omits extraArgs when not provided", () => {
   assertFalse(unit.includes("--no-schedule"));
 });
 
+Deno.test("buildServeService: includes ExecReload for SIGHUP", () => {
+  const unit = buildServeService(baseConfig);
+  assertStringIncludes(unit, "ExecReload=/bin/kill -HUP $MAINPID");
+});
+
 Deno.test("buildServeService: does not include OnCalendar or timer config", () => {
   const unit = buildServeService(baseConfig);
   assertFalse(unit.includes("OnCalendar"));

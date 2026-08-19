@@ -385,6 +385,36 @@ Deno.test("collectServeExtraArgs: omits --trusted-hosts when not set", () => {
   assertEquals(args, []);
 });
 
+Deno.test("collectServeExtraArgs: forwards --hot-reload", () => {
+  const args = collectServeExtraArgs({ hotReload: true });
+  assertEquals(args, ["--hot-reload"]);
+});
+
+Deno.test("collectServeExtraArgs: omits --hot-reload when false", () => {
+  const args = collectServeExtraArgs({ hotReload: false });
+  assertEquals(args, []);
+});
+
+Deno.test("collectServeExtraArgs: forwards --enable-internal-api", () => {
+  const args = collectServeExtraArgs({ enableInternalApi: true });
+  assertEquals(args, ["--enable-internal-api"]);
+});
+
+Deno.test("collectServeExtraArgs: forwards --max-concurrent-runs", () => {
+  const args = collectServeExtraArgs({ maxConcurrentRuns: 50 });
+  assertEquals(args, ["--max-concurrent-runs", "50"]);
+});
+
+Deno.test("collectServeExtraArgs: forwards --max-runs-per-principal", () => {
+  const args = collectServeExtraArgs({ maxRunsPerPrincipal: 10 });
+  assertEquals(args, ["--max-runs-per-principal", "10"]);
+});
+
+Deno.test("collectServeExtraArgs: forwards --max-run-duration", () => {
+  const args = collectServeExtraArgs({ maxRunDuration: "1h" });
+  assertEquals(args, ["--max-run-duration", "1h"]);
+});
+
 // --- reapOrphanedWorkflowRuns ---
 
 const WORKFLOW_ID = "96968218-50aa-4b91-8161-a6995ce96cae" as WorkflowId;
