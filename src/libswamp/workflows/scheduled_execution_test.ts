@@ -92,6 +92,7 @@ Deno.test("ScheduledExecutionService: registers schedules from existing workflow
   const schedules = service.listSchedules();
   assertEquals(schedules.length, 1);
   assertEquals(schedules[0].cronExpression, "0 * * * *");
+  assertEquals(schedules[0].workflowName, "scheduled-wf");
 
   // Should have emitted a registration event
   const registered = events.filter((e) => e.kind === "schedule_registered");

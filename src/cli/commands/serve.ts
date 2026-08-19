@@ -3544,6 +3544,7 @@ export const serveCommand = new Command()
           if (url.pathname === "/" || url.pathname === "/health") {
             const schedules = scheduledExecution?.listSchedules().map((s) => ({
               workflowId: s.workflowId,
+              workflowName: s.workflowName,
               cronExpression: s.cronExpression,
               nextRun: s.nextRun?.toISOString() ?? null,
               running: scheduledExecution!.isRunning(s.workflowId),

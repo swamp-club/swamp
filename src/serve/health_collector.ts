@@ -38,6 +38,7 @@ export interface HealthSnapshotRun {
 
 export interface HealthSnapshotSchedule {
   readonly workflowId: string;
+  readonly workflowName: string;
   readonly cronExpression: string;
   readonly nextRun: string | null;
   readonly running: boolean;
@@ -69,6 +70,7 @@ export interface HealthSnapshot {
 export interface ScheduleProvider {
   listSchedules(): Array<{
     readonly workflowId: string;
+    readonly workflowName: string;
     readonly cronExpression: string;
     readonly nextRun: Date | null;
   }>;
@@ -142,6 +144,7 @@ export class HealthCollector {
     const schedules: HealthSnapshotSchedule[] = this.#deps.scheduleProvider
       ? this.#deps.scheduleProvider.listSchedules().map((s) => ({
         workflowId: String(s.workflowId),
+        workflowName: s.workflowName,
         cronExpression: s.cronExpression,
         nextRun: s.nextRun?.toISOString() ?? null,
         running: this.#deps.scheduleProvider!.isRunning(String(s.workflowId)),

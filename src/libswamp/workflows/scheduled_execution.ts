@@ -240,8 +240,12 @@ export class ScheduledExecutionService {
   /**
    * Returns all registered schedules and their next fire times.
    */
-  listSchedules(): ScheduleEntry[] {
-    return this.scheduler.listSchedules();
+  listSchedules(): Array<ScheduleEntry & { workflowName: string }> {
+    return this.scheduler.listSchedules().map((entry) => ({
+      ...entry,
+      workflowName: this.workflowNames.get(entry.workflowId) ??
+        entry.workflowId,
+    }));
   }
 
   /**
