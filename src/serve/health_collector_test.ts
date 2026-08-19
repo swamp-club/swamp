@@ -110,6 +110,7 @@ Deno.test("HealthCollector: includes schedule entries", async () => {
     scheduleProvider: {
       listSchedules: () => [{
         workflowId: "my-workflow",
+        workflowName: "my-workflow-name",
         cronExpression: "*/5 * * * *",
         nextRun: new Date("2026-01-01T00:05:00Z"),
       }],
@@ -123,6 +124,10 @@ Deno.test("HealthCollector: includes schedule entries", async () => {
   assertEquals(snapshot.scheduling.enabled, true);
   assertEquals(snapshot.scheduling.schedules.length, 1);
   assertEquals(snapshot.scheduling.schedules[0].workflowId, "my-workflow");
+  assertEquals(
+    snapshot.scheduling.schedules[0].workflowName,
+    "my-workflow-name",
+  );
   assertEquals(snapshot.scheduling.schedules[0].cronExpression, "*/5 * * * *");
   assertEquals(snapshot.scheduling.schedules[0].running, false);
 });
