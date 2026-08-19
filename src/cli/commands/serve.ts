@@ -29,6 +29,10 @@ import { parseTimeout } from "../duration_parser.ts";
 import { buildServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
 import { handleConnection } from "../../serve/connection.ts";
 import {
+  collectClusterInstances,
+  redactServeOptions,
+} from "../../serve/handlers/admin_handlers.ts";
+import {
   closeConnectionsForPrincipal,
   removeConnection,
   setConnectionCollectives,
@@ -3395,64 +3399,14 @@ export const serveCommand = new Command()
             );
             if (!auth.ok) return auth.response;
 
-            const instances: Record<string, unknown>[] = [];
-            const resolvedStaleTtlMs = staleTtlMs ?? 90_000;
-            const degradedThresholdMs = resolvedStaleTtlMs * 2 / 3;
-
-            const keys = await controlPlaneStore.list("heartbeats/");
-            for (const key of keys) {
-              const data = await controlPlaneStore.get(key);
-              if (!data) continue;
-              const record = InstanceHeartbeatService.parseRecord(data);
-              if (!record) continue;
-
-              const isLocal = record.instanceId === instanceId;
-              const age = Date.now() -
-                new Date(record.heartbeatAt).getTime();
-              let status: string;
-              if (isNaN(age)) {
-                status = "unreachable";
-              } else if (age <= degradedThresholdMs) {
-                status = "healthy";
-              } else if (age <= resolvedStaleTtlMs) {
-                status = "degraded";
-              } else {
-                status = "unreachable";
-              }
-
-              const entry: Record<string, unknown> = {
-                instanceId: record.instanceId,
-                hostname: record.hostname,
-                pid: record.pid,
-                startedAt: record.startedAt,
-                lastHeartbeatAt: record.heartbeatAt,
-                status,
-                address: record.address ?? null,
-              };
-
-              if (isLocal) {
-                const snapshot = await healthCollector.collect(ac.signal);
-                entry.health = snapshot;
-              }
-
-              instances.push(entry);
-            }
-
-            if (instances.length === 0) {
-              const localScheme = tlsEnabled ? "https" : "http";
-              const entry: Record<string, unknown> = {
-                instanceId,
-                hostname: Deno.hostname(),
-                pid: Deno.pid,
-                startedAt: null,
-                lastHeartbeatAt: null,
-                status: "healthy",
-                address: `${localScheme}://${host}:${port}`,
-              };
-              const snapshot = await healthCollector.collect(ac.signal);
-              entry.health = snapshot;
-              instances.push(entry);
-            }
+            const instances = await collectClusterInstances({
+              controlPlaneStore,
+              healthCollector,
+              instanceId,
+              staleTtlMs,
+              serveOptions: merged,
+              signal: ac.signal,
+            });
 
             return Response.json({ instances });
           }
@@ -3466,34 +3420,9 @@ export const serveCommand = new Command()
             );
             if (!auth.ok) return auth.response;
 
-            const config = {
-              port: merged.port,
-              host: merged.host,
-              tls: {
-                enabled: merged.certFile !== undefined &&
-                  merged.keyFile !== undefined,
-                certFile: merged.certFile ?? null,
-              },
-              authMode: merged.authMode,
-              scheduling: { enabled: merged.schedule },
-              dashboard: { enabled: true },
-              webhooks: (merged.webhookConfigs ?? []).map((wh) => ({
-                route: wh.route,
-                workflow: wh.workflow,
-                scheme: wh.scheme ?? "github",
-              })),
-              maxConcurrentRuns: merged.maxConcurrentRuns ?? null,
-              maxRunsPerPrincipal: merged.maxRunsPerPrincipal ?? null,
-              maxRunDuration: merged.maxRunDuration ?? null,
-              enableInternalApi: merged.enableInternalApi,
-              detachRuns: merged.detachRuns,
-              hotReload: merged.hotReload,
-              remoteOnly: merged.remoteOnly,
-              trustProxy: merged.trustProxy,
-              verifyOnEnroll: merged.verifyOnEnroll,
-            };
-
-            return Response.json({ config });
+            return Response.json({
+              config: redactServeOptions(merged),
+            });
           }
 
           // Internal runs endpoint (opt-in, authenticated + authorized)

@@ -2022,6 +2022,96 @@ export async function handleDatastoreNamespaceList(
   }
 }
 
+export interface CollectClusterInstancesOptions {
+  controlPlaneStore?:
+    import("../../domain/datastore/control_plane_store.ts").ControlPlaneStore;
+  healthCollector?: import("../health_collector.ts").HealthCollector;
+  instanceId?: string;
+  staleTtlMs?: number;
+  serveOptions?: MergedServeOptions;
+  signal: AbortSignal;
+}
+
+export async function collectClusterInstances(
+  opts: CollectClusterInstancesOptions,
+): Promise<Record<string, unknown>[]> {
+  const instances: Record<string, unknown>[] = [];
+  const staleTtlMs = opts.staleTtlMs ?? DEFAULT_STALE_TTL_MS;
+  const degradedThresholdMs = staleTtlMs * 2 / 3;
+
+  if (opts.controlPlaneStore) {
+    const keys = await opts.controlPlaneStore.list("heartbeats/");
+    for (const key of keys) {
+      if (opts.signal.aborted) break;
+      const data = await opts.controlPlaneStore.get(key);
+      if (!data) continue;
+      const record = InstanceHeartbeatService.parseRecord(data);
+      if (!record) continue;
+
+      const isLocal = record.instanceId === opts.instanceId;
+      const age = Date.now() - new Date(record.heartbeatAt).getTime();
+      let status: string;
+      if (isNaN(age)) {
+        status = "unreachable";
+      } else if (age <= degradedThresholdMs) {
+        status = "healthy";
+      } else if (age <= staleTtlMs) {
+        status = "degraded";
+      } else {
+        status = "unreachable";
+      }
+
+      const entry: Record<string, unknown> = {
+        instanceId: record.instanceId,
+        hostname: record.hostname,
+        pid: record.pid,
+        startedAt: record.startedAt,
+        lastHeartbeatAt: record.heartbeatAt,
+        status,
+        address: record.address ?? null,
+      };
+
+      if (isLocal && opts.healthCollector) {
+        const snapshot = await opts.healthCollector.collect(opts.signal);
+        entry.health = snapshot;
+      }
+
+      instances.push(entry);
+    }
+  }
+
+  if (instances.length === 0 && opts.instanceId) {
+    let address: string | null = null;
+    if (opts.serveOptions) {
+      const scheme = opts.serveOptions.certFile !== undefined &&
+          opts.serveOptions.keyFile !== undefined
+        ? "https"
+        : "http";
+      address =
+        `${scheme}://${opts.serveOptions.host}:${opts.serveOptions.port}`;
+    }
+
+    const entry: Record<string, unknown> = {
+      instanceId: opts.instanceId,
+      hostname: Deno.hostname(),
+      pid: Deno.pid,
+      startedAt: null,
+      lastHeartbeatAt: null,
+      status: "healthy",
+      address,
+    };
+
+    if (opts.healthCollector) {
+      const snapshot = await opts.healthCollector.collect(opts.signal);
+      entry.health = snapshot;
+    }
+
+    instances.push(entry);
+  }
+
+  return instances;
+}
+
 export async function handleClusterInstances(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -2038,69 +2128,14 @@ export async function handleClusterInstances(
   ) return;
 
   try {
-    const instances: Record<string, unknown>[] = [];
-    const staleTtlMs = ctx.staleTtlMs ?? DEFAULT_STALE_TTL_MS;
-    const degradedThresholdMs = staleTtlMs * 2 / 3;
-
-    if (ctx.controlPlaneStore) {
-      const keys = await ctx.controlPlaneStore.list("heartbeats/");
-      for (const key of keys) {
-        if (controller.signal.aborted) break;
-        const data = await ctx.controlPlaneStore.get(key);
-        if (!data) continue;
-        const record = InstanceHeartbeatService.parseRecord(data);
-        if (!record) continue;
-
-        const isLocal = record.instanceId === ctx.instanceId;
-        const age = Date.now() - new Date(record.heartbeatAt).getTime();
-        let status: string;
-        if (isNaN(age)) {
-          status = "unreachable";
-        } else if (age <= degradedThresholdMs) {
-          status = "healthy";
-        } else if (age <= staleTtlMs) {
-          status = "degraded";
-        } else {
-          status = "unreachable";
-        }
-
-        const entry: Record<string, unknown> = {
-          instanceId: record.instanceId,
-          hostname: record.hostname,
-          pid: record.pid,
-          startedAt: record.startedAt,
-          lastHeartbeatAt: record.heartbeatAt,
-          status,
-          address: record.address ?? null,
-        };
-
-        if (isLocal && ctx.healthCollector) {
-          const snapshot = await ctx.healthCollector.collect(controller.signal);
-          entry.health = snapshot;
-        }
-
-        instances.push(entry);
-      }
-    }
-
-    if (instances.length === 0 && ctx.instanceId) {
-      const entry: Record<string, unknown> = {
-        instanceId: ctx.instanceId,
-        hostname: Deno.hostname(),
-        pid: Deno.pid,
-        startedAt: null,
-        lastHeartbeatAt: null,
-        status: "healthy",
-        address: null,
-      };
-
-      if (ctx.healthCollector) {
-        const snapshot = await ctx.healthCollector.collect(controller.signal);
-        entry.health = snapshot;
-      }
-
-      instances.push(entry);
-    }
+    const instances = await collectClusterInstances({
+      controlPlaneStore: ctx.controlPlaneStore,
+      healthCollector: ctx.healthCollector,
+      instanceId: ctx.instanceId,
+      staleTtlMs: ctx.staleTtlMs,
+      serveOptions: ctx.serveOptions,
+      signal: controller.signal,
+    });
 
     if (controller.signal.aborted) {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
