@@ -173,7 +173,14 @@ import {
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { GRANT_MODEL_TYPE } from "../../domain/models/access/grant_model.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
-import { basename, isAbsolute, join, resolve } from "@std/path";
+import {
+  basename,
+  extname,
+  isAbsolute,
+  join,
+  normalize,
+  resolve,
+} from "@std/path";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
 import {
   RepoMarkerRepository,
@@ -1150,6 +1157,11 @@ export const serveCommand = new Command()
     "Disable local (loopback) execution — all steps must declare placement " +
       "and be dispatched to remote workers. Steps without placement will error " +
       "(env: SWAMP_REMOTE_ONLY)",
+  )
+  .option(
+    "--dashboard",
+    "Enable the web dashboard at /dashboard " +
+      "(env: SWAMP_DASHBOARD)",
   )
   .example(
     "Enable TLS",
@@ -3131,6 +3143,72 @@ export const serveCommand = new Command()
       trustProxy,
     };
 
+    // Dashboard static file serving
+    const dashboardEnabled = merged.dashboard;
+    const dashboardDistDir = dashboardEnabled
+      ? resolve(
+        import.meta.dirname ?? ".",
+        "..",
+        "..",
+        "..",
+        "packages",
+        "dashboard",
+        "dist",
+      )
+      : null;
+
+    const MIME_TYPES: Record<string, string> = {
+      ".html": "text/html; charset=utf-8",
+      ".js": "application/javascript",
+      ".css": "text/css",
+      ".json": "application/json",
+      ".svg": "image/svg+xml",
+      ".png": "image/png",
+      ".ico": "image/x-icon",
+      ".woff2": "font/woff2",
+      ".woff": "font/woff",
+      ".ttf": "font/ttf",
+    };
+
+    async function serveDashboardFile(
+      filePath: string,
+    ): Promise<Response | null> {
+      if (!dashboardDistDir) return null;
+      const root = resolve(dashboardDistDir);
+      const target = resolve(join(root, normalize(filePath)));
+      if (
+        isAbsolute(filePath) || filePath.includes("..") ||
+        (!target.startsWith(root + "/") && target !== root &&
+          !target.startsWith(root + "\\"))
+      ) {
+        return new Response("Forbidden", { status: 403 });
+      }
+      try {
+        const content = await Deno.readFile(target);
+        const ext = extname(target);
+        const contentType = MIME_TYPES[ext] ?? "application/octet-stream";
+        const isIndexHtml = basename(target) === "index.html";
+        return new Response(content, {
+          headers: {
+            "content-type": contentType,
+            "cache-control": isIndexHtml
+              ? "no-cache"
+              : "public, max-age=31536000, immutable",
+          },
+        });
+      } catch (e) {
+        if (e instanceof Deno.errors.NotFound) return null;
+        throw e;
+      }
+    }
+
+    if (dashboardEnabled && !isJson) {
+      const scheme = tlsEnabled ? "https" : "http";
+      logger.info("Dashboard enabled at {url}", {
+        url: `${scheme}://${host}:${port}/dashboard`,
+      });
+    }
+
     const wsScheme = tlsEnabled ? "wss" : "ws";
     const server = Deno.serve(
       {
@@ -3683,6 +3761,30 @@ export const serveCommand = new Command()
               },
               webhooks,
             });
+          }
+        }
+
+        // Dashboard SPA
+        if (dashboardEnabled) {
+          const dashUrl = new URL(req.url);
+          if (
+            dashUrl.pathname === "/dashboard" ||
+            dashUrl.pathname.startsWith("/dashboard/")
+          ) {
+            if (req.method !== "GET" && req.method !== "HEAD") {
+              return new Response("Method not allowed", { status: 405 });
+            }
+            const subPath = dashUrl.pathname === "/dashboard"
+              ? "index.html"
+              : dashUrl.pathname.slice("/dashboard/".length) || "index.html";
+            const fileResponse = await serveDashboardFile(subPath);
+            if (fileResponse) return fileResponse;
+            const indexResponse = await serveDashboardFile("index.html");
+            if (indexResponse) return indexResponse;
+            return new Response(
+              "Dashboard not built. Run: cd packages/dashboard && npm run build",
+              { status: 404, headers: { "content-type": "text/plain" } },
+            );
           }
         }
 

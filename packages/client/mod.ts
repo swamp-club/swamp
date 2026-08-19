@@ -44,19 +44,29 @@
  */
 
 export { SwampClient } from "./client.ts";
+export type { SwampClientOptions } from "./client.ts";
 
 // Protocol types
 export type {
+  DataGetPayload,
+  DataListPayload,
+  DataQueryPayload,
+  DataResponse,
+  DataSearchPayload,
   ModelMethodRunEvent,
   ModelMethodRunPayload,
   ModelMethodRunView,
+  ModelSearchPayload,
+  RunHistoryPayload,
   SerializedError,
   SerializedEvent,
   ServerMessage,
   ServerRequest,
   WorkflowRunEvent,
   WorkflowRunPayload,
+  WorkflowRunSearchPayload,
   WorkflowRunView,
+  WorkflowSearchPayload,
 } from "./protocol.ts";
 
 // Stream helpers

@@ -174,6 +174,8 @@ async function main() {
       ".claude/skills",
       "--include",
       "resources/deno",
+      "--include",
+      "packages/dashboard/dist",
       // Exclude development-only directories from the binary
       "--exclude",
       "agent-constraints",

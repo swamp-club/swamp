@@ -348,9 +348,24 @@ export interface ExtensionRmPayload {
 
 // Doctor operations have no payload fields.
 
+// ── Run tracking ────────────────────────────────────────────────────────
+
+export interface RunHistoryPayload {
+  active?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+// ── Workflow trigger operations ─────────────────────────────────────────
+
+export interface WorkflowTriggerGetPayload {
+  workflowIdOrName: string;
+}
+
 // ── Server admin ─────────────────────────────────────────────────────────
 
-// Worker list and datastore status have no payload fields.
+// Worker list, datastore status, cluster instances, and serve config
+// have no payload fields.
 
 // ── ServerRequest union ──────────────────────────────────────────────────
 
@@ -428,6 +443,12 @@ export type ServerRequest =
   | { type: "workflow.search"; id: string; payload?: WorkflowSearchPayload }
   | { type: "workflow.approve"; id: string; payload: WorkflowApprovePayload }
   | { type: "workflow.reject"; id: string; payload: WorkflowRejectPayload }
+  | { type: "workflow.approvals"; id: string }
+  | {
+    type: "workflow.trigger.get";
+    id: string;
+    payload: WorkflowTriggerGetPayload;
+  }
   // Vault operations
   | { type: "vault.get"; id: string; payload: VaultGetPayload }
   | { type: "vault.put"; id: string; payload: VaultPutPayload }
@@ -460,9 +481,15 @@ export type ServerRequest =
   | { type: "doctor.secrets"; id: string }
   | { type: "doctor.workflows"; id: string }
   | { type: "doctor.extensions"; id: string }
+  // Run tracking
+  | { type: "run.history"; id: string; payload?: RunHistoryPayload }
   // Server admin
   | { type: "worker.list"; id: string }
+  | { type: "worker.queue.list"; id: string }
   | { type: "datastore.status"; id: string }
+  | { type: "cluster.instances"; id: string }
+  | { type: "serve.config"; id: string }
+  | { type: "server.version"; id: string }
   // Control
   | { type: "cancel"; id: string };
 
@@ -522,6 +549,8 @@ export type ServerMessage =
   | { type: "workflow.search"; id: string; payload: DataResponse }
   | { type: "workflow.approve"; id: string; payload: DataResponse }
   | { type: "workflow.reject"; id: string; payload: DataResponse }
+  | { type: "workflow.approvals"; id: string; payload: DataResponse }
+  | { type: "workflow.trigger.get"; id: string; payload: DataResponse }
   // Vault responses
   | { type: "vault.get"; id: string; payload: DataResponse }
   | { type: "vault.put"; id: string; payload: DataResponse }
@@ -550,9 +579,15 @@ export type ServerMessage =
   | { type: "doctor.secrets"; id: string; payload: DataResponse }
   | { type: "doctor.workflows"; id: string; payload: DataResponse }
   | { type: "doctor.extensions"; id: string; payload: DataResponse }
+  // Run tracking responses
+  | { type: "run.history"; id: string; payload: DataResponse }
   // Server admin responses
   | { type: "worker.list"; id: string; payload: DataResponse }
+  | { type: "worker.queue.list"; id: string; payload: DataResponse }
   | { type: "datastore.status"; id: string; payload: DataResponse }
+  | { type: "cluster.instances"; id: string; payload: DataResponse }
+  | { type: "serve.config"; id: string; payload: DataResponse }
+  | { type: "server.version"; id: string; payload: DataResponse }
   // Access responses (internal — not in client package's primary API)
   | { type: "access.grant.list"; id: string; payload: DataResponse }
   | { type: "access.group.list"; id: string; payload: DataResponse }

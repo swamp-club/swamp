@@ -55,6 +55,7 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   maxRunDuration: "SWAMP_MAX_RUN_DURATION",
   enableInternalApi: "SWAMP_ENABLE_INTERNAL_API",
   remoteOnly: "SWAMP_REMOTE_ONLY",
+  dashboard: "SWAMP_DASHBOARD",
 };
 
 // ── Webhook Config Types ──────────────────────────────────────────────
@@ -119,6 +120,7 @@ export interface ServeConfigFile {
   "hydration-timeout"?: string;
   "enable-internal-api"?: boolean;
   "remote-only"?: boolean;
+  dashboard?: boolean;
 }
 
 // ── Known Keys ────────────────────────────────────────────────────────
@@ -150,6 +152,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "hydration-timeout",
   "enable-internal-api",
   "remote-only",
+  "dashboard",
 ]);
 
 const KNOWN_AUTH_KEYS = new Set([
@@ -643,6 +646,7 @@ export interface MergedServeOptions {
   hydrationTimeout?: string;
   enableInternalApi: boolean;
   remoteOnly: boolean;
+  dashboard: boolean;
 }
 
 export function mergeServeOptions(
@@ -986,6 +990,13 @@ export function mergeServeOptions(
     false,
   );
 
+  const dashboard = resolveBoolean(
+    "dashboard",
+    cliOptions.dashboard as boolean,
+    config?.dashboard,
+    false,
+  );
+
   // Webhooks: CLI --webhook flags replace config file webhooks entirely.
   // Config-file webhooks are passed as raw entries — secret resolution
   // (which may need async vault access) happens later at startup.
@@ -1043,6 +1054,7 @@ export function mergeServeOptions(
     hydrationTimeout,
     enableInternalApi,
     remoteOnly,
+    dashboard,
   };
 }
 

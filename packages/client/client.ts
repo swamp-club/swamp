@@ -25,6 +25,7 @@
  */
 
 import type {
+  DataResponse,
   ModelMethodRunEvent,
   ModelMethodRunPayload,
   ModelMethodRunView,
@@ -40,6 +41,10 @@ import {
   withDefaults,
 } from "./stream.ts";
 
+export interface SwampClientOptions {
+  token?: string;
+}
+
 interface PendingRequest<T> {
   resolve: (value: T) => void;
   reject: (error: Error) => void;
@@ -51,13 +56,15 @@ interface PendingRequest<T> {
 
 export class SwampClient {
   private url: string;
+  private token: string | undefined;
   private socket: WebSocket | null = null;
   // deno-lint-ignore no-explicit-any
   private pending = new Map<string, PendingRequest<any>>();
   private connectPromise: Promise<void> | null = null;
 
-  constructor(url: string) {
+  constructor(url: string, options?: SwampClientOptions) {
     this.url = url;
+    this.token = options?.token;
   }
 
   /**
@@ -71,7 +78,8 @@ export class SwampClient {
     if (this.connectPromise) return this.connectPromise;
 
     this.connectPromise = new Promise<void>((resolve, reject) => {
-      const socket = new WebSocket(this.url);
+      const protocols = this.token ? [`bearer.${this.token}`] : undefined;
+      const socket = new WebSocket(this.url, protocols);
 
       socket.onopen = () => {
         this.socket = socket;
@@ -232,6 +240,31 @@ export class SwampClient {
     this.send({ type: "cancel", id });
   }
 
+  /**
+   * Sends a request-response command and resolves with the response payload.
+   * Works with any non-streaming ServerRequest type (data.*, model.*, workflow.search, etc.).
+   */
+  async request<T = DataResponse>(
+    type: string,
+    payload?: Record<string, unknown>,
+  ): Promise<T> {
+    await this.connect();
+    const id = crypto.randomUUID();
+
+    return new Promise<T>((resolve, reject) => {
+      this.pending.set(id, {
+        resolve,
+        reject,
+        handlers: withDefaults({}),
+      });
+      const msg: Record<string, unknown> = { type, id };
+      if (payload !== undefined) {
+        msg.payload = payload;
+      }
+      this.send(msg as unknown as ServerRequest);
+    });
+  }
+
   private handleMessage(data: string): void {
     let msg: ServerMessage;
     try {
@@ -287,6 +320,15 @@ export class SwampClient {
           ),
         );
       }
+      return;
+    }
+
+    // Request-response: the response type matches the request type and
+    // carries a payload (e.g. { type: "workflow.search", id, payload }).
+    if ("payload" in msg) {
+      this.pending.delete(msg.id);
+      // deno-lint-ignore no-explicit-any
+      pending.resolve((msg as any).payload);
     }
   }
 
