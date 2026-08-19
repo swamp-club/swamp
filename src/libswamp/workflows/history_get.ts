@@ -25,13 +25,17 @@ import {
   type WorkflowId,
 } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
+import {
+  isPartialId,
+  matchByPartialId,
+} from "../../domain/models/model_lookup.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
-import { notFound } from "../errors.ts";
+import { notFound, validationFailed } from "../errors.ts";
 import type { WorkflowRunView } from "./workflow_run_view.ts";
 import { toRunData } from "./run.ts";
 
@@ -41,8 +45,17 @@ export type WorkflowHistoryGetEvent =
   | { kind: "completed"; data: WorkflowRunView }
   | { kind: "error"; error: SwampError };
 
+/** Partial ID match result. */
+interface PartialMatchResult {
+  status: "found" | "not_found" | "ambiguous";
+  match?: WorkflowRun;
+  matches?: Array<{ id: string }>;
+}
+
 /** Dependencies for the workflow history get operation. */
 export interface WorkflowHistoryGetDeps {
+  isPartialId: (value: string) => boolean;
+  matchRunByPartialId: (idPrefix: string) => Promise<PartialMatchResult>;
   findWorkflow: (idOrName: string) => Promise<Workflow | null>;
   findLatestRun: (workflowId: WorkflowId) => Promise<WorkflowRun | null>;
   getRunPath: (workflowId: WorkflowId, runId: string) => string;
@@ -64,6 +77,24 @@ export function createWorkflowHistoryGetDeps(
     dsPath(SWAMP_SUBDIRS.workflowRuns),
   );
   return {
+    isPartialId,
+    matchRunByPartialId: async (idPrefix: string) => {
+      const allRuns = await runRepo.findAllGlobal();
+      const result = matchByPartialId(
+        allRuns.map((r) => ({ id: r.run.id, item: r.run })),
+        idPrefix,
+      );
+      if (result.status === "found") {
+        return { status: "found" as const, match: result.match };
+      }
+      if (result.status === "ambiguous") {
+        return {
+          status: "ambiguous" as const,
+          matches: result.matches.map((m) => ({ id: m.id })),
+        };
+      }
+      return { status: "not_found" as const };
+    },
     findWorkflow: async (idOrName) =>
       await workflowRepo.findByName(idOrName) ??
         await workflowRepo.findById(createWorkflowId(idOrName)),
@@ -73,11 +104,11 @@ export function createWorkflowHistoryGetDeps(
   };
 }
 
-/** Retrieves the latest run for a workflow. */
+/** Retrieves a specific run by ID or the latest run for a workflow. */
 export async function* workflowHistoryGet(
   _ctx: LibSwampContext,
   deps: WorkflowHistoryGetDeps,
-  workflowIdOrName: string,
+  runIdOrWorkflow: string,
 ): AsyncIterable<WorkflowHistoryGetEvent> {
   yield* withGeneratorSpan(
     "swamp.workflow.history.get",
@@ -85,26 +116,62 @@ export async function* workflowHistoryGet(
     (async function* () {
       yield { kind: "resolving" };
 
-      const workflow = await deps.findWorkflow(workflowIdOrName);
-      if (!workflow) {
-        yield { kind: "error", error: notFound("Workflow", workflowIdOrName) };
-        return;
+      let run: WorkflowRun | undefined;
+
+      if (deps.isPartialId(runIdOrWorkflow)) {
+        const result = await deps.matchRunByPartialId(runIdOrWorkflow);
+
+        if (result.status === "found" && result.match) {
+          run = result.match;
+        } else if (result.status === "ambiguous" && result.matches) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              `Ambiguous ID prefix "${runIdOrWorkflow}" matches:\n` +
+                result.matches.map((m) => `  ${m.id}`).join("\n"),
+            ),
+          };
+          return;
+        }
       }
 
-      const latestRun = await deps.findLatestRun(workflow.id);
-      if (!latestRun) {
-        yield {
-          kind: "error",
-          error: notFound(
-            "Workflow run",
-            `no runs for workflow: ${workflow.name}`,
-          ),
-        };
-        return;
+      if (!run) {
+        const workflow = await deps.findWorkflow(runIdOrWorkflow);
+        if (!workflow) {
+          yield {
+            kind: "error",
+            error: {
+              code: "not_found",
+              message: `No workflow run or workflow found: ${runIdOrWorkflow}`,
+              details: {
+                entityType: "Workflow run or workflow",
+                idOrName: runIdOrWorkflow,
+              },
+            },
+          };
+          return;
+        }
+
+        const latestRun = await deps.findLatestRun(workflow.id);
+        if (!latestRun) {
+          yield {
+            kind: "error",
+            error: notFound(
+              "Workflow run",
+              `no runs for workflow: ${workflow.name}`,
+            ),
+          };
+          return;
+        }
+
+        run = latestRun;
       }
 
-      const path = deps.getRunPath(workflow.id, latestRun.id);
-      const data = toRunData(latestRun, path);
+      const path = deps.getRunPath(
+        run.workflowId as WorkflowId,
+        run.id,
+      );
+      const data = toRunData(run, path);
 
       yield { kind: "completed", data };
     })(),

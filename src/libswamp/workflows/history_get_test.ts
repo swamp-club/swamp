@@ -48,6 +48,9 @@ function makeDeps(
   overrides: Partial<WorkflowHistoryGetDeps> = {},
 ): WorkflowHistoryGetDeps {
   return {
+    isPartialId: () => false,
+    matchRunByPartialId: () =>
+      Promise.resolve({ status: "not_found" as const }),
     findWorkflow: () => Promise.resolve(testWorkflow),
     findLatestRun: () => Promise.resolve(testRun),
     getRunPath: () => "/repo/.swamp/runs/wf-1/run-1",
@@ -55,7 +58,7 @@ function makeDeps(
   };
 }
 
-Deno.test("workflowHistoryGet yields resolving then completed on happy path", async () => {
+Deno.test("workflowHistoryGet: yields resolving then completed on happy path", async () => {
   const deps = makeDeps();
   const events = await collect<WorkflowHistoryGetEvent>(
     workflowHistoryGet(createLibSwampContext(), deps, "my-workflow"),
@@ -72,7 +75,7 @@ Deno.test("workflowHistoryGet yields resolving then completed on happy path", as
   assertEquals(completed.data.workflowName, "my-workflow");
 });
 
-Deno.test("workflowHistoryGet yields error with not_found when workflow not found", async () => {
+Deno.test("workflowHistoryGet: yields error with not_found when workflow not found", async () => {
   const deps = makeDeps({
     findWorkflow: () => Promise.resolve(null),
   });
@@ -87,7 +90,7 @@ Deno.test("workflowHistoryGet yields error with not_found when workflow not foun
   assertEquals(last.error.code, "not_found");
 });
 
-Deno.test("workflowHistoryGet yields error with not_found when no runs exist", async () => {
+Deno.test("workflowHistoryGet: yields error with not_found when no runs exist", async () => {
   const deps = makeDeps({
     findLatestRun: () => Promise.resolve(null),
   });
@@ -100,4 +103,64 @@ Deno.test("workflowHistoryGet yields error with not_found when no runs exist", a
   const last = events[1] as Extract<WorkflowHistoryGetEvent, { kind: "error" }>;
   assertEquals(last.kind, "error");
   assertEquals(last.error.code, "not_found");
+});
+
+Deno.test("workflowHistoryGet: resolves run by partial ID", async () => {
+  const deps = makeDeps({
+    isPartialId: () => true,
+    matchRunByPartialId: () =>
+      Promise.resolve({ status: "found" as const, match: testRun }),
+  });
+  const events = await collect<WorkflowHistoryGetEvent>(
+    workflowHistoryGet(createLibSwampContext(), deps, "run-1"),
+  );
+
+  assertEquals(events.length, 2);
+  assertEquals(events[0], { kind: "resolving" });
+  const completed = events[1] as Extract<
+    WorkflowHistoryGetEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.id, "run-1");
+});
+
+Deno.test("workflowHistoryGet: yields error on ambiguous partial ID", async () => {
+  const deps = makeDeps({
+    isPartialId: () => true,
+    matchRunByPartialId: () =>
+      Promise.resolve({
+        status: "ambiguous" as const,
+        matches: [{ id: "run-1" }, { id: "run-2" }],
+      }),
+  });
+  const events = await collect<WorkflowHistoryGetEvent>(
+    workflowHistoryGet(createLibSwampContext(), deps, "run"),
+  );
+
+  assertEquals(events.length, 2);
+  assertEquals(events[0], { kind: "resolving" });
+  const last = events[1] as Extract<WorkflowHistoryGetEvent, { kind: "error" }>;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "validation_failed");
+});
+
+Deno.test("workflowHistoryGet: partial ID not found falls back to workflow name", async () => {
+  const deps = makeDeps({
+    isPartialId: () => true,
+    matchRunByPartialId: () =>
+      Promise.resolve({ status: "not_found" as const }),
+  });
+  const events = await collect<WorkflowHistoryGetEvent>(
+    workflowHistoryGet(createLibSwampContext(), deps, "my-workflow"),
+  );
+
+  assertEquals(events.length, 2);
+  assertEquals(events[0], { kind: "resolving" });
+  const completed = events[1] as Extract<
+    WorkflowHistoryGetEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.id, "run-1");
 });
