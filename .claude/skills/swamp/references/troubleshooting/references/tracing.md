@@ -36,24 +36,36 @@ Tracing is most useful when:
 
 ## Configuration
 
-| Variable                      | Purpose                                  | Default         |
-| ----------------------------- | ---------------------------------------- | --------------- |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | Collector URL (telemetry off when unset) | _(unset = off)_ |
-| `OTEL_TRACES_EXPORTER`        | `otlp`, `console`, or `none`             | `otlp`          |
-| `OTEL_LOGS_EXPORTER`          | `otlp`, `console` (stderr), or `none`    | `otlp`          |
-| `OTEL_SERVICE_NAME`           | Service name for traces and logs         | `swamp`         |
-| `OTEL_EXPORTER_OTLP_HEADERS`  | Auth headers (`key=val,key=val`)         | _(none)_        |
-| `OTEL_BLRP_USE`               | Batch log exports (`1` to enable)        | _(per-record)_  |
+| Variable                              | Purpose                                   | Default                |
+| ------------------------------------- | ----------------------------------------- | ---------------------- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`         | Shared collector base URL                 | _(none)_               |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`  | Complete traces URL; overrides shared URL | shared + `/v1/traces`  |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`    | Complete logs URL; overrides shared URL   | shared + `/v1/logs`    |
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | Complete future metrics URL               | shared + `/v1/metrics` |
+| `OTEL_EXPORTER_OTLP_HEADERS`          | Shared headers (`key=val,key=val`)        | _(none)_               |
+| `OTEL_EXPORTER_OTLP_TRACES_HEADERS`   | Trace headers; replace shared headers     | shared headers         |
+| `OTEL_EXPORTER_OTLP_LOGS_HEADERS`     | Log headers; replace shared headers       | shared headers         |
+| `OTEL_EXPORTER_OTLP_METRICS_HEADERS`  | Future metrics headers; replace shared    | shared headers         |
+| `OTEL_TRACES_EXPORTER`                | `otlp`, `console`, or `none`              | `otlp`                 |
+| `OTEL_LOGS_EXPORTER`                  | `otlp`, `console` (stderr), or `none`     | `otlp`                 |
+| `OTEL_SERVICE_NAME`                   | Service name for traces and logs          | `swamp`                |
+| `OTEL_BLRP_USE`                       | Batch log exports (`1` to enable)         | _(per-record)_         |
+
+Signal-specific endpoints are complete URLs and take precedence over the shared
+base URL. Signal-specific headers replace, rather than merge with, shared
+headers. Empty signal-specific values fall back to the shared setting. The
+metrics variables reserve the same contract for future native metrics support;
+swamp currently emits traces and logs only.
 
 ### Logs Signal
 
-With an OTLP endpoint set, swamp also exports its structured log lines as OTel
-log records, each correlated with the active `trace_id`/`span_id` so logs sit
-next to their spans in the backend. Run secrets are redacted before export.
-Disable with `OTEL_LOGS_EXPORTER=none` (traces stay on); batch with
-`OTEL_BLRP_USE=1` for long-running `swamp serve`. If logs aren't arriving, check
-that the endpoint is set, `OTEL_LOGS_EXPORTER` is not `none`, and the collector
-accepts `POST /v1/logs`.
+With a shared or logs-specific OTLP endpoint set, swamp also exports its
+structured log lines as OTel log records, each correlated with the active
+`trace_id`/`span_id` so logs sit next to their spans in the backend. Run secrets
+are redacted before export. Disable with `OTEL_LOGS_EXPORTER=none` (traces stay
+on); batch with `OTEL_BLRP_USE=1` for long-running `swamp serve`. If logs aren't
+arriving, check that the endpoint is set, `OTEL_LOGS_EXPORTER` is not `none`,
+and the collector accepts the configured logs URL.
 
 ### Console Exporter (No Collector Needed)
 
@@ -76,6 +88,16 @@ export OTEL_EXPORTER_OTLP_HEADERS="x-honeycomb-team=YOUR_API_KEY"
 # Grafana Cloud
 export OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp-gateway-prod-us-east-0.grafana.net/otlp
 export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic YOUR_BASE64_TOKEN"
+
+# Axiom with separate trace and log datasets
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://api.axiom.co/v1/traces
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer YOUR_TOKEN,X-Axiom-Dataset=swamp-traces"
+export OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=https://api.axiom.co/v1/logs
+export OTEL_EXPORTER_OTLP_LOGS_HEADERS="Authorization=Bearer YOUR_TOKEN,X-Axiom-Dataset=swamp-logs"
+
+# Reserved for future native metrics export
+export OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=https://api.axiom.co/v1/metrics
+export OTEL_EXPORTER_OTLP_METRICS_HEADERS="Authorization=Bearer YOUR_TOKEN,X-Axiom-Metrics-Dataset=swamp-metrics"
 ```
 
 ## What Gets Traced

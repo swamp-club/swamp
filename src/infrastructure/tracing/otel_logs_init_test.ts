@@ -22,9 +22,11 @@ import { initLogs, shutdownLogs } from "./otel_logs_init.ts";
 
 const ENV_KEYS = [
   "OTEL_EXPORTER_OTLP_ENDPOINT",
+  "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
   "OTEL_LOGS_EXPORTER",
   "OTEL_BLRP_USE",
   "OTEL_EXPORTER_OTLP_HEADERS",
+  "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
 ];
 
 async function withEnv(
@@ -73,6 +75,20 @@ Deno.test("initLogs: disabled when OTEL_LOGS_EXPORTER=none even with an endpoint
 Deno.test("initLogs: enabled (returns a provider) when an endpoint is set", async () => {
   await withEnv(
     { OTEL_EXPORTER_OTLP_ENDPOINT: "http://localhost:4318" },
+    async () => {
+      const provider = await initLogs();
+      assertExists(provider);
+      assertEquals(typeof provider.getLogger, "function");
+      await shutdownLogs();
+    },
+  );
+});
+
+Deno.test("initLogs: enabled when only the signal-specific logs endpoint is set", async () => {
+  await withEnv(
+    {
+      OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: "http://localhost:4318/v1/logs",
+    },
     async () => {
       const provider = await initLogs();
       assertExists(provider);

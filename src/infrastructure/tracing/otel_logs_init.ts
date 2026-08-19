@@ -25,9 +25,8 @@ import type {
 import { ExportResultCode } from "@opentelemetry/core";
 import type { ExportResult } from "@opentelemetry/core";
 // Static import is deliberate: otel_config.ts is a tiny leaf with no SDK deps,
-// so it costs nothing eagerly. (otel_init.ts imports it dynamically only because
-// it already batches all its SDK imports inside the function body.)
-import { parseOtlpHeaders } from "./otel_config.ts";
+// so it costs nothing eagerly.
+import { parseOtlpHeaders, resolveOtlpEndpoint } from "./otel_config.ts";
 
 /**
  * Handle to the provider so we can flush on shutdown and short-circuit a
@@ -92,7 +91,7 @@ export interface InitLogsConfig {
  * and is given this provider by injection — this module never imports logging,
  * so no import cycle forms). Returns `undefined` when logs export is disabled.
  *
- * Enabled when `OTEL_EXPORTER_OTLP_ENDPOINT` is set and `OTEL_LOGS_EXPORTER` is
+ * Enabled when an OTLP logs endpoint is configured and `OTEL_LOGS_EXPORTER` is
  * not `none`, OR when `OTEL_LOGS_EXPORTER` is `console`. All SDK packages are
  * dynamically imported so they impose zero cost when logs export is disabled.
  *
@@ -111,8 +110,9 @@ export async function initLogs(
     return providerRef;
   }
 
-  const endpoint = config?.endpoint ??
-    Deno.env.get("OTEL_EXPORTER_OTLP_ENDPOINT");
+  const endpoint = config?.endpoint !== undefined
+    ? resolveOtlpEndpoint("logs", { genericEndpoint: config.endpoint })
+    : resolveOtlpEndpoint("logs");
   const exporterKind = config?.exporterKind ??
     Deno.env.get("OTEL_LOGS_EXPORTER") ?? "otlp";
 
@@ -152,8 +152,8 @@ export async function initLogs(
       "./fetch_otlp_log_exporter.ts"
     );
     exporter = new FetchOtlpLogExporter({
-      url: `${endpoint!.replace(/\/+$/, "")}/v1/logs`,
-      headers: parseOtlpHeaders(),
+      url: endpoint!,
+      headers: parseOtlpHeaders("logs"),
     });
   }
 
