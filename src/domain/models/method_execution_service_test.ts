@@ -3181,6 +3181,124 @@ Deno.test("executeWorkflow: check unresolvedMethodArgs filters unresolved expres
   assertEquals(capturedArgs?.apiKey, undefined);
 });
 
+Deno.test("executeWorkflow - remote placement skips pre-flight checks (swamp-club#1721)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const checkExecuted = { value: false };
+  const model = createCheckModel({
+    "fs-check": {
+      description: "Filesystem check that would fail on orchestrator",
+      execute: () => {
+        checkExecuted.value = true;
+        return Promise.resolve({ pass: false, errors: ["Path not found"] });
+      },
+    },
+  });
+
+  const definition = Definition.create({
+    name: "remote-def",
+    globalArguments: {},
+  });
+
+  const written = Data.create({
+    name: "data-out",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "resource", specName: "data" },
+    ownerDefinition: { ownerType: "model-method", ownerRef: "remote-def" },
+    version: 1,
+    size: 2,
+  });
+  const baseRepo = createMockDataRepoWithData([written]);
+  const repo: UnifiedDataRepository = {
+    ...baseRepo,
+    findByName: (_type, _modelId, dataName, version) =>
+      Promise.resolve(
+        dataName === "data-out" && version === 1 ? written : null,
+      ),
+    getContent: () => Promise.resolve(new TextEncoder().encode("{}")),
+  };
+
+  setRemoteStepDispatcher({
+    executeRemote: () =>
+      Promise.resolve({
+        outputs: [{
+          dataId: String(written.id),
+          version: 1,
+          name: "data-out",
+          specName: "data",
+          type: "resource" as const,
+        }],
+        logs: [],
+        durationMs: 1,
+        workerName: "w1",
+      }),
+    releaseAffinity: () => {},
+  });
+  try {
+    const { context } = createTestContext({
+      modelType: model.type,
+      dataRepository: repo,
+      placement: { labels: { tier: "remote" } },
+    });
+    const result = await service.executeWorkflow(
+      definition,
+      model,
+      "create",
+      context,
+    );
+    assertEquals(result !== undefined, true);
+    assertEquals(checkExecuted.value, false);
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
+});
+
+Deno.test("executeWorkflow - local execution still runs pre-flight checks", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createCheckModel({
+    "local-check": {
+      description: "Check that runs locally",
+      execute: () => Promise.resolve({ pass: false, errors: ["Check failed"] }),
+    },
+  });
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+  const { context } = createTestContext({ modelType: model.type });
+  await assertRejects(
+    () => service.executeWorkflow(definition, model, "create", context),
+    UserError,
+    "local-check",
+  );
+});
+
+Deno.test("executeWorkflow - empty placement still runs checks", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createCheckModel({
+    "check-with-empty-placement": {
+      description: "Should still run",
+      execute: () => Promise.resolve({ pass: false, errors: ["Check failed"] }),
+    },
+  });
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+  const { context } = createTestContext({
+    modelType: model.type,
+    placement: {},
+  });
+  await assertRejects(
+    () => service.executeWorkflow(definition, model, "create", context),
+    UserError,
+    "check-with-empty-placement",
+  );
+});
+
 Deno.test("executeWorkflow - placed steps rebuild full handles from durable records (swamp-club#535)", async () => {
   const service = new DefaultMethodExecutionService();
   const model = createTestModel({});
