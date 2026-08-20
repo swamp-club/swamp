@@ -523,6 +523,9 @@ export class DefaultWorkflowValidationService
                   ? undefined
                   : taskData.inputs,
                 taskData.modelType,
+                typeof taskData.globalArgs === "string"
+                  ? undefined
+                  : taskData.globalArgs,
               ),
             );
           }
@@ -549,6 +552,7 @@ export class DefaultWorkflowValidationService
     methodName: string,
     inputs: Record<string, unknown> | undefined,
     modelType?: string,
+    globalArgs?: Record<string, unknown>,
   ): Promise<WorkflowValidationResult[]> {
     const checkName =
       `Step inputs for '${stepName}' in job '${jobName}' (${modelIdOrName}.${methodName})`;
@@ -601,6 +605,7 @@ export class DefaultWorkflowValidationService
       case "resolved": {
         const provided = new Set<string>([
           ...Object.keys(inputs ?? {}),
+          ...Object.keys(globalArgs ?? {}),
           ...(resolution.definitionProvidedArgs ?? []),
         ]);
         const missing = resolution.requiredArgs.filter((arg) =>

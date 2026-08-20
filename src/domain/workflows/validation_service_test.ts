@@ -1327,6 +1327,111 @@ Deno.test("validateStepInputs: direct-execution step with CEL in modelType skips
   assertEquals(inputResult?.passed, true);
 });
 
+Deno.test("validateStepInputs: direct-execution step with globalArgs satisfying required arg passes", async () => {
+  const resolver = mockResolverWithType({
+    "type:@swamp/test/model.create": {
+      status: "resolved",
+      requiredArgs: ["name", "region"],
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.directExecution(
+              "@swamp/test/model",
+              "my-instance",
+              "create",
+              { region: "us-east-1" },
+              { name: "my-resource" },
+            ),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, true);
+});
+
+Deno.test("validateStepInputs: direct-execution step with CEL expression in globalArgs passes", async () => {
+  const resolver = mockResolverWithType({
+    "type:@swamp/test/model.create": {
+      status: "resolved",
+      requiredArgs: ["name"],
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.directExecution(
+              "@swamp/test/model",
+              "my-instance",
+              "create",
+              undefined,
+              { name: '${{ "Swamp Tests " + inputs.suffix }}' },
+            ),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, true);
+});
+
+Deno.test("validateStepInputs: direct-execution step missing required globalArg still fails", async () => {
+  const resolver = mockResolverWithType({
+    "type:@swamp/test/model.create": {
+      status: "resolved",
+      requiredArgs: ["name", "region"],
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.directExecution(
+              "@swamp/test/model",
+              "my-instance",
+              "create",
+              { region: "us-east-1" },
+            ),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, false);
+  assertEquals(inputResult?.error?.includes("name"), true);
+});
+
 // ---------- validateGlobalArgInputRefs ----------
 
 Deno.test("validateGlobalArgInputRefs: fails when step does not supply referenced input", async () => {
