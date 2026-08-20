@@ -47,6 +47,15 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { AccessTokenRotateResponse } from "../../serve/protocol.ts";
+import { TOKEN_SECRETS_VAULT_NAME } from "../../domain/vaults/control_plane_vault_provider.ts";
+import { initializeControlPlaneVaultForCli } from "../control_plane_vault.ts";
+import {
+  SERVER_TOKEN_MODEL_TYPE,
+  serverTokenModel,
+} from "../../domain/models/access/server_token_model.ts";
+import { migrateTokenSecrets } from "../../serve/token_secret_migration.ts";
+import { createResourceWriter } from "../../domain/models/data_writer.ts";
+import { VaultService } from "../../domain/vaults/vault_service.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -127,6 +136,60 @@ export const accessTokenRotateCommand = withRemoteOptions(
 
   cliCtx.logger.debug`Rotating server token ${name}`;
 
+  const controlPlaneResult = await initializeControlPlaneVaultForCli(
+    repoDir,
+    syncService,
+  );
+
+  let effectiveVault = options.vault as string | undefined;
+  if (controlPlaneResult) {
+    if (effectiveVault !== undefined) {
+      cliCtx.logger.warn(
+        "Ignoring --vault {vault} — token secrets are stored in the {controlPlane} control-plane vault when a datastore is configured",
+        { vault: effectiveVault, controlPlane: TOKEN_SECRETS_VAULT_NAME },
+      );
+    }
+    effectiveVault = TOKEN_SECRETS_VAULT_NAME;
+
+    const migrationVaultService = await VaultService.fromRepository(repoDir);
+    await migrateTokenSecrets({
+      tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,
+      vaultService: migrationVaultService,
+      dataQueryService: repoContext.dataQueryService,
+      updateTokenVaultName: async (
+        tokenName,
+        newVaultName,
+        currentAttrs,
+      ) => {
+        const def = await repoContext.definitionRepo.findByName(
+          SERVER_TOKEN_MODEL_TYPE,
+          tokenName,
+        );
+        if (!def) {
+          throw new Error(
+            `Definition not found for token '${tokenName}' — skipping migration`,
+          );
+        }
+        const { writeResource } = createResourceWriter(
+          repoContext.unifiedDataRepo,
+          SERVER_TOKEN_MODEL_TYPE,
+          def.id,
+          serverTokenModel.resources!,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          tokenName,
+        );
+        await writeResource(
+          "token",
+          "token-main",
+          { ...currentAttrs, vaultName: newVaultName },
+        );
+      },
+    });
+  }
+
   const libCtx = createLibSwampContext({ logger: cliCtx.logger });
   const deps = await createServerTokenRotateDeps(
     libCtx,
@@ -166,7 +229,7 @@ export const accessTokenRotateCommand = withRemoteOptions(
       serverTokenRotate(libCtx, deps, {
         name,
         durationMs,
-        vaultName: options.vault as string | undefined,
+        vaultName: effectiveVault,
       }),
       withDefaults<ServerTokenRotateEvent>({
         completed: (event) => {
