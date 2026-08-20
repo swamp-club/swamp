@@ -25,6 +25,7 @@ import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import {
   countYamlRunFiles,
   deleteRunIndex,
+  INDEX_SCHEMA_VERSION,
   isIndexStale,
   listDirEntries,
   readRunIndex,
@@ -754,12 +755,12 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     const yamlCount = countYamlRunFiles(entries);
     if (yamlCount === 0) return null;
 
-    const index = await readRunIndex(indexDir);
-    if (!index || isIndexStale(index, yamlCount)) {
+    const result = await readRunIndex(indexDir);
+    if (!result || isIndexStale(result, yamlCount)) {
       return await this.rebuildIndex(runsDir, indexDir);
     }
 
-    return index;
+    return result.entries;
   }
 
   private async rebuildIndex(
@@ -808,16 +809,17 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     const indexDir = this.getLocalIndexDir(workflowId);
     try {
       await ensureDir(indexDir);
-      const existing = await readRunIndex(indexDir) ?? {};
-      existing[run.id] = {
-        status: run.status,
-        workflowId: run.workflowId,
-        workflowName: run.workflowName,
-        startedAt: run.startedAt?.toISOString(),
-        completedAt: run.completedAt?.toISOString(),
-        tags: run.tags ?? {},
-        inputs: run.inputs ?? {},
-      };
+      const result = await readRunIndex(indexDir);
+      if (result && result.version !== INDEX_SCHEMA_VERSION) {
+        // Stale schema — delete so the next read rebuilds from YAML.
+        // Merging would promote old entries to the new version without
+        // populating fields they're missing.
+        await deleteRunIndex(indexDir);
+        return;
+      }
+      const existing = result?.entries ?? {};
+      const summary = parseWorkflowRunSummary(run.toData());
+      existing[run.id] = summaryToIndexEntry(summary);
       await writeRunIndex(indexDir, existing);
     } catch (error) {
       logger.warn`Failed to update run index, deleting for rebuild: ${error}`;
