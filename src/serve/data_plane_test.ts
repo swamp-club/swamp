@@ -37,6 +37,7 @@ interface StoredEntry {
   content: Uint8Array;
   data: Record<string, unknown>;
   version: number;
+  lifetime?: string;
 }
 
 function createInMemoryRepo(tempDir: string): {
@@ -87,6 +88,7 @@ function createInMemoryRepo(tempDir: string): {
         content,
         data: { id: data.id, name: data.name },
         version,
+        lifetime: data.lifetime,
       });
       return Promise.resolve({ version });
     },
@@ -625,5 +627,93 @@ Deno.test("DataPlane: per-dispatch redactor scrubs secrets from written resource
     const entry = h.stored.get(key);
     const content = JSON.parse(new TextDecoder().decode(entry!.content!));
     assertEquals(content.value, "output: ***");
+  });
+});
+
+Deno.test("DataPlane: dataOutputOverrides on dispatch override resource lifetime", async () => {
+  const ephemeralModelDef: ModelDefinition = {
+    type: MODEL_TYPE,
+    version: "2026.06.09.1",
+    resources: {
+      "statusResult": {
+        description: "ephemeral output",
+        schema: z.object({ clean: z.boolean() }),
+        lifetime: "ephemeral",
+        garbageCollection: 5,
+      },
+    },
+    methods: {},
+  };
+  await withHarness(async (h) => {
+    const d: ActiveDispatch = {
+      workerName: "w1",
+      dispatchId: "d-1",
+      leaseId: "l-1",
+      modelDef: ephemeralModelDef,
+      modelType: MODEL_TYPE,
+      modelId: "m-1",
+      methodName: "status",
+      definitionName: "test-def",
+      definitionTags: {},
+      dataOutputOverrides: [
+        { specName: "statusResult", lifetime: "infinite" },
+      ],
+    };
+    h.dispatches.register(d);
+
+    const resp = await h.plane.handle(
+      request("/data/resource", {
+        method: "POST",
+        body: JSON.stringify({
+          specName: "statusResult",
+          name: "status",
+          data: { clean: true },
+        }),
+      }),
+    );
+    assertEquals(resp?.status, 200);
+
+    const key = `${MODEL_TYPE.normalized}/m-1/status`;
+    const entry = h.stored.get(key);
+    assertEquals(entry?.lifetime, "infinite");
+  });
+});
+
+Deno.test("DataPlane: tagOverrides on dispatch are applied to written resources", async () => {
+  await withHarness(async (h) => {
+    const d: ActiveDispatch = {
+      workerName: "w1",
+      dispatchId: "d-1",
+      leaseId: "l-1",
+      modelDef: modelDef,
+      modelType: MODEL_TYPE,
+      modelId: "m-1",
+      methodName: "run",
+      definitionName: "test-def",
+      definitionTags: {},
+      tagOverrides: {
+        workflow: "my-workflow",
+        job: "my-job",
+        step: "my-step",
+      },
+    };
+    h.dispatches.register(d);
+
+    const resp = await h.plane.handle(
+      request("/data/resource", {
+        method: "POST",
+        body: JSON.stringify({
+          specName: "result",
+          name: "result",
+          data: { value: "x" },
+        }),
+      }),
+    );
+    assertEquals(resp?.status, 200);
+
+    const handle = await resp!.json();
+    assertEquals(handle.tags.workflow, "my-workflow");
+    assertEquals(handle.tags.job, "my-job");
+    assertEquals(handle.tags.step, "my-step");
   });
 });

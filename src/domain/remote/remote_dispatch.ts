@@ -28,6 +28,7 @@
  */
 
 import type { UnifiedDataRepository } from "../data/repositories.ts";
+import type { DataOutputOverride } from "../models/data_output_override.ts";
 import type { ModelDefinition } from "../models/model.ts";
 import type { ModelType } from "../models/model_type.ts";
 import type { StepPlacement } from "./scheduler.ts";
@@ -54,6 +55,8 @@ export interface RemoteStepRequest {
   /** W3C trace context propagated into the worker's execution. */
   traceHeaders?: Record<string, string>;
   runtimeTags?: Record<string, string>;
+  tagOverrides?: Record<string, string>;
+  dataOutputOverrides?: DataOutputOverride[];
   workflowName?: string;
   jobName?: string;
   stepName?: string;

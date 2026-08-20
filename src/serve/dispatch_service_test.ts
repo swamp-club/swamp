@@ -803,3 +803,28 @@ Deno.test("executeRemote: concurrent affinity step rejects when first step fails
   assertEquals(results[1].status, "rejected");
   assertEquals(callCount, 1);
 });
+
+Deno.test("executeRemote: dataOutputOverrides and tagOverrides are stored on the active dispatch", async () => {
+  const h = createHarness();
+  const overrides = [
+    { specName: "out", lifetime: "workflow" as const },
+  ];
+  const tags = { workflow: "my-wf", job: "my-job", step: "my-step" };
+  let capturedDispatch: import("./dispatch_registry.ts").ActiveDispatch | null =
+    null;
+  h.setBehavior((_name, _params) => {
+    capturedDispatch = h.dispatches.forWorker("w1")[0] ?? null;
+    return Promise.resolve({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+  await h.service.executeRemote(stepRequest({
+    dataOutputOverrides: overrides,
+    tagOverrides: tags,
+  }));
+  assertEquals(capturedDispatch!.dataOutputOverrides, overrides);
+  assertEquals(capturedDispatch!.tagOverrides, tags);
+});

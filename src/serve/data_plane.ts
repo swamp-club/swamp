@@ -370,8 +370,8 @@ export class DataPlane {
       dispatch.modelType,
       dispatch.modelId,
       dispatch.modelDef.resources ?? {},
-      undefined, // tagOverrides
-      undefined, // dataOutputOverrides
+      dispatch.tagOverrides,
+      dispatch.dataOutputOverrides,
       dispatch.definitionTags,
       dispatch.runtimeTags,
       dispatch.definitionName,
@@ -439,8 +439,8 @@ export class DataPlane {
       dispatch.modelType,
       dispatch.modelId,
       dispatch.modelDef.files ?? {},
-      undefined, // tagOverrides
-      undefined, // dataOutputOverrides
+      dispatch.tagOverrides,
+      dispatch.dataOutputOverrides,
       undefined, // callbacks
       dispatch.definitionTags,
       dispatch.runtimeTags,

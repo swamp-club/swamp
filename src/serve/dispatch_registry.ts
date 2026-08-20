@@ -25,6 +25,7 @@
  */
 
 import type { UnifiedDataRepository } from "../domain/data/repositories.ts";
+import type { DataOutputOverride } from "../domain/models/data_output_override.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
 import type { ModelType } from "../domain/models/model_type.ts";
 import type {
@@ -44,6 +45,8 @@ export interface ActiveDispatch {
   definitionName: string;
   definitionTags: Record<string, string>;
   runtimeTags?: Record<string, string>;
+  tagOverrides?: Record<string, string>;
+  dataOutputOverrides?: DataOutputOverride[];
   dataRepo?: UnifiedDataRepository;
   allowedSecrets?: VaultExtractionResult;
   /** Per-dispatch redactor populated with vault-derived secret values. */
