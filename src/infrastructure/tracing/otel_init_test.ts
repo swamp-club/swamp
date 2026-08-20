@@ -21,12 +21,15 @@ import { assertEquals, assertExists } from "@std/assert";
 import { propagation, trace } from "@opentelemetry/api";
 import { initTracing, shutdownTracing } from "./otel_init.ts";
 
-Deno.test("initTracing: no-op when OTEL_EXPORTER_OTLP_ENDPOINT is not set", async () => {
-  // Ensure env var is not set
+Deno.test("initTracing: no-op when no endpoint is set", async () => {
   const original = Deno.env.get("OTEL_EXPORTER_OTLP_ENDPOINT");
+  const originalSpecific = Deno.env.get(
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+  );
   const originalExporter = Deno.env.get("OTEL_TRACES_EXPORTER");
   try {
     Deno.env.delete("OTEL_EXPORTER_OTLP_ENDPOINT");
+    Deno.env.delete("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
     Deno.env.delete("OTEL_TRACES_EXPORTER");
 
     const parentCtx = await initTracing();
@@ -43,8 +46,42 @@ Deno.test("initTracing: no-op when OTEL_EXPORTER_OTLP_ENDPOINT is not set", asyn
     await shutdownTracing();
   } finally {
     if (original) Deno.env.set("OTEL_EXPORTER_OTLP_ENDPOINT", original);
+    if (originalSpecific) {
+      Deno.env.set("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", originalSpecific);
+    }
     if (originalExporter) {
       Deno.env.set("OTEL_TRACES_EXPORTER", originalExporter);
+    }
+  }
+});
+
+Deno.test("initTracing: initializes from the signal-specific traces endpoint", async () => {
+  const keys = [
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "OTEL_TRACES_EXPORTER",
+  ];
+  const saved = new Map(keys.map((key) => [key, Deno.env.get(key)]));
+  try {
+    for (const key of keys) Deno.env.delete(key);
+    Deno.env.set(
+      "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+      "http://localhost:4318/v1/traces",
+    );
+
+    await initTracing();
+
+    const span = trace.getTracer("test").startSpan("specific-endpoint");
+    assertEquals(
+      span.spanContext().traceId !== "00000000000000000000000000000000",
+      true,
+    );
+    span.end();
+  } finally {
+    await shutdownTracing();
+    for (const [key, value] of saved) {
+      if (value === undefined) Deno.env.delete(key);
+      else Deno.env.set(key, value);
     }
   }
 });

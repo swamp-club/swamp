@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Context } from "@opentelemetry/api";
+import { parseOtlpHeaders, resolveOtlpEndpoint } from "./otel_config.ts";
 
 /** Handle to the provider so we can flush on shutdown. */
 let providerRef: { shutdown(): Promise<void> } | undefined;
@@ -32,7 +33,7 @@ export interface InitTracingConfig {
 }
 
 /**
- * Initializes OpenTelemetry tracing if `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+ * Initializes OpenTelemetry tracing if an OTLP traces endpoint is configured.
  *
  * All SDK packages are dynamically imported so they impose zero cost when
  * tracing is disabled. `@opentelemetry/api` is statically imported because it
@@ -41,8 +42,9 @@ export interface InitTracingConfig {
 export async function initTracing(
   config?: InitTracingConfig,
 ): Promise<Context | undefined> {
-  const endpoint = config?.endpoint ??
-    Deno.env.get("OTEL_EXPORTER_OTLP_ENDPOINT");
+  const endpoint = config?.endpoint !== undefined
+    ? resolveOtlpEndpoint("traces", { genericEndpoint: config.endpoint })
+    : resolveOtlpEndpoint("traces");
   const exporterKind = config?.exporterKind ??
     Deno.env.get("OTEL_TRACES_EXPORTER") ?? "otlp";
 
@@ -99,12 +101,10 @@ export async function initTracing(
     // Fetch-based OTLP/HTTP exporter — uses Deno's native fetch instead of
     // Node.js http/https modules, which fail TLS in compiled binaries.
     const { FetchOtlpExporter } = await import("./fetch_otlp_exporter.ts");
-    const { parseOtlpHeaders } = await import("./otel_config.ts");
-
-    const headers = parseOtlpHeaders();
+    const headers = parseOtlpHeaders("traces");
 
     const exporter = new FetchOtlpExporter({
-      url: `${endpoint!.replace(/\/+$/, "")}/v1/traces`,
+      url: endpoint!,
       headers,
     });
     provider.addSpanProcessor(wrapProcessor(exporter));

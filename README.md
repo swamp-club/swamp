@@ -327,7 +327,8 @@ Priority order (highest to lowest): `-q` / `--log-level` flag →
 Swamp has native OpenTelemetry tracing for diagnosing slow or failing
 operations. Tracing is opt-in and has zero overhead when disabled.
 
-Set `OTEL_EXPORTER_OTLP_ENDPOINT` to enable:
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` to enable both signals through a shared
+collector, or configure a signal-specific endpoint:
 
 ```bash
 # Send traces to a local Jaeger instance
@@ -343,14 +344,14 @@ in-process extensions and Docker containers via `TRACEPARENT`.
 
 ### Logs
 
-When an OTLP endpoint is configured, swamp also emits its structured log lines
-as native OpenTelemetry **log records** over OTLP, using the same
-`OTEL_EXPORTER_OTLP_*` configuration as traces. Each record is stamped with the
-active `trace_id`/`span_id`, so logs correlate with the spans they belong to and
-are filterable by trace, service, and severity in the backend — no need to read
-a local log file. This is most useful for long-running `swamp serve` daemons.
-Secrets registered for a run are redacted from log bodies and attributes before
-they leave the process, just as they are in the persisted per-run log files.
+When a generic or logs-specific OTLP endpoint is configured, swamp also emits
+its structured log lines as native OpenTelemetry **log records** over OTLP. Each
+record is stamped with the active `trace_id`/`span_id`, so logs correlate with
+the spans they belong to and are filterable by trace, service, and severity in
+the backend — no need to read a local log file. This is most useful for
+long-running `swamp serve` daemons. Secrets registered for a run are redacted
+from log bodies and attributes before they leave the process, just as they are
+in the persisted per-run log files.
 
 Opt out with `OTEL_LOGS_EXPORTER=none` (traces stay on). For high-volume
 `swamp serve`, set `OTEL_BLRP_USE=1` to batch log exports instead of sending one
@@ -376,14 +377,39 @@ Then open `http://localhost:16686` and search for the `swamp` service.
 
 ### Configuration
 
-| Variable                      | Purpose                                  | Default         |
-| ----------------------------- | ---------------------------------------- | --------------- |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | Collector URL (telemetry off when unset) | _(unset = off)_ |
-| `OTEL_TRACES_EXPORTER`        | `otlp`, `console`, or `none`             | `otlp`          |
-| `OTEL_LOGS_EXPORTER`          | `otlp`, `console` (stderr), or `none`    | `otlp`          |
-| `OTEL_SERVICE_NAME`           | Service name for traces and logs         | `swamp`         |
-| `OTEL_EXPORTER_OTLP_HEADERS`  | Auth headers (`key=val,key=val`)         | _(none)_        |
-| `OTEL_BLRP_USE`               | Batch log exports (`1` to enable)        | _(per-record)_  |
+| Variable                              | Purpose                                   | Default                |
+| ------------------------------------- | ----------------------------------------- | ---------------------- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`         | Shared collector base URL                 | _(none)_               |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`  | Complete traces URL; overrides shared URL | shared + `/v1/traces`  |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`    | Complete logs URL; overrides shared URL   | shared + `/v1/logs`    |
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | Complete future metrics URL               | shared + `/v1/metrics` |
+| `OTEL_EXPORTER_OTLP_HEADERS`          | Shared headers (`key=val,key=val`)        | _(none)_               |
+| `OTEL_EXPORTER_OTLP_TRACES_HEADERS`   | Trace headers; replace shared headers     | shared headers         |
+| `OTEL_EXPORTER_OTLP_LOGS_HEADERS`     | Log headers; replace shared headers       | shared headers         |
+| `OTEL_EXPORTER_OTLP_METRICS_HEADERS`  | Future metrics headers; replace shared    | shared headers         |
+| `OTEL_TRACES_EXPORTER`                | `otlp`, `console`, or `none`              | `otlp`                 |
+| `OTEL_LOGS_EXPORTER`                  | `otlp`, `console` (stderr), or `none`     | `otlp`                 |
+| `OTEL_SERVICE_NAME`                   | Service name for traces and logs          | `swamp`                |
+| `OTEL_BLRP_USE`                       | Batch log exports (`1` to enable)         | _(per-record)_         |
+
+Signal-specific endpoint values are complete URLs and take precedence over the
+shared base URL. Signal-specific headers replace, rather than merge with, the
+shared headers. Empty signal-specific values fall back to the shared setting.
+The metrics variables establish the same configuration contract for future
+native metrics support; swamp currently emits traces and logs only.
+
+For a backend such as Axiom that routes each signal to a different dataset:
+
+```bash
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://api.axiom.co/v1/traces
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer TOKEN,X-Axiom-Dataset=swamp-traces"
+export OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=https://api.axiom.co/v1/logs
+export OTEL_EXPORTER_OTLP_LOGS_HEADERS="Authorization=Bearer TOKEN,X-Axiom-Dataset=swamp-logs"
+
+# Reserved for future native metrics export
+export OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=https://api.axiom.co/v1/metrics
+export OTEL_EXPORTER_OTLP_METRICS_HEADERS="Authorization=Bearer TOKEN,X-Axiom-Metrics-Dataset=swamp-metrics"
+```
 
 ## Telemetry
 

@@ -17,14 +17,38 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+export type OtlpSignal = "traces" | "logs" | "metrics";
+
+/** Resolves the complete OTLP/HTTP endpoint for a signal. */
+export function resolveOtlpEndpoint(
+  signal: OtlpSignal,
+  config?: { genericEndpoint?: string; signalEndpoint?: string },
+): string | undefined {
+  const signalName = signal.toUpperCase();
+  const signalEndpoint = config
+    ? config.signalEndpoint
+    : Deno.env.get(`OTEL_EXPORTER_OTLP_${signalName}_ENDPOINT`);
+  if (signalEndpoint) return signalEndpoint;
+
+  const genericEndpoint = config
+    ? config.genericEndpoint
+    : Deno.env.get("OTEL_EXPORTER_OTLP_ENDPOINT");
+  if (!genericEndpoint) return undefined;
+
+  return `${genericEndpoint.replace(/\/+$/, "")}/v1/${signal}`;
+}
+
 /**
- * Parses the `OTEL_EXPORTER_OTLP_HEADERS` env var (`key=val,key=val`) into a
- * record. Shared by the trace and log exporters so both signals authenticate to
- * the collector identically. Returns an empty record when the var is unset.
+ * Parses the signal-specific or generic OTLP headers (`key=val,key=val`) into a
+ * record. Signal-specific headers replace generic headers when set.
  */
-export function parseOtlpHeaders(): Record<string, string> {
+export function parseOtlpHeaders(
+  signal: OtlpSignal,
+): Record<string, string> {
   const headers: Record<string, string> = {};
-  const raw = Deno.env.get("OTEL_EXPORTER_OTLP_HEADERS");
+  const signalName = signal.toUpperCase();
+  const raw = Deno.env.get(`OTEL_EXPORTER_OTLP_${signalName}_HEADERS`) ||
+    Deno.env.get("OTEL_EXPORTER_OTLP_HEADERS");
   if (raw) {
     for (const pair of raw.split(",")) {
       const eqIdx = pair.indexOf("=");
