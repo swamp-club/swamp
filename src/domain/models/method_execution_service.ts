@@ -610,8 +610,19 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         ...rawMethodArgs,
       };
 
+      // Skip pre-flight checks for remotely-placed steps — checks run on
+      // the orchestrator where worker-local filesystem state is unavailable.
+      const isRemotePlacement = context.placement &&
+        hasPlacement(context.placement);
+
+      if (isRemotePlacement && modelDef.checks && isMutatingKind(methodKind)) {
+        context.logger.info(
+          "Skipping pre-flight checks for remotely-placed step",
+        );
+      }
+
       // Run pre-flight checks for mutating methods
-      if (modelDef.checks && isMutatingKind(methodKind)) {
+      if (modelDef.checks && isMutatingKind(methodKind) && !isRemotePlacement) {
         const defChecks = currentDefinition.checkSelection;
         const requiredCheckNames = new Set(defChecks?.require ?? []);
         const skippedCheckNames = new Set(defChecks?.skip ?? []);
@@ -825,11 +836,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       let result: MethodResult;
       let executionContext: MethodContext = context;
 
-      if (
-        method.rollbackOnFailure &&
-        context.placement &&
-        hasPlacement(context.placement)
-      ) {
+      if (method.rollbackOnFailure && isRemotePlacement) {
         throw new Error(
           `Method '${methodName}' declares rollbackOnFailure but has remote ` +
             `placement — deferred-latest writes are not yet supported for ` +
@@ -838,11 +845,11 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       }
 
       try {
-        if (context.placement && hasPlacement(context.placement)) {
+        if (isRemotePlacement) {
           // Remote placement: the method body runs on a matching worker; the
-          // surrounding pipeline (checks above, output records and follow-up
-          // actions below) stays at the orchestrator. See
-          // design/remote-execution.md.
+          // surrounding pipeline (output records and follow-up actions below)
+          // stays at the orchestrator. Pre-flight checks are skipped (they
+          // cannot access worker-local state). See design/remote-execution.md.
           const remoteResult = await this.#executeRemotely(
             context,
             executionRequest,

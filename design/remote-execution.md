@@ -710,20 +710,23 @@ bundle; the worker prefetches the (small) asset tree via
 before executing, because `extensionFile()` is synchronous and must resolve a
 local path. Assets cache under the fingerprint like the bundle itself.
 
-### Checks and reports run at the orchestrator, around the method body
+### Pre-flight checks are skipped for remote steps; reports run at the orchestrator
 
-As built, checks and reports keep their existing pipeline *position*, which is
-**before and after the execution seam at the orchestrator** — this is where
-they have always run relative to out-of-process execution, and remote dispatch
-enters at exactly that seam (`DefaultMethodExecutionService`, where the
-in-process executor used to be selected). Only the method body moves to the
-worker; pre-flight checks, output records, deletion markers, and follow-up
-actions run at the orchestrator with local repositories, unchanged. This
-supersedes an earlier draft that ran checks worker-side: it preserves today's
-semantics exactly, and report-provider bundles never need to ship. (The
-dispatch protocol reserves `reportBundleFingerprints` should that ever
-change.) Control-plane bookkeeping runs (worker/token/lease transitions)
-skip per-run report artifacts so pool churn stays bounded.
+Pre-flight checks are **skipped** for remotely-placed steps. Checks run on the
+orchestrator, which cannot access worker-local filesystem state — a check like
+`@swamp/git`'s `repo-initialized` that runs `git rev-parse` against a
+worker-local path would always fail on the orchestrator where that path does not
+exist. For remotely-placed steps, the method body runs on the worker where
+filesystem preconditions fail naturally if unmet.
+
+Post-run **reports** keep their existing pipeline position **after the execution
+seam at the orchestrator** — this is where they have always run relative to
+out-of-process execution, and report-provider bundles never need to ship. (The
+dispatch protocol reserves `reportBundleFingerprints` should that ever change.)
+Output records, deletion markers, and follow-up actions also run at the
+orchestrator with local repositories, unchanged. Control-plane bookkeeping runs
+(worker/token/lease transitions) skip per-run report artifacts so pool churn
+stays bounded.
 
 ## Data semantics
 
