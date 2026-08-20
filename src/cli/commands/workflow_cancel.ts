@@ -177,21 +177,27 @@ export const workflowCancelCommand = withRemoteOptions(
           }`,
         );
       }
-      if (body.status !== "cancelled") {
+      if (
+        body.status !== "cancelled" &&
+        body.status !== "cancellation_requested"
+      ) {
         throw new UserError(
           (body.message as string | undefined) ??
             `Failed to cancel run ${options.run as string}: ${body.status}`,
         );
       }
+      const runId = options.run as string;
       if (cliCtx.outputMode === "json") {
         console.log(JSON.stringify({
-          runId: body.executionId ?? options.run,
-          status: "cancelled",
+          runId: body.executionId ?? runId,
+          status: body.status,
           reason: options.reason ?? "Cancelled by user",
         }));
+      } else if (body.status === "cancelled") {
+        cliCtx.logger.info`Cancelled run ${runId} on server`;
       } else {
         cliCtx.logger
-          .info`Cancelled run ${options.run as string} on server`;
+          .warn`Cancellation requested for run ${runId} on server (run may still be active — check health endpoint to confirm)`;
       }
       return;
     }

@@ -21,10 +21,17 @@ import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
   assertOffLoopbackSecurity,
+  cancelExecution,
   collectServeExtraArgs,
   reapOrphanedWorkflowRuns,
   validateWebSocketOrigin,
 } from "./serve.ts";
+import {
+  type ActiveRun,
+  ActiveRunRegistry,
+} from "../../serve/active_run_registry.ts";
+import { RunCancelRegistry } from "../../serve/run_cancel_registry.ts";
+import { RunEventBuffer } from "../../serve/run_event_buffer.ts";
 import { UserError } from "../../domain/errors.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
@@ -689,4 +696,143 @@ Deno.test("reapOrphanedWorkflowRuns: reaps run with foreign instanceId when trac
   assertEquals(result.skipped, 0);
   assertEquals(run.status, "failed");
   assertEquals(saved.length, 1);
+});
+
+// --- cancelExecution ---
+
+function makeActiveRun(
+  runId: string,
+  completion: Promise<void>,
+): ActiveRun {
+  return {
+    runId,
+    kind: "workflow-run",
+    resourceName: "test-workflow",
+    buffer: new RunEventBuffer(100),
+    controller: new AbortController(),
+    startedAt: new Date(),
+    completion,
+    principalId: null,
+  };
+}
+
+Deno.test("cancelExecution: returns not_found when run is absent from all registries", async () => {
+  const cancelRegistry = new RunCancelRegistry();
+  const activeRunRegistry = new ActiveRunRegistry();
+  const result = await cancelExecution(
+    "workflow-run",
+    "missing-run",
+    { cancelRegistry, activeRunRegistry },
+  );
+  assertEquals(result.status, "not_found");
+  assertEquals(result.executionId, "missing-run");
+});
+
+Deno.test("cancelExecution: returns cancelled when run deregisters within grace period", async () => {
+  const cancelRegistry = new RunCancelRegistry();
+  const activeRunRegistry = new ActiveRunRegistry();
+  const controller = new AbortController();
+  let resolveCompletion!: () => void;
+  const completion = new Promise<void>((r) => {
+    resolveCompletion = r;
+  });
+  const run = makeActiveRun("run-1", completion);
+  Object.assign(run, { controller });
+
+  cancelRegistry.register("workflow-run", "run-1", controller);
+  activeRunRegistry.register(run);
+
+  const resultPromise = cancelExecution(
+    "workflow-run",
+    "run-1",
+    { cancelRegistry, activeRunRegistry },
+    100,
+  );
+
+  // Simulate the run stopping: deregister and resolve completion
+  activeRunRegistry.deregister("run-1");
+  resolveCompletion();
+
+  const result = await resultPromise;
+  assertEquals(result.status, "cancelled");
+  assertEquals(result.executionType, "workflow-run");
+  assertEquals(result.executionId, "run-1");
+});
+
+Deno.test("cancelExecution: returns cancellation_requested when run stays active past grace period", async () => {
+  const cancelRegistry = new RunCancelRegistry();
+  const activeRunRegistry = new ActiveRunRegistry();
+  const controller = new AbortController();
+  // Completion never resolves — simulates a stuck run
+  const completion = new Promise<void>(() => {});
+  const run = makeActiveRun("run-stuck", completion);
+  Object.assign(run, { controller });
+
+  cancelRegistry.register("workflow-run", "run-stuck", controller);
+  activeRunRegistry.register(run);
+
+  const result = await cancelExecution(
+    "workflow-run",
+    "run-stuck",
+    { cancelRegistry, activeRunRegistry },
+    50,
+  );
+  assertEquals(result.status, "cancellation_requested");
+  assertEquals(result.executionId, "run-stuck");
+
+  // Clean up: deregister to avoid dangling state
+  activeRunRegistry.deregister("run-stuck");
+});
+
+Deno.test("cancelExecution: returns cancellation_requested for scheduled runs", async () => {
+  const cancelRegistry = new RunCancelRegistry();
+  const activeRunRegistry = new ActiveRunRegistry();
+
+  const result = await cancelExecution(
+    "workflow-run",
+    "sched-1",
+    {
+      cancelRegistry,
+      activeRunRegistry,
+      scheduledCancelByRunId: (id) => id === "sched-1",
+    },
+  );
+  assertEquals(result.status, "cancellation_requested");
+  assertEquals(result.executionId, "sched-1");
+});
+
+Deno.test("cancelExecution: returns cancelled when run already left active registry", async () => {
+  const cancelRegistry = new RunCancelRegistry();
+  const activeRunRegistry = new ActiveRunRegistry();
+  const controller = new AbortController();
+  cancelRegistry.register("method-run", "run-done", controller);
+  // Run is in cancel registry but not in active registry (already completed)
+
+  const result = await cancelExecution(
+    "method-run",
+    "run-done",
+    { cancelRegistry, activeRunRegistry },
+  );
+  assertEquals(result.status, "cancelled");
+  assertEquals(result.executionType, "method-run");
+  assertEquals(result.executionId, "run-done");
+});
+
+Deno.test("cancelExecution: scheduled fallback not checked for method-run type", async () => {
+  const cancelRegistry = new RunCancelRegistry();
+  let scheduledCalled = false;
+
+  const result = await cancelExecution(
+    "method-run",
+    "run-x",
+    {
+      cancelRegistry,
+      scheduledCancelByRunId: (_id) => {
+        scheduledCalled = true;
+        return true;
+      },
+    },
+  );
+  assertEquals(result.status, "not_found");
+  assertEquals(scheduledCalled, false);
 });

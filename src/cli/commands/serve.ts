@@ -122,7 +122,10 @@ import {
   deleteActiveRun,
   writeActiveRun,
 } from "../../serve/active_run_tracker.ts";
-import { RunCancelRegistry } from "../../serve/run_cancel_registry.ts";
+import {
+  type ExecutionType,
+  RunCancelRegistry,
+} from "../../serve/run_cancel_registry.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
@@ -222,6 +225,68 @@ import {
 type AnyOptions = any;
 
 const logger = getSwampLogger(["serve"]);
+
+export const CANCEL_GRACE_MS = 5_000;
+
+export type CancelStatus = "cancelled" | "cancellation_requested" | "not_found";
+
+export interface CancelResult {
+  status: CancelStatus;
+  executionType: ExecutionType;
+  executionId: string;
+  message?: string;
+}
+
+export interface CancelDeps {
+  cancelRegistry: RunCancelRegistry;
+  activeRunRegistry?: ActiveRunRegistry;
+  scheduledCancelByRunId?: (id: string) => boolean;
+}
+
+export async function cancelExecution(
+  executionType: ExecutionType,
+  executionId: string,
+  deps: CancelDeps,
+  graceMs: number = CANCEL_GRACE_MS,
+): Promise<CancelResult> {
+  let found = deps.cancelRegistry.cancel(executionType, executionId);
+  if (!found && deps.activeRunRegistry) {
+    found = deps.activeRunRegistry.cancel(executionId);
+  }
+  let foundViaScheduled = false;
+  if (
+    !found && executionType === "workflow-run" && deps.scheduledCancelByRunId
+  ) {
+    found = deps.scheduledCancelByRunId(executionId);
+    foundViaScheduled = found;
+  }
+  if (!found) {
+    return {
+      status: "not_found",
+      executionType,
+      executionId,
+      message:
+        `No active ${executionType} with id ${executionId} in this serve instance`,
+    };
+  }
+  const activeRun = deps.activeRunRegistry?.get(executionId);
+  if (activeRun) {
+    await Promise.race([
+      activeRun.completion,
+      new Promise<void>((r) => setTimeout(r, graceMs)),
+    ]);
+    const confirmed = deps.activeRunRegistry?.get(executionId) === undefined;
+    return {
+      status: confirmed ? "cancelled" : "cancellation_requested",
+      executionType,
+      executionId,
+    };
+  }
+  if (foundViaScheduled) {
+    return { status: "cancellation_requested", executionType, executionId };
+  }
+  return { status: "cancelled", executionType, executionId };
+}
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 
@@ -3297,34 +3362,30 @@ export const serveCommand = new Command()
             }
           }
           if (cancelMatch) {
-            const executionType = cancelMatch[1] as
-              | "workflow-run"
-              | "method-run";
+            const executionType = cancelMatch[1] as ExecutionType;
             const executionId = cancelMatch[2];
-            // Check cancel registry first (WebSocket ad-hoc and webhook runs)
-            let found = cancelRegistry.cancel(executionType, executionId);
-            // Then check active run registry (detached runs)
-            if (!found && activeRunRegistry) {
-              found = activeRunRegistry.cancel(executionId);
-            }
-            // For workflow runs, also check scheduled execution service
-            if (
-              !found && executionType === "workflow-run" && scheduledExecution
-            ) {
-              found = scheduledExecution.cancelByRunId(executionId);
-            }
-            if (found) {
+            const result = await cancelExecution(
+              executionType,
+              executionId,
+              {
+                cancelRegistry,
+                activeRunRegistry,
+                scheduledCancelByRunId: scheduledExecution
+                  ? (id) => scheduledExecution.cancelByRunId(id)
+                  : undefined,
+              },
+            );
+            if (result.status === "not_found") {
               return Response.json({
-                status: "cancelled",
-                executionType,
-                executionId,
-              });
+                status: result.status,
+                message: result.message,
+              }, { status: 404 });
             }
             return Response.json({
-              status: "not_found",
-              message:
-                `No active ${executionType} with id ${executionId} in this serve instance`,
-            }, { status: 404 });
+              status: result.status,
+              executionType: result.executionType,
+              executionId: result.executionId,
+            });
           }
           if (url.pathname === "/api/v1/cancel") {
             const body = await req.json().catch(() => ({}));
@@ -3350,7 +3411,7 @@ export const serveCommand = new Command()
             ) {
               count += scheduledExecution.cancelAllRuns();
             }
-            return Response.json({ status: "cancelled", count });
+            return Response.json({ status: "cancellation_requested", count });
           }
         }
 
