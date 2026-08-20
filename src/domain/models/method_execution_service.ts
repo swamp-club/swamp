@@ -408,6 +408,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         fileSpecs: executionRequest.fileSpecs,
         traceHeaders: executionRequest.traceHeaders,
         runtimeTags: context.runtimeTags,
+        tagOverrides: context.tagOverrides,
+        dataOutputOverrides: context.dataOutputOverrides,
         workflowName: context.tagOverrides?.workflow,
         jobName: context.tagOverrides?.job,
         stepName: context.tagOverrides?.step,

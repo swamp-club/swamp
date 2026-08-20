@@ -484,6 +484,8 @@ export class DispatchService {
       definitionName: request.definitionName,
       definitionTags: request.definitionTags,
       runtimeTags: request.runtimeTags,
+      tagOverrides: request.tagOverrides,
+      dataOutputOverrides: request.dataOutputOverrides,
       dataRepo: request.dataRepo,
       allowedSecrets: extractVaultReferences(
         request.globalArgs,
