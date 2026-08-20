@@ -315,21 +315,40 @@ When using --server, the value must be passed as a positional argument or KEY=VA
   );
 
   try {
-    // Resolve key and value from arguments.
+    // Extract the key from arguments before vault validation so that a
+    // mistyped vault name is caught before the user is prompted for a secret.
+    const key = parseKeyValue(keyOrKeyValue)?.key ?? keyOrKeyValue;
+    if (key.length === 0) {
+      throw new UserError("Key cannot be empty");
+    }
+    cliCtx.logger.debug`Parsed key: ${key}`;
+
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = createVaultPutDeps(repoDir, repoContext.eventBus);
+
+    // Phase 1: Preview — check vault existence and whether secret exists.
+    // This runs before value resolution so the user never types a credential
+    // for a vault that does not exist.
+    let preview;
+    try {
+      preview = await vaultPutPreview(ctx, deps, vaultName, key);
+    } catch (error) {
+      if ("code" in (error as Record<string, unknown>)) {
+        throw new UserError((error as { message: string }).message);
+      }
+      throw error;
+    }
+
+    // Phase 2: Resolve the secret value.
     // Priority: explicit value arg > KEY=VALUE format > stdin > interactive prompt.
-    let key: string;
     let value: string;
     let stdinContent: string | null = null;
 
     if (valueArg !== undefined) {
-      // 3-arg form: swamp vault put <vault> <key> <value>
-      key = keyOrKeyValue;
       value = valueArg;
     } else {
-      // 2-arg form: try KEY=VALUE, then stdin, then interactive prompt.
       const parsed = parseKeyValue(keyOrKeyValue);
       if (parsed) {
-        key = parsed.key;
         value = parsed.value;
       } else if (!isStdinTty()) {
         stdinContent = await readStdin();
@@ -337,13 +356,8 @@ When using --server, the value must be passed as a positional argument or KEY=VA
         if ("error" in resolved) {
           throw new UserError(resolved.error);
         }
-        key = resolved.key;
         value = resolved.value;
       } else if (cliCtx.outputMode === "log") {
-        key = keyOrKeyValue;
-        if (key.length === 0) {
-          throw new UserError("Key cannot be empty");
-        }
         try {
           value = await readSecretFromTty(`Enter value for ${key}: `);
         } catch (err) {
@@ -358,24 +372,8 @@ When using --server, the value must be passed as a positional argument or KEY=VA
         if ("error" in resolved) {
           throw new UserError(resolved.error);
         }
-        key = resolved.key;
         value = resolved.value;
       }
-    }
-    cliCtx.logger.debug`Parsed key: ${key}`;
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createVaultPutDeps(repoDir, repoContext.eventBus);
-
-    // Phase 1: Preview — check vault existence and whether secret exists
-    let preview;
-    try {
-      preview = await vaultPutPreview(ctx, deps, vaultName, key);
-    } catch (error) {
-      if ("code" in (error as Record<string, unknown>)) {
-        throw new UserError((error as { message: string }).message);
-      }
-      throw error;
     }
 
     // Phase 2: Prompt on overwrite
