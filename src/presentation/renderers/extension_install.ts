@@ -65,7 +65,9 @@ class LogExtensionInstallRenderer implements Renderer<ExtensionInstallEvent> {
       completed: (e) => {
         const { installed, migrated, upToDate, failed } = e.data;
         if (e.data.entries.length === 0) {
-          logger.info("No extensions in lockfile.");
+          logger.warn(
+            "Lockfile has no entries — nothing to restore. If this is unexpected, check that upstream_extensions.json is populated.",
+          );
           return;
         }
         if (installed === 0 && migrated === 0 && failed === 0) {
@@ -129,7 +131,14 @@ class JsonExtensionInstallRenderer implements Renderer<ExtensionInstallEvent> {
         ));
       },
       completed: (e) => {
-        console.log(JSON.stringify(e.data, null, 2));
+        const output = e.data.entries.length === 0
+          ? {
+            ...e.data,
+            warning:
+              "Lockfile has no entries — nothing to restore. If this is unexpected, check that upstream_extensions.json is populated.",
+          }
+          : e.data;
+        console.log(JSON.stringify(output, null, 2));
       },
       error: (e) => {
         throw new UserError(e.error.message);

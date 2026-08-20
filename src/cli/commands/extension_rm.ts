@@ -59,7 +59,9 @@ export const extensionRemoveCommand = withRemoteOptions(
   new Command()
     .name("rm")
     .alias("remove")
-    .description("Remove a pulled extension and its files")
+    .description(
+      "Remove a pulled extension, its files, and its lockfile entry",
+    )
     .example("Remove extension", "swamp extension rm @stack72/aws-ec2")
     .example("Force remove", "swamp extension rm @stack72/aws-ec2 --force")
     .arguments("<extension:string>")
