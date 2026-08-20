@@ -25,8 +25,10 @@ import {
 } from "../../domain/data/data_lifecycle_service.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
+import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
+import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import {
   createCatalogStore,
@@ -36,6 +38,23 @@ import type { DatastorePathResolver } from "../../domain/datastore/datastore_pat
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+
+/**
+ * Serve-side control-plane types whose definitions are minted by `swamp serve`
+ * and exist only in the serve's repo. A client-side scan can never resolve
+ * them, so they must be treated as unconditionally live.
+ * Mirrors the internal-type list in src/domain/models/models.ts.
+ */
+const SERVE_CONTROL_PLANE_TYPES = new Set([
+  "swamp/enrollment-token",
+  "swamp/worker",
+  "swamp/step-lease",
+  "swamp/pending-dispatch",
+  "swamp/fleet-probe",
+  "swamp/server-token",
+  "swamp/grant",
+  "swamp/group",
+]);
 
 /** Preview item for a single orphaned model whose data would be reclaimed. */
 export interface DataPrunePreviewItem {
@@ -134,8 +153,24 @@ export function createDataPruneDeps(
     undefined,
     autoDefDir ?? undefined,
   );
-  const isModelLive: IsModelLive = async (type, modelId) =>
-    (await definitionRepo.findById(type, createDefinitionId(modelId))) !== null;
+
+  // Workflow report data is stored under ModelType "workflow" with the
+  // workflow UUID as modelId. Workflow definitions live in workflows/, not
+  // models/ or auto-definitions/, so we need a separate lookup.
+  const workflowRepo = new YamlWorkflowRepository(repoDir);
+
+  const isModelLive: IsModelLive = async (type, modelId) => {
+    if (SERVE_CONTROL_PLANE_TYPES.has(type.toDirectoryPath())) return true;
+
+    if (type.toDirectoryPath() === "workflow") {
+      return (await workflowRepo.findById(createWorkflowId(modelId))) !== null;
+    }
+
+    return (await definitionRepo.findById(
+      type,
+      createDefinitionId(modelId),
+    )) !== null;
+  };
 
   return {
     findOrphanedData: () => service.findOrphanedData(isModelLive),

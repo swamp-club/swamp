@@ -58,6 +58,12 @@ import { DefaultDatastorePathResolver } from "../src/infrastructure/persistence/
 import { namespaceFromResolver } from "../src/infrastructure/persistence/repository_factory.ts";
 import type { DatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
 
+import { Workflow } from "../src/domain/workflows/workflow.ts";
+import { Job } from "../src/domain/workflows/job.ts";
+import { Step } from "../src/domain/workflows/step.ts";
+import { StepTask } from "../src/domain/workflows/step_task.ts";
+import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
+
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-data-prune-" });
   try {
@@ -346,5 +352,112 @@ Deno.test("Data Prune: namespaced datastore — auto-definition-backed model is 
         await Deno.remove(datastoreDir, { recursive: true });
       }
     }
+  });
+});
+
+Deno.test("Data Prune: workflow report data is NOT pruned when workflow definition exists (swamp-club#1749)", async () => {
+  await withTempDir(async (repoDir) => {
+    await ensureDir(join(repoDir, "models"));
+    await ensureDir(join(repoDir, "workflows"));
+    await ensureDir(join(repoDir, ".swamp", "data"));
+
+    const workflow = Workflow.create({
+      name: "nightly-summary",
+      description: "test workflow",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "step1",
+              task: StepTask.directExecution(
+                "command/shell",
+                "echo-test",
+                "run",
+              ),
+            }),
+          ],
+        }),
+      ],
+    });
+    const wfRepo = new YamlWorkflowRepository(repoDir);
+    await wfRepo.save(workflow);
+
+    const workflowType = ModelType.create("workflow");
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
+    await writeData(
+      dataRepo,
+      workflowType,
+      workflow.id,
+      "report-swamp-workflow-summary",
+      3,
+    );
+
+    const deps = createDataPruneDeps(repoDir);
+    const orphans = await deps.findOrphanedData();
+    assertEquals(
+      orphans.length,
+      0,
+      "workflow report data must NOT be flagged as orphaned when workflow definition exists",
+    );
+
+    const result = await deps.deleteOrphanedData({ dryRun: false });
+    assertEquals(result.modelsReclaimed, 0);
+    assertEquals(
+      (await dataRepo.listVersions(
+        workflowType,
+        workflow.id,
+        "report-swamp-workflow-summary",
+      )).length,
+      3,
+      "workflow report versions must survive prune",
+    );
+  });
+});
+
+Deno.test("Data Prune: serve control-plane types are NOT pruned (swamp-club#1749)", async () => {
+  await withTempDir(async (repoDir) => {
+    await ensureDir(join(repoDir, "models"));
+    await ensureDir(join(repoDir, ".swamp", "data"));
+
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
+
+    const serverTokenType = ModelType.create("swamp/server-token");
+    const grantType = ModelType.create("swamp/grant");
+    const tokenId = crypto.randomUUID();
+    const grantId = crypto.randomUUID();
+
+    await writeData(dataRepo, serverTokenType, tokenId, "token-main", 2);
+    await writeData(dataRepo, grantType, grantId, "grant-main", 1);
+
+    const deps = createDataPruneDeps(repoDir);
+    const orphans = await deps.findOrphanedData();
+    assertEquals(
+      orphans.length,
+      0,
+      "serve control-plane data must NOT be flagged as orphaned from a client-side scan",
+    );
+
+    const result = await deps.deleteOrphanedData({ dryRun: false });
+    assertEquals(result.modelsReclaimed, 0);
+    assertEquals(
+      (await dataRepo.listVersions(serverTokenType, tokenId, "token-main"))
+        .length,
+      2,
+      "server-token data must survive prune",
+    );
+    assertEquals(
+      (await dataRepo.listVersions(grantType, grantId, "grant-main")).length,
+      1,
+      "grant data must survive prune",
+    );
   });
 });
