@@ -267,8 +267,15 @@ Deno.test("mergeWithConcurrency propagates error from one of multiple streams", 
 
 async function* slowStream(
   durationMs: number,
+  signal?: AbortSignal,
 ): AsyncGenerator<string> {
-  await new Promise((r) => setTimeout(r, durationMs));
+  await new Promise<void>((resolve) => {
+    const id = setTimeout(resolve, durationMs);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(id);
+      resolve();
+    }, { once: true });
+  });
   yield "slow-done";
 }
 
@@ -280,7 +287,7 @@ Deno.test("merge exits promptly when signal aborts during slow stream", async ()
 
   const start = performance.now();
   const items = await collect(merge(
-    [fromArray(["fast"]), slowStream(slowMs)],
+    [fromArray(["fast"]), slowStream(slowMs, controller.signal)],
     controller.signal,
   ));
   const elapsed = performance.now() - start;
@@ -297,7 +304,7 @@ Deno.test("mergeWithConcurrency exits promptly when signal aborts during slow st
 
   const start = performance.now();
   const items = await collect(mergeWithConcurrency(
-    [fromArray(["fast"]), slowStream(slowMs)],
+    [fromArray(["fast"]), slowStream(slowMs, controller.signal)],
     1,
     controller.signal,
   ));
@@ -312,7 +319,13 @@ Deno.test("merge does not throw stream error after abort", async () => {
 
   async function* abortThenSlow(): AsyncGenerator<number> {
     controller.abort();
-    await new Promise((r) => setTimeout(r, 5_000));
+    await new Promise<void>((resolve) => {
+      const id = setTimeout(resolve, 5_000);
+      controller.signal.addEventListener("abort", () => {
+        clearTimeout(id);
+        resolve();
+      }, { once: true });
+    });
     yield 1;
   }
 
