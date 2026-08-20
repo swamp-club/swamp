@@ -23,6 +23,7 @@ import {
   countYamlRunFiles,
   deleteRunIndex,
   getIndexPath,
+  INDEX_SCHEMA_VERSION,
   isIndexStale,
   readRunIndex,
   RUNS_INDEX_FILENAME,
@@ -74,7 +75,8 @@ Deno.test("writeRunIndex and readRunIndex: roundtrip", async () => {
   await withTempDir(async (dir) => {
     await writeRunIndex(dir, SAMPLE_INDEX);
     const loaded = await readRunIndex(dir);
-    assertEquals(loaded, SAMPLE_INDEX);
+    assertEquals(loaded?.entries, SAMPLE_INDEX);
+    assertEquals(loaded?.version, INDEX_SCHEMA_VERSION);
   });
 });
 
@@ -159,12 +161,57 @@ Deno.test("countYamlRunFiles: counts only matching files", () => {
 });
 
 Deno.test("isIndexStale: detects count mismatch", () => {
-  assertEquals(isIndexStale(SAMPLE_INDEX, 2), false);
-  assertEquals(isIndexStale(SAMPLE_INDEX, 3), true);
-  assertEquals(isIndexStale(SAMPLE_INDEX, 1), true);
-  assertEquals(isIndexStale(SAMPLE_INDEX, 0), true);
+  const current = { entries: SAMPLE_INDEX, version: INDEX_SCHEMA_VERSION };
+  assertEquals(isIndexStale(current, 2), false);
+  assertEquals(isIndexStale(current, 3), true);
+  assertEquals(isIndexStale(current, 1), true);
+  assertEquals(isIndexStale(current, 0), true);
 });
 
 Deno.test("isIndexStale: empty index matches zero files", () => {
-  assertEquals(isIndexStale({}, 0), false);
+  assertEquals(
+    isIndexStale({ entries: {}, version: INDEX_SCHEMA_VERSION }, 0),
+    false,
+  );
+});
+
+Deno.test("isIndexStale: outdated version is stale even with correct count", () => {
+  const outdated = { entries: SAMPLE_INDEX, version: INDEX_SCHEMA_VERSION - 1 };
+  assertEquals(isIndexStale(outdated, 2), true);
+});
+
+Deno.test("readRunIndex: returns version 0 for unversioned legacy format", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(
+      getIndexPath(dir),
+      JSON.stringify(SAMPLE_INDEX),
+    );
+    const result = await readRunIndex(dir);
+    assertEquals(result?.entries, SAMPLE_INDEX);
+    assertEquals(result?.version, 0);
+  });
+});
+
+Deno.test("readRunIndex: preserves entries from outdated schema version", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(
+      getIndexPath(dir),
+      JSON.stringify({
+        version: INDEX_SCHEMA_VERSION - 1,
+        entries: SAMPLE_INDEX,
+      }),
+    );
+    const result = await readRunIndex(dir);
+    assertEquals(result?.entries, SAMPLE_INDEX);
+    assertEquals(result?.version, INDEX_SCHEMA_VERSION - 1);
+  });
+});
+
+Deno.test("readRunIndex: reads current schema version", async () => {
+  await withTempDir(async (dir) => {
+    await writeRunIndex(dir, SAMPLE_INDEX);
+    const result = await readRunIndex(dir);
+    assertEquals(result?.entries, SAMPLE_INDEX);
+    assertEquals(result?.version, INDEX_SCHEMA_VERSION);
+  });
 });

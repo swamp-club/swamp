@@ -793,8 +793,24 @@ Deno.test("save: creates index entry alongside YAML file", async () => {
     );
     const index = await readRunIndex(runsDir);
     assertNotEquals(index, null);
-    assertEquals(index![run.id]?.status, "running");
-    assertEquals(index![run.id]?.workflowName, "test-workflow");
+    assertEquals(index!.entries[run.id]?.status, "running");
+    assertEquals(index!.entries[run.id]?.workflowName, "test-workflow");
+  });
+});
+
+Deno.test("save: index entry includes triggerSource from run", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow, {}, undefined, "schedule");
+    run.start();
+
+    await repo.save(workflow.id, run);
+
+    const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    const index = await readRunIndex(runsDir);
+    assertNotEquals(index, null);
+    assertEquals(index!.entries[run.id]?.triggerSource, "schedule");
   });
 });
 
@@ -813,7 +829,7 @@ Deno.test("save: updates index entry on status change", async () => {
 
     const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
     const index = await readRunIndex(runsDir);
-    assertEquals(index![run.id]?.status, "succeeded");
+    assertEquals(index!.entries[run.id]?.status, "succeeded");
   });
 });
 
@@ -856,6 +872,42 @@ Deno.test("findAllSummariesFromIndex: falls back to YAML scan when index missing
     const summaries = await repo.findAllSummariesFromIndex(workflow.id);
     assertEquals(summaries.length, 1);
     assertEquals(summaries[0].status, "running");
+  });
+});
+
+Deno.test("findAllSummariesFromIndex: rebuilds stale index missing triggerSource", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+
+    // Save a run with triggerSource
+    const run = WorkflowRun.create(workflow, {}, undefined, "schedule");
+    run.start();
+    await repo.save(workflow.id, run);
+
+    // Overwrite the index with an old-format file (flat JSON, no
+    // triggerSource) simulating a pre-upgrade cache
+    const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    const oldIndex: Record<string, unknown> = {
+      [run.id]: {
+        status: "running",
+        workflowId: run.workflowId,
+        workflowName: "test-workflow",
+        startedAt: run.startedAt?.toISOString(),
+        tags: {},
+        inputs: {},
+        // triggerSource deliberately omitted
+      },
+    };
+    await Deno.writeTextFile(
+      getIndexPath(runsDir),
+      JSON.stringify(oldIndex),
+    );
+
+    // The search must rebuild from YAML and return the real triggerSource
+    const summaries = await repo.findAllSummariesFromIndex(workflow.id);
+    assertEquals(summaries.length, 1);
+    assertEquals(summaries[0].triggerSource, "schedule");
   });
 });
 
@@ -1150,7 +1202,7 @@ Deno.test("save: index is written to local path, not cache baseDir", async () =>
       const localIndexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
       const localIndex = await readRunIndex(localIndexDir);
       assertNotEquals(localIndex, null, "index must exist under local .swamp/");
-      assertEquals(localIndex![run.id]?.status, "running");
+      assertEquals(localIndex!.entries[run.id]?.status, "running");
 
       // Index must NOT be in the cache baseDir (would pollute sync)
       const cacheIndex = await readRunIndex(join(cacheDir, workflow.id));

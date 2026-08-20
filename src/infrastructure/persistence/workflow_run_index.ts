@@ -22,6 +22,10 @@ import { atomicWriteTextFile } from "./atomic_write.ts";
 
 export const RUNS_INDEX_FILENAME = ".runs-index.json";
 
+// Bump when WorkflowRunIndexEntry gains or removes fields so that
+// old on-disk indices are rebuilt instead of serving stale data.
+export const INDEX_SCHEMA_VERSION = 2;
+
 export interface WorkflowRunIndexEntry {
   status: string;
   workflowId: string;
@@ -43,9 +47,14 @@ export function getIndexPath(workflowRunsDir: string): string {
   return join(workflowRunsDir, RUNS_INDEX_FILENAME);
 }
 
+export interface ReadIndexResult {
+  entries: WorkflowRunIndex;
+  version: number;
+}
+
 export async function readRunIndex(
   workflowRunsDir: string,
-): Promise<WorkflowRunIndex | null> {
+): Promise<ReadIndexResult | null> {
   const path = getIndexPath(workflowRunsDir);
   try {
     const content = await Deno.readTextFile(path);
@@ -55,7 +64,19 @@ export async function readRunIndex(
     ) {
       return null;
     }
-    return parsed as WorkflowRunIndex;
+    if (
+      typeof parsed.version === "number" &&
+      parsed.entries !== undefined &&
+      typeof parsed.entries === "object" &&
+      !Array.isArray(parsed.entries)
+    ) {
+      return {
+        entries: parsed.entries as WorkflowRunIndex,
+        version: parsed.version,
+      };
+    }
+    // Unversioned legacy format — return entries with version 0
+    return { entries: parsed as WorkflowRunIndex, version: 0 };
   } catch {
     return null;
   }
@@ -66,7 +87,10 @@ export async function writeRunIndex(
   index: WorkflowRunIndex,
 ): Promise<void> {
   const path = getIndexPath(workflowRunsDir);
-  await atomicWriteTextFile(path, JSON.stringify(index));
+  await atomicWriteTextFile(
+    path,
+    JSON.stringify({ version: INDEX_SCHEMA_VERSION, entries: index }),
+  );
 }
 
 export async function deleteRunIndex(
@@ -109,8 +133,9 @@ export async function listDirEntries(
 }
 
 export function isIndexStale(
-  index: WorkflowRunIndex,
+  result: ReadIndexResult,
   yamlFileCount: number,
 ): boolean {
-  return Object.keys(index).length !== yamlFileCount;
+  return result.version !== INDEX_SCHEMA_VERSION ||
+    Object.keys(result.entries).length !== yamlFileCount;
 }
