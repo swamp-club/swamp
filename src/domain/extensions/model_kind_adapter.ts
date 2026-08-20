@@ -35,6 +35,7 @@ import {
   type MethodResult,
   type ModelDefinition,
   modelRegistry,
+  type ResourceOutputSpec,
   ResourceOutputSpecSchema,
   type VersionUpgrade,
 } from "../models/model.ts";
@@ -53,6 +54,7 @@ import type {
   RegistrationContext,
   ValidationResult,
 } from "./kind_adapter.ts";
+import { emitExtensionLoadWarning } from "../../infrastructure/logging/extension_load_warnings.ts";
 
 const logger = getLogger(["swamp", "models", "loader"]);
 
@@ -579,8 +581,20 @@ export const modelKindAdapter: KindAdapter = {
       return;
     }
 
+    const existingMethodNames = new Set(Object.keys(targetModel.methods));
     const methods: Record<string, MethodDefinition> = {};
+    const collidingMethods: string[] = [];
     for (const [name, method] of Object.entries(flatMethods)) {
+      if (existingMethodNames.has(name)) {
+        collidingMethods.push(name);
+        emitExtensionLoadWarning({
+          kind: "extension",
+          file,
+          error:
+            `method '${name}' already exists on '${ext.type}'; method not registered`,
+        });
+        continue;
+      }
       methods[name] = {
         description: method.description,
         ...(method.kind ? { kind: method.kind as MethodKind } : {}),
@@ -608,24 +622,64 @@ export const modelKindAdapter: KindAdapter = {
           flatChecks[name] = check;
         }
       }
-      checks = Object.fromEntries(
-        Object.entries(flatChecks).map(([name, check]) => [
-          name,
-          {
-            description: check.description,
-            labels: check.labels,
-            appliesTo: check.appliesTo,
-            execute: check.execute,
-          },
-        ]),
+      const existingCheckNames = new Set(
+        Object.keys(targetModel.checks ?? {}),
       );
+      checks = {};
+      for (const [name, check] of Object.entries(flatChecks)) {
+        if (existingCheckNames.has(name)) {
+          emitExtensionLoadWarning({
+            kind: "extension",
+            file,
+            error:
+              `check '${name}' already exists on '${ext.type}'; check not registered`,
+          });
+          continue;
+        }
+        checks[name] = {
+          description: check.description,
+          labels: check.labels,
+          appliesTo: check.appliesTo,
+          execute: check.execute,
+        };
+      }
+      if (Object.keys(checks).length === 0) checks = undefined;
     }
 
-    try {
-      modelRegistry.extend(ext.type, methods, checks, ext.resources);
+    let resources: Record<string, ResourceOutputSpec> | undefined;
+    if (ext.resources) {
+      const existingResourceNames = new Set(
+        Object.keys(targetModel.resources ?? {}),
+      );
+      resources = {};
+      for (const [name, spec] of Object.entries(ext.resources)) {
+        if (existingResourceNames.has(name)) {
+          emitExtensionLoadWarning({
+            kind: "extension",
+            file,
+            error:
+              `resource '${name}' already exists on '${ext.type}'; resource not registered`,
+          });
+          continue;
+        }
+        resources[name] = spec;
+      }
+      if (Object.keys(resources).length === 0) resources = undefined;
+    }
+
+    const hasNewMethods = Object.keys(methods).length > 0;
+    const hasNewChecks = checks !== undefined;
+    const hasNewResources = resources !== undefined;
+
+    if (hasNewMethods || hasNewChecks || hasNewResources) {
+      try {
+        modelRegistry.extend(ext.type, methods, checks, resources);
+        result.extended.push(file);
+      } catch (error) {
+        result.failed.push({ file, error: String(error) });
+      }
+    } else if (collidingMethods.length > 0) {
       result.extended.push(file);
-    } catch (error) {
-      result.failed.push({ file, error: String(error) });
     }
   },
 
@@ -670,17 +724,10 @@ export const modelKindAdapter: KindAdapter = {
       result,
     );
 
-    const genuine: typeof result.failed = [];
     for (const failure of result.failed) {
-      if (String(failure.error).includes("already exists on model type")) {
-        result.extended.push(failure.file);
-      } else {
-        genuine.push(failure);
-        logger
-          .warn`Failed to extend model from ${failure.file}: ${failure.error}`;
-      }
+      logger
+        .warn`Failed to extend model from ${failure.file}: ${failure.error}`;
     }
-    result.failed = genuine;
   },
 
   async attachPendingExtensionsForType(
