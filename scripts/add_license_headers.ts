@@ -57,8 +57,8 @@ const SKIP_DIRS = new Set([
 async function collectFiles(): Promise<string[]> {
   const files: string[] = [];
 
-  // Walk src/, integration/, scripts/
-  for (const dir of ["src", "integration", "scripts"]) {
+  // Walk src/, integration/, scripts/, packages/
+  for (const dir of ["src", "integration", "scripts", "packages"]) {
     const dirPath = join(ROOT, dir);
     try {
       for await (
