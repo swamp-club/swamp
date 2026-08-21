@@ -115,7 +115,7 @@ export function builtInToolConfig(tool: AiTool): ToolConfig {
         instructionsMode: "shared",
         frontmatter:
           "---\ndescription: Swamp automation rules\nalwaysApply: true\n---\n",
-        skillReferenceStyle: "path",
+        skillReferenceStyle: "name",
       };
     case "opencode":
       return {
@@ -124,7 +124,7 @@ export function builtInToolConfig(tool: AiTool): ToolConfig {
         skillsDir: ".agents/skills",
         instructionsFile: "AGENTS.md",
         instructionsMode: "shared",
-        skillReferenceStyle: "path",
+        skillReferenceStyle: "name",
       };
     case "codex":
       return {
@@ -133,7 +133,7 @@ export function builtInToolConfig(tool: AiTool): ToolConfig {
         skillsDir: ".agents/skills",
         instructionsFile: "AGENTS.md",
         instructionsMode: "shared",
-        skillReferenceStyle: "path",
+        skillReferenceStyle: "name",
       };
     case "copilot":
       return {
@@ -142,7 +142,7 @@ export function builtInToolConfig(tool: AiTool): ToolConfig {
         skillsDir: ".agents/skills",
         instructionsFile: "AGENTS.md",
         instructionsMode: "shared",
-        skillReferenceStyle: "path",
+        skillReferenceStyle: "name",
       };
     case "kiro":
       return {
@@ -152,7 +152,7 @@ export function builtInToolConfig(tool: AiTool): ToolConfig {
         instructionsFile: ".kiro/steering/swamp-rules.md",
         instructionsMode: "shared",
         frontmatter: "---\ninclusion: always\n---\n",
-        skillReferenceStyle: "path",
+        skillReferenceStyle: "name",
       };
     case "none":
       return {

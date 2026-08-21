@@ -1907,7 +1907,7 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
       tools: ["read", "write", "shell", "grep", "glob", "thinking", "todo"],
       resources: [
         "file://.kiro/steering/**/*.md",
-        "skill://.kiro/skills/**/SKILL.md",
+        "skill://~/.kiro/skills/**/SKILL.md",
       ],
       toolsSettings: {
         shell: {
