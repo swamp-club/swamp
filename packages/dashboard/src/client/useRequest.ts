@@ -44,7 +44,6 @@ export function useRequest<T = Record<string, unknown>>(
     setError(null);
     request<T>(type, payload)
       .then((result) => {
-        console.log(`[swamp-dashboard] ${type}:`, result);
         setData(result);
         setLoading(false);
       })

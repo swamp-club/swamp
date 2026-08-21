@@ -37,3 +37,4 @@ evals/promptfoo/node_modules/
 # Dashboard build artifacts
 packages/dashboard/node_modules/
 packages/dashboard/dist/
+packages/dashboard/tsconfig.tsbuildinfo

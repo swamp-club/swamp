@@ -36,11 +36,12 @@ export function CodeBlock({ code, language = "json" }: CodeBlockProps) {
 }
 
 function highlightJson(raw: string): string {
-  return raw.replace(
-    /("(?:[^"\\]|\\.)*")\s*:/g,
+  const safe = escapeHtml(raw);
+  return safe.replace(
+    /(&quot;(?:[^&]|&(?!quot;))*&quot;)\s*:/g,
     '<span class="code-key">$1</span>:',
   ).replace(
-    /:\s*("(?:[^"\\]|\\.)*")/g,
+    /:\s*(&quot;(?:[^&]|&(?!quot;))*&quot;)/g,
     ': <span class="code-string">$1</span>',
   ).replace(
     /:\s*(\d+(?:\.\d+)?)\b/g,
@@ -56,21 +57,22 @@ function highlightJson(raw: string): string {
 
 function highlightYaml(raw: string): string {
   return raw.split("\n").map((line) => {
+    const safeLine = escapeHtml(line);
     if (line.trimStart().startsWith("#")) {
-      return `<span class="code-comment">${escapeHtml(line)}</span>`;
+      return `<span class="code-comment">${safeLine}</span>`;
     }
-    return line
+    return safeLine
       .replace(
         /^(\s*)([\w.-]+)(:)/,
         '$1<span class="code-key">$2</span>$3',
       )
       .replace(
-        /:\s+"([^"]*)"$/,
-        ': <span class="code-string">"$1"</span>',
+        /:\s+&quot;([^&]*)&quot;$/,
+        ': <span class="code-string">&quot;$1&quot;</span>',
       )
       .replace(
-        /:\s+'([^']*)'$/,
-        ": <span class=\"code-string\">'$1'</span>",
+        /:\s+&#39;([^&]*)&#39;$/,
+        ": <span class=\"code-string\">&#39;$1&#39;</span>",
       )
       .replace(
         /:\s+(\d+(?:\.\d+)?)$/,
