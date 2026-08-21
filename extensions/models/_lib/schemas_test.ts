@@ -30,7 +30,9 @@ Deno.test("Phase: includes pr_open, pr_failed, releasing, notify, summarizing be
   const summarizingIdx = phases.indexOf("summarizing");
   const doneIdx = phases.indexOf("done");
 
-  assertEquals(prOpenIdx, implementingIdx + 1);
+  const verifyingIdx = phases.indexOf("verifying");
+  assertEquals(verifyingIdx, implementingIdx + 1);
+  assertEquals(prOpenIdx, verifyingIdx + 1);
   assertEquals(prFailedIdx, prOpenIdx + 1);
   assertEquals(releasingIdx, prFailedIdx + 1);
   assertEquals(notifyIdx, releasingIdx + 1);
@@ -39,7 +41,12 @@ Deno.test("Phase: includes pr_open, pr_failed, releasing, notify, summarizing be
 });
 
 Deno.test("TRANSITIONS: link_pr accepts implementing, pr_open, and pr_failed", () => {
-  assertEquals(TRANSITIONS.link_pr, ["implementing", "pr_open", "pr_failed"]);
+  assertEquals(TRANSITIONS.link_pr, [
+    "implementing",
+    "verifying",
+    "pr_open",
+    "pr_failed",
+  ]);
 });
 
 Deno.test("TRANSITIONS: complete accepts implementing, pr_open, and releasing", () => {
