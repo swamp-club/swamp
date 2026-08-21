@@ -163,6 +163,47 @@ Deno.test("CatalogStore: upsertNewVersion does not touch unrelated data names", 
   store.close();
 });
 
+Deno.test("CatalogStore: upsertNewVersion scopes is_latest by step_name", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsertNewVersion(
+    makeRow({ version: 1, step_name: "step-a" }),
+  );
+  store.upsertNewVersion(
+    makeRow({ version: 2, step_name: "step-b" }),
+  );
+
+  const rows = [...store.iterate()];
+  assertEquals(rows.length, 2);
+  const latestRows = rows.filter((r) => r.is_latest === 1);
+  assertEquals(latestRows.length, 2);
+  assertEquals(latestRows.map((r) => r.step_name).sort(), [
+    "step-a",
+    "step-b",
+  ]);
+  store.close();
+});
+
+Deno.test("CatalogStore: upsertNewVersion clears is_latest within same step_name", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsertNewVersion(
+    makeRow({ version: 1, step_name: "step-a" }),
+  );
+  store.upsertNewVersion(
+    makeRow({ version: 2, step_name: "step-a" }),
+  );
+
+  const rows = [...store.iterate()];
+  assertEquals(rows.length, 2);
+  const latestRows = rows.filter((r) => r.is_latest === 1);
+  assertEquals(latestRows.length, 1);
+  assertEquals(latestRows[0].version, 2);
+  store.close();
+});
+
 Deno.test("CatalogStore: removeVersion deletes a single version row", () => {
   const dbPath = makeTempDbPath();
   const store = new CatalogStore(dbPath);

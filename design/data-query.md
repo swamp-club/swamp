@@ -200,6 +200,13 @@ All data access functions (`data.findBySpec()`, `data.findByTag()`,
 `context.queryData()`) return unscoped results by default. The predicate
 string is the contract — if it doesn't say it, it isn't happening.
 
+**Step-scoped versioning:** The `is_latest` flag is scoped per
+`(data_name, step_name)`. When different workflow steps write to the same
+data name, each step maintains its own version chain. Collection helpers
+(`findBySpec`, `findByTag`) return the latest version per step, so multiple
+records may be returned for the same data name. `data.latest()` returns the
+single most-recently-written record regardless of step.
+
 **Vault resolution:** JSON attributes containing `vault.get(...)` references
 are resolved automatically in async data access paths (extension methods,
 `data.query()` in CEL). Resolution failures leave the reference unresolved

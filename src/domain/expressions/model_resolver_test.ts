@@ -1010,6 +1010,157 @@ Deno.test("findBySpec: returns all data when workflowRunId is not set", async ()
 });
 
 // ============================================================================
+// data.findBySpec() returns distinct records from different workflow steps
+// ============================================================================
+
+Deno.test("findBySpec: returns both records when same data name written by different steps", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const type = ModelType.create("test/model");
+
+    const model = Definition.create({
+      name: "probe",
+      globalArguments: {},
+    });
+    await defRepo.save(type, model);
+
+    const resultA = Data.create({
+      name: "result",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", specName: "result", modelName: "probe" },
+      ownerDefinition: {
+        ...owner,
+        stepName: "run-good",
+      },
+    });
+    await dataRepo.save(
+      type,
+      model.id,
+      resultA,
+      new TextEncoder().encode(JSON.stringify({ exitCode: 0 })),
+    );
+
+    const resultB = Data.create({
+      name: "result",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", specName: "result", modelName: "probe" },
+      ownerDefinition: {
+        ...owner,
+        stepName: "run-bad",
+      },
+    });
+    await dataRepo.save(
+      type,
+      model.id,
+      resultB,
+      new TextEncoder().encode(JSON.stringify({ exitCode: 7 })),
+    );
+
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
+    const ctx = await resolver.buildContext();
+    assertExists(ctx.data);
+
+    const results = await ctx.data.findBySpec("probe", "result");
+    assertEquals(results.length, 2);
+
+    const exitCodes = results.map(
+      (r) => (r.attributes as { exitCode: number }).exitCode,
+    ).sort();
+    assertEquals(exitCodes, [0, 7]);
+    catalog.close();
+  });
+});
+
+Deno.test("findBySpec: deduplicates same-step same-name to latest version", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const type = ModelType.create("test/model");
+
+    const model = Definition.create({
+      name: "probe",
+      globalArguments: {},
+    });
+    await defRepo.save(type, model);
+
+    const stepOwner = { ...owner, stepName: "run-good" };
+
+    const v1 = Data.create({
+      name: "result",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", specName: "result", modelName: "probe" },
+      ownerDefinition: stepOwner,
+    });
+    await dataRepo.save(
+      type,
+      model.id,
+      v1,
+      new TextEncoder().encode(JSON.stringify({ attempt: 1 })),
+    );
+
+    const v2 = Data.create({
+      name: "result",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", specName: "result", modelName: "probe" },
+      ownerDefinition: stepOwner,
+    });
+    await dataRepo.save(
+      type,
+      model.id,
+      v2,
+      new TextEncoder().encode(JSON.stringify({ attempt: 2 })),
+    );
+
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
+    const ctx = await resolver.buildContext();
+    assertExists(ctx.data);
+
+    const results = await ctx.data.findBySpec("probe", "result");
+    assertEquals(results.length, 1);
+    assertEquals(
+      (results[0].attributes as { attempt: number }).attempt,
+      2,
+    );
+    catalog.close();
+  });
+});
+
+// ============================================================================
 // workers.connected() returns only non-disconnected workers
 // ============================================================================
 

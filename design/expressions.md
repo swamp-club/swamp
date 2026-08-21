@@ -453,6 +453,11 @@ Results are **not** run-scoped — `findBySpec` returns every matching record
 in the catalog. Add a `workflowRunId` predicate via `data.query()` when you
 want to scope to the current run.
 
+When the same model is invoked by different workflow steps that produce data
+with the same spec/instance name, each step's output is treated as a distinct
+record. The version chain is scoped per step: step A's latest version and step
+B's latest version are both returned.
+
 ### data.findByTag(tagKey, tagValue)
 
 Returns all data records across all models with a matching tag. Shortcut for

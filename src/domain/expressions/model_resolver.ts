@@ -142,8 +142,8 @@ function deduplicateByName(records: DataRecord[]): DataRecord[] {
   const byKey = new Map<string, DataRecord>();
   for (const record of records) {
     const key = record.modelName
-      ? `${record.modelName}\0${record.name}`
-      : record.id; // unique per record when modelName is absent
+      ? `${record.modelName}\0${record.name}\0${record.stepName}`
+      : record.id;
     const existing = byKey.get(key);
     if (!existing || record.createdAt > existing.createdAt) {
       byKey.set(key, record);
