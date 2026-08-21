@@ -37,10 +37,19 @@ Report verification results to the human before creating the PR:
 
 ## 3a. Code Conformance Review
 
-**Before creating a PR**, read
+**Before verification**, read
 [code-conformance-review.md](code-conformance-review.md) and run the code
 conformance review. This adversarially compares the implemented code against the
-approved plan. All deviations must be justified before `link_pr` will succeed.
+approved plan. All deviations must be justified before proceeding.
+
+## 3b. Verification Loop
+
+**After code conformance review**, read [verification.md](verification.md) and
+run the verification workflow in the container sandbox. This runs lint, test,
+compile, and agent reviews — the same checks as CI — before a PR is opened. The
+agent iterates until all steps pass.
+
+Do NOT proceed to create a PR until verification passes.
 
 ## 4. Create a PR
 

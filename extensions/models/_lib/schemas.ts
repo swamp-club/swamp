@@ -43,6 +43,7 @@ export const Phase = z.enum([
   "plan_generated",
   "approved",
   "implementing",
+  "verifying",
   "pr_open",
   "pr_failed",
   "releasing",
@@ -79,7 +80,10 @@ export const TRANSITIONS: Record<string, Phase[]> = {
   resolve_findings: ["plan_generated"],
   code_conformance_review: ["implementing", "pr_failed"],
   justify_deviations: ["implementing", "pr_failed"],
-  link_pr: ["implementing", "pr_open", "pr_failed"],
+  verify: ["implementing"],
+  verification_passed: ["verifying"],
+  verification_failed: ["verifying"],
+  link_pr: ["implementing", "verifying", "pr_open", "pr_failed"],
   pr_merged: ["pr_open"],
   pr_failed: ["pr_open"],
   ship: ["releasing"],
@@ -245,6 +249,33 @@ export const CodeConformanceReviewSchema = z.object({
 export type CodeConformanceReviewData = z.infer<
   typeof CodeConformanceReviewSchema
 >;
+
+// ---------------------------------------------------------------------------
+// Verification Result Schema
+// ---------------------------------------------------------------------------
+
+export const VerificationStepResultSchema = z.object({
+  job: z.string(),
+  step: z.string(),
+  model: z.string(),
+  method: z.string(),
+  status: z.enum(["succeeded", "failed", "skipped"]),
+});
+
+export const VerificationResultSchema = z.object({
+  workflowRunId: z.string(),
+  commit: z.string(),
+  branch: z.string(),
+  allPassed: z.boolean(),
+  stepsCompleted: z.number(),
+  stepsTotal: z.number(),
+  stepsSkipped: z.number(),
+  stepsFailed: z.number(),
+  steps: z.array(VerificationStepResultSchema),
+  verifiedAt: z.string(),
+});
+
+export type VerificationResultData = z.infer<typeof VerificationResultSchema>;
 
 export const PullRequestSchema = z.object({
   url: z.string().min(1).describe(

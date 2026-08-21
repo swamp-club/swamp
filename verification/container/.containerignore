@@ -1,0 +1,6 @@
+.git
+.swamp
+node_modules
+integration
+containers/verify/*.tar
+*.tar.gz

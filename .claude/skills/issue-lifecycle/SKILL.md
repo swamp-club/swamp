@@ -51,6 +51,8 @@ repository root. If these files exist, they customize how each phase works:
   criteria
 - `agent-constraints/implementation-conventions.md` — build, verify, and PR
   conventions
+- `agent-constraints/verification-conventions.md` — container sandbox and
+  verification workflow configuration
 
 If these files do not exist, the skill uses generic defaults documented in each
 reference file.
@@ -106,10 +108,17 @@ approval. Covers: signalling implementation start and doing the work.
 
 After the code is written, read
 [references/code-conformance-review.md](references/code-conformance-review.md)
-**before creating a PR.** This adversarially compares the implemented code
+**before verification.** This adversarially compares the implemented code
 against the approved plan. Deviations are expected — they just need a documented
-justification. The `link_pr` method will fail until all deviations are
-justified.
+justification.
+
+### Phase 4a: Verification Loop
+
+Read [references/verification.md](references/verification.md) **after code
+conformance review is complete.** This runs the same checks as CI (lint, test,
+compile, agent reviews) inside a container sandbox before the PR opens. The
+agent iterates — fixing failures and re-verifying — until all steps pass. Only
+then can a PR be created.
 
 ### Phase 5: Contributor Notification
 
@@ -192,7 +201,8 @@ Use this table to determine what to do next:
 | `classified`     | Read [references/planning.md](references/planning.md)                      |
 | `plan_generated` | Read [references/adversarial-review.md](references/adversarial-review.md)  |
 | `approved`       | Read [references/implementation.md](references/implementation.md)          |
-| `implementing`   | Run code conformance review, then link a PR with `link_pr`                 |
+| `implementing`   | Run code conformance review, then verify                                   |
+| `verifying`      | Read [references/verification.md](references/verification.md)              |
 | `pr_open`        | Wait 3 min, then check PR: `pr_merged` if merged, `pr_failed` if failed    |
 | `pr_failed`      | Fix the issue, then `link_pr` (new PR) or `implement` (major rework)       |
 | `releasing`      | Check release build: `ship` when done, or `complete` as fallback           |
