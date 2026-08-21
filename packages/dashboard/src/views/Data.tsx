@@ -51,9 +51,7 @@ export function Data() {
             }}
           >
             <option value="">All models</option>
-            {models.map((m) => (
-              <option key={m} value={m}>{m}</option>
-            ))}
+            {models.map((m) => <option key={m} value={m}>{m}</option>)}
           </select>
           <div
             className="health-pill"

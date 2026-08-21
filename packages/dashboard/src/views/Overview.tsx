@@ -133,7 +133,11 @@ export function Overview({ health, onOpenRun }: OverviewProps) {
               <div className="loading">No active runs</div>
             )}
             {liveRuns.map((run) => (
-              <div className="run-row" key={run.runId} onClick={() => onOpenRun?.(run.workflowName, run.runId)}>
+              <div
+                className="run-row"
+                key={run.runId}
+                onClick={() => onOpenRun?.(run.workflowName, run.runId)}
+              >
                 <StatusDot status={run.status} />
                 <div className="run-info">
                   <div className="run-name">{run.workflowName}</div>
@@ -277,7 +281,11 @@ export function Overview({ health, onOpenRun }: OverviewProps) {
               <div className="loading">No recent failures</div>
             )}
             {failedRuns.map((run) => (
-              <div className="run-row" key={run.runId} onClick={() => onOpenRun?.(run.workflowName, run.runId)}>
+              <div
+                className="run-row"
+                key={run.runId}
+                onClick={() => onOpenRun?.(run.workflowName, run.runId)}
+              >
                 <StatusDot status="failed" />
                 <div className="run-info">
                   <div className="run-name">{run.workflowName}</div>
@@ -314,12 +322,14 @@ function ExecutionChart({ runs }: { runs: WorkflowRunSearchItem[] }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const barsRef = useRef<BarHit[]>([]);
-  const [tooltip, setTooltip] = useState<{
-    x: number;
-    y: number;
-    day: string;
-    data: Record<string, number>;
-  } | null>(null);
+  const [tooltip, setTooltip] = useState<
+    {
+      x: number;
+      y: number;
+      day: string;
+      data: Record<string, number>;
+    } | null
+  >(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -450,7 +460,12 @@ function ExecutionChart({ runs }: { runs: WorkflowRunSearchItem[] }) {
 
       for (const bar of barsRef.current) {
         if (mx >= bar.x && mx <= bar.x + bar.w && my < rect.height - 20) {
-          setTooltip({ x: bar.x + bar.w / 2, y: 0, day: bar.day, data: bar.data });
+          setTooltip({
+            x: bar.x + bar.w / 2,
+            y: 0,
+            day: bar.day,
+            data: bar.data,
+          });
           return;
         }
       }

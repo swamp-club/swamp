@@ -146,7 +146,6 @@ export function RunDetail({ workflowName, runId, onBack }: RunDetailProps) {
       {run && (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           {run.jobs.map((job) => (
-
             <div className="panel" key={job.name}>
               <div className="panel-header">
                 <div className="panel-title">

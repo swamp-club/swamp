@@ -56,8 +56,7 @@ export function Vaults() {
             <div
               className="panel-header"
               style={{ cursor: "pointer" }}
-              onClick={() =>
-                setExpanded(expanded === v.name ? null : v.name)}
+              onClick={() => setExpanded(expanded === v.name ? null : v.name)}
             >
               <div className="panel-title">
                 <span
@@ -124,9 +123,7 @@ function VaultExpanded({ vaultName }: { vaultName: string }) {
                   {key}
                 </span>
                 <span className="sys-val" style={{ fontSize: "0.75rem" }}>
-                  {typeof val === "object"
-                    ? JSON.stringify(val)
-                    : String(val)}
+                  {typeof val === "object" ? JSON.stringify(val) : String(val)}
                 </span>
               </div>
             ))}
@@ -228,9 +225,7 @@ function VaultExpanded({ vaultName }: { vaultName: string }) {
                   fontSize: "0.72rem",
                 }}
               >
-                {entry.timestamp
-                  ? formatRelativeTime(entry.timestamp)
-                  : ""}
+                {entry.timestamp ? formatRelativeTime(entry.timestamp) : ""}
               </span>
             </div>
           ))}

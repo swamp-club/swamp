@@ -293,9 +293,7 @@ export function System({ health }: { health: HealthSnapshot | null }) {
                         <span className="sys-key">{key}</span>
                         <span className="sys-val">
                           {val === true
-                            ? (
-                              <span className="sys-val ok">enabled</span>
-                            )
+                            ? <span className="sys-val ok">enabled</span>
                             : val === false
                             ? "disabled"
                             : String(val)}

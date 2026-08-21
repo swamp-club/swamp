@@ -74,8 +74,7 @@ function TokenLogin({ onToken }: { onToken: (t: string) => void }) {
             {checking ? "Connecting..." : "Sign in"}
           </button>
           <p className="login-hint">
-            Generate a token with{" "}
-            <code>swamp access token mint</code>
+            Generate a token with <code>swamp access token mint</code>
           </p>
         </form>
       </div>

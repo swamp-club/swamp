@@ -18,11 +18,10 @@ interface RunSummary {
 }
 
 interface WorkflowsProps {
-  onOpenRun?: (workflowName: string, runId?: string) => void;
   onOpenWorkflow?: (workflowName: string) => void;
 }
 
-export function Workflows({ onOpenRun, onOpenWorkflow }: WorkflowsProps) {
+export function Workflows({ onOpenWorkflow }: WorkflowsProps) {
   const { data: workflowsData } = useRequest("workflow.search");
   const { data: runsData } = useRequest("workflow.run.search", { limit: 200 });
 

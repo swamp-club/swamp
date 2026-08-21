@@ -91,7 +91,9 @@ function formatRelativeTime(iso: string): string {
   if (diff < 60000) return "< 1m";
   if (diff < 3600000) return `in ${Math.floor(diff / 60000)}m`;
   if (diff < 86400000) {
-    return `in ${Math.floor(diff / 3600000)}h ${Math.floor((diff % 3600000) / 60000)}m`;
+    return `in ${Math.floor(diff / 3600000)}h ${
+      Math.floor((diff % 3600000) / 60000)
+    }m`;
   }
   return `in ${Math.floor(diff / 86400000)}d`;
 }

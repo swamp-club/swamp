@@ -86,16 +86,17 @@ export function WorkflowDetail(
             &larr; Back
           </button>
           <h1>{workflowName}</h1>
-          {workflow?.trigger?.schedule && (
-            <TriggerBadge trigger="schedule" />
-          )}
+          {workflow?.trigger?.schedule && <TriggerBadge trigger="schedule" />}
         </div>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         {/* Stats row */}
         {total > 0 && (
-          <div className="stats-grid" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
+          <div
+            className="stats-grid"
+            style={{ gridTemplateColumns: "repeat(3, 1fr)" }}
+          >
             <div className="stat-card">
               <div className="stat-label">Total Runs</div>
               <div className="stat-value">{total}</div>
@@ -126,8 +127,7 @@ export function WorkflowDetail(
                 {workflow.jobs?.reduce(
                   (n, j) => n + (j.steps?.length ?? 0),
                   0,
-                ) ?? 0}{" "}
-                steps
+                ) ?? 0} steps
               </span>
             </div>
             <div>
@@ -246,7 +246,10 @@ export function WorkflowDetail(
                 </span>
               )}
             </div>
-            <CodeBlock code={yaml.dump(workflow, { lineWidth: -1, noRefs: true })} language="yaml" />
+            <CodeBlock
+              code={yaml.dump(workflow, { lineWidth: -1, noRefs: true })}
+              language="yaml"
+            />
           </div>
         )}
       </div>

@@ -37,7 +37,11 @@ export function Models({ onOpenModel }: ModelsProps) {
 
       <div className="card-grid">
         {models.map((m) => (
-          <div className="card" key={m.id} onClick={() => onOpenModel?.(m.name)}>
+          <div
+            className="card"
+            key={m.id}
+            onClick={() => onOpenModel?.(m.name)}
+          >
             <div className="card-header">
               <span className="card-name">{m.name}</span>
               <span

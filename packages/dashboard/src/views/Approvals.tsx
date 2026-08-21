@@ -114,16 +114,14 @@ export function Approvals() {
                     <button
                       type="button"
                       className="btn-sm btn-approve"
-                      onClick={() =>
-                        handleApprove(a.workflowName, step.name)}
+                      onClick={() => handleApprove(a.workflowName, step.name)}
                     >
                       Approve
                     </button>
                     <button
                       type="button"
                       className="btn-sm btn-reject"
-                      onClick={() =>
-                        handleReject(a.workflowName, step.name)}
+                      onClick={() => handleReject(a.workflowName, step.name)}
                     >
                       Reject
                     </button>

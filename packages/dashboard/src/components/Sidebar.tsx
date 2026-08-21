@@ -28,7 +28,8 @@ const ICONS: Record<string, string> = {
     '<path d="M9 2v3M9 13v3M2 9h3M13 9h3M4.2 4.2l2.1 2.1M11.7 11.7l2.1 2.1M4.2 13.8l2.1-2.1M11.7 6.3l2.1-2.1"/>',
   approvals:
     '<path d="M9 2l7 4v6l-7 4-7-4V6z"/><path d="M2 6l7 4m0 0l7-4m-7 4v8"/>',
-  data: '<rect x="2" y="2" width="14" height="14" rx="2"/><path d="M2 6h14M6 6v10"/>',
+  data:
+    '<rect x="2" y="2" width="14" height="14" rx="2"/><path d="M2 6h14M6 6v10"/>',
   vaults:
     '<rect x="4" y="2" width="10" height="14" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M9 2v5M9 11v5M4 9h3M11 9h3"/>',
   extensions: '<path d="M3 5h12M3 9h12M3 13h8"/>',

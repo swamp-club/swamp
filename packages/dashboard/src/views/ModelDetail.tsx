@@ -75,7 +75,8 @@ export function ModelDetail({ modelName, onBack }: ModelDetailProps) {
             <span className="panel-count">{model.type}</span>
           </div>
           <CodeBlock
-            code={model.definition ?? yaml.dump(model, { lineWidth: -1, noRefs: true })}
+            code={model.definition ??
+              yaml.dump(model, { lineWidth: -1, noRefs: true })}
             language="yaml"
           />
         </div>
