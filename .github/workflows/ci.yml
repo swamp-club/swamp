@@ -83,6 +83,12 @@ jobs:
       - name: Run deno test
         run: deno task test
 
+      - name: Build dashboard
+        working-directory: packages/dashboard
+        run: |
+          npm ci
+          npm run build
+
       - name: Compile binary
         run: deno task compile
 

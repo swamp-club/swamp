@@ -159,6 +159,8 @@ async function main() {
     // on device nodes (e.g. /dev/ttyUSB0) requires --allow-all in compiled
     // binaries, so extensions must use Deno.Command for hardware I/O.
     // See design/extension.md "Runtime Permissions".
+    const dashboardDistExists = await Deno.stat("packages/dashboard/dist")
+      .then(() => true).catch(() => false);
     const baseCommand = [
       "deno",
       "compile",
@@ -174,8 +176,11 @@ async function main() {
       ".claude/skills",
       "--include",
       "resources/deno",
-      "--include",
-      "packages/dashboard/dist",
+      // Dashboard dist is included only when pre-built (CI runs
+      // `npm run build` in packages/dashboard before compile).
+      ...(dashboardDistExists
+        ? ["--include", "packages/dashboard/dist"]
+        : []),
       // Exclude development-only directories from the binary
       "--exclude",
       "agent-constraints",
