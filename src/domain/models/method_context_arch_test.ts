@@ -46,17 +46,33 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // writers proxy the orchestrator's data plane — the local factory's
   // startup-scoped deps do not exist on a worker.
   "src/worker/remote_method_context.ts",
+  // Test-only fixture builders. Not `_test.ts` themselves, but they exist
+  // solely to fabricate a stub context for unit tests via
+  // `{...} as unknown as MethodContext`. Production code must never do this.
+  "src/domain/models/access/access_test_helpers.ts",
+  "src/domain/models/worker/worker_test_helpers.ts",
 ]);
 
-// Matches `: MethodContext = {` and `MethodContext = {` literal assignments.
-const INLINE_LITERAL = /\bMethodContext\s*=\s*\{/;
+// Matches the three ways a MethodContext gets constructed outside the factory:
+//   - `: MethodContext = {` / `MethodContext = {`  — object literal assignment
+//   - `satisfies MethodContext`                    — literal validated in place
+//   - `as MethodContext` / `as unknown as MethodContext` — cast fabrication
+//
+// The negative lookahead excludes indexed-access *type* references such as
+// `as unknown as MethodContext["logger"]`, which name one field's type rather
+// than fabricating a whole context. src/domain/models/validation_service.ts
+// relies on that form to build a partial logger; it is a type lookup, not a
+// construction site, so it is deliberately out of scope for this guard rather
+// than allowlisted.
+const INLINE_LITERAL =
+  /\bMethodContext\s*=\s*\{|(?:satisfies|as)\s+MethodContext\b(?!\s*\[)/;
 
 Deno.test("architecture: no inline MethodContext literals outside factory and tests", async () => {
   const offenders: string[] = [];
 
   for await (
     const entry of walk(SRC_ROOT, {
-      exts: [".ts"],
+      exts: [".ts", ".tsx"],
       includeDirs: false,
       followSymlinks: false,
     })
@@ -65,7 +81,7 @@ Deno.test("architecture: no inline MethodContext literals outside factory and te
     // forward slashes) matches on Windows where `relative()` returns
     // backslash-separated paths.
     const rel = relative(REPO_ROOT, entry.path).replaceAll("\\", "/");
-    if (rel.endsWith("_test.ts")) continue;
+    if (/_test\.tsx?$/.test(rel)) continue;
     if (ALLOWED_FILES.has(rel)) continue;
 
     const text = await Deno.readTextFile(entry.path);

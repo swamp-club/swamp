@@ -83,6 +83,9 @@ const GUIDE_DIRS: Record<string, string> = {
   "issue": "references/issue",
   "extension-publish": "references/extension-publish",
   "troubleshooting": "references/troubleshooting",
+  "architecture": "references/architecture",
+  "share": "references/share",
+  "serve": "references/serve",
 };
 
 interface SufficiencyEval {

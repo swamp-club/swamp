@@ -29,12 +29,12 @@ import {
   createDataDeleteRenderer,
   renderDataDeleteCancelled,
 } from "./data_delete.ts";
-import type {
-  DataBatchDeleteEvent,
-  DataDeleteEvent,
+import {
+  type DataBatchDeleteEvent,
+  type DataDeleteEvent,
+  validationFailed,
 } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
-import { validationFailed } from "../../libswamp/errors.ts";
 
 // noColor: true selects LogTape's text formatter, which produces a single
 // pre-rendered string per record — necessary for captureLog to see the
