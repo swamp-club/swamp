@@ -106,76 +106,20 @@ function VaultExpanded({ vaultName }: { vaultName: string }) {
 
   return (
     <div style={{ borderTop: "1px solid var(--border)" }}>
-      {/* Keys */}
-      <div
-        style={{
-          padding: "10px 18px 6px",
-          fontSize: "0.7rem",
-          fontFamily: "'JetBrains Mono', monospace",
-          fontWeight: 500,
-          letterSpacing: "0.08em",
-          textTransform: "uppercase",
-          color: "var(--text-3)",
-        }}
-      >
-        Keys ({keys.length})
-      </div>
-      {keys.length === 0
-        ? (
-          <div
-            style={{
-              padding: "8px 18px 14px",
-              fontSize: "0.82rem",
-              color: "var(--text-3)",
-            }}
-          >
-            No keys stored
-          </div>
-        )
-        : (
-          <div
-            style={{
-              display: "flex",
-              flexWrap: "wrap",
-              gap: 6,
-              padding: "4px 18px 14px",
-            }}
-          >
-            {keys.map((k) => (
-              <span
-                className="cron-badge"
-                key={typeof k === "string" ? k : k.key}
-                style={{ fontSize: "0.75rem" }}
-              >
-                {typeof k === "string" ? k : k.key}
-              </span>
-            ))}
-          </div>
-        )}
-
       {/* Config */}
       {vaultInfo && (
         <>
-          <div
-            style={{
-              padding: "6px 18px",
-              fontSize: "0.7rem",
-              fontFamily: "'JetBrains Mono', monospace",
-              fontWeight: 500,
-              letterSpacing: "0.08em",
-              textTransform: "uppercase",
-              color: "var(--text-3)",
-              borderTop: "1px solid var(--border-subtle)",
-            }}
-          >
-            Configuration
-          </div>
+          <SectionHeader title="Configuration" />
           {Object.entries(vaultInfo)
             .filter(([k]) =>
               k !== "name" && k !== "type" && k !== "id" && k !== "version"
             )
             .map(([key, val]) => (
-              <div className="sys-row" style={{ padding: "4px 18px" }} key={key}>
+              <div
+                className="sys-row"
+                style={{ padding: "4px 18px" }}
+                key={key}
+              >
                 <span className="sys-key" style={{ fontSize: "0.78rem" }}>
                   {key}
                 </span>
@@ -189,23 +133,73 @@ function VaultExpanded({ vaultName }: { vaultName: string }) {
         </>
       )}
 
+      {/* Keys */}
+      <SectionHeader
+        title={`Keys (${keys.length})`}
+        border={!!vaultInfo}
+      />
+      {keys.length === 0
+        ? (
+          <div
+            style={{
+              padding: "8px 18px 14px",
+              fontSize: "0.82rem",
+              color: "var(--text-3)",
+            }}
+          >
+            No keys stored
+          </div>
+        )
+        : (
+          <div style={{ padding: "0 0 4px" }}>
+            {keys.map((k) => {
+              const keyName = typeof k === "string" ? k : k.key;
+              return (
+                <div
+                  key={keyName}
+                  style={{
+                    padding: "6px 18px",
+                    borderBottom: "1px solid var(--border-subtle)",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    fontSize: "0.82rem",
+                  }}
+                >
+                  <span
+                    className="mono"
+                    style={{ fontWeight: 500 }}
+                  >
+                    {keyName}
+                  </span>
+                  {typeof k === "object" && k.labels && (
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 4,
+                        marginLeft: "auto",
+                      }}
+                    >
+                      {Object.entries(k.labels).map(([lk, lv]) => (
+                        <span className="cron-badge" key={lk}>
+                          {lk}: {lv}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
       {/* Audit trail */}
       {auditEntries.length > 0 && (
         <>
-          <div
-            style={{
-              padding: "10px 18px 6px",
-              fontSize: "0.7rem",
-              fontFamily: "'JetBrains Mono', monospace",
-              fontWeight: 500,
-              letterSpacing: "0.08em",
-              textTransform: "uppercase",
-              color: "var(--text-3)",
-              borderTop: "1px solid var(--border-subtle)",
-            }}
-          >
-            Recent Activity ({auditEntries.length})
-          </div>
+          <SectionHeader
+            title={`Recent Activity (${auditEntries.length})`}
+            border
+          />
           {auditEntries.map((entry, i) => (
             <div
               key={i}
@@ -243,6 +237,27 @@ function VaultExpanded({ vaultName }: { vaultName: string }) {
         </>
       )}
       <div style={{ height: 8 }} />
+    </div>
+  );
+}
+
+function SectionHeader(
+  { title, border = false }: { title: string; border?: boolean },
+) {
+  return (
+    <div
+      style={{
+        padding: "10px 18px 6px",
+        fontSize: "0.7rem",
+        fontFamily: "'JetBrains Mono', monospace",
+        fontWeight: 500,
+        letterSpacing: "0.08em",
+        textTransform: "uppercase",
+        color: "var(--text-3)",
+        borderTop: border ? "1px solid var(--border-subtle)" : undefined,
+      }}
+    >
+      {title}
     </div>
   );
 }
