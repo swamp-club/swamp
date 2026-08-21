@@ -207,6 +207,9 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Generate build date
+        run: echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
       - name: Copy Dockerfile into build contexts
         run: |
           cp Dockerfile docker-build/linux-amd64/
@@ -219,6 +222,10 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: swampclub/swamp:${{ env.docker_tag }}-amd64
+          build-args: |
+            SWAMP_VERSION=${{ needs.release.outputs.version }}
+            VCS_REF=${{ github.sha }}
+            BUILD_DATE=${{ env.build_date }}
           provenance: mode=max
           sbom: true
 
@@ -229,6 +236,10 @@ jobs:
           platforms: linux/arm64
           push: true
           tags: swampclub/swamp:${{ env.docker_tag }}-arm64
+          build-args: |
+            SWAMP_VERSION=${{ needs.release.outputs.version }}
+            VCS_REF=${{ github.sha }}
+            BUILD_DATE=${{ env.build_date }}
           provenance: mode=max
           sbom: true
 
