@@ -18,11 +18,18 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
+import { z } from "zod";
 import {
   clearAttachedExtensions,
   modelKindAdapter,
   removeAttachedExtensionsForType,
 } from "./model_kind_adapter.ts";
+import { ModelType } from "../models/model_type.ts";
+import { modelRegistry } from "../models/model.ts";
+import {
+  getExtensionLoadWarnings,
+  resetExtensionLoadWarnings,
+} from "../../infrastructure/logging/extension_load_warnings.ts";
 
 Deno.test("removeAttachedExtensionsForType: does not throw for unknown type", () => {
   removeAttachedExtensionsForType("@nonexistent/type");
@@ -259,4 +266,141 @@ Deno.test("validatePrimaryExport: model with mismatching last toVersion fails", 
     }),
   );
   assertEquals(result.success, false);
+});
+
+// ── processSecondaryExport: method collision pre-filtering ─────────────
+
+const testArgs = z.object({});
+
+function registerTestModel(
+  type: string,
+  methods: Record<string, unknown>,
+): void {
+  modelRegistry.register({
+    type: ModelType.create(type),
+    version: "2026.01.01.0",
+    methods: Object.fromEntries(
+      Object.entries(methods).map(([name, _]) => [
+        name,
+        {
+          description: `Base ${name}`,
+          arguments: testArgs,
+          execute: () => Promise.resolve({ dataHandles: [] }),
+        },
+      ]),
+    ),
+  });
+}
+
+function makeExtension(
+  type: string,
+  methodNames: string[],
+): Record<string, unknown> {
+  return {
+    type,
+    methods: methodNames.map((name) => ({
+      [name]: {
+        description: `Extension ${name}`,
+        arguments: testArgs,
+        execute: () => Promise.resolve({ dataHandles: [] }),
+      },
+    })),
+  };
+}
+
+Deno.test("processSecondaryExport: colliding method is skipped, sibling is merged", () => {
+  const type = "@test/collision-partial";
+  resetExtensionLoadWarnings();
+  registerTestModel(type, { retrieve: true });
+  try {
+    const result = {
+      loaded: [] as string[],
+      extended: [] as string[],
+      failed: [] as { file: string; error: string }[],
+    };
+    modelKindAdapter.processSecondaryExport!(
+      "extensions/models/probe.ts",
+      makeExtension(type, ["retrieve", "probe_marker"]),
+      result,
+    );
+
+    assertEquals(result.extended, ["extensions/models/probe.ts"]);
+    assertEquals(result.failed.length, 0);
+
+    const model = modelRegistry.get(type);
+    assertEquals("probe_marker" in (model?.methods ?? {}), true);
+    assertEquals(model?.methods["retrieve"]?.description, "Base retrieve");
+
+    const warnings = getExtensionLoadWarnings();
+    const collision = warnings.find((w) =>
+      w.error.includes("retrieve") && w.error.includes("already exists")
+    );
+    assertEquals(collision !== undefined, true);
+  } finally {
+    modelRegistry.invalidateType(type);
+    resetExtensionLoadWarnings();
+  }
+});
+
+Deno.test("processSecondaryExport: all methods collide — file marked extended, warnings emitted", () => {
+  const type = "@test/collision-full";
+  resetExtensionLoadWarnings();
+  registerTestModel(type, { run: true, list: true });
+  try {
+    const result = {
+      loaded: [] as string[],
+      extended: [] as string[],
+      failed: [] as { file: string; error: string }[],
+    };
+    modelKindAdapter.processSecondaryExport!(
+      "extensions/models/dupe.ts",
+      makeExtension(type, ["run", "list"]),
+      result,
+    );
+
+    assertEquals(result.extended, ["extensions/models/dupe.ts"]);
+    assertEquals(result.failed.length, 0);
+
+    const warnings = getExtensionLoadWarnings();
+    assertEquals(
+      warnings.filter((w) => w.error.includes("already exists")).length,
+      2,
+    );
+  } finally {
+    modelRegistry.invalidateType(type);
+    resetExtensionLoadWarnings();
+  }
+});
+
+Deno.test("processSecondaryExport: no collision — all methods merged normally", () => {
+  const type = "@test/no-collision";
+  resetExtensionLoadWarnings();
+  registerTestModel(type, { run: true });
+  try {
+    const result = {
+      loaded: [] as string[],
+      extended: [] as string[],
+      failed: [] as { file: string; error: string }[],
+    };
+    modelKindAdapter.processSecondaryExport!(
+      "extensions/models/clean.ts",
+      makeExtension(type, ["custom_method"]),
+      result,
+    );
+
+    assertEquals(result.extended, ["extensions/models/clean.ts"]);
+    assertEquals(result.failed.length, 0);
+
+    const model = modelRegistry.get(type);
+    assertEquals("custom_method" in (model?.methods ?? {}), true);
+
+    const warnings = getExtensionLoadWarnings();
+    assertEquals(
+      warnings.filter((w) => w.error.includes("already exists")).length,
+      0,
+    );
+  } finally {
+    modelRegistry.invalidateType(type);
+    resetExtensionLoadWarnings();
+  }
 });

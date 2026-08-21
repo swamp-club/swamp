@@ -1142,9 +1142,8 @@ export const extension = {
       const result = await loader.load(dir);
 
       assertEquals(result.loaded.length, 1);
-      assertEquals(result.extended.length, 0);
-      assertEquals(result.failed.length, 1);
-      assertStringIncludes(result.failed[0].error, "already exists");
+      assertEquals(result.extended.length, 1);
+      assertEquals(result.failed.length, 0);
     },
   );
 });
@@ -1630,11 +1629,8 @@ export const extension = {
       const result = await loader.load(dir);
 
       assertEquals(result.loaded.length, 1);
-      assertEquals(result.failed.length, 1);
-      assertStringIncludes(
-        result.failed[0].error,
-        "Resource spec 'data' already exists",
-      );
+      assertEquals(result.extended.length, 1);
+      assertEquals(result.failed.length, 0);
     },
   );
 });

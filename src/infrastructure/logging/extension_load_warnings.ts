@@ -60,8 +60,7 @@ function getState(): EmitterState {
 const HINT_BY_KIND: Record<ExtensionKind, string> = {
   model:
     "extensions/models/ is auto-discovered — running `swamp extension source add` here is a no-op.",
-  extension:
-    "extensions/models/ is auto-discovered — running `swamp extension source add` here is a no-op.",
+  extension: "run `swamp doctor extensions` for details.",
   vault:
     "extensions/vaults/ is auto-discovered — running `swamp extension source add` here is a no-op.",
   datastore:
