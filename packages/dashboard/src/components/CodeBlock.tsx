@@ -72,7 +72,7 @@ function highlightYaml(raw: string): string {
       )
       .replace(
         /:\s+&#39;([^&]*)&#39;$/,
-        ": <span class=\"code-string\">&#39;$1&#39;</span>",
+        ': <span class="code-string">&#39;$1&#39;</span>',
       )
       .replace(
         /:\s+(\d+(?:\.\d+)?)$/,
