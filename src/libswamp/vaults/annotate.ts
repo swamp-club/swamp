@@ -74,8 +74,13 @@ export interface VaultAnnotateDeps {
     vaultName: string,
     key: string,
     annotation: VaultAnnotation,
+    callerContext?: string,
   ) => Promise<void>;
-  deleteAnnotation: (vaultName: string, key: string) => Promise<void>;
+  deleteAnnotation: (
+    vaultName: string,
+    key: string,
+    callerContext?: string,
+  ) => Promise<void>;
   publishSecretAnnotated: (
     vaultId: string,
     vaultType: string,
@@ -118,13 +123,13 @@ export function createVaultAnnotateDeps(
       const svc = await getVaultService();
       return await svc.getAnnotation(vaultName, key);
     },
-    putAnnotation: async (vaultName, key, annotation) => {
+    putAnnotation: async (vaultName, key, annotation, callerContext) => {
       const svc = await getVaultService();
-      await svc.putAnnotation(vaultName, key, annotation);
+      await svc.putAnnotation(vaultName, key, annotation, callerContext);
     },
-    deleteAnnotation: async (vaultName, key) => {
+    deleteAnnotation: async (vaultName, key, callerContext) => {
       const svc = await getVaultService();
-      await svc.deleteAnnotation(vaultName, key);
+      await svc.deleteAnnotation(vaultName, key, callerContext);
     },
     publishSecretAnnotated: async (
       vaultId,
@@ -215,7 +220,11 @@ export async function* vaultAnnotate(
       }
 
       if (input.clear) {
-        await deps.deleteAnnotation(input.vaultName, input.key);
+        await deps.deleteAnnotation(
+          input.vaultName,
+          input.key,
+          "cli:vault-annotate",
+        );
         ctx.logger.debug`Cleared annotation for ${input.key}`;
 
         await deps.publishSecretAnnotated(
@@ -265,7 +274,12 @@ export async function* vaultAnnotate(
         annotation = annotation.removeLabels(input.removeLabels);
       }
 
-      await deps.putAnnotation(input.vaultName, input.key, annotation);
+      await deps.putAnnotation(
+        input.vaultName,
+        input.key,
+        annotation,
+        "cli:vault-annotate",
+      );
       ctx.logger.debug`Annotation updated for ${input.key}`;
 
       await deps.publishSecretAnnotated(

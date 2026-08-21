@@ -295,7 +295,9 @@ methods are required.
 - **Audit**: Every CLI read emits a `VaultSecretRead` domain event through the
   event bus, recording the vault name, type, and secret key accessed. When
   `auditReads` is enabled on the vault, a persistent audit trail entry is also
-  written to `.swamp/audit/vault-reads-YYYY-MM-DD.jsonl`.
+  written to `.swamp/audit/vault-audit-YYYY-MM-DD.jsonl`. Write operations
+  (`put`, `delete`, `annotate`) are always audited when an audit repository is
+  available.
 
 ### JSON Output
 
@@ -308,13 +310,17 @@ methods are required.
 }
 ```
 
-## Read Access Audit Trail
+## Vault Audit Trail
 
-Optional per-vault audit trail that records every `VaultService.get()` call to
-append-only JSONL files. Designed for security posture verification in
-autonomous agent fleets — proving "which automation read which secret, when."
+Audit trail that records vault operations to append-only JSONL files. Designed
+for security posture verification in autonomous agent fleets — proving "which
+automation accessed which secret, when, and how."
 
-### Enabling
+Write operations (`put`, `delete`, `annotate`) are always recorded when an audit
+repository is available. Read operations (`get`) are opt-in per vault via the
+`auditReads` flag.
+
+### Enabling Read Audit
 
 Set `auditReads: true` in the vault configuration YAML, or use the
 `--audit-reads` flag at creation time:
@@ -326,42 +332,52 @@ swamp vault create local_encryption my-vault --audit-reads
 Existing vaults can enable audit reads by editing their YAML config with
 `swamp vault edit my-vault` and adding `auditReads: true`.
 
+Write operations do not require this flag — they are always audited when the
+audit repository is wired.
+
 ### How It Works
 
-When `auditReads` is enabled on a vault:
-
-1. `VaultService.get()` writes an audit entry after each successful read
-2. Entries are appended to date-partitioned JSONL files:
-   `.swamp/audit/vault-reads-YYYY-MM-DD.jsonl`
-3. Audit writes are awaited but wrapped in try/catch — they never block or fail
-   a secret read
+1. `VaultService.put()`, `.delete()`, `.putAnnotation()`, and
+   `.deleteAnnotation()` write an audit entry after each successful operation,
+   regardless of the per-vault `auditReads` flag
+2. `VaultService.get()` writes an audit entry only when `auditReads` is enabled
+   on that vault
+3. Entries are appended to date-partitioned JSONL files:
+   `.swamp/audit/vault-audit-YYYY-MM-DD.jsonl`
+4. Audit writes are awaited but wrapped in try/catch — they never block or fail
+   the vault operation
 
 All `VaultService.fromRepository()` call sites automatically wire the audit
 repository when any vault has `auditReads` enabled. This covers CLI commands
-(`vault read-secret`, `vault inspect`, `vault migrate`), CEL expression
-evaluation, model method execution, serve/WebSocket, and token operations.
+(`vault put`, `vault delete`, `vault annotate`, `vault read-secret`,
+`vault inspect`, `vault migrate`), CEL expression evaluation, model method
+execution, serve/WebSocket, and token operations.
 
 ### Audit Entry Fields
 
 Each entry captures:
 
-- `timestamp` — ISO-8601 when the read occurred
-- `vaultName` — which vault was read
+- `action` — the operation type: `"get"`, `"put"`, `"delete"`, or `"annotate"`
+- `timestamp` — ISO-8601 when the operation occurred
+- `vaultName` — which vault was accessed
 - `vaultType` — the provider type (e.g. `local_encryption`, `@swamp/aws-sm`)
 - `secretKey` — which secret was accessed
-- `callerContext` — who/what initiated the read (e.g. `cli:vault-read-secret`,
-  `model:mytype/myid:exec`, `unknown`)
+- `callerContext` — who/what initiated the operation (e.g. `cli:vault-put`,
+  `cli:vault-read-secret`, `model:mytype/myid:exec`, `unknown`)
 
 Secret values are never recorded.
 
 ### Querying the Trail
 
 ```bash
-# Recent reads (last 7 days)
+# Recent operations (last 7 days)
 swamp vault audit-trail
 
 # Filter by vault and key
 swamp vault audit-trail --vault my-vault --key API_KEY
+
+# Filter by action
+swamp vault audit-trail --action put
 
 # Time range
 swamp vault audit-trail --since 2026-07-01 --until 2026-07-10
@@ -370,15 +386,24 @@ swamp vault audit-trail --since 2026-07-01 --until 2026-07-10
 swamp vault audit-trail --vault my-vault --json --limit 50
 ```
 
+### Backwards Compatibility
+
+Pre-existing audit files named `vault-reads-YYYY-MM-DD.jsonl` are still read
+during queries. New entries are written to `vault-audit-YYYY-MM-DD.jsonl`.
+Legacy entries without an `action` field default to `"get"` on deserialization.
+
 ### Architecture
 
 - **Value object**: `VaultAuditEntry` (`src/domain/vaults/vault_audit_entry.ts`)
+  — includes `action` discriminator field
 - **Repository interface**: `VaultAuditRepository`
-  (`src/domain/vaults/vault_audit_repository.ts`)
+  (`src/domain/vaults/vault_audit_repository.ts`) — query options include
+  `action` filter
 - **Infrastructure**: `JsonlVaultAuditRepository` — follows the established
   `JsonlAuditRepository` pattern with date-partitioned JSONL files under
-  `.swamp/audit/`
-- **Interception**: `VaultService` stores `auditReads` flags per vault name.
+  `.swamp/audit/`, reads both legacy and current file prefixes
+- **Interception**: `VaultService` records writes unconditionally when audit repo
+  exists; reads are gated by per-vault `auditReads` flag.
   `setAuditRepository()` injects the repository post-construction, avoiding
   changes to the ~20 `fromRepository()` call sites
 

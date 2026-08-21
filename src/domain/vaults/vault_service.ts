@@ -40,7 +40,10 @@ import type { LocalEncryptionConfig } from "./local_encryption_vault_provider.ts
 import { join } from "@std/path";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { createVaultProvider } from "./vault_provider_factory.ts";
-import { createVaultAuditEntry } from "./vault_audit_entry.ts";
+import {
+  createVaultAuditEntry,
+  type VaultAuditAction,
+} from "./vault_audit_entry.ts";
 import type { VaultAuditRepository } from "./vault_audit_repository.ts";
 import { JsonlVaultAuditRepository } from "../../infrastructure/persistence/jsonl_vault_audit_repository.ts";
 
@@ -244,6 +247,7 @@ export class VaultService {
               getLogger("vaults")
                 .info`Refreshed secret ${secretKey} in vault ${vaultName}`;
               await this.recordAuditEntry(
+                "get",
                 vaultName,
                 secretKey,
                 callerContext,
@@ -263,6 +267,7 @@ export class VaultService {
 
     const value = await provider.get(secretKey);
     await this.recordAuditEntry(
+      "get",
       vaultName,
       secretKey,
       callerContext,
@@ -271,14 +276,17 @@ export class VaultService {
   }
 
   private async recordAuditEntry(
+    action: VaultAuditAction,
     vaultName: string,
     secretKey: string,
     callerContext?: string,
   ): Promise<void> {
-    if (!this.auditRepository || !this.auditFlags.get(vaultName)) return;
+    if (!this.auditRepository) return;
+    if (action === "get" && !this.auditFlags.get(vaultName)) return;
     try {
       const vaultType = this.vaultTypes.get(vaultName) ?? "unknown";
       const entry = createVaultAuditEntry(
+        action,
         vaultName,
         vaultType,
         secretKey,
@@ -324,14 +332,21 @@ export class VaultService {
     secretKey: string,
     secretValue: string,
     options?: VaultPutOptions,
+    callerContext?: string,
   ): Promise<void> {
     const provider = this.requireProvider(vaultName);
     await provider.put(secretKey, secretValue, options);
+    await this.recordAuditEntry("put", vaultName, secretKey, callerContext);
   }
 
-  async delete(vaultName: string, secretKey: string): Promise<void> {
+  async delete(
+    vaultName: string,
+    secretKey: string,
+    callerContext?: string,
+  ): Promise<void> {
     const provider = this.requireDeleteProvider(vaultName);
     await provider.delete(secretKey);
+    await this.recordAuditEntry("delete", vaultName, secretKey, callerContext);
   }
 
   supportsDelete(vaultName: string): boolean {
@@ -384,17 +399,31 @@ export class VaultService {
     vaultName: string,
     secretKey: string,
     annotation: VaultAnnotation,
+    callerContext?: string,
   ): Promise<void> {
     const provider = this.requireAnnotationProvider(vaultName);
     await provider.putAnnotation(secretKey, annotation);
+    await this.recordAuditEntry(
+      "annotate",
+      vaultName,
+      secretKey,
+      callerContext,
+    );
   }
 
   async deleteAnnotation(
     vaultName: string,
     secretKey: string,
+    callerContext?: string,
   ): Promise<void> {
     const provider = this.requireAnnotationProvider(vaultName);
     await provider.deleteAnnotation(secretKey);
+    await this.recordAuditEntry(
+      "annotate",
+      vaultName,
+      secretKey,
+      callerContext,
+    );
   }
 
   supportsRefreshHooks(vaultName: string): boolean {

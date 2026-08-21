@@ -36,6 +36,7 @@ function withTempDir(
 
 function makeEntry(overrides: Partial<VaultAuditEntry> = {}): VaultAuditEntry {
   return {
+    action: "get",
     timestamp: "2026-07-10T12:00:00.000Z",
     vaultName: "my-vault",
     vaultType: "local_encryption",

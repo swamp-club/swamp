@@ -17,7 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+export type VaultAuditAction = "get" | "put" | "delete" | "annotate";
+
 export interface VaultAuditEntry {
+  readonly action: VaultAuditAction;
   readonly timestamp: string;
   readonly vaultName: string;
   readonly vaultType: string;
@@ -26,6 +29,7 @@ export interface VaultAuditEntry {
 }
 
 export interface VaultAuditEntryData {
+  action?: VaultAuditAction;
   timestamp: string;
   vaultName: string;
   vaultType: string;
@@ -34,12 +38,14 @@ export interface VaultAuditEntryData {
 }
 
 export function createVaultAuditEntry(
+  action: VaultAuditAction,
   vaultName: string,
   vaultType: string,
   secretKey: string,
   callerContext: string,
 ): VaultAuditEntry {
   return {
+    action,
     timestamp: new Date().toISOString(),
     vaultName,
     vaultType,
@@ -52,6 +58,7 @@ export function vaultAuditEntryFromData(
   data: VaultAuditEntryData,
 ): VaultAuditEntry {
   return {
+    action: data.action ?? "get",
     timestamp: data.timestamp,
     vaultName: data.vaultName,
     vaultType: data.vaultType,
@@ -64,6 +71,7 @@ export function vaultAuditEntryToData(
   entry: VaultAuditEntry,
 ): VaultAuditEntryData {
   return {
+    action: entry.action,
     timestamp: entry.timestamp,
     vaultName: entry.vaultName,
     vaultType: entry.vaultType,

@@ -33,13 +33,14 @@ class LogVaultAuditTrailRenderer implements Renderer<VaultAuditTrailEvent> {
       resolving: () => {},
       completed: (e) => {
         if (e.data.entries.length === 0) {
-          logger.info`No vault read audit entries found.`;
+          logger.info`No vault audit entries found.`;
           return;
         }
-        logger.info`${e.data.returnedCount} vault read(s):`;
+        logger.info`${e.data.returnedCount} vault operation(s):`;
         for (const entry of e.data.entries) {
+          const action = entry.action?.toUpperCase() ?? "GET";
           logger
-            .info`  ${entry.timestamp}  ${entry.vaultName} (${entry.vaultType})/${entry.secretKey}  by ${entry.callerContext}`;
+            .info`  ${entry.timestamp}  ${action}  ${entry.vaultName} (${entry.vaultType})/${entry.secretKey}  by ${entry.callerContext}`;
         }
         if (e.data.truncated) {
           logger.info`  (results truncated — use --limit to see more)`;

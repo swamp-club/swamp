@@ -47,14 +47,18 @@ type AnyOptions = any;
 export const vaultAuditTrailCommand = withRemoteOptions(
   new Command()
     .name("audit-trail")
-    .description("View the secret-read audit trail for vaults.")
+    .description("View the vault audit trail.")
     .example(
-      "Show recent reads",
+      "Show recent operations",
       "swamp vault audit-trail",
     )
     .example(
       "Filter by vault",
       "swamp vault audit-trail --vault my-vault",
+    )
+    .example(
+      "Filter by action",
+      "swamp vault audit-trail --action put",
     )
     .example(
       "Filter by key and time range",
@@ -66,6 +70,10 @@ export const vaultAuditTrailCommand = withRemoteOptions(
     )
     .option("--vault <name:string>", "Filter by vault name")
     .option("--key <key:string>", "Filter by secret key")
+    .option(
+      "--action <action:string>",
+      "Filter by action: get, put, delete, annotate",
+    )
     .option(
       "--since <date:string>",
       "Start date, e.g. 2026-07-01 or 2026-07-01T00:00:00Z [default: 7 days ago]",
@@ -99,6 +107,7 @@ export const vaultAuditTrailCommand = withRemoteOptions(
         payload: {
           vaultName: options.vault as string | undefined,
           secretKey: options.key as string | undefined,
+          action: options.action as string | undefined,
           since: since?.toISOString(),
           until: until?.toISOString(),
           limit: options.limit as number | undefined,
@@ -129,6 +138,7 @@ export const vaultAuditTrailCommand = withRemoteOptions(
     vaultAuditTrail(ctx, deps, {
       vaultName: options.vault,
       secretKey: options.key,
+      action: options.action,
       since,
       until,
       limit: options.limit,

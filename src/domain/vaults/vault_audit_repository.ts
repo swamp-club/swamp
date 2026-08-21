@@ -22,6 +22,7 @@ import type { VaultAuditEntry } from "./vault_audit_entry.ts";
 export interface VaultAuditQueryOptions {
   readonly vaultName?: string;
   readonly secretKey?: string;
+  readonly action?: string;
   readonly limit?: number;
 }
 

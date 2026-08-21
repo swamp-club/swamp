@@ -540,6 +540,7 @@ export interface VaultEditPayload {
 export interface VaultAuditTrailPayload {
   vaultName?: string;
   secretKey?: string;
+  action?: string;
   since?: string;
   until?: string;
   limit?: number;
