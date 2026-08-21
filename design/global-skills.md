@@ -53,6 +53,19 @@ const GLOBAL_SKILL_DIRS: Record<string, string> = {
 These are relative paths resolved against the user's home directory at
 runtime.
 
+### Skill Reference Style
+
+All built-in tools use `skillReferenceStyle: "name"`, meaning generated
+instructions files (CLAUDE.md, AGENTS.md, `.cursor/rules/swamp.mdc`,
+`.kiro/steering/swamp-rules.md`) reference skills by name (e.g. "use the
+`swamp` skill") rather than by project-local path. This is required because
+skills are installed globally — project-local skill directories no longer
+exist after init, so path-based references would dangle.
+
+Custom tools may use either `"name"` or `"path"`. Tools with `"path"` style
+must install skills to a project-local directory or provide a mechanism for
+the agent to resolve the referenced paths.
+
 After deduplication, swamp writes to at most three directories:
 
 - `~/.claude/skills/swamp/` and `~/.claude/skills/swamp-getting-started/`

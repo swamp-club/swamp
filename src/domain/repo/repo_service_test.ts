@@ -1429,7 +1429,7 @@ Deno.test("RepoService.upgrade without flag honors marker from init", async () =
 
 // Kiro tool tests
 
-Deno.test("RepoService.init with kiro creates .kiro/skills/ and steering file with frontmatter", async () => {
+Deno.test("RepoService.init with kiro creates steering file with name-based skill references", async () => {
   await withTempDir(async (tempDir) => {
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
@@ -1454,6 +1454,9 @@ Deno.test("RepoService.init with kiro creates .kiro/skills/ and steering file wi
     assertStringIncludes(content, "---\ninclusion: always\n---");
     assertStringIncludes(content, "swamp");
     assertStringIncludes(content, "## Skills");
+    // Must use name-based references, not project-local paths
+    assertStringIncludes(content, "the `swamp` skill");
+    assertEquals(content.includes(".kiro/skills/swamp/SKILL.md"), false);
 
     // Check .vscode/settings.local.json created with trusted commands
     const settingsPath = join(tempDir, ".vscode", "settings.local.json");
@@ -1755,7 +1758,7 @@ Deno.test("RepoService.init with kiro creates .kiro/agents/swamp.json", async ()
     );
     assertStringIncludes(
       JSON.stringify(config.resources),
-      "skill://.kiro/skills/**/SKILL.md",
+      "skill://~/.kiro/skills/**/SKILL.md",
     );
   });
 });
