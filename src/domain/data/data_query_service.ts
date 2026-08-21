@@ -44,6 +44,28 @@ import { resolveVaultRefsInData } from "../models/data_writer.ts";
 
 const logger = getLogger(["swamp", "domain", "data", "query"]);
 
+/**
+ * Sets `is_latest` on each row so that the highest version per
+ * (model_id, data_name, step_name) group is marked latest.
+ * Different workflow steps writing to the same data name keep
+ * independent latest markers; non-workflow data (step_name = "")
+ * collapses as before.
+ */
+function markLatestPerStep(rows: CatalogRow[]): void {
+  const maxVersions = new Map<string, number>();
+  for (const row of rows) {
+    const key = `${row.model_id}\0${row.data_name}\0${row.step_name}`;
+    const cur = maxVersions.get(key);
+    if (cur === undefined || row.version > cur) {
+      maxVersions.set(key, row.version);
+    }
+  }
+  for (const row of rows) {
+    const key = `${row.model_id}\0${row.data_name}\0${row.step_name}`;
+    row.is_latest = row.version === maxVersions.get(key) ? 1 : 0;
+  }
+}
+
 export interface DataQueryOptions {
   limit?: number;
   /** CEL projection expression. When set, results are projected and returned as unknown[]. */
@@ -508,7 +530,6 @@ export class DataQueryService {
           latest.name,
         );
         if (versions.length === 0) continue;
-        const maxVersion = Math.max(...versions);
         for (const version of versions) {
           try {
             const data = version === latest.version
@@ -526,7 +547,7 @@ export class DataQueryService {
                 data,
                 modelType,
                 modelId,
-                version === maxVersion,
+                false,
               ),
             );
           } catch (error) {
@@ -541,6 +562,11 @@ export class DataQueryService {
       // GC cycle and reclaim intermediate objects from metadata parsing.
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
     }
+
+    // Compute is_latest per (data_name, step_name) group so different
+    // workflow steps writing to the same name keep independent latest
+    // markers.
+    markLatestPerStep(rows);
 
     this.catalogStore.bulkUpsert(rows);
     this.catalogStore.markPopulated();
@@ -573,7 +599,6 @@ export class DataQueryService {
           latest.name,
         );
         if (versions.length === 0) continue;
-        const maxVersion = Math.max(...versions);
         for (const version of versions) {
           try {
             const data = version === latest.version
@@ -591,7 +616,7 @@ export class DataQueryService {
                 data,
                 modelType,
                 modelId,
-                version === maxVersion,
+                false,
               ),
             );
           } catch (error) {
@@ -603,6 +628,7 @@ export class DataQueryService {
         }
       }
     }
+    markLatestPerStep(rows);
     this.catalogStore.bulkUpsert(rows);
     this.catalogStore.markPopulated();
   }
