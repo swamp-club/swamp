@@ -42,13 +42,13 @@ async function* toStream(
   }
 }
 
-Deno.test("LogVaultReadSecretRenderer: writes secret with newline when stdout is a TTY", async () => {
+Deno.test("LogVaultReadSecretRenderer: writes only the secret value to stdout", async () => {
   const logs: string[] = [];
   const originalLog = console.log;
   console.log = (msg: string) => logs.push(msg);
 
   try {
-    const renderer = createVaultReadSecretRenderer("log", () => true);
+    const renderer = createVaultReadSecretRenderer("log");
     const events: VaultReadSecretEvent[] = [
       { kind: "resolving" },
       { kind: "completed", data: makeData() },
@@ -58,29 +58,6 @@ Deno.test("LogVaultReadSecretRenderer: writes secret with newline when stdout is
     assertEquals(logs[0], "super_secret_value");
   } finally {
     console.log = originalLog;
-  }
-});
-
-Deno.test("LogVaultReadSecretRenderer: writes exact bytes without trailing newline when piped", async () => {
-  const written: Uint8Array[] = [];
-  const originalWriteSync = Deno.stdout.writeSync.bind(Deno.stdout);
-  Deno.stdout.writeSync = (data: Uint8Array): number => {
-    written.push(new Uint8Array(data));
-    return data.length;
-  };
-
-  try {
-    const renderer = createVaultReadSecretRenderer("log", () => false);
-    const events: VaultReadSecretEvent[] = [
-      { kind: "resolving" },
-      { kind: "completed", data: makeData() },
-    ];
-    await consumeStream(toStream(events), renderer.handlers());
-    assertEquals(written.length, 1);
-    const output = new TextDecoder().decode(written[0]);
-    assertEquals(output, "super_secret_value");
-  } finally {
-    Deno.stdout.writeSync = originalWriteSync;
   }
 });
 

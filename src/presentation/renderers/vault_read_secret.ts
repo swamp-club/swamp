@@ -26,24 +26,12 @@ import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 
-const encoder = new TextEncoder();
-
 class LogVaultReadSecretRenderer implements Renderer<VaultReadSecretEvent> {
-  #isTerminal: () => boolean;
-
-  constructor(isTerminal: () => boolean) {
-    this.#isTerminal = isTerminal;
-  }
-
   handlers(): EventHandlers<VaultReadSecretEvent> {
     return {
       resolving: () => {},
       completed: (e) => {
-        if (this.#isTerminal()) {
-          writeOutput(e.data.value);
-        } else {
-          Deno.stdout.writeSync(encoder.encode(e.data.value));
-        }
+        writeOutput(e.data.value);
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -68,12 +56,11 @@ class JsonVaultReadSecretRenderer implements Renderer<VaultReadSecretEvent> {
 
 export function createVaultReadSecretRenderer(
   mode: OutputMode,
-  isTerminal: () => boolean = () => Deno.stdout.isTerminal(),
 ): Renderer<VaultReadSecretEvent> {
   switch (mode) {
     case "json":
       return new JsonVaultReadSecretRenderer();
     case "log":
-      return new LogVaultReadSecretRenderer(isTerminal);
+      return new LogVaultReadSecretRenderer();
   }
 }
