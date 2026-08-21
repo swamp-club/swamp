@@ -88,6 +88,42 @@
     "expected_guide": "report"
   },
   {
+    "query": "Should I build a model or a workflow to automate a three-step deploy?",
+    "expected_guide": "architecture"
+  },
+  {
+    "query": "Explain the design trade-off between writing an extension and using command/shell",
+    "expected_guide": "architecture"
+  },
+  {
+    "query": "Which swamp primitive should I pick for this, and which design doc backs that choice?",
+    "expected_guide": "architecture"
+  },
+  {
+    "query": "How do I promote my solo swamp repo so a teammate can clone and collaborate?",
+    "expected_guide": "share"
+  },
+  {
+    "query": "My vaults are still on local_encryption — what do I migrate before a teammate can run my workflows?",
+    "expected_guide": "share"
+  },
+  {
+    "query": "Generate onboarding instructions for someone joining my swamp repo",
+    "expected_guide": "share"
+  },
+  {
+    "query": "How do I start swamp serve with OAuth authentication for my team?",
+    "expected_guide": "serve"
+  },
+  {
+    "query": "Grant the platform-eng IdP group permission to run workflows in the acme namespace",
+    "expected_guide": "serve"
+  },
+  {
+    "query": "Which access grant do I need to add so alice can run the deploy workflow on the swamp server?",
+    "expected_guide": "serve"
+  },
+  {
     "query": "The datastore sync is hanging and timing out",
     "expected_guide": "troubleshooting"
   },

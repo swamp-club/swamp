@@ -83,6 +83,9 @@ const GUIDE_TOPICS: Record<string, string> = {
   "report": "Load this guide for report operations — run, configure, view, filter reports",
   "troubleshooting": "Load this guide for troubleshooting — errors, health checks, diagnostics, tracing, debugging",
   "issue": "Load this guide for issue operations — file bugs, feature requests, security reports, comments",
+  "architecture": "Load this guide for architecture decisions — choosing between model, workflow, report, extension, vault, and design trade-offs",
+  "share": "Load this guide for sharing a repo — promoting a solo repo to a team, datastore promotion, vault migration, joiner onboarding",
+  "serve": "Load this guide for swamp serve — auth modes, grants, access control, groups, tokens, OAuth server login",
 };
 
 interface RoutingEval {

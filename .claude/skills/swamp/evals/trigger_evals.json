@@ -105,6 +105,46 @@
     "note": "report domain — report filtering"
   },
   {
+    "query": "Should I use a swamp workflow or a single model method for this three-step deploy?",
+    "should_trigger": true,
+    "note": "architecture domain — primitive selection"
+  },
+  {
+    "query": "Explain the trade-off between writing a swamp extension and using command/shell",
+    "should_trigger": true,
+    "note": "architecture domain — design trade-off"
+  },
+  {
+    "query": "How do I promote my solo swamp repo so a teammate can clone it?",
+    "should_trigger": true,
+    "note": "share domain — solo to team"
+  },
+  {
+    "query": "Migrate my local_encryption vault to 1Password so my team can use it",
+    "should_trigger": true,
+    "note": "share domain — vault migration for sharing"
+  },
+  {
+    "query": "Set up a remote S3 datastore so my repo isn't local-only",
+    "should_trigger": true,
+    "note": "share domain — datastore promotion"
+  },
+  {
+    "query": "How do I run swamp serve with OAuth so my team can connect?",
+    "should_trigger": true,
+    "note": "serve domain — auth mode"
+  },
+  {
+    "query": "Grant the platform-eng IdP group permission to run workflows",
+    "should_trigger": true,
+    "note": "serve domain — grants and access control"
+  },
+  {
+    "query": "Mint an access token for a service principal and rotate the old one",
+    "should_trigger": true,
+    "note": "serve domain — token management"
+  },
+  {
     "query": "Debug why my deploy-infra workflow is failing on the second step",
     "should_trigger": true,
     "note": "troubleshooting domain — workflow error"

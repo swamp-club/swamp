@@ -37,15 +37,21 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   "src/domain/reports/report_context.ts",
 ]);
 
-// Matches `MethodReportContext = {` literal assignments.
-const INLINE_LITERAL = /\bMethodReportContext\s*=\s*\{/;
+// Matches the three ways a MethodReportContext gets constructed outside the
+// factory: `MethodReportContext = {` object literals, `satisfies
+// MethodReportContext`, and `as (unknown as) MethodReportContext` casts.
+// The negative lookahead excludes indexed-access *type* references such as
+// `as unknown as MethodReportContext["logger"]`, which name one field's type
+// rather than fabricating a whole context.
+const INLINE_LITERAL =
+  /\bMethodReportContext\s*=\s*\{|(?:satisfies|as)\s+MethodReportContext\b(?!\s*\[)/;
 
 Deno.test("architecture: no inline MethodReportContext literals outside factory and tests", async () => {
   const offenders: string[] = [];
 
   for await (
     const entry of walk(SRC_ROOT, {
-      exts: [".ts"],
+      exts: [".ts", ".tsx"],
       includeDirs: false,
       followSymlinks: false,
     })
@@ -54,7 +60,7 @@ Deno.test("architecture: no inline MethodReportContext literals outside factory 
     // forward slashes) matches on Windows where `relative()` returns
     // backslash-separated paths.
     const rel = relative(REPO_ROOT, entry.path).replaceAll("\\", "/");
-    if (rel.endsWith("_test.ts")) continue;
+    if (/_test\.tsx?$/.test(rel)) continue;
     if (ALLOWED_FILES.has(rel)) continue;
 
     const text = await Deno.readTextFile(entry.path);

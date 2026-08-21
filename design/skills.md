@@ -38,9 +38,14 @@ is the authoritative guide for structure and best practices.
 ├── SKILL.md              # Required — uppercase, contains frontmatter + body
 ├── references/           # Optional — detailed docs loaded on demand
 │   └── *.md
-└── evals/                # Optional — trigger evaluation test cases
-    └── trigger_evals.json
+└── evals/                # Optional — evaluation test cases
+    ├── trigger_evals.json           # Phase 1 — does this skill trigger?
+    ├── routing_evals.json           # Phase 2 — which guide does it load?
+    └── guide_sufficiency_evals.json # Phase 3 — is the guide enough?
 ```
+
+Only gateway skills with a `references/<topic>/guide.md` tree (currently
+`swamp`) need the phase 2 and phase 3 files.
 
 ### SKILL.md
 
@@ -105,6 +110,65 @@ Write both positive and negative cases. Negative cases are important — they
 verify that similar-sounding queries route to the correct neighboring skill
 rather than this one.
 
+## Writing Routing Evals
+
+Routing evals check the _second_ hop: once the gateway skill has triggered, does
+Claude load the right guide from the SKILL.md routing table? They live at
+`.claude/skills/<skill-name>/evals/routing_evals.json`.
+
+### Format
+
+```json
+[
+  {
+    "query": "Show me the run history for the deployment workflow",
+    "expected_guide": "workflow"
+  }
+]
+```
+
+Each entry has:
+
+- `query` — a realistic user request that has already reached this skill
+- `expected_guide` — the directory name under `references/` whose `guide.md`
+  should be loaded
+
+Every guide topic must have at least one case. `skill_routing_test.ts` derives
+the topic list from the `references/` directory on disk, so adding a new guide
+without adding routing evals fails the unit test — no promptfoo run needed.
+
+## Writing Sufficiency Evals
+
+Sufficiency evals check the _third_ hop: given only the short `guide.md`, can
+Claude answer the query, or must it descend into `reference.md`? They live at
+`.claude/skills/<skill-name>/evals/guide_sufficiency_evals.json`.
+
+### Format
+
+```json
+[
+  {
+    "query": "Search for model types that handle payments",
+    "guide": "model",
+    "answerable_from_guide": true,
+    "note": "Quick Reference table has the search command"
+  }
+]
+```
+
+Each entry has:
+
+- `query` — a realistic user request
+- `guide` — the topic whose `guide.md` is supplied as the only context
+- `answerable_from_guide` — `true` if the guide alone suffices, `false` if the
+  detail lives in `reference.md` or a deeper `references/` file
+- `note` — where the answer lives, which makes failures diagnosable
+
+Balance the two outcomes per topic: `true` cases catch guides that have gone too
+thin, `false` cases catch guides that have absorbed reference material they
+should have delegated. Self-contained guides with no `reference.md` carry only
+`true` cases.
+
 ## Testing Locally
 
 Both testing tools require **Node.js/npm** and **Deno** installed locally. They
@@ -147,11 +211,26 @@ deno run review-skills
 This runs tessl against every skill in `.claude/skills/` and prints a summary
 table. In CI, it writes the table to the GitHub Actions step summary.
 
-### Promptfoo — Trigger Routing Evaluation
+### Promptfoo — Routing Evaluation
 
-Promptfoo tests whether an LLM correctly routes user queries to the right skill.
-It reads all `trigger_evals.json` files, presents each query to the model as a
-tool-selection task, and asserts that the correct skill was (or was not) called.
+Promptfoo tests whether an LLM actually navigates from a user query to the right
+context. `deno run eval-skill-triggers` runs three phases in sequence against
+the same model, then reports a combined pass rate:
+
+| Phase | Eval file                      | Generator                        | Question                                          |
+| ----- | ------------------------------ | -------------------------------- | ------------------------------------------------- |
+| 1     | `trigger_evals.json`           | `generate_config.ts`             | Does the right skill trigger?                     |
+| 2     | `routing_evals.json`           | `generate_routing_config.ts`     | Does the right guide get loaded?                  |
+| 3     | `guide_sufficiency_evals.json` | `generate_sufficiency_config.ts` | Is the guide enough, or is `reference.md` needed? |
+
+Generators live in `evals/promptfoo/` and turn each eval file into a promptfoo
+config where every choice is a tool the model can call. Each phase writes its
+raw results to `evals/promptfoo/<phase>_results.json` — generated artifacts that
+are gitignored, not committed.
+
+Phase 2 and 3 generators keep a topic map (`GUIDE_TOPICS` / `GUIDE_DIRS`) that
+must list every directory under `references/`; a missing entry makes the
+generator exit with an error naming the unknown topic.
 
 **Run against the default model (opus):**
 
@@ -203,7 +282,8 @@ Two jobs run in parallel on every PR that touches skill files:
 Fails the PR if any skill scores below 90%.
 
 **skill-trigger-eval** — runs `deno run eval-skill-triggers` (promptfoo) with
-the default opus model. Fails the PR if the pass rate drops below 90%.
+the default opus model, covering all three phases. Fails the PR if the combined
+pass rate drops below 90%.
 
 Both jobs write detailed results to the GitHub Actions step summary for easy
 review.

@@ -60,9 +60,14 @@
     "jsx": "react",
     "strict": true
   },
+  "fmt": {
+    "exclude": ["scripts/"]
+  },
+  "lint": {
+    "exclude": ["scripts/"]
+  },
   "exclude": [
     "design/",
-    "scripts/",
     ".github/",
     ".agents/",
     "agent-constraints/",

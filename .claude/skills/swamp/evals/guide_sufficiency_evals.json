@@ -156,6 +156,72 @@
     "note": "Quick Reference table has auth_verified state with swamp auth whoami --json"
   },
   {
+    "query": "Should I build a model or a workflow to automate a three-step deploy?",
+    "guide": "architecture",
+    "answerable_from_guide": true,
+    "note": "Decision tree and primitive table are in guide.md — this guide is self-contained"
+  },
+  {
+    "query": "Which design doc should I cite when explaining DAG step ordering?",
+    "guide": "architecture",
+    "answerable_from_guide": true,
+    "note": "Conceptual References section names design/workflow.md"
+  },
+  {
+    "query": "How does CEL expression evaluation actually resolve step references internally?",
+    "guide": "architecture",
+    "answerable_from_guide": false,
+    "note": "The guide only points at design/expressions.md; the mechanics live there"
+  },
+  {
+    "query": "Check whether my repo's datastore is already external",
+    "guide": "share",
+    "answerable_from_guide": true,
+    "note": "Quick Reference has swamp datastore status --json"
+  },
+  {
+    "query": "What has to change before a teammate can clone and use my repo?",
+    "guide": "share",
+    "answerable_from_guide": true,
+    "note": "State machine and assess checklist are in guide.md"
+  },
+  {
+    "query": "What does the swamp datastore setup output look like when it succeeds?",
+    "guide": "share",
+    "answerable_from_guide": false,
+    "note": "CLI output shapes are in reference.md"
+  },
+  {
+    "query": "What onboarding instructions should I hand to the teammate joining the repo?",
+    "guide": "share",
+    "answerable_from_guide": false,
+    "note": "Joiner template is in references/joiner-instructions.md"
+  },
+  {
+    "query": "What auth modes does swamp serve support and which needs swamp-club?",
+    "guide": "serve",
+    "answerable_from_guide": true,
+    "note": "Auth Modes table is in guide.md — this guide is self-contained"
+  },
+  {
+    "query": "Create a grant letting the ops group run workflows in the acme namespace",
+    "guide": "serve",
+    "answerable_from_guide": true,
+    "note": "CLI Grant Management section has swamp access grant create"
+  },
+  {
+    "query": "How often does the server refresh IdP group memberships, and can I disable it?",
+    "guide": "serve",
+    "answerable_from_guide": true,
+    "note": "Background refresh section documents --group-refresh-interval and the 0 value"
+  },
+  {
+    "query": "Where do declarative grant YAML files live and how do I apply them?",
+    "guide": "serve",
+    "answerable_from_guide": true,
+    "note": "Declarative Grants section covers the grants/ directory and swamp access reload"
+  },
+  {
     "query": "What are the four diagnostic tiers for troubleshooting?",
     "guide": "troubleshooting",
     "answerable_from_guide": true,

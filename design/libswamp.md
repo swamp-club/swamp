@@ -1056,5 +1056,27 @@ src/cli/commands/     →  libswamp/         →  src/domain/
 ```
 
 The CLI layer depends on libswamp. libswamp depends on domain and
-infrastructure. Domain depends on nothing. This is the standard hexagonal
-dependency rule, enforced by Deno's module system.
+infrastructure. Domain should depend on nothing — that is the standard
+hexagonal dependency rule, and the target state.
+
+It is not the current state, and nothing in Deno's module system enforces it.
+A set of `src/domain/**` modules still import concrete infrastructure directly
+(YAML repositories, the catalog store, the CEL evaluator, path helpers). Those
+edges are legacy debt from before libswamp existed, and they are pinned
+individually in `integration/ddd_layer_rules_test.ts`:
+
+- The test scans every domain source file and compares the exact set of
+  domain→infrastructure import edges against a checked-in list.
+- A **new** edge fails the build. Define the port in the domain and implement
+  it in infrastructure instead of adding one.
+- A **removed** edge also fails the build, so the pinned list must be trimmed
+  when debt is paid off and the fix cannot silently regress.
+- Logging (`src/infrastructure/logging/`) and tracing
+  (`src/infrastructure/tracing/`) are exempt as cross-cutting concerns.
+
+The same file pins the `src/serve/ → src/cli/` and
+`src/presentation/ → src/cli/` edges on the same terms, and
+`integration/architecture_boundary_test.ts` pins the mutual dependencies
+between bounded contexts. New code is expected to follow the dependency rule;
+the pinned lists exist so the existing violations shrink over time and never
+grow.
