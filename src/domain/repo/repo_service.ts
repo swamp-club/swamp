@@ -715,9 +715,9 @@ export class RepoService {
           const c = await this.ensureKiroCliDefaultAgent(repoPath);
           settingsChanged = s || h || a || c;
           if (s) changedFiles.push(".vscode/settings.local.json");
-          if (h) changedFiles.push(".kiro/hooks.json");
-          if (a) changedFiles.push(".kiro/agents/swamp.agent.md");
-          if (c) changedFiles.push(".kiro/config.json");
+          if (h) changedFiles.push(".kiro/hooks/swamp-audit.kiro.hook");
+          if (a) changedFiles.push(".kiro/agents/swamp.json");
+          if (c) changedFiles.push(".kiro/settings/cli.json");
           break;
         }
         case "opencode": {
