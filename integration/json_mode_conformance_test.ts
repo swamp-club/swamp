@@ -215,6 +215,14 @@ async function loadCommandModules(): Promise<{
   const fileOfCommand = new Map<unknown, string>();
   const sources = new Map<string, string>();
 
+  // Settle every command module in production evaluation order before the
+  // per-file imports below. The walk yields files in filesystem order, which
+  // differs across platforms; entering a module cycle (extension.ts ->
+  // extension_source.ts -> extension_source_add.ts) from the wrong side
+  // throws a TDZ ReferenceError. After this import the per-file imports only
+  // hit the module cache.
+  await import(toFileUrl(join(cliDir, "mod.ts")).href);
+
   for await (
     const entry of walkFs(commandsDir, { exts: [".ts"], includeDirs: false })
   ) {
