@@ -185,19 +185,10 @@ export class VaultService {
       }
     }
     vaultService.ensureDefaultVaults();
-    if (vaultService.hasAnyAuditEnabled()) {
-      vaultService.setAuditRepository(
-        new JsonlVaultAuditRepository(repoDir),
-      );
-    }
+    vaultService.setAuditRepository(
+      new JsonlVaultAuditRepository(repoDir),
+    );
     return vaultService;
-  }
-
-  private hasAnyAuditEnabled(): boolean {
-    for (const enabled of this.auditFlags.values()) {
-      if (enabled) return true;
-    }
-    return false;
   }
 
   /**

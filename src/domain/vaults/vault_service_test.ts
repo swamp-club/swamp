@@ -582,6 +582,53 @@ Deno.test("VaultService - fromRepository auto-remaps renamed vault types", async
   );
 });
 
+Deno.test("VaultService - fromRepository wires audit repository even without auditReads", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const vaultDir = join(tempDir, "vaults", "noaudit");
+    await ensureDir(vaultDir);
+    await Deno.writeTextFile(
+      join(vaultDir, "noaudit-id.yaml"),
+      stringifyYaml({
+        id: "noaudit-id",
+        name: "noaudit",
+        type: "mock",
+        config: { "secret-key": "secret-value" },
+        createdAt: new Date(2026, 0, 1).toISOString(),
+      }),
+    );
+
+    const vaultService = await VaultService.fromRepository(tempDir);
+    await vaultService.put("noaudit", "secret-key", "new-value");
+
+    const auditDir = join(tempDir, ".swamp", "audit");
+    let hasAuditFile = false;
+    try {
+      for await (const entry of Deno.readDir(auditDir)) {
+        if (
+          entry.name.startsWith("vault-audit-") && entry.name.endsWith(".jsonl")
+        ) {
+          hasAuditFile = true;
+          const content = await Deno.readTextFile(join(auditDir, entry.name));
+          const record = JSON.parse(content.trim());
+          assertEquals(record.action, "put");
+          assertEquals(record.vaultName, "noaudit");
+          assertEquals(record.secretKey, "secret-key");
+        }
+      }
+    } catch {
+      // audit dir doesn't exist — fail
+    }
+    assertEquals(
+      hasAuditFile,
+      true,
+      "Expected a vault-audit JSONL file to be created",
+    );
+  } finally {
+    await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+  }
+});
+
 Deno.test("VaultService - delete", async (t) => {
   await t.step("should delete a secret from a mock vault", async () => {
     const vaultService = new VaultService();
