@@ -18,35 +18,44 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { join } from "@std/path";
 import { hasCaTrue, validateEndEntityCert } from "./tls_cert_validation.ts";
 
 async function generateCert(
   extraArgs: string[] = [],
 ): Promise<string> {
-  const cmd = new Deno.Command("openssl", {
-    args: [
-      "req",
-      "-x509",
-      "-newkey",
-      "ec",
-      "-pkeyopt",
-      "ec_paramgen_curve:P-256",
-      "-keyout",
-      "/dev/null",
-      "-out",
-      "/dev/stdout",
-      "-days",
-      "1",
-      "-nodes",
-      "-subj",
-      "/CN=test",
-      ...extraArgs,
-    ],
-    stdout: "piped",
-    stderr: "null",
-  });
-  const { stdout } = await cmd.output();
-  return new TextDecoder().decode(stdout);
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const keyPath = join(tmpDir, "key.pem");
+    const certPath = join(tmpDir, "cert.pem");
+    const cmd = new Deno.Command("openssl", {
+      args: [
+        "req",
+        "-x509",
+        "-newkey",
+        "ec",
+        "-pkeyopt",
+        "ec_paramgen_curve:P-256",
+        "-keyout",
+        keyPath,
+        "-out",
+        certPath,
+        "-days",
+        "1",
+        "-nodes",
+        "-subj",
+        "/CN=test",
+        ...extraArgs,
+      ],
+      stdout: "null",
+      stderr: "null",
+    });
+    const { success } = await cmd.output();
+    if (!success) throw new Error("openssl failed");
+    return await Deno.readTextFile(certPath);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
 }
 
 Deno.test("hasCaTrue: returns true for default openssl req -x509 cert", async () => {
@@ -63,30 +72,38 @@ Deno.test("hasCaTrue: returns false for CA:FALSE cert", async () => {
 });
 
 Deno.test("hasCaTrue: returns false for RSA CA:FALSE cert", async () => {
-  const cmd = new Deno.Command("openssl", {
-    args: [
-      "req",
-      "-x509",
-      "-newkey",
-      "rsa:2048",
-      "-keyout",
-      "/dev/null",
-      "-out",
-      "/dev/stdout",
-      "-days",
-      "1",
-      "-nodes",
-      "-subj",
-      "/CN=test",
-      "-addext",
-      "basicConstraints=critical,CA:FALSE",
-    ],
-    stdout: "piped",
-    stderr: "null",
-  });
-  const { stdout } = await cmd.output();
-  const cert = new TextDecoder().decode(stdout);
-  assertEquals(hasCaTrue(cert), false);
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const keyPath = join(tmpDir, "key.pem");
+    const certPath = join(tmpDir, "cert.pem");
+    const cmd = new Deno.Command("openssl", {
+      args: [
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-keyout",
+        keyPath,
+        "-out",
+        certPath,
+        "-days",
+        "1",
+        "-nodes",
+        "-subj",
+        "/CN=test",
+        "-addext",
+        "basicConstraints=critical,CA:FALSE",
+      ],
+      stdout: "null",
+      stderr: "null",
+    });
+    const { success } = await cmd.output();
+    if (!success) throw new Error("openssl failed");
+    const cert = await Deno.readTextFile(certPath);
+    assertEquals(hasCaTrue(cert), false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
 });
 
 Deno.test("hasCaTrue: returns false for invalid PEM", () => {
