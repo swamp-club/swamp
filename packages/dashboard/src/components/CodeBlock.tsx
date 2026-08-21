@@ -36,12 +36,14 @@ export function CodeBlock({ code, language = "json" }: CodeBlockProps) {
 }
 
 function highlightJson(raw: string): string {
+  // escapeHtml neutralizes <, >, & for XSS safety. Quotes stay as
+  // literal " so the regexes below match them directly.
   const safe = escapeHtml(raw);
   return safe.replace(
-    /(&quot;(?:[^&]|&(?!quot;))*&quot;)\s*:/g,
+    /("(?:[^"\\]|\\.)*")\s*:/g,
     '<span class="code-key">$1</span>:',
   ).replace(
-    /:\s*(&quot;(?:[^&]|&(?!quot;))*&quot;)/g,
+    /:\s*("(?:[^"\\]|\\.)*")/g,
     ': <span class="code-string">$1</span>',
   ).replace(
     /:\s*(\d+(?:\.\d+)?)\b/g,
@@ -67,12 +69,12 @@ function highlightYaml(raw: string): string {
         '$1<span class="code-key">$2</span>$3',
       )
       .replace(
-        /:\s+&quot;([^&]*)&quot;$/,
-        ': <span class="code-string">&quot;$1&quot;</span>',
+        /:\s+"([^"]*)"$/,
+        ': <span class="code-string">"$1"</span>',
       )
       .replace(
-        /:\s+&#39;([^&]*)&#39;$/,
-        ': <span class="code-string">&#39;$1&#39;</span>',
+        /:\s+'([^']*)'$/,
+        ": <span class=\"code-string\">'$1'</span>",
       )
       .replace(
         /:\s+(\d+(?:\.\d+)?)$/,
