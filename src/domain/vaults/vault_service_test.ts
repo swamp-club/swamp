@@ -681,7 +681,7 @@ class InMemoryVaultAuditRepository implements VaultAuditRepository {
 
 Deno.test("VaultService - audit trail", async (t) => {
   await t.step(
-    "should record audit entry when audit is enabled on vault",
+    "should record audit entry with action get when audit is enabled on vault",
     async () => {
       const svc = new VaultService();
       const auditRepo = new InMemoryVaultAuditRepository();
@@ -697,6 +697,7 @@ Deno.test("VaultService - audit trail", async (t) => {
       await svc.get("audited-vault", "key", "test-caller");
 
       assertEquals(auditRepo.entries.length, 1);
+      assertEquals(auditRepo.entries[0].action, "get");
       assertEquals(auditRepo.entries[0].vaultName, "audited-vault");
       assertEquals(auditRepo.entries[0].vaultType, "mock");
       assertEquals(auditRepo.entries[0].secretKey, "key");
@@ -705,7 +706,7 @@ Deno.test("VaultService - audit trail", async (t) => {
   );
 
   await t.step(
-    "should not record audit entry when audit is disabled on vault",
+    "should not record read audit entry when auditReads is disabled",
     async () => {
       const svc = new VaultService();
       const auditRepo = new InMemoryVaultAuditRepository();
@@ -781,6 +782,97 @@ Deno.test("VaultService - audit trail", async (t) => {
 
       const result = await svc.get("vault", "key");
       assertEquals(result, "val");
+    },
+  );
+
+  await t.step(
+    "should record put audit entry even without auditReads flag",
+    async () => {
+      const svc = new VaultService();
+      const auditRepo = new InMemoryVaultAuditRepository();
+      svc.setAuditRepository(auditRepo);
+
+      svc.registerVault({
+        name: "vault",
+        type: "mock",
+        config: {},
+      });
+
+      await svc.put("vault", "secret", "value", undefined, "cli:vault-put");
+
+      assertEquals(auditRepo.entries.length, 1);
+      assertEquals(auditRepo.entries[0].action, "put");
+      assertEquals(auditRepo.entries[0].vaultName, "vault");
+      assertEquals(auditRepo.entries[0].secretKey, "secret");
+      assertEquals(auditRepo.entries[0].callerContext, "cli:vault-put");
+    },
+  );
+
+  await t.step(
+    "should record delete audit entry even without auditReads flag",
+    async () => {
+      const svc = new VaultService();
+      const auditRepo = new InMemoryVaultAuditRepository();
+      svc.setAuditRepository(auditRepo);
+
+      svc.registerVault({
+        name: "vault",
+        type: "mock",
+        config: {},
+      });
+
+      await svc.put("vault", "to-delete", "value");
+      auditRepo.entries.length = 0;
+
+      await svc.delete("vault", "to-delete", "cli:vault-delete");
+
+      assertEquals(auditRepo.entries.length, 1);
+      assertEquals(auditRepo.entries[0].action, "delete");
+      assertEquals(auditRepo.entries[0].secretKey, "to-delete");
+      assertEquals(auditRepo.entries[0].callerContext, "cli:vault-delete");
+    },
+  );
+
+  await t.step(
+    "should record annotate audit entry even without auditReads flag",
+    async () => {
+      const svc = new VaultService();
+      const auditRepo = new InMemoryVaultAuditRepository();
+      svc.setAuditRepository(auditRepo);
+
+      svc.registerVault({
+        name: "vault",
+        type: "local_encryption",
+        config: { auto_generate: true },
+      });
+
+      await svc.put("vault", "key", "value");
+      auditRepo.entries.length = 0;
+
+      const { VaultAnnotation } = await import("./vault_annotation.ts");
+      const annotation = VaultAnnotation.create({ notes: "test" });
+      await svc.putAnnotation("vault", "key", annotation, "cli:vault-annotate");
+
+      assertEquals(auditRepo.entries.length, 1);
+      assertEquals(auditRepo.entries[0].action, "annotate");
+      assertEquals(auditRepo.entries[0].secretKey, "key");
+      assertEquals(auditRepo.entries[0].callerContext, "cli:vault-annotate");
+    },
+  );
+
+  await t.step(
+    "should not record write audit when no audit repository is set",
+    async () => {
+      const svc = new VaultService();
+
+      svc.registerVault({
+        name: "vault",
+        type: "mock",
+        config: {},
+      });
+
+      // Should not throw — put succeeds, audit is silently skipped
+      await svc.put("vault", "key", "val");
     },
   );
 });

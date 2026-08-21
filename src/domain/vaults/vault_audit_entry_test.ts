@@ -26,12 +26,14 @@ import {
 
 Deno.test("createVaultAuditEntry: creates entry with all fields", () => {
   const entry = createVaultAuditEntry(
+    "get",
     "my-vault",
     "local_encryption",
     "API_KEY",
     "cli:vault-read-secret",
   );
 
+  assertEquals(entry.action, "get");
   assertEquals(entry.vaultName, "my-vault");
   assertEquals(entry.vaultType, "local_encryption");
   assertEquals(entry.secretKey, "API_KEY");
@@ -40,8 +42,22 @@ Deno.test("createVaultAuditEntry: creates entry with all fields", () => {
   assertEquals(new Date(entry.timestamp).toISOString(), entry.timestamp);
 });
 
+Deno.test("createVaultAuditEntry: supports all action types", () => {
+  for (const action of ["get", "put", "delete", "annotate"] as const) {
+    const entry = createVaultAuditEntry(
+      action,
+      "v",
+      "mock",
+      "k",
+      "test",
+    );
+    assertEquals(entry.action, action);
+  }
+});
+
 Deno.test("vaultAuditEntryToData: serializes entry to data", () => {
   const entry = createVaultAuditEntry(
+    "put",
     "my-vault",
     "local_encryption",
     "DB_PASS",
@@ -50,6 +66,7 @@ Deno.test("vaultAuditEntryToData: serializes entry to data", () => {
 
   const data = vaultAuditEntryToData(entry);
 
+  assertEquals(data.action, "put");
   assertEquals(data.vaultName, "my-vault");
   assertEquals(data.vaultType, "local_encryption");
   assertEquals(data.secretKey, "DB_PASS");
@@ -58,6 +75,26 @@ Deno.test("vaultAuditEntryToData: serializes entry to data", () => {
 });
 
 Deno.test("vaultAuditEntryFromData: deserializes data to entry", () => {
+  const data = {
+    action: "delete" as const,
+    timestamp: "2026-07-10T12:00:00.000Z",
+    vaultName: "prod-vault",
+    vaultType: "@swamp/aws-sm",
+    secretKey: "TOKEN",
+    callerContext: "unknown",
+  };
+
+  const entry = vaultAuditEntryFromData(data);
+
+  assertEquals(entry.action, "delete");
+  assertEquals(entry.timestamp, "2026-07-10T12:00:00.000Z");
+  assertEquals(entry.vaultName, "prod-vault");
+  assertEquals(entry.vaultType, "@swamp/aws-sm");
+  assertEquals(entry.secretKey, "TOKEN");
+  assertEquals(entry.callerContext, "unknown");
+});
+
+Deno.test("vaultAuditEntryFromData: defaults missing action to get", () => {
   const data = {
     timestamp: "2026-07-10T12:00:00.000Z",
     vaultName: "prod-vault",
@@ -68,15 +105,12 @@ Deno.test("vaultAuditEntryFromData: deserializes data to entry", () => {
 
   const entry = vaultAuditEntryFromData(data);
 
-  assertEquals(entry.timestamp, "2026-07-10T12:00:00.000Z");
-  assertEquals(entry.vaultName, "prod-vault");
-  assertEquals(entry.vaultType, "@swamp/aws-sm");
-  assertEquals(entry.secretKey, "TOKEN");
-  assertEquals(entry.callerContext, "unknown");
+  assertEquals(entry.action, "get");
 });
 
 Deno.test("vaultAuditEntry: round-trip preserves all fields", () => {
   const original = createVaultAuditEntry(
+    "annotate",
     "test-vault",
     "local_encryption",
     "MY_SECRET",
@@ -86,6 +120,7 @@ Deno.test("vaultAuditEntry: round-trip preserves all fields", () => {
   const data = vaultAuditEntryToData(original);
   const restored = vaultAuditEntryFromData(data);
 
+  assertEquals(restored.action, original.action);
   assertEquals(restored.timestamp, original.timestamp);
   assertEquals(restored.vaultName, original.vaultName);
   assertEquals(restored.vaultType, original.vaultType);

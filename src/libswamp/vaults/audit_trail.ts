@@ -42,6 +42,7 @@ export type VaultAuditTrailEvent =
 export interface VaultAuditTrailInput {
   vaultName?: string;
   secretKey?: string;
+  action?: string;
   since?: Date;
   until?: Date;
   limit?: number;
@@ -111,12 +112,13 @@ export async function* vaultAuditTrail(
       }
 
       ctx.logger
-        .debug`Querying vault audit trail: vault=${input.vaultName}, key=${input.secretKey}, since=${since.toISOString()}, until=${until.toISOString()}, limit=${limit}`;
+        .debug`Querying vault audit trail: vault=${input.vaultName}, key=${input.secretKey}, action=${input.action}, since=${since.toISOString()}, until=${until.toISOString()}, limit=${limit}`;
 
       const fetchLimit = limit + 1;
       const entries = await deps.findByTimeRange(since, until, {
         vaultName: input.vaultName,
         secretKey: input.secretKey,
+        action: input.action,
         limit: fetchLimit,
       });
 

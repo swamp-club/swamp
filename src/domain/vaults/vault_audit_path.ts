@@ -19,14 +19,23 @@
 
 import { join } from "@std/path";
 
-const VAULT_AUDIT_FILENAME_PREFIX = "vault-reads-";
+const VAULT_AUDIT_FILENAME_PREFIX = "vault-audit-";
 const VAULT_AUDIT_FILENAME_SUFFIX = ".jsonl";
 
+const VAULT_AUDIT_LEGACY_PREFIX = "vault-reads-";
+
 export const VAULT_AUDIT_FILENAME_PATTERN =
+  /^vault-audit-(\d{4}-\d{2}-\d{2})\.jsonl$/;
+
+export const VAULT_AUDIT_LEGACY_FILENAME_PATTERN =
   /^vault-reads-(\d{4}-\d{2}-\d{2})\.jsonl$/;
 
 export function vaultAuditFilename(date: string): string {
   return `${VAULT_AUDIT_FILENAME_PREFIX}${date}${VAULT_AUDIT_FILENAME_SUFFIX}`;
+}
+
+export function vaultAuditLegacyFilename(date: string): string {
+  return `${VAULT_AUDIT_LEGACY_PREFIX}${date}${VAULT_AUDIT_FILENAME_SUFFIX}`;
 }
 
 function datePartOfIsoTimestamp(iso: string): string {
@@ -42,4 +51,12 @@ export function vaultAuditFilePathForTimestamp(
   isoTimestamp: string,
 ): string {
   return join(auditDir, vaultAuditFilenameForTimestamp(isoTimestamp));
+}
+
+export function vaultAuditLegacyFilePathForTimestamp(
+  auditDir: string,
+  isoTimestamp: string,
+): string {
+  const date = isoTimestamp.split("T")[0];
+  return join(auditDir, vaultAuditLegacyFilename(date));
 }

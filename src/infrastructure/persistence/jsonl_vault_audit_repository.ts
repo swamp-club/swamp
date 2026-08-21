@@ -26,7 +26,10 @@ import {
   vaultAuditEntryFromData,
   vaultAuditEntryToData,
 } from "../../domain/vaults/vault_audit_entry.ts";
-import { vaultAuditFilePathForTimestamp } from "../../domain/vaults/vault_audit_path.ts";
+import {
+  vaultAuditFilePathForTimestamp,
+  vaultAuditLegacyFilePathForTimestamp,
+} from "../../domain/vaults/vault_audit_path.ts";
 import type {
   VaultAuditQueryOptions,
   VaultAuditRepository,
@@ -77,45 +80,55 @@ export class JsonlVaultAuditRepository implements VaultAuditRepository {
       end.setUTCHours(23, 59, 59, 999);
 
       while (current <= end) {
-        const path = vaultAuditFilePathForTimestamp(
-          this.baseDir,
-          current.toISOString(),
-        );
+        const iso = current.toISOString();
+        const paths = [
+          vaultAuditFilePathForTimestamp(this.baseDir, iso),
+          vaultAuditLegacyFilePathForTimestamp(this.baseDir, iso),
+        ];
 
-        try {
-          const content = await Deno.readTextFile(path);
-          const lines = content.split("\n").filter((line) => line.trim());
+        for (const path of paths) {
+          try {
+            const content = await Deno.readTextFile(path);
+            const lines = content.split("\n").filter((line) => line.trim());
 
-          for (const line of lines) {
-            try {
-              const data = JSON.parse(line) as VaultAuditEntryData;
-              const entry = vaultAuditEntryFromData(data);
+            for (const line of lines) {
+              try {
+                const data = JSON.parse(line) as VaultAuditEntryData;
+                const entry = vaultAuditEntryFromData(data);
 
-              const entryTime = new Date(entry.timestamp);
-              if (entryTime < startTime || entryTime > endTime) continue;
-              if (options?.vaultName && entry.vaultName !== options.vaultName) {
-                continue;
+                const entryTime = new Date(entry.timestamp);
+                if (entryTime < startTime || entryTime > endTime) continue;
+                if (
+                  options?.vaultName && entry.vaultName !== options.vaultName
+                ) {
+                  continue;
+                }
+                if (
+                  options?.secretKey && entry.secretKey !== options.secretKey
+                ) {
+                  continue;
+                }
+                if (options?.action && entry.action !== options.action) {
+                  continue;
+                }
+
+                entries.push(entry);
+
+                if (options?.limit && entries.length >= options.limit) {
+                  return entries;
+                }
+              } catch {
+                // Skip malformed lines
               }
-              if (options?.secretKey && entry.secretKey !== options.secretKey) {
-                continue;
-              }
-
-              entries.push(entry);
-
-              if (options?.limit && entries.length >= options.limit) {
-                return entries;
-              }
-            } catch {
-              // Skip malformed lines
             }
-          }
-        } catch (error) {
-          if (!(error instanceof Deno.errors.NotFound)) {
-            if (Deno.env.get("SWAMP_DEBUG")) {
-              console.error(
-                `[VaultAudit] Failed to read ${path}:`,
-                error,
-              );
+          } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) {
+              if (Deno.env.get("SWAMP_DEBUG")) {
+                console.error(
+                  `[VaultAudit] Failed to read ${path}:`,
+                  error,
+                );
+              }
             }
           }
         }

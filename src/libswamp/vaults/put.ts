@@ -80,6 +80,7 @@ export interface VaultPutDeps {
     key: string,
     value: string,
     tags?: Record<string, string>,
+    callerContext?: string,
   ) => Promise<void>;
   publishSecretUpdated: (
     vaultId: string,
@@ -122,9 +123,15 @@ export function createVaultPutDeps(
       const keys = await svc.list(vaultName);
       return keys.includes(key);
     },
-    putSecret: async (vaultName, key, value, tags) => {
+    putSecret: async (vaultName, key, value, tags, callerContext) => {
       const svc = await getVaultService();
-      await svc.put(vaultName, key, value, tags ? { tags } : undefined);
+      await svc.put(
+        vaultName,
+        key,
+        value,
+        tags ? { tags } : undefined,
+        callerContext,
+      );
     },
     publishSecretUpdated: async (vaultId, vaultType, vaultName, key) => {
       const event = createVaultSecretUpdated(
@@ -208,7 +215,13 @@ export async function* vaultPut(
       const tags = input.tags && Object.keys(input.tags).length > 0
         ? input.tags
         : undefined;
-      await deps.putSecret(input.vaultName, input.key, input.value, tags);
+      await deps.putSecret(
+        input.vaultName,
+        input.key,
+        input.value,
+        tags,
+        "cli:vault-put",
+      );
       ctx.logger.debug`Secret stored successfully`;
 
       const appliedLabels: Record<string, string> | undefined = tags;

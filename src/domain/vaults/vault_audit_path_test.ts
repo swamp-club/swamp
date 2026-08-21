@@ -20,23 +20,26 @@
 import { assertEquals } from "@std/assert";
 import {
   VAULT_AUDIT_FILENAME_PATTERN,
+  VAULT_AUDIT_LEGACY_FILENAME_PATTERN,
   vaultAuditFilename,
   vaultAuditFilenameForTimestamp,
   vaultAuditFilePathForTimestamp,
+  vaultAuditLegacyFilename,
+  vaultAuditLegacyFilePathForTimestamp,
 } from "./vault_audit_path.ts";
 import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 
 Deno.test("vaultAuditFilename: formats date as vault audit filename", () => {
   assertEquals(
     vaultAuditFilename("2026-07-10"),
-    "vault-reads-2026-07-10.jsonl",
+    "vault-audit-2026-07-10.jsonl",
   );
 });
 
 Deno.test("vaultAuditFilenameForTimestamp: extracts date from ISO timestamp", () => {
   assertEquals(
     vaultAuditFilenameForTimestamp("2026-07-10T15:30:00.000Z"),
-    "vault-reads-2026-07-10.jsonl",
+    "vault-audit-2026-07-10.jsonl",
   );
 });
 
@@ -47,16 +50,23 @@ Deno.test("vaultAuditFilePathForTimestamp: returns full path", () => {
   );
   assertPathEquals(
     path,
-    "/repo/.swamp/audit/vault-reads-2026-07-10.jsonl",
+    "/repo/.swamp/audit/vault-audit-2026-07-10.jsonl",
   );
 });
 
-Deno.test("VAULT_AUDIT_FILENAME_PATTERN: matches valid filenames", () => {
-  const match = "vault-reads-2026-07-10.jsonl".match(
+Deno.test("VAULT_AUDIT_FILENAME_PATTERN: matches new filenames", () => {
+  const match = "vault-audit-2026-07-10.jsonl".match(
     VAULT_AUDIT_FILENAME_PATTERN,
   );
   assertEquals(match !== null, true);
   assertEquals(match![1], "2026-07-10");
+});
+
+Deno.test("VAULT_AUDIT_FILENAME_PATTERN: does not match legacy filenames", () => {
+  const match = "vault-reads-2026-07-10.jsonl".match(
+    VAULT_AUDIT_FILENAME_PATTERN,
+  );
+  assertEquals(match, null);
 });
 
 Deno.test("VAULT_AUDIT_FILENAME_PATTERN: does not match command audit files", () => {
@@ -64,4 +74,30 @@ Deno.test("VAULT_AUDIT_FILENAME_PATTERN: does not match command audit files", ()
     VAULT_AUDIT_FILENAME_PATTERN,
   );
   assertEquals(match, null);
+});
+
+Deno.test("vaultAuditLegacyFilename: formats legacy filename", () => {
+  assertEquals(
+    vaultAuditLegacyFilename("2026-07-10"),
+    "vault-reads-2026-07-10.jsonl",
+  );
+});
+
+Deno.test("VAULT_AUDIT_LEGACY_FILENAME_PATTERN: matches legacy filenames", () => {
+  const match = "vault-reads-2026-07-10.jsonl".match(
+    VAULT_AUDIT_LEGACY_FILENAME_PATTERN,
+  );
+  assertEquals(match !== null, true);
+  assertEquals(match![1], "2026-07-10");
+});
+
+Deno.test("vaultAuditLegacyFilePathForTimestamp: returns full path", () => {
+  const path = vaultAuditLegacyFilePathForTimestamp(
+    "/repo/.swamp/audit",
+    "2026-07-10T15:30:00.000Z",
+  );
+  assertPathEquals(
+    path,
+    "/repo/.swamp/audit/vault-reads-2026-07-10.jsonl",
+  );
 });

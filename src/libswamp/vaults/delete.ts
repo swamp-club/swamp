@@ -62,7 +62,11 @@ export interface VaultDeleteDeps {
   findVault: (name: string) => Promise<VaultDeleteConfigInfo | null>;
   listVaultNames: () => Promise<string[]>;
   supportsDelete: (vaultName: string) => Promise<boolean>;
-  deleteSecret: (vaultName: string, key: string) => Promise<void>;
+  deleteSecret: (
+    vaultName: string,
+    key: string,
+    callerContext?: string,
+  ) => Promise<void>;
   publishSecretDeleted: (
     vaultId: string,
     vaultType: string,
@@ -95,9 +99,9 @@ export function createVaultDeleteDeps(
       const svc = await getVaultService();
       return svc.supportsDelete(vaultName);
     },
-    deleteSecret: async (vaultName, key) => {
+    deleteSecret: async (vaultName, key, callerContext) => {
       const svc = await getVaultService();
-      await svc.delete(vaultName, key);
+      await svc.delete(vaultName, key, callerContext);
     },
     publishSecretDeleted: async (vaultId, vaultType, vaultName, key) => {
       const event = createVaultSecretDeleted(
@@ -164,7 +168,7 @@ export async function* vaultDelete(
         return;
       }
 
-      await deps.deleteSecret(input.vaultName, input.key);
+      await deps.deleteSecret(input.vaultName, input.key, "cli:vault-delete");
       ctx.logger.debug`Secret deleted successfully`;
 
       await deps.publishSecretDeleted(

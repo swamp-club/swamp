@@ -833,6 +833,7 @@ export async function handleVaultAuditTrail(
       vaultAuditTrail(libCtx, deps, {
         vaultName: payload?.vaultName,
         secretKey: payload?.secretKey,
+        action: payload?.action,
         since: payload?.since ? new Date(payload.since) : undefined,
         until: payload?.until ? new Date(payload.until) : undefined,
         limit: payload?.limit,
