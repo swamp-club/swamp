@@ -204,6 +204,8 @@ async function main() {
       "--exclude",
       "scripts",
       "--exclude",
+      "verification",
+      "--exclude",
       "workflows",
     ];
 

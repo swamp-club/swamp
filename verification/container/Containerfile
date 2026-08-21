@@ -1,0 +1,64 @@
+# syntax=docker/dockerfile:1
+#
+# Verification Sandbox Container
+# OCI-compliant image for pre-PR verification loops.
+# Compatible with Docker, Apple Containers, and Kubernetes.
+#
+# The container provides an isolated, reproducible environment matching
+# CI conditions. Agents run verification workflows inside it directly —
+# no orchestrator or worker protocol needed.
+#
+# Build:  ./containers/verify/build.sh
+#
+# Run a verification workflow:
+#   docker run --rm -v $(pwd):/workspace \
+#     swamp-club/verify:latest \
+#     workflow run verify-changes
+#
+# Interactive shell (debugging):
+#   docker run --rm -it -v $(pwd):/workspace \
+#     --entrypoint /bin/bash \
+#     swamp-club/verify:latest
+
+ARG DENO_VERSION=2.8.3
+
+# ── Stage 1: Compile swamp binary ──────────────────────────────
+FROM denoland/deno:${DENO_VERSION} AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends unzip git && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY . .
+RUN deno run -A scripts/compile.ts
+
+# ── Stage 2: Runtime ───────────────────────────────────────────
+FROM denoland/deno:${DENO_VERSION}
+
+# git: repo operations and @swamp/git extension
+# curl: @swamp/deno-runner downloads pinned Deno versions
+# ca-certificates: TLS for registry/API calls
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       git \
+       curl \
+       unzip \
+       ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/swamp /usr/local/bin/swamp
+RUN chmod +x /usr/local/bin/swamp
+
+WORKDIR /workspace
+
+# OCI annotations (build-time labels added by build.sh)
+LABEL org.opencontainers.image.title="swamp-verify" \
+      org.opencontainers.image.description="Verification sandbox for pre-PR verification loops" \
+      org.opencontainers.image.vendor="swamp-club" \
+      org.opencontainers.image.url="https://github.com/swamp-club/swamp" \
+      org.opencontainers.image.source="https://github.com/swamp-club/swamp"
+
+ENV SWAMP_NO_TELEMETRY=1
+
+# The entrypoint is `swamp` — the agent passes the subcommand.
+# Typical use: docker run ... swamp-club/verify workflow run verify-changes
+ENTRYPOINT ["swamp"]

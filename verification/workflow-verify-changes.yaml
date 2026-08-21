@@ -1,0 +1,247 @@
+id: ae3c59af-767a-4b40-92af-78efb15ad21e
+name: verify-changes
+description: |
+  Pre-PR verification loop. Runs lint, format check, type check, tests,
+  compile, dependency audit, and agent reviews inside a container sandbox.
+  Produces a verification attestation on success.
+version: 1
+
+tags:
+  purpose: pre-pr-verification
+
+inputs:
+  properties:
+    commit:
+      type: string
+      description: Commit SHA being verified.
+    branch:
+      type: string
+      description: Branch name being verified.
+    agentCliVersion:
+      type: string
+      description: Claude Code CLI version for agent reviews.
+      default: "1.0.33"
+    workingDir:
+      type: string
+      description: Directory containing the project checkout.
+      default: /workspace
+  required:
+    - commit
+    - branch
+
+concurrency: 4
+
+jobs:
+  # ── Static Analysis ──────────────────────────────────────────
+  - name: static-analysis
+    description: Lint, format check, and type check.
+    steps:
+      - name: lint
+        task:
+          type: model_method
+          modelType: "@swamp/deno-runner"
+          modelName: lint
+          methodName: task
+          inputs:
+            version: "2.8.3"
+            taskName: "lint"
+            workingDir: "${{ inputs.workingDir }}"
+
+      - name: fmt-check
+        task:
+          type: model_method
+          modelType: "@swamp/deno-runner"
+          modelName: fmt-check
+          methodName: run
+          inputs:
+            version: "2.8.3"
+            args:
+              - fmt
+              - --check
+            workingDir: "${{ inputs.workingDir }}"
+
+      - name: type-check
+        task:
+          type: model_method
+          modelType: "@swamp/deno-runner"
+          modelName: type-check
+          methodName: task
+          inputs:
+            version: "2.8.3"
+            taskName: "check"
+            workingDir: "${{ inputs.workingDir }}"
+
+  # ── Tests ────────────────────────────────────────────────────
+  - name: tests
+    description: Run the full test suite in parallel.
+    steps:
+      - name: run-tests
+        task:
+          type: model_method
+          modelType: "@swamp/deno-runner"
+          modelName: tests
+          methodName: task
+          inputs:
+            version: "2.8.3"
+            taskName: "test"
+            workingDir: "${{ inputs.workingDir }}"
+
+  # ── Dependency Audit ─────────────────────────────────────────
+  - name: deps-audit
+    description: Scan dependencies for known vulnerabilities.
+    steps:
+      - name: vuln-scan
+        task:
+          type: model_method
+          modelType: "@swamp/deno-runner"
+          modelName: audit
+          methodName: task
+          inputs:
+            version: "2.8.3"
+            taskName: "audit"
+            workingDir: "${{ inputs.workingDir }}"
+
+  # ── Compile + Binary Check ────────────────────────────────────
+  - name: compile
+    description: Compile the binary and verify it executes.
+    dependsOn:
+      - job: static-analysis
+        condition:
+          type: succeeded
+      - job: tests
+        condition:
+          type: succeeded
+    steps:
+      - name: build
+        task:
+          type: model_method
+          modelType: "@swamp/deno-runner"
+          modelName: compile
+          methodName: task
+          inputs:
+            version: "2.8.3"
+            taskName: "compile"
+            workingDir: "${{ inputs.workingDir }}"
+            env:
+              DENO_DIR: "/tmp/deno-compile-cache"
+
+      - name: binary-check
+        dependsOn:
+          - step: build
+            condition:
+              type: succeeded
+        task:
+          type: model_method
+          modelType: "command/shell"
+          modelName: binary-check
+          methodName: execute
+          inputs:
+            run: "ls -la swamp && chmod +x swamp && ./swamp --version"
+            workingDir: "${{ inputs.workingDir }}"
+
+  # ── Agent Reviews ────────────────────────────────────────────
+  - name: code-review
+    description: General code review for conventions, DDD, tests, security.
+    dependsOn:
+      - job: static-analysis
+        condition:
+          type: succeeded
+      - job: tests
+        condition:
+          type: succeeded
+      - job: deps-audit
+        condition:
+          type: succeeded
+    steps:
+      - name: review
+        task:
+          type: model_method
+          modelType: "@swamp/agent-runner"
+          modelName: code-review
+          methodName: review
+          globalArgs:
+            version: "${{ inputs.agentCliVersion }}"
+            apiKeyEnvVar: "ANTHROPIC_API_KEY"
+          inputs:
+            promptFile: "verification/review-prompts/code-review.md"
+            model: "claude-opus-4-6"
+            files: ["."]
+            readOnly: true
+
+  - name: adversarial-review
+    description: Adversarial review for logic errors, security, edge cases.
+    dependsOn:
+      - job: static-analysis
+        condition:
+          type: succeeded
+      - job: tests
+        condition:
+          type: succeeded
+    steps:
+      - name: review
+        guard: "${{ hasChanges('src/domain/', 'src/infrastructure/', 'src/libswamp/', 'src/serve/', 'src/worker/') }}"
+        task:
+          type: model_method
+          modelType: "@swamp/agent-runner"
+          modelName: adversarial
+          methodName: review
+          globalArgs:
+            version: "${{ inputs.agentCliVersion }}"
+            apiKeyEnvVar: "ANTHROPIC_API_KEY"
+          inputs:
+            promptFile: "verification/review-prompts/adversarial-review.md"
+            model: "claude-opus-4-6"
+            files: ["."]
+            readOnly: true
+
+  - name: ux-review
+    description: CLI UX review for help text, errors, output consistency.
+    dependsOn:
+      - job: static-analysis
+        condition:
+          type: succeeded
+      - job: tests
+        condition:
+          type: succeeded
+    steps:
+      - name: review
+        guard: "${{ hasChanges('src/cli/', 'src/presentation/', 'src/domain/errors.ts', 'src/libswamp/') }}"
+        task:
+          type: model_method
+          modelType: "@swamp/agent-runner"
+          modelName: ux
+          methodName: review
+          globalArgs:
+            version: "${{ inputs.agentCliVersion }}"
+            apiKeyEnvVar: "ANTHROPIC_API_KEY"
+          inputs:
+            promptFile: "verification/review-prompts/ux-review.md"
+            model: "claude-sonnet-4-6"
+            files: ["."]
+            readOnly: true
+
+  - name: ci-security-review
+    description: Security review of CI/CD workflow changes.
+    dependsOn:
+      - job: static-analysis
+        condition:
+          type: succeeded
+      - job: tests
+        condition:
+          type: succeeded
+    steps:
+      - name: review
+        guard: "${{ hasChanges('.github/workflows/') }}"
+        task:
+          type: model_method
+          modelType: "@swamp/agent-runner"
+          modelName: ci-security
+          methodName: review
+          globalArgs:
+            version: "${{ inputs.agentCliVersion }}"
+            apiKeyEnvVar: "ANTHROPIC_API_KEY"
+          inputs:
+            promptFile: "verification/review-prompts/ci-security-review.md"
+            model: "claude-opus-4-6"
+            files: ["."]
+            readOnly: true
