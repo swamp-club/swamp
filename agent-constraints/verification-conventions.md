@@ -12,6 +12,7 @@ Mount the host's Deno cache for fast dependency resolution:
 docker run --rm \
   -v /path/to/repo:/path/to/repo \
   -v ~/Library/Caches/deno:/deno-dir \
+  -e SWAMP_WORKFLOWS_DIR=verification \
   -w /path/to/worktree \
   swamp-club/verify:deno-2.8.3 \
   workflow run verify-changes \

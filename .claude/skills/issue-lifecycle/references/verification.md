@@ -26,6 +26,7 @@ container must be built first (`./verification/container/build.sh`).
 docker run --rm \
   -v <repo-root>:<repo-root> \
   -v ~/Library/Caches/deno:/deno-dir \
+  -e SWAMP_WORKFLOWS_DIR=verification \
   -w <worktree-path> \
   swamp-club/verify:deno-2.8.3 \
   workflow run verify-changes \
@@ -37,6 +38,9 @@ docker run --rm \
 Replace `<repo-root>` with the main repo path and `<worktree-path>` with the
 current working directory. On Linux, use `~/.cache/deno` instead of
 `~/Library/Caches/deno`.
+
+The `SWAMP_WORKFLOWS_DIR=verification` env var tells swamp to look for workflow
+files in the `verification/` directory instead of the default `workflows/`.
 
 The workflow runs lint, fmt check, type check, tests, deps audit, compile, and
 agent reviews as a DAG. Build steps run in parallel; reviews run after builds
