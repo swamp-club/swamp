@@ -248,6 +248,12 @@ export function requestServerResponse<T>(
                 `Could not connect to ${baseUrl}${detail}`,
               ),
             );
+          }).catch(() => {
+            reject(
+              new UserError(
+                `Could not connect to ${baseUrl}${connectErrorDetail}`,
+              ),
+            );
           });
         } else {
           reject(
@@ -398,6 +404,12 @@ async function classifyConnectionError(
       return `Authentication failed — run: swamp auth server-login --server ${wsUrl}`;
     }
   }
+  if (originalMessage.includes(H2_MASKED_ERROR)) {
+    try {
+      const diagnosis = await diagnoseTlsError(wsUrl);
+      if (diagnosis) return diagnosis;
+    } catch { /* fall through to other checks */ }
+  }
   if (await probeServerHealth(wsUrl)) {
     return `Authentication failed — run: swamp auth server-login --server ${wsUrl}`;
   }
@@ -413,7 +425,7 @@ async function classifyConnectionError(
 // Caveat: this flag causes Deno to mask all TLS errors (UnknownIssuer,
 // CaUsedAsEndEntity, expired, etc.) as "HTTP/2 not supported by this
 // client" in the WebSocket code path. diagnoseTlsError() below works
-// around this by probing with Deno.connectTls when that message appears.
+// around this by probing with fetch() when that message appears.
 const wsHttpClient = Deno.createHttpClient({ http2: false });
 
 let resolvedEnvCaCerts: string[] | undefined;
@@ -421,8 +433,15 @@ let resolvedEnvCaCerts: string[] | undefined;
 function resolveCaCertPath(): string | undefined {
   const envPath = Deno.env.get("SWAMP_CA_CERT");
   if (envPath) return envPath;
-  const idx = Deno.args.indexOf("--ca-cert");
-  if (idx >= 0 && idx + 1 < Deno.args.length) return Deno.args[idx + 1];
+  // Handle both --ca-cert value and --ca-cert=value forms
+  for (let i = 0; i < Deno.args.length; i++) {
+    if (Deno.args[i] === "--ca-cert" && i + 1 < Deno.args.length) {
+      return Deno.args[i + 1];
+    }
+    if (Deno.args[i].startsWith("--ca-cert=")) {
+      return Deno.args[i].slice("--ca-cert=".length);
+    }
+  }
   return undefined;
 }
 
@@ -437,12 +456,16 @@ function getEnvCaCerts(): string[] | undefined {
   }
   try {
     resolvedEnvCaCerts = [Deno.readTextFileSync(certPath)];
-  } catch {
-    resolvedEnvCaCerts = [];
-    return undefined;
+  } catch (e: unknown) {
+    const detail = e instanceof Error ? e.message : String(e);
+    throw new UserError(
+      `Could not read CA certificate file '${certPath}': ${detail}`,
+    );
   }
   return resolvedEnvCaCerts;
 }
+
+let cachedCaCertClient: Deno.HttpClient | undefined;
 
 function createSocket(
   url: string,
@@ -450,9 +473,18 @@ function createSocket(
   caCerts?: string[],
 ): WebSocket {
   const effectiveCaCerts = caCerts ?? getEnvCaCerts();
-  const client = effectiveCaCerts?.length
-    ? Deno.createHttpClient({ http2: false, caCerts: effectiveCaCerts })
-    : wsHttpClient;
+  let client: Deno.HttpClient;
+  if (effectiveCaCerts?.length) {
+    if (!cachedCaCertClient) {
+      cachedCaCertClient = Deno.createHttpClient({
+        http2: false,
+        caCerts: effectiveCaCerts,
+      });
+    }
+    client = cachedCaCertClient;
+  } else {
+    client = wsHttpClient;
+  }
   const opts: Record<string, unknown> = { client };
   if (headers && Object.keys(headers).length > 0) {
     opts.headers = headers;
@@ -495,17 +527,17 @@ export async function diagnoseTlsError(
       return (
         `TLS certificate rejected: the server certificate has ` +
         `basicConstraints CA:TRUE, which is invalid for a server ` +
-        `(end-entity) certificate. Regenerate the certificate with ` +
-        `"basicConstraints=critical,CA:FALSE" — see the swamp serve ` +
-        `documentation for the exact openssl command`
+        `(end-entity) certificate. Regenerate with ` +
+        `"basicConstraints=critical,CA:FALSE" — restart swamp serve ` +
+        `to see the exact openssl command`
       );
     }
 
     if (msg.includes("UnknownIssuer")) {
       return (
         `TLS certificate rejected: the server's certificate issuer is ` +
-        `not trusted. If using a self-signed certificate, add it to ` +
-        `the system trust store or set DENO_CERT=/path/to/cert.pem`
+        `not trusted. If using a self-signed certificate, pass it with ` +
+        `--ca-cert /path/to/cert.pem or set SWAMP_CA_CERT=/path/to/cert.pem`
       );
     }
 
