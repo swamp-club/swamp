@@ -132,11 +132,12 @@ jobs:
               type: succeeded
         task:
           type: model_method
-          modelType: "command/shell"
+          modelType: "@swamp/deno-runner"
           modelName: binary-check
-          methodName: execute
+          methodName: task
           inputs:
-            run: "ls -la swamp && chmod +x swamp && ./swamp --version"
+            version: "2.8.3"
+            taskName: "binary-check"
             workingDir: "${{ inputs.workingDir }}"
 
   # ── Agent Reviews ────────────────────────────────────────────
