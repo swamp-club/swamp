@@ -90,7 +90,8 @@ During development, use these commands for quick feedback:
 1. `deno check` - Type checking
 2. `deno lint` - Linting
 3. `deno fmt` - Formatting
-4. `deno run test` - Tests (or `deno run test src/path/to_test.ts` for a single file)
+4. `deno run test` - Tests (or `deno run test src/path/to_test.ts` for a single
+   file)
 
 Before opening a PR, run the verification workflow in the container sandbox
 instead of these commands individually — it runs all checks (lint, fmt, test,
