@@ -31,6 +31,7 @@ import {
   type AiTool,
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { writeCustomTools } from "../../infrastructure/persistence/custom_tools_repository.ts";
 
 // Helper to create a temp directory for testing
 async function withTempDir(
@@ -2886,5 +2887,81 @@ Deno.test("RepoService.upgrade: returns empty when no lockfile exists", async ()
     const result = await newService.upgrade(repoPath);
 
     assertEquals(result.untrustedCollectives, []);
+  });
+});
+
+Deno.test("RepoService.init: custom tool with relative skillsDir gets skills copied locally", async () => {
+  await withTempDir(async (tempDir) => {
+    await writeCustomTools(tempDir, [{
+      name: "pi",
+      skillsDir: ".agents/skills",
+      instructionsFile: "AGENTS.md",
+      instructionsMode: "shared",
+      skillReferenceStyle: "path",
+    }]);
+
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    const result = await service.init(repoPath, { tools: ["pi"] });
+
+    assertEquals(result.tools[0], "pi");
+    assertEquals(result.skillsCopied.includes("swamp"), true);
+
+    const skillPath = join(tempDir, ".agents", "skills", "swamp", "SKILL.md");
+    const stat = await Deno.stat(skillPath);
+    assertEquals(stat.isFile, true);
+  });
+});
+
+Deno.test("RepoService.init: custom tool with nested relative skillsDir gets skills copied", async () => {
+  await withTempDir(async (tempDir) => {
+    await writeCustomTools(tempDir, [{
+      name: "myagent",
+      skillsDir: ".myagent/skills",
+      instructionsFile: "AGENTS.md",
+      instructionsMode: "shared",
+      skillReferenceStyle: "path",
+    }]);
+
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    const result = await service.init(repoPath, { tools: ["myagent"] });
+
+    assertEquals(result.skillsCopied.includes("swamp"), true);
+
+    const skillPath = join(
+      tempDir,
+      ".myagent",
+      "skills",
+      "swamp",
+      "SKILL.md",
+    );
+    const stat = await Deno.stat(skillPath);
+    assertEquals(stat.isFile, true);
+  });
+});
+
+Deno.test("RepoService.upgrade: custom tool with relative skillsDir gets skills updated", async () => {
+  await withTempDir(async (tempDir) => {
+    await writeCustomTools(tempDir, [{
+      name: "pi",
+      skillsDir: ".agents/skills",
+      instructionsFile: "AGENTS.md",
+      instructionsMode: "shared",
+      skillReferenceStyle: "path",
+    }]);
+
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath, { tools: ["pi"] });
+
+    const newService = new RepoService("0.2.0");
+    const result = await newService.upgrade(repoPath);
+
+    assertEquals(result.skillsUpdated.includes("swamp"), true);
+
+    const skillPath = join(tempDir, ".agents", "skills", "swamp", "SKILL.md");
+    const stat = await Deno.stat(skillPath);
+    assertEquals(stat.isFile, true);
   });
 });

@@ -320,7 +320,7 @@ export class RepoService {
     await this.createDataDirectoryStructure(repoPath);
 
     // Install skills globally (deduplicated across tools)
-    const skillsCopied = await this.installGlobalSkills(tools);
+    let skillsCopied = await this.installGlobalSkills(tools);
 
     // Resolve tools to configs and run per-repo scaffolding (instructions,
     // settings, hooks — but NOT skills, which are now global)
@@ -343,6 +343,15 @@ export class RepoService {
 
     // Install skills for custom tools with global (~/prefixed) skillsDir
     await this.installCustomToolGlobalSkills(resolvedConfigs);
+
+    // Install skills for custom tools with repo-relative skillsDir
+    const localSkillNames = await this.installCustomToolLocalSkills(
+      repoPath,
+      resolvedConfigs,
+    );
+    if (localSkillNames.length > 0 && skillsCopied.length === 0) {
+      skillsCopied = localSkillNames;
+    }
 
     // Always manage .gitignore on init (single call with resolved configs)
     const gitignoreAction = await this.ensureGitignoreSection(
@@ -435,7 +444,7 @@ export class RepoService {
     updatedMarker.tools = tools;
 
     // Install skills globally (deduplicated across tools)
-    const skillsUpdated = await this.installGlobalSkills(tools);
+    let skillsUpdated = await this.installGlobalSkills(tools);
 
     // Resolve tools to configs and run per-repo scaffolding (instructions,
     // settings, hooks — but NOT skills, which are now global)
@@ -459,6 +468,15 @@ export class RepoService {
 
     // Install skills for custom tools with global (~/prefixed) skillsDir
     await this.installCustomToolGlobalSkills(resolvedConfigs);
+
+    // Install skills for custom tools with repo-relative skillsDir
+    const localSkillNames = await this.installCustomToolLocalSkills(
+      repoPath,
+      resolvedConfigs,
+    );
+    if (localSkillNames.length > 0 && skillsUpdated.length === 0) {
+      skillsUpdated = localSkillNames;
+    }
 
     // Determine gitignore management: CLI flag > marker preference > default off
     const shouldManageGitignore = options.includeGitignore ??
@@ -631,6 +649,45 @@ export class RepoService {
         }`;
       }
     }
+  }
+
+  /**
+   * Installs bundled skills to repo-local directories for custom tools whose
+   * skillsDir is a relative path (not ~/prefixed). These are project-local
+   * directories that can't be discovered by `swamp update`, so they are only
+   * synced during repo init and upgrade.
+   */
+  private async installCustomToolLocalSkills(
+    repoPath: RepoPath,
+    configs: readonly ToolConfig[],
+  ): Promise<string[]> {
+    const localConfigs = configs.filter((c) =>
+      !c.isBuiltIn && !c.skillsDir.startsWith("~/")
+    );
+    if (localConfigs.length === 0) return [];
+
+    const seen = new Set<string>();
+    let skillNames: string[] = [];
+
+    for (const config of localConfigs) {
+      const localDir = join(repoPath.value, config.skillsDir);
+      if (seen.has(localDir)) continue;
+      seen.add(localDir);
+
+      try {
+        await this.skillAssets.copySkillsTo(localDir);
+        await removeSupersededSkills(localDir);
+        skillNames = this.skillAssets.getSkillNames();
+        logger
+          .info`Installed local skills to ${localDir} for custom tool ${config.name}`;
+      } catch (err) {
+        logger
+          .warn`Failed to install local skills for custom tool ${config.name}: ${
+          err instanceof Error ? err.message : String(err)
+        }`;
+      }
+    }
+    return skillNames;
   }
 
   /**
