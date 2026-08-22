@@ -164,7 +164,12 @@ The registry is a simple JSON array of absolute directory paths:
 ```
 
 Custom tools with repo-relative `skillsDir` (not `~/`-prefixed) are not
-registered — those are project-local directories, not global skill targets.
+registered in the global registry — those are project-local directories, not
+global skill targets. However, during `repo init` and `repo upgrade`, swamp
+resolves the relative path against the repo root and copies bundled skills there.
+This ensures custom tools with relative paths (e.g. `.agents/skills/`) receive
+skills on initialization, even though `swamp update` cannot discover or sync
+them (it runs without repo context).
 
 > **Note:** The original design proposed a separate `globalSkillsDir` field on
 > `CustomToolDefinition`. The current implementation infers global intent from
