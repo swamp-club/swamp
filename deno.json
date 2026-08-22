@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "license": "AGPL-3.0-only",
   "exports": "./main.ts",
-  "workspace": ["packages/client", "packages/testing"],
+  "workspace": ["packages/client", "packages/testing", "packages/dashboard"],
   "tasks": {
     "dev": "deno run --unstable-bundle --allow-read --allow-write --allow-env --allow-run --allow-sys --allow-ffi main.ts",
     "test": "SWAMP_NO_TELEMETRY=1 deno test --parallel --unstable-bundle --allow-read --allow-write --allow-env --allow-run --allow-net --allow-sys --allow-ffi",
@@ -16,7 +16,8 @@
     "sbom": "deno run --allow-read --allow-run --allow-net=api.jsr.io,registry.npmjs.org --allow-write=sbom.cdx.json,scripts/jsr_license_cache.json scripts/generate_sbom.ts",
     "audit-actions": "deno run --allow-read --allow-net=api.github.com --allow-env=GITHUB_STEP_SUMMARY,GITHUB_TOKEN --allow-write scripts/audit_actions.ts",
     "review-skills": "deno run --allow-read --allow-run --allow-env=GITHUB_STEP_SUMMARY --allow-write scripts/review_skills.ts",
-    "eval-skill-triggers": "deno run --allow-read --allow-run --allow-env --allow-write --allow-net scripts/eval_skill_triggers_promptfoo.ts"
+    "eval-skill-triggers": "deno run --allow-read --allow-run --allow-env --allow-write --allow-net scripts/eval_skill_triggers_promptfoo.ts",
+    "build-dashboard": "cd packages/dashboard && npm run build"
   },
   "imports": {
     "@cliffy/table": "jsr:@cliffy/table@^1.0.1",

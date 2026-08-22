@@ -2165,7 +2165,7 @@ export function redactServeOptions(
     },
     authMode: opts.authMode,
     scheduling: { enabled: opts.schedule },
-    dashboard: { enabled: true },
+    dashboard: { enabled: opts.dashboard },
     webhooks: (opts.webhookConfigs ?? []).map((wh) => ({
       route: wh.route,
       workflow: wh.workflow,

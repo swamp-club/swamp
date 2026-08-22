@@ -317,3 +317,145 @@ Deno.test("SwampClient - socket close rejects pending requests", async () => {
   client.close();
   await server.shutdown();
 });
+
+// ── Constructor options ───────────────────────────────────────────────
+
+Deno.test("SwampClient - constructor accepts token option", () => {
+  const client = new SwampClient("ws://localhost:9876/ws", {
+    token: "admin.secret123",
+  });
+  client.close();
+});
+
+Deno.test("SwampClient - token is sent as WebSocket subprotocol", async () => {
+  let receivedProtocol = "";
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
+    if (req.headers.get("upgrade") === "websocket") {
+      receivedProtocol = req.headers.get("sec-websocket-protocol") ?? "";
+      const { socket, response } = Deno.upgradeWebSocket(req, {
+        protocol: receivedProtocol,
+      });
+      socket.onopen = () => {};
+      return response;
+    }
+    return new Response("not found", { status: 404 });
+  });
+
+  const addr = server.addr;
+  const client = new SwampClient(`ws://localhost:${addr.port}/ws`, {
+    token: "admin.testsecret",
+  });
+
+  await client.connect();
+  assertEquals(receivedProtocol, "bearer.admin.testsecret");
+
+  client.close();
+  await server.shutdown();
+});
+
+// ── request<T>() ──────────────────────────────────────────────────────
+
+Deno.test("SwampClient - request resolves with payload", async () => {
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
+    if (req.headers.get("upgrade") === "websocket") {
+      const { socket, response } = Deno.upgradeWebSocket(req);
+      socket.onmessage = (e) => {
+        const msg = JSON.parse(e.data as string);
+        socket.send(JSON.stringify({
+          type: msg.type,
+          id: msg.id,
+          payload: {
+            data: { results: [{ name: "test-workflow" }] },
+          },
+        }));
+      };
+      return response;
+    }
+    return new Response("not found", { status: 404 });
+  });
+
+  const addr = server.addr;
+  const client = new SwampClient(`ws://localhost:${addr.port}/ws`);
+  await client.connect();
+
+  const result = await client.request<{
+    data: { results: Array<{ name: string }> };
+  }>(
+    "workflow.search",
+  );
+  assertEquals(result.data.results[0].name, "test-workflow");
+
+  client.close();
+  await server.shutdown();
+});
+
+Deno.test("SwampClient - request rejects on error response", async () => {
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
+    if (req.headers.get("upgrade") === "websocket") {
+      const { socket, response } = Deno.upgradeWebSocket(req);
+      socket.onmessage = (e) => {
+        const msg = JSON.parse(e.data as string);
+        socket.send(JSON.stringify({
+          type: "error",
+          id: msg.id,
+          error: { code: "not_found", message: "Resource not found" },
+        }));
+      };
+      return response;
+    }
+    return new Response("not found", { status: 404 });
+  });
+
+  const addr = server.addr;
+  const client = new SwampClient(`ws://localhost:${addr.port}/ws`);
+  await client.connect();
+
+  await assertRejects(
+    () => client.request("workflow.get", { workflowIdOrName: "missing" }),
+    Error,
+    "Resource not found",
+  );
+
+  client.close();
+  await server.shutdown();
+});
+
+Deno.test("SwampClient - request sends payload when provided", async () => {
+  let receivedPayload: Record<string, unknown> | undefined;
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
+    if (req.headers.get("upgrade") === "websocket") {
+      const { socket, response } = Deno.upgradeWebSocket(req);
+      socket.onmessage = (e) => {
+        const msg = JSON.parse(e.data as string);
+        receivedPayload = msg.payload;
+        socket.send(JSON.stringify({
+          type: msg.type,
+          id: msg.id,
+          payload: { data: {} },
+        }));
+      };
+      return response;
+    }
+    return new Response("not found", { status: 404 });
+  });
+
+  const addr = server.addr;
+  const client = new SwampClient(`ws://localhost:${addr.port}/ws`);
+  await client.connect();
+
+  await client.request("workflow.run.search", { limit: 50, status: "failed" });
+  assertEquals(receivedPayload?.limit, 50);
+  assertEquals(receivedPayload?.status, "failed");
+
+  client.close();
+  await server.shutdown();
+});
+
+Deno.test("SwampClient - request rejects when connection fails", async () => {
+  const client = new SwampClient("ws://127.0.0.1:1/ws");
+
+  await assertRejects(
+    () => client.request("workflow.search"),
+    Error,
+  );
+});

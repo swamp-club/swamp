@@ -33,3 +33,8 @@ evals/promptfoo/routing_results.json
 evals/promptfoo/sufficiency_results.json
 evals/promptfoo/promptfooconfig.yaml
 evals/promptfoo/node_modules/
+
+# Dashboard build artifacts
+packages/dashboard/node_modules/
+packages/dashboard/dist/
+packages/dashboard/tsconfig.tsbuildinfo
