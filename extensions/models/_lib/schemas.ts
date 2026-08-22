@@ -86,7 +86,7 @@ export const TRANSITIONS: Record<string, Phase[]> = {
   verify: ["implementing"],
   verification_passed: ["verifying"],
   verification_failed: ["verifying"],
-  link_pr: ["implementing", "verifying", "pr_open", "pr_failed"],
+  link_pr: ["verifying", "pr_open", "pr_failed"],
   pr_merged: ["pr_open"],
   pr_failed: ["pr_open"],
   ship: ["releasing"],

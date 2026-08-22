@@ -501,6 +501,52 @@ export const model = {
       },
     },
 
+    "verification-clear": {
+      description: "Ensures verification passed before a PR can be linked",
+      labels: ["policy"],
+      appliesTo: ["link_pr"],
+      execute: async (context: {
+        dataRepository: {
+          getContent: (
+            type: string,
+            modelId: string,
+            dataName: string,
+          ) => Promise<Uint8Array | null>;
+        };
+        modelType: string;
+        modelId: string;
+      }) => {
+        const content = await context.dataRepository.getContent(
+          context.modelType,
+          context.modelId,
+          "verificationResult-main",
+        );
+        if (!content) {
+          return {
+            pass: false,
+            errors: [
+              "No verification result exists. Run 'verify' and then 'verification_passed' before linking a PR.",
+            ],
+          };
+        }
+
+        const result = JSON.parse(
+          new TextDecoder().decode(content),
+        ) as { allPassed: boolean; stepsFailed: number };
+
+        if (!result.allPassed) {
+          return {
+            pass: false,
+            errors: [
+              `Verification failed (${result.stepsFailed} step(s) failed). Fix the issues and re-verify.`,
+            ],
+          };
+        }
+
+        return { pass: true };
+      },
+    },
+
     "adversarial-review-clear": {
       description:
         "Ensures all critical/high adversarial findings are resolved before approval",
