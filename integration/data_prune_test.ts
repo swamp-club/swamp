@@ -419,6 +419,102 @@ Deno.test("Data Prune: workflow report data is NOT pruned when workflow definiti
   });
 });
 
+Deno.test("Data Prune: retyped model data is detected as orphaned (swamp-club#1737)", async () => {
+  await withTempDir(async (repoDir) => {
+    await ensureDir(join(repoDir, "models"));
+    await ensureDir(join(repoDir, ".swamp", "data"));
+
+    const oldType = ModelType.create("test/old-type");
+    const modelsRepo = new YamlDefinitionRepository(repoDir);
+
+    // 1. Save a definition under type "test/old-type"
+    const def = Definition.create({ name: "story-analyzer" });
+    await modelsRepo.save(oldType, def);
+
+    // 2. Write data under the old type
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
+    await writeData(dataRepo, oldType, def.id, "analysis", 3);
+
+    // 3. Simulate a retype: edit the YAML in place to change type to "test/new-type"
+    const defPath = join(
+      repoDir,
+      "models",
+      "test",
+      "old-type",
+      `${def.name}.yaml`,
+    );
+    const yaml = await Deno.readTextFile(defPath);
+    await Deno.writeTextFile(
+      defPath,
+      yaml.replace("type: test/old-type", "type: test/new-type"),
+    );
+
+    // 4. Prune via createDataPruneDeps — the production code path
+    const deps = createDataPruneDeps(repoDir);
+    const orphans = await deps.findOrphanedData();
+    assertEquals(
+      orphans.length,
+      1,
+      "retyped model data must be detected as orphaned",
+    );
+    assertEquals(orphans[0].modelId, def.id);
+    assertEquals(orphans[0].dataNames, ["analysis"]);
+    assertEquals(orphans[0].versionCount, 3);
+
+    // 5. Prune reclaims the stranded data
+    const result = await deps.deleteOrphanedData({ dryRun: false });
+    assertEquals(result.modelsReclaimed, 1);
+    assertEquals(result.versionsDeleted, 3);
+    assertEquals(await dataRepo.listVersions(oldType, def.id, "analysis"), []);
+  });
+});
+
+Deno.test("Data Prune: retyped model with undefined type is treated as live (legacy safety)", async () => {
+  await withTempDir(async (repoDir) => {
+    await ensureDir(join(repoDir, "models"));
+    await ensureDir(join(repoDir, ".swamp", "data"));
+
+    const type = ModelType.create("test/legacy");
+    const modelsRepo = new YamlDefinitionRepository(repoDir);
+
+    const def = Definition.create({ name: "legacy-model" });
+    await modelsRepo.save(type, def);
+
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
+    await writeData(dataRepo, type, def.id, "state", 2);
+
+    // Remove the type field from the YAML to simulate a legacy definition
+    const defPath = join(
+      repoDir,
+      "models",
+      "test",
+      "legacy",
+      `${def.name}.yaml`,
+    );
+    const yaml = await Deno.readTextFile(defPath);
+    await Deno.writeTextFile(
+      defPath,
+      yaml.replace(/^type:.*$/m, ""),
+    );
+
+    const deps = createDataPruneDeps(repoDir);
+    const orphans = await deps.findOrphanedData();
+    assertEquals(
+      orphans.length,
+      0,
+      "definition with undefined type must be treated as live",
+    );
+  });
+});
+
 Deno.test("Data Prune: serve control-plane types are NOT pruned (swamp-club#1749)", async () => {
   await withTempDir(async (repoDir) => {
     await ensureDir(join(repoDir, "models"));
