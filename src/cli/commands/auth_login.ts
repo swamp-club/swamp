@@ -41,15 +41,23 @@ type AnyOptions = any;
 
 export const authLoginCommand = new Command()
   .name("login")
-  .description("Authenticate with a swamp-club server")
+  .description(
+    "Authenticate with a swamp-club server.\n\n" +
+      "For non-interactive use (CI, agents, scripts), set the SWAMP_API_KEY\n" +
+      "environment variable instead of running this command.",
+  )
   .example("Login via browser", "swamp auth login")
   .example(
     "Login to custom server",
     "swamp auth login --server https://registry.example.com",
   )
   .example(
-    "Non-interactive login",
-    "swamp auth login --username alice --password secret --no-browser",
+    "Non-interactive login (env var)",
+    "export SWAMP_API_KEY=swamp_abc123...",
+  )
+  .example(
+    "Non-interactive login (piped stdin)",
+    "printf 'mypassword\\n' | swamp auth login --username alice --no-browser",
   )
   .option(
     "--server <url:string>",

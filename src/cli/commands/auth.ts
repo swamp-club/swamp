@@ -35,7 +35,10 @@ export const authTokenCommand = new Command()
 
 export const authCommand = new Command()
   .name("auth")
-  .description("Manage swamp-club authentication")
+  .description(
+    "Manage swamp-club authentication.\n\n" +
+      "For non-interactive use, set the SWAMP_API_KEY environment variable.",
+  )
   .action(groupCommandAction)
   .command("login", authLoginCommand)
   .command("logout", authLogoutCommand)
