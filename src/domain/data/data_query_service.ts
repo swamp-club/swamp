@@ -90,6 +90,10 @@ export type ForeignContentFetcher = (
   relPath: string,
 ) => Promise<Uint8Array | null>;
 
+export interface DataQueryServiceOptions {
+  filterStaleRows?: boolean;
+}
+
 export class DataQueryService {
   private readonly queryEnv: Environment;
   private vaultService?: VaultService;
@@ -97,11 +101,14 @@ export class DataQueryService {
   private foreignContentFetcher?: ForeignContentFetcher;
   private readonly foreignContentCache = new Map<string, Uint8Array | null>();
   private backfillPromise: Promise<void> | null = null;
+  private readonly filterStaleRows: boolean;
 
   constructor(
     private readonly catalogStore: CatalogStore,
     private readonly dataRepo: UnifiedDataRepository,
+    options?: DataQueryServiceOptions,
   ) {
+    this.filterStaleRows = options?.filterStaleRows ?? false;
     this.queryEnv = new Environment({
       unlistedVariablesAreDyn: true,
       homogeneousAggregateLiterals: false,
@@ -458,10 +465,33 @@ export class DataQueryService {
     // Hydrate matched records with attributes when the predicate didn't
     // require them for filtering. Only applies to non-projected results —
     // projections handle attribute loading via AST analysis above.
+    // When filterStaleRows is enabled, rows whose backing file is absent
+    // are dropped during hydration — a stale catalog row with isLatest=true
+    // and empty content is worse than a missing row because it wins [0]
+    // selection (swamp-club#1737).
     if (needsHydration) {
+      let writeIndex = 0;
       for (let i = 0; i < results.length; i++) {
-        results[i] = this.rowToRecord(matchedRows[i], true, needsContent);
+        const row = matchedRows[i];
+        if (this.filterStaleRows) {
+          const contentPath = this.dataRepo.getContentPath(
+            ModelType.create(row.type_normalized),
+            row.model_id,
+            row.data_name,
+            row.version,
+          );
+          try {
+            Deno.statSync(contentPath);
+          } catch {
+            logger
+              .debug`Skipping stale catalog row ${row.model_name}/${row.data_name}@v${row.version}: backing file absent`;
+            continue;
+          }
+        }
+        results[writeIndex] = this.rowToRecord(row, true, needsContent);
+        writeIndex++;
       }
+      results.length = writeIndex;
     }
 
     // Apply projection if select expression provided.

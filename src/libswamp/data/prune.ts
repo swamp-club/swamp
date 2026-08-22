@@ -28,6 +28,7 @@ import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import {
@@ -166,10 +167,19 @@ export function createDataPruneDeps(
       return (await workflowRepo.findById(createWorkflowId(modelId))) !== null;
     }
 
-    return (await definitionRepo.findById(
+    const definition = await definitionRepo.findById(
       type,
       createDefinitionId(modelId),
-    )) !== null;
+    );
+    if (definition === null) return false;
+    // A retyped model leaves its definition file in the old type directory
+    // with a different type: field. The data under the old type path is
+    // orphaned even though findById locates the file by UUID.
+    if (definition.type !== undefined) {
+      const defType = ModelType.create(definition.type);
+      if (defType.toDirectoryPath() !== type.toDirectoryPath()) return false;
+    }
+    return true;
   };
 
   return {

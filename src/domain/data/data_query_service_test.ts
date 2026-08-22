@@ -1642,3 +1642,69 @@ Deno.test("DataQueryService: a non-matching query preserves rows for models with
 
   catalog.close();
 });
+
+Deno.test("DataQueryService: skips stale catalog rows with missing backing files (swamp-club#1737)", () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-stale-" });
+  const dbPath = join(dir, ".swamp", "data", "_catalog.db");
+  const catalog = new CatalogStore(dbPath);
+  catalog.markPopulated();
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const service = new DataQueryService(catalog, dataRepo, {
+    filterStaleRows: true,
+  });
+
+  // Insert a catalog row whose backing file does NOT exist on disk.
+  const staleRow = makeRow({
+    model_name: "story-analyzer",
+    data_name: "analysis",
+    type_normalized: "test/stale-type",
+    model_id: "stale-model-id",
+    version: 27,
+    is_latest: 1,
+  });
+  catalog.upsert(staleRow);
+
+  // Insert a live row WITH a backing file on disk.
+  const liveRow = makeRow({
+    model_name: "story-analyzer",
+    data_name: "analysis",
+    type_normalized: "test/live-type",
+    model_id: "live-model-id",
+    version: 1,
+    is_latest: 1,
+    id: "00000000-0000-1000-8000-000000000002",
+  });
+  catalog.upsert(liveRow);
+
+  // Create the backing file for the live row only.
+  const livePath = join(
+    dir,
+    ".swamp",
+    "data",
+    "test",
+    "live-type",
+    "live-model-id",
+    "analysis",
+    "1",
+  );
+  ensureDirSync(livePath);
+  Deno.writeTextFileSync(
+    join(livePath, "raw"),
+    JSON.stringify({ result: "live data" }),
+  );
+
+  const results = service.querySync(
+    'modelName == "story-analyzer"',
+  ) as DataRecord[];
+
+  // Only the live row should be returned; the stale row is skipped.
+  assertEquals(
+    results.length,
+    1,
+    "stale row with missing backing file must be skipped",
+  );
+  assertEquals(results[0].modelId, "live-model-id");
+  assertEquals(results[0].version, 1);
+
+  catalog.close();
+});

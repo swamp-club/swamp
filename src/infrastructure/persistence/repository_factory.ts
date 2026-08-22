@@ -447,7 +447,9 @@ export function createRepositoryContext(
   // Construct the query service alongside its dependencies so consumers
   // never need to reach into the repo to rebuild it. This keeps the
   // catalog handle as an infrastructure detail of the composition root.
-  const dataQueryService = new DataQueryService(catalogStore, unifiedDataRepo);
+  const dataQueryService = new DataQueryService(catalogStore, unifiedDataRepo, {
+    filterStaleRows: true,
+  });
   const outputRepo = new YamlOutputRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.outputs),
