@@ -1142,6 +1142,64 @@ Deno.test("loadServeConfig: boolean remote-only is accepted", () => {
   });
 });
 
+// ── dashboard ──────────────────────────────────────────────────────────
+
+Deno.test("mergeServeOptions: dashboard defaults to false", () => {
+  const merged = mergeServeOptions(
+    null,
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.dashboard, false);
+});
+
+Deno.test("mergeServeOptions: dashboard CLI flag wins over config and env", () => {
+  const config: ServeConfigFile = { dashboard: false };
+  const cliOptions = { dashboard: true };
+  const explicitFlags = new Set(["dashboard"]);
+  const envLookup = () => undefined;
+
+  const merged = mergeServeOptions(
+    config,
+    cliOptions,
+    explicitFlags,
+    envLookup,
+  );
+  assertEquals(merged.dashboard, true);
+});
+
+Deno.test("mergeServeOptions: dashboard env var wins over config when CLI not explicit", () => {
+  const config: ServeConfigFile = { dashboard: false };
+  const cliOptions = {};
+  const explicitFlags = new Set<string>();
+  const envLookup = (name: string) =>
+    name === "SWAMP_DASHBOARD" ? "true" : undefined;
+
+  const merged = mergeServeOptions(
+    config,
+    cliOptions,
+    explicitFlags,
+    envLookup,
+  );
+  assertEquals(merged.dashboard, true);
+});
+
+Deno.test("mergeServeOptions: dashboard from config when no CLI or env", () => {
+  const config: ServeConfigFile = { dashboard: true };
+  const cliOptions = {};
+  const explicitFlags = new Set<string>();
+  const envLookup = () => undefined;
+
+  const merged = mergeServeOptions(
+    config,
+    cliOptions,
+    explicitFlags,
+    envLookup,
+  );
+  assertEquals(merged.dashboard, true);
+});
+
 Deno.test("readServeConfigFile: returns null when file does not exist", async () => {
   const dir = await Deno.makeTempDir();
   try {
