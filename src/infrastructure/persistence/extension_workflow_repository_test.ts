@@ -86,6 +86,22 @@ Deno.test("ExtensionWorkflowRepository discovers YAML workflows from directory",
   });
 });
 
+Deno.test("ExtensionWorkflowRepository discovers .yml workflow files", async () => {
+  await withTempDir(async (dir) => {
+    const workflowData = createWorkflowYaml("yml-workflow");
+    await Deno.writeTextFile(
+      join(dir, "deploy.yml"),
+      stringifyYaml(workflowData),
+    );
+
+    const repo = new ExtensionWorkflowRepository(dir);
+    const workflows = await repo.findAll();
+
+    assertEquals(workflows.length, 1);
+    assertEquals(workflows[0].name, "yml-workflow");
+  });
+});
+
 Deno.test("ExtensionWorkflowRepository discovers workflows in subdirectories", async () => {
   await withTempDir(async (dir) => {
     const subdir = join(dir, "aws");

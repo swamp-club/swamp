@@ -42,7 +42,8 @@ const MANIFEST_FILENAMES = new Set(["manifest.yaml", "manifest.yml"]);
  * extension workflows directory (e.g. `extensions/workflows/`).
  *
  * Extension workflows are read-only — save() and delete() throw UserError.
- * Any `*.yaml` file in the directory tree is treated as a workflow definition.
+ * Any `*.yaml` / `*.yml` file in the directory tree is treated as a workflow
+ * definition; `manifest.yaml` and `manifest.yml` are skipped.
  */
 export class ExtensionWorkflowRepository implements WorkflowRepository {
   private readonly workflowsDirs: string[];
