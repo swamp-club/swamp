@@ -30,7 +30,9 @@ Deno.test("Phase: includes pr_open, pr_failed, releasing, notify, summarizing be
   const summarizingIdx = phases.indexOf("summarizing");
   const doneIdx = phases.indexOf("done");
 
-  assertEquals(prOpenIdx, implementingIdx + 1);
+  const verifyingIdx = phases.indexOf("verifying");
+  assertEquals(verifyingIdx, implementingIdx + 1);
+  assertEquals(prOpenIdx, verifyingIdx + 1);
   assertEquals(prFailedIdx, prOpenIdx + 1);
   assertEquals(releasingIdx, prFailedIdx + 1);
   assertEquals(notifyIdx, releasingIdx + 1);
@@ -38,8 +40,12 @@ Deno.test("Phase: includes pr_open, pr_failed, releasing, notify, summarizing be
   assertEquals(doneIdx, summarizingIdx + 1);
 });
 
-Deno.test("TRANSITIONS: link_pr accepts implementing, pr_open, and pr_failed", () => {
-  assertEquals(TRANSITIONS.link_pr, ["implementing", "pr_open", "pr_failed"]);
+Deno.test("TRANSITIONS: link_pr accepts verifying, pr_open, and pr_failed", () => {
+  assertEquals(TRANSITIONS.link_pr, [
+    "verifying",
+    "pr_open",
+    "pr_failed",
+  ]);
 });
 
 Deno.test("TRANSITIONS: complete accepts implementing, pr_open, and releasing", () => {
@@ -62,17 +68,17 @@ Deno.test("TRANSITIONS: notify and skip_notify accept only notify phase", () => 
 });
 
 Deno.test("TRANSITIONS: link_pr is rejected from earlier lifecycle phases", () => {
-  // link_pr should only be callable once implementation has begun. Calling
-  // it from any earlier phase is a sequencing bug in the agent and must be
-  // blocked by the valid-transition pre-flight check.
-  const earlierPhases: ReadonlyArray<typeof Phase.options[number]> = [
+  // link_pr requires verification — it's not allowed from implementing
+  // or any earlier phase.
+  const blockedPhases: ReadonlyArray<typeof Phase.options[number]> = [
     "created",
     "triaging",
     "classified",
     "plan_generated",
     "approved",
+    "implementing",
   ];
-  for (const phase of earlierPhases) {
+  for (const phase of blockedPhases) {
     assertEquals(
       TRANSITIONS.link_pr.includes(phase),
       false,

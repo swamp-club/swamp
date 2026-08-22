@@ -40,6 +40,7 @@ import {
   StepVerificationSchema,
   SummarySchema,
   TRANSITIONS,
+  VerificationResultSchema,
 } from "./_lib/schemas.ts";
 import { createSwampClubClient, loadAuthFile } from "./_lib/swamp_club.ts";
 
@@ -77,7 +78,7 @@ async function readState(
 
 export const model = {
   type: "@swamp/issue-lifecycle",
-  version: "2026.08.16.1",
+  version: "2026.08.21.1",
   globalArguments: GlobalArgsSchema,
 
   upgrades: [
@@ -182,6 +183,17 @@ export const model = {
       description: "Change Swamp Club API Health Endpoint",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
+    {
+      toVersion: "2026.08.21.1",
+      description:
+        "Pre-PR verification loop — new verifying phase between implementing " +
+        "and pr_open. Three new methods: verify (start verification), " +
+        "verification_passed (record results as checklist), " +
+        "verification_failed (return to implementing). " +
+        "New verificationResult resource stores the checklist data. " +
+        "No globalArguments changes.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
   ],
 
   resources: {
@@ -229,6 +241,15 @@ export const model = {
       schema: CodeConformanceReviewSchema,
       lifetime: "infinite" as const,
       garbageCollection: 10,
+    },
+    "verificationResult": {
+      description:
+        "Verification workflow result — the full checklist of steps, " +
+        "their statuses, and the gate outcome. Written by verification_passed " +
+        "and used as a gate on link_pr.",
+      schema: VerificationResultSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 5,
     },
     "pullRequest": {
       description:
@@ -472,6 +493,52 @@ export const model = {
             pass: false,
             errors: [
               `${unjustified.length} unjustified deviation(s): ${orders}. Run 'justify_deviations' to explain why the code differs from the plan.`,
+            ],
+          };
+        }
+
+        return { pass: true };
+      },
+    },
+
+    "verification-clear": {
+      description: "Ensures verification passed before a PR can be linked",
+      labels: ["policy"],
+      appliesTo: ["link_pr"],
+      execute: async (context: {
+        dataRepository: {
+          getContent: (
+            type: string,
+            modelId: string,
+            dataName: string,
+          ) => Promise<Uint8Array | null>;
+        };
+        modelType: string;
+        modelId: string;
+      }) => {
+        const content = await context.dataRepository.getContent(
+          context.modelType,
+          context.modelId,
+          "verificationResult-main",
+        );
+        if (!content) {
+          return {
+            pass: false,
+            errors: [
+              "No verification result exists. Run 'verify' and then 'verification_passed' before linking a PR.",
+            ],
+          };
+        }
+
+        const result = JSON.parse(
+          new TextDecoder().decode(content),
+        ) as { allPassed: boolean; stepsFailed: number };
+
+        if (!result.allPassed) {
+          return {
+            pass: false,
+            errors: [
+              `Verification failed (${result.stepsFailed} step(s) failed). Fix the issues and re-verify.`,
             ],
           };
         }
@@ -1621,6 +1688,226 @@ export const model = {
           summary: "Implementation started",
           emoji: "\u{1F680}",
           payload: {},
+          isVerbose: false,
+        });
+
+        return { dataHandles: [stateHandle] };
+      },
+    },
+
+    verify: {
+      description:
+        "Start verification — transitions to verifying phase. The agent " +
+        "runs the verification workflow in a container sandbox.",
+      arguments: z.object({
+        commit: z.string().describe("Commit SHA being verified"),
+        branch: z.string().describe("Branch being verified"),
+      }),
+      execute: async (
+        args: { commit: string; branch: string },
+        context: {
+          globalArgs: GlobalArgs;
+          logger: {
+            info: (msg: string, props: Record<string, unknown>) => void;
+            warning: (msg: string, props: Record<string, unknown>) => void;
+          };
+          writeResource: (
+            specName: string,
+            instanceName: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
+        const { issueNumber } = context.globalArgs;
+
+        const stateHandle = await context.writeResource("state", "state-main", {
+          phase: "verifying",
+          issueNumber,
+          updatedAt: new Date().toISOString(),
+        });
+
+        context.logger.info(
+          "Verification started for commit {commit} on {branch}",
+          { commit: args.commit, branch: args.branch },
+        );
+
+        const sc = await createSwampClubClient(
+          context.globalArgs,
+          context.logger,
+        );
+        await sc?.postLifecycleEntry({
+          step: "verification_started",
+          targetStatus: "in_progress",
+          summary: `Verification started for ${args.commit} on ${args.branch}`,
+          emoji: "\u{1F50D}",
+          payload: { commit: args.commit, branch: args.branch },
+          isVerbose: false,
+        });
+
+        return { dataHandles: [stateHandle] };
+      },
+    },
+
+    verification_passed: {
+      description:
+        "Record that verification passed. Carries the full verification " +
+        "checklist — every step, status, and gate result. This data gates " +
+        "the transition to link_pr.",
+      arguments: z.object({
+        workflowRunId: z.string(),
+        commit: z.string(),
+        branch: z.string(),
+        steps: z.array(z.object({
+          job: z.string(),
+          step: z.string(),
+          model: z.string(),
+          method: z.string(),
+          status: z.enum(["succeeded", "failed", "skipped"]),
+        })),
+      }),
+      execute: async (
+        args: {
+          workflowRunId: string;
+          commit: string;
+          branch: string;
+          steps: Array<{
+            job: string;
+            step: string;
+            model: string;
+            method: string;
+            status: "succeeded" | "failed" | "skipped";
+          }>;
+        },
+        context: {
+          globalArgs: GlobalArgs;
+          logger: {
+            info: (msg: string, props: Record<string, unknown>) => void;
+            warning: (msg: string, props: Record<string, unknown>) => void;
+          };
+          writeResource: (
+            specName: string,
+            instanceName: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
+        const { issueNumber } = context.globalArgs;
+        const now = new Date().toISOString();
+
+        const succeeded = args.steps.filter((s) => s.status === "succeeded")
+          .length;
+        const skipped = args.steps.filter((s) => s.status === "skipped").length;
+        const failed = args.steps.filter((s) => s.status === "failed").length;
+
+        const verificationHandle = await context.writeResource(
+          "verificationResult",
+          "verificationResult-main",
+          {
+            workflowRunId: args.workflowRunId,
+            commit: args.commit,
+            branch: args.branch,
+            allPassed: failed === 0,
+            stepsCompleted: succeeded,
+            stepsTotal: args.steps.length,
+            stepsSkipped: skipped,
+            stepsFailed: failed,
+            steps: args.steps,
+            verifiedAt: now,
+          },
+        );
+
+        const stateHandle = await context.writeResource("state", "state-main", {
+          phase: "verifying",
+          issueNumber,
+          updatedAt: now,
+        });
+
+        context.logger.info(
+          "Verification passed: {succeeded}/{total} steps, {skipped} skipped",
+          { succeeded, total: args.steps.length, skipped },
+        );
+
+        const sc = await createSwampClubClient(
+          context.globalArgs,
+          context.logger,
+        );
+        await sc?.postLifecycleEntry({
+          step: "verification_passed",
+          targetStatus: "in_progress",
+          summary:
+            `Verification passed: ${succeeded}/${args.steps.length} steps`,
+          emoji: "✅",
+          payload: {
+            workflowRunId: args.workflowRunId,
+            commit: args.commit,
+            stepsCompleted: succeeded,
+            stepsTotal: args.steps.length,
+          },
+          isVerbose: false,
+        });
+
+        return { dataHandles: [verificationHandle, stateHandle] };
+      },
+    },
+
+    verification_failed: {
+      description:
+        "Record that verification failed. Transitions back to implementing " +
+        "so the agent can fix issues and re-verify.",
+      arguments: z.object({
+        workflowRunId: z.string(),
+        commit: z.string(),
+        branch: z.string(),
+        failureReason: z.string().describe(
+          "Summary of what failed in the verification workflow",
+        ),
+      }),
+      execute: async (
+        args: {
+          workflowRunId: string;
+          commit: string;
+          branch: string;
+          failureReason: string;
+        },
+        context: {
+          globalArgs: GlobalArgs;
+          logger: {
+            info: (msg: string, props: Record<string, unknown>) => void;
+            warning: (msg: string, props: Record<string, unknown>) => void;
+          };
+          writeResource: (
+            specName: string,
+            instanceName: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
+        const { issueNumber } = context.globalArgs;
+
+        const stateHandle = await context.writeResource("state", "state-main", {
+          phase: "implementing",
+          issueNumber,
+          updatedAt: new Date().toISOString(),
+        });
+
+        context.logger.info("Verification failed: {reason}", {
+          reason: args.failureReason,
+        });
+
+        const sc = await createSwampClubClient(
+          context.globalArgs,
+          context.logger,
+        );
+        await sc?.postLifecycleEntry({
+          step: "verification_failed",
+          targetStatus: "in_progress",
+          summary: `Verification failed: ${args.failureReason}`,
+          emoji: "❌",
+          payload: {
+            workflowRunId: args.workflowRunId,
+            commit: args.commit,
+            failureReason: args.failureReason,
+          },
           isVerbose: false,
         });
 

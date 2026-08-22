@@ -19,13 +19,17 @@
 
 import { reportRegistry } from "../report_registry.ts";
 import { methodSummaryReport } from "./method_summary_report.ts";
+import { verificationAttestationReport } from "./verification_attestation_report.ts";
 import { workflowSummaryReport } from "./workflow_summary_report.ts";
 
 /** Built-in method-scope report names injected as candidates at call sites. */
 export const BUILTIN_METHOD_REPORTS = ["@swamp/method-summary"];
 
 /** Built-in workflow-scope report names injected as candidates at call sites. */
-export const BUILTIN_WORKFLOW_REPORTS = ["@swamp/workflow-summary"];
+export const BUILTIN_WORKFLOW_REPORTS = [
+  "@swamp/workflow-summary",
+  "@swamp/verification-attestation",
+];
 
 // Register built-in reports (guarded to be idempotent across re-imports)
 if (!reportRegistry.has("@swamp/method-summary")) {
@@ -33,4 +37,10 @@ if (!reportRegistry.has("@swamp/method-summary")) {
 }
 if (!reportRegistry.has("@swamp/workflow-summary")) {
   reportRegistry.register("@swamp/workflow-summary", workflowSummaryReport);
+}
+if (!reportRegistry.has("@swamp/verification-attestation")) {
+  reportRegistry.register(
+    "@swamp/verification-attestation",
+    verificationAttestationReport,
+  );
 }
