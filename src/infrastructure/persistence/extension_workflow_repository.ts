@@ -34,6 +34,9 @@ import { UserError } from "../../domain/errors.ts";
 
 const logger = getLogger(["extension-workflow-repo"]);
 
+// Keep in sync with MANIFEST_FILENAMES in manifest_cross_kind_discovery.ts
+const MANIFEST_FILENAMES = new Set(["manifest.yaml", "manifest.yml"]);
+
 /**
  * Read-only WorkflowRepository that discovers YAML workflows from an
  * extension workflows directory (e.g. `extensions/workflows/`).
@@ -73,6 +76,7 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
             includeDirs: false,
           })
         ) {
+          if (MANIFEST_FILENAMES.has(entry.name)) continue;
           try {
             const content = await Deno.readTextFile(entry.path);
             const data = parseYaml(content) as WorkflowData;
@@ -147,6 +151,7 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
             includeDirs: false,
           })
         ) {
+          if (MANIFEST_FILENAMES.has(entry.name)) continue;
           try {
             const content = await Deno.readTextFile(entry.path);
             const data = parseYaml(content) as WorkflowData;

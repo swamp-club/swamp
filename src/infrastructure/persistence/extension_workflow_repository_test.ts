@@ -199,6 +199,75 @@ Deno.test("ExtensionWorkflowRepository save throws UserError", async () => {
   });
 });
 
+Deno.test("ExtensionWorkflowRepository findAll skips manifest.yaml", async () => {
+  await withTempDir(async (dir) => {
+    const workflowData = createWorkflowYaml("real-workflow");
+    await Deno.writeTextFile(
+      join(dir, "deploy.yaml"),
+      stringifyYaml(workflowData),
+    );
+    await Deno.writeTextFile(
+      join(dir, "manifest.yaml"),
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/my-ext",
+        version: "1.0.0",
+      }),
+    );
+
+    const repo = new ExtensionWorkflowRepository(dir);
+    const workflows = await repo.findAll();
+
+    assertEquals(workflows.length, 1);
+    assertEquals(workflows[0].name, "real-workflow");
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository findAll skips manifest.yml", async () => {
+  await withTempDir(async (dir) => {
+    const workflowData = createWorkflowYaml("real-workflow");
+    await Deno.writeTextFile(
+      join(dir, "deploy.yaml"),
+      stringifyYaml(workflowData),
+    );
+    await Deno.writeTextFile(
+      join(dir, "manifest.yml"),
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/my-ext",
+        version: "1.0.0",
+      }),
+    );
+
+    const repo = new ExtensionWorkflowRepository(dir);
+    const workflows = await repo.findAll();
+
+    assertEquals(workflows.length, 1);
+    assertEquals(workflows[0].name, "real-workflow");
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository findPath skips manifest.yaml", async () => {
+  await withTempDir(async (dir) => {
+    const id = crypto.randomUUID();
+    await Deno.writeTextFile(
+      join(dir, "manifest.yaml"),
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/my-ext",
+        id,
+      }),
+    );
+
+    const repo = new ExtensionWorkflowRepository(dir);
+    const path = await repo.findPath(
+      id as ReturnType<typeof repo.nextId>,
+    );
+
+    assertEquals(path, null);
+  });
+});
+
 Deno.test("ExtensionWorkflowRepository delete throws UserError", async () => {
   await withTempDir(async (dir) => {
     const repo = new ExtensionWorkflowRepository(dir);
