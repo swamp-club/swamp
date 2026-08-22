@@ -72,7 +72,7 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
       try {
         for await (
           const entry of walk(dir, {
-            exts: [".yaml"],
+            exts: [".yaml", ".yml"],
             includeDirs: false,
           })
         ) {
@@ -147,7 +147,7 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
       try {
         for await (
           const entry of walk(dir, {
-            exts: [".yaml"],
+            exts: [".yaml", ".yml"],
             includeDirs: false,
           })
         ) {
