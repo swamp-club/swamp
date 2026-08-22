@@ -220,6 +220,7 @@ import {
   resolveDeploymentMode,
   type VaultClassification,
 } from "../../domain/serve/deployment_mode.ts";
+import { validateEndEntityCert } from "../../infrastructure/runtime/tls_cert_validation.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -1220,6 +1221,12 @@ export const serveCommand = new Command()
       key = await Deno.readTextFile(keyFile);
     }
     const tlsEnabled = cert !== undefined;
+
+    if (cert) {
+      for (const warning of validateEndEntityCert(cert)) {
+        logger.warn("{warning}", { warning: warning.message });
+      }
+    }
     const trustProxy = merged.trustProxy;
 
     const wsIdleTimeoutRaw = merged.wsIdleTimeout;

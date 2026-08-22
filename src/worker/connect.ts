@@ -50,6 +50,12 @@ const logger = getSwampLogger(["worker", "connect"]);
 
 // Force HTTP/1.1 ALPN for wss:// so WebSocket upgrades succeed through
 // HTTP/2-capable reverse proxies. See: https://github.com/denoland/deno/issues/16923
+//
+// Caveat: this flag causes Deno to mask all TLS errors as "HTTP/2 not
+// supported by this client" in the WebSocket code path. The CLI side
+// (remote_run.ts) diagnoses the real error; here we log it as-is since
+// the worker connect loop retries and the serve-side startup warning
+// catches the most common cert issue (CA:TRUE).
 const wsHttpClient = Deno.createHttpClient({ http2: false });
 
 /** Refresh the session credential when 2/3 of its lifetime has elapsed. */

@@ -78,6 +78,8 @@ export interface ServerRunOptions {
   signal?: AbortSignal;
   /** Extra headers for proxy/tunnel pass-through (env: SWAMP_SERVE_EXTRA_HEADERS). */
   headers?: Record<string, string>;
+  /** PEM-encoded CA certificates to trust for TLS connections. */
+  caCerts?: string[];
   /** Test seam: WebSocket factory. */
   createSocket?: (url: string, headers?: Record<string, string>) => WebSocket;
 }
@@ -172,6 +174,8 @@ export interface RequestResponseOptions {
   signal?: AbortSignal;
   /** Extra headers for proxy/tunnel pass-through (env: SWAMP_SERVE_EXTRA_HEADERS). */
   headers?: Record<string, string>;
+  /** PEM-encoded CA certificates to trust for TLS connections. */
+  caCerts?: string[];
   createSocket?: (url: string, headers?: Record<string, string>) => WebSocket;
   timeoutMs?: number;
 }
@@ -187,10 +191,9 @@ export function requestServerResponse<T>(
     headers["Authorization"] = `Bearer ${options.token}`;
   }
   const requestId = request.id ?? crypto.randomUUID();
-  const socket = (options.createSocket ?? defaultCreateSocket)(
-    baseUrl,
-    headers,
-  );
+  const socket = options.createSocket
+    ? options.createSocket(baseUrl, headers)
+    : createSocket(baseUrl, headers, options.caCerts);
   const timeoutMs = options.timeoutMs ?? REQUEST_RESPONSE_TIMEOUT_MS;
 
   const raw = new Promise<T>((resolve, reject) => {
@@ -235,11 +238,30 @@ export function requestServerResponse<T>(
       if (!settled) {
         settled = true;
         cleanup();
-        reject(
-          new UserError(
-            `Could not connect to ${baseUrl}${connectErrorDetail}`,
-          ),
-        );
+
+        const errorMsg = connectErrorDetail;
+        if (errorMsg.includes(H2_MASKED_ERROR)) {
+          diagnoseTlsError(baseUrl).then((diagnosis) => {
+            const detail = diagnosis ? `: ${diagnosis}` : connectErrorDetail;
+            reject(
+              new UserError(
+                `Could not connect to ${baseUrl}${detail}`,
+              ),
+            );
+          }).catch(() => {
+            reject(
+              new UserError(
+                `Could not connect to ${baseUrl}${connectErrorDetail}`,
+              ),
+            );
+          });
+        } else {
+          reject(
+            new UserError(
+              `Could not connect to ${baseUrl}${connectErrorDetail}`,
+            ),
+          );
+        }
       }
     };
 
@@ -337,6 +359,10 @@ export function withRemoteOptions<T extends AnyCommand>(command: T): T {
     .option(
       "--token <token:string>",
       "Server token in <name>.<secret> format; only applies with --server (overrides stored credentials and SWAMP_SERVER_TOKEN)",
+    )
+    .option(
+      "--ca-cert <path:string>",
+      "Path to PEM-encoded CA certificate to trust for TLS connections to the server (env: SWAMP_CA_CERT)",
     ) as T;
 }
 
@@ -378,6 +404,12 @@ async function classifyConnectionError(
       return `Authentication failed — run: swamp auth server-login --server ${wsUrl}`;
     }
   }
+  if (originalMessage.includes(H2_MASKED_ERROR)) {
+    try {
+      const diagnosis = await diagnoseTlsError(wsUrl);
+      if (diagnosis) return diagnosis;
+    } catch { /* fall through to other checks */ }
+  }
   if (await probeServerHealth(wsUrl)) {
     return `Authentication failed — run: swamp auth server-login --server ${wsUrl}`;
   }
@@ -389,17 +421,136 @@ async function classifyConnectionError(
 // this, Deno's default client advertises h2 ALPN, the proxy selects h2, and
 // the HTTP/1.1 WebSocket Upgrade is invalid over HTTP/2.
 // See: https://github.com/denoland/deno/issues/16923
+//
+// Caveat: this flag causes Deno to mask all TLS errors (UnknownIssuer,
+// CaUsedAsEndEntity, expired, etc.) as "HTTP/2 not supported by this
+// client" in the WebSocket code path. diagnoseTlsError() below works
+// around this by probing with fetch() when that message appears.
 const wsHttpClient = Deno.createHttpClient({ http2: false });
 
-function defaultCreateSocket(
+let resolvedEnvCaCerts: string[] | undefined;
+
+function resolveCaCertPath(): string | undefined {
+  const envPath = Deno.env.get("SWAMP_CA_CERT");
+  if (envPath) return envPath;
+  // Handle both --ca-cert value and --ca-cert=value forms
+  for (let i = 0; i < Deno.args.length; i++) {
+    if (Deno.args[i] === "--ca-cert" && i + 1 < Deno.args.length) {
+      return Deno.args[i + 1];
+    }
+    if (Deno.args[i].startsWith("--ca-cert=")) {
+      return Deno.args[i].slice("--ca-cert=".length);
+    }
+  }
+  return undefined;
+}
+
+function getEnvCaCerts(): string[] | undefined {
+  if (resolvedEnvCaCerts !== undefined) {
+    return resolvedEnvCaCerts.length > 0 ? resolvedEnvCaCerts : undefined;
+  }
+  const certPath = resolveCaCertPath();
+  if (!certPath) {
+    resolvedEnvCaCerts = [];
+    return undefined;
+  }
+  try {
+    resolvedEnvCaCerts = [Deno.readTextFileSync(certPath)];
+  } catch (e: unknown) {
+    const detail = e instanceof Error ? e.message : String(e);
+    throw new UserError(
+      `Could not read CA certificate file '${certPath}': ${detail}`,
+    );
+  }
+  return resolvedEnvCaCerts;
+}
+
+let cachedCaCertClient: Deno.HttpClient | undefined;
+
+function createSocket(
   url: string,
   headers?: Record<string, string>,
+  caCerts?: string[],
 ): WebSocket {
-  const opts: Record<string, unknown> = { client: wsHttpClient };
+  const effectiveCaCerts = caCerts ?? getEnvCaCerts();
+  let client: Deno.HttpClient;
+  if (effectiveCaCerts?.length) {
+    if (!cachedCaCertClient) {
+      cachedCaCertClient = Deno.createHttpClient({
+        http2: false,
+        caCerts: effectiveCaCerts,
+      });
+    }
+    client = cachedCaCertClient;
+  } else {
+    client = wsHttpClient;
+  }
+  const opts: Record<string, unknown> = { client };
   if (headers && Object.keys(headers).length > 0) {
     opts.headers = headers;
   }
   return new WebSocket(url, opts);
+}
+
+const H2_MASKED_ERROR = "HTTP/2 not supported by this client";
+
+/**
+ * When `createHttpClient({ http2: false })` is used, Deno's WebSocket
+ * masks every TLS validation error as "HTTP/2 not supported by this
+ * client". Probe with a plain `fetch()` (no custom client) to surface
+ * the real error — `fetch` shows the actual TLS rejection reason.
+ * Returns a more helpful message or `undefined` if the probe succeeds
+ * (meaning the WebSocket failure has a different cause).
+ */
+export async function diagnoseTlsError(
+  wsUrl: string,
+): Promise<string | undefined> {
+  let parsed: URL;
+  try {
+    parsed = new URL(wsUrl);
+  } catch {
+    return undefined;
+  }
+  if (parsed.protocol !== "wss:") return undefined;
+
+  parsed.protocol = "https:";
+  try {
+    const resp = await fetch(parsed.href, {
+      signal: AbortSignal.timeout(3_000),
+    });
+    await resp.body?.cancel();
+    return undefined;
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+
+    if (msg.includes("CaUsedAsEndEntity")) {
+      return (
+        `TLS certificate rejected: the server certificate has ` +
+        `basicConstraints CA:TRUE, which is invalid for a server ` +
+        `(end-entity) certificate. Regenerate with ` +
+        `"basicConstraints=critical,CA:FALSE" — restart swamp serve ` +
+        `to see the exact openssl command`
+      );
+    }
+
+    if (msg.includes("UnknownIssuer")) {
+      return (
+        `TLS certificate rejected: the server's certificate issuer is ` +
+        `not trusted. If using a self-signed certificate, pass it with ` +
+        `--ca-cert /path/to/cert.pem or set SWAMP_CA_CERT=/path/to/cert.pem`
+      );
+    }
+
+    if (msg.includes("expired") || msg.includes("NotValidYet")) {
+      return `TLS certificate rejected: ${msg}`;
+    }
+
+    if (msg.includes("AbortError") || msg.includes("timed out")) {
+      return undefined;
+    }
+
+    return `TLS connection failed: ${msg}`;
+  }
 }
 
 interface OutboundRequest {
@@ -436,10 +587,9 @@ async function* singleConnectionStream(
     headers["Authorization"] = `Bearer ${options.token}`;
   }
   const requestId = crypto.randomUUID();
-  const socket = (options.createSocket ?? defaultCreateSocket)(
-    baseUrl,
-    headers,
-  );
+  const socket = options.createSocket
+    ? options.createSocket(baseUrl, headers)
+    : createSocket(baseUrl, headers, options.caCerts);
 
   const queue: ServerMessage[] = [];
   let wake: (() => void) | null = null;
