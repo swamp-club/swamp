@@ -27,6 +27,7 @@ docker run --rm \
   -v <repo-root>:<repo-root> \
   -v ~/Library/Caches/deno:/deno-dir \
   -e SWAMP_WORKFLOWS_DIR=verification \
+  $([ -f ~/.config/swamp/verify.env ] && echo "--env-file $HOME/.config/swamp/verify.env") \
   -w <worktree-path> \
   swamp-club/verify:deno-2.8.3 \
   workflow run verify-changes \
@@ -38,6 +39,11 @@ docker run --rm \
 Replace `<repo-root>` with the main repo path and `<worktree-path>` with the
 current working directory. On Linux, use `~/.cache/deno` instead of
 `~/Library/Caches/deno`.
+
+The `--env-file` flag injects `ANTHROPIC_API_KEY` into the container for agent
+reviews. If `~/.config/swamp/verify.env` does not exist, the flag is omitted and
+agent reviews fail gracefully while build verification still runs. See
+`agent-constraints/verification-conventions.md` for setup.
 
 The `SWAMP_WORKFLOWS_DIR=verification` env var tells swamp to look for workflow
 files in the `verification/` directory instead of the default `workflows/`.
