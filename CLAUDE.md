@@ -85,13 +85,20 @@ CLI.
 
 ## Verification
 
-After completing work, run these checks:
+During development, use these commands for quick feedback:
 
 1. `deno check` - Type checking
 2. `deno lint` - Linting
 3. `deno fmt` - Formatting
-4. `deno run test` - Tests
-5. `deno run compile` - Recompile the binary
+4. `deno run test` - Tests (or `deno run test src/path/to_test.ts` for a single file)
+
+Before opening a PR, run the verification workflow in the container sandbox
+instead of these commands individually — it runs all checks (lint, fmt, test,
+compile, deps audit, agent reviews) as a DAG and produces an attestation. See
+`agent-constraints/verification-conventions.md` for the docker command. Do not
+run `deno check`, `deno lint`, `deno fmt`, `deno run test`, or
+`deno run compile` as a pre-PR gate — the verification workflow covers all of
+them.
 
 ## Source Control & Pull Requests
 

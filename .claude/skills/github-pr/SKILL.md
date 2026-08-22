@@ -28,18 +28,16 @@ fi
 
 ## Pre-flight Checks
 
-Run these checks before submitting any PR:
+The verification workflow must have passed before opening a PR. If using the
+issue-lifecycle skill, verification is already enforced — the `link_pr` method
+requires a passing attestation.
 
-```bash
-deno fmt --check
-deno lint
-deno run test
-```
+If working outside the issue lifecycle (e.g. a quick fix), run the verification
+workflow in the container sandbox before submitting. See
+`agent-constraints/verification-conventions.md` for the docker command.
 
-Fix any issues before proceeding. All checks must pass.
-
-If `deno fmt --check` fails, run `deno fmt` to auto-fix formatting, then re-run
-the checks.
+Do not run lint/test/fmt manually as a pre-PR gate — the verification workflow
+covers all checks.
 
 ## Create PR
 
