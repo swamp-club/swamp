@@ -22,7 +22,8 @@ review the changed code — do not review unchanged code.
 
 ## Review Dimensions
 
-1. **Convention adherence** — does the change follow the conventions listed above?
+1. **Convention adherence** — does the change follow the conventions listed
+   above?
 2. **Domain-driven design** — are DDD principles applied correctly? Are domain
    boundaries respected? Are value objects used where appropriate?
 3. **Test coverage** — are there unit tests for new code? Do tests live next to
