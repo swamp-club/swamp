@@ -26,6 +26,7 @@ import {
   findLiteralSensitiveGlobalArgs,
   getNestedValue,
   literalSensitiveGlobalArgsMessage,
+  redactAllValues,
   redactSensitiveValues,
   setNestedValue,
 } from "./sensitive_field_extractor.ts";
@@ -360,6 +361,22 @@ Deno.test("redactSensitiveValues: does not mutate the input", () => {
   redactSensitiveValues(schema, input);
 
   assertEquals(input.apiKey, "SUPERSECRET123");
+});
+
+Deno.test("redactAllValues: replaces all leaf values with ***", () => {
+  const data = { region: "us-east-1", apiToken: "secret-token", count: 42 };
+  const redacted = redactAllValues(data);
+  assertEquals(redacted, { region: "***", apiToken: "***", count: "***" });
+});
+
+Deno.test("redactAllValues: returns empty object unchanged", () => {
+  assertEquals(redactAllValues({}), {});
+});
+
+Deno.test("redactAllValues: does not mutate the input", () => {
+  const input = { key: "value" };
+  redactAllValues(input);
+  assertEquals(input.key, "value");
 });
 
 Deno.test("findLiteralSensitiveGlobalArgs: flags a literal string secret", () => {

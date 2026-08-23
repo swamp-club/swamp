@@ -1105,6 +1105,136 @@ Deno.test("buildRedactSensitiveArgs: returns args unchanged for workflow scope",
   assertEquals(capturedResult!.apiKey, "sk-secret");
 });
 
+Deno.test("buildRedactSensitiveArgs: redacts all values when model type not in registry", async () => {
+  const unknownType = ModelType.create("@test-redact/unknown-type-fallback");
+  const globalArgs = { region: "us-east-1", apiKey: "sk-secret" };
+  const methodArgs = { target: "prod" };
+  const { report, getResults } = makeRedactionCapturingReport(
+    globalArgs,
+    methodArgs,
+  );
+
+  const registry = new ReportRegistry();
+  registry.register("redaction-test-unknown", report);
+
+  const { repo } = createInMemoryDataRepo();
+
+  const context: MethodReportContext = {
+    scope: "method",
+    repoDir: "/tmp/test",
+    logger: {
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      fatal: () => {},
+    } as unknown as MethodReportContext["logger"],
+    // deno-lint-ignore no-explicit-any
+    dataRepository: repo as any,
+    // deno-lint-ignore no-explicit-any
+    definitionRepository: {} as any,
+    modelType: unknownType,
+    modelId: "test-id",
+    definition: { id: "test-id", name: "test", version: 1, tags: {} },
+    globalArgs,
+    methodArgs,
+    methodName: "deploy",
+    executionStatus: "succeeded",
+    dataHandles: [],
+    extensionFile: () => {
+      throw new Error("extensionFile not stubbed in this test");
+    },
+  };
+
+  await executeReports(
+    registry,
+    context,
+    unknownType,
+    "test-id",
+    { require: ["redaction-test-unknown"] },
+    {},
+    undefined,
+    "deploy",
+  );
+
+  const results = getResults();
+  assertEquals(results !== null, true);
+  assertEquals(results!.redactedGlobal.region, "***");
+  assertEquals(results!.redactedGlobal.apiKey, "***");
+  assertEquals(results!.redactedMethod.target, "***");
+});
+
+Deno.test("buildRedactSensitiveArgs: redacts all method args when method not found on model", async () => {
+  const typeName = "@test-redact/missing-method";
+  const modelType = ModelType.create(typeName);
+  if (!modelRegistry.has(modelType)) {
+    modelRegistry.register({
+      type: modelType,
+      version: "2026.01.01.1",
+      methods: {
+        run: {
+          description: "only method",
+          arguments: z.object({}),
+          execute: () => Promise.resolve({ dataHandles: [] }),
+        },
+      },
+    });
+  }
+
+  const methodArgs = { token: "api-token-123" };
+  const { report, getResults } = makeRedactionCapturingReport(
+    {},
+    methodArgs,
+  );
+
+  const registry = new ReportRegistry();
+  registry.register("redaction-test-missing-method", report);
+
+  const { repo } = createInMemoryDataRepo();
+
+  const context: MethodReportContext = {
+    scope: "method",
+    repoDir: "/tmp/test",
+    logger: {
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      fatal: () => {},
+    } as unknown as MethodReportContext["logger"],
+    // deno-lint-ignore no-explicit-any
+    dataRepository: repo as any,
+    // deno-lint-ignore no-explicit-any
+    definitionRepository: {} as any,
+    modelType,
+    modelId: "test-id",
+    definition: { id: "test-id", name: "test", version: 1, tags: {} },
+    globalArgs: {},
+    methodArgs,
+    methodName: "nonexistent",
+    executionStatus: "succeeded",
+    dataHandles: [],
+    extensionFile: () => {
+      throw new Error("extensionFile not stubbed in this test");
+    },
+  };
+
+  await executeReports(
+    registry,
+    context,
+    modelType,
+    "test-id",
+    { require: ["redaction-test-missing-method"] },
+    {},
+    undefined,
+    "nonexistent",
+  );
+
+  const results = getResults();
+  assertEquals(results !== null, true);
+  assertEquals(results!.redactedMethod.token, "***");
+});
+
 // --- executeReports lazy-report promotion tests (regression: #81) ---
 
 /**

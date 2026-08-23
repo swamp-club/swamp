@@ -26,7 +26,10 @@ import type { ModelType } from "../models/model_type.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import { DefaultDataWriter } from "../models/data_writer.ts";
 import { modelRegistry } from "../models/model.ts";
-import { redactSensitiveValues } from "../models/sensitive_field_extractor.ts";
+import {
+  redactAllValues,
+  redactSensitiveValues,
+} from "../models/sensitive_field_extractor.ts";
 import { buildReportErrorResult } from "./builtin/report_error_report.ts";
 
 /**
@@ -299,12 +302,12 @@ function buildRedactSensitiveArgs(
     if (context.scope === "workflow") return args;
 
     const modelDef = modelRegistry.get(context.modelType);
-    if (!modelDef) return args;
+    if (!modelDef) return redactAllValues(args);
 
     const schema = argsKind === "global"
       ? modelDef.globalArguments
       : modelDef.methods[context.methodName]?.arguments;
-    if (!schema) return args;
+    if (!schema) return redactAllValues(args);
 
     return redactSensitiveValues(schema, args);
   };

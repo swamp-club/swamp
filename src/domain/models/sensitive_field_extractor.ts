@@ -395,6 +395,21 @@ export function redactSensitiveValues(
 }
 
 /**
+ * Returns a deep clone of `data` with every leaf value replaced by `"***"`.
+ * Used as the fallback redaction strategy when no Zod schema is available
+ * to drive field-level redaction — all values are assumed sensitive.
+ */
+export function redactAllValues(
+  data: Record<string, unknown>,
+): Record<string, unknown> {
+  const redacted = structuredClone(data);
+  for (const key of Object.keys(redacted)) {
+    redacted[key] = "***";
+  }
+  return redacted;
+}
+
+/**
  * Recursively collects all string values from a value tree into `out`.
  * Handles strings, arrays, and plain objects (records/maps).
  */

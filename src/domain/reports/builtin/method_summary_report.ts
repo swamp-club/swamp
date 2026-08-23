@@ -111,7 +111,6 @@ export const methodSummaryReport: ReportDefinition = {
       methodArgs,
       dataHandles,
       outputSpecs,
-      redactSensitiveArgs,
       swampSha,
     } = context;
 
@@ -139,38 +138,27 @@ export const methodSummaryReport: ReportDefinition = {
       lines.push("## Error", "", errorMessage, "");
     }
 
-    // Arguments section
-    const redactedGlobal = redactSensitiveArgs
-      ? redactSensitiveArgs(globalArgs, "global")
-      : globalArgs;
-    const redactedMethod = redactSensitiveArgs
-      ? redactSensitiveArgs(methodArgs, "method")
-      : methodArgs;
+    // Arguments section — names only, never values (swamp-club#1746).
+    const globalKeys = Object.keys(globalArgs);
+    const methodKeys = Object.keys(methodArgs);
 
-    const globalEmpty = Object.keys(redactedGlobal).length === 0;
-    const methodEmpty = Object.keys(redactedMethod).length === 0;
-
-    if (globalEmpty && methodEmpty) {
+    if (globalKeys.length === 0 && methodKeys.length === 0) {
       lines.push("## Arguments", "", "No arguments.", "");
     } else {
       lines.push("## Arguments", "");
-      if (!globalEmpty) {
+      if (globalKeys.length > 0) {
         lines.push("**Global Arguments**", "");
-        lines.push(
-          "```json",
-          JSON.stringify(redactedGlobal, null, 2),
-          "```",
-          "",
-        );
+        for (const key of globalKeys) {
+          lines.push(`- ${key}`);
+        }
+        lines.push("");
       }
-      if (!methodEmpty) {
+      if (methodKeys.length > 0) {
         lines.push("**Method Arguments**", "");
-        lines.push(
-          "```json",
-          JSON.stringify(redactedMethod, null, 2),
-          "```",
-          "",
-        );
+        for (const key of methodKeys) {
+          lines.push(`- ${key}`);
+        }
+        lines.push("");
       }
     }
 
@@ -190,8 +178,8 @@ export const methodSummaryReport: ReportDefinition = {
       methodName,
       ...(swampSha ? { swampSha } : {}),
       narrative,
-      globalArgs: redactedGlobal,
-      methodArgs: redactedMethod,
+      globalArgs: globalKeys,
+      methodArgs: methodKeys,
       ...(outputSpecs && outputSpecs.length > 0 ? { outputSpecs } : {}),
       dataProduced: dataHandles.map((h) => ({
         name: h.name,
