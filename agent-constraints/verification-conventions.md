@@ -158,6 +158,25 @@ To construct this checklist:
        "os": "<platform>",
        "swampVersion": "<version>"
      },
+     "configIntegrity": {
+       "claudeMd": "<sha256 of CLAUDE.md>",
+       "prompts": {
+         "code-review": "<sha256 of verification/review-prompts/code-review.md>",
+         "adversarial-review": "<sha256 of verification/review-prompts/adversarial-review.md>",
+         "ux-review": "<sha256 of verification/review-prompts/ux-review.md>",
+         "ci-security-review": "<sha256 of verification/review-prompts/ci-security-review.md>"
+       },
+       "workflows": {
+         "verify-build": "<sha256 of verification/workflow-verify-build.yaml>",
+         "verify-reviews": "<sha256 of verification/workflow-verify-reviews.yaml>"
+       }
+     },
+     "reviewConfig": {
+       "code-review": { "model": "claude-opus-4-6", "ran": true },
+       "adversarial-review": { "model": "claude-opus-4-6", "ran": false, "reason": "guard" },
+       "ux-review": { "model": "claude-sonnet-4-6", "ran": false, "reason": "guard" },
+       "ci-security-review": { "model": "claude-opus-4-6", "ran": false, "reason": "guard" }
+     },
      "steps": [
        {
          "job": "static-analysis",
@@ -201,6 +220,15 @@ To construct this checklist:
    }
    ```
 
+   The `configIntegrity` section proves the review prompts, workflows, and
+   CLAUDE.md used match the versions at the verified commit. Anyone can
+   checkout that commit, hash the files, and verify they match. Compute
+   hashes with:
+
+   ```bash
+   sha256sum CLAUDE.md verification/review-prompts/*.md verification/workflow-verify-*.yaml
+   ```
+
 5. Present the checklist AND the workflow run file paths to the user so they
    can inspect the full details:
 
@@ -209,8 +237,13 @@ To construct this checklist:
    Review run: .swamp/workflow-runs/<id>/workflow-run-<review-run-id>.yaml
    ```
 
-6. Determine the overall result:
-   - **All pass** → call `verification_passed` with the checklist data
+6. Determine the overall result. **Only call `verification_passed` when
+   `gate.allPassed` is true — every non-skipped step must have succeeded.**
+   If any step failed, call `verification_failed` instead. Do not treat a
+   partial pass as success.
+
+   - **All pass** → post the attestation JSON to swamp-club as part of the
+     `verification_passed` call so the team has a permanent, shared record
    - **Any fail** → call `verification_failed`, fix the issues, re-verify
 
 ## Handling Failures
