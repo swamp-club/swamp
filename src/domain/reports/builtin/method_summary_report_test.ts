@@ -95,11 +95,12 @@ Deno.test("methodSummaryReport: succeeded method with data handles shows narrati
   // No schema in markdown — that's JSON-only for agents
   assertEquals(result.markdown.includes("## Output Schema"), false);
 
-  // Arguments shown in markdown
+  // Argument names shown in markdown (never values)
   assertStringIncludes(result.markdown, "**Global Arguments**");
   assertStringIncludes(result.markdown, "**Method Arguments**");
-  assertStringIncludes(result.markdown, '"region": "us-east-1"');
-  assertStringIncludes(result.markdown, '"force": true');
+  assertStringIncludes(result.markdown, "- region");
+  assertStringIncludes(result.markdown, "- force");
+  assertEquals(result.markdown.includes("us-east-1"), false);
 
   // JSON checks
   assertEquals(result.json.status, "succeeded");
@@ -329,9 +330,9 @@ Deno.test("methodSummaryReport: both args empty shows 'No arguments.'", async ()
   assertEquals(result.markdown.includes("**Method Arguments**"), false);
   assertEquals(result.markdown.includes("```json\n{}"), false);
 
-  // JSON still contains both fields
-  assertEquals(result.json.globalArgs, {});
-  assertEquals(result.json.methodArgs, {});
+  // JSON contains empty key arrays
+  assertEquals(result.json.globalArgs, []);
+  assertEquals(result.json.methodArgs, []);
 });
 
 Deno.test("methodSummaryReport: only globalArgs populated omits method args section", async () => {
@@ -343,7 +344,8 @@ Deno.test("methodSummaryReport: only globalArgs populated omits method args sect
   const result = await methodSummaryReport.execute(ctx);
 
   assertStringIncludes(result.markdown, "**Global Arguments**");
-  assertStringIncludes(result.markdown, '"region": "us-west-2"');
+  assertStringIncludes(result.markdown, "- region");
+  assertEquals(result.markdown.includes("us-west-2"), false);
   assertEquals(result.markdown.includes("**Method Arguments**"), false);
   assertEquals(result.markdown.includes("No arguments."), false);
 });
@@ -357,7 +359,7 @@ Deno.test("methodSummaryReport: only methodArgs populated omits global args sect
   const result = await methodSummaryReport.execute(ctx);
 
   assertStringIncludes(result.markdown, "**Method Arguments**");
-  assertStringIncludes(result.markdown, '"force": true');
+  assertStringIncludes(result.markdown, "- force");
   assertEquals(result.markdown.includes("**Global Arguments**"), false);
   assertEquals(result.markdown.includes("No arguments."), false);
 });
@@ -405,60 +407,25 @@ Deno.test("methodSummaryReport: JSON output structure matches expected shape", a
   );
 });
 
-Deno.test("methodSummaryReport: redactSensitiveArgs masks sensitive fields in markdown and JSON", async () => {
+Deno.test("methodSummaryReport: argument values never appear in markdown or JSON", async () => {
   const ctx = makeMethodContext({
     globalArgs: { region: "us-east-1", apiKey: "sk-secret-12345" },
     methodArgs: { target: "prod", password: "hunter2" },
-    redactSensitiveArgs: (
-      args: Record<string, unknown>,
-      argsKind: "global" | "method",
-    ): Record<string, unknown> => {
-      const redacted = structuredClone(args);
-      if (argsKind === "global" && "apiKey" in redacted) {
-        redacted.apiKey = "***";
-      }
-      if (argsKind === "method" && "password" in redacted) {
-        redacted.password = "***";
-      }
-      return redacted;
-    },
   });
 
   const result = await methodSummaryReport.execute(ctx);
 
-  // Markdown: sensitive values replaced with ***
-  assertStringIncludes(result.markdown, '"apiKey": "***"');
-  assertStringIncludes(result.markdown, '"password": "***"');
-  // Non-sensitive values still present
-  assertStringIncludes(result.markdown, '"region": "us-east-1"');
-  assertStringIncludes(result.markdown, '"target": "prod"');
-  // Original secrets must NOT appear
+  // Markdown: argument names listed, values never appear
+  assertStringIncludes(result.markdown, "- region");
+  assertStringIncludes(result.markdown, "- apiKey");
+  assertStringIncludes(result.markdown, "- target");
+  assertStringIncludes(result.markdown, "- password");
+  assertEquals(result.markdown.includes("us-east-1"), false);
   assertEquals(result.markdown.includes("sk-secret-12345"), false);
+  assertEquals(result.markdown.includes("prod"), false);
   assertEquals(result.markdown.includes("hunter2"), false);
 
-  // JSON: same redaction applied
-  const globalArgs = result.json.globalArgs as Record<string, unknown>;
-  assertEquals(globalArgs.apiKey, "***");
-  assertEquals(globalArgs.region, "us-east-1");
-  const methodArgs = result.json.methodArgs as Record<string, unknown>;
-  assertEquals(methodArgs.password, "***");
-  assertEquals(methodArgs.target, "prod");
-});
-
-Deno.test("methodSummaryReport: without redactSensitiveArgs, args render as-is", async () => {
-  const ctx = makeMethodContext({
-    globalArgs: { apiKey: "sk-secret-12345" },
-    methodArgs: { password: "hunter2" },
-  });
-
-  const result = await methodSummaryReport.execute(ctx);
-
-  // Without redaction, raw values appear
-  assertStringIncludes(result.markdown, '"apiKey": "sk-secret-12345"');
-  assertStringIncludes(result.markdown, '"password": "hunter2"');
-
-  const globalArgs = result.json.globalArgs as Record<string, unknown>;
-  assertEquals(globalArgs.apiKey, "sk-secret-12345");
-  const methodArgs = result.json.methodArgs as Record<string, unknown>;
-  assertEquals(methodArgs.password, "hunter2");
+  // JSON: key name arrays, not key-value objects
+  assertEquals(result.json.globalArgs, ["region", "apiKey"]);
+  assertEquals(result.json.methodArgs, ["target", "password"]);
 });

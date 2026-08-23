@@ -403,9 +403,16 @@ line carries the error information.
 
 ## Sensitive Argument Redaction
 
-Report contexts include an optional `redactSensitiveArgs` helper that replaces
+The builtin `@swamp/method-summary` report records argument **names only** — it
+never persists argument values. Both the markdown and JSON artifacts list
+argument keys (`string[]`) instead of key-value objects. This eliminates the risk
+of leaking secrets passed as literal `--input` values or resolved from
+expressions (swamp-club#1746).
+
+Report contexts also include an optional `redactSensitiveArgs` helper for custom
+extension reports that choose to display argument values. The helper replaces
 values marked `{ sensitive: true }` in the model type's Zod schema with `"***"`.
-The helper is built by `buildRedactSensitiveArgs` in
+It is built by `buildRedactSensitiveArgs` in
 `src/domain/reports/report_execution_service.ts` and attached to the context
 before report execution.
 
@@ -424,12 +431,14 @@ replaces matching values with `"***"`.
 - **Method/model scope** — looks up the schema via `modelRegistry.get(modelType)`
   and returns a redacted clone.
 - **Workflow scope** — returns args unchanged (no single model type to look up).
-- **No schema found** — returns args unchanged. Safe to call unconditionally.
+- **No model definition found** — returns all values as `"***"` via
+  `redactAllValues`. This is the safe default when no schema is available to
+  drive field-level redaction.
+- **No argument schema found** — returns all values as `"***"` via
+  `redactAllValues`.
 
-Reports that include argument values in their output should call
-`context.redactSensitiveArgs(args, kind)` to avoid persisting secrets. The
-builtin `@swamp/method-summary` report uses this for both global and method
-arguments.
+Custom extension reports that include argument values in their output should call
+`context.redactSensitiveArgs(args, kind)` to avoid persisting secrets.
 
 `redactSensitiveValues` is the single redaction primitive shared across the
 surfaces that honor the `sensitive: true` flag. `swamp model get` applies it to a
@@ -437,8 +446,8 @@ model's global arguments in the libswamp read path
 (`src/libswamp/models/get.ts`) before assembling `ModelGetData`, so both the log
 and JSON renderers — and `swamp model search`, which routes through the same
 read path — display `"***"` instead of literal sensitive values. When the model
-type is unavailable the schema is unknown, so values pass through unredacted,
-matching the report path's "no schema found" behavior.
+type is unavailable the schema is unknown, so values are fully redacted via
+`redactAllValues`, matching the report path's fallback behavior.
 
 Additionally, report contexts receive **pre-vault** arguments — args are
 captured before `resolveRuntimeExpressionsInDefinition` replaces vault
