@@ -128,6 +128,7 @@ export interface WorkflowReportContext extends BaseReportContext {
   stepExecutions: Array<{
     jobName: string;
     stepName: string;
+    taskType: string;
     modelName: string;
     modelType: string;
     methodName: string;
@@ -136,6 +137,7 @@ export interface WorkflowReportContext extends BaseReportContext {
     methodArgs: Record<string, unknown>;
     modelId: string;
     globalArgs: Record<string, unknown>;
+    errorMessage?: string;
   }>;
 }
 

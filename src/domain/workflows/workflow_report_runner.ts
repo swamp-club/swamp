@@ -44,6 +44,7 @@ import type { WorkflowExecutionEvent } from "./execution_events.ts";
 export interface WorkflowStepExecutionDetail {
   jobName: string;
   stepName: string;
+  taskType: string;
   modelName: string;
   modelType: string;
   methodName: string;
@@ -52,6 +53,7 @@ export interface WorkflowStepExecutionDetail {
   methodArgs: Record<string, unknown>;
   modelId: string;
   globalArgs: Record<string, unknown>;
+  errorMessage?: string;
 }
 
 /**

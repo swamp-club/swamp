@@ -28,6 +28,7 @@ function makeStepExecution(
   return {
     jobName: "static-analysis",
     stepName: "lint",
+    taskType: "model_method",
     modelName: "lint",
     modelType: "@swamp/deno-runner",
     methodName: "task",
@@ -311,4 +312,60 @@ Deno.test("verificationAttestationReport: job with all skipped steps shows check
 
   assertStringIncludes(result.markdown, "✓ **ux-review**");
   assertStringIncludes(result.markdown, "○ review");
+});
+
+Deno.test("verificationAttestationReport: failed assert step appears in attestation", async () => {
+  const ctx = makeWorkflowContext({
+    workflowStatus: "failed",
+    stepExecutions: [
+      makeStepExecution({
+        jobName: "validate",
+        stepName: "run-model",
+        status: "succeeded",
+      }),
+      {
+        jobName: "validate",
+        stepName: "check-output",
+        taskType: "assert",
+        modelName: "",
+        modelType: "",
+        methodName: "",
+        status: "failed",
+        dataHandles: [],
+        methodArgs: {},
+        modelId: "",
+        globalArgs: {},
+        errorMessage: "Expected output to contain result.",
+      },
+    ],
+  });
+
+  const result = await verificationAttestationReport.execute(ctx);
+
+  assertStringIncludes(result.markdown, "1 passed · 1 failed · 0 skipped");
+  assertStringIncludes(result.markdown, "✗ **validate**");
+  assertStringIncludes(
+    result.markdown,
+    "✗ check-output  —  assert  (failed)",
+  );
+  assertStringIncludes(
+    result.markdown,
+    "Expected output to contain result.",
+  );
+  assertStringIncludes(result.markdown, "**Gate:** 1/2 passed, 0 skipped");
+
+  const json = result.json;
+  const steps = json.steps as Array<Record<string, unknown>>;
+  assertEquals(steps.length, 2);
+  assertEquals(steps[1].taskType, "assert");
+  assertEquals(steps[1].status, "failed");
+  assertEquals(steps[1].errorMessage, "Expected output to contain result.");
+
+  const failures = json.failures as Array<Record<string, unknown>>;
+  assertEquals(failures!.length, 1);
+  assertEquals(failures![0].taskType, "assert");
+  assertEquals(
+    failures![0].errorMessage,
+    "Expected output to contain result.",
+  );
 });
