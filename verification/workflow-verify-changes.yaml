@@ -180,7 +180,7 @@ jobs:
           type: succeeded
     steps:
       - name: review
-        guard: "${{ hasChanges('src/domain/', 'src/infrastructure/', 'src/libswamp/', 'src/serve/', 'src/worker/') }}"
+        guard: "${{ modelMethod.method('change-detector', 'execute', {'run': 'git diff main --name-only | grep -qE \"^src/(domain|infrastructure|libswamp|serve|worker)/\"', 'ignoreExitCode': true}).exitCode != 0 }}"
         task:
           type: model_method
           modelType: "@swamp/agent-runner"
@@ -206,7 +206,7 @@ jobs:
           type: succeeded
     steps:
       - name: review
-        guard: "${{ hasChanges('src/cli/', 'src/presentation/', 'src/domain/errors.ts', 'src/libswamp/') }}"
+        guard: "${{ modelMethod.method('change-detector', 'execute', {'run': 'git diff main --name-only | grep -qE \"^src/(cli/|presentation/|domain/errors\\.ts|libswamp/)\"', 'ignoreExitCode': true}).exitCode != 0 }}"
         task:
           type: model_method
           modelType: "@swamp/agent-runner"
@@ -232,7 +232,7 @@ jobs:
           type: succeeded
     steps:
       - name: review
-        guard: "${{ hasChanges('.github/workflows/') }}"
+        guard: "${{ modelMethod.method('change-detector', 'execute', {'run': 'git diff main --name-only | grep -qE \"^\\.github/workflows/\"', 'ignoreExitCode': true}).exitCode != 0 }}"
         task:
           type: model_method
           modelType: "@swamp/agent-runner"
