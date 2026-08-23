@@ -180,6 +180,146 @@ Deno.test("getWorkflowRunLogger", async (t) => {
   });
 });
 
+/**
+ * Replaces every console method the console sink can write through with a
+ * capturing stub. initializeLogging builds its console sink over the global
+ * console, so this injects a capturing sink at the parent-sink boundary:
+ * anything the run/model category loggers would emit through the root
+ * logger's console sink lands in `lines`.
+ */
+function captureConsoleSink(): { lines: string[]; restore: () => void } {
+  const original = {
+    debug: console.debug,
+    log: console.log,
+    info: console.info,
+    warn: console.warn,
+    error: console.error,
+  };
+  const lines: string[] = [];
+  const capture = (...args: unknown[]) => {
+    lines.push(
+      args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(
+        " ",
+      ),
+    );
+  };
+  console.debug = capture;
+  console.log = capture;
+  console.info = capture;
+  console.warn = capture;
+  console.error = capture;
+  return {
+    lines,
+    restore: () => {
+      console.debug = original.debug;
+      console.log = original.log;
+      console.info = original.info;
+      console.warn = original.warn;
+      console.error = original.error;
+    },
+  };
+}
+
+Deno.test("initializeLogging: json mode keeps run category records off the console", async () => {
+  const capture = captureConsoleSink();
+  try {
+    await initializeLogging({
+      jsonMode: true,
+      _reset: true,
+      _logsConfig: { exporterKind: "none" },
+    });
+
+    getRunLogger("json-sink-test", "greet")
+      .info`model run record must not print`;
+    getWorkflowRunLogger("json-sink-wf")
+      .info`workflow run record must not print`;
+
+    assertEquals(
+      capture.lines.filter((line) => line.includes("must not print")),
+      [],
+    );
+  } finally {
+    capture.restore();
+  }
+});
+
+Deno.test("initializeLogging: json mode with forceLog still emits nothing to the console", async () => {
+  const capture = captureConsoleSink();
+  try {
+    await initializeLogging({
+      jsonMode: true,
+      forceLog: true,
+      _reset: true,
+      _logsConfig: { exporterKind: "none" },
+    });
+
+    getRunLogger("json-forcelog-test", "greet")
+      .info`json forceLog record must not print`;
+    getWorkflowRunLogger("json-forcelog-wf")
+      .info`json forceLog workflow record must not print`;
+
+    assertEquals(
+      capture.lines.filter((line) => line.includes("must not print")),
+      [],
+    );
+  } finally {
+    capture.restore();
+  }
+});
+
+Deno.test("initializeLogging: log mode with forceLog lets run categories inherit the console sink", async () => {
+  const capture = captureConsoleSink();
+  try {
+    await initializeLogging({
+      jsonMode: false,
+      forceLog: true,
+      _reset: true,
+      _logsConfig: { exporterKind: "none" },
+    });
+
+    getRunLogger("forcelog-test", "greet").info`model run record does print`;
+    getWorkflowRunLogger("forcelog-wf")
+      .info`workflow run record does print`;
+
+    const matches = capture.lines.filter((line) => line.includes("does print"));
+    assertEquals(matches.length, 2);
+    assertStringIncludes(matches[0], "model run record does print");
+    assertStringIncludes(matches[1], "workflow run record does print");
+  } finally {
+    capture.restore();
+  }
+});
+
+Deno.test("initializeLogging: default log mode severs run category console inheritance", async () => {
+  const capture = captureConsoleSink();
+  try {
+    await initializeLogging({
+      jsonMode: false,
+      _reset: true,
+      _logsConfig: { exporterKind: "none" },
+    });
+
+    getRunLogger("plain-log-test", "greet")
+      .info`plain run record must not print`;
+    getWorkflowRunLogger("plain-log-wf")
+      .info`plain workflow record must not print`;
+    // A non-run category still reaches the console sink — the severed
+    // inheritance is scoped to the run/model categories only.
+    getSwampLogger(["plain-log-general"]).info`general record does print`;
+
+    assertEquals(
+      capture.lines.filter((line) => line.includes("must not print")),
+      [],
+    );
+    const general = capture.lines.filter((line) =>
+      line.includes("general record does print")
+    );
+    assertEquals(general.length, 1);
+  } finally {
+    capture.restore();
+  }
+});
+
 Deno.test("initializeLogging: quiet mode keeps run file sink at info level", async () => {
   const dir = await Deno.makeTempDir({ prefix: "logger-quiet-test-" });
   try {

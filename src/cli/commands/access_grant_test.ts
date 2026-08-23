@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { Command } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 // Import models barrel to trigger self-registration
@@ -25,6 +26,70 @@ import "../../domain/models/models.ts";
 
 // Initialize logging for tests
 await initializeLogging({});
+
+/**
+ * In-process serve endpoint streaming the given run events followed by a
+ * `done` frame — enough to drive the command's streaming --server path
+ * without a subprocess.
+ */
+function runEventServer(
+  events: Record<string, unknown>[],
+): { url: string; shutdown: () => Promise<void> } {
+  const server = Deno.serve(
+    { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+    (req) => {
+      const { socket, response } = Deno.upgradeWebSocket(req);
+      socket.onmessage = (message) => {
+        const request = JSON.parse(message.data as string) as { id: string };
+        for (const event of events) {
+          socket.send(
+            JSON.stringify({ type: "event", id: request.id, event }),
+          );
+        }
+        socket.send(JSON.stringify({ type: "done", id: request.id }));
+      };
+      return response;
+    },
+  );
+  return {
+    url: `ws://127.0.0.1:${server.addr.port}`,
+    shutdown: () => server.shutdown(),
+  };
+}
+
+/** Runs `access grant create` against a scripted run result; returns Deno.exitCode. */
+async function runGrantCreateAgainst(
+  run: Record<string, unknown>,
+): Promise<number> {
+  const server = runEventServer([{ kind: "completed", run }]);
+  const previousExitCode = Deno.exitCode;
+  Deno.exitCode = 0;
+  try {
+    const { accessGrantCommand } = await import("./access_grant.ts");
+    const root = new Command()
+      .globalOption("--json", "JSON output")
+      .command("grant", accessGrantCommand);
+    await root.parse([
+      "grant",
+      "create",
+      "--subject",
+      "user:adam",
+      "--allow",
+      "run",
+      "--on",
+      "workflow:@acme/deploy",
+      "--json",
+      "--server",
+      server.url,
+      "--token",
+      "test.token",
+    ]);
+    return Deno.exitCode;
+  } finally {
+    Deno.exitCode = previousExitCode;
+    await server.shutdown();
+  }
+}
 
 Deno.test("accessGrantCommand: module loads", async () => {
   const { accessGrantCommand } = await import("./access_grant.ts");
@@ -143,4 +208,23 @@ Deno.test("accessGrantCommand: revoke accepts grant_id argument", async () => {
   const revokeCmd = commands.find((c) => c.getName() === "revoke")!;
   const args = revokeCmd.getArguments();
   assertEquals(args.length, 1);
+});
+
+Deno.test({
+  name: "accessGrantCommand: create sets Deno.exitCode 1 when the run fails",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    assertEquals(await runGrantCreateAgainst({ status: "failed" }), 1);
+  },
+});
+
+Deno.test({
+  name:
+    "accessGrantCommand: create leaves Deno.exitCode 0 when the run succeeds",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    assertEquals(await runGrantCreateAgainst({ status: "succeeded" }), 0);
+  },
 });

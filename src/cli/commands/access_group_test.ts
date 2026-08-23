@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { Command } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 // Import models barrel to trigger self-registration
@@ -25,6 +26,65 @@ import "../../domain/models/models.ts";
 
 // Initialize logging for tests
 await initializeLogging({});
+
+/**
+ * In-process serve endpoint streaming the given run events followed by a
+ * `done` frame — enough to drive the command's streaming --server path
+ * without a subprocess.
+ */
+function runEventServer(
+  events: Record<string, unknown>[],
+): { url: string; shutdown: () => Promise<void> } {
+  const server = Deno.serve(
+    { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+    (req) => {
+      const { socket, response } = Deno.upgradeWebSocket(req);
+      socket.onmessage = (message) => {
+        const request = JSON.parse(message.data as string) as { id: string };
+        for (const event of events) {
+          socket.send(
+            JSON.stringify({ type: "event", id: request.id, event }),
+          );
+        }
+        socket.send(JSON.stringify({ type: "done", id: request.id }));
+      };
+      return response;
+    },
+  );
+  return {
+    url: `ws://127.0.0.1:${server.addr.port}`,
+    shutdown: () => server.shutdown(),
+  };
+}
+
+/** Runs `access group create` against a scripted run result; returns Deno.exitCode. */
+async function runGroupCreateAgainst(
+  run: Record<string, unknown>,
+): Promise<number> {
+  const server = runEventServer([{ kind: "completed", run }]);
+  const previousExitCode = Deno.exitCode;
+  Deno.exitCode = 0;
+  try {
+    const { accessGroupCommand } = await import("./access_group.ts");
+    const root = new Command()
+      .globalOption("--json", "JSON output")
+      .command("group", accessGroupCommand);
+    await root.parse([
+      "group",
+      "create",
+      "release-managers",
+      "--json",
+      "--server",
+      server.url,
+      "--token",
+      "test.token",
+    ]);
+    return Deno.exitCode;
+  } finally {
+    Deno.exitCode = previousExitCode;
+    await server.shutdown();
+  }
+}
 
 Deno.test("accessGroupCommand: module loads", async () => {
   const { accessGroupCommand } = await import("./access_group.ts");
@@ -175,4 +235,23 @@ Deno.test("accessGroupCommand: list-idp has no --repo-dir option", async () => {
   const options = listIdpCmd.getOptions();
   const repoDirOpt = options.find((o) => o.name === "repo-dir");
   assertEquals(repoDirOpt, undefined);
+});
+
+Deno.test({
+  name: "accessGroupCommand: create sets Deno.exitCode 1 when the run fails",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    assertEquals(await runGroupCreateAgainst({ status: "failed" }), 1);
+  },
+});
+
+Deno.test({
+  name:
+    "accessGroupCommand: create leaves Deno.exitCode 0 when the run succeeds",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    assertEquals(await runGroupCreateAgainst({ status: "succeeded" }), 0);
+  },
 });
