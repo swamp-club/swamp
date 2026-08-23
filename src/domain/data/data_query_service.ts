@@ -471,9 +471,10 @@ export class DataQueryService {
     // selection (swamp-club#1737).
     if (needsHydration) {
       let writeIndex = 0;
+      const ownNamespace = this.dataRepo.namespace;
       for (let i = 0; i < results.length; i++) {
         const row = matchedRows[i];
-        if (this.filterStaleRows) {
+        if (this.filterStaleRows && row.namespace === ownNamespace) {
           const contentPath = this.dataRepo.getContentPath(
             ModelType.create(row.type_normalized),
             row.model_id,
