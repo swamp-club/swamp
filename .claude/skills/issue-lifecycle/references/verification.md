@@ -67,20 +67,29 @@ swamp data get <model-name> <data-name>
 
 ### All steps passed
 
-Call `verification_passed` with the checklist data from the attestation:
+**Only proceed when `gate.allPassed` is true — every non-skipped step must have
+succeeded.** A partial pass is NOT a pass. If any step failed, go to "Any step
+failed" below.
 
-```
-swamp model @swamp/issue-lifecycle method run verification_passed issue-<N> \
-  --input workflowRunId=<run-id> \
-  --input commit=<SHA> \
-  --input branch=<branch> \
-  --input steps='[{"job":"static-analysis","step":"lint","model":"@swamp/deno-runner","method":"task","status":"succeeded"}, ...]'
-```
+1. Construct the combined attestation JSON including the `configIntegrity`
+   checksums (see `agent-constraints/verification-conventions.md` for the full
+   schema). The attestation is posted to swamp-club as part of the
+   `verification_passed` call so the team has a permanent, shared record.
 
-Populate the `steps` array from the attestation output. Include every step with
-its actual status (succeeded, failed, or skipped).
+2. Call `verification_passed` with the attestation data:
 
-2. **Present the full verification checklist to the user and wait for their
+   ```
+   swamp model @swamp/issue-lifecycle method run verification_passed issue-<N> \
+     --input workflowRunId=<run-id> \
+     --input commit=<SHA> \
+     --input branch=<branch> \
+     --input steps='[{"job":"static-analysis","step":"lint","model":"build-lint","status":"succeeded"}, ...]'
+   ```
+
+   Populate the `steps` array from the attestation output. Include every step
+   with its actual status (succeeded, failed, or skipped).
+
+3. **Present the full verification checklist to the user and wait for their
    approval before opening the PR.** The checklist must show every step from
    both the build and review workflows — status, model, duration, and for
    reviews the VERDICT and finding count. Include the workflow run file paths so
@@ -90,7 +99,7 @@ its actual status (succeeded, failed, or skipped).
    Do NOT proceed to open a PR until the user has seen the checklist and
    confirmed they are happy with the results.
 
-3. Then proceed to open a PR — read the "Create a PR" section in
+4. Then proceed to open a PR — read the "Create a PR" section in
    [implementation.md](implementation.md).
 
 ### Any step failed
