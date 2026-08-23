@@ -102,6 +102,7 @@ Deno.test("createReportTestContext: workflow scope with step executions", () => 
       {
         jobName: "deploy",
         stepName: "create-instance",
+        taskType: "model_method",
         modelName: "ec2",
         modelType: "aws/ec2",
         methodName: "create",
@@ -114,6 +115,7 @@ Deno.test("createReportTestContext: workflow scope with step executions", () => 
       {
         jobName: "deploy",
         stepName: "configure",
+        taskType: "model_method",
         modelName: "config",
         modelType: "aws/ssm",
         methodName: "apply",
