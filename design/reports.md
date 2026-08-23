@@ -101,11 +101,15 @@ contexts additionally carry `extensionFile`.
 | `workflowRunId`    | `string`                         | Run UUID                                      |
 | `workflowName`     | `string`                         | Workflow name                                 |
 | `workflowStatus`   | `"succeeded"` / `"failed"`      | Overall run outcome                           |
-| `stepExecutions`   | `StepExecution[]`                | Per-step details (job, model, method, status) |
+| `stepExecutions`   | `StepExecution[]`                | Per-step details (job, task, status)          |
 
-Each `stepExecutions` entry contains `jobName`, `stepName`, `modelName`,
-`modelType`, `methodName`, `status`, `dataHandles`, `methodArgs`, `modelId`,
-and `globalArgs`.
+Each `stepExecutions` entry contains `jobName`, `stepName`, `taskType`,
+`modelName`, `modelType`, `methodName`, `status`, `dataHandles`, `methodArgs`,
+`modelId`, `globalArgs`, and an optional `errorMessage`. The `taskType` field
+identifies the step's task kind (`model_method`, `assert`, `manual_approval`,
+`workflow`). For non-model tasks, the model-specific fields (`modelName`,
+`modelType`, `methodName`, `modelId`) are empty strings and `errorMessage`
+carries the failure reason when the step failed.
 
 ## Standalone Report Extensions
 

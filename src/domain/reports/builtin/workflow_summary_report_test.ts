@@ -28,6 +28,7 @@ function makeStepExecution(
   return {
     jobName: "deploy-job",
     stepName: "deploy-step",
+    taskType: "model_method",
     modelName: "my-server",
     modelType: "server",
     methodName: "deploy",
@@ -140,7 +141,7 @@ Deno.test("workflowSummaryReport: failures section with data handles shows retri
     failuresIdx < jobIdx,
     "Failures section should appear before Job sections",
   );
-  assertStringIncludes(result.markdown, "| Retrieval Commands |");
+  assertStringIncludes(result.markdown, "| Detail |");
   assertStringIncludes(result.markdown, "| deploy-job | **bad-step** |");
   assertStringIncludes(result.markdown, "my-server \u2192 deploy");
   assertStringIncludes(
@@ -281,13 +282,16 @@ Deno.test("workflowSummaryReport: JSON output structure matches expected shape",
   const stepKeys = [
     "jobName",
     "stepName",
+    "taskType",
     "modelName",
     "modelType",
     "methodName",
     "status",
+    "errorMessage",
     "retrievalCommands",
   ];
   assertEquals(Object.keys(steps[0]).sort(), stepKeys.sort());
+  assertEquals(steps[0].taskType, "model_method");
   assertEquals(steps[0].retrievalCommands, []);
 });
 
@@ -322,4 +326,106 @@ Deno.test("workflowSummaryReport: failure JSON includes retrievalCommands", asyn
   assertEquals(failures[0].retrievalCommands, [
     "swamp data get broken-svc result",
   ]);
+});
+
+Deno.test("workflowSummaryReport: failed assert step is counted and shown with job marked failed", async () => {
+  const ctx = makeWorkflowContext({
+    workflowStatus: "failed",
+    stepExecutions: [
+      makeStepExecution({
+        jobName: "reproduce",
+        stepName: "successful-model-step",
+        status: "succeeded",
+      }),
+      {
+        jobName: "reproduce",
+        stepName: "deliberately-failed-assertion",
+        taskType: "assert",
+        modelName: "",
+        modelType: "",
+        methodName: "",
+        status: "failed",
+        dataHandles: [],
+        methodArgs: {},
+        modelId: "",
+        globalArgs: {},
+        errorMessage: "Deliberate assertion failure for reproduction.",
+      },
+    ],
+  });
+
+  const result = await workflowSummaryReport.execute(ctx);
+
+  assertStringIncludes(
+    result.markdown,
+    "1 succeeded · 1 failed · 0 skipped",
+  );
+  assertStringIncludes(result.markdown, "## Job: reproduce (failed)");
+  assertStringIncludes(
+    result.markdown,
+    "| **deliberately-failed-assertion** | **assert** | **failed** |",
+  );
+  assertStringIncludes(result.markdown, "## Failures");
+  assertStringIncludes(
+    result.markdown,
+    "| reproduce | **deliberately-failed-assertion** | assert | Deliberate assertion failure for reproduction. |",
+  );
+
+  assertEquals(result.json.totalSteps, 2);
+  assertEquals(result.json.succeeded, 1);
+  assertEquals(result.json.failed, 1);
+
+  const failures = result.json.failures as Array<Record<string, unknown>>;
+  assertEquals(failures.length, 1);
+  assertEquals(failures[0].taskType, "assert");
+  assertEquals(failures[0].stepName, "deliberately-failed-assertion");
+  assertEquals(
+    failures[0].errorMessage,
+    "Deliberate assertion failure for reproduction.",
+  );
+});
+
+Deno.test("workflowSummaryReport: mixed model-method and assert steps — correct per-job status", async () => {
+  const ctx = makeWorkflowContext({
+    workflowStatus: "succeeded",
+    stepExecutions: [
+      makeStepExecution({
+        jobName: "check",
+        stepName: "run-model",
+        status: "succeeded",
+      }),
+      {
+        jobName: "check",
+        stepName: "verify-output",
+        taskType: "assert",
+        modelName: "",
+        modelType: "",
+        methodName: "",
+        status: "succeeded",
+        dataHandles: [],
+        methodArgs: {},
+        modelId: "",
+        globalArgs: {},
+      },
+    ],
+  });
+
+  const result = await workflowSummaryReport.execute(ctx);
+
+  assertStringIncludes(
+    result.markdown,
+    "2 succeeded · 0 failed · 0 skipped",
+  );
+  assertStringIncludes(result.markdown, "## Job: check (succeeded)");
+  assertStringIncludes(
+    result.markdown,
+    "| verify-output | assert | succeeded |",
+  );
+
+  assertEquals(result.json.totalSteps, 2);
+  assertEquals(result.json.succeeded, 2);
+
+  const steps = result.json.steps as Array<Record<string, unknown>>;
+  assertEquals(steps.length, 2);
+  assertEquals(steps[1].taskType, "assert");
 });

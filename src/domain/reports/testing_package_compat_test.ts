@@ -112,6 +112,7 @@ function _checkWorkflowReportContextFields(ctx: TestingWorkflowReportContext) {
     const step = ctx.stepExecutions[0];
     const _jobName: string = step.jobName;
     const _stepName: string = step.stepName;
+    const _taskType: string = step.taskType;
     const _modelName: string = step.modelName;
     const _modelType: string = step.modelType;
     const _methodName: string = step.methodName;
@@ -119,9 +120,11 @@ function _checkWorkflowReportContextFields(ctx: TestingWorkflowReportContext) {
     const _methodArgs: Record<string, unknown> = step.methodArgs;
     const _modelId: string = step.modelId;
     const _globalArgs: Record<string, unknown> = step.globalArgs;
+    const _errorMessage: string | undefined = step.errorMessage;
     void [
       _jobName,
       _stepName,
+      _taskType,
       _modelName,
       _modelType,
       _methodName,
@@ -129,6 +132,7 @@ function _checkWorkflowReportContextFields(ctx: TestingWorkflowReportContext) {
       _methodArgs,
       _modelId,
       _globalArgs,
+      _errorMessage,
     ];
   }
 

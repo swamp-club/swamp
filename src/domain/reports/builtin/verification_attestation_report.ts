@@ -81,6 +81,8 @@ export const verificationAttestationReport: ReportDefinition = {
     const failureDetails: Array<{
       job: string;
       step: string;
+      taskType: string;
+      errorMessage?: string;
       retrievalCommands: string[];
     }> = [];
 
@@ -96,21 +98,36 @@ export const verificationAttestationReport: ReportDefinition = {
           : step.status === "skipped"
           ? "○"
           : "✗";
+        const typeLabel = step.taskType !== "model_method"
+          ? step.taskType
+          : step.modelType;
         lines.push(
-          `  ${stepIcon} ${step.stepName}  —  ${step.modelType}  (${step.status})`,
+          `  ${stepIcon} ${step.stepName}  —  ${typeLabel}  (${step.status})`,
         );
 
-        if (step.status === "failed" && step.dataHandles.length > 0) {
-          const cmds = step.dataHandles.map((h) =>
-            `swamp data get ${step.modelName} ${h.name}`
-          );
-          failureDetails.push({
-            job: step.jobName,
-            step: step.stepName,
-            retrievalCommands: cmds,
-          });
-          for (const cmd of cmds) {
-            lines.push(`    → \`${cmd}\``);
+        if (step.status === "failed") {
+          if (step.taskType !== "model_method" && step.errorMessage) {
+            failureDetails.push({
+              job: step.jobName,
+              step: step.stepName,
+              taskType: step.taskType,
+              errorMessage: step.errorMessage,
+              retrievalCommands: [],
+            });
+            lines.push(`    ${step.errorMessage}`);
+          } else if (step.dataHandles.length > 0) {
+            const cmds = step.dataHandles.map((h) =>
+              `swamp data get ${step.modelName} ${h.name}`
+            );
+            failureDetails.push({
+              job: step.jobName,
+              step: step.stepName,
+              taskType: step.taskType,
+              retrievalCommands: cmds,
+            });
+            for (const cmd of cmds) {
+              lines.push(`    → \`${cmd}\``);
+            }
           }
         }
       }
@@ -139,9 +156,11 @@ export const verificationAttestationReport: ReportDefinition = {
       steps: stepExecutions.map((s) => ({
         job: s.jobName,
         step: s.stepName,
-        model: s.modelType,
-        method: s.methodName,
+        taskType: s.taskType,
+        model: s.modelType || undefined,
+        method: s.methodName || undefined,
         status: s.status,
+        errorMessage: s.errorMessage,
         retrievalCommands: s.status === "failed"
           ? s.dataHandles.map((h) => `swamp data get ${s.modelName} ${h.name}`)
           : undefined,

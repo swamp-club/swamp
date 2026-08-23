@@ -27,6 +27,13 @@ function isWorkflowContext(ctx: ReportContext): ctx is WorkflowReportContext {
   return ctx.scope === "workflow";
 }
 
+function stepLabel(
+  step: WorkflowReportContext["stepExecutions"][0],
+): string {
+  if (step.taskType !== "model_method") return step.taskType;
+  return `${step.modelName} → ${step.methodName}`;
+}
+
 export const workflowSummaryReport: ReportDefinition = {
   description:
     "Built-in summary of a workflow execution including step statuses, failures, and data produced.",
@@ -58,26 +65,31 @@ export const workflowSummaryReport: ReportDefinition = {
     const lines: string[] = [
       `# ${workflowName}: ${workflowStatus}`,
       "",
-      `${succeeded} succeeded \u00B7 ${failed} failed \u00B7 ${skipped} skipped`,
+      `${succeeded} succeeded · ${failed} failed · ${skipped} skipped`,
     ];
 
     // Failures section — only if any failed steps
     if (failures.length > 0) {
       lines.push("", "## Failures", "");
-      lines.push("| Job | Step | Model | Retrieval Commands |");
-      lines.push("| --- | ---- | ----- | ------------------ |");
+      lines.push("| Job | Step | Task | Detail |");
+      lines.push("| --- | ---- | ---- | ------ |");
       for (const step of failures) {
-        const model = `${step.modelName} \u2192 ${step.methodName}`;
-        if (step.dataHandles.length === 0) {
+        const label = stepLabel(step);
+        if (step.taskType !== "model_method") {
+          const detail = step.errorMessage ?? "No detail.";
           lines.push(
-            `| ${step.jobName} | **${step.stepName}** | ${model} | No data output. |`,
+            `| ${step.jobName} | **${step.stepName}** | ${label} | ${detail} |`,
+          );
+        } else if (step.dataHandles.length === 0) {
+          lines.push(
+            `| ${step.jobName} | **${step.stepName}** | ${label} | No data output. |`,
           );
         } else {
           const firstHandle = step.dataHandles[0];
           const firstCmd =
             `swamp data get ${step.modelName} ${firstHandle.name}`;
           lines.push(
-            `| ${step.jobName} | **${step.stepName}** | ${model} | \`${firstCmd}\` |`,
+            `| ${step.jobName} | **${step.stepName}** | ${label} | \`${firstCmd}\` |`,
           );
           for (let i = 1; i < step.dataHandles.length; i++) {
             const cmd = `swamp data get ${step.modelName} ${
@@ -105,17 +117,17 @@ export const workflowSummaryReport: ReportDefinition = {
         ? "failed"
         : "succeeded";
       lines.push("", `## Job: ${jobName} (${jobStatus})`, "");
-      lines.push("| Step | Model | Status |");
-      lines.push("| ---- | ----- | ------ |");
+      lines.push("| Step | Task | Status |");
+      lines.push("| ---- | ---- | ------ |");
       for (const step of steps) {
-        const model = `${step.modelName} \u2192 ${step.methodName}`;
+        const label = stepLabel(step);
         if (step.status === "failed") {
           lines.push(
-            `| **${step.stepName}** | **${model}** | **${step.status}** |`,
+            `| **${step.stepName}** | **${label}** | **${step.status}** |`,
           );
         } else {
           lines.push(
-            `| ${step.stepName} | ${model} | ${step.status} |`,
+            `| ${step.stepName} | ${label} | ${step.status} |`,
           );
         }
       }
@@ -136,8 +148,10 @@ export const workflowSummaryReport: ReportDefinition = {
       failures: failures.map((s) => ({
         jobName: s.jobName,
         stepName: s.stepName,
-        modelName: s.modelName,
-        methodName: s.methodName,
+        taskType: s.taskType,
+        modelName: s.modelName || undefined,
+        methodName: s.methodName || undefined,
+        errorMessage: s.errorMessage,
         retrievalCommands: s.dataHandles.map((h) =>
           `swamp data get ${s.modelName} ${h.name}`
         ),
@@ -145,10 +159,12 @@ export const workflowSummaryReport: ReportDefinition = {
       steps: stepExecutions.map((s) => ({
         jobName: s.jobName,
         stepName: s.stepName,
-        modelName: s.modelName,
-        modelType: s.modelType,
-        methodName: s.methodName,
+        taskType: s.taskType,
+        modelName: s.modelName || undefined,
+        modelType: s.modelType || undefined,
+        methodName: s.methodName || undefined,
         status: s.status,
+        errorMessage: s.errorMessage,
         retrievalCommands: s.dataHandles.map((h) =>
           `swamp data get ${s.modelName} ${h.name}`
         ),

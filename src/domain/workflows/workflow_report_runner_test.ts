@@ -63,6 +63,7 @@ Deno.test("WorkflowReportContext: existing workflow summary report works with in
       {
         jobName: "deploy-job",
         stepName: "deploy-step",
+        taskType: "model_method",
         modelName: "my-server",
         modelType: "server",
         methodName: "deploy",
@@ -88,6 +89,7 @@ Deno.test("WorkflowReportContext: existing workflow summary report works without
       {
         jobName: "build-job",
         stepName: "build-step",
+        taskType: "model_method",
         modelName: "app",
         modelType: "app",
         methodName: "build",
