@@ -73,6 +73,14 @@ type FalseKeys<T extends Record<string, boolean>> = {
 // move the pair to the pinned block below with a comment).
 
 const _identicalPairs: {
+  WorkflowRunPayload: Identical<
+    client.WorkflowRunPayload,
+    serve.WorkflowRunPayload
+  >;
+  ModelMethodRunPayload: Identical<
+    client.ModelMethodRunPayload,
+    serve.ModelMethodRunPayload
+  >;
   DataGetPayload: Identical<client.DataGetPayload, serve.DataGetPayload>;
   DataQueryPayload: Identical<client.DataQueryPayload, serve.DataQueryPayload>;
   DataListPayload: Identical<client.DataListPayload, serve.DataListPayload>;
@@ -161,6 +169,22 @@ const _identicalPairs: {
     client.WorkflowHistoryLogsPayload,
     serve.WorkflowHistoryLogsPayload
   >;
+  WorkflowHistorySearchPayload: Identical<
+    client.WorkflowHistorySearchPayload,
+    serve.WorkflowHistorySearchPayload
+  >;
+  WorkflowRunSearchPayload: Identical<
+    client.WorkflowRunSearchPayload,
+    serve.WorkflowRunSearchPayload
+  >;
+  WorkflowSchemaPayload: Identical<
+    client.WorkflowSchemaPayload,
+    serve.WorkflowSchemaPayload
+  >;
+  WorkflowResumePayload: Identical<
+    client.WorkflowResumePayload,
+    serve.WorkflowResumePayload
+  >;
   WorkflowApprovePayload: Identical<
     client.WorkflowApprovePayload,
     serve.WorkflowApprovePayload
@@ -217,6 +241,10 @@ const _identicalPairs: {
     client.ExtensionListPayload,
     serve.ExtensionListPayload
   >;
+  ExtensionSearchPayload: Identical<
+    client.ExtensionSearchPayload,
+    serve.ExtensionSearchPayload
+  >;
   ExtensionInfoPayload: Identical<
     client.ExtensionInfoPayload,
     serve.ExtensionInfoPayload
@@ -225,9 +253,68 @@ const _identicalPairs: {
     client.ExtensionRmPayload,
     serve.ExtensionRmPayload
   >;
+  RunHistoryPayload: Identical<
+    client.RunHistoryPayload,
+    serve.RunHistoryPayload
+  >;
+  WorkflowTriggerGetPayload: Identical<
+    client.WorkflowTriggerGetPayload,
+    serve.WorkflowTriggerGetPayload
+  >;
+  EffectiveTrigger: Identical<client.EffectiveTrigger, serve.EffectiveTrigger>;
+  WorkflowTriggerGetResult: Identical<
+    client.WorkflowTriggerGetResult,
+    serve.WorkflowTriggerGetResult
+  >;
+  WorkflowTriggerGetResponse: Identical<
+    client.WorkflowTriggerGetResponse,
+    serve.WorkflowTriggerGetResponse
+  >;
+  AccessGrantListResponse: Identical<
+    client.AccessGrantListResponse,
+    serve.AccessGrantListResponse
+  >;
+  AccessGroupListResponse: Identical<
+    client.AccessGroupListResponse,
+    serve.AccessGroupListResponse
+  >;
+  AccessCheckResponse: Identical<
+    client.AccessCheckResponse,
+    serve.AccessCheckResponse
+  >;
+  AccessCanIDecision: Identical<
+    client.AccessCanIDecision,
+    serve.AccessCanIDecision
+  >;
+  AccessCanIResponse: Identical<
+    client.AccessCanIResponse,
+    serve.AccessCanIResponse
+  >;
+  AccessReloadFileResult: Identical<
+    client.AccessReloadFileResult,
+    serve.AccessReloadFileResult
+  >;
+  AccessReloadResponse: Identical<
+    client.AccessReloadResponse,
+    serve.AccessReloadResponse
+  >;
+  RunHistoryResponse: Identical<
+    client.RunHistoryResponse,
+    serve.RunHistoryResponse
+  >;
+  ClusterInstancesResponse: Identical<
+    client.ClusterInstancesResponse,
+    serve.ClusterInstancesResponse
+  >;
+  ServeConfigResponse: Identical<
+    client.ServeConfigResponse,
+    serve.ServeConfigResponse
+  >;
   SerializedEvent: Identical<client.SerializedEvent, serve.SerializedEvent>;
   SerializedError: Identical<client.SerializedError, serve.SerializedError>;
 } = {
+  WorkflowRunPayload: true,
+  ModelMethodRunPayload: true,
   DataGetPayload: true,
   DataQueryPayload: true,
   DataListPayload: true,
@@ -253,6 +340,10 @@ const _identicalPairs: {
   WorkflowSearchPayload: true,
   WorkflowHistoryGetPayload: true,
   WorkflowHistoryLogsPayload: true,
+  WorkflowHistorySearchPayload: true,
+  WorkflowRunSearchPayload: true,
+  WorkflowSchemaPayload: true,
+  WorkflowResumePayload: true,
   WorkflowApprovePayload: true,
   WorkflowRejectPayload: true,
   VaultGetPayload: true,
@@ -270,8 +361,24 @@ const _identicalPairs: {
   ReportDescribePayload: true,
   ReportTypeSearchPayload: true,
   ExtensionListPayload: true,
+  ExtensionSearchPayload: true,
   ExtensionInfoPayload: true,
   ExtensionRmPayload: true,
+  RunHistoryPayload: true,
+  WorkflowTriggerGetPayload: true,
+  EffectiveTrigger: true,
+  WorkflowTriggerGetResult: true,
+  WorkflowTriggerGetResponse: true,
+  AccessGrantListResponse: true,
+  AccessGroupListResponse: true,
+  AccessCheckResponse: true,
+  AccessCanIDecision: true,
+  AccessCanIResponse: true,
+  AccessReloadFileResult: true,
+  AccessReloadResponse: true,
+  RunHistoryResponse: true,
+  ClusterInstancesResponse: true,
+  ServeConfigResponse: true,
   SerializedEvent: true,
   SerializedError: true,
 };
@@ -284,95 +391,18 @@ void _identicalPairs;
 // safety property. `identical: false` pins the divergence: when the client
 // copy is brought back in sync, the pair must move up to the identical
 // block, so a fix cannot land without being recorded here.
+//
+// Currently empty — every same-named type is an exact structural copy. To
+// pin a new intentional divergence, add an entry of the form
+//
+//   TypeName: [
+//     ClientSendable<client.TypeName, serve.TypeName>,
+//     Identical<client.TypeName, serve.TypeName>,
+//   ];   // value: [true, false]
+//
+// with a comment explaining why the divergence is intentional.
 
-const _pinnedDivergentPairs: {
-  // Serve added report/check skip filters and traceparent/tracestate;
-  // the client copy has none of them (all optional — sendable).
-  WorkflowRunPayload: [
-    ClientSendable<client.WorkflowRunPayload, serve.WorkflowRunPayload>,
-    Identical<client.WorkflowRunPayload, serve.WorkflowRunPayload>,
-  ];
-  // Serve added typeArg, definitionName, report/check skip filters and
-  // trace context; the client copy has none of them (all optional).
-  ModelMethodRunPayload: [
-    ClientSendable<client.ModelMethodRunPayload, serve.ModelMethodRunPayload>,
-    Identical<client.ModelMethodRunPayload, serve.ModelMethodRunPayload>,
-  ];
-  // Serve added an optional `inputs` filter the client copy lacks.
-  WorkflowHistorySearchPayload: [
-    ClientSendable<
-      client.WorkflowHistorySearchPayload,
-      serve.WorkflowHistorySearchPayload
-    >,
-    Identical<
-      client.WorkflowHistorySearchPayload,
-      serve.WorkflowHistorySearchPayload
-    >,
-  ];
-  // Serve added an optional `inputs` filter the client copy lacks.
-  WorkflowRunSearchPayload: [
-    ClientSendable<
-      client.WorkflowRunSearchPayload,
-      serve.WorkflowRunSearchPayload
-    >,
-    Identical<
-      client.WorkflowRunSearchPayload,
-      serve.WorkflowRunSearchPayload
-    >,
-  ];
-  // Serve relaxed workflowIdOrName to optional; the client still requires
-  // it, which is narrower and therefore safe.
-  WorkflowSchemaPayload: [
-    ClientSendable<client.WorkflowSchemaPayload, serve.WorkflowSchemaPayload>,
-    Identical<client.WorkflowSchemaPayload, serve.WorkflowSchemaPayload>,
-  ];
-  // Serve added optional traceparent/tracestate the client copy lacks.
-  WorkflowResumePayload: [
-    ClientSendable<client.WorkflowResumePayload, serve.WorkflowResumePayload>,
-    Identical<client.WorkflowResumePayload, serve.WorkflowResumePayload>,
-  ];
-  // Serve widened platform/label/contentType/channel to string | string[];
-  // the client's plain-string fields are a narrower, sendable subset.
-  ExtensionSearchPayload: [
-    ClientSendable<
-      client.ExtensionSearchPayload,
-      serve.ExtensionSearchPayload
-    >,
-    Identical<client.ExtensionSearchPayload, serve.ExtensionSearchPayload>,
-  ];
-  // Client declares limit/offset, which the server does not know about
-  // (it accepts active/all) — extra optional fields are structurally
-  // sendable but silently ignored, and the client cannot express `all`.
-  RunHistoryPayload: [
-    ClientSendable<client.RunHistoryPayload, serve.RunHistoryPayload>,
-    Identical<client.RunHistoryPayload, serve.RunHistoryPayload>,
-  ];
-  // BUG (pinned, not endorsed): the client names the field
-  // `workflowIdOrName` but the server's zod schema requires
-  // `workflowName` — a request built from the client type is rejected.
-  // Fixing packages/client/protocol.ts flips this to true and must
-  // promote the pair to the identical block.
-  WorkflowTriggerGetPayload: [
-    ClientSendable<
-      client.WorkflowTriggerGetPayload,
-      serve.WorkflowTriggerGetPayload
-    >,
-    Identical<
-      client.WorkflowTriggerGetPayload,
-      serve.WorkflowTriggerGetPayload
-    >,
-  ];
-} = {
-  WorkflowRunPayload: [true, false],
-  ModelMethodRunPayload: [true, false],
-  WorkflowHistorySearchPayload: [true, false],
-  WorkflowRunSearchPayload: [true, false],
-  WorkflowSchemaPayload: [true, false],
-  WorkflowResumePayload: [true, false],
-  ExtensionSearchPayload: [true, false],
-  RunHistoryPayload: [true, false],
-  WorkflowTriggerGetPayload: [false, false],
-};
+const _pinnedDivergentPairs: Record<never, [boolean, boolean]> = {};
 void _pinnedDivergentPairs;
 
 // Client-only types with no serve counterpart, intentionally excluded:
@@ -414,46 +444,24 @@ type MessageVariantCompat = {
 
 // The exact set of request variants that do NOT line up today. Pinned in
 // both directions: a new divergence fails here, and a fixed one must be
-// removed from the expected union.
-//
-//   workflow.trigger.get — the payload field-name bug pinned above.
+// removed from the expected union. Currently `never`: every request
+// variant the client can emit is accepted by the server as-is.
 const _divergentRequestVariants: MutuallyAssignable<
   FalseKeys<RequestVariantCompat>,
-  "workflow.trigger.get"
+  never
 > = true;
 void _divergentRequestVariants;
 
-// The exact set of message variants that do NOT line up today. The client
-// declares the generic `DataResponse` ({ data: ... }) for these, but the
-// server sends a differently-shaped payload:
-//
-//   server.version     — { version, gitSha }
-//   access.grant.list  — AccessGrantListResponse { grants, ... }
-//   access.group.list  — AccessGroupListResponse { groups }
-//   access.check       — AccessCheckResponse { subject, action, ... }
-//   access.can-i       — AccessCanIResponse { principal, decisions }
-//   access.reload      — AccessReloadResponse { success, ... }
-//   workflow.trigger.get — { data: WorkflowTriggerGetResult } (narrower
-//                          than the client's Record<string, unknown>)
-//   run.history        — RunHistoryResponse { runs }
-//   cluster.instances  — ClusterInstancesResponse { instances }
-//   serve.config       — ServeConfigResponse { config }
-//
-// A client switching on these frames sees a payload that does not match
-// its declared type. Fixing packages/client/protocol.ts shrinks this
-// union, and this pin forces the fix to be recorded.
+// The exact set of message variants that do NOT line up today. Currently
+// `never`: every response frame the client declares matches the payload
+// shape the server actually sends. (The generic DataResponse variants are
+// exact copies of the serve `{ data: Record<string, unknown> }` response
+// family; operations with flat payloads — server.version, access.*,
+// run.history, cluster.instances, serve.config — and the typed
+// workflow.trigger.get response mirror their serve counterparts.)
 const _divergentMessageVariants: MutuallyAssignable<
   FalseKeys<MessageVariantCompat>,
-  | "server.version"
-  | "access.grant.list"
-  | "access.group.list"
-  | "access.check"
-  | "access.can-i"
-  | "access.reload"
-  | "workflow.trigger.get"
-  | "run.history"
-  | "cluster.instances"
-  | "serve.config"
+  never
 > = true;
 void _divergentMessageVariants;
 

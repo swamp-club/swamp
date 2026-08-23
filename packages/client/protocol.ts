@@ -33,6 +33,16 @@ export interface WorkflowRunPayload {
   lastEvaluated?: boolean;
   verbose?: boolean;
   runtimeTags?: Record<string, string>;
+  skipAllReports?: boolean;
+  skipReportNames?: string[];
+  skipReportLabels?: string[];
+  reportNames?: string[];
+  reportLabels?: string[];
+  skipAllChecks?: boolean;
+  skipCheckNames?: string[];
+  skipCheckLabels?: string[];
+  traceparent?: string;
+  tracestate?: string;
 }
 
 export interface ModelMethodRunPayload {
@@ -41,6 +51,18 @@ export interface ModelMethodRunPayload {
   inputs?: Record<string, unknown>;
   lastEvaluated?: boolean;
   runtimeTags?: Record<string, string>;
+  typeArg?: string;
+  definitionName?: string;
+  skipAllReports?: boolean;
+  skipReportNames?: string[];
+  skipReportLabels?: string[];
+  reportNames?: string[];
+  reportLabels?: string[];
+  skipAllChecks?: boolean;
+  skipCheckNames?: string[];
+  skipCheckLabels?: string[];
+  traceparent?: string;
+  tracestate?: string;
 }
 
 // ── Data operations ──────────────────────────────────────────────────────
@@ -191,6 +213,7 @@ export interface WorkflowHistoryLogsPayload {
 
 export interface WorkflowHistorySearchPayload {
   query?: string;
+  inputs?: Record<string, string>;
 }
 
 export interface WorkflowRunSearchPayload {
@@ -199,11 +222,12 @@ export interface WorkflowRunSearchPayload {
   status?: string;
   workflow?: string;
   tags?: Record<string, string>;
+  inputs?: Record<string, string>;
   limit?: number;
 }
 
 export interface WorkflowSchemaPayload {
-  workflowIdOrName: string;
+  workflowIdOrName?: string;
 }
 
 export interface WorkflowApprovePayload {
@@ -227,6 +251,8 @@ export interface WorkflowResumePayload {
   runId?: string;
   from?: string;
   inputs?: Record<string, unknown>;
+  traceparent?: string;
+  tracestate?: string;
 }
 
 // ── Vault operations ─────────────────────────────────────────────────────
@@ -327,10 +353,10 @@ export type ExtensionListPayload = Record<string, never>;
 export interface ExtensionSearchPayload {
   query?: string;
   collective?: string;
-  platform?: string;
-  label?: string;
-  contentType?: string;
-  channel?: string;
+  platform?: string | string[];
+  label?: string | string[];
+  contentType?: string | string[];
+  channel?: string | string[];
   sort?: string;
   perPage?: number;
   page?: number;
@@ -352,14 +378,28 @@ export interface ExtensionRmPayload {
 
 export interface RunHistoryPayload {
   active?: boolean;
-  limit?: number;
-  offset?: number;
+  all?: boolean;
 }
 
 // ── Workflow trigger operations ─────────────────────────────────────────
 
 export interface WorkflowTriggerGetPayload {
-  workflowIdOrName: string;
+  workflowName: string;
+}
+
+export interface EffectiveTrigger {
+  readonly schedule: string | null;
+  readonly inputs: Record<string, unknown>;
+}
+
+export interface WorkflowTriggerGetResult {
+  readonly workflowName: string;
+  readonly builtIn: EffectiveTrigger | null;
+  readonly override: {
+    readonly schedule?: string;
+    readonly inputs?: Record<string, unknown>;
+  } | null;
+  readonly effective: EffectiveTrigger;
 }
 
 // ── Server admin ─────────────────────────────────────────────────────────
@@ -511,6 +551,90 @@ export interface DataResponse {
   data: Record<string, unknown>;
 }
 
+// ── Flat response payloads (not DataResponse-shaped) ─────────────────────
+//
+// These operations return a payload that is NOT wrapped in { data: ... };
+// the shapes mirror the same-named types in src/serve/protocol.ts.
+
+export interface AccessGrantListResponse {
+  grants: Record<string, unknown>[];
+  subjectDisplayNames?: Record<string, string>;
+}
+
+export interface AccessGroupListResponse {
+  groups: Record<string, unknown>[];
+}
+
+export interface AccessCheckResponse {
+  subject: string;
+  action: string;
+  resource: string;
+  collectives: string[];
+  groups: string[];
+  decisions: Record<string, unknown>[];
+}
+
+export interface AccessCanIDecision {
+  action: string;
+  resource: string;
+  effect: string;
+  grantId: string;
+  via: string;
+  condition?: string;
+}
+
+export interface AccessCanIResponse {
+  principal: string;
+  decisions: AccessCanIDecision[];
+}
+
+export interface AccessReloadFileResult {
+  filename: string;
+  entryCount: number;
+  created: number;
+  revoked: number;
+  reactivated: number;
+  unchanged: number;
+}
+
+export interface AccessReloadResponse {
+  success: boolean;
+  grantCount: number;
+  groupCount: number;
+  filesProcessed?: number;
+  fileResults?: AccessReloadFileResult[];
+  errors?: string[];
+}
+
+export interface WorkflowTriggerGetResponse {
+  data: WorkflowTriggerGetResult;
+}
+
+export interface RunHistoryResponse {
+  runs: Array<{
+    id: string;
+    runKind: string;
+    modelType: string | null;
+    methodName: string | null;
+    workflowName: string | null;
+    pid: number;
+    hostname: string;
+    status: string;
+    startedAt: string;
+    heartbeatAt: string;
+    stale: boolean;
+    initiatedBy?: string | null;
+  }>;
+}
+
+export interface ClusterInstancesResponse {
+  instances: Record<string, unknown>[];
+}
+
+export interface ServeConfigResponse {
+  config: Record<string, unknown>;
+}
+
 export type ServerMessage =
   // Streaming frames
   | { type: "event"; id: string; event: SerializedEvent }
@@ -550,7 +674,11 @@ export type ServerMessage =
   | { type: "workflow.approve"; id: string; payload: DataResponse }
   | { type: "workflow.reject"; id: string; payload: DataResponse }
   | { type: "workflow.approvals"; id: string; payload: DataResponse }
-  | { type: "workflow.trigger.get"; id: string; payload: DataResponse }
+  | {
+    type: "workflow.trigger.get";
+    id: string;
+    payload: WorkflowTriggerGetResponse;
+  }
   // Vault responses
   | { type: "vault.get"; id: string; payload: DataResponse }
   | { type: "vault.put"; id: string; payload: DataResponse }
@@ -580,20 +708,24 @@ export type ServerMessage =
   | { type: "doctor.workflows"; id: string; payload: DataResponse }
   | { type: "doctor.extensions"; id: string; payload: DataResponse }
   // Run tracking responses
-  | { type: "run.history"; id: string; payload: DataResponse }
+  | { type: "run.history"; id: string; payload: RunHistoryResponse }
   // Server admin responses
   | { type: "worker.list"; id: string; payload: DataResponse }
   | { type: "worker.queue.list"; id: string; payload: DataResponse }
   | { type: "datastore.status"; id: string; payload: DataResponse }
-  | { type: "cluster.instances"; id: string; payload: DataResponse }
-  | { type: "serve.config"; id: string; payload: DataResponse }
-  | { type: "server.version"; id: string; payload: DataResponse }
+  | { type: "cluster.instances"; id: string; payload: ClusterInstancesResponse }
+  | { type: "serve.config"; id: string; payload: ServeConfigResponse }
+  | {
+    type: "server.version";
+    id: string;
+    payload: { version: string; gitSha: string };
+  }
   // Access responses (internal — not in client package's primary API)
-  | { type: "access.grant.list"; id: string; payload: DataResponse }
-  | { type: "access.group.list"; id: string; payload: DataResponse }
-  | { type: "access.check"; id: string; payload: DataResponse }
-  | { type: "access.can-i"; id: string; payload: DataResponse }
-  | { type: "access.reload"; id: string; payload: DataResponse };
+  | { type: "access.grant.list"; id: string; payload: AccessGrantListResponse }
+  | { type: "access.group.list"; id: string; payload: AccessGroupListResponse }
+  | { type: "access.check"; id: string; payload: AccessCheckResponse }
+  | { type: "access.can-i"; id: string; payload: AccessCanIResponse }
+  | { type: "access.reload"; id: string; payload: AccessReloadResponse };
 
 // ── Event types (wire-format discriminated unions) ────────────────────────
 
