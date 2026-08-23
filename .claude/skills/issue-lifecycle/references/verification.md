@@ -33,7 +33,7 @@ SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-build \
 **Reviews** (host workflow):
 
 ```
-swamp workflow run verify-reviews \
+SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-reviews \
   --input commit=$(git rev-parse HEAD) \
   --input branch=$(git branch --show-current)
 ```
@@ -80,8 +80,18 @@ swamp model @swamp/issue-lifecycle method run verification_passed issue-<N> \
 Populate the `steps` array from the attestation output. Include every step with
 its actual status (succeeded, failed, or skipped).
 
-Then proceed to open a PR — read the "Create a PR" section in
-[implementation.md](implementation.md).
+2. **Present the full verification checklist to the user and wait for their
+   approval before opening the PR.** The checklist must show every step from
+   both the build and review workflows — status, model, duration, and for
+   reviews the VERDICT and finding count. Include the workflow run file paths so
+   the user can inspect the raw data. See
+   `agent-constraints/verification-conventions.md` for the checklist format.
+
+   Do NOT proceed to open a PR until the user has seen the checklist and
+   confirmed they are happy with the results.
+
+3. Then proceed to open a PR — read the "Create a PR" section in
+   [implementation.md](implementation.md).
 
 ### Any step failed
 

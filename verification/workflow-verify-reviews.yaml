@@ -38,7 +38,7 @@ jobs:
           inputs:
             base: "main"
 
-  # ── Agent Reviews (factory pattern) ──────────────────────────
+  # ── Agent Reviews ────────────────────────────────────────────
   - name: reviews
     description: Run all agent reviews in parallel using claude CLI.
     dependsOn:
@@ -50,7 +50,7 @@ jobs:
         task:
           type: model_method
           modelType: "command/shell"
-          modelName: cli-reviewer
+          modelName: review-code
           methodName: execute
           inputs:
             run: |
@@ -75,7 +75,7 @@ jobs:
         task:
           type: model_method
           modelType: "command/shell"
-          modelName: cli-reviewer
+          modelName: review-adversarial
           methodName: execute
           inputs:
             run: |
@@ -100,7 +100,7 @@ jobs:
         task:
           type: model_method
           modelType: "command/shell"
-          modelName: cli-reviewer
+          modelName: review-ux
           methodName: execute
           inputs:
             run: |
@@ -125,7 +125,7 @@ jobs:
         task:
           type: model_method
           modelType: "command/shell"
-          modelName: cli-reviewer
+          modelName: review-ci-security
           methodName: execute
           inputs:
             run: |
