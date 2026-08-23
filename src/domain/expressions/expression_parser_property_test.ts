@@ -276,33 +276,62 @@ Deno.test("extractInputReferencesFromCel: dot and bracket references agree", () 
   );
 });
 
-Deno.test("replaceExpressions: strings starting with ${{ and ending with }} collapse to one unmatched expression (current behavior)", () => {
-  // BUG CANDIDATE: the single-expression fast path in
-  // replaceExpressionsRecursive matches /^(\$\{\{\s*.+?\s*\}\})\s*$/s, whose
-  // lazy interior expands across ANY string that starts with "${{" and ends
-  // with "}}" — including "${{ a }} and ${{ b }}". The whole string is then
-  // looked up in the values map (which is keyed by the individual raw
-  // matches from extractExpressions), misses, and the input is returned
-  // UNREPLACED. Counterexample: data = "${{ a }} and ${{ b }}" with values
-  // for "${{ a }}" and "${{ b }}" yields the raw input instead of "A and B".
-  // Reachable from every production call site (expression_evaluation_service,
-  // libswamp/workflows/evaluate, expression_evaluators) since they all key
-  // the values map by location.raw. This property encodes today's lossy
-  // behavior rather than the intended one.
+Deno.test("replaceExpressions: multi-expression strings interpolate every expression with stringified values", () => {
+  // Regression: the single-expression fast path once matched ANY string that
+  // started with "${{" and ended with "}}", so "${{ a }} and ${{ b }}" was
+  // looked up whole in the values map (keyed by individual raws), missed, and
+  // came back unreplaced. Strings that start AND end with expressions must go
+  // through inline interpolation like any other multi-expression string.
   fc.assert(
     fc.property(
       arbIdent,
       arbIdent,
       arbLiteral,
-      (a, b, mid) => {
-        const data = `\${{ ${a} }}${mid}\${{ ${b} }}`;
+      arbLiteral,
+      arbLiteral,
+      (a, b, pre, mid, post) => {
+        fc.pre(a !== b);
+        const rawA = `\${{ ${a} }}`;
+        const rawB = `\${{ ${b} }}`;
         const values = new Map<string, unknown>([
-          [`\${{ ${a} }}`, "A"],
-          [`\${{ ${b} }}`, "B"],
+          [rawA, "A"],
+          [rawB, 42],
         ]);
-        assertEquals(replaceExpressions(data, values), data);
+        // Starts and ends with expressions — the shape the old fast path
+        // swallowed whole (mid may be empty, making them adjacent).
+        assertEquals(
+          replaceExpressions(`${rawA}${mid}${rawB}`, values),
+          `A${mid}42`,
+        );
+        // Literal text around the expressions interpolates the same way.
+        assertEquals(
+          replaceExpressions(`${pre}${rawA}${mid}${rawB}${post}`, values),
+          `${pre}A${mid}42${post}`,
+        );
       },
     ),
-    { numRuns: 100 },
+    { numRuns: 200 },
+  );
+});
+
+Deno.test("replaceExpressions: a lone expression keeps the evaluated value's type, dropping trailing whitespace", () => {
+  fc.assert(
+    fc.property(
+      arbCelExpr,
+      fc.constantFrom("", " ", "\n", " \n "),
+      fc.oneof(
+        fc.integer({ min: -1000, max: 1000 }),
+        fc.boolean(),
+        fc.constant(null),
+        fc.array(fc.string(), { maxLength: 3 }),
+        fc.dictionary(arbKey, fc.integer({ min: 0, max: 9 }), { maxKeys: 3 }),
+      ),
+      (expr, trailing, value) => {
+        const raw = `\${{ ${expr} }}`;
+        const values = new Map<string, unknown>([[raw, value]]);
+        assertEquals(replaceExpressions(`${raw}${trailing}`, values), value);
+      },
+    ),
+    { numRuns: 200 },
   );
 });

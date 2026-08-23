@@ -26,6 +26,18 @@ import type { ExpressionLocation } from "./expression.ts";
 const EXPRESSION_PATTERN = /\$\{\{\s*(.+?)\s*\}\}/gs;
 
 /**
+ * Matches a string that is exactly one ${{ ... }} expression, optionally
+ * followed by trailing whitespace. The tempered interior refuses to cross a
+ * closing `}}`, so the capture is always identical to the raw produced by
+ * {@link EXPRESSION_PATTERN} for the same text. A string that merely starts
+ * with `${{` and ends with `}}` around other content — e.g.
+ * `"${{ a }} and ${{ b }}"` — must NOT match: it would be looked up whole in
+ * the values map (keyed by individual raws), miss, and skip inline
+ * interpolation entirely.
+ */
+const SINGLE_EXPRESSION_PATTERN = /^(\$\{\{(?:(?!\}\})[\s\S])+?\}\})\s*$/;
+
+/**
  * Transforms model references with hyphenated names to bracket notation.
  *
  * CEL interprets hyphens as subtraction operators, so `model.deploy-vpc.resource`
@@ -156,7 +168,7 @@ function replaceExpressionsRecursive(
 ): unknown {
   if (typeof data === "string") {
     // Check if the entire string is a single expression
-    const singleMatch = data.match(/^(\$\{\{\s*.+?\s*\}\})\s*$/s);
+    const singleMatch = data.match(SINGLE_EXPRESSION_PATTERN);
     if (singleMatch) {
       // Return the evaluated value directly (preserves type)
       const evaluated = values.get(singleMatch[1]);
