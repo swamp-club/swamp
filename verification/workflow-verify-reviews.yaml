@@ -54,21 +54,21 @@ jobs:
           methodName: execute
           inputs:
             run: |
+              set -o pipefail
               PROMPT_FILE=$(mktemp)
               RESULT_FILE=$(mktemp)
               cat verification/review-prompts/code-review.md > "$PROMPT_FILE"
               printf '\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n\nDIFF:\n%s' "$(git diff main)" >> "$PROMPT_FILE"
-              claude -p "$(cat "$PROMPT_FILE")" \
+              claude -p - \
                 --model claude-opus-4-6 \
-                --allowedTools "Read,Glob,Grep" | tee "$RESULT_FILE"
-              VERDICT=$(head -5 "$RESULT_FILE" | grep -o 'VERDICT: [a-z]*' | head -1 | cut -d' ' -f2)
+                --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
               rm -f "$PROMPT_FILE"
-              if [ "$VERDICT" = "fail" ]; then
-                echo "::error::Code review found blocking issues"
-                rm -f "$RESULT_FILE"
+              VERDICT=$(head -5 "$RESULT_FILE" | grep -o 'VERDICT: [a-z]*' | head -1 | cut -d' ' -f2)
+              rm -f "$RESULT_FILE"
+              if [ "$VERDICT" != "pass" ]; then
+                echo "::error::Code review did not pass (verdict: ${VERDICT:-missing})"
                 exit 1
               fi
-              rm -f "$RESULT_FILE"
 
       - name: adversarial-review
         guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('src/domain/') || f.startsWith('src/infrastructure/') || f.startsWith('src/libswamp/') || f.startsWith('src/serve/') || f.startsWith('src/worker/')).size() == 0 }}"
@@ -79,21 +79,21 @@ jobs:
           methodName: execute
           inputs:
             run: |
+              set -o pipefail
               PROMPT_FILE=$(mktemp)
               RESULT_FILE=$(mktemp)
               cat verification/review-prompts/adversarial-review.md > "$PROMPT_FILE"
               printf '\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n\nDIFF:\n%s' "$(git diff main)" >> "$PROMPT_FILE"
-              claude -p "$(cat "$PROMPT_FILE")" \
+              claude -p - \
                 --model claude-opus-4-6 \
-                --allowedTools "Read,Glob,Grep" | tee "$RESULT_FILE"
-              VERDICT=$(head -5 "$RESULT_FILE" | grep -o 'VERDICT: [a-z]*' | head -1 | cut -d' ' -f2)
+                --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
               rm -f "$PROMPT_FILE"
-              if [ "$VERDICT" = "fail" ]; then
-                echo "::error::Adversarial review found blocking issues"
-                rm -f "$RESULT_FILE"
+              VERDICT=$(head -5 "$RESULT_FILE" | grep -o 'VERDICT: [a-z]*' | head -1 | cut -d' ' -f2)
+              rm -f "$RESULT_FILE"
+              if [ "$VERDICT" != "pass" ]; then
+                echo "::error::Adversarial review did not pass (verdict: ${VERDICT:-missing})"
                 exit 1
               fi
-              rm -f "$RESULT_FILE"
 
       - name: ux-review
         guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('src/cli/') || f.startsWith('src/presentation/') || f == 'src/domain/errors.ts' || f.startsWith('src/libswamp/')).size() == 0 }}"
@@ -104,21 +104,21 @@ jobs:
           methodName: execute
           inputs:
             run: |
+              set -o pipefail
               PROMPT_FILE=$(mktemp)
               RESULT_FILE=$(mktemp)
               cat verification/review-prompts/ux-review.md > "$PROMPT_FILE"
               printf '\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n\nDIFF:\n%s' "$(git diff main)" >> "$PROMPT_FILE"
-              claude -p "$(cat "$PROMPT_FILE")" \
+              claude -p - \
                 --model claude-sonnet-4-6 \
-                --allowedTools "Read,Glob,Grep" | tee "$RESULT_FILE"
-              VERDICT=$(head -5 "$RESULT_FILE" | grep -o 'VERDICT: [a-z]*' | head -1 | cut -d' ' -f2)
+                --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
               rm -f "$PROMPT_FILE"
-              if [ "$VERDICT" = "fail" ]; then
-                echo "::error::UX review found blocking issues"
-                rm -f "$RESULT_FILE"
+              VERDICT=$(head -5 "$RESULT_FILE" | grep -o 'VERDICT: [a-z]*' | head -1 | cut -d' ' -f2)
+              rm -f "$RESULT_FILE"
+              if [ "$VERDICT" != "pass" ]; then
+                echo "::error::UX review did not pass (verdict: ${VERDICT:-missing})"
                 exit 1
               fi
-              rm -f "$RESULT_FILE"
 
       - name: ci-security-review
         guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('.github/workflows/')).size() == 0 }}"
@@ -129,18 +129,18 @@ jobs:
           methodName: execute
           inputs:
             run: |
+              set -o pipefail
               PROMPT_FILE=$(mktemp)
               RESULT_FILE=$(mktemp)
               cat verification/review-prompts/ci-security-review.md > "$PROMPT_FILE"
               printf '\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n\nDIFF:\n%s' "$(git diff main)" >> "$PROMPT_FILE"
-              claude -p "$(cat "$PROMPT_FILE")" \
+              claude -p - \
                 --model claude-opus-4-6 \
-                --allowedTools "Read,Glob,Grep" | tee "$RESULT_FILE"
-              VERDICT=$(head -5 "$RESULT_FILE" | grep -o 'VERDICT: [a-z]*' | head -1 | cut -d' ' -f2)
+                --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
               rm -f "$PROMPT_FILE"
-              if [ "$VERDICT" = "fail" ]; then
-                echo "::error::CI security review found blocking issues"
-                rm -f "$RESULT_FILE"
+              VERDICT=$(head -5 "$RESULT_FILE" | grep -o 'VERDICT: [a-z]*' | head -1 | cut -d' ' -f2)
+              rm -f "$RESULT_FILE"
+              if [ "$VERDICT" != "pass" ]; then
+                echo "::error::CI security review did not pass (verdict: ${VERDICT:-missing})"
                 exit 1
               fi
-              rm -f "$RESULT_FILE"
