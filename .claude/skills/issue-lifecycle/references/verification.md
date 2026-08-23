@@ -17,12 +17,12 @@ swamp model @swamp/issue-lifecycle method run verify issue-<N> \
   --input branch=$(git branch --show-current)
 ```
 
-## 2. Run the Verification Workflows
+## 2. Run Verification
 
-Run both verification workflows in parallel inside separate containers. The
-container must be built first (`./verification/container/build.sh`).
+Launch build verification and agent reviews in parallel. The container must be
+built first (`./verification/container/build.sh`).
 
-**Build container** (no API key):
+**Build** (container):
 
 ```
 docker run --rm \
@@ -37,29 +37,25 @@ docker run --rm \
   --input branch=$(git branch --show-current)
 ```
 
-**Review container** (with API key):
+**Reviews** (host workflow):
 
 ```
-docker run --rm \
-  -v <repo-root>:<repo-root> \
-  -v ~/Library/Caches/deno:/deno-dir \
-  -e SWAMP_WORKFLOWS_DIR=verification \
-  --env-file ~/.config/swamp/verify.env \
-  -w <worktree-path> \
-  swamp-club/verify:deno-2.8.3 \
-  workflow run verify-reviews \
-  --repo-dir <repo-root> \
+swamp workflow run verify-reviews \
   --input commit=$(git rev-parse HEAD) \
   --input branch=$(git branch --show-current)
 ```
 
-Launch both commands simultaneously. Replace `<repo-root>` with the main repo
-path and `<worktree-path>` with the current working directory. On Linux, use
-`~/.cache/deno` instead of `~/Library/Caches/deno`.
+Reviews run on the host (not in a container) as a swamp workflow that invokes
+`claude -p` for each review type. The workflow handles change detection, guards,
+parallel execution, and result collection. See
+`agent-constraints/verification-conventions.md` for details.
 
-The review container needs `~/.config/swamp/verify.env` with the API key. See
-`agent-constraints/verification-conventions.md` for setup. Without it, skip the
-review container — build verification still works independently.
+Replace `<repo-root>` with the main repo path and `<worktree-path>` with the
+current working directory. On Linux, use `~/.cache/deno` instead of
+`~/Library/Caches/deno`.
+
+Reviews need `~/.config/swamp/verify.env` with `ANTHROPIC_API_KEY`. Without it,
+skip reviews — build verification still works independently.
 
 The `SWAMP_WORKFLOWS_DIR=verification` env var tells swamp to look for workflow
 files in the `verification/` directory instead of the default `workflows/`.

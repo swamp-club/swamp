@@ -1,9 +1,10 @@
 id: b4d6e8f0-2a1c-4b3d-9e5f-7a8c0d2e4f6b
 name: verify-reviews
 description: |
-  Agent code reviews: detect changed files, then run code review, adversarial
-  review, UX review, and CI security review in parallel. Runs in the review
-  container with ANTHROPIC_API_KEY.
+  Agent code reviews using claude CLI directly. Detects changed files,
+  constructs review prompts with the diff inlined, and runs claude -p
+  for each review type in parallel. Runs on the host (not in a container)
+  so CLAUDE.md and skills are available as project context.
 version: 1
 
 tags:
@@ -17,10 +18,6 @@ inputs:
     branch:
       type: string
       description: Branch name being verified.
-    agentCliVersion:
-      type: string
-      description: Claude Code CLI version for agent reviews.
-      default: "2.1.240"
   required:
     - commit
     - branch
@@ -30,7 +27,7 @@ concurrency: 4
 jobs:
   # ── Detect Changed Files ──────────────────────────────────────
   - name: detect-changes
-    description: Compute the list of files changed on this branch.
+    description: Compute the diff and changed file list.
     steps:
       - name: diff
         task:
@@ -43,7 +40,7 @@ jobs:
 
   # ── Agent Reviews (factory pattern) ──────────────────────────
   - name: reviews
-    description: Run all agent reviews in parallel using a single model.
+    description: Run all agent reviews in parallel using claude CLI.
     dependsOn:
       - job: detect-changes
         condition:
@@ -52,66 +49,98 @@ jobs:
       - name: code-review
         task:
           type: model_method
-          modelType: "@swamp/agent-runner"
-          modelName: reviewer
-          methodName: review
-          globalArgs:
-            version: "${{ inputs.agentCliVersion }}"
-            apiKeyEnvVar: "ANTHROPIC_API_KEY"
+          modelType: "command/shell"
+          modelName: cli-reviewer
+          methodName: execute
           inputs:
-            instanceName: code-review
-            promptFile: "verification/review-prompts/code-review.md"
-            model: "claude-opus-4-6"
-            diff: "${{ data.latest('repo', 'diff').attributes.raw }}"
-            readOnly: true
+            run: |
+              PROMPT_FILE=$(mktemp)
+              RESULT_FILE=$(mktemp)
+              cat verification/review-prompts/code-review.md > "$PROMPT_FILE"
+              printf '\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n\nDIFF:\n%s' "$(git diff main)" >> "$PROMPT_FILE"
+              claude -p "$(cat "$PROMPT_FILE")" \
+                --model claude-opus-4-6 \
+                --allowedTools "Read,Glob,Grep" | tee "$RESULT_FILE"
+              VERDICT=$(head -5 "$RESULT_FILE" | grep -o 'VERDICT: [a-z]*' | head -1 | cut -d' ' -f2)
+              rm -f "$PROMPT_FILE"
+              if [ "$VERDICT" = "fail" ]; then
+                echo "::error::Code review found blocking issues"
+                rm -f "$RESULT_FILE"
+                exit 1
+              fi
+              rm -f "$RESULT_FILE"
 
       - name: adversarial-review
         guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('src/domain/') || f.startsWith('src/infrastructure/') || f.startsWith('src/libswamp/') || f.startsWith('src/serve/') || f.startsWith('src/worker/')).size() == 0 }}"
         task:
           type: model_method
-          modelType: "@swamp/agent-runner"
-          modelName: reviewer
-          methodName: review
-          globalArgs:
-            version: "${{ inputs.agentCliVersion }}"
-            apiKeyEnvVar: "ANTHROPIC_API_KEY"
+          modelType: "command/shell"
+          modelName: cli-reviewer
+          methodName: execute
           inputs:
-            instanceName: adversarial
-            promptFile: "verification/review-prompts/adversarial-review.md"
-            model: "claude-opus-4-6"
-            diff: "${{ data.latest('repo', 'diff').attributes.raw }}"
-            readOnly: true
+            run: |
+              PROMPT_FILE=$(mktemp)
+              RESULT_FILE=$(mktemp)
+              cat verification/review-prompts/adversarial-review.md > "$PROMPT_FILE"
+              printf '\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n\nDIFF:\n%s' "$(git diff main)" >> "$PROMPT_FILE"
+              claude -p "$(cat "$PROMPT_FILE")" \
+                --model claude-opus-4-6 \
+                --allowedTools "Read,Glob,Grep" | tee "$RESULT_FILE"
+              VERDICT=$(head -5 "$RESULT_FILE" | grep -o 'VERDICT: [a-z]*' | head -1 | cut -d' ' -f2)
+              rm -f "$PROMPT_FILE"
+              if [ "$VERDICT" = "fail" ]; then
+                echo "::error::Adversarial review found blocking issues"
+                rm -f "$RESULT_FILE"
+                exit 1
+              fi
+              rm -f "$RESULT_FILE"
 
       - name: ux-review
         guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('src/cli/') || f.startsWith('src/presentation/') || f == 'src/domain/errors.ts' || f.startsWith('src/libswamp/')).size() == 0 }}"
         task:
           type: model_method
-          modelType: "@swamp/agent-runner"
-          modelName: reviewer
-          methodName: review
-          globalArgs:
-            version: "${{ inputs.agentCliVersion }}"
-            apiKeyEnvVar: "ANTHROPIC_API_KEY"
+          modelType: "command/shell"
+          modelName: cli-reviewer
+          methodName: execute
           inputs:
-            instanceName: ux
-            promptFile: "verification/review-prompts/ux-review.md"
-            model: "claude-sonnet-4-6"
-            diff: "${{ data.latest('repo', 'diff').attributes.raw }}"
-            readOnly: true
+            run: |
+              PROMPT_FILE=$(mktemp)
+              RESULT_FILE=$(mktemp)
+              cat verification/review-prompts/ux-review.md > "$PROMPT_FILE"
+              printf '\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n\nDIFF:\n%s' "$(git diff main)" >> "$PROMPT_FILE"
+              claude -p "$(cat "$PROMPT_FILE")" \
+                --model claude-sonnet-4-6 \
+                --allowedTools "Read,Glob,Grep" | tee "$RESULT_FILE"
+              VERDICT=$(head -5 "$RESULT_FILE" | grep -o 'VERDICT: [a-z]*' | head -1 | cut -d' ' -f2)
+              rm -f "$PROMPT_FILE"
+              if [ "$VERDICT" = "fail" ]; then
+                echo "::error::UX review found blocking issues"
+                rm -f "$RESULT_FILE"
+                exit 1
+              fi
+              rm -f "$RESULT_FILE"
 
       - name: ci-security-review
         guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('.github/workflows/')).size() == 0 }}"
         task:
           type: model_method
-          modelType: "@swamp/agent-runner"
-          modelName: reviewer
-          methodName: review
-          globalArgs:
-            version: "${{ inputs.agentCliVersion }}"
-            apiKeyEnvVar: "ANTHROPIC_API_KEY"
+          modelType: "command/shell"
+          modelName: cli-reviewer
+          methodName: execute
           inputs:
-            instanceName: ci-security
-            promptFile: "verification/review-prompts/ci-security-review.md"
-            model: "claude-opus-4-6"
-            diff: "${{ data.latest('repo', 'diff').attributes.raw }}"
-            readOnly: true
+            run: |
+              PROMPT_FILE=$(mktemp)
+              RESULT_FILE=$(mktemp)
+              cat verification/review-prompts/ci-security-review.md > "$PROMPT_FILE"
+              printf '\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n\nDIFF:\n%s' "$(git diff main)" >> "$PROMPT_FILE"
+              claude -p "$(cat "$PROMPT_FILE")" \
+                --model claude-opus-4-6 \
+                --allowedTools "Read,Glob,Grep" | tee "$RESULT_FILE"
+              VERDICT=$(head -5 "$RESULT_FILE" | grep -o 'VERDICT: [a-z]*' | head -1 | cut -d' ' -f2)
+              rm -f "$PROMPT_FILE"
+              if [ "$VERDICT" = "fail" ]; then
+                echo "::error::CI security review found blocking issues"
+                rm -f "$RESULT_FILE"
+                exit 1
+              fi
+              rm -f "$RESULT_FILE"
