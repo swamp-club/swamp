@@ -28,10 +28,12 @@ import { join } from "@std/path";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import {
   acquireModelLocks,
+  createLockProgressWriter,
   createModelLock,
   datastoreGlobalLockOptions,
   flushSinglePhasePush,
   flushTwoPhasePush,
+  type LockProgressWriter,
   requireInitializedRepo,
   requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,
@@ -1101,6 +1103,56 @@ Deno.test(
       },
       LockTimeoutError,
     );
+  },
+);
+
+Deno.test(
+  "waitForPerModelLocks - uses custom progressWriter when provided",
+  async () => {
+    const sequence = [1, 0];
+    let i = 0;
+    const scanner = (): Promise<number> => {
+      const next = sequence[Math.min(i, sequence.length - 1)];
+      i++;
+      return Promise.resolve(next);
+    };
+
+    const messages: string[] = [];
+    const writer: LockProgressWriter = (msg) => {
+      messages.push(msg);
+    };
+
+    await waitForPerModelLocks(
+      "/unused/datastore/path",
+      undefined,
+      scanner,
+      writer,
+    );
+
+    assertEquals(messages.length, 2);
+    assertStringIncludes(messages[0], "Waiting for 1 per-model lock");
+    assertStringIncludes(messages[1], "Per-model locks released");
+  },
+);
+
+Deno.test(
+  "createLockProgressWriter - formats with custom label",
+  () => {
+    const captured: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      captured.push(String(args[0]));
+    };
+    try {
+      const writer = createLockProgressWriter("my-model");
+      writer("test message");
+      assertEquals(captured.length, 1);
+      assertStringIncludes(captured[0], "my-model");
+      assertStringIncludes(captured[0], "│");
+      assertStringIncludes(captured[0], "test message");
+    } finally {
+      console.error = originalError;
+    }
   },
 );
 

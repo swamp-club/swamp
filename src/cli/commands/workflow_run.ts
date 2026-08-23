@@ -31,6 +31,7 @@ import {
 } from "../../libswamp/mod.ts";
 import {
   acquireModelLocks,
+  createLockProgressWriter,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -293,6 +294,7 @@ export const workflowRunCommand = new Command()
         repoDir,
         unlocked.syncService,
         repoContext.catalogStore,
+        createLockProgressWriter(modelId),
       );
       if (result.synced) repoContext.catalogStore.invalidate();
       return result;

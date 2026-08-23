@@ -27,6 +27,7 @@ import {
 } from "../context.ts";
 import {
   acquireModelLocks,
+  createLockProgressWriter,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -306,6 +307,7 @@ export const workflowResumeCommand = withRemoteOptions(
         repoDir,
         unlocked.syncService,
         repoContext.catalogStore,
+        createLockProgressWriter(modelId),
       );
       if (result.synced) repoContext.catalogStore.invalidate();
       return result;

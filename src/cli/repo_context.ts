@@ -95,6 +95,23 @@ function systemPrefix(): string {
   const padded = "system".padStart(getSystemPipeWidth() + 1);
   return dim(`${padded} │`);
 }
+
+export type LockProgressWriter = (message: string) => void;
+
+function labeledPrefix(label: string): string {
+  const padded = label.padStart(getSystemPipeWidth() + 1);
+  return dim(`${padded} │`);
+}
+
+function defaultLockWriter(message: string): void {
+  console.error(`${systemPrefix()} ${message}`);
+}
+
+export function createLockProgressWriter(label: string): LockProgressWriter {
+  return (message: string) => {
+    console.error(`${labeledPrefix(label)} ${message}`);
+  };
+}
 import { withSpan } from "../infrastructure/tracing/mod.ts";
 import {
   collectDirsForKind,
@@ -877,7 +894,9 @@ export async function waitForPerModelLocks(
   datastorePath: string,
   namespace?: string,
   findModelLocksOverride?: () => Promise<number>,
+  progressWriter?: LockProgressWriter,
 ): Promise<void> {
+  const write = progressWriter ?? defaultLockWriter;
   const parentPid = Deno.env.get(SWAMP_LOCK_HOLDER_PID);
 
   const findModelLocks = findModelLocksOverride ??
@@ -922,10 +941,8 @@ export async function waitForPerModelLocks(
   const maxWaitMs = resolveLockTimeoutMs();
   const held = await findModelLocks();
   if (held > 0) {
-    console.error(
-      `${systemPrefix()} ${
-        yellow(`Waiting for ${held} per-model lock(s) to be released...`)
-      }`,
+    write(
+      yellow(`Waiting for ${held} per-model lock(s) to be released...`),
     );
     const waitStart = Date.now();
     while (true) {
@@ -941,7 +958,7 @@ export async function waitForPerModelLocks(
         );
       }
     }
-    console.error(`${systemPrefix()} ${dim("Per-model locks released")}`);
+    write(dim("Per-model locks released"));
   }
 }
 
@@ -1021,7 +1038,9 @@ export async function acquireModelLocks(
    * a second one (avoids locking contention on _catalog.db).
    */
   catalogStore?: CatalogStore,
+  progressWriter?: LockProgressWriter,
 ): Promise<ModelLockResult> {
+  const write = progressWriter ?? defaultLockWriter;
   const logger = getSwampLogger(["datastore", "lock"]);
   let synced = false;
 
@@ -1055,12 +1074,10 @@ export async function acquireModelLocks(
     : await createDatastoreLock(config);
   const globalInfo = await globalLock.inspect();
   if (globalInfo) {
-    console.error(
-      `${systemPrefix()} ${
-        yellow(
-          `Global lock held by ${globalInfo.holder} — waiting for structural command to finish...`,
-        )
-      }`,
+    write(
+      yellow(
+        `Global lock held by ${globalInfo.holder} — waiting for structural command to finish...`,
+      ),
     );
     // Poll until the global lock is released or expires (stale lock).
     // Timeout after 2x TTL to prevent indefinite hangs if staleness
@@ -1074,12 +1091,10 @@ export async function acquireModelLocks(
       // Check if the lock has exceeded its TTL (stale/crashed process)
       const acquiredAt = new Date(info.acquiredAt).getTime();
       if (Date.now() - acquiredAt > info.ttlMs) {
-        console.error(
-          `${systemPrefix()} ${
-            dim(
-              `Global lock held by ${info.holder} appears stale (exceeded TTL of ${info.ttlMs}ms) — proceeding`,
-            )
-          }`,
+        write(
+          dim(
+            `Global lock held by ${info.holder} appears stale (exceeded TTL of ${info.ttlMs}ms) — proceeding`,
+          ),
         );
         await tryForceReleaseStaleLock(globalLock, info);
         break;
@@ -1094,10 +1109,8 @@ export async function acquireModelLocks(
         );
       }
     }
-    console.error(
-      `${systemPrefix()} ${
-        dim("Global lock released, proceeding with per-model locks")
-      }`,
+    write(
+      dim("Global lock released, proceeding with per-model locks"),
     );
   }
 
@@ -1149,12 +1162,10 @@ export async function acquireModelLocks(
     // and this per-model acquisition, release everything and wait.
     const postAcquireGlobalInfo = await globalLock.inspect();
     if (postAcquireGlobalInfo) {
-      console.error(
-        `${systemPrefix()} ${
-          dim(
-            `Global lock acquired by ${postAcquireGlobalInfo.holder} during per-model lock acquisition — releasing and retrying`,
-          )
-        }`,
+      write(
+        dim(
+          `Global lock acquired by ${postAcquireGlobalInfo.holder} during per-model lock acquisition — releasing and retrying`,
+        ),
       );
       // Release all per-model locks acquired so far
       for (const acquiredKey of lockKeys) {
@@ -1171,12 +1182,10 @@ export async function acquireModelLocks(
         if (!info) break;
         const acquiredAt = new Date(info.acquiredAt).getTime();
         if (Date.now() - acquiredAt > info.ttlMs) {
-          console.error(
-            `${systemPrefix()} ${
-              dim(
-                `Global lock held by ${info.holder} appears stale (exceeded TTL of ${info.ttlMs}ms) — proceeding`,
-              )
-            }`,
+          write(
+            dim(
+              `Global lock held by ${info.holder} appears stale (exceeded TTL of ${info.ttlMs}ms) — proceeding`,
+            ),
           );
           await tryForceReleaseStaleLock(globalLock, info);
           break;
@@ -1200,16 +1209,15 @@ export async function acquireModelLocks(
         repoDir,
         customSyncService,
         catalogStore,
+        progressWriter,
       );
     }
 
     // For custom sync-capable datastores: pull after acquiring per-model lock
     if (customSyncService) {
       try {
-        console.error(
-          `${systemPrefix()} ${
-            dim(`Syncing model ${modelType}/${modelId} from datastore...`)
-          }`,
+        write(
+          dim(`Syncing model ${modelType}/${modelId} from datastore...`),
         );
 
         const ns = isCustomDatastoreConfig(config)
@@ -1231,10 +1239,8 @@ export async function acquireModelLocks(
         synced = true;
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
-        console.error(
-          `${systemPrefix()} ${
-            dim(`Failed to pull model data from datastore: ${msg}`)
-          }`,
+        write(
+          dim(`Failed to pull model data from datastore: ${msg}`),
         );
         throw new Error(
           `Datastore sync failed: could not pull data for ${modelType}/${modelId}: ${msg}`,
@@ -1271,6 +1277,7 @@ export async function acquireModelLocks(
             pushNs,
             catalogStore,
             logger,
+            progressWriter,
           );
         } else {
           // Single-phase fallback: everything under global lock
@@ -1283,6 +1290,7 @@ export async function acquireModelLocks(
             pushNs,
             catalogStore,
             logger,
+            progressWriter,
           );
         }
       }
@@ -1312,7 +1320,9 @@ export async function flushSinglePhasePush(
   namespace: string | undefined,
   catalogStore: CatalogStore | undefined,
   logger: ReturnType<typeof getSwampLogger>,
+  progressWriter?: LockProgressWriter,
 ): Promise<void> {
+  const write = progressWriter ?? defaultLockWriter;
   const pushLock = provider.createLock(
     config.datastorePath,
     {
@@ -1325,26 +1335,23 @@ export async function flushSinglePhasePush(
     await pushLock.acquire();
     const lockMs = Date.now() - lockStart;
     if (lockMs > 5_000 && !config.namespace) {
-      console.error(
-        `${systemPrefix()} ${
-          yellow(
-            `Lock acquisition took ${lockMs}ms — multiple repos sharing this ` +
-              "datastore without namespaces serialize all writes behind a " +
-              "single global lock. Run 'swamp datastore namespace set " +
-              "<name>' to scope each repo to its own lock and index",
-          )
-        }`,
+      write(
+        yellow(
+          `Lock acquisition took ${lockMs}ms — multiple repos sharing this ` +
+            "datastore without namespaces serialize all writes behind a " +
+            "single global lock. Run 'swamp datastore namespace set " +
+            "<name>' to scope each repo to its own lock and index",
+        ),
       );
     }
-    console.error(
-      `${systemPrefix()} ${dim("Pushing changes to datastore...")}`,
-    );
+    write(dim("Pushing changes to datastore..."));
 
     await writeCatalogExportIfNeeded(
       syncService,
       config,
       namespace,
       catalogStore,
+      progressWriter,
     );
 
     let pushed: number | void;
@@ -1360,13 +1367,9 @@ export async function flushSinglePhasePush(
       pushed = await syncService.pushChanged();
     }
     if (pushed && pushed > 0) {
-      console.error(
-        `${systemPrefix()} ${dim(`Pushed ${pushed} file(s) to datastore`)}`,
-      );
+      write(dim(`Pushed ${pushed} file(s) to datastore`));
     } else {
-      console.error(
-        `${systemPrefix()} ${dim("Push complete, no changes")}`,
-      );
+      write(dim("Push complete, no changes"));
     }
   } catch (error) {
     const { summary, fields } = summarizeSyncError(
@@ -1408,7 +1411,9 @@ export async function flushTwoPhasePush(
   namespace: string | undefined,
   catalogStore: CatalogStore | undefined,
   logger: ReturnType<typeof getSwampLogger>,
+  progressWriter?: LockProgressWriter,
 ): Promise<void> {
+  const write = progressWriter ?? defaultLockWriter;
   // Write catalog export before preparePush so it's included in the
   // upload phase. The export is a full snapshot of the local catalog —
   // safe to write outside the lock because a later concurrent writer
@@ -1418,14 +1423,13 @@ export async function flushTwoPhasePush(
     config,
     namespace,
     catalogStore,
+    progressWriter,
   );
 
   // Phase 1: upload files outside the global lock
   let manifest: PushManifest;
   try {
-    console.error(
-      `${systemPrefix()} ${dim("Preparing push (uploading files)...")}`,
-    );
+    write(dim("Preparing push (uploading files)..."));
     const prepareOpts = caps?.scopedSync
       ? {
         context: { models: [...models] } as SyncContext,
@@ -1458,33 +1462,23 @@ export async function flushTwoPhasePush(
     await pushLock.acquire();
     const lockMs = Date.now() - lockStart;
     if (lockMs > 5_000 && !config.namespace) {
-      console.error(
-        `${systemPrefix()} ${
-          yellow(
-            `Lock acquisition took ${lockMs}ms — multiple repos sharing this ` +
-              "datastore without namespaces serialize all writes behind a " +
-              "single global lock. Run 'swamp datastore namespace set " +
-              "<name>' to scope each repo to its own lock and index",
-          )
-        }`,
+      write(
+        yellow(
+          `Lock acquisition took ${lockMs}ms — multiple repos sharing this ` +
+            "datastore without namespaces serialize all writes behind a " +
+            "single global lock. Run 'swamp datastore namespace set " +
+            "<name>' to scope each repo to its own lock and index",
+        ),
       );
     }
-    console.error(
-      `${systemPrefix()} ${dim("Committing index update...")}`,
-    );
+    write(dim("Committing index update..."));
 
     const commitOpts = namespace ? { namespace } : undefined;
     const pushed = await syncService.commitPush!(manifest, commitOpts);
     if (pushed && pushed > 0) {
-      console.error(
-        `${systemPrefix()} ${
-          dim(`Committed ${pushed} file(s) to datastore index`)
-        }`,
-      );
+      write(dim(`Committed ${pushed} file(s) to datastore index`));
     } else {
-      console.error(
-        `${systemPrefix()} ${dim("Commit complete, no index changes")}`,
-      );
+      write(dim("Commit complete, no index changes"));
     }
   } catch (error) {
     const { summary, fields } = summarizeSyncError(
@@ -1512,7 +1506,9 @@ export async function writeCatalogExportIfNeeded(
   config: CustomDatastoreConfig,
   namespace: string | undefined,
   catalogStore: CatalogStore | undefined,
+  progressWriter?: LockProgressWriter,
 ): Promise<void> {
+  const write = progressWriter ?? defaultLockWriter;
   if (namespace && catalogStore && config.cachePath) {
     try {
       const exportCount = await writeCatalogExport(
@@ -1523,18 +1519,14 @@ export async function writeCatalogExportIfNeeded(
       await syncService.markDirty({
         relPath: `${namespace}/.catalog-export.json`,
       });
-      console.error(
-        `${systemPrefix()} ${
-          dim(
-            `Wrote catalog export (${exportCount} row(s)) for namespace ${namespace}`,
-          )
-        }`,
+      write(
+        dim(
+          `Wrote catalog export (${exportCount} row(s)) for namespace ${namespace}`,
+        ),
       );
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      console.error(
-        `${systemPrefix()} ${yellow(`Catalog export write failed: ${msg}`)}`,
-      );
+      write(yellow(`Catalog export write failed: ${msg}`));
     }
   }
 }
