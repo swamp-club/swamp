@@ -33,7 +33,7 @@ SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-build \
 **Reviews** (host workflow):
 
 ```
-swamp workflow run verify-reviews \
+SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-reviews \
   --input commit=$(git rev-parse HEAD) \
   --input branch=$(git branch --show-current)
 ```

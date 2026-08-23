@@ -21,7 +21,7 @@ Reviews run as a swamp workflow on the host (not in a container) so the claude
 CLI has full project context — CLAUDE.md, skills, and the codebase.
 
 ```
-swamp workflow run verify-reviews \
+SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-reviews \
   --input commit=<SHA> \
   --input branch=<branch>
 ```
@@ -63,8 +63,26 @@ chmod 600 ~/.config/swamp/verify.env
 
 ## Running Both in Parallel
 
-The agent launches the build container and the review workflow simultaneously.
-Both must pass for verification to succeed.
+The agent launches the build and review workflows simultaneously. Both must
+pass for verification to succeed.
+
+After each workflow completes, present the commands to the user so they can
+inspect the attestations:
+
+```
+# Build attestation (human-readable)
+SWAMP_WORKFLOWS_DIR=verification swamp workflow history verify-build
+
+# Build attestation (JSON for programmatic use)
+SWAMP_WORKFLOWS_DIR=verification swamp workflow history verify-build --json
+
+# Review attestation — shows which reviews ran, passed, failed, or skipped
+SWAMP_WORKFLOWS_DIR=verification swamp workflow history verify-reviews
+SWAMP_WORKFLOWS_DIR=verification swamp workflow history verify-reviews --json
+
+# Review findings — each review that ran writes to cli-reviewer log
+swamp data get cli-reviewer log
+```
 
 ## Attestation
 
