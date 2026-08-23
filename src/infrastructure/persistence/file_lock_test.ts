@@ -416,9 +416,16 @@ Deno.test("FileLock - maxWaitMs override is respected", async () => {
     await assertRejects(() => longTimeout.acquire(), LockTimeoutError);
     const elapsed2 = Date.now() - start2;
 
+    // Assert each run against its own configured floor (with slack for timer
+    // granularity) — comparing the two measured durations to each other flips
+    // under parallel scheduling jitter.
     assert(
-      elapsed2 > elapsed1,
-      `longer timeout (${elapsed2}ms) should wait longer than shorter (${elapsed1}ms)`,
+      elapsed1 >= 150,
+      `short timeout gave up before its 200ms budget (${elapsed1}ms)`,
+    );
+    assert(
+      elapsed2 >= 600,
+      `long timeout gave up before its 800ms budget (${elapsed2}ms)`,
     );
 
     await holder.release();

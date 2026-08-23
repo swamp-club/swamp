@@ -71,7 +71,7 @@ Deno.test("UserVaultLoader - loads valid vault from temp directory", async () =>
 import { z } from "npm:zod";
 
 export const vault = {
-  type: "@test/custom-vault-${Date.now()}",
+  type: "@test/custom-vault-${crypto.randomUUID().slice(0, 8)}",
   name: "Custom Vault",
   description: "A test vault implementation",
   configSchema: z.object({ endpoint: z.string() }),
@@ -257,7 +257,7 @@ export const vault = {
 });
 
 Deno.test("UserVaultLoader - invalidates bundle cache when dependency changes", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const helperCode = `export const vaultName = "original";`;
   const vaultCode = `
 import { z } from "npm:zod";
@@ -307,14 +307,15 @@ export const vault = {
     );
     const cachedBundle1 = await Deno.readTextFile(bundlePath);
 
-    // Wait so mtime differs
-    await new Promise((r) => setTimeout(r, 1100));
-
     // Modify only the dependency (not the entry point)
     await Deno.writeTextFile(
       join(vaultsDir, "helper.ts"),
       `export const vaultName = "updated";`,
     );
+    // Bump mtime past the cached bundle's 1s-granularity timestamp instead
+    // of sleeping.
+    const bumped = new Date(Date.now() + 5_000);
+    await Deno.utime(join(vaultsDir, "helper.ts"), bumped, bumped);
 
     // Second load — should detect dependency change and rebundle
     const loader2 = new ExtensionLoader(
@@ -369,7 +370,7 @@ export const vault = {
 });
 
 Deno.test("UserVaultLoader buildIndex rebundles when source content changes with preserved mtime (#128)", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const vaultType = `@user/preserved-mtime-vault-${ts}`;
   const v1 = `
 export const vault = {
@@ -438,8 +439,6 @@ export const vault = {
 
     const origMtime = (await Deno.stat(sourcePath)).mtime!;
 
-    await new Promise((r) => setTimeout(r, 1100));
-
     await Deno.writeTextFile(sourcePath, v2);
     await Deno.utime(sourcePath, origMtime, origMtime);
 
@@ -478,7 +477,7 @@ export const vault = {
 });
 
 Deno.test("UserVaultLoader buildIndex rebundles when transitive dep content changes with preserved mtime (#128)", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const vaultType = `@user/preserved-mtime-vault-dep-${ts}`;
   const entry = `
 import { marker } from "./_lib/marker.ts";
@@ -540,8 +539,6 @@ export const vault = {
     const entryMtime = (await Deno.stat(entryPath)).mtime!;
     const libMtime = (await Deno.stat(libPath)).mtime!;
 
-    await new Promise((r) => setTimeout(r, 1100));
-
     await Deno.writeTextFile(libPath, libV2);
     await Deno.utime(libPath, libMtime, libMtime);
     await Deno.utime(entryPath, entryMtime, entryMtime);
@@ -586,7 +583,7 @@ Deno.test("UserVaultLoader: registerLazyFromCatalog skips validation_failed rows
   const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
 
   try {
-    const ts = Date.now();
+    const ts = crypto.randomUUID().slice(0, 8);
     const validVault = `
 import { z } from "npm:zod";
 
@@ -665,7 +662,7 @@ export const vault = {
 Deno.test(
   "UserVaultLoader.bundleAndIndexOne: returns vault metadata without writing catalog rows (Pin 1)",
   async () => {
-    const ts = Date.now();
+    const ts = crypto.randomUUID().slice(0, 8);
     const vaultType = `@user/pin1-vault-${ts}`;
     const vaultCode = `
 import { z } from "npm:zod";

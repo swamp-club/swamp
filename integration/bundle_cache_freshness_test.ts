@@ -96,9 +96,8 @@ Deno.test("CLI rebundles user extension when source content changes with preserv
     // mtime advancing — this is the core of the bug.
     const origMtime = (await Deno.stat(sourcePath)).mtime!;
 
-    // Advance wall clock at least one second, then overwrite content
-    // and restore the original mtime.
-    await new Promise((r) => setTimeout(r, 1100));
+    // Overwrite content and restore the original mtime — the restore keeps
+    // source mtime <= bundle mtime without sleeping.
     await Deno.writeTextFile(sourcePath, V2_SOURCE);
     await Deno.utime(sourcePath, origMtime, origMtime);
 
@@ -247,7 +246,6 @@ Deno.test("source-mounted: edit with preserved mtime detected via fingerprint (#
     assertEquals(prime.code, 0, `Prime failed:\n${prime.stderr}`);
 
     const origMtime = (await Deno.stat(sourcePath)).mtime!;
-    await new Promise((r) => setTimeout(r, 1100));
 
     await Deno.writeTextFile(sourcePath, makeSource("V2_MARKER", "npm:zod@4"));
     await Deno.utime(sourcePath, origMtime, origMtime);
@@ -349,7 +347,6 @@ Deno.test("source-mounted: bare specifiers + deno.json, mtime preserved (#274)",
     assertEquals(prime.code, 0, `Prime failed:\n${prime.stderr}`);
 
     const origMtime = (await Deno.stat(sourcePath)).mtime!;
-    await new Promise((r) => setTimeout(r, 1100));
 
     await Deno.writeTextFile(sourcePath, makeSource("V2_MARKER", "zod"));
     await Deno.utime(sourcePath, origMtime, origMtime);

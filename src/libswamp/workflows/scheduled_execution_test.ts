@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertGreater } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import {
   normalizeFireTime,
   type PendingRunHook,
@@ -164,7 +165,10 @@ Deno.test("ScheduledExecutionService: emits schedule_failed when workflow run ha
   await service.start((e) => events.push(e));
 
   // Wait for the cron to fire (every second)
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await waitFor(
+    () => events.some((e) => e.kind === "schedule_failed"),
+    "schedule_failed event",
+  );
   await service.stop();
 
   const failed = events.filter((e) => e.kind === "schedule_failed");
@@ -212,7 +216,10 @@ Deno.test("ScheduledExecutionService: emits schedule_failed when workflow yields
 
   await service.start((e) => events.push(e));
 
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await waitFor(
+    () => events.some((e) => e.kind === "schedule_failed"),
+    "schedule_failed event",
+  );
   await service.stop();
 
   const failed = events.filter((e) => e.kind === "schedule_failed");
@@ -241,7 +248,10 @@ Deno.test("ScheduledExecutionService: emits schedule_failed when no terminal eve
 
   await service.start((e) => events.push(e));
 
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await waitFor(
+    () => events.some((e) => e.kind === "schedule_failed"),
+    "schedule_failed event",
+  );
   await service.stop();
 
   const failed = events.filter((e) => e.kind === "schedule_failed");
@@ -288,7 +298,10 @@ Deno.test("ScheduledExecutionService: cronFireDedup returning true allows execut
 
   await service.start((e) => events.push(e));
 
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await waitFor(
+    () => events.some((e) => e.kind === "schedule_fired"),
+    "schedule_fired event",
+  );
   await service.stop();
 
   const fired = events.filter((e) => e.kind === "schedule_fired");
@@ -318,7 +331,10 @@ Deno.test("ScheduledExecutionService: cronFireDedup returning false skips execut
 
   await service.start((e) => events.push(e));
 
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await waitFor(
+    () => events.some((e) => e.kind === "schedule_skipped"),
+    "schedule_skipped event",
+  );
   await service.stop();
 
   const skipped = events.filter((e) =>
@@ -346,7 +362,10 @@ Deno.test("ScheduledExecutionService: cronFireDedup error falls through to execu
 
   await service.start((e) => events.push(e));
 
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await waitFor(
+    () => events.some((e) => e.kind === "schedule_fired"),
+    "schedule_fired event",
+  );
   await service.stop();
 
   const fired = events.filter((e) => e.kind === "schedule_fired");
@@ -383,7 +402,10 @@ Deno.test("ScheduledExecutionService: pendingRunHook delete awaits enqueue befor
   });
 
   await service.start();
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await waitFor(
+    () => ops.includes("delete"),
+    "pendingRunHook delete call",
+  );
   await service.stop();
 
   assertGreater(ops.length, 2);
@@ -494,7 +516,10 @@ Deno.test("ScheduledExecutionService: trigger override inputs are passed to exec
   });
 
   await service.start();
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await waitFor(
+    () => capturedInputs.length > 0,
+    "fire with override inputs",
+  );
   await service.stop();
 
   assertGreater(capturedInputs.length, 0);
@@ -703,7 +728,10 @@ Deno.test("updateTriggerOverrides: inputs-only change is detected", async () => 
   );
   assertEquals(changed, 1);
 
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await waitFor(
+    () => capturedInputs.at(-1)?.inputs?.["channel"] === "#new",
+    "fire with updated override inputs",
+  );
   await service.stop();
 
   assertGreater(capturedInputs.length, 0);

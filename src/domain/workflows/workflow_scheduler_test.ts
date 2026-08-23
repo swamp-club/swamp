@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { canonicalFireTime, WorkflowScheduler } from "./workflow_scheduler.ts";
 import { Cron } from "croner";
 import type { WorkflowId } from "./workflow_id.ts";
@@ -97,7 +98,7 @@ Deno.test("WorkflowScheduler: start fires callback on cron match", async () => {
   });
 
   // Wait for at least one fire
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await waitFor(() => fired.length > 0, "first cron fire");
   scheduler.stop();
 
   assertEquals(fired.length > 0, true);
