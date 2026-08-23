@@ -557,11 +557,15 @@ export class DefaultWorkflowValidationService
     const checkName =
       `Step inputs for '${stepName}' in job '${jobName}' (${modelIdOrName}.${methodName})`;
 
-    // Skip dynamic CEL references — cannot resolve statically
-    if (modelIdOrName.includes("${{")) {
-      return [WorkflowValidationResult.pass(checkName)];
-    }
-    if (modelType?.includes("${{")) {
+    // Skip dynamic CEL references — cannot resolve statically.
+    // For factory-pattern steps (modelType is set), only the modelType
+    // matters for type/method resolution — a CEL modelName does not
+    // prevent resolving the extension type.
+    if (modelType) {
+      if (modelType.includes("${{")) {
+        return [WorkflowValidationResult.pass(checkName)];
+      }
+    } else if (modelIdOrName.includes("${{")) {
       return [WorkflowValidationResult.pass(checkName)];
     }
 
