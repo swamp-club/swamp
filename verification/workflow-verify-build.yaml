@@ -2,7 +2,7 @@ id: 7c2f8a31-4e19-4d6b-b8a0-1f3d5e7c9b2a
 name: verify-build
 description: |
   Build verification: lint, format check, type check, tests, dependency audit,
-  compile, and binary smoke test. Runs in the build container without API keys.
+  compile, and binary smoke test. Runs on the host from a fresh checkout.
 version: 1
 
 tags:
@@ -30,48 +30,42 @@ jobs:
       - name: lint
         task:
           type: model_method
-          modelType: "@swamp/deno-runner"
-          modelName: lint
-          methodName: task
+          modelType: "command/shell"
+          modelName: build-lint
+          methodName: execute
           inputs:
-            version: "2.8.3"
-            taskName: "lint"
+            run: "deno lint"
 
       - name: fmt-check
         task:
           type: model_method
-          modelType: "@swamp/deno-runner"
-          modelName: fmt-check
-          methodName: run
+          modelType: "command/shell"
+          modelName: build-fmt
+          methodName: execute
           inputs:
-            version: "2.8.3"
-            args:
-              - fmt
-              - --check
+            run: "deno fmt --check"
 
       - name: type-check
         task:
           type: model_method
-          modelType: "@swamp/deno-runner"
-          modelName: type-check
-          methodName: task
+          modelType: "command/shell"
+          modelName: build-check
+          methodName: execute
           inputs:
-            version: "2.8.3"
-            taskName: "check"
+            run: "deno task check"
 
   # ── Tests ────────────────────────────────────────────────────
   - name: tests
-    description: Run the full test suite in parallel.
+    description: Run the full test suite.
     steps:
       - name: run-tests
         task:
           type: model_method
-          modelType: "@swamp/deno-runner"
-          modelName: tests
-          methodName: task
+          modelType: "command/shell"
+          modelName: build-tests
+          methodName: execute
           inputs:
-            version: "2.8.3"
-            taskName: "test"
+            run: "deno task test"
 
   # ── Dependency Audit ─────────────────────────────────────────
   - name: deps-audit
@@ -80,12 +74,11 @@ jobs:
       - name: vuln-scan
         task:
           type: model_method
-          modelType: "@swamp/deno-runner"
-          modelName: audit
-          methodName: task
+          modelType: "command/shell"
+          modelName: build-audit
+          methodName: execute
           inputs:
-            version: "2.8.3"
-            taskName: "audit"
+            run: "deno task audit"
 
   # ── Compile + Binary Check ────────────────────────────────────
   - name: compile
@@ -101,14 +94,11 @@ jobs:
       - name: build
         task:
           type: model_method
-          modelType: "@swamp/deno-runner"
-          modelName: compile
-          methodName: task
+          modelType: "command/shell"
+          modelName: build-compile
+          methodName: execute
           inputs:
-            version: "2.8.3"
-            taskName: "compile"
-            env:
-              DENO_DIR: "/tmp/deno-compile-cache"
+            run: "deno task compile"
 
       - name: binary-check
         dependsOn:
@@ -118,7 +108,7 @@ jobs:
         task:
           type: model_method
           modelType: "command/shell"
-          modelName: binary-check
+          modelName: build-smoke
           methodName: execute
           inputs:
             run: "ls -la swamp && chmod +x swamp && ./swamp --version"

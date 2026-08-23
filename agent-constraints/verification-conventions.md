@@ -1,24 +1,19 @@
 # Verification Conventions
 
-## Build Verification (Container)
+## Build Verification (Host Workflow)
 
-Build checks run inside the `swamp-club/verify` container — isolated,
-reproducible, matching CI.
+Build checks run as a swamp workflow on the host — native filesystem speed,
+same Deno that's already installed. Isolation comes from running in a fresh
+checkout.
 
 ```
-docker run --rm \
-  -v /path/to/repo:/path/to/repo \
-  -v ~/Library/Caches/deno:/deno-dir \
-  -e SWAMP_WORKFLOWS_DIR=verification \
-  -w /path/to/worktree \
-  swamp-club/verify:deno-2.8.3 \
-  workflow run verify-build \
-  --repo-dir /path/to/repo \
+SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-build \
   --input commit=<SHA> \
   --input branch=<branch>
 ```
 
-On Linux, the Deno cache is at `~/.cache/deno`.
+All steps use `command/shell` which correctly fails on non-zero exit code —
+lint, test, and compile failures are reported accurately.
 
 ## Agent Reviews (Host Workflow)
 
@@ -88,11 +83,37 @@ Read the results to determine next steps:
 
 When verification fails:
 
-1. Read the results to identify which steps failed
-2. For failed build steps (lint, test, compile): fix the code directly
-3. For failed agent reviews: read the findings, address blocking issues,
-   re-verify
-4. Do NOT open a PR until all verification steps pass
+1. Read the workflow attestation output to identify which steps failed. Note:
+   the `@swamp/deno-runner` model currently reports step status as "succeeded"
+   even on non-zero exit. Check the `exitCode` tag in each step's data to
+   determine the real result.
+
+2. For failed build steps, read the step's captured output:
+
+   ```bash
+   # List data for a specific model (e.g. lint, tests, compile)
+   swamp data list <model-name>
+
+   # Read the output — stderr contains the error details
+   swamp data get <model-name> <data-name> --json
+   ```
+
+   The `stderr` field contains the full command output including which tests
+   failed, lint errors, or compile errors. The `exitCode` field confirms
+   pass (0) or fail (non-zero).
+
+3. For failed agent reviews, read the review findings:
+
+   ```bash
+   swamp data get cli-reviewer log
+   ```
+
+   The log contains the full review text with blocking issues and suggestions.
+
+4. Fix the issues identified in the output, then re-verify. Repeat until all
+   steps pass with `exitCode: 0` and all reviews return `VERDICT: pass`.
+
+5. Do NOT open a PR until all verification steps pass.
 
 ## Review Prompts
 

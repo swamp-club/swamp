@@ -22,17 +22,10 @@ swamp model @swamp/issue-lifecycle method run verify issue-<N> \
 Launch build verification and agent reviews in parallel. The container must be
 built first (`./verification/container/build.sh`).
 
-**Build** (container):
+**Build** (host workflow):
 
 ```
-docker run --rm \
-  -v <repo-root>:<repo-root> \
-  -v ~/Library/Caches/deno:/deno-dir \
-  -e SWAMP_WORKFLOWS_DIR=verification \
-  -w <worktree-path> \
-  swamp-club/verify:deno-2.8.3 \
-  workflow run verify-build \
-  --repo-dir <repo-root> \
+SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-build \
   --input commit=$(git rev-parse HEAD) \
   --input branch=$(git branch --show-current)
 ```
@@ -50,19 +43,12 @@ Reviews run on the host (not in a container) as a swamp workflow that invokes
 parallel execution, and result collection. See
 `agent-constraints/verification-conventions.md` for details.
 
-Replace `<repo-root>` with the main repo path and `<worktree-path>` with the
-current working directory. On Linux, use `~/.cache/deno` instead of
-`~/Library/Caches/deno`.
+Both workflows run on the host. `SWAMP_WORKFLOWS_DIR=verification` tells swamp
+to look for workflow files in the `verification/` directory.
 
-Reviews need `~/.config/swamp/verify.env` with `ANTHROPIC_API_KEY`. Without it,
-skip reviews — build verification still works independently.
-
-The `SWAMP_WORKFLOWS_DIR=verification` env var tells swamp to look for workflow
-files in the `verification/` directory instead of the default `workflows/`.
-
-The workflow runs lint, fmt check, type check, tests, deps audit, compile, and
-agent reviews as a DAG. Build steps run in parallel; reviews run after builds
-pass. Each review gets its own isolated subprocess.
+Reviews need `~/.config/swamp/verify.env` with `ANTHROPIC_API_KEY`, or a
+claude.ai login. Without either, skip reviews — build verification still works
+independently.
 
 ## 3. Read the Attestation
 
