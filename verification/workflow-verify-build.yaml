@@ -16,10 +16,6 @@ inputs:
     branch:
       type: string
       description: Branch name being verified.
-    workingDir:
-      type: string
-      description: Directory containing the project checkout.
-      default: /workspace
   required:
     - commit
     - branch
@@ -40,7 +36,6 @@ jobs:
           inputs:
             version: "2.8.3"
             taskName: "lint"
-            workingDir: "${{ inputs.workingDir }}"
 
       - name: fmt-check
         task:
@@ -53,7 +48,6 @@ jobs:
             args:
               - fmt
               - --check
-            workingDir: "${{ inputs.workingDir }}"
 
       - name: type-check
         task:
@@ -64,7 +58,6 @@ jobs:
           inputs:
             version: "2.8.3"
             taskName: "check"
-            workingDir: "${{ inputs.workingDir }}"
 
   # ── Tests ────────────────────────────────────────────────────
   - name: tests
@@ -79,7 +72,6 @@ jobs:
           inputs:
             version: "2.8.3"
             taskName: "test"
-            workingDir: "${{ inputs.workingDir }}"
 
   # ── Dependency Audit ─────────────────────────────────────────
   - name: deps-audit
@@ -94,7 +86,6 @@ jobs:
           inputs:
             version: "2.8.3"
             taskName: "audit"
-            workingDir: "${{ inputs.workingDir }}"
 
   # ── Compile + Binary Check ────────────────────────────────────
   - name: compile
@@ -116,7 +107,6 @@ jobs:
           inputs:
             version: "2.8.3"
             taskName: "compile"
-            workingDir: "${{ inputs.workingDir }}"
             env:
               DENO_DIR: "/tmp/deno-compile-cache"
 
