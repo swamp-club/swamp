@@ -17,33 +17,49 @@ swamp model @swamp/issue-lifecycle method run verify issue-<N> \
   --input branch=$(git branch --show-current)
 ```
 
-## 2. Run the Verification Workflow
+## 2. Run the Verification Workflows
 
-Run the `verify-changes` workflow inside the verification container. The
+Run both verification workflows in parallel inside separate containers. The
 container must be built first (`./verification/container/build.sh`).
+
+**Build container** (no API key):
 
 ```
 docker run --rm \
   -v <repo-root>:<repo-root> \
   -v ~/Library/Caches/deno:/deno-dir \
   -e SWAMP_WORKFLOWS_DIR=verification \
-  $([ -f ~/.config/swamp/verify.env ] && echo "--env-file $HOME/.config/swamp/verify.env") \
   -w <worktree-path> \
   swamp-club/verify:deno-2.8.3 \
-  workflow run verify-changes \
+  workflow run verify-build \
   --repo-dir <repo-root> \
   --input commit=$(git rev-parse HEAD) \
   --input branch=$(git branch --show-current)
 ```
 
-Replace `<repo-root>` with the main repo path and `<worktree-path>` with the
-current working directory. On Linux, use `~/.cache/deno` instead of
-`~/Library/Caches/deno`.
+**Review container** (with API key):
 
-The `--env-file` flag injects `ANTHROPIC_API_KEY` into the container for agent
-reviews. If `~/.config/swamp/verify.env` does not exist, the flag is omitted and
-agent reviews fail gracefully while build verification still runs. See
-`agent-constraints/verification-conventions.md` for setup.
+```
+docker run --rm \
+  -v <repo-root>:<repo-root> \
+  -v ~/Library/Caches/deno:/deno-dir \
+  -e SWAMP_WORKFLOWS_DIR=verification \
+  --env-file ~/.config/swamp/verify.env \
+  -w <worktree-path> \
+  swamp-club/verify:deno-2.8.3 \
+  workflow run verify-reviews \
+  --repo-dir <repo-root> \
+  --input commit=$(git rev-parse HEAD) \
+  --input branch=$(git branch --show-current)
+```
+
+Launch both commands simultaneously. Replace `<repo-root>` with the main repo
+path and `<worktree-path>` with the current working directory. On Linux, use
+`~/.cache/deno` instead of `~/Library/Caches/deno`.
+
+The review container needs `~/.config/swamp/verify.env` with the API key. See
+`agent-constraints/verification-conventions.md` for setup. Without it, skip the
+review container — build verification still works independently.
 
 The `SWAMP_WORKFLOWS_DIR=verification` env var tells swamp to look for workflow
 files in the `verification/` directory instead of the default `workflows/`.

@@ -1,0 +1,134 @@
+id: b4d6e8f0-2a1c-4b3d-9e5f-7a8c0d2e4f6b
+name: verify-reviews
+description: |
+  Agent code reviews: detect changed files, then run code review, adversarial
+  review, UX review, and CI security review in parallel. Runs in the review
+  container with ANTHROPIC_API_KEY.
+version: 1
+
+tags:
+  purpose: pre-pr-verification
+
+inputs:
+  properties:
+    commit:
+      type: string
+      description: Commit SHA being verified.
+    branch:
+      type: string
+      description: Branch name being verified.
+    agentCliVersion:
+      type: string
+      description: Claude Code CLI version for agent reviews.
+      default: "2.1.240"
+  required:
+    - commit
+    - branch
+
+concurrency: 4
+
+jobs:
+  # ── Detect Changed Files ──────────────────────────────────────
+  - name: detect-changes
+    description: Compute the list of files changed on this branch.
+    steps:
+      - name: diff
+        task:
+          type: model_method
+          modelType: "@swamp/git"
+          modelName: repo
+          methodName: diff
+          inputs:
+            base: "main"
+
+  # ── Agent Reviews ────────────────────────────────────────────
+  - name: code-review
+    description: General code review for conventions, DDD, tests, security.
+    dependsOn:
+      - job: detect-changes
+        condition:
+          type: succeeded
+    steps:
+      - name: review
+        task:
+          type: model_method
+          modelType: "@swamp/agent-runner"
+          modelName: code-review
+          methodName: review
+          globalArgs:
+            version: "${{ inputs.agentCliVersion }}"
+            apiKeyEnvVar: "ANTHROPIC_API_KEY"
+          inputs:
+            promptFile: "verification/review-prompts/code-review.md"
+            model: "claude-opus-4-6"
+            diff: "${{ data.latest('repo', 'diff').attributes.raw }}"
+            readOnly: true
+
+  - name: adversarial-review
+    description: Adversarial review for logic errors, security, edge cases.
+    dependsOn:
+      - job: detect-changes
+        condition:
+          type: succeeded
+    steps:
+      - name: review
+        guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('src/domain/') || f.startsWith('src/infrastructure/') || f.startsWith('src/libswamp/') || f.startsWith('src/serve/') || f.startsWith('src/worker/')).size() == 0 }}"
+        task:
+          type: model_method
+          modelType: "@swamp/agent-runner"
+          modelName: adversarial
+          methodName: review
+          globalArgs:
+            version: "${{ inputs.agentCliVersion }}"
+            apiKeyEnvVar: "ANTHROPIC_API_KEY"
+          inputs:
+            promptFile: "verification/review-prompts/adversarial-review.md"
+            model: "claude-opus-4-6"
+            diff: "${{ data.latest('repo', 'diff').attributes.raw }}"
+            readOnly: true
+
+  - name: ux-review
+    description: CLI UX review for help text, errors, output consistency.
+    dependsOn:
+      - job: detect-changes
+        condition:
+          type: succeeded
+    steps:
+      - name: review
+        guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('src/cli/') || f.startsWith('src/presentation/') || f == 'src/domain/errors.ts' || f.startsWith('src/libswamp/')).size() == 0 }}"
+        task:
+          type: model_method
+          modelType: "@swamp/agent-runner"
+          modelName: ux
+          methodName: review
+          globalArgs:
+            version: "${{ inputs.agentCliVersion }}"
+            apiKeyEnvVar: "ANTHROPIC_API_KEY"
+          inputs:
+            promptFile: "verification/review-prompts/ux-review.md"
+            model: "claude-sonnet-4-6"
+            diff: "${{ data.latest('repo', 'diff').attributes.raw }}"
+            readOnly: true
+
+  - name: ci-security-review
+    description: Security review of CI/CD workflow changes.
+    dependsOn:
+      - job: detect-changes
+        condition:
+          type: succeeded
+    steps:
+      - name: review
+        guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('.github/workflows/')).size() == 0 }}"
+        task:
+          type: model_method
+          modelType: "@swamp/agent-runner"
+          modelName: ci-security
+          methodName: review
+          globalArgs:
+            version: "${{ inputs.agentCliVersion }}"
+            apiKeyEnvVar: "ANTHROPIC_API_KEY"
+          inputs:
+            promptFile: "verification/review-prompts/ci-security-review.md"
+            model: "claude-opus-4-6"
+            diff: "${{ data.latest('repo', 'diff').attributes.raw }}"
+            readOnly: true

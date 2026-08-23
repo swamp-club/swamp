@@ -1,0 +1,134 @@
+id: 7c2f8a31-4e19-4d6b-b8a0-1f3d5e7c9b2a
+name: verify-build
+description: |
+  Build verification: lint, format check, type check, tests, dependency audit,
+  compile, and binary smoke test. Runs in the build container without API keys.
+version: 1
+
+tags:
+  purpose: pre-pr-verification
+
+inputs:
+  properties:
+    commit:
+      type: string
+      description: Commit SHA being verified.
+    branch:
+      type: string
+      description: Branch name being verified.
+    workingDir:
+      type: string
+      description: Directory containing the project checkout.
+      default: /workspace
+  required:
+    - commit
+    - branch
+
+concurrency: 4
+
+jobs:
+  # ── Static Analysis ──────────────────────────────────────────
+  - name: static-analysis
+    description: Lint, format check, and type check.
+    steps:
+      - name: lint
+        task:
+          type: model_method
+          modelType: "@swamp/deno-runner"
+          modelName: lint
+          methodName: task
+          inputs:
+            version: "2.8.3"
+            taskName: "lint"
+            workingDir: "${{ inputs.workingDir }}"
+
+      - name: fmt-check
+        task:
+          type: model_method
+          modelType: "@swamp/deno-runner"
+          modelName: fmt-check
+          methodName: run
+          inputs:
+            version: "2.8.3"
+            args:
+              - fmt
+              - --check
+            workingDir: "${{ inputs.workingDir }}"
+
+      - name: type-check
+        task:
+          type: model_method
+          modelType: "@swamp/deno-runner"
+          modelName: type-check
+          methodName: task
+          inputs:
+            version: "2.8.3"
+            taskName: "check"
+            workingDir: "${{ inputs.workingDir }}"
+
+  # ── Tests ────────────────────────────────────────────────────
+  - name: tests
+    description: Run the full test suite in parallel.
+    steps:
+      - name: run-tests
+        task:
+          type: model_method
+          modelType: "@swamp/deno-runner"
+          modelName: tests
+          methodName: task
+          inputs:
+            version: "2.8.3"
+            taskName: "test"
+            workingDir: "${{ inputs.workingDir }}"
+
+  # ── Dependency Audit ─────────────────────────────────────────
+  - name: deps-audit
+    description: Scan dependencies for known vulnerabilities.
+    steps:
+      - name: vuln-scan
+        task:
+          type: model_method
+          modelType: "@swamp/deno-runner"
+          modelName: audit
+          methodName: task
+          inputs:
+            version: "2.8.3"
+            taskName: "audit"
+            workingDir: "${{ inputs.workingDir }}"
+
+  # ── Compile + Binary Check ────────────────────────────────────
+  - name: compile
+    description: Compile the binary and verify it executes.
+    dependsOn:
+      - job: static-analysis
+        condition:
+          type: succeeded
+      - job: tests
+        condition:
+          type: succeeded
+    steps:
+      - name: build
+        task:
+          type: model_method
+          modelType: "@swamp/deno-runner"
+          modelName: compile
+          methodName: task
+          inputs:
+            version: "2.8.3"
+            taskName: "compile"
+            workingDir: "${{ inputs.workingDir }}"
+            env:
+              DENO_DIR: "/tmp/deno-compile-cache"
+
+      - name: binary-check
+        dependsOn:
+          - step: build
+            condition:
+              type: succeeded
+        task:
+          type: model_method
+          modelType: "command/shell"
+          modelName: binary-check
+          methodName: execute
+          inputs:
+            run: "ls -la swamp && chmod +x swamp && ./swamp --version"
