@@ -164,6 +164,9 @@ const PINNED_SUBPROCESS_SOCKET_TESTS: readonly string[] = [
   "src/cli/context_test.ts",
   // In-process Deno.serve WebSocket stands in for the swamp server that
   // the command's --server path talks to.
+  "src/cli/commands/model_method_run_test.ts",
+  // In-process Deno.serve WebSocket stands in for the swamp server that
+  // the command's --server path talks to.
   "src/cli/commands/model_validate_test.ts",
   // In-process Deno.serve WebSocket stands in for the swamp server that
   // the command's --server path talks to.
@@ -171,6 +174,9 @@ const PINNED_SUBPROCESS_SOCKET_TESTS: readonly string[] = [
   // In-process Deno.serve WebSocket stands in for the swamp server that
   // the command's --server path talks to.
   "src/cli/commands/workflow_resume_test.ts",
+  // In-process Deno.serve WebSocket stands in for the swamp server that
+  // the command's --server path talks to.
+  "src/cli/commands/workflow_run_test.ts",
   // Deno.serve stands in for the remote swamp server the command talks to.
   "src/cli/remote_run_test.ts",
   // Runs Windows `icacls` to verify on-disk ACLs the provider must set.

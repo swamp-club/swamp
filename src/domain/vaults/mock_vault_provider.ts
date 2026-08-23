@@ -47,7 +47,7 @@ export class MockVaultProvider implements VaultProvider, VaultDeleteProvider {
 
   get(secretKey: string): Promise<string> {
     const secret = this.secrets.get(secretKey);
-    if (!secret) {
+    if (secret === undefined) {
       throw new Error(
         `Secret '${secretKey}' not found in mock vault '${this.name}'`,
       );

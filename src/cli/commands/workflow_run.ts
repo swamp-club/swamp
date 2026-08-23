@@ -677,7 +677,8 @@ async function runWorkflowViaServer(
         renderer.handlers(),
       );
       if (renderer.workflowFailed()) {
-        Deno.exit(1);
+        Deno.exitCode = 1;
+        return;
       }
     }
   } finally {
