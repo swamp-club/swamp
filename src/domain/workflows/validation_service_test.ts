@@ -1327,6 +1327,114 @@ Deno.test("validateStepInputs: direct-execution step with CEL in modelType skips
   assertEquals(inputResult?.passed, true);
 });
 
+Deno.test("validateStepInputs: direct-execution step with CEL modelName and unresolvable modelType fails", async () => {
+  const resolver = mockResolverWithType({
+    "type:@swamp/nonexistent/type.deploy": {
+      status: "type_unresolvable",
+      modelType: "@swamp/nonexistent/type",
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.directExecution(
+              "@swamp/nonexistent/type",
+              '${{ "sync-" + inputs.host }}',
+              "deploy",
+              { region: "us-east-1" },
+            ),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, false);
+  assertEquals(inputResult?.error?.includes("could not be resolved"), true);
+  assertEquals(inputResult?.error?.includes("@swamp/nonexistent/type"), true);
+});
+
+Deno.test("validateStepInputs: direct-execution step with CEL modelName and valid modelType passes", async () => {
+  const resolver = mockResolverWithType({
+    "type:@swamp/test/model.deploy": {
+      status: "resolved",
+      requiredArgs: ["region"],
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.directExecution(
+              "@swamp/test/model",
+              '${{ "sync-" + inputs.host }}',
+              "deploy",
+              { region: "us-east-1" },
+            ),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, true);
+});
+
+Deno.test("validateStepInputs: direct-execution step with CEL modelName and method not found fails", async () => {
+  const resolver = mockResolverWithType({
+    "type:@swamp/test/model.nonexistent": {
+      status: "method_not_found",
+      modelType: "@swamp/test/model",
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.directExecution(
+              "@swamp/test/model",
+              '${{ "sync-" + inputs.host }}',
+              "nonexistent",
+              { region: "us-east-1" },
+            ),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, false);
+  assertEquals(
+    inputResult?.error?.includes("Method 'nonexistent' not found"),
+    true,
+  );
+});
+
 Deno.test("validateStepInputs: direct-execution step with globalArgs satisfying required arg passes", async () => {
   const resolver = mockResolverWithType({
     "type:@swamp/test/model.create": {
