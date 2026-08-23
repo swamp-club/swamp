@@ -41,93 +41,76 @@ jobs:
           inputs:
             base: "main"
 
-  # ── Agent Reviews ────────────────────────────────────────────
-  - name: code-review
-    description: General code review for conventions, DDD, tests, security.
+  # ── Agent Reviews (factory pattern) ──────────────────────────
+  - name: reviews
+    description: Run all agent reviews in parallel using a single model.
     dependsOn:
       - job: detect-changes
         condition:
           type: succeeded
     steps:
-      - name: review
+      - name: code-review
         task:
           type: model_method
           modelType: "@swamp/agent-runner"
-          modelName: code-review
+          modelName: reviewer
           methodName: review
           globalArgs:
             version: "${{ inputs.agentCliVersion }}"
             apiKeyEnvVar: "ANTHROPIC_API_KEY"
           inputs:
+            instanceName: code-review
             promptFile: "verification/review-prompts/code-review.md"
             model: "claude-opus-4-6"
             diff: "${{ data.latest('repo', 'diff').attributes.raw }}"
             readOnly: true
 
-  - name: adversarial-review
-    description: Adversarial review for logic errors, security, edge cases.
-    dependsOn:
-      - job: detect-changes
-        condition:
-          type: succeeded
-    steps:
-      - name: review
+      - name: adversarial-review
         guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('src/domain/') || f.startsWith('src/infrastructure/') || f.startsWith('src/libswamp/') || f.startsWith('src/serve/') || f.startsWith('src/worker/')).size() == 0 }}"
         task:
           type: model_method
           modelType: "@swamp/agent-runner"
-          modelName: adversarial
+          modelName: reviewer
           methodName: review
           globalArgs:
             version: "${{ inputs.agentCliVersion }}"
             apiKeyEnvVar: "ANTHROPIC_API_KEY"
           inputs:
+            instanceName: adversarial
             promptFile: "verification/review-prompts/adversarial-review.md"
             model: "claude-opus-4-6"
             diff: "${{ data.latest('repo', 'diff').attributes.raw }}"
             readOnly: true
 
-  - name: ux-review
-    description: CLI UX review for help text, errors, output consistency.
-    dependsOn:
-      - job: detect-changes
-        condition:
-          type: succeeded
-    steps:
-      - name: review
+      - name: ux-review
         guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('src/cli/') || f.startsWith('src/presentation/') || f == 'src/domain/errors.ts' || f.startsWith('src/libswamp/')).size() == 0 }}"
         task:
           type: model_method
           modelType: "@swamp/agent-runner"
-          modelName: ux
+          modelName: reviewer
           methodName: review
           globalArgs:
             version: "${{ inputs.agentCliVersion }}"
             apiKeyEnvVar: "ANTHROPIC_API_KEY"
           inputs:
+            instanceName: ux
             promptFile: "verification/review-prompts/ux-review.md"
             model: "claude-sonnet-4-6"
             diff: "${{ data.latest('repo', 'diff').attributes.raw }}"
             readOnly: true
 
-  - name: ci-security-review
-    description: Security review of CI/CD workflow changes.
-    dependsOn:
-      - job: detect-changes
-        condition:
-          type: succeeded
-    steps:
-      - name: review
+      - name: ci-security-review
         guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('.github/workflows/')).size() == 0 }}"
         task:
           type: model_method
           modelType: "@swamp/agent-runner"
-          modelName: ci-security
+          modelName: reviewer
           methodName: review
           globalArgs:
             version: "${{ inputs.agentCliVersion }}"
             apiKeyEnvVar: "ANTHROPIC_API_KEY"
           inputs:
+            instanceName: ci-security
             promptFile: "verification/review-prompts/ci-security-review.md"
             model: "claude-opus-4-6"
             diff: "${{ data.latest('repo', 'diff').attributes.raw }}"
