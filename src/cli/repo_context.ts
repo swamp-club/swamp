@@ -91,11 +91,6 @@ import {
 } from "../infrastructure/logging/logger.ts";
 import { dim, yellow } from "@std/fmt/colors";
 
-function systemPrefix(): string {
-  const padded = "system".padStart(getSystemPipeWidth() + 1);
-  return dim(`${padded} │`);
-}
-
 export type LockProgressWriter = (message: string) => void;
 
 function labeledPrefix(label: string): string {
@@ -104,7 +99,7 @@ function labeledPrefix(label: string): string {
 }
 
 function defaultLockWriter(message: string): void {
-  console.error(`${systemPrefix()} ${message}`);
+  console.error(`${labeledPrefix("system")} ${message}`);
 }
 
 export function createLockProgressWriter(label: string): LockProgressWriter {
