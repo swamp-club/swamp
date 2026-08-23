@@ -1708,3 +1708,42 @@ Deno.test("DataQueryService: skips stale catalog rows with missing backing files
 
   catalog.close();
 });
+
+Deno.test("DataQueryService: filterStaleRows skips foreign namespace rows (no local backing file expected)", () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-foreign-stale-" });
+  const dbPath = join(dir, ".swamp", "data", "_catalog.db");
+  const catalog = new CatalogStore(dbPath);
+  catalog.markPopulated();
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const service = new DataQueryService(catalog, dataRepo, {
+    filterStaleRows: true,
+  });
+
+  // Foreign namespace row — no backing file on disk (catalog-only pull).
+  catalog.upsert(makeRow({
+    namespace: "infra",
+    model_name: "scanner",
+    data_name: "results",
+    type_normalized: "test/foreign",
+    model_id: "foreign-model-id",
+    version: 1,
+    is_latest: 1,
+    id: "00000000-0000-1000-8000-000000000099",
+  }));
+
+  // The repo's own namespace is "" (solo mode). The foreign row's namespace
+  // ("infra") differs, so filterStaleRows must NOT stat-check it.
+  const results = service.querySync(
+    'modelName == "scanner"',
+  ) as DataRecord[];
+
+  assertEquals(
+    results.length,
+    1,
+    "foreign namespace rows must not be filtered as stale",
+  );
+  assertEquals(results[0].namespace, "infra");
+  assertEquals(results[0].modelId, "foreign-model-id");
+
+  catalog.close();
+});
