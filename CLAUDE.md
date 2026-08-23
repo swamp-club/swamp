@@ -132,6 +132,42 @@ in `src/libswamp/`) may import from internal paths.
 
 ## Testing
 
+### What tests belong in this repo
+
+- **Unit tests** (`src/**/foo_test.ts`, next to the source): in-process only.
+  Never spawn subprocesses, bind sockets, or mutate process-global state
+  (`PATH`, `HOME`, `Deno.env` races across parallel test files — mock instead:
+  `withMockedCommand` / `withMockedFetch` from `@swamp-club/swamp-testing`). The
+  one exception is infrastructure adapter tests, which may run a localhost mock
+  server on `port: 0`.
+- **Integration tests** (`integration/`): wire real components together
+  in-process — repositories on a real temp filesystem, services + event buses,
+  port-0 mock servers. Must NOT spawn the CLI as a subprocess.
+- **Architecture fitness tests** (`integration/*_rules_test.ts`,
+  `arch_fitness_helpers.ts`): static rules over the source tree (layer
+  boundaries, libswamp encapsulation, json-mode conformance, license headers).
+- **Property tests** (`*_property_test.ts`, fast-check): invariants and
+  round-trips for parsers, serialization, and data lifecycle.
+- **Contract/conformance tests** (`packages/testing/` suites): run first-party
+  providers against the same contracts extension authors are held to.
+- **Acceptance/UAT tests do NOT live here.** Anything that spawns the swamp CLI
+  and asserts user-facing behavior (stdout, exit codes, flags, journeys) belongs
+  in the `swamp-uat` repo, which runs against the compiled binary. Do not add
+  new `runCliCommand`-style subprocess tests to `integration/`.
+
+### Timing and flakiness rules
+
+- Never wait with a fixed `setTimeout` sleep for async work to finish — poll the
+  condition with `waitFor` from `@swamp-club/swamp-testing`.
+- Never assert on measured wall-clock durations (upper bounds, or comparing two
+  elapsed times); assert on work done (call counts, events) instead.
+- Never sleep to advance a file's mtime — set it explicitly with `Deno.utime`.
+- Generate unique test IDs with `crypto.randomUUID()`, not `Date.now()`.
+- Restore env vars with `if (original !== undefined)` — truthiness checks delete
+  vars that were set to the empty string.
+
+### Conventions
+
 - Unit tests live next to source files: `foo.ts` → `foo_test.ts`
 - Integration tests live in `integration/` directory (sibling to `src/`)
 - Use `@std/assert` for assertions (`assertEquals`, `assertStringIncludes`,
