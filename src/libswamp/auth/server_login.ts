@@ -120,17 +120,26 @@ function wsToHttp(url: string): string {
 }
 
 /**
- * Create production dependencies for server login.
+ * Create production dependencies for server login. When an httpClient
+ * is provided (e.g. one carrying custom CA certs from `--ca-cert`), it
+ * is used for all REST calls to the serve instance.
  */
-export function createServerLoginDeps(): ServerLoginDeps {
+export function createServerLoginDeps(
+  options?: { httpClient?: Deno.HttpClient },
+): ServerLoginDeps {
   const repo = new FileServerCredentialRepository();
+  const clientOpts: Record<string, unknown> = {};
+  if (options?.httpClient) clientOpts.client = options.httpClient;
   return {
     discoverAuthMode: async (
       serverUrl: string,
       signal: AbortSignal,
     ): Promise<AuthDiscovery> => {
       const httpUrl = wsToHttp(serverUrl);
-      const resp = await fetch(`${httpUrl}/auth/info`, { signal });
+      const resp = await fetch(`${httpUrl}/auth/info`, {
+        signal,
+        ...clientOpts,
+      });
       if (!resp.ok) {
         throw new UserError(
           `Failed to discover auth mode: ${resp.status} ${resp.statusText}`,
@@ -147,6 +156,7 @@ export function createServerLoginDeps(): ServerLoginDeps {
       const resp = await fetch(`${httpUrl}/auth/device`, {
         method: "POST",
         signal,
+        ...clientOpts,
       });
       if (!resp.ok) {
         throw new UserError(
@@ -167,6 +177,7 @@ export function createServerLoginDeps(): ServerLoginDeps {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ deviceCode }),
         signal,
+        ...clientOpts,
       });
       if (resp.status === 202) {
         throw new DeviceAuthPendingError();
