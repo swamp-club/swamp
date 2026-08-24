@@ -33,7 +33,7 @@ jobs:
         task:
           type: model_method
           modelType: "command/shell"
-          modelName: review-setup
+          modelName: review-setup-${{ run.id }}
           methodName: execute
           inputs:
             run: |
@@ -86,7 +86,7 @@ jobs:
         task:
           type: model_method
           modelType: "command/shell"
-          modelName: review-code
+          modelName: review-code-${{ run.id }}
           methodName: execute
           inputs:
             run: |
@@ -114,7 +114,7 @@ jobs:
         task:
           type: model_method
           modelType: "command/shell"
-          modelName: review-adversarial
+          modelName: review-adversarial-${{ run.id }}
           methodName: execute
           inputs:
             run: |
@@ -142,7 +142,7 @@ jobs:
         task:
           type: model_method
           modelType: "command/shell"
-          modelName: review-ux
+          modelName: review-ux-${{ run.id }}
           methodName: execute
           inputs:
             run: |
@@ -170,7 +170,7 @@ jobs:
         task:
           type: model_method
           modelType: "command/shell"
-          modelName: review-ci-security
+          modelName: review-ci-security-${{ run.id }}
           methodName: execute
           inputs:
             run: |
@@ -205,11 +205,14 @@ jobs:
         task:
           type: model_method
           modelType: "command/shell"
-          modelName: review-cleanup
+          modelName: review-cleanup-${{ run.id }}
           methodName: execute
           inputs:
             run: |
               CHECKOUT_DIR="/tmp/swamp-verify-reviews-${{ run.id }}"
               git worktree remove --force "$CHECKOUT_DIR" 2>/dev/null || true
               git worktree prune
+              # Remove ephemeral auto-definitions created for this run
+              REPO_ROOT="$(git rev-parse --git-common-dir)/.."
+              find "$REPO_ROOT/.swamp/auto-definitions" -name "*-${{ run.id }}.yaml" -delete 2>/dev/null || true
             ignoreExitCode: true
