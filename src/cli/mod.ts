@@ -96,9 +96,7 @@ import {
   RepoMarkerRepository,
 } from "../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../domain/repo/repo_path.ts";
-import {
-  detectSupersededSkills,
-} from "../domain/repo/repo_service.ts";
+import { detectSupersededSkills } from "../domain/repo/repo_service.ts";
 import { resolvePrimaryTool } from "../domain/repo/primary_tool.ts";
 import { SKILL_DIRS } from "../domain/repo/skill_dirs.ts";
 import { ExtensionAutoResolver } from "../domain/extensions/extension_auto_resolver.ts";
