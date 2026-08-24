@@ -3,8 +3,10 @@
 ## Build Verification (Host Workflow)
 
 Build checks run as a swamp workflow on the host — native filesystem speed,
-same Deno that's already installed. Isolation comes from running in a fresh
-checkout.
+same Deno that's already installed. Isolation comes from a fresh `git worktree`
+at the verified commit in `/tmp/swamp-verify-build-<run-id>`. Each workflow run
+gets its own unique directory (keyed by run ID, not commit SHA) so multiple
+verifications can run in parallel without colliding.
 
 ```
 SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-build \
@@ -12,13 +14,20 @@ SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-build \
   --input branch=<branch>
 ```
 
+The workflow creates the worktree in a `setup` job, runs all build steps with
+`workingDir` pointing at it, and removes the worktree in a `cleanup` job that
+fires regardless of pass/fail.
+
 All steps use `command/shell` which correctly fails on non-zero exit code —
 lint, test, and compile failures are reported accurately.
 
 ## Agent Reviews (Host Workflow)
 
 Reviews run as a swamp workflow on the host (not in a container) so the claude
-CLI has full project context — CLAUDE.md, skills, and the codebase.
+CLI has full project context — CLAUDE.md, skills, and the codebase. Like the
+build workflow, reviews run in a fresh `git worktree` at the verified commit
+(`/tmp/swamp-verify-reviews-<run-id>`) so that `claude -p`'s Read/Glob/Grep
+tools see the committed file state, not the caller's working tree.
 
 ```
 SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-reviews \
@@ -28,15 +37,18 @@ SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-reviews \
 
 The workflow:
 
-1. Detects changed files via `@swamp/git` diff (full diff, then `nameOnly` for
+1. Creates a clean worktree at the verified commit
+2. Detects changed files via `@swamp/git` diff (full diff, then `nameOnly` for
    the file list used by guards)
-2. Runs applicable reviews in parallel using `command/shell` steps that invoke
-   `claude -p` with the review prompt + diff
-3. Each review uses the factory pattern — one `reviewer` model, called once per
+3. Runs applicable reviews in parallel using `command/shell` steps that invoke
+   `claude -p` with the review prompt + diff, with `workingDir` set to the
+   worktree
+4. Each review uses the factory pattern — one `reviewer` model, called once per
    review type with different prompt files and models
-4. Review diffs use `git merge-base main HEAD` so only the branch's own changes
+5. Review diffs use `git merge-base main HEAD` so only the branch's own changes
    are reviewed — not the inverse of what landed on main since the branch
    diverged
+6. Cleans up the worktree regardless of pass/fail
 
 ### Guards
 
