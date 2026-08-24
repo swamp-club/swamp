@@ -176,6 +176,7 @@ export class ExtensionLoader {
     options?: {
       skipAlreadyRegistered?: boolean;
       additionalDirs?: string[];
+      indexOnly?: boolean;
     },
   ): Promise<ExtensionLoadResult> {
     const result: ExtensionLoadResult = {
@@ -203,6 +204,41 @@ export class ExtensionLoader {
       for (const file of files) {
         allFiles.push({ file, baseDir: d });
       }
+    }
+
+    if (options?.indexOnly) {
+      for (const { file, baseDir } of allFiles) {
+        try {
+          const absolutePath = resolve(baseDir, file);
+          const source = await Deno.readTextFile(absolutePath);
+          if (!this.adapter.exportRegex.test(source)) {
+            this.logger
+              .debug`Skipping ${file} (no ${this.adapter.kind} export found)`;
+            continue;
+          }
+
+          const { fromCache } = await this.bundleWithCache(
+            absolutePath,
+            file,
+            denoPath,
+            baseDir,
+            { trustPulledCache: true },
+          );
+          if (fromCache) {
+            this.logger
+              .warn`Using cached bundle for ${file} — source may have changed but bundle could not be regenerated`;
+          }
+          result.loaded.push(file);
+        } catch (error) {
+          result.failed.push({
+            file,
+            error: String(error),
+            originalError: error,
+            baseDir,
+          });
+        }
+      }
+      return result;
     }
 
     const primaryFiles: Array<{
@@ -486,9 +522,14 @@ export class ExtensionLoader {
       return result;
     }
 
+    // Cold start: bundle all source files without importing them into V8.
+    // This avoids OOM on repos with thousands of model definitions by
+    // keeping bundles on disk only. Types are registered as lazy catalog
+    // entries and imported on demand via ensureTypeLoaded()/loadSingleType().
     const fullResult = await this.load(dir, {
       additionalDirs: options?.additionalDirs,
       skipAlreadyRegistered: true,
+      indexOnly: true,
     });
 
     if (fullResult.failed.length > 0 && this.repoDir) {
@@ -571,6 +612,7 @@ export class ExtensionLoader {
     if (this.repoDir) {
       catalog.resolveOriginConflicts(this.repoDir);
     }
+    this.registerLazyFromCatalog(catalog);
     catalog.markPopulated(this.adapter.kind);
     catalog.setLayoutVersion(BUNDLE_LAYOUT_VERSION);
     catalog.setDatastoreBasePath(currentBasePath, this.adapter.kind);

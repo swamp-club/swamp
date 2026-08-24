@@ -1726,8 +1726,13 @@ model registry is wired up initially.
      unchanged) and retried when they mismatch (source changed) — warm-start and
      reconcile operate on orthogonal axes.
 
-   - If not populated (first run or DB deleted): falls back to the existing
-     full-import path, then populates the catalog from the loaded registry
+   - If not populated (first run or DB deleted): bundles all source files
+     without importing them into V8 (`load()` with `indexOnly: true`), then
+     populates the catalog from source extraction and registers lazy entries.
+     This avoids OOM on repos with thousands of model definitions — bundles
+     stay on disk and are imported on demand via `ensureTypeLoaded()`. Schema
+     validation errors are deferred to first type access, matching the
+     warm-start behavior.
 
 2. `types()` returns both fully loaded and lazy type names — commands like
    `model type search` work without importing any bundles.
@@ -1746,9 +1751,11 @@ model registry is wired up initially.
 
 ### Self-Healing
 
-The catalog self-heals: deleting `_extension_catalog.db` triggers a full import
-on next access (same behavior as before lazy loading was added). The `populated`
-flag follows the same pattern as the data catalog's backfill mechanism.
+The catalog self-heals: deleting `_extension_catalog.db` triggers a cold-start
+rebuild on next access — source files are bundled (without importing into V8)
+and the catalog is repopulated from source extraction. Types are then available
+as lazy entries and imported on demand. The `populated` flag follows the same
+pattern as the data catalog's backfill mechanism.
 
 ### Roadmap
 

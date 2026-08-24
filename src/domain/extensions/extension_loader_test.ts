@@ -437,6 +437,197 @@ const stubDenoRuntime: DenoRuntime = {
   getDenoEnv: () => Deno.env.toObject(),
 };
 
+// -- load() indexOnly (swamp-club#1684) -----------------------------------
+
+Deno.test("load: indexOnly bundles files without importing or registering types", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_1684_" });
+  try {
+    // Set up a pulled-extensions directory structure so bundleWithCache
+    // takes the trustPulledCache fast path (no Deno subprocess).
+    const pulledDir = join(dir, ".swamp", "pulled-extensions", "@test", "ext");
+    const modelsDir = join(pulledDir, "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+
+    const sourcePath = join(modelsDir, "my_type.ts");
+    await Deno.writeTextFile(
+      sourcePath,
+      'export const model = { type: "@test/my-type", name: "my-type" };\n',
+    );
+
+    // Pre-create the bundle at the expected path so bundleWithCache
+    // returns it from cache without shelling out to Deno.
+    const { bundleNamespace: bn } = await import(
+      "../../infrastructure/persistence/paths.ts"
+    );
+    const ns = bn(modelsDir, dir);
+    const bundleDir = join(dir, ".swamp", "bundles", ns);
+    await Deno.mkdir(bundleDir, { recursive: true });
+    const bundlePath = join(bundleDir, "my_type.js");
+    await Deno.writeTextFile(
+      bundlePath,
+      'export const model = { type: "@test/my-type", name: "my-type" };\n',
+    );
+
+    const registered = new Set<string>();
+    const adapter = makeStubAdapter(registered);
+
+    const loader = new ExtensionLoader(
+      stubDenoRuntime,
+      adapter,
+      dir,
+      undefined,
+      undefined,
+    );
+
+    const result = await loader.load(modelsDir, { indexOnly: true });
+
+    assertEquals(
+      result.loaded.length > 0,
+      true,
+      "indexOnly should report files as loaded (bundled)",
+    );
+    assertEquals(
+      registered.size,
+      0,
+      "indexOnly must not register any types — they should stay lazy",
+    );
+    assertEquals(
+      result.extended.length,
+      0,
+      "indexOnly must not process secondary exports",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("load: without indexOnly imports and registers types normally", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_1684_eager_" });
+  try {
+    const pulledDir = join(dir, ".swamp", "pulled-extensions", "@test", "ext");
+    const modelsDir = join(pulledDir, "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+
+    const sourcePath = join(modelsDir, "eager_type.ts");
+    await Deno.writeTextFile(
+      sourcePath,
+      'export const model = { type: "@test/eager", name: "eager" };\n',
+    );
+
+    const { bundleNamespace: bn } = await import(
+      "../../infrastructure/persistence/paths.ts"
+    );
+    const ns = bn(modelsDir, dir);
+    const bundleDir = join(dir, ".swamp", "bundles", ns);
+    await Deno.mkdir(bundleDir, { recursive: true });
+    const bundlePath = join(bundleDir, "eager_type.js");
+    await Deno.writeTextFile(
+      bundlePath,
+      'export const model = { type: "@test/eager", name: "eager" };\n',
+    );
+
+    const registered = new Set<string>();
+    const adapter: KindAdapter = {
+      kind: "model",
+      bundleSubdir: "bundles",
+      catalogKinds: ["model"],
+      primaryExportKey: "model",
+      exportRegex: /export\s+const\s+model\s*[=:]/,
+      useResolver: false,
+      validatePrimaryExport() {
+        return { success: true, data: { type: "@test/eager" } };
+      },
+      formatValidationError() {
+        return "validation error";
+      },
+      normalizeType(validated: Record<string, unknown>) {
+        return String(validated.type ?? "");
+      },
+      extractTypeFromSource() {
+        return null;
+      },
+      register(type: string) {
+        registered.add(type);
+      },
+      registerLazy() {},
+      promoteFromLazy() {},
+      hasType(type) {
+        return registered.has(type);
+      },
+      isFullyLoaded(type) {
+        return registered.has(type);
+      },
+    };
+
+    const loader = new ExtensionLoader(
+      stubDenoRuntime,
+      adapter,
+      dir,
+      undefined,
+      undefined,
+    );
+
+    const result = await loader.load(modelsDir, {
+      skipAlreadyRegistered: true,
+    });
+
+    assertEquals(
+      result.loaded.length > 0,
+      true,
+      "eager load should report files as loaded",
+    );
+    assertEquals(
+      registered.has("@test/eager"),
+      true,
+      "eager load must register the type",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("load: indexOnly records bundling failures", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_1684_fail_" });
+  try {
+    const modelsDir = join(dir, "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+
+    // Source file that matches exportRegex but has no pre-existing bundle
+    // and no real Deno to bundle it — bundleWithCache will fail.
+    const sourcePath = join(modelsDir, "broken.ts");
+    await Deno.writeTextFile(
+      sourcePath,
+      'export const model = { type: "@test/broken" };\n',
+    );
+
+    const registered = new Set<string>();
+    const adapter = makeStubAdapter(registered);
+
+    const loader = new ExtensionLoader(
+      stubDenoRuntime,
+      adapter,
+      dir,
+      undefined,
+      undefined,
+    );
+
+    const result = await loader.load(modelsDir, { indexOnly: true });
+
+    assertEquals(
+      result.failed.length > 0,
+      true,
+      "bundling failure should be recorded",
+    );
+    assertEquals(
+      registered.size,
+      0,
+      "failed bundles must not register types",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
 Deno.test("loadSingleType: skips bundle without primary export and removes catalog entry", async () => {
   const dir = await Deno.makeTempDir({ prefix: "swamp_1018_" });
   try {
