@@ -27,7 +27,7 @@ concurrency: 4
 jobs:
   # ── Detect Changed Files ──────────────────────────────────────
   - name: detect-changes
-    description: Compute the diff and changed file list.
+    description: Compute the merge-base diff and changed file list.
     steps:
       - name: diff
         task:
@@ -37,6 +37,20 @@ jobs:
           methodName: diff
           inputs:
             base: "main"
+
+      - name: changed-files
+        dependsOn:
+          - step: diff
+            condition:
+              type: succeeded
+        task:
+          type: model_method
+          modelType: "@swamp/git"
+          modelName: repo
+          methodName: diff
+          inputs:
+            base: "main"
+            nameOnly: true
 
   # ── Agent Reviews ────────────────────────────────────────────
   - name: reviews
@@ -55,11 +69,12 @@ jobs:
           inputs:
             run: |
               set -o pipefail
+              MERGE_BASE=$(git merge-base main HEAD)
               PROMPT_FILE=$(mktemp)
               RESULT_FILE=$(mktemp)
               cat verification/review-prompts/code-review.md > "$PROMPT_FILE"
               printf '\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n\nDIFF:\n' >> "$PROMPT_FILE"
-              git diff main >> "$PROMPT_FILE"
+              git diff "$MERGE_BASE" >> "$PROMPT_FILE"
               claude -p - \
                 --model claude-opus-4-6 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
@@ -81,11 +96,12 @@ jobs:
           inputs:
             run: |
               set -o pipefail
+              MERGE_BASE=$(git merge-base main HEAD)
               PROMPT_FILE=$(mktemp)
               RESULT_FILE=$(mktemp)
               cat verification/review-prompts/adversarial-review.md > "$PROMPT_FILE"
               printf '\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n\nDIFF:\n' >> "$PROMPT_FILE"
-              git diff main >> "$PROMPT_FILE"
+              git diff "$MERGE_BASE" >> "$PROMPT_FILE"
               claude -p - \
                 --model claude-opus-4-6 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
@@ -98,7 +114,7 @@ jobs:
               fi
 
       - name: ux-review
-        guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('src/cli/') || f.startsWith('src/presentation/') || f == 'src/domain/errors.ts' || f.startsWith('src/libswamp/')).size() == 0 }}"
+        guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('src/cli/commands/') || f.startsWith('src/presentation/') || f == 'src/domain/errors.ts' || f.startsWith('src/libswamp/')).size() == 0 }}"
         task:
           type: model_method
           modelType: "command/shell"
@@ -107,11 +123,12 @@ jobs:
           inputs:
             run: |
               set -o pipefail
+              MERGE_BASE=$(git merge-base main HEAD)
               PROMPT_FILE=$(mktemp)
               RESULT_FILE=$(mktemp)
               cat verification/review-prompts/ux-review.md > "$PROMPT_FILE"
               printf '\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n\nDIFF:\n' >> "$PROMPT_FILE"
-              git diff main >> "$PROMPT_FILE"
+              git diff "$MERGE_BASE" >> "$PROMPT_FILE"
               claude -p - \
                 --model claude-sonnet-4-6 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
@@ -133,11 +150,12 @@ jobs:
           inputs:
             run: |
               set -o pipefail
+              MERGE_BASE=$(git merge-base main HEAD)
               PROMPT_FILE=$(mktemp)
               RESULT_FILE=$(mktemp)
               cat verification/review-prompts/ci-security-review.md > "$PROMPT_FILE"
               printf '\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n\nDIFF:\n' >> "$PROMPT_FILE"
-              git diff main >> "$PROMPT_FILE"
+              git diff "$MERGE_BASE" >> "$PROMPT_FILE"
               claude -p - \
                 --model claude-opus-4-6 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"

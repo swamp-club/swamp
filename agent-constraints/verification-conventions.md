@@ -28,11 +28,15 @@ SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-reviews \
 
 The workflow:
 
-1. Detects changed files via `@swamp/git` diff
+1. Detects changed files via `@swamp/git` diff (full diff, then `nameOnly` for
+   the file list used by guards)
 2. Runs applicable reviews in parallel using `command/shell` steps that invoke
    `claude -p` with the review prompt + diff
 3. Each review uses the factory pattern — one `reviewer` model, called once per
    review type with different prompt files and models
+4. Review diffs use `git merge-base main HEAD` so only the branch's own changes
+   are reviewed — not the inverse of what landed on main since the branch
+   diverged
 
 ### Guards
 
@@ -42,7 +46,7 @@ Reviews are guarded by file path — they skip when no relevant files changed:
 | --- | --- | --- |
 | code-review | always | claude-opus-4-6 |
 | adversarial-review | `src/domain/`, `src/infrastructure/`, `src/libswamp/`, `src/serve/`, `src/worker/` | claude-opus-4-6 |
-| ux-review | `src/cli/`, `src/presentation/`, `src/domain/errors.ts`, `src/libswamp/` | claude-sonnet-4-6 |
+| ux-review | `src/cli/commands/`, `src/presentation/`, `src/domain/errors.ts`, `src/libswamp/` | claude-sonnet-4-6 |
 | ci-security-review | `.github/workflows/` | claude-opus-4-6 |
 
 ### Authentication
