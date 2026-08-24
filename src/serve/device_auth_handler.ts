@@ -297,6 +297,7 @@ async function mintServerTokenImpl(
   repoContext: RepositoryContext,
   defaultVault?: string,
   syncService?: DatastoreSyncService,
+  namespace?: string,
 ): Promise<string> {
   const tokenName = `oauth-${crypto.randomUUID().slice(0, 8)}`;
   const secretKey = serverTokenSecretKey(tokenName);
@@ -366,7 +367,7 @@ async function mintServerTokenImpl(
 
   if (syncService) {
     await syncService.markDirty();
-    await syncService.pushChanged();
+    await syncService.pushChanged({ namespace });
 
     repoContext.catalogStore.invalidate();
     const verifyResult = await findDefinitionByIdOrName(
@@ -400,6 +401,7 @@ export function createDeviceAuthDeps(
   repoContext: RepositoryContext,
   defaultVault?: string,
   syncService?: DatastoreSyncService,
+  namespace?: string,
 ): DeviceAuthDeps {
   return {
     authConfig,
@@ -427,6 +429,7 @@ export function createDeviceAuthDeps(
         rc,
         defaultVault,
         syncService,
+        namespace,
       ),
     storeAccessToken: async (tokenName: string, accessToken: string) => {
       const vaultService = await VaultService.fromRepository(
