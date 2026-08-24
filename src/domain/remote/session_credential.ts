@@ -24,6 +24,10 @@
  * worker presents it on every data-plane HTTP request and refreshes it over
  * the control socket before expiry, so the window slides forward (see
  * design/remote-execution.md, "Authenticating the data plane").
+ *
+ * Per-dispatch credentials are auto-refreshed internally by the service for
+ * the lifetime of the dispatch — the credential string stays the same but
+ * its expiry slides forward every 2/3 TTL until explicitly revoked.
  */
 
 export interface SessionCredentialRecord {
@@ -38,6 +42,9 @@ export interface SessionCredentialRecord {
 /** Default credential lifetime: 15 minutes, refreshed well before expiry. */
 export const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
 
+/** Refresh at 2/3 of the TTL — matches the worker-side refresh fraction. */
+const REFRESH_FRACTION = 2 / 3;
+
 /**
  * Generate a 256-bit opaque bearer token, hex-encoded. Used for both
  * data-plane session credentials and enrollment-token secrets.
@@ -46,6 +53,13 @@ export function generateOpaqueToken(): string {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export interface SessionCredentialServiceOptions {
+  ttlMs?: number;
+  now?: () => number;
+  setInterval?: (cb: () => void, ms: number) => number;
+  clearInterval?: (id: number) => void;
 }
 
 /**
@@ -59,12 +73,20 @@ export class SessionCredentialService {
   #byWorker = new Map<string, string>();
   #byDispatch = new Map<string, string>();
   #credentialsByWorker = new Map<string, Set<string>>();
+  #refreshTimers = new Map<string, number>();
   readonly #ttlMs: number;
   readonly #now: () => number;
+  readonly #setInterval: (cb: () => void, ms: number) => number;
+  readonly #clearInterval: (id: number) => void;
 
-  constructor(options?: { ttlMs?: number; now?: () => number }) {
+  constructor(options?: SessionCredentialServiceOptions) {
     this.#ttlMs = options?.ttlMs ?? DEFAULT_SESSION_TTL_MS;
     this.#now = options?.now ?? Date.now;
+    this.#setInterval = options?.setInterval ??
+      ((cb: () => void, ms: number) =>
+        globalThis.setInterval(cb, ms) as unknown as number);
+    this.#clearInterval = options?.clearInterval ??
+      ((id: number) => globalThis.clearInterval(id));
   }
 
   /**
@@ -91,9 +113,10 @@ export class SessionCredentialService {
   }
 
   /**
-   * Issue a per-dispatch credential. These are independent of the
-   * control-channel credential and are not revoked by `issue()` or
-   * `refresh()`. They are revoked explicitly via `revokeDispatch()`.
+   * Issue a per-dispatch credential with auto-refresh. The credential's
+   * expiry slides forward every 2/3 TTL until explicitly revoked via
+   * revokeDispatch() or revokeAllForWorker(). The credential string stays
+   * the same — the runner process does not need to be notified.
    */
   issueForDispatch(
     workerId: string,
@@ -113,6 +136,7 @@ export class SessionCredentialService {
       this.#credentialsByWorker.set(workerId, workerCreds);
     }
     workerCreds.add(record.credential);
+    this.#startRefreshTimer(dispatchId, record);
     return record;
   }
 
@@ -139,7 +163,8 @@ export class SessionCredentialService {
 
   /**
    * Slide the window forward: re-issue against a currently valid
-   * control-channel credential. Does not affect dispatch credentials.
+   * control-channel credential. Does not affect dispatch credentials
+   * (those are auto-refreshed internally).
    */
   refresh(credential: string): SessionCredentialRecord | null {
     const result = this.verify(credential);
@@ -152,6 +177,37 @@ export class SessionCredentialService {
     return this.issue(result.workerId);
   }
 
+  /** Clean up all refresh timers. Call on orchestrator shutdown. */
+  dispose(): void {
+    for (const timerId of this.#refreshTimers.values()) {
+      this.#clearInterval(timerId);
+    }
+    this.#refreshTimers.clear();
+  }
+
+  #startRefreshTimer(
+    dispatchId: string,
+    record: SessionCredentialRecord,
+  ): void {
+    const intervalMs = Math.max(1_000, this.#ttlMs * REFRESH_FRACTION);
+    const timerId = this.#setInterval(() => {
+      if (!this.#byCredential.has(record.credential)) {
+        this.#stopRefreshTimer(dispatchId);
+        return;
+      }
+      record.expiresAtMs = this.#now() + this.#ttlMs;
+    }, intervalMs);
+    this.#refreshTimers.set(dispatchId, timerId);
+  }
+
+  #stopRefreshTimer(dispatchId: string): void {
+    const timerId = this.#refreshTimers.get(dispatchId);
+    if (timerId !== undefined) {
+      this.#clearInterval(timerId);
+      this.#refreshTimers.delete(dispatchId);
+    }
+  }
+
   #deleteCredential(record: SessionCredentialRecord): void {
     this.#byCredential.delete(record.credential);
     if (this.#byWorker.get(record.workerId) === record.credential) {
@@ -159,6 +215,7 @@ export class SessionCredentialService {
     }
     if (record.dispatchId) {
       this.#byDispatch.delete(record.dispatchId);
+      this.#stopRefreshTimer(record.dispatchId);
     }
     this.#credentialsByWorker.get(record.workerId)?.delete(record.credential);
   }
@@ -182,6 +239,7 @@ export class SessionCredentialService {
         const record = this.#byCredential.get(cred);
         if (record?.dispatchId) {
           this.#byDispatch.delete(record.dispatchId);
+          this.#stopRefreshTimer(record.dispatchId);
         }
         this.#byCredential.delete(cred);
       }

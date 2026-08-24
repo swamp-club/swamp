@@ -3965,6 +3965,7 @@ export const serveCommand = new Command()
       if (heartbeatService) {
         await heartbeatService.stop();
       }
+      workerGateway.dispose();
       if (collectiveRefreshService) {
         await collectiveRefreshService.dispose();
       }

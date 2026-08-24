@@ -673,10 +673,14 @@ tracks N active dispatches per worker keyed by `(workerName, dispatchId)`.
 **Per-dispatch credentials**: each runner receives its own credential from
 `SessionCredentialService.issueForDispatch(workerId, dispatchId)`. This
 credential is independent of the control-channel credential — session refreshes
-do not invalidate in-flight runners. Credentials are revoked when the dispatch
-completes. The capability bridge overrides `dispatchId` in every RPC verb so
-the `CapabilityService` can resolve the correct dispatch for model-type scope
-isolation.
+do not invalidate in-flight runners. The service auto-refreshes dispatch
+credentials internally: a periodic timer slides the credential's expiry forward
+every 2/3 TTL, so the credential remains valid for the entire lifetime of the
+dispatch regardless of duration. The credential string stays the same (the
+runner does not need to be notified of the refresh). Credentials are revoked
+when the dispatch completes. The capability bridge overrides `dispatchId` in
+every RPC verb so the `CapabilityService` can resolve the correct dispatch for
+model-type scope isolation.
 
 **Idle semantics**: a worker is "idle" when `activeDispatchIds.length === 0`.
 The idle timeout starts only when all slots are empty. `maxDispatches` counts
