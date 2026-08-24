@@ -442,7 +442,6 @@ export class JobRun implements TriggerEvaluationContext {
       statuses.push(status);
     }
 
-    if (statuses.some((s) => s === "failed")) return "failed";
     if (
       statuses.some((s) =>
         s === "pending" || s === "running" || s === "waiting_approval"
@@ -450,6 +449,7 @@ export class JobRun implements TriggerEvaluationContext {
     ) {
       return "running";
     }
+    if (statuses.some((s) => s === "failed")) return "failed";
     if (statuses.every((s) => s === "succeeded")) return "succeeded";
     if (statuses.every((s) => s === "skipped")) return "skipped";
     // Mix of succeeded and skipped (no failures, all terminal)

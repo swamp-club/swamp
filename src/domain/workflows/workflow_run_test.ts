@@ -1362,6 +1362,27 @@ Deno.test("JobRun.getStatus: aggregates forEach expanded steps — any still run
   assertEquals(jobRun.getStatus("deploy"), "running");
 });
 
+Deno.test("JobRun.getStatus: aggregates forEach expanded steps — failed with sibling still running", () => {
+  const jobRun = JobRun.pending("main", ["deploy"]);
+  jobRun.replaceExpandedSteps("deploy", [
+    "deploy-dev",
+    "deploy-qa",
+    "deploy-staging",
+  ]);
+  jobRun.registerForEachExpansion("deploy", [
+    "deploy-dev",
+    "deploy-qa",
+    "deploy-staging",
+  ]);
+
+  jobRun.getStep("deploy-dev")!.start();
+  jobRun.getStep("deploy-dev")!.fail("timeout");
+  jobRun.getStep("deploy-qa")!.start();
+  // deploy-staging still pending
+
+  assertEquals(jobRun.getStatus("deploy"), "running");
+});
+
 Deno.test("JobRun.getStatus: empty forEach expansion returns undefined", () => {
   const jobRun = JobRun.pending("main", ["deploy"]);
   jobRun.replaceExpandedSteps("deploy", []);
