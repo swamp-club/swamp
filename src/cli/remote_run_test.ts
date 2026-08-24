@@ -25,6 +25,7 @@ import {
 } from "@std/assert";
 import { UserError } from "../domain/errors.ts";
 import {
+  diagnoseTlsError,
   normalizeServerUrl,
   probeServerHealth,
   requestServerResponse,
@@ -1232,5 +1233,25 @@ Deno.test({
     } finally {
       await server.shutdown();
     }
+  },
+});
+
+// ── diagnoseTlsError tests ────────────────────────────────────────────
+
+Deno.test({
+  name: "diagnoseTlsError: returns undefined for non-wss URLs",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    assertEquals(await diagnoseTlsError("ws://127.0.0.1:9999"), undefined);
+  },
+});
+
+Deno.test({
+  name: "diagnoseTlsError: returns undefined for invalid URL",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    assertEquals(await diagnoseTlsError("not-a-url"), undefined);
   },
 });

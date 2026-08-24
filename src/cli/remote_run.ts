@@ -378,9 +378,12 @@ export async function probeServerHealth(wsUrl: string): Promise<boolean> {
   const httpUrl = toHttpUrl(wsUrl);
   try {
     const healthUrl = new URL("/health", httpUrl);
-    const response = await fetch(healthUrl, {
+    const fetchClient = getCaCertFetchClient();
+    const fetchOpts: Record<string, unknown> = {
       signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
-    });
+    };
+    if (fetchClient) fetchOpts.client = fetchClient;
+    const response = await fetch(healthUrl, fetchOpts);
     if (!response.ok) return false;
     const body = await response.json();
     return typeof body === "object" && body !== null &&
@@ -445,7 +448,7 @@ function resolveCaCertPath(): string | undefined {
   return undefined;
 }
 
-function getEnvCaCerts(): string[] | undefined {
+export function getEnvCaCerts(): string[] | undefined {
   if (resolvedEnvCaCerts !== undefined) {
     return resolvedEnvCaCerts.length > 0 ? resolvedEnvCaCerts : undefined;
   }
@@ -466,6 +469,17 @@ function getEnvCaCerts(): string[] | undefined {
 }
 
 let cachedCaCertClient: Deno.HttpClient | undefined;
+
+let cachedCaCertFetchClient: Deno.HttpClient | undefined;
+
+function getCaCertFetchClient(): Deno.HttpClient | undefined {
+  const caCerts = getEnvCaCerts();
+  if (!caCerts?.length) return undefined;
+  if (!cachedCaCertFetchClient) {
+    cachedCaCertFetchClient = Deno.createHttpClient({ caCerts });
+  }
+  return cachedCaCertFetchClient;
+}
 
 function createSocket(
   url: string,
@@ -496,9 +510,13 @@ const H2_MASKED_ERROR = "HTTP/2 not supported by this client";
 
 /**
  * When `createHttpClient({ http2: false })` is used, Deno's WebSocket
- * masks every TLS validation error as "HTTP/2 not supported by this
- * client". Probe with a plain `fetch()` (no custom client) to surface
- * the real error — `fetch` shows the actual TLS rejection reason.
+ * masks every TLS validation error — and also HTTP error codes like 401
+ * — as "HTTP/2 not supported by this client". Probe with `fetch()` to
+ * surface the real error. Uses the CA cert from `--ca-cert` /
+ * `SWAMP_CA_CERT` when available so the probe reflects the same trust
+ * configuration as the WebSocket connection; without this, a server
+ * that rejects an unauthenticated upgrade (401) is misdiagnosed as a
+ * TLS failure because the bare probe fails on an untrusted issuer.
  * Returns a more helpful message or `undefined` if the probe succeeds
  * (meaning the WebSocket failure has a different cause).
  */
@@ -514,10 +532,13 @@ export async function diagnoseTlsError(
   if (parsed.protocol !== "wss:") return undefined;
 
   parsed.protocol = "https:";
+  const fetchClient = getCaCertFetchClient();
+  const fetchOpts: Record<string, unknown> = {
+    signal: AbortSignal.timeout(3_000),
+  };
+  if (fetchClient) fetchOpts.client = fetchClient;
   try {
-    const resp = await fetch(parsed.href, {
-      signal: AbortSignal.timeout(3_000),
-    });
+    const resp = await fetch(parsed.href, fetchOpts);
     await resp.body?.cancel();
     return undefined;
   } catch (e: unknown) {

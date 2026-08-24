@@ -20,7 +20,7 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
-import { resolveServeUrl } from "../remote_run.ts";
+import { getEnvCaCerts, resolveServeUrl } from "../remote_run.ts";
 import { FileServerCredentialRepository } from "../../infrastructure/persistence/server_credential_repository.ts";
 import { normalizeServerUrl } from "../../domain/auth/server_url.ts";
 import { splitServerToken } from "../../serve/token_auth.ts";
@@ -52,6 +52,10 @@ export const authServerLoginCommand = new Command()
   .option(
     "--token <token:string>",
     "Server token in <name>.<secret> format (skips OAuth flow)",
+  )
+  .option(
+    "--ca-cert <path:string>",
+    "Path to PEM-encoded CA certificate to trust for TLS connections to the server (env: SWAMP_CA_CERT)",
   )
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [
@@ -145,7 +149,11 @@ async function handleOAuthFlow(
     );
   }
   const normalizedUrl = normalizeServerUrl(rawUrl);
-  const deps = createServerLoginDeps();
+  const caCerts = getEnvCaCerts();
+  const httpClient = caCerts?.length
+    ? Deno.createHttpClient({ caCerts })
+    : undefined;
+  const deps = createServerLoginDeps({ httpClient });
   const input = { serverUrl: rawUrl, signal: AbortSignal.timeout(300_000) };
 
   for await (const event of serverLogin(deps, input)) {
