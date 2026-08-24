@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { withMockedCommand } from "@swamp-club/swamp-testing";
 import { EditorService } from "./editor_service.ts";
 
 Deno.test("EditorService.findEditor returns $EDITOR when set", async () => {
@@ -29,7 +30,7 @@ Deno.test("EditorService.findEditor returns $EDITOR when set", async () => {
     const editor = await service.findEditor();
     assertEquals(editor, "cat");
   } finally {
-    if (originalEditor) {
+    if (originalEditor !== undefined) {
       Deno.env.set("EDITOR", originalEditor);
     } else {
       Deno.env.delete("EDITOR");
@@ -46,7 +47,7 @@ Deno.test("EditorService.findEditor handles $EDITOR with arguments", async () =>
     const editor = await service.findEditor();
     assertEquals(editor, "cat -n");
   } finally {
-    if (originalEditor) {
+    if (originalEditor !== undefined) {
       Deno.env.set("EDITOR", originalEditor);
     } else {
       Deno.env.delete("EDITOR");
@@ -73,7 +74,7 @@ Deno.test("EditorService.findEditor falls back when $EDITOR is not available", a
       );
     }
   } finally {
-    if (originalEditor) {
+    if (originalEditor !== undefined) {
       Deno.env.set("EDITOR", originalEditor);
     } else {
       Deno.env.delete("EDITOR");
@@ -83,23 +84,21 @@ Deno.test("EditorService.findEditor falls back when $EDITOR is not available", a
 
 Deno.test("EditorService.findEditor throws when no editor is available", async () => {
   const originalEditor = Deno.env.get("EDITOR");
-  const originalPath = Deno.env.get("PATH");
   try {
-    // Clear EDITOR and set PATH to empty to ensure no editors are found
+    // Make every PATH lookup fail via a mocked `which`/`where` — mutating the
+    // real PATH is process-global and races other parallel test files.
     Deno.env.delete("EDITOR");
-    Deno.env.set("PATH", "");
-    const service = new EditorService();
-    await assertRejects(
-      () => service.findEditor(),
-      Error,
-      "No editor found",
-    );
+    await withMockedCommand(() => ({ stdout: "", code: 1 }), async () => {
+      const service = new EditorService();
+      await assertRejects(
+        () => service.findEditor(),
+        Error,
+        "No editor found",
+      );
+    });
   } finally {
-    if (originalEditor) {
+    if (originalEditor !== undefined) {
       Deno.env.set("EDITOR", originalEditor);
-    }
-    if (originalPath) {
-      Deno.env.set("PATH", originalPath);
     }
   }
 });

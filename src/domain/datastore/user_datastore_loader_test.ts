@@ -78,7 +78,7 @@ Deno.test("UserDatastoreLoader - loads valid datastore from temp directory", asy
 import { z } from "npm:zod";
 
 export const datastore = {
-  type: "@test/custom-store-${Date.now()}",
+  type: "@test/custom-store-${crypto.randomUUID().slice(0, 8)}",
   name: "Custom Store",
   description: "A test datastore implementation",
   configSchema: z.object({ path: z.string() }),
@@ -263,7 +263,7 @@ export const datastore = {
 });
 
 Deno.test("UserDatastoreLoader - invalidates bundle cache when dependency changes", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const helperCode = `export const storeName = "original";`;
   const datastoreCode = `
 import { storeName } from "./helper.ts";
@@ -329,14 +329,15 @@ export const datastore = {
     );
     const cachedBundle1 = await Deno.readTextFile(bundlePath);
 
-    // Wait so mtime differs
-    await new Promise((r) => setTimeout(r, 1100));
-
     // Modify only the dependency (not the entry point)
     await Deno.writeTextFile(
       join(datastoresDir, "helper.ts"),
       `export const storeName = "updated";`,
     );
+    // Bump mtime past the cached bundle's 1s-granularity timestamp instead
+    // of sleeping.
+    const bumped = new Date(Date.now() + 5_000);
+    await Deno.utime(join(datastoresDir, "helper.ts"), bumped, bumped);
 
     // Second load — should detect dependency change and rebundle
     const loader2 = new ExtensionLoader(
@@ -356,7 +357,7 @@ export const datastore = {
 });
 
 Deno.test("UserDatastoreLoader buildIndex rebundles when source content changes with preserved mtime (#128)", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const datastoreType = `@user/preserved-mtime-datastore-${ts}`;
   const v1 = `
 export const datastore = {
@@ -425,8 +426,6 @@ export const datastore = {
 
     const origMtime = (await Deno.stat(sourcePath)).mtime!;
 
-    await new Promise((r) => setTimeout(r, 1100));
-
     await Deno.writeTextFile(sourcePath, v2);
     await Deno.utime(sourcePath, origMtime, origMtime);
 
@@ -465,7 +464,7 @@ export const datastore = {
 });
 
 Deno.test("UserDatastoreLoader buildIndex rebundles when transitive dep content changes with preserved mtime (#128)", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const datastoreType = `@user/preserved-mtime-datastore-dep-${ts}`;
   const entry = `
 import { marker } from "./_lib/marker.ts";
@@ -527,8 +526,6 @@ export const datastore = {
     const entryMtime = (await Deno.stat(entryPath)).mtime!;
     const libMtime = (await Deno.stat(libPath)).mtime!;
 
-    await new Promise((r) => setTimeout(r, 1100));
-
     await Deno.writeTextFile(libPath, libV2);
     await Deno.utime(libPath, libMtime, libMtime);
     await Deno.utime(entryPath, entryMtime, entryMtime);
@@ -569,7 +566,7 @@ Deno.test("UserDatastoreLoader: registerLazyFromCatalog skips validation_failed 
   const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
 
   try {
-    const ts = Date.now();
+    const ts = crypto.randomUUID().slice(0, 8);
     const validDatastore = `
 import { z } from "npm:zod";
 
@@ -639,7 +636,7 @@ export const datastore = {
 Deno.test(
   "UserDatastoreLoader.bundleAndIndexOne: returns datastore metadata without writing catalog rows (Pin 1)",
   async () => {
-    const ts = Date.now();
+    const ts = crypto.randomUUID().slice(0, 8);
     const dsType = `@user/pin1-datastore-${ts}`;
     const dsCode = `
 import { z } from "npm:zod";

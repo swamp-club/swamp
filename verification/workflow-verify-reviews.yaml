@@ -58,7 +58,8 @@ jobs:
               PROMPT_FILE=$(mktemp)
               RESULT_FILE=$(mktemp)
               cat verification/review-prompts/code-review.md > "$PROMPT_FILE"
-              printf '\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n\nDIFF:\n%s' "$(git diff main)" >> "$PROMPT_FILE"
+              printf '\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n\nDIFF:\n' >> "$PROMPT_FILE"
+              git diff main >> "$PROMPT_FILE"
               claude -p - \
                 --model claude-opus-4-6 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
@@ -83,7 +84,8 @@ jobs:
               PROMPT_FILE=$(mktemp)
               RESULT_FILE=$(mktemp)
               cat verification/review-prompts/adversarial-review.md > "$PROMPT_FILE"
-              printf '\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n\nDIFF:\n%s' "$(git diff main)" >> "$PROMPT_FILE"
+              printf '\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n\nDIFF:\n' >> "$PROMPT_FILE"
+              git diff main >> "$PROMPT_FILE"
               claude -p - \
                 --model claude-opus-4-6 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
@@ -108,7 +110,8 @@ jobs:
               PROMPT_FILE=$(mktemp)
               RESULT_FILE=$(mktemp)
               cat verification/review-prompts/ux-review.md > "$PROMPT_FILE"
-              printf '\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n\nDIFF:\n%s' "$(git diff main)" >> "$PROMPT_FILE"
+              printf '\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n\nDIFF:\n' >> "$PROMPT_FILE"
+              git diff main >> "$PROMPT_FILE"
               claude -p - \
                 --model claude-sonnet-4-6 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
@@ -133,7 +136,8 @@ jobs:
               PROMPT_FILE=$(mktemp)
               RESULT_FILE=$(mktemp)
               cat verification/review-prompts/ci-security-review.md > "$PROMPT_FILE"
-              printf '\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n\nDIFF:\n%s' "$(git diff main)" >> "$PROMPT_FILE"
+              printf '\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n\nDIFF:\n' >> "$PROMPT_FILE"
+              git diff main >> "$PROMPT_FILE"
               claude -p - \
                 --model claude-opus-4-6 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"

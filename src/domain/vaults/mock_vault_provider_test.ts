@@ -67,6 +67,15 @@ Deno.test("MockVaultProvider - get", async (t) => {
     assertStringIncludes(error.message, "Secret 'non-existent-key' not found");
     assertStringIncludes(error.message, "mock vault 'test-vault'");
   });
+
+  await t.step("should round-trip an empty-string secret", async () => {
+    // Regression: `if (!secret)` treated "" as not-found, diverging from
+    // LocalEncryptionVaultProvider, which round-trips empty strings.
+    const provider = new MockVaultProvider("test-vault");
+    await provider.put("empty-secret", "");
+    const value = await provider.get("empty-secret");
+    assertEquals(value, "");
+  });
 });
 
 Deno.test("MockVaultProvider - put", async (t) => {

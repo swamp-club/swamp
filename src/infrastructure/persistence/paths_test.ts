@@ -166,10 +166,11 @@ Deno.test("getSwampConfigDir uses XDG_CONFIG_HOME when set", () => {
     Deno.env.set("XDG_CONFIG_HOME", "/custom/config");
     assertPathEquals(getSwampConfigDir(), "/custom/config/swamp");
   } finally {
-    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
+    if (originalXdg !== undefined) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
     else Deno.env.delete("XDG_CONFIG_HOME");
-    if (originalSwampHome) Deno.env.set("SWAMP_HOME", originalSwampHome);
-    else Deno.env.delete("SWAMP_HOME");
+    if (originalSwampHome !== undefined) {
+      Deno.env.set("SWAMP_HOME", originalSwampHome);
+    } else Deno.env.delete("SWAMP_HOME");
   }
 });
 
@@ -183,12 +184,13 @@ Deno.test("getSwampConfigDir falls back to HOME/.config/swamp", () => {
     Deno.env.set("HOME", "/home/testuser");
     assertPathEquals(getSwampConfigDir(), "/home/testuser/.config/swamp");
   } finally {
-    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
+    if (originalXdg !== undefined) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
     else Deno.env.delete("XDG_CONFIG_HOME");
-    if (originalHome) Deno.env.set("HOME", originalHome);
+    if (originalHome !== undefined) Deno.env.set("HOME", originalHome);
     else Deno.env.delete("HOME");
-    if (originalSwampHome) Deno.env.set("SWAMP_HOME", originalSwampHome);
-    else Deno.env.delete("SWAMP_HOME");
+    if (originalSwampHome !== undefined) {
+      Deno.env.set("SWAMP_HOME", originalSwampHome);
+    } else Deno.env.delete("SWAMP_HOME");
   }
 });
 
@@ -206,12 +208,13 @@ Deno.test("getSwampConfigDir throws when neither SWAMP_HOME nor HOME is set", ()
       "HOME environment variable is not set",
     );
   } finally {
-    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
+    if (originalXdg !== undefined) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
     else Deno.env.delete("XDG_CONFIG_HOME");
-    if (originalHome) Deno.env.set("HOME", originalHome);
+    if (originalHome !== undefined) Deno.env.set("HOME", originalHome);
     else Deno.env.delete("HOME");
-    if (originalSwampHome) Deno.env.set("SWAMP_HOME", originalSwampHome);
-    else Deno.env.delete("SWAMP_HOME");
+    if (originalSwampHome !== undefined) {
+      Deno.env.set("SWAMP_HOME", originalSwampHome);
+    } else Deno.env.delete("SWAMP_HOME");
   }
 });
 
@@ -221,7 +224,7 @@ Deno.test("globalTelemetryDir is the telemetry subdir under the config dir", () 
     Deno.env.set("XDG_CONFIG_HOME", "/custom/config");
     assertPathEquals(globalTelemetryDir(), "/custom/config/swamp/telemetry");
   } finally {
-    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
+    if (originalXdg !== undefined) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
     else Deno.env.delete("XDG_CONFIG_HOME");
   }
 });
@@ -237,9 +240,9 @@ Deno.test("globalTelemetryDir falls back to HOME/.config/swamp/telemetry", () =>
       "/home/testuser/.config/swamp/telemetry",
     );
   } finally {
-    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
+    if (originalXdg !== undefined) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
     else Deno.env.delete("XDG_CONFIG_HOME");
-    if (originalHome) Deno.env.set("HOME", originalHome);
+    if (originalHome !== undefined) Deno.env.set("HOME", originalHome);
     else Deno.env.delete("HOME");
   }
 });
@@ -254,9 +257,10 @@ Deno.test("getSwampDataDir: SWAMP_HOME takes precedence over HOME", () => {
     Deno.env.set("HOME", "/home/testuser");
     assertEquals(getSwampDataDir(), "/opt/swamp");
   } finally {
-    if (saved.swampHome) Deno.env.set("SWAMP_HOME", saved.swampHome);
-    else Deno.env.delete("SWAMP_HOME");
-    if (saved.home) Deno.env.set("HOME", saved.home);
+    if (saved.swampHome !== undefined) {
+      Deno.env.set("SWAMP_HOME", saved.swampHome);
+    } else Deno.env.delete("SWAMP_HOME");
+    if (saved.home !== undefined) Deno.env.set("HOME", saved.home);
     else Deno.env.delete("HOME");
   }
 });
@@ -273,11 +277,12 @@ Deno.test("getSwampDataDir: SWAMP_HOME set, HOME unset succeeds", () => {
     Deno.env.delete("USERPROFILE");
     assertEquals(getSwampDataDir(), "/opt/swamp");
   } finally {
-    if (saved.swampHome) Deno.env.set("SWAMP_HOME", saved.swampHome);
-    else Deno.env.delete("SWAMP_HOME");
-    if (saved.home) Deno.env.set("HOME", saved.home);
+    if (saved.swampHome !== undefined) {
+      Deno.env.set("SWAMP_HOME", saved.swampHome);
+    } else Deno.env.delete("SWAMP_HOME");
+    if (saved.home !== undefined) Deno.env.set("HOME", saved.home);
     else Deno.env.delete("HOME");
-    if (saved.profile) Deno.env.set("USERPROFILE", saved.profile);
+    if (saved.profile !== undefined) Deno.env.set("USERPROFILE", saved.profile);
     else Deno.env.delete("USERPROFILE");
   }
 });
@@ -292,9 +297,10 @@ Deno.test("getSwampDataDir: falls back to HOME/.swamp when SWAMP_HOME unset", ()
     Deno.env.set("HOME", "/home/testuser");
     assertPathEquals(getSwampDataDir(), "/home/testuser/.swamp");
   } finally {
-    if (saved.swampHome) Deno.env.set("SWAMP_HOME", saved.swampHome);
-    else Deno.env.delete("SWAMP_HOME");
-    if (saved.home) Deno.env.set("HOME", saved.home);
+    if (saved.swampHome !== undefined) {
+      Deno.env.set("SWAMP_HOME", saved.swampHome);
+    } else Deno.env.delete("SWAMP_HOME");
+    if (saved.home !== undefined) Deno.env.set("HOME", saved.home);
     else Deno.env.delete("HOME");
   }
 });
@@ -311,11 +317,12 @@ Deno.test("getSwampDataDir: falls back to USERPROFILE/.swamp", () => {
     Deno.env.set("USERPROFILE", "C:\\Users\\testuser");
     assertPathEquals(getSwampDataDir(), "C:\\Users\\testuser/.swamp");
   } finally {
-    if (saved.swampHome) Deno.env.set("SWAMP_HOME", saved.swampHome);
-    else Deno.env.delete("SWAMP_HOME");
-    if (saved.home) Deno.env.set("HOME", saved.home);
+    if (saved.swampHome !== undefined) {
+      Deno.env.set("SWAMP_HOME", saved.swampHome);
+    } else Deno.env.delete("SWAMP_HOME");
+    if (saved.home !== undefined) Deno.env.set("HOME", saved.home);
     else Deno.env.delete("HOME");
-    if (saved.profile) Deno.env.set("USERPROFILE", saved.profile);
+    if (saved.profile !== undefined) Deno.env.set("USERPROFILE", saved.profile);
     else Deno.env.delete("USERPROFILE");
   }
 });
@@ -336,11 +343,12 @@ Deno.test("getSwampDataDir: throws when no env var is set", () => {
       "Cannot determine home directory",
     );
   } finally {
-    if (saved.swampHome) Deno.env.set("SWAMP_HOME", saved.swampHome);
-    else Deno.env.delete("SWAMP_HOME");
-    if (saved.home) Deno.env.set("HOME", saved.home);
+    if (saved.swampHome !== undefined) {
+      Deno.env.set("SWAMP_HOME", saved.swampHome);
+    } else Deno.env.delete("SWAMP_HOME");
+    if (saved.home !== undefined) Deno.env.set("HOME", saved.home);
     else Deno.env.delete("HOME");
-    if (saved.profile) Deno.env.set("USERPROFILE", saved.profile);
+    if (saved.profile !== undefined) Deno.env.set("USERPROFILE", saved.profile);
     else Deno.env.delete("USERPROFILE");
   }
 });
@@ -357,11 +365,12 @@ Deno.test("getSwampConfigDir: SWAMP_HOME takes precedence over XDG and HOME", ()
     Deno.env.set("HOME", "/home/testuser");
     assertPathEquals(getSwampConfigDir(), "/opt/swamp/config");
   } finally {
-    if (saved.swampHome) Deno.env.set("SWAMP_HOME", saved.swampHome);
-    else Deno.env.delete("SWAMP_HOME");
-    if (saved.xdg) Deno.env.set("XDG_CONFIG_HOME", saved.xdg);
+    if (saved.swampHome !== undefined) {
+      Deno.env.set("SWAMP_HOME", saved.swampHome);
+    } else Deno.env.delete("SWAMP_HOME");
+    if (saved.xdg !== undefined) Deno.env.set("XDG_CONFIG_HOME", saved.xdg);
     else Deno.env.delete("XDG_CONFIG_HOME");
-    if (saved.home) Deno.env.set("HOME", saved.home);
+    if (saved.home !== undefined) Deno.env.set("HOME", saved.home);
     else Deno.env.delete("HOME");
   }
 });
@@ -378,11 +387,12 @@ Deno.test("getSwampConfigDir: SWAMP_HOME set, HOME unset succeeds", () => {
     Deno.env.delete("HOME");
     assertPathEquals(getSwampConfigDir(), "/opt/swamp/config");
   } finally {
-    if (saved.swampHome) Deno.env.set("SWAMP_HOME", saved.swampHome);
-    else Deno.env.delete("SWAMP_HOME");
-    if (saved.xdg) Deno.env.set("XDG_CONFIG_HOME", saved.xdg);
+    if (saved.swampHome !== undefined) {
+      Deno.env.set("SWAMP_HOME", saved.swampHome);
+    } else Deno.env.delete("SWAMP_HOME");
+    if (saved.xdg !== undefined) Deno.env.set("XDG_CONFIG_HOME", saved.xdg);
     else Deno.env.delete("XDG_CONFIG_HOME");
-    if (saved.home) Deno.env.set("HOME", saved.home);
+    if (saved.home !== undefined) Deno.env.set("HOME", saved.home);
     else Deno.env.delete("HOME");
   }
 });
@@ -399,11 +409,12 @@ Deno.test("homeDirectoryIsSet: true when only SWAMP_HOME is set", () => {
     Deno.env.delete("USERPROFILE");
     assertEquals(homeDirectoryIsSet(), true);
   } finally {
-    if (saved.swampHome) Deno.env.set("SWAMP_HOME", saved.swampHome);
-    else Deno.env.delete("SWAMP_HOME");
-    if (saved.home) Deno.env.set("HOME", saved.home);
+    if (saved.swampHome !== undefined) {
+      Deno.env.set("SWAMP_HOME", saved.swampHome);
+    } else Deno.env.delete("SWAMP_HOME");
+    if (saved.home !== undefined) Deno.env.set("HOME", saved.home);
     else Deno.env.delete("HOME");
-    if (saved.profile) Deno.env.set("USERPROFILE", saved.profile);
+    if (saved.profile !== undefined) Deno.env.set("USERPROFILE", saved.profile);
     else Deno.env.delete("USERPROFILE");
   }
 });
@@ -507,11 +518,12 @@ Deno.test("homeDirectoryIsSet: false when no env var is set", () => {
     Deno.env.delete("USERPROFILE");
     assertEquals(homeDirectoryIsSet(), false);
   } finally {
-    if (saved.swampHome) Deno.env.set("SWAMP_HOME", saved.swampHome);
-    else Deno.env.delete("SWAMP_HOME");
-    if (saved.home) Deno.env.set("HOME", saved.home);
+    if (saved.swampHome !== undefined) {
+      Deno.env.set("SWAMP_HOME", saved.swampHome);
+    } else Deno.env.delete("SWAMP_HOME");
+    if (saved.home !== undefined) Deno.env.set("HOME", saved.home);
     else Deno.env.delete("HOME");
-    if (saved.profile) Deno.env.set("USERPROFILE", saved.profile);
+    if (saved.profile !== undefined) Deno.env.set("USERPROFILE", saved.profile);
     else Deno.env.delete("USERPROFILE");
   }
 });

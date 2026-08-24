@@ -19,7 +19,11 @@
 
 import { assertEquals, assertRejects } from "@std/assert";
 import { assertStringIncludes } from "@std/assert/string-includes";
-import { getCollectives, SwampClubClient } from "./swamp_club_client.ts";
+import {
+  getCollectives,
+  SwampClubClient,
+  type WhoamiOrganization,
+} from "./swamp_club_client.ts";
 import { UserError } from "../../domain/errors.ts";
 
 /** Start a simple mock HTTP server that returns canned responses. */
@@ -897,4 +901,37 @@ Deno.test("getCollectives: a collective missing entitlement is still listed", ()
 
 Deno.test("getCollectives: undefined when the server sends no organizations", () => {
   assertEquals(getCollectives({ authenticated: true }), undefined);
+});
+
+// ── WhoamiOrganization key-set pin (compile-time) ─────────────────────────
+//
+// CLAUDE.md (Code Style): the `organizations` array from GET /api/whoami is
+// an authorization contract, not a general-purpose payload — extension push
+// and pull authorize namespace ownership from it. New server-supplied data
+// must be added as its own optional top-level field joined on `slug` (as
+// `collectiveEntitlements` is), never as extra keys on the organization
+// entries, so changes to unrelated concerns can never reach the publish
+// path.
+//
+// This assertion pins the exact key set of WhoamiOrganization: widening
+// (or shrinking) the interface fails `deno check` here. If you hit this
+// error, add the new data as a top-level whoami field instead — and only
+// update this pin for a deliberate change to the authorization contract
+// itself.
+
+type WhoamiOrganizationPinnedKeys = "slug" | "name" | "role" | "personal";
+
+type MutuallyExtends<A, B> = [A] extends [B] ? [B] extends [A] ? true
+  : false
+  : false;
+
+const _whoamiOrganizationKeysArePinned: MutuallyExtends<
+  keyof WhoamiOrganization,
+  WhoamiOrganizationPinnedKeys
+> = true;
+void _whoamiOrganizationKeysArePinned;
+
+Deno.test("WhoamiOrganization: key set is pinned at compile time", () => {
+  // The real assertion is the type-level constant above, enforced by
+  // `deno check`. This body is intentionally trivial.
 });

@@ -643,7 +643,8 @@ async function runMethodViaServer(
         renderer.handlers(),
       );
       if (renderer.runFailed()) {
-        Deno.exit(1);
+        Deno.exitCode = 1;
+        return;
       }
     }
   } finally {

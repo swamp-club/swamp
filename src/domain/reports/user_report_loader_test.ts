@@ -55,7 +55,7 @@ Deno.test("UserReportLoader buildIndex rebundles when source content changes wit
   // / rsync --times / sub-ms edit signature), then re-run buildIndex and
   // verify the regenerated bundle carries the new content. With the old
   // mtime-based freshness check the stale bundle would be served.
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const name = `@user/preserved-mtime-report-${ts}`;
   const v1 = `
 export const report = {
@@ -116,11 +116,8 @@ export const report = {
 
     const origMtime = (await Deno.stat(sourcePath)).mtime!;
 
-    // Advance wall clock so any mtime-based comparison would notice a
-    // rebundle moment, making the test deterministic.
-    await new Promise((r) => setTimeout(r, 1100));
-
     // Swap content, then restore the original mtime — the #125 trigger.
+    // The restored mtime keeps source mtime <= bundle mtime without sleeping.
     await Deno.writeTextFile(sourcePath, v2);
     await Deno.utime(sourcePath, origMtime, origMtime);
 
@@ -167,7 +164,7 @@ Deno.test("UserReportLoader buildIndex rebundles when transitive dep content cha
   // Transitive-dep variant — edit a _lib/*.ts helper, preserve the entry
   // point's mtime, verify the fingerprint helper walks the dep graph and
   // marks the entry point stale.
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const name = `@user/preserved-mtime-report-dep-${ts}`;
   const entry = `
 import { marker } from "./_lib/marker.ts";
@@ -226,8 +223,6 @@ export const report = {
     const entryMtime = (await Deno.stat(entryPath)).mtime!;
     const libMtime = (await Deno.stat(libPath)).mtime!;
 
-    await new Promise((r) => setTimeout(r, 1100));
-
     await Deno.writeTextFile(libPath, libV2);
     await Deno.utime(libPath, libMtime, libMtime);
     await Deno.utime(entryPath, entryMtime, entryMtime);
@@ -272,7 +267,7 @@ Deno.test("UserReportLoader: registerLazyFromCatalog skips validation_failed row
   const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
 
   try {
-    const ts = Date.now();
+    const ts = crypto.randomUUID().slice(0, 8);
     const reportName = `@test/issue209-report-${ts}`;
     const validReport = `
 export const report = {
@@ -334,7 +329,7 @@ export const report = {
 Deno.test(
   "UserReportLoader.bundleAndIndexOne: returns report metadata without writing catalog rows (Pin 1)",
   async () => {
-    const ts = Date.now();
+    const ts = crypto.randomUUID().slice(0, 8);
     const reportName = `@user/pin1-report-${ts}`;
     const reportCode = `
 export const report = {

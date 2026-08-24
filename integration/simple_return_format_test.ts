@@ -109,7 +109,7 @@ export const model = {
       description: "Provision a cloud resource and return its state",
       arguments: InputSchema,
       execute: async (args, context) => {
-        const resourceId = "res-" + Date.now().toString(36);
+        const resourceId = "res-" + crypto.randomUUID().slice(0, 8);
 
         const content = {
           id: resourceId,

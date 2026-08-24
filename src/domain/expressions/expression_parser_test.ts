@@ -507,6 +507,29 @@ Deno.test("replaceExpressions: replaces whole-value expression spanning newlines
   assertEquals(result.deliveryId, "gh-abc-123");
 });
 
+Deno.test("replaceExpressions: interpolates strings that start and end with expressions", () => {
+  // Regression: the single-expression fast path once matched any string that
+  // started with "${{" and ended with "}}", so this shape was looked up whole
+  // in the values map, missed, and returned completely unreplaced.
+  const data = { message: "${{ a }} and ${{ b }}" };
+  const values = new Map<string, unknown>([
+    ["${{ a }}", "A"],
+    ["${{ b }}", "B"],
+  ]);
+  const result = replaceExpressions(data, values) as typeof data;
+  assertEquals(result.message, "A and B");
+});
+
+Deno.test("replaceExpressions: interpolates adjacent expressions with nothing between them", () => {
+  const data = { message: "${{ a }}${{ b }}" };
+  const values = new Map<string, unknown>([
+    ["${{ a }}", "A"],
+    ["${{ b }}", 42],
+  ]);
+  const result = replaceExpressions(data, values) as typeof data;
+  assertEquals(result.message, "A42");
+});
+
 Deno.test("replaceExpressions: preserves type for whole-value expression with trailing newline", () => {
   const raw = "${{ model.foo.resource.id }}";
   const data = { value: raw + "\n" };

@@ -330,7 +330,7 @@ const InputSchema = z.object({
 });
 
 export const model = {
-  type: "@user/data-model-${Date.now()}",
+  type: "@user/data-model-${crypto.randomUUID().slice(0, 8)}",
   version: "2026.02.09.1",
   globalArguments: InputSchema,
   resources: {
@@ -417,7 +417,7 @@ export const model = { type: "test/should-skip" };
 import { z } from "npm:zod@4";
 
 export const model = {
-  type: "@user/regular-${Date.now()}",
+  type: "@user/regular-${crypto.randomUUID().slice(0, 8)}",
   version: "2026.02.09.1",
   globalArguments: z.object({ msg: z.string() }),
   resources: {
@@ -454,7 +454,7 @@ export const model = {
 
 Deno.test("UserModelLoader prevents duplicate type registration", async () => {
   // Test that two models with the same type fail on the second one
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const typeId = `@user/duplicate-${ts}`;
   const model1 = `
 import { z } from "npm:zod@4";
@@ -521,7 +521,7 @@ export const model = {
 });
 
 Deno.test("UserModelLoader passes through dataHandles from user execute", async () => {
-  const typeId = `@user/passthrough-handles-${Date.now()}`;
+  const typeId = `@user/passthrough-handles-${crypto.randomUUID().slice(0, 8)}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -590,7 +590,9 @@ export const model = {
 });
 
 Deno.test("UserModelLoader uses model globalArguments when method lacks own arguments schema", async () => {
-  const typeId = `@user/method-inherits-schema-${Date.now()}`;
+  const typeId = `@user/method-inherits-schema-${
+    crypto.randomUUID().slice(0, 8)
+  }`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -641,7 +643,7 @@ Deno.test("UserModelLoader loads multiple models from directory", async () => {
   const model1 = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "@user/multi-a-${Date.now()}",
+  type: "@user/multi-a-${crypto.randomUUID().slice(0, 8)}",
   version: "2026.02.09.1",
   globalArguments: z.object({ a: z.string() }),
   resources: {
@@ -665,7 +667,7 @@ export const model = {
   const model2 = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "@user/multi-b-${Date.now()}",
+  type: "@user/multi-b-${crypto.randomUUID().slice(0, 8)}",
   version: "2026.02.09.1",
   globalArguments: z.object({ b: z.string() }),
   resources: {
@@ -702,7 +704,7 @@ export const model = {
 });
 
 Deno.test("UserModelLoader user method returns empty dataHandles", async () => {
-  const typeId = `@user/empty-handles-${Date.now()}`;
+  const typeId = `@user/empty-handles-${crypto.randomUUID().slice(0, 8)}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -756,7 +758,7 @@ export const model = {
 });
 
 Deno.test("UserModelLoader user method without dataHandles returns undefined", async () => {
-  const typeId = `@user/no-handles-${Date.now()}`;
+  const typeId = `@user/no-handles-${crypto.randomUUID().slice(0, 8)}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -811,7 +813,7 @@ export const model = {
 // --- Recursive discovery tests ---
 
 Deno.test("UserModelLoader discovers nested files with correct relative paths", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const modelA = `
 import { z } from "npm:zod@4";
 export const model = {
@@ -875,7 +877,7 @@ export const model = {
 });
 
 Deno.test("UserModelLoader excludes _test.ts in subdirectories", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
@@ -911,7 +913,7 @@ export const model = {
 });
 
 Deno.test("UserModelLoader handles deeply nested directories (3+ levels)", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
@@ -950,7 +952,7 @@ export const model = {
 // --- Extension tests ---
 
 Deno.test("UserModelLoader loads extension with single method in array", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
@@ -1009,7 +1011,7 @@ export const extension = {
 });
 
 Deno.test("UserModelLoader loads extension with multiple methods in array", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
@@ -1070,7 +1072,7 @@ export const extension = {
 });
 
 Deno.test("UserModelLoader extension targeting unregistered type fails gracefully", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const extCode = `
 import { z } from "npm:zod@4";
 export const extension = {
@@ -1097,7 +1099,7 @@ export const extension = {
 });
 
 Deno.test("UserModelLoader extension with method name conflict fails gracefully", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
@@ -1149,7 +1151,7 @@ export const extension = {
 });
 
 Deno.test("UserModelLoader extension with duplicate method names within array fails", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
@@ -1215,7 +1217,7 @@ export const extension = {
 });
 
 Deno.test("UserModelLoader extension methods inherit target model's arguments schema", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
@@ -1278,7 +1280,7 @@ import { z } from "npm:zod@4";
 export const extension = {
   type: "command/shell",
   methods: [{
-    audit_ext_test_${Date.now()}: {
+    audit_ext_test_${crypto.randomUUID().slice(0, 8)}: {
       description: "Audit the shell command",
       arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
@@ -1302,7 +1304,7 @@ export const extension = {
 });
 
 Deno.test("UserModelLoader multiple extensions targeting same type", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
@@ -1372,7 +1374,7 @@ export const extension = {
 });
 
 Deno.test("UserModelLoader two-pass ordering: user model registered before extension targets it", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   // Extension file sorts before model file alphabetically,
   // but two-pass loading should process models first
   const modelCode = `
@@ -1431,7 +1433,7 @@ export const extension = {
 });
 
 Deno.test("UserModelLoader extension method execute passes through dataHandles", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
@@ -1510,7 +1512,7 @@ export const extension = {
 });
 
 Deno.test("UserModelLoader extension with resources merges into target model", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
@@ -1577,7 +1579,7 @@ export const extension = {
 });
 
 Deno.test("UserModelLoader extension with conflicting resource spec fails gracefully", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
@@ -1638,7 +1640,7 @@ export const extension = {
 // --- resources/files validation tests ---
 
 Deno.test("UserModelLoader registers user-declared resources", async () => {
-  const typeId = `@user/custom-specs-${Date.now()}`;
+  const typeId = `@user/custom-specs-${crypto.randomUUID().slice(0, 8)}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -1804,7 +1806,7 @@ export const model = {
 });
 
 Deno.test("UserModelLoader accepts model with custom namespace @adam/mymodel", async () => {
-  const typeId = `@adam/mymodel-${Date.now()}`;
+  const typeId = `@adam/mymodel-${crypto.randomUUID().slice(0, 8)}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -1843,7 +1845,7 @@ export const model = {
 });
 
 Deno.test("UserModelLoader accepts model with custom namespace @stack72/name", async () => {
-  const typeId = `@stack72/my-model-${Date.now()}`;
+  const typeId = `@stack72/my-model-${crypto.randomUUID().slice(0, 8)}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -1882,7 +1884,7 @@ export const model = {
 });
 
 Deno.test("UserModelLoader accepts model with custom namespace @keeb/name", async () => {
-  const typeId = `@keeb/keyboard-${Date.now()}`;
+  const typeId = `@keeb/keyboard-${crypto.randomUUID().slice(0, 8)}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -1921,7 +1923,7 @@ export const model = {
 });
 
 Deno.test("UserModelLoader accepts valid @user/name format", async () => {
-  const typeId = `@user/valid-model-${Date.now()}`;
+  const typeId = `@user/valid-model-${crypto.randomUUID().slice(0, 8)}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -1960,7 +1962,7 @@ export const model = {
 });
 
 Deno.test("UserModelLoader accepts valid @user/foo/bar format with 3 segments", async () => {
-  const typeId = `@user/category/model-${Date.now()}`;
+  const typeId = `@user/category/model-${crypto.randomUUID().slice(0, 8)}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -2213,7 +2215,7 @@ Deno.test("UserModelLoader silently skips library files without model exports", 
 import { z } from "npm:zod@4";
 
 export const model = {
-  type: "@test/skip-test-${Date.now()}",
+  type: "@test/skip-test-${crypto.randomUUID().slice(0, 8)}",
   version: "2026.02.11.1",
   methods: {
     run: {
@@ -2259,7 +2261,7 @@ Deno.test("UserModelLoader silently skips type-only .ts files in subdirectories"
 import { z } from "npm:zod@4";
 
 export const model = {
-  type: "@test/type-only-skip-${Date.now()}",
+  type: "@test/type-only-skip-${crypto.randomUUID().slice(0, 8)}",
   version: "2026.02.11.1",
   methods: {
     run: {
@@ -2298,7 +2300,7 @@ export type Status = "running" | "stopped" | "error";
 });
 
 Deno.test("UserModelLoader invalidates bundle cache when dependency changes", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const helperCode = `export const greeting = "hello";`;
   const modelCode = `
 import { z } from "npm:zod@4";
@@ -2339,14 +2341,15 @@ export const model = {
     const bundlePath = join(repoDir, ".swamp", "bundles", ns, "model.js");
     const cachedBundle1 = await Deno.readTextFile(bundlePath);
 
-    // Wait so mtime differs
-    await new Promise((r) => setTimeout(r, 1100));
-
     // Modify only the dependency (not the entry point)
     await Deno.writeTextFile(
       join(modelsDir, "helper.ts"),
       `export const greeting = "goodbye";`,
     );
+    // Bump mtime past the cached bundle's 1s-granularity timestamp instead
+    // of sleeping.
+    const bumped = new Date(Date.now() + 5_000);
+    await Deno.utime(join(modelsDir, "helper.ts"), bumped, bumped);
 
     // Second load — should detect dependency change and rebundle
     // (registration will fail since type is already registered, but
@@ -2368,7 +2371,7 @@ export const model = {
 });
 
 Deno.test("UserModelLoader loads model with TypeScript-specific syntax", async () => {
-  const typeId = `@user/ts-syntax-${Date.now()}`;
+  const typeId = `@user/ts-syntax-${crypto.randomUUID().slice(0, 8)}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -2454,7 +2457,7 @@ export const model = {
 // --- kind propagation tests ---
 
 Deno.test("UserModelLoader propagates method kind from model definition", async () => {
-  const typeId = `@user/kind-model-${Date.now()}`;
+  const typeId = `@user/kind-model-${crypto.randomUUID().slice(0, 8)}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -2506,7 +2509,7 @@ export const model = {
 });
 
 Deno.test("UserModelLoader skips _-prefixed directories in discoverFiles", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const validModel = `
 import { z } from "npm:zod@4";
 export const model = {
@@ -2568,7 +2571,7 @@ export function helper() { return "helper"; }
 });
 
 Deno.test("UserModelLoader buildIndex detects transitive dependency changes", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const helperCode = `export const greeting = "hello";`;
   const modelCode = `
 import { z } from "npm:zod@4";
@@ -2616,14 +2619,15 @@ export const model = {
     const bundlePath = join(repoDir, ".swamp", "bundles", ns, "model.js");
     const cachedBundle1 = await Deno.readTextFile(bundlePath);
 
-    // Wait so mtime differs
-    await new Promise((r) => setTimeout(r, 1100));
-
     // Modify only the dependency (not the entry point)
     await Deno.writeTextFile(
       join(modelsDir, "helper.ts"),
       `export const greeting = "goodbye";`,
     );
+    // Bump mtime past the cached bundle's 1s-granularity timestamp instead
+    // of sleeping.
+    const bumped = new Date(Date.now() + 5_000);
+    await Deno.utime(join(modelsDir, "helper.ts"), bumped, bumped);
 
     // Second buildIndex — catalog is populated, should detect dep change
     const catalog2 = new ExtensionCatalogStore(dbPath);
@@ -2660,7 +2664,7 @@ Deno.test("UserModelLoader buildIndex rebundles when source content changes with
   // stale bundle. This test exercises exactly that sequence with Deno.utime
   // (cross-platform equivalent of `touch -t`) and verifies the
   // content-fingerprint freshness check catches it.
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const typeId = `@user/preserved-mtime-${ts}`;
   const v1 = `
 import { z } from "npm:zod@4";
@@ -2730,11 +2734,8 @@ export const model = {
     // Capture the original source mtime before the edit.
     const origMtime = (await Deno.stat(sourcePath)).mtime!;
 
-    // Advance wall clock so any mtime-based comparison would notice a
-    // rebundle moment, making the test deterministic.
-    await new Promise((r) => setTimeout(r, 1100));
-
     // Swap content, then restore the original mtime — the #125 trigger.
+    // The restored mtime keeps source mtime <= bundle mtime without sleeping.
     await Deno.writeTextFile(sourcePath, v2);
     await Deno.utime(sourcePath, origMtime, origMtime);
 
@@ -2783,7 +2784,7 @@ export const model = {
 });
 
 Deno.test("UserModelLoader bundleWithCache preserves cached bundle on unexpected failure", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   // Model that imports a nonexistent npm package — will fail to bundle.
   // Uses npm: prefix (not a bare specifier) so isExpectedBundleFailure
   // returns false — this is an "unexpected" failure path.
@@ -2842,12 +2843,13 @@ export const model = {
     const bundlePath = join(repoDir, ".swamp", "bundles", ns, "model.js");
     const cachedBundle1 = await Deno.readTextFile(bundlePath);
 
-    // Wait so mtime differs
-    await new Promise((r) => setTimeout(r, 1100));
-
     // Replace with broken model (no bare specifiers, no deno.json →
     // unexpected failure)
     await Deno.writeTextFile(join(modelsDir, "model.ts"), brokenModelCode);
+    // Bump mtime past the cached bundle's 1s-granularity timestamp instead
+    // of sleeping, so the loader attempts a rebundle.
+    const bumped = new Date(Date.now() + 5_000);
+    await Deno.utime(join(modelsDir, "model.ts"), bumped, bumped);
 
     // Load again — should fall back to cached bundle.
     // The broken code should NOT appear in the bundle.
@@ -2883,7 +2885,7 @@ Deno.test("UserModelLoader buildIndex: unchanged content does not rebundle even 
   // content with a new mtime would trigger a spurious rebundle. After the
   // switch to content fingerprints, rewriting the source with the same
   // bytes must NOT change the cached bundle even when mtime advances.
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -2928,9 +2930,11 @@ export const model = {
     const bundleMtimeBefore = (await Deno.stat(bundlePath)).mtime!.getTime();
 
     // Rewrite the source with identical content but advance its mtime
-    // (simulates touch or save-without-changes).
-    await new Promise((r) => setTimeout(r, 1100));
+    // (simulates touch or save-without-changes). Bump mtime explicitly
+    // past the bundle's 1s-granularity timestamp instead of sleeping.
     await Deno.writeTextFile(join(modelsDir, "model.ts"), modelCode);
+    const bumped = new Date(Date.now() + 5_000);
+    await Deno.utime(join(modelsDir, "model.ts"), bumped, bumped);
 
     const catalog2 = new ExtensionCatalogStore(dbPath);
 
@@ -3005,7 +3009,7 @@ Deno.test("UserModelLoader: accepts optional DatastorePathResolver", () => {
 });
 
 Deno.test("buildIndex: invalidates catalog when source dirs change (#1107)", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const modelCodeA = `
 import { z } from "npm:zod@4";
 
@@ -3113,7 +3117,7 @@ export const model = {
 });
 
 Deno.test("UserModelLoader buildIndex: catalog extracts type from export block, not from decoy properties", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   // Model with a decoy `type: "decoy"` in a helper call BEFORE the
   // actual `export const model = { type: "@test/real-..." }`.
   // Guards against naive type-extraction that picks the first `type:` literal
@@ -3194,7 +3198,7 @@ export const model = {
 // extensions targeting it.
 
 function makePendingAttachFixture(typeSlug: string) {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const typeId = `@user/${typeSlug}-${ts}`;
   const modelCode = `
 import { z } from "npm:zod@4";
@@ -3267,7 +3271,7 @@ Deno.test("attachPendingExtensionsForType: attaches a single pending extension",
 });
 
 Deno.test("attachPendingExtensionsForType: attaches multiple extensions on same base", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const typeId = `@user/apeft-multi-${ts}`;
   const modelCode = `
 import { z } from "npm:zod@4";
@@ -3350,7 +3354,7 @@ export const extension = {
 });
 
 Deno.test("attachPendingExtensionsForType: zero pending extensions is a no-op", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const typeId = `@user/apeft-zero-${ts}`;
   const modelCode = `
 import { z } from "npm:zod@4";
@@ -3461,7 +3465,7 @@ Deno.test("buildIndex post-loop attach: extension attaches after model file rebu
   // BEFORE its stale extension file — the in-loop attach would find no
   // catalog row for the extension, but the post-loop attach succeeds
   // because every catalog row exists by the time it runs.
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const typeId = `@user/buildindex-order-${ts}`;
   const modelCode = (marker: string) => `
 import { z } from "npm:zod@4";
@@ -3566,7 +3570,7 @@ Deno.test("UserModelLoader: registerLazyFromCatalog skips ValidationFailed rows 
   // which is why the bug manifests there but not via in-process
   // integration tests. The fix's actual surface is the catalog row
   // shape + the registration filter — both unit-testable.
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const healthy = `
 import { z } from "npm:zod@4";
 
@@ -3690,7 +3694,7 @@ Deno.test("UserModelLoader buildIndex: missing cached bundle is detected and rec
   // module — only that recovery happened (no throw + bundle restored).
   // Production runs are fresh subprocesses without that cache, which is
   // why the bug manifests there.
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const typeId = `@user/missing-bundle-${ts}`;
   const modelCode = `
 import { z } from "npm:zod@4";
@@ -3793,7 +3797,7 @@ export const model = {
 Deno.test(
   "UserModelLoader.bundleAndIndexOne: returns model metadata without writing catalog rows (Pin 1)",
   async () => {
-    const ts = Date.now();
+    const ts = crypto.randomUUID().slice(0, 8);
     const typeId = `@user/pin1-model-${ts}`;
     const modelCode = `
 import { z } from "npm:zod@4";
@@ -4043,7 +4047,7 @@ export const model = {
 // tracking set that replaced allExtensionMethodsAttached.
 
 Deno.test("attachPendingExtensionsForType: idempotent across two code paths (issue #123 regression)", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const typeId = `@user/issue123-cross-path-${ts}`;
   const modelCode = `
 import { z } from "npm:zod@4";
@@ -4132,7 +4136,7 @@ export const extension = {
 });
 
 Deno.test("attachPendingExtensionsForType: load-then-attach cross-path produces no failures (hotLoadModels scenario)", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const typeId = `@user/issue318-hotload-${ts}`;
   const modelCode = `
 import { z } from "npm:zod@4";
@@ -4219,7 +4223,7 @@ export const extension = {
 });
 
 Deno.test("attachPendingExtensionsForType: attaches new extension B while skipping already-attached A", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const typeId = `@user/issue318-ab-${ts}`;
   const modelCode = `
 import { z } from "npm:zod@4";
@@ -4335,7 +4339,7 @@ export const extension = {
 });
 
 Deno.test("attachPendingExtensionsForType: resetLoadedFlag does not break tracking (ADV-2)", async () => {
-  const ts = Date.now();
+  const ts = crypto.randomUUID().slice(0, 8);
   const typeId = `@user/issue318-reset-${ts}`;
   const modelCode = `
 import { z } from "npm:zod@4";

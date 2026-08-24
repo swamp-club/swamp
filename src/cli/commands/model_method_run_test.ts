@@ -18,7 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { Command } from "@cliffy/command";
+import { ModelNameType } from "../completion_types.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+
+// Import models barrel to trigger self-registration
+import "../../domain/models/models.ts";
 
 // Initialize logging for tests
 await initializeLogging({});
@@ -77,4 +82,84 @@ Deno.test("modelMethodRunCommand has --server option", async () => {
   const options = modelMethodRunCommand.getOptions();
   const serverOpt = options.find((o) => o.name === "server");
   assertEquals(serverOpt !== undefined, true);
+});
+
+/**
+ * In-process serve endpoint streaming the given run events followed by a
+ * `done` frame — enough to drive the command's streaming --server path
+ * without a subprocess.
+ */
+function runEventServer(
+  events: Record<string, unknown>[],
+): { url: string; shutdown: () => Promise<void> } {
+  const server = Deno.serve(
+    { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+    (req) => {
+      const { socket, response } = Deno.upgradeWebSocket(req);
+      socket.onmessage = (message) => {
+        const request = JSON.parse(message.data as string) as { id: string };
+        for (const event of events) {
+          socket.send(
+            JSON.stringify({ type: "event", id: request.id, event }),
+          );
+        }
+        socket.send(JSON.stringify({ type: "done", id: request.id }));
+      };
+      return response;
+    },
+  );
+  return {
+    url: `ws://127.0.0.1:${server.addr.port}`,
+    shutdown: () => server.shutdown(),
+  };
+}
+
+/** Runs `model method run --server` against a scripted run result; returns Deno.exitCode. */
+async function runMethodRunAgainst(
+  run: Record<string, unknown>,
+): Promise<number> {
+  const server = runEventServer([{ kind: "completed", run }]);
+  const previousExitCode = Deno.exitCode;
+  Deno.exitCode = 0;
+  try {
+    const { modelMethodRunCommand } = await import("./model_method_run.ts");
+    const root = new Command()
+      .globalType("model_name", new ModelNameType())
+      .globalOption("--json", "JSON output")
+      .command("run", modelMethodRunCommand);
+    await root.parse([
+      "run",
+      "echo-model",
+      "echo",
+      "--json",
+      "--server",
+      server.url,
+      "--token",
+      "test.token",
+    ]);
+    return Deno.exitCode;
+  } finally {
+    Deno.exitCode = previousExitCode;
+    await server.shutdown();
+  }
+}
+
+Deno.test({
+  name:
+    "modelMethodRunCommand: sets Deno.exitCode 1 when the server-side run fails",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    assertEquals(await runMethodRunAgainst({ status: "failed" }), 1);
+  },
+});
+
+Deno.test({
+  name:
+    "modelMethodRunCommand: leaves Deno.exitCode 0 when the server-side run succeeds",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    assertEquals(await runMethodRunAgainst({ status: "succeeded" }), 0);
+  },
 });

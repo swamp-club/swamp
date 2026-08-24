@@ -22,6 +22,7 @@ import {
   assertNotEquals,
   assertStringIncludes,
 } from "@std/assert";
+import { withMockedCommand } from "@swamp-club/swamp-testing";
 import { assertPathStringIncludes } from "../persistence/path_test_helpers.ts";
 import {
   autoupdateLogDir,
@@ -272,15 +273,13 @@ Deno.test({
     "detectInstalledCronMode: returns null when crontab binary is not installed",
   ignore: Deno.build.os === "windows",
   async fn() {
-    const originalPath = Deno.env.get("PATH");
-    try {
-      Deno.env.set("PATH", "/nonexistent");
+    // Simulate the missing binary by making the spawn throw — mutating the
+    // real PATH is process-global and races other parallel test files.
+    await withMockedCommand(() => {
+      throw new Deno.errors.NotFound("crontab: command not found");
+    }, async () => {
       const result = await detectInstalledCronMode();
       assertEquals(result, null);
-    } finally {
-      if (originalPath !== undefined) {
-        Deno.env.set("PATH", originalPath);
-      }
-    }
+    });
   },
 });

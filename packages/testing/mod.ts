@@ -190,3 +190,9 @@ export type {
   CommandOutput,
   MockCommandResult,
 } from "./mock_command.ts";
+
+// --- Timing ---
+
+export { waitFor } from "./wait_for.ts";
+
+export type { WaitForOptions } from "./wait_for.ts";
