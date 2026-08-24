@@ -235,6 +235,11 @@ export class WorkerGateway {
     return this.#sessions;
   }
 
+  /** Clean up internal timers (dispatch credential refresh). */
+  dispose(): void {
+    this.#sessions.dispose();
+  }
+
   /**
    * Attach a control socket. Returns the per-socket state whose channel
    * consumes RPC frames; the caller feeds raw messages to `feed()` and must
