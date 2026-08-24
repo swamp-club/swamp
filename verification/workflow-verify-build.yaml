@@ -37,7 +37,7 @@ jobs:
           inputs:
             run: |
               set -e
-              CHECKOUT_DIR="/tmp/swamp-verify-build-${{ inputs.commit }}"
+              CHECKOUT_DIR="/tmp/swamp-verify-build-${{ run.id }}"
               rm -rf "$CHECKOUT_DIR"
               git worktree prune
               git worktree add --detach "$CHECKOUT_DIR" "${{ inputs.commit }}"
@@ -58,7 +58,7 @@ jobs:
           methodName: execute
           inputs:
             run: "deno lint"
-            workingDir: "/tmp/swamp-verify-build-${{ inputs.commit }}"
+            workingDir: "/tmp/swamp-verify-build-${{ run.id }}"
 
       - name: fmt-check
         task:
@@ -68,7 +68,7 @@ jobs:
           methodName: execute
           inputs:
             run: "deno fmt --check"
-            workingDir: "/tmp/swamp-verify-build-${{ inputs.commit }}"
+            workingDir: "/tmp/swamp-verify-build-${{ run.id }}"
 
       - name: type-check
         task:
@@ -78,7 +78,7 @@ jobs:
           methodName: execute
           inputs:
             run: "deno task check"
-            workingDir: "/tmp/swamp-verify-build-${{ inputs.commit }}"
+            workingDir: "/tmp/swamp-verify-build-${{ run.id }}"
 
   # ── Tests ────────────────────────────────────────────────────
   - name: tests
@@ -96,7 +96,7 @@ jobs:
           methodName: execute
           inputs:
             run: "deno task test"
-            workingDir: "/tmp/swamp-verify-build-${{ inputs.commit }}"
+            workingDir: "/tmp/swamp-verify-build-${{ run.id }}"
 
   # ── Dependency Audit ─────────────────────────────────────────
   - name: deps-audit
@@ -114,7 +114,7 @@ jobs:
           methodName: execute
           inputs:
             run: "deno task audit"
-            workingDir: "/tmp/swamp-verify-build-${{ inputs.commit }}"
+            workingDir: "/tmp/swamp-verify-build-${{ run.id }}"
 
   # ── Compile + Binary Check ────────────────────────────────────
   - name: compile
@@ -135,7 +135,7 @@ jobs:
           methodName: execute
           inputs:
             run: "deno task compile"
-            workingDir: "/tmp/swamp-verify-build-${{ inputs.commit }}"
+            workingDir: "/tmp/swamp-verify-build-${{ run.id }}"
 
       - name: binary-check
         dependsOn:
@@ -149,7 +149,7 @@ jobs:
           methodName: execute
           inputs:
             run: "ls -la swamp && chmod +x swamp && ./swamp --version"
-            workingDir: "/tmp/swamp-verify-build-${{ inputs.commit }}"
+            workingDir: "/tmp/swamp-verify-build-${{ run.id }}"
 
   # ── Cleanup ──────────────────────────────────────────────────
   - name: cleanup
@@ -170,7 +170,7 @@ jobs:
           methodName: execute
           inputs:
             run: |
-              CHECKOUT_DIR="/tmp/swamp-verify-build-${{ inputs.commit }}"
+              CHECKOUT_DIR="/tmp/swamp-verify-build-${{ run.id }}"
               git worktree remove --force "$CHECKOUT_DIR" 2>/dev/null || true
               git worktree prune
             ignoreExitCode: true

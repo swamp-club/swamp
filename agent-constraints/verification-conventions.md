@@ -4,8 +4,9 @@
 
 Build checks run as a swamp workflow on the host — native filesystem speed,
 same Deno that's already installed. Isolation comes from a fresh `git worktree`
-at the verified commit in `/tmp/swamp-verify-build-<commit>`. This guarantees
-the build verifies exactly what was committed, not whatever is on disk.
+at the verified commit in `/tmp/swamp-verify-build-<run-id>`. Each workflow run
+gets its own unique directory (keyed by run ID, not commit SHA) so multiple
+verifications can run in parallel without colliding.
 
 ```
 SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-build \
@@ -25,7 +26,7 @@ lint, test, and compile failures are reported accurately.
 Reviews run as a swamp workflow on the host (not in a container) so the claude
 CLI has full project context — CLAUDE.md, skills, and the codebase. Like the
 build workflow, reviews run in a fresh `git worktree` at the verified commit
-(`/tmp/swamp-verify-reviews-<commit>`) so that `claude -p`'s Read/Glob/Grep
+(`/tmp/swamp-verify-reviews-<run-id>`) so that `claude -p`'s Read/Glob/Grep
 tools see the committed file state, not the caller's working tree.
 
 ```

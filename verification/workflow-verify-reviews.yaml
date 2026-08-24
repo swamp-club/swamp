@@ -38,7 +38,7 @@ jobs:
           inputs:
             run: |
               set -e
-              CHECKOUT_DIR="/tmp/swamp-verify-reviews-${{ inputs.commit }}"
+              CHECKOUT_DIR="/tmp/swamp-verify-reviews-${{ run.id }}"
               rm -rf "$CHECKOUT_DIR"
               git worktree prune
               git worktree add --detach "$CHECKOUT_DIR" "${{ inputs.commit }}"
@@ -107,7 +107,7 @@ jobs:
                 echo "::error::Code review did not pass (verdict: ${VERDICT:-missing})"
                 exit 1
               fi
-            workingDir: "/tmp/swamp-verify-reviews-${{ inputs.commit }}"
+            workingDir: "/tmp/swamp-verify-reviews-${{ run.id }}"
 
       - name: adversarial-review
         guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('src/domain/') || f.startsWith('src/infrastructure/') || f.startsWith('src/libswamp/') || f.startsWith('src/serve/') || f.startsWith('src/worker/')).size() == 0 }}"
@@ -135,7 +135,7 @@ jobs:
                 echo "::error::Adversarial review did not pass (verdict: ${VERDICT:-missing})"
                 exit 1
               fi
-            workingDir: "/tmp/swamp-verify-reviews-${{ inputs.commit }}"
+            workingDir: "/tmp/swamp-verify-reviews-${{ run.id }}"
 
       - name: ux-review
         guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('src/cli/commands/') || f.startsWith('src/presentation/') || f == 'src/domain/errors.ts' || f.startsWith('src/libswamp/')).size() == 0 }}"
@@ -163,7 +163,7 @@ jobs:
                 echo "::error::UX review did not pass (verdict: ${VERDICT:-missing})"
                 exit 1
               fi
-            workingDir: "/tmp/swamp-verify-reviews-${{ inputs.commit }}"
+            workingDir: "/tmp/swamp-verify-reviews-${{ run.id }}"
 
       - name: ci-security-review
         guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('.github/workflows/')).size() == 0 }}"
@@ -191,7 +191,7 @@ jobs:
                 echo "::error::CI security review did not pass (verdict: ${VERDICT:-missing})"
                 exit 1
               fi
-            workingDir: "/tmp/swamp-verify-reviews-${{ inputs.commit }}"
+            workingDir: "/tmp/swamp-verify-reviews-${{ run.id }}"
 
   # ── Cleanup ──────────────────────────────────────────────────
   - name: cleanup
@@ -209,7 +209,7 @@ jobs:
           methodName: execute
           inputs:
             run: |
-              CHECKOUT_DIR="/tmp/swamp-verify-reviews-${{ inputs.commit }}"
+              CHECKOUT_DIR="/tmp/swamp-verify-reviews-${{ run.id }}"
               git worktree remove --force "$CHECKOUT_DIR" 2>/dev/null || true
               git worktree prune
             ignoreExitCode: true
