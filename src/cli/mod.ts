@@ -661,7 +661,7 @@ async function loadUserModels(
 
     // Build the index: reads catalog + mtime scan for freshness.
     // If catalog is populated, only rebundles changed files.
-    // If not populated (first run), does a full import to bootstrap.
+    // If not populated (first run), bundles without importing (indexOnly).
     // Always scans for staleness so users never see stale data.
     // Load order: local > sources > pulled (sources override pulled).
     // pulledDirs is one entry per installed extension — the loader walks
@@ -671,6 +671,7 @@ async function loadUserModels(
       absoluteModelsDir,
       {
         additionalDirs: [...sourceDirs, ...pulledDirs],
+        indexOnly: true,
       },
     );
 
@@ -754,6 +755,7 @@ async function loadUserVaults(
 
       const result = await loader.buildIndex(absoluteVaultsDir, {
         additionalDirs: [...sourceDirs, ...pulledDirs],
+        indexOnly: true,
       });
 
       throwOnTransientLoadFailures(result.failed, "vault");
@@ -838,6 +840,7 @@ async function loadUserDatastores(
         absoluteDatastoresDir,
         {
           additionalDirs: [...sourceDirs, ...pulledDirs],
+          indexOnly: true,
         },
       );
 
@@ -923,6 +926,7 @@ async function loadUserReports(
 
       const result = await loader.buildIndex(absoluteReportsDir, {
         additionalDirs: [...sourceDirs, ...pulledDirs],
+        indexOnly: true,
       });
 
       throwOnTransientLoadFailures(result.failed, "report");

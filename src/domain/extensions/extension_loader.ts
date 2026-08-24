@@ -395,7 +395,7 @@ export class ExtensionLoader {
 
   async buildIndex(
     dir: string,
-    options?: { additionalDirs?: string[] },
+    options?: { additionalDirs?: string[]; indexOnly?: boolean },
   ): Promise<ExtensionLoadResult> {
     const repository = this.requireRepository("buildIndex");
     const catalog = repository.getCatalogStore();
@@ -522,14 +522,10 @@ export class ExtensionLoader {
       return result;
     }
 
-    // Cold start: bundle all source files without importing them into V8.
-    // This avoids OOM on repos with thousands of model definitions by
-    // keeping bundles on disk only. Types are registered as lazy catalog
-    // entries and imported on demand via ensureTypeLoaded()/loadSingleType().
     const fullResult = await this.load(dir, {
       additionalDirs: options?.additionalDirs,
       skipAlreadyRegistered: true,
-      indexOnly: true,
+      indexOnly: options?.indexOnly,
     });
 
     if (fullResult.failed.length > 0 && this.repoDir) {
@@ -612,7 +608,9 @@ export class ExtensionLoader {
     if (this.repoDir) {
       catalog.resolveOriginConflicts(this.repoDir);
     }
-    this.registerLazyFromCatalog(catalog);
+    if (options?.indexOnly) {
+      this.registerLazyFromCatalog(catalog);
+    }
     catalog.markPopulated(this.adapter.kind);
     catalog.setLayoutVersion(BUNDLE_LAYOUT_VERSION);
     catalog.setDatastoreBasePath(currentBasePath, this.adapter.kind);
