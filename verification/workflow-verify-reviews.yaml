@@ -3,8 +3,8 @@ name: verify-reviews
 description: |
   Agent code reviews using claude CLI directly. Detects changed files,
   constructs review prompts with the diff inlined, and runs claude -p
-  for each review type in parallel. Runs on the host (not in a container)
-  so CLAUDE.md and skills are available as project context.
+  for each review type in parallel. Runs on the host in a fresh git
+  worktree so CLAUDE.md, skills, and file reads reflect the verified commit.
 version: 1
 
 tags:
@@ -25,9 +25,31 @@ inputs:
 concurrency: 4
 
 jobs:
+  # ── Fresh Checkout ──────────────────────────────────────────
+  - name: setup
+    description: Create a clean worktree at the verified commit.
+    steps:
+      - name: checkout
+        task:
+          type: model_method
+          modelType: "command/shell"
+          modelName: review-setup
+          methodName: execute
+          inputs:
+            run: |
+              set -e
+              CHECKOUT_DIR="/tmp/swamp-verify-reviews-${{ inputs.commit }}"
+              rm -rf "$CHECKOUT_DIR"
+              git worktree prune
+              git worktree add --detach "$CHECKOUT_DIR" "${{ inputs.commit }}"
+
   # ── Detect Changed Files ──────────────────────────────────────
   - name: detect-changes
     description: Compute the merge-base diff and changed file list.
+    dependsOn:
+      - job: setup
+        condition:
+          type: succeeded
     steps:
       - name: diff
         task:
@@ -85,6 +107,7 @@ jobs:
                 echo "::error::Code review did not pass (verdict: ${VERDICT:-missing})"
                 exit 1
               fi
+            workingDir: "/tmp/swamp-verify-reviews-${{ inputs.commit }}"
 
       - name: adversarial-review
         guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('src/domain/') || f.startsWith('src/infrastructure/') || f.startsWith('src/libswamp/') || f.startsWith('src/serve/') || f.startsWith('src/worker/')).size() == 0 }}"
@@ -112,6 +135,7 @@ jobs:
                 echo "::error::Adversarial review did not pass (verdict: ${VERDICT:-missing})"
                 exit 1
               fi
+            workingDir: "/tmp/swamp-verify-reviews-${{ inputs.commit }}"
 
       - name: ux-review
         guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('src/cli/commands/') || f.startsWith('src/presentation/') || f == 'src/domain/errors.ts' || f.startsWith('src/libswamp/')).size() == 0 }}"
@@ -139,6 +163,7 @@ jobs:
                 echo "::error::UX review did not pass (verdict: ${VERDICT:-missing})"
                 exit 1
               fi
+            workingDir: "/tmp/swamp-verify-reviews-${{ inputs.commit }}"
 
       - name: ci-security-review
         guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('.github/workflows/')).size() == 0 }}"
@@ -166,3 +191,25 @@ jobs:
                 echo "::error::CI security review did not pass (verdict: ${VERDICT:-missing})"
                 exit 1
               fi
+            workingDir: "/tmp/swamp-verify-reviews-${{ inputs.commit }}"
+
+  # ── Cleanup ──────────────────────────────────────────────────
+  - name: cleanup
+    description: Remove the temporary worktree.
+    dependsOn:
+      - job: reviews
+        condition:
+          type: always
+    steps:
+      - name: remove-worktree
+        task:
+          type: model_method
+          modelType: "command/shell"
+          modelName: review-cleanup
+          methodName: execute
+          inputs:
+            run: |
+              CHECKOUT_DIR="/tmp/swamp-verify-reviews-${{ inputs.commit }}"
+              git worktree remove --force "$CHECKOUT_DIR" 2>/dev/null || true
+              git worktree prune
+            ignoreExitCode: true

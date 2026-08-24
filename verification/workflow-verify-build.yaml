@@ -2,7 +2,8 @@ id: 7c2f8a31-4e19-4d6b-b8a0-1f3d5e7c9b2a
 name: verify-build
 description: |
   Build verification: lint, format check, type check, tests, dependency audit,
-  compile, and binary smoke test. Runs on the host from a fresh checkout.
+  compile, and binary smoke test. Runs on the host in a fresh git worktree
+  checked out at the verified commit.
 version: 1
 
 tags:
@@ -23,9 +24,31 @@ inputs:
 concurrency: 4
 
 jobs:
+  # ── Fresh Checkout ──────────────────────────────────────────
+  - name: setup
+    description: Create a clean worktree at the verified commit.
+    steps:
+      - name: checkout
+        task:
+          type: model_method
+          modelType: "command/shell"
+          modelName: build-setup
+          methodName: execute
+          inputs:
+            run: |
+              set -e
+              CHECKOUT_DIR="/tmp/swamp-verify-build-${{ inputs.commit }}"
+              rm -rf "$CHECKOUT_DIR"
+              git worktree prune
+              git worktree add --detach "$CHECKOUT_DIR" "${{ inputs.commit }}"
+
   # ── Static Analysis ──────────────────────────────────────────
   - name: static-analysis
     description: Lint, format check, and type check.
+    dependsOn:
+      - job: setup
+        condition:
+          type: succeeded
     steps:
       - name: lint
         task:
@@ -35,6 +58,7 @@ jobs:
           methodName: execute
           inputs:
             run: "deno lint"
+            workingDir: "/tmp/swamp-verify-build-${{ inputs.commit }}"
 
       - name: fmt-check
         task:
@@ -44,6 +68,7 @@ jobs:
           methodName: execute
           inputs:
             run: "deno fmt --check"
+            workingDir: "/tmp/swamp-verify-build-${{ inputs.commit }}"
 
       - name: type-check
         task:
@@ -53,10 +78,15 @@ jobs:
           methodName: execute
           inputs:
             run: "deno task check"
+            workingDir: "/tmp/swamp-verify-build-${{ inputs.commit }}"
 
   # ── Tests ────────────────────────────────────────────────────
   - name: tests
     description: Run the full test suite.
+    dependsOn:
+      - job: setup
+        condition:
+          type: succeeded
     steps:
       - name: run-tests
         task:
@@ -66,10 +96,15 @@ jobs:
           methodName: execute
           inputs:
             run: "deno task test"
+            workingDir: "/tmp/swamp-verify-build-${{ inputs.commit }}"
 
   # ── Dependency Audit ─────────────────────────────────────────
   - name: deps-audit
     description: Scan dependencies for known vulnerabilities.
+    dependsOn:
+      - job: setup
+        condition:
+          type: succeeded
     steps:
       - name: vuln-scan
         task:
@@ -79,6 +114,7 @@ jobs:
           methodName: execute
           inputs:
             run: "deno task audit"
+            workingDir: "/tmp/swamp-verify-build-${{ inputs.commit }}"
 
   # ── Compile + Binary Check ────────────────────────────────────
   - name: compile
@@ -99,6 +135,7 @@ jobs:
           methodName: execute
           inputs:
             run: "deno task compile"
+            workingDir: "/tmp/swamp-verify-build-${{ inputs.commit }}"
 
       - name: binary-check
         dependsOn:
@@ -112,3 +149,28 @@ jobs:
           methodName: execute
           inputs:
             run: "ls -la swamp && chmod +x swamp && ./swamp --version"
+            workingDir: "/tmp/swamp-verify-build-${{ inputs.commit }}"
+
+  # ── Cleanup ──────────────────────────────────────────────────
+  - name: cleanup
+    description: Remove the temporary worktree.
+    dependsOn:
+      - job: compile
+        condition:
+          type: always
+      - job: deps-audit
+        condition:
+          type: always
+    steps:
+      - name: remove-worktree
+        task:
+          type: model_method
+          modelType: "command/shell"
+          modelName: build-cleanup
+          methodName: execute
+          inputs:
+            run: |
+              CHECKOUT_DIR="/tmp/swamp-verify-build-${{ inputs.commit }}"
+              git worktree remove --force "$CHECKOUT_DIR" 2>/dev/null || true
+              git worktree prune
+            ignoreExitCode: true
