@@ -47,6 +47,10 @@ type AnyOptions = any;
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 
+export function isServeOwnedRun(run: WorkflowRun): boolean {
+  return run.instanceId !== undefined;
+}
+
 async function cancelRun(run: WorkflowRun, reason: string): Promise<void> {
   if (run.pid && run.pid !== Deno.pid) {
     await killProcessTree(run.pid);
@@ -221,19 +225,22 @@ export const workflowCancelCommand = withRemoteOptions(
       const activeRuns = await findAllActiveRuns(workflowRepo, runRepo);
       if (activeRuns.length === 0) {
         if (cliCtx.outputMode === "json") {
-          console.log(JSON.stringify({ cancelled: [] }));
+          console.log(JSON.stringify({ cancelled: [], skipped: [] }));
         } else {
           cliCtx.logger.info("No active workflow runs found to cancel.");
         }
         return;
       }
 
+      const localRuns = activeRuns.filter(({ run }) => !isServeOwnedRun(run));
+      const serveRuns = activeRuns.filter(({ run }) => isServeOwnedRun(run));
+
       const cancelled: {
         runId: string;
         workflowName: string;
         previousStatus: string;
       }[] = [];
-      for (const { run, workflowId, workflowName } of activeRuns) {
+      for (const { run, workflowId, workflowName } of localRuns) {
         const previousStatus = run.status;
         await cancelRun(run, reason);
         await runRepo.save(workflowId, run);
@@ -244,18 +251,38 @@ export const workflowCancelCommand = withRemoteOptions(
         });
       }
 
+      const skipped = serveRuns.map(({ run, workflowName }) => ({
+        runId: run.id,
+        workflowName,
+        status: run.status,
+      }));
+
       if (cliCtx.outputMode === "json") {
         console.log(JSON.stringify({
           cancelled,
+          skipped,
           count: cancelled.length,
           reason,
         }));
       } else {
-        cliCtx.logger
-          .info`Cancelled ${cancelled.length} workflow run(s)`;
-        for (const entry of cancelled) {
+        if (cancelled.length > 0) {
           cliCtx.logger
-            .info`  ${entry.workflowName} (${entry.runId}): ${entry.previousStatus} -> cancelled`;
+            .info`Cancelled ${cancelled.length} workflow run(s)`;
+          for (const entry of cancelled) {
+            cliCtx.logger
+              .info`  ${entry.workflowName} (${entry.runId}): ${entry.previousStatus} -> cancelled`;
+          }
+        }
+        if (skipped.length > 0) {
+          cliCtx.logger
+            .warn`Skipped ${skipped.length} serve-owned run(s) — cancel these individually via --server --run <id>`;
+          for (const entry of skipped) {
+            cliCtx.logger
+              .warn`  ${entry.workflowName} (${entry.runId}): ${entry.status}`;
+          }
+        }
+        if (cancelled.length === 0 && skipped.length === 0) {
+          cliCtx.logger.info("No active workflow runs found to cancel.");
         }
       }
       return;
@@ -302,6 +329,13 @@ export const workflowCancelCommand = withRemoteOptions(
     if (TERMINAL_STATUSES.has(run.status)) {
       throw new UserError(
         `Run ${run.id} is already in a terminal state (status: ${run.status})`,
+      );
+    }
+
+    if (isServeOwnedRun(run)) {
+      throw new UserError(
+        `Run ${run.id} belongs to a serve instance and cannot be cancelled locally. ` +
+          `Use --server to cancel it: swamp workflow cancel --run ${run.id} --server <url>`,
       );
     }
 
