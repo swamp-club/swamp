@@ -103,7 +103,8 @@ main() {
   echo
 
   # Prompt to connect to SWAMP CLUB when running interactively
-  if [ -e /dev/tty ] && [ -t 1 ]; then
+  # Skip in CI environments or when explicitly requested via SWAMP_NONINTERACTIVE
+  if [ -z "${CI:-}" ] && [ -z "${SWAMP_NONINTERACTIVE:-}" ] && [ -e /dev/tty ] && [ -t 1 ]; then
     echo
     section "Swamp is better with SWAMP CLUB (swamp-club.com)"
     info ""
