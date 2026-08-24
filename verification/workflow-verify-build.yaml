@@ -32,7 +32,7 @@ jobs:
         task:
           type: model_method
           modelType: "command/shell"
-          modelName: build-setup
+          modelName: build-setup-${{ run.id }}
           methodName: execute
           inputs:
             run: |
@@ -54,7 +54,7 @@ jobs:
         task:
           type: model_method
           modelType: "command/shell"
-          modelName: build-lint
+          modelName: build-lint-${{ run.id }}
           methodName: execute
           inputs:
             run: "deno lint"
@@ -64,7 +64,7 @@ jobs:
         task:
           type: model_method
           modelType: "command/shell"
-          modelName: build-fmt
+          modelName: build-fmt-${{ run.id }}
           methodName: execute
           inputs:
             run: "deno fmt --check"
@@ -74,7 +74,7 @@ jobs:
         task:
           type: model_method
           modelType: "command/shell"
-          modelName: build-check
+          modelName: build-check-${{ run.id }}
           methodName: execute
           inputs:
             run: "deno task check"
@@ -92,7 +92,7 @@ jobs:
         task:
           type: model_method
           modelType: "command/shell"
-          modelName: build-tests
+          modelName: build-tests-${{ run.id }}
           methodName: execute
           inputs:
             run: "deno task test"
@@ -110,7 +110,7 @@ jobs:
         task:
           type: model_method
           modelType: "command/shell"
-          modelName: build-audit
+          modelName: build-audit-${{ run.id }}
           methodName: execute
           inputs:
             run: "deno task audit"
@@ -131,7 +131,7 @@ jobs:
         task:
           type: model_method
           modelType: "command/shell"
-          modelName: build-compile
+          modelName: build-compile-${{ run.id }}
           methodName: execute
           inputs:
             run: "deno task compile"
@@ -145,7 +145,7 @@ jobs:
         task:
           type: model_method
           modelType: "command/shell"
-          modelName: build-smoke
+          modelName: build-smoke-${{ run.id }}
           methodName: execute
           inputs:
             run: "ls -la swamp && chmod +x swamp && ./swamp --version"
@@ -166,11 +166,14 @@ jobs:
         task:
           type: model_method
           modelType: "command/shell"
-          modelName: build-cleanup
+          modelName: build-cleanup-${{ run.id }}
           methodName: execute
           inputs:
             run: |
               CHECKOUT_DIR="/tmp/swamp-verify-build-${{ run.id }}"
               git worktree remove --force "$CHECKOUT_DIR" 2>/dev/null || true
               git worktree prune
+              # Remove ephemeral auto-definitions created for this run
+              REPO_ROOT="$(git rev-parse --git-common-dir)/.."
+              find "$REPO_ROOT/.swamp/auto-definitions" -name "*-${{ run.id }}.yaml" -delete 2>/dev/null || true
             ignoreExitCode: true
