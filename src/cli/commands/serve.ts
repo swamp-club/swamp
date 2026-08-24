@@ -1496,8 +1496,8 @@ export const serveCommand = new Command()
       dataPlane.releaseDispatch(dispatchId)
     );
 
-    // Eagerly load extension registries so failures surface at startup
-    // rather than silently on first scheduled/webhook execution.
+    // Index extension registries so types are discoverable at startup.
+    // Bundles are imported on demand when workflow steps target them.
     await Promise.all([
       modelRegistry.ensureLoaded(),
       vaultTypeRegistry.ensureLoaded(),

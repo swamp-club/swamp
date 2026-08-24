@@ -176,6 +176,7 @@ export class ExtensionLoader {
     options?: {
       skipAlreadyRegistered?: boolean;
       additionalDirs?: string[];
+      indexOnly?: boolean;
     },
   ): Promise<ExtensionLoadResult> {
     const result: ExtensionLoadResult = {
@@ -203,6 +204,41 @@ export class ExtensionLoader {
       for (const file of files) {
         allFiles.push({ file, baseDir: d });
       }
+    }
+
+    if (options?.indexOnly) {
+      for (const { file, baseDir } of allFiles) {
+        try {
+          const absolutePath = resolve(baseDir, file);
+          const source = await Deno.readTextFile(absolutePath);
+          if (!this.adapter.exportRegex.test(source)) {
+            this.logger
+              .debug`Skipping ${file} (no ${this.adapter.kind} export found)`;
+            continue;
+          }
+
+          const { fromCache } = await this.bundleWithCache(
+            absolutePath,
+            file,
+            denoPath,
+            baseDir,
+            { trustPulledCache: true },
+          );
+          if (fromCache) {
+            this.logger
+              .warn`Using cached bundle for ${file} — source may have changed but bundle could not be regenerated`;
+          }
+          result.loaded.push(file);
+        } catch (error) {
+          result.failed.push({
+            file,
+            error: String(error),
+            originalError: error,
+            baseDir,
+          });
+        }
+      }
+      return result;
     }
 
     const primaryFiles: Array<{
@@ -359,7 +395,7 @@ export class ExtensionLoader {
 
   async buildIndex(
     dir: string,
-    options?: { additionalDirs?: string[] },
+    options?: { additionalDirs?: string[]; indexOnly?: boolean },
   ): Promise<ExtensionLoadResult> {
     const repository = this.requireRepository("buildIndex");
     const catalog = repository.getCatalogStore();
@@ -489,6 +525,7 @@ export class ExtensionLoader {
     const fullResult = await this.load(dir, {
       additionalDirs: options?.additionalDirs,
       skipAlreadyRegistered: true,
+      indexOnly: options?.indexOnly,
     });
 
     if (fullResult.failed.length > 0 && this.repoDir) {
@@ -570,6 +607,9 @@ export class ExtensionLoader {
     );
     if (this.repoDir) {
       catalog.resolveOriginConflicts(this.repoDir);
+    }
+    if (options?.indexOnly) {
+      this.registerLazyFromCatalog(catalog);
     }
     catalog.markPopulated(this.adapter.kind);
     catalog.setLayoutVersion(BUNDLE_LAYOUT_VERSION);
