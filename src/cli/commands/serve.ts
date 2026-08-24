@@ -3702,6 +3702,7 @@ export const serveCommand = new Command()
             repoContext,
             repoMarker?.defaultVault,
             syncService,
+            serveNamespace,
           );
           const deviceAuthResponse = await handleDeviceAuth(
             req,
