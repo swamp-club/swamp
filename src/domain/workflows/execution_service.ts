@@ -2462,6 +2462,7 @@ export class WorkflowExecutionService {
           const expanded = expandedStepsMap.get(step.name);
           const names = expanded ? expanded.map((e) => e.expandedName) : [];
           jobRun.replaceExpandedSteps(step.name, names);
+          jobRun.registerForEachExpansion(step.name, names);
         }
       }
 

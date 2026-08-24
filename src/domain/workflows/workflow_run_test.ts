@@ -1298,3 +1298,169 @@ Deno.test("WorkflowRun.toData: stepProgress counts failed steps as completed", (
   const data = run.toData();
   assertEquals(data.stepProgress, { completed: 2, total: 3 });
 });
+
+// --- forEach getStatus aggregation (swamp-club#1780) ---
+
+Deno.test("JobRun.getStatus: aggregates forEach expanded steps — all succeeded", () => {
+  const jobRun = JobRun.pending("main", ["deploy"]);
+  jobRun.replaceExpandedSteps("deploy", ["deploy-dev", "deploy-qa"]);
+  jobRun.registerForEachExpansion("deploy", ["deploy-dev", "deploy-qa"]);
+
+  jobRun.getStep("deploy-dev")!.start();
+  jobRun.getStep("deploy-dev")!.succeed();
+  jobRun.getStep("deploy-qa")!.start();
+  jobRun.getStep("deploy-qa")!.succeed();
+
+  assertEquals(jobRun.getStatus("deploy"), "succeeded");
+});
+
+Deno.test("JobRun.getStatus: aggregates forEach expanded steps — any failed", () => {
+  const jobRun = JobRun.pending("main", ["deploy"]);
+  jobRun.replaceExpandedSteps("deploy", ["deploy-dev", "deploy-qa"]);
+  jobRun.registerForEachExpansion("deploy", ["deploy-dev", "deploy-qa"]);
+
+  jobRun.getStep("deploy-dev")!.start();
+  jobRun.getStep("deploy-dev")!.succeed();
+  jobRun.getStep("deploy-qa")!.start();
+  jobRun.getStep("deploy-qa")!.fail("connection timeout");
+
+  assertEquals(jobRun.getStatus("deploy"), "failed");
+});
+
+Deno.test("JobRun.getStatus: aggregates forEach expanded steps — all skipped", () => {
+  const jobRun = JobRun.pending("main", ["deploy"]);
+  jobRun.replaceExpandedSteps("deploy", ["deploy-dev", "deploy-qa"]);
+  jobRun.registerForEachExpansion("deploy", ["deploy-dev", "deploy-qa"]);
+
+  jobRun.getStep("deploy-dev")!.skip();
+  jobRun.getStep("deploy-qa")!.skip();
+
+  assertEquals(jobRun.getStatus("deploy"), "skipped");
+});
+
+Deno.test("JobRun.getStatus: aggregates forEach expanded steps — mixed succeeded and skipped", () => {
+  const jobRun = JobRun.pending("main", ["deploy"]);
+  jobRun.replaceExpandedSteps("deploy", ["deploy-dev", "deploy-qa"]);
+  jobRun.registerForEachExpansion("deploy", ["deploy-dev", "deploy-qa"]);
+
+  jobRun.getStep("deploy-dev")!.start();
+  jobRun.getStep("deploy-dev")!.succeed();
+  jobRun.getStep("deploy-qa")!.skip();
+
+  assertEquals(jobRun.getStatus("deploy"), "succeeded");
+});
+
+Deno.test("JobRun.getStatus: aggregates forEach expanded steps — any still running", () => {
+  const jobRun = JobRun.pending("main", ["deploy"]);
+  jobRun.replaceExpandedSteps("deploy", ["deploy-dev", "deploy-qa"]);
+  jobRun.registerForEachExpansion("deploy", ["deploy-dev", "deploy-qa"]);
+
+  jobRun.getStep("deploy-dev")!.start();
+  jobRun.getStep("deploy-dev")!.succeed();
+  // deploy-qa still pending
+
+  assertEquals(jobRun.getStatus("deploy"), "running");
+});
+
+Deno.test("JobRun.getStatus: aggregates forEach expanded steps — failed with sibling still running", () => {
+  const jobRun = JobRun.pending("main", ["deploy"]);
+  jobRun.replaceExpandedSteps("deploy", [
+    "deploy-dev",
+    "deploy-qa",
+    "deploy-staging",
+  ]);
+  jobRun.registerForEachExpansion("deploy", [
+    "deploy-dev",
+    "deploy-qa",
+    "deploy-staging",
+  ]);
+
+  jobRun.getStep("deploy-dev")!.start();
+  jobRun.getStep("deploy-dev")!.fail("timeout");
+  jobRun.getStep("deploy-qa")!.start();
+  // deploy-staging still pending
+
+  assertEquals(jobRun.getStatus("deploy"), "running");
+});
+
+Deno.test("JobRun.getStatus: empty forEach expansion returns undefined", () => {
+  const jobRun = JobRun.pending("main", ["deploy"]);
+  jobRun.replaceExpandedSteps("deploy", []);
+  jobRun.registerForEachExpansion("deploy", []);
+
+  assertEquals(jobRun.getStatus("deploy"), undefined);
+});
+
+Deno.test("JobRun.getStatus: unknown template returns undefined (no regression)", () => {
+  const jobRun = JobRun.pending("main", ["step1"]);
+
+  assertEquals(jobRun.getStatus("nonexistent"), undefined);
+});
+
+Deno.test("JobRun.getStatus: direct match takes priority over forEach mapping", () => {
+  const jobRun = JobRun.pending("main", ["step1", "deploy"]);
+  jobRun.registerForEachExpansion("deploy", ["deploy-dev"]);
+
+  jobRun.getStep("deploy")!.start();
+  jobRun.getStep("deploy")!.fail("error");
+
+  assertEquals(jobRun.getStatus("deploy"), "failed");
+});
+
+Deno.test("JobRun.getStatus: forEach aggregation works with trigger conditions", () => {
+  const jobRun = JobRun.pending("main", ["deploy", "after"]);
+  jobRun.replaceExpandedSteps("deploy", ["deploy-dev", "deploy-qa"]);
+  jobRun.registerForEachExpansion("deploy", ["deploy-dev", "deploy-qa"]);
+
+  jobRun.getStep("deploy-dev")!.start();
+  jobRun.getStep("deploy-dev")!.succeed();
+  jobRun.getStep("deploy-qa")!.start();
+  jobRun.getStep("deploy-qa")!.succeed();
+
+  const succeeded = TriggerCondition.succeeded();
+  assertEquals(succeeded.evaluate(jobRun, "deploy"), true);
+
+  const failed = TriggerCondition.failed();
+  assertEquals(failed.evaluate(jobRun, "deploy"), false);
+
+  const completed = TriggerCondition.completed();
+  assertEquals(completed.evaluate(jobRun, "deploy"), true);
+
+  const skipped = TriggerCondition.skipped();
+  assertEquals(skipped.evaluate(jobRun, "deploy"), false);
+});
+
+Deno.test("JobRun.getStatus: forEach aggregation with failed iteration triggers conditions correctly", () => {
+  const jobRun = JobRun.pending("main", ["deploy", "cleanup"]);
+  jobRun.replaceExpandedSteps("deploy", ["deploy-dev", "deploy-qa"]);
+  jobRun.registerForEachExpansion("deploy", ["deploy-dev", "deploy-qa"]);
+
+  jobRun.getStep("deploy-dev")!.start();
+  jobRun.getStep("deploy-dev")!.succeed();
+  jobRun.getStep("deploy-qa")!.start();
+  jobRun.getStep("deploy-qa")!.fail("timeout");
+
+  const succeeded = TriggerCondition.succeeded();
+  assertEquals(succeeded.evaluate(jobRun, "deploy"), false);
+
+  const failed = TriggerCondition.failed();
+  assertEquals(failed.evaluate(jobRun, "deploy"), true);
+
+  const completed = TriggerCondition.completed();
+  assertEquals(completed.evaluate(jobRun, "deploy"), true);
+});
+
+Deno.test("JobRun.getStatus: registerForEachExpansion is idempotent on re-registration", () => {
+  const jobRun = JobRun.pending("main", ["deploy"]);
+  jobRun.replaceExpandedSteps("deploy", ["deploy-dev", "deploy-qa"]);
+  jobRun.registerForEachExpansion("deploy", ["deploy-dev", "deploy-qa"]);
+  // Re-register (simulates resume path)
+  jobRun.registerForEachExpansion("deploy", ["deploy-dev", "deploy-qa"]);
+
+  jobRun.getStep("deploy-dev")!.start();
+  jobRun.getStep("deploy-dev")!.succeed();
+  jobRun.getStep("deploy-qa")!.start();
+  jobRun.getStep("deploy-qa")!.succeed();
+
+  assertEquals(jobRun.getStatus("deploy"), "succeeded");
+});

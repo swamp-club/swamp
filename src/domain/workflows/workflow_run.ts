@@ -372,6 +372,8 @@ export class StepRun {
  * JobRun tracks the execution state of a job and its steps.
  */
 export class JobRun implements TriggerEvaluationContext {
+  private _forEachMappings = new Map<string, readonly string[]>();
+
   constructor(
     readonly jobName: string,
     private _status: RunStatus,
@@ -421,9 +423,37 @@ export class JobRun implements TriggerEvaluationContext {
 
   /**
    * Gets the status of a step by name (for TriggerEvaluationContext).
+   *
+   * When `ref` is a forEach template name, aggregates the expanded steps'
+   * statuses: failed if any failed, succeeded if all succeeded, skipped if
+   * all skipped, running if any still in progress.
    */
   getStatus(ref: string): RunStatus | undefined {
-    return this._steps.find((s) => s.stepName === ref)?.status;
+    const direct = this._steps.find((s) => s.stepName === ref)?.status;
+    if (direct !== undefined) return direct;
+
+    const expandedNames = this._forEachMappings.get(ref);
+    if (!expandedNames || expandedNames.length === 0) return undefined;
+
+    const statuses: RunStatus[] = [];
+    for (const name of expandedNames) {
+      const status = this._steps.find((s) => s.stepName === name)?.status;
+      if (status === undefined) return undefined;
+      statuses.push(status);
+    }
+
+    if (
+      statuses.some((s) =>
+        s === "pending" || s === "running" || s === "waiting_approval"
+      )
+    ) {
+      return "running";
+    }
+    if (statuses.some((s) => s === "failed")) return "failed";
+    if (statuses.every((s) => s === "succeeded")) return "succeeded";
+    if (statuses.every((s) => s === "skipped")) return "skipped";
+    // Mix of succeeded and skipped (no failures, all terminal)
+    return "succeeded";
   }
 
   /**
@@ -474,6 +504,19 @@ export class JobRun implements TriggerEvaluationContext {
       }
     }
     this._steps.splice(templateIndex, 1, ...insertions);
+  }
+
+  /**
+   * Records the mapping from a forEach template step name to its expanded
+   * step names so {@link getStatus} can aggregate their statuses. Called
+   * by the execution service after forEach expansion on every run
+   * (including resume), so the mapping does not need to be persisted.
+   */
+  registerForEachExpansion(
+    templateName: string,
+    expandedNames: readonly string[],
+  ): void {
+    this._forEachMappings.set(templateName, expandedNames);
   }
 
   resetToPending(): void {
