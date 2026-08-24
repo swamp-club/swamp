@@ -1104,6 +1104,21 @@ export async function handleWorkflowResume(
         const message = sanitizeErrorForClient(error);
         sendError(socket, requestId, "workflow_resume_failed", message);
       }
+    } finally {
+      if (ctx.syncService) {
+        try {
+          await ctx.syncService.pushChanged();
+        } catch (pushErr) {
+          logger.warn(
+            "Post-resume push failed; terminal status may be delayed: {error}",
+            {
+              error: pushErr instanceof Error
+                ? pushErr.message
+                : String(pushErr),
+            },
+          );
+        }
+      }
     }
     return;
   }
@@ -1265,6 +1280,20 @@ export async function handleWorkflowResume(
         });
       }
     } finally {
+      if (ctx.syncService) {
+        try {
+          await ctx.syncService.pushChanged();
+        } catch (pushErr) {
+          logger.warn(
+            "Post-resume push failed; terminal status may be delayed: {error}",
+            {
+              error: pushErr instanceof Error
+                ? pushErr.message
+                : String(pushErr),
+            },
+          );
+        }
+      }
       try {
         ephemeral?.dispose();
       } catch (disposeErr) {

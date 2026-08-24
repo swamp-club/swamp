@@ -430,28 +430,43 @@ export async function executeWorkflowWithLocks(
     }
   };
 
-  if (!runTelemetry) {
-    await runTraced();
-    return;
-  }
-
-  // Record the run's own parent entry however it ends. Telemetry must never
-  // be able to fail a workflow run, so `finish` is isolated from the run's
-  // own error and the original error always propagates.
   try {
-    await runTraced();
-  } catch (error) {
-    await finishRunTelemetry(
-      runTelemetry,
-      error instanceof Error ? error : new Error(String(error)),
-    );
-    throw error;
-  }
+    if (!runTelemetry) {
+      await runTraced();
+      return;
+    }
 
-  const failure = finalStatus === "succeeded" ? null : new Error(
-    streamError ?? `workflow run ${finalStatus ?? "did not complete"}`,
-  );
-  await finishRunTelemetry(runTelemetry, failure);
+    // Record the run's own parent entry however it ends. Telemetry must never
+    // be able to fail a workflow run, so `finish` is isolated from the run's
+    // own error and the original error always propagates.
+    try {
+      await runTraced();
+    } catch (error) {
+      await finishRunTelemetry(
+        runTelemetry,
+        error instanceof Error ? error : new Error(String(error)),
+      );
+      throw error;
+    }
+
+    const failure = finalStatus === "succeeded" ? null : new Error(
+      streamError ?? `workflow run ${finalStatus ?? "did not complete"}`,
+    );
+    await finishRunTelemetry(runTelemetry, failure);
+  } finally {
+    if (syncService) {
+      try {
+        await syncService.pushChanged();
+      } catch (pushErr) {
+        logger.warn(
+          "Post-run push failed; terminal status may be delayed: {error}",
+          {
+            error: pushErr instanceof Error ? pushErr.message : String(pushErr),
+          },
+        );
+      }
+    }
+  }
 }
 
 /**

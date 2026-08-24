@@ -560,6 +560,16 @@ export const workflowRunCommand = new Command()
       const message = error instanceof Error ? error.message : String(error);
       throw new UserError(`Workflow execution failed: ${message}`);
     } finally {
+      if (unlocked.syncService) {
+        try {
+          await unlocked.syncService.pushChanged();
+        } catch (pushErr) {
+          ctx.logger
+            .warn`Post-run push failed; terminal status may be delayed: ${
+            pushErr instanceof Error ? pushErr.message : String(pushErr)
+          }`;
+        }
+      }
       shutdownHandle?.dispose();
       exitSuppress.dispose();
     }

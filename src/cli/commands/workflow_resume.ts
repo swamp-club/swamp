@@ -462,6 +462,16 @@ export const workflowResumeCommand = withRemoteOptions(
     try {
       await consumeStream(resumeGenerator(), renderer.handlers());
     } finally {
+      if (unlocked.syncService) {
+        try {
+          await unlocked.syncService.pushChanged();
+        } catch (pushErr) {
+          cliCtx.logger
+            .warn`Post-resume push failed; terminal status may be delayed: ${
+            pushErr instanceof Error ? pushErr.message : String(pushErr)
+          }`;
+        }
+      }
       shutdownHandle.dispose();
       ephemeral.dispose();
     }

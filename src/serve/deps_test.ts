@@ -18,9 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { createWorkflowRunDeps } from "./deps.ts";
+import { createWorkflowRunDeps, executeWorkflowWithLocks } from "./deps.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
+import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import type { WorkflowTelemetrySink } from "../libswamp/mod.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 
@@ -78,4 +79,90 @@ Deno.test("createWorkflowRunDeps: leaves telemetrySink undefined by default", as
   );
 
   assertEquals(deps.telemetrySink, undefined);
+});
+
+function stubSyncService(): DatastoreSyncService & { pushCalledCount: number } {
+  const svc = {
+    pushCalledCount: 0,
+    pullChanged: () => Promise.resolve(),
+    pushChanged: () => {
+      svc.pushCalledCount++;
+      return Promise.resolve();
+    },
+    markDirty: () => Promise.resolve(),
+  };
+  return svc;
+}
+
+function stubRepoContextWithRepos(): RepositoryContext {
+  return {
+    workflowRepo: {
+      findByName: () => Promise.resolve(null),
+      findById: () => Promise.resolve(null),
+      findAll: () => Promise.resolve([]),
+    },
+    workflowRunRepo: {},
+    catalogStore: { invalidate: () => {} },
+    unifiedDataRepo: { namespace: "test" },
+    definitionRepo: {},
+    autoDefinitionsDir: "/tmp/auto-definitions",
+    markDirty: () => {},
+    eventBus: {},
+  } as unknown as RepositoryContext;
+}
+
+Deno.test("executeWorkflowWithLocks: calls pushChanged after run completes", async () => {
+  const syncService = stubSyncService();
+  const ctx = stubRepoContextWithRepos();
+
+  await executeWorkflowWithLocks(
+    "/tmp/repo",
+    ctx,
+    datastoreConfig,
+    { workflowIdOrName: "nonexistent" },
+    new AbortController().signal,
+    () => {},
+    syncService,
+  );
+
+  assertEquals(syncService.pushCalledCount, 1);
+});
+
+Deno.test("executeWorkflowWithLocks: calls pushChanged even when onEvent throws", async () => {
+  const syncService = stubSyncService();
+  const ctx = stubRepoContextWithRepos();
+
+  let threw = false;
+  try {
+    await executeWorkflowWithLocks(
+      "/tmp/repo",
+      ctx,
+      datastoreConfig,
+      { workflowIdOrName: "nonexistent" },
+      new AbortController().signal,
+      () => {
+        throw new Error("deliberate onEvent failure");
+      },
+      syncService,
+    );
+  } catch {
+    threw = true;
+  }
+
+  assertEquals(threw, true);
+  assertEquals(syncService.pushCalledCount, 1);
+});
+
+Deno.test("executeWorkflowWithLocks: skips pushChanged when no syncService", async () => {
+  const ctx = stubRepoContextWithRepos();
+
+  await executeWorkflowWithLocks(
+    "/tmp/repo",
+    ctx,
+    datastoreConfig,
+    { workflowIdOrName: "nonexistent" },
+    new AbortController().signal,
+    () => {},
+    undefined,
+  );
 });
