@@ -4764,3 +4764,254 @@ Deno.test("assert: model.method() in expr fails when method returns falsy", asyn
     assertEquals(events[0].message, "Instance check failed");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Drain-before-suspend: parallel sibling steps complete before suspension
+// ---------------------------------------------------------------------------
+
+Deno.test("suspend: parallel sibling steps complete before suspension is persisted", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new ConcurrencyTrackingExecutor(50);
+
+    // deploy → (gate + cleanup) where gate is manual_approval and cleanup
+    // is a model_method. Both depend on deploy (same level, parallel).
+    const workflow = Workflow.create({
+      name: "drain-suspend",
+      jobs: [
+        Job.create({
+          name: "deploy",
+          steps: [
+            Step.create({
+              name: "build",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+        }),
+        Job.create({
+          name: "gate",
+          steps: [
+            Step.create({
+              name: "production-gate",
+              task: StepTask.manualApproval("Approve?"),
+            }),
+          ],
+          dependsOn: [
+            { job: "deploy", condition: TriggerCondition.succeeded() },
+          ],
+        }),
+        Job.create({
+          name: "cleanup",
+          steps: [
+            Step.create({
+              name: "gc",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+          dependsOn: [
+            { job: "deploy", condition: TriggerCondition.completed() },
+          ],
+        }),
+      ],
+    });
+
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const suspended = await service.execute(workflow.name);
+
+    assertEquals(suspended.status, "suspended");
+
+    // The cleanup job's step must be succeeded — not stuck at running.
+    const cleanupJob = suspended.getJob("cleanup")!;
+    assertEquals(cleanupJob.status, "succeeded");
+    assertEquals(cleanupJob.getStep("gc")!.status, "succeeded");
+
+    // The gate job stays running with the approval step waiting.
+    const gateJob = suspended.getJob("gate")!;
+    assertEquals(gateJob.status, "running");
+    assertEquals(
+      gateJob.getStep("production-gate")!.status,
+      "waiting_approval",
+    );
+
+    // The deploy job completed normally.
+    assertEquals(suspended.getJob("deploy")!.status, "succeeded");
+
+    // The executor ran the deploy step and the cleanup step (not the gate).
+    assert(executor.executedSteps.includes("deploy/build"));
+    assert(executor.executedSteps.includes("cleanup/gc"));
+  });
+});
+
+Deno.test("suspend: resumed run skips completed sibling steps", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = Workflow.create({
+      name: "resume-skip",
+      jobs: [
+        Job.create({
+          name: "deploy",
+          steps: [
+            Step.create({
+              name: "build",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+        }),
+        Job.create({
+          name: "gate",
+          steps: [
+            Step.create({
+              name: "approval",
+              task: StepTask.manualApproval("Go?"),
+            }),
+          ],
+          dependsOn: [
+            { job: "deploy", condition: TriggerCondition.succeeded() },
+          ],
+        }),
+        Job.create({
+          name: "cleanup",
+          steps: [
+            Step.create({
+              name: "gc",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+          dependsOn: [
+            { job: "deploy", condition: TriggerCondition.completed() },
+          ],
+        }),
+        Job.create({
+          name: "post-gate",
+          steps: [
+            Step.create({
+              name: "release",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+          dependsOn: [
+            { job: "gate", condition: TriggerCondition.succeeded() },
+            { job: "cleanup", condition: TriggerCondition.succeeded() },
+          ],
+        }),
+      ],
+    });
+
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const suspended = await service.execute(workflow.name);
+    assertEquals(suspended.status, "suspended");
+
+    // Approve the gate step.
+    const toApprove = await runRepo.findById(workflow.id, suspended.id);
+    toApprove!.getJob("gate")!.getStep("approval")!.succeed();
+    await runRepo.save(workflow.id, toApprove!);
+
+    // Clear executor tracking and resume.
+    executor.executedSteps = [];
+
+    let resumedRun: WorkflowRun | undefined;
+    for await (const event of service.resume(workflow.name, suspended.id)) {
+      if (event.kind === "completed") resumedRun = event.run;
+    }
+
+    assertEquals(resumedRun?.status, "succeeded");
+
+    // Only post-gate/release should execute on resume — cleanup/gc was
+    // already completed during the initial run and must NOT re-execute.
+    assertEquals(executor.executedSteps, ["post-gate/release"]);
+  });
+});
+
+Deno.test("suspend: sibling step failure is recorded during drain", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+    executor.shouldFail.add("gc");
+
+    const workflow = Workflow.create({
+      name: "drain-fail",
+      jobs: [
+        Job.create({
+          name: "deploy",
+          steps: [
+            Step.create({
+              name: "build",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+        }),
+        Job.create({
+          name: "gate",
+          steps: [
+            Step.create({
+              name: "approval",
+              task: StepTask.manualApproval("Ready?"),
+            }),
+          ],
+          dependsOn: [
+            { job: "deploy", condition: TriggerCondition.succeeded() },
+          ],
+        }),
+        Job.create({
+          name: "cleanup",
+          steps: [
+            Step.create({
+              name: "gc",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+          dependsOn: [
+            { job: "deploy", condition: TriggerCondition.completed() },
+          ],
+        }),
+      ],
+    });
+
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const suspended = await service.execute(workflow.name);
+    assertEquals(suspended.status, "suspended");
+
+    // The cleanup job's step failed — properly recorded, not stuck running.
+    const cleanupJob = suspended.getJob("cleanup")!;
+    assertEquals(cleanupJob.status, "failed");
+    assertEquals(cleanupJob.getStep("gc")!.status, "failed");
+  });
+});

@@ -135,8 +135,12 @@ steps:
 **Lifecycle: suspend → approve → resume**
 
 1. `swamp workflow run` executes until hitting a `manual_approval` step. The step
-   is marked `waiting_approval`, the run is saved as `suspended`, and the CLI
-   exits.
+   is marked `waiting_approval` and the run status is set to `suspended`.
+   Parallel sibling steps that are already in-flight continue executing until
+   they reach a terminal state (succeeded, failed, or skipped) — the executor
+   drains all generators at the current level before persisting. The saved run
+   record is a consistent checkpoint: every step is either completed or has not
+   started. The CLI then exits.
 2. `swamp workflow approve <workflow> <step>` marks the step as succeeded in the
    persisted run record. Lightweight — no execution, any authorized user.
 3. `swamp workflow resume <workflow>` re-enters the executor, skips completed
