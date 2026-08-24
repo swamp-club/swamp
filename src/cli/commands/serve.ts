@@ -501,6 +501,9 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   if (options.enableInternalApi) {
     args.push("--enable-internal-api");
   }
+  if (options.dashboard) {
+    args.push("--dashboard");
+  }
   return args;
 }
 
@@ -762,6 +765,11 @@ const daemonEnableCommand = new Command()
     "--enable-internal-api",
     "Enable the /internal/runs endpoint for full run history access " +
       "(env: SWAMP_ENABLE_INTERNAL_API)",
+  )
+  .option(
+    "--dashboard",
+    "Enable the web dashboard at /dashboard " +
+      "(env: SWAMP_DASHBOARD)",
   )
   .example("Enable daemon", "swamp serve daemon enable")
   .example(

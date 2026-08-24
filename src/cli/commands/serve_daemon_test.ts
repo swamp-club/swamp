@@ -144,6 +144,16 @@ Deno.test("collectServeExtraArgs: skips --grants-file when not set", () => {
   assertEquals(args, []);
 });
 
+Deno.test("collectServeExtraArgs: forwards --dashboard", () => {
+  const args = collectServeExtraArgs({ dashboard: true });
+  assertEquals(args, ["--dashboard"]);
+});
+
+Deno.test("collectServeExtraArgs: omits --dashboard when false", () => {
+  const args = collectServeExtraArgs({ dashboard: false });
+  assertEquals(args, []);
+});
+
 Deno.test("collectServeExtraArgs: combines multiple flags", () => {
   const args = collectServeExtraArgs({
     schedule: false,
