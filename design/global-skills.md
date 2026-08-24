@@ -224,22 +224,6 @@ Once a user upgrades to a CLI version that installs global skills, any repo that
 still has local skill copies is in a conflict state — the local copies shadow the
 global ones and the user may be running stale skills.
 
-**On CLI startup** (once per day per repo), if local bundled skill copies are
-detected:
-
-```
-WRN Swamp skills are now installed globally but this repo still has local
-    copies that take precedence. Run 'swamp repo upgrade' to clean up.
-
-    Local copies found:
-      .claude/skills/swamp/
-      .claude/skills/swamp-getting-started/
-```
-
-The debounce is tracked via a `lastSkillMigrationWarning` timestamp in the
-`.swamp.yaml` marker file. The warning persists until the user deletes the
-local copies manually.
-
 **During `swamp repo upgrade`**, local copies are detected and reported:
 
 ```
@@ -255,12 +239,6 @@ set `skillMigrationDismissed: true` in `.swamp.yaml` to suppress the warning.
 ### Migration Flow
 
 ```
-Any CLI command in a repo:
-  │
-  ├─ Check for local bundled skill copies in enrolled tool dirs
-  ├─ If found and not dismissed: emit warning (once per day)
-  └─ Continue with normal command execution
-
 swamp repo upgrade:
   │
   ├─ For each enrolled tool:

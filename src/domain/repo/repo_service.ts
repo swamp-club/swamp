@@ -515,13 +515,18 @@ export class RepoService {
     await this.migrateRepoLocalTelemetry(repoPath, existingMarker);
 
     if (localSkillCopies.length === 0) {
-      delete updatedMarker.lastSkillMigrationWarning;
       delete updatedMarker.skillMigrationDismissed;
     }
     // When local copies remain, do NOT set skillMigrationDismissed here —
-    // the daily warning should keep firing until the user removes them.
-    // The flag can be set manually in .swamp.yaml for repos that
+    // the flag can be set manually in .swamp.yaml for repos that
     // intentionally keep local skills (e.g., the swamp source repo).
+
+    // Strip legacy runtime-state fields that were previously written to
+    // the tracked .swamp.yaml (see swamp-club#1792).
+    // deno-lint-ignore no-explicit-any
+    const raw = updatedMarker as Record<string, any>;
+    delete raw.lastSkillMigrationWarning;
+    delete raw.lastStalenessWarning;
 
     await this.markerRepo.write(repoPath, updatedMarker);
 
