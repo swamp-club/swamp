@@ -59,6 +59,13 @@ opening a PR.** If you have not yet posted the attestation via
 [verification.md](verification.md) step 4 and complete the attestation flow
 first. Do NOT skip this step. Do NOT open a PR without a posted attestation.
 
+**DO NOT amend, rebase, or modify the verified commit after the attestation has
+been posted.** The attestation is bound to the commit SHA — amending (even just
+to add a co-author line) changes the SHA and invalidates the attestation. The
+co-author trailer must be included in the ORIGINAL commit, not added via amend
+afterwards. If the commit has already been amended, you must re-run verification
+and post a new attestation for the new SHA.
+
 **Always ask the human before opening a PR.** Do not create the PR automatically
 — present a summary of the changes and ask if they are ready to open it. Only
 proceed after explicit confirmation.

@@ -124,6 +124,13 @@ failed" below.
    `validate-attestation` check will fail if no attestation exists for the
    commit.
 
+   **NEVER amend, rebase, or modify the commit after posting the attestation.**
+   The attestation is bound to a specific commit SHA. If you amend the commit
+   (e.g., to add a co-author, fix a typo, or reword the message), the SHA
+   changes and the attestation becomes invalid — CI will report a commit
+   mismatch. If you need to change the commit after posting, you must re-run
+   verification on the new SHA and post a new attestation.
+
 5. **Only after `post_attestation` succeeds**, proceed to open a PR — read the
    "Create a PR" section in [implementation.md](implementation.md). If you
    skipped step 4, implementation.md will send you back here.
