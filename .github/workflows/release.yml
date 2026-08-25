@@ -41,6 +41,12 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Version: $VERSION"
 
+      - name: Build dashboard
+        working-directory: packages/dashboard
+        run: |
+          npm ci
+          npm run build
+
       - name: Build binaries
         run: |
           mkdir -p dist

@@ -3798,7 +3798,7 @@ export const serveCommand = new Command()
             const indexResponse = await serveDashboardFile("index.html");
             if (indexResponse) return indexResponse;
             return new Response(
-              "Dashboard not built. Run: cd packages/dashboard && npm run build",
+              "Dashboard assets not available in this build",
               { status: 404, headers: { "content-type": "text/plain" } },
             );
           }
