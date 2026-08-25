@@ -266,35 +266,26 @@ To construct this checklist:
    open a PR until the user explicitly says to proceed. The user's
    confirmation is the trigger for the attestation push.
 
-8. **After the user confirms, post the attestation to swamp-club.** This is
-   a **hard requirement** — the PR MUST NOT open until the attestation has
-   been successfully posted.
+8. **After the user confirms, post the attestation to swamp-club** using the
+   issue-lifecycle model's `post_attestation` method. This is a **hard
+   requirement** — the PR MUST NOT open until the attestation has been
+   successfully posted.
 
-   ```bash
-   curl -sf -X POST \
-     -H "Content-Type: application/json" \
-     -H "Cookie: $(cat ~/.config/swamp/session-cookie)" \
-     -d @attestation.json \
-     "https://swamp.club/api/v1/admin/attestations"
+   ```
+   swamp model @swamp/issue-lifecycle method run post_attestation issue-<N> \
+     --input attestation='<attestation JSON string>'
    ```
 
-   The endpoint requires swamp admin authentication. The attestation JSON is
-   the same object constructed in step 4.
+   The method uses the CLI's existing auth credentials (Bearer token from
+   `~/.config/swamp/auth.json`). It throws on failure — if it fails, fix the
+   auth or connectivity issue and retry.
 
-   **If the POST fails, do NOT open a PR.** Report the failure to the user
-   and fix the auth or connectivity issue before retrying. The attestation
-   record in swamp-club is what CI validates — without it, the
-   `validate-attestation` CI check will report "no attestation found."
+   **If the POST fails, do NOT open a PR.** The attestation record in
+   swamp-club is what CI validates — without it, the `validate-attestation`
+   CI check will report "no attestation found."
 
-   **If the POST succeeds**, the response includes the server-stamped
-   `postedBy` and `postedAt` fields. Log these so the user can confirm
-   attribution.
-
-   Verify the attestation was stored correctly:
-
-   ```bash
-   curl -sf "https://swamp.club/api/v1/admin/attestations?commit=<SHA>" | jq .
-   ```
+   **If the POST succeeds**, the log output confirms the attestation ID and
+   who posted it. A lifecycle entry is also recorded on the swamp-club issue.
 
 ## Handling Failures
 

@@ -741,7 +741,7 @@ jobs:
           head_sha="${{ github.event.pull_request.head.sha }}"
 
           http_code=$(curl -s -w '%{http_code}' -o attestation.json \
-            "https://swamp.club/api/v1/admin/attestations?commit=${head_sha}" \
+            "https://swamp-club.com/api/v1/admin/attestations?commit=${head_sha}" \
             2>/dev/null) || true
 
           if [ "$http_code" != "200" ] || [ ! -s attestation.json ]; then

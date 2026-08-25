@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { LIFECYCLE_SUMMARY_MAX_CHARS, SwampClubClient } from "./swamp_club.ts";
 
 // ---------------------------------------------------------------------------
@@ -162,5 +162,70 @@ Deno.test("postLifecycleEntry: truncates summary one char over the limit", async
     assertEquals(sent.endsWith("..."), true);
   } finally {
     restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// postAttestation
+// ---------------------------------------------------------------------------
+
+Deno.test("postAttestation: returns server response on success", async () => {
+  const originalFetch = globalThis.fetch;
+  const serverResponse = {
+    id: "test-uuid",
+    postedBy: "user-123",
+    postedAt: "2026-08-25T15:00:00Z",
+    version: "1",
+  };
+
+  globalThis.fetch = ((_input: string | URL | Request): Promise<Response> => {
+    return Promise.resolve(
+      new Response(JSON.stringify(serverResponse), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+  }) as typeof fetch;
+
+  try {
+    const client = new SwampClubClient(
+      "https://fake.swamp-club.com",
+      "fake-key",
+      42,
+    );
+    const result = await client.postAttestation({ version: "1" });
+    assertEquals(result.id, "test-uuid");
+    assertEquals(result.postedBy, "user-123");
+    assertEquals(result.postedAt, "2026-08-25T15:00:00Z");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("postAttestation: throws on non-OK response with status and body", async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = ((_input: string | URL | Request): Promise<Response> => {
+    return Promise.resolve(
+      new Response(JSON.stringify({ error: "Forbidden" }), {
+        status: 403,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+  }) as typeof fetch;
+
+  try {
+    const client = new SwampClubClient(
+      "https://fake.swamp-club.com",
+      "fake-key",
+      42,
+    );
+    await assertRejects(
+      () => client.postAttestation({ version: "1" }),
+      Error,
+      "Attestation POST failed: HTTP 403",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
