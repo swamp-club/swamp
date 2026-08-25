@@ -24,6 +24,7 @@ import type {
   CatalogRow,
   CatalogStore,
 } from "../../infrastructure/persistence/catalog_store.ts";
+import { UserError } from "../errors.ts";
 import type { UnifiedDataRepository } from "./repositories.ts";
 import type { DataRecord } from "./data_record.ts";
 import {
@@ -200,6 +201,7 @@ export class DataQueryService {
     const row = this.catalogStore.findLatestRow(modelName, dataName, namespace);
     if (row) {
       if (populated) {
+        this.checkSpecNameAmbiguity(row.spec_name, modelName, namespace);
         return this.buildRecordFromRow(modelName, dataName, namespace, row);
       }
       // Catalog not populated — verify the data still exists on disk to
@@ -236,6 +238,30 @@ export class DataQueryService {
     );
     if (freshContent === null) return null;
     return this.buildRecordFromRow(modelName, dataName, namespace, freshRow);
+  }
+
+  checkSpecNameAmbiguity(
+    specName: string,
+    modelName: string,
+    namespace?: string,
+  ): void {
+    if (!specName) return;
+    if (!this.catalogStore.isPopulated()) {
+      this.backfillSync();
+    }
+    const peers = this.catalogStore.findLatestRowsBySpecName(
+      modelName,
+      specName,
+      namespace,
+    );
+    if (peers.length > 1) {
+      const names = peers.map((r) => r.data_name).sort();
+      throw new UserError(
+        `Ambiguous data.latest() match: specName "${specName}" ` +
+          `resolves to ${peers.length} data items ` +
+          `(${names.join(", ")}). Use the specific data name instead.`,
+      );
+    }
   }
 
   private async buildRecordFromRow(

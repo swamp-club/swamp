@@ -1169,3 +1169,142 @@ Deno.test(
     store.close();
   },
 );
+
+Deno.test(
+  "CatalogStore: findLatestRowsBySpecName returns all latest rows sharing a spec_name",
+  () => {
+    const store = new CatalogStore(makeTempDbPath());
+    store.upsert(
+      makeRow({
+        model_name: "fleet",
+        data_name: "run-exec-thinkpad",
+        spec_name: "runResult",
+        id: "uuid-1",
+      }),
+    );
+    store.upsert(
+      makeRow({
+        model_name: "fleet",
+        data_name: "run-exec-clara",
+        spec_name: "runResult",
+        id: "uuid-2",
+      }),
+    );
+    store.upsert(
+      makeRow({
+        model_name: "fleet",
+        data_name: "other-data",
+        spec_name: "otherSpec",
+        id: "uuid-3",
+      }),
+    );
+
+    const rows = store.findLatestRowsBySpecName("fleet", "runResult");
+    assertEquals(rows.length, 2);
+    const names = rows.map((r) => r.data_name).sort();
+    assertEquals(names, ["run-exec-clara", "run-exec-thinkpad"]);
+
+    store.close();
+  },
+);
+
+Deno.test(
+  "CatalogStore: findLatestRowsBySpecName returns single match",
+  () => {
+    const store = new CatalogStore(makeTempDbPath());
+    store.upsert(
+      makeRow({
+        model_name: "fleet",
+        data_name: "only-one",
+        spec_name: "uniqueSpec",
+        id: "uuid-1",
+      }),
+    );
+
+    const rows = store.findLatestRowsBySpecName("fleet", "uniqueSpec");
+    assertEquals(rows.length, 1);
+    assertEquals(rows[0].data_name, "only-one");
+
+    store.close();
+  },
+);
+
+Deno.test(
+  "CatalogStore: findLatestRowsBySpecName returns empty for no match",
+  () => {
+    const store = new CatalogStore(makeTempDbPath());
+    store.upsert(
+      makeRow({ model_name: "fleet", spec_name: "other" }),
+    );
+
+    const rows = store.findLatestRowsBySpecName("fleet", "nonexistent");
+    assertEquals(rows.length, 0);
+
+    store.close();
+  },
+);
+
+Deno.test(
+  "CatalogStore: findLatestRowsBySpecName scopes by namespace",
+  () => {
+    const store = new CatalogStore(makeTempDbPath());
+    store.upsert(makeRow({
+      namespace: "ns-a",
+      model_name: "fleet",
+      data_name: "item-a",
+      spec_name: "runResult",
+      model_id: "id-a",
+      id: "uuid-a",
+    }));
+    store.upsert(makeRow({
+      namespace: "ns-b",
+      model_name: "fleet",
+      data_name: "item-b",
+      spec_name: "runResult",
+      model_id: "id-b",
+      id: "uuid-b",
+    }));
+
+    const rowsA = store.findLatestRowsBySpecName("fleet", "runResult", "ns-a");
+    assertEquals(rowsA.length, 1);
+    assertEquals(rowsA[0].data_name, "item-a");
+
+    const rowsAll = store.findLatestRowsBySpecName("fleet", "runResult");
+    assertEquals(rowsAll.length, 2);
+
+    store.close();
+  },
+);
+
+Deno.test(
+  "CatalogStore: findLatestRowsBySpecName excludes non-latest rows",
+  () => {
+    const store = new CatalogStore(makeTempDbPath());
+    store.upsert(
+      makeRow({
+        model_name: "fleet",
+        data_name: "item",
+        spec_name: "runResult",
+        version: 1,
+        is_latest: 0,
+        id: "uuid-old",
+      }),
+    );
+    store.upsert(
+      makeRow({
+        model_name: "fleet",
+        data_name: "item",
+        spec_name: "runResult",
+        version: 2,
+        is_latest: 1,
+        id: "uuid-new",
+      }),
+    );
+
+    const rows = store.findLatestRowsBySpecName("fleet", "runResult");
+    assertEquals(rows.length, 1);
+    assertEquals(rows[0].version, 2);
+
+    store.close();
+  },
+);

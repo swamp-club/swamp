@@ -571,6 +571,34 @@ export class CatalogStore {
   }
 
   /**
+   * Returns all latest rows sharing a spec_name under a model, optionally
+   * scoped to a namespace.  Used by the ambiguity check in data.latest() —
+   * if more than one row shares the spec_name the lookup is ambiguous.
+   */
+  findLatestRowsBySpecName(
+    modelName: string,
+    specName: string,
+    namespace?: string,
+  ): CatalogRow[] {
+    if (namespace !== undefined) {
+      const stmt = this.db.prepare(
+        `SELECT * FROM catalog
+         WHERE model_name = ? AND spec_name = ? AND is_latest = 1 AND namespace = ?`,
+      );
+      return stmt.all(
+        modelName,
+        specName,
+        namespace,
+      ) as unknown as CatalogRow[];
+    }
+    const stmt = this.db.prepare(
+      `SELECT * FROM catalog
+       WHERE model_name = ? AND spec_name = ? AND is_latest = 1`,
+    );
+    return stmt.all(modelName, specName) as unknown as CatalogRow[];
+  }
+
+  /**
    * Returns the number of rows in the catalog.
    */
   count(): number {

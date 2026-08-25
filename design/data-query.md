@@ -49,6 +49,13 @@ key, or history access beyond a single version.
 Results from any shortcut are structurally identical to the equivalent
 `data.query()` call — same `DataRecord[]` type, same fields, same semantics.
 
+**specName ambiguity detection:** `data.latest()` throws a `UserError` when the
+matched data item's `specName` tag is shared by other data items under the same
+model. This prevents silent resolution to a single item when multiple items
+share the same spec. Use the specific data name or `data.findBySpec()` to
+explicitly query by specName. The raw `data.query()` equivalent does not perform
+this check.
+
 ### Null-safe access (.?)
 
 `data.latest()` and `data.version()` return `null` when the named instance
