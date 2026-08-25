@@ -3130,12 +3130,7 @@ export class WorkflowExecutionService {
         }
       }
 
-      // Store a lightweight copy of the output on the step run — strip
-      // content and attributes from DataRecords to avoid accumulating
-      // gigabytes of parsed data in the WorkflowRun aggregate. The full
-      // content is already persisted in the datastore and available via
-      // `swamp data get`. The expression context (updated above) retains
-      // the original references for downstream CEL evaluation.
+      // Strip heavy payload from the run record (see stripResourceContent).
       const lightOutput = step.task.isModelMethod() && output &&
           typeof output === "object"
         ? stripResourceContent(output as Record<string, unknown>)
@@ -3754,7 +3749,7 @@ function stripResourceContent(
   if (dataHandles) {
     result.dataHandles = dataHandles.map((handle) => {
       if (!handle.attributes) return handle;
-      return { ...handle, attributes: undefined };
+      return { ...handle, attributes: null };
     });
   }
 

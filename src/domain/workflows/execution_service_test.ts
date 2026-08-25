@@ -5071,6 +5071,19 @@ Deno.test("step output stored on WorkflowRun has stripped content and attributes
               },
             },
           },
+          dataHandles: [
+            {
+              name: "default",
+              specName: "result",
+              kind: "resource",
+              dataId: "data-123",
+              version: 1,
+              size: 10000,
+              tags: { type: "resource" },
+              metadata: {},
+              attributes: { largePayload },
+            },
+          ],
         });
       }
       if (step.name === "step2") {
@@ -5167,5 +5180,14 @@ Deno.test("step output stored on WorkflowRun has stripped content and attributes
     assertEquals(record?.id, "data-123");
     assertEquals(record?.name, "result");
     assertEquals(record?.version, 1);
+
+    // DataHandle attributes should also be stripped
+    const step1Handles = (step1Run.toData().output as {
+      dataHandles?: Array<{ attributes: unknown; name: string }>;
+    })?.dataHandles;
+    assert(step1Handles);
+    assertEquals(step1Handles.length, 1);
+    assertEquals(step1Handles[0].name, "default");
+    assertEquals(step1Handles[0].attributes, null);
   });
 });
