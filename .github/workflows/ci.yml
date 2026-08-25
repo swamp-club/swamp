@@ -746,32 +746,32 @@ jobs:
 
           if [ "$http_code" != "200" ] || [ ! -s attestation.json ]; then
             echo "found=false" >> "$GITHUB_OUTPUT"
-            {
-              echo "## Attestation Validation"
-              echo ""
-              echo "⚠️ No verification attestation found for \`${head_sha:0:8}\`."
-              echo ""
-              echo "Run local verification before opening the PR:"
-              echo '```bash'
-              echo 'SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-build \'
-              echo '  --input commit=$(git rev-parse HEAD) \'
-              echo '  --input branch=$(git branch --show-current)'
-              echo ''
-              echo 'SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-reviews \'
-              echo '  --input commit=$(git rev-parse HEAD) \'
-              echo '  --input branch=$(git branch --show-current)'
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
+            cat >> "$GITHUB_STEP_SUMMARY" << EOF
+          ## Attestation Validation
+
+          ⚠️ No verification attestation found for \`${head_sha:0:8}\`.
+
+          Run local verification before opening the PR:
+          \`\`\`bash
+          SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-build \\
+            --input commit=\$(git rev-parse HEAD) \\
+            --input branch=\$(git branch --show-current)
+
+          SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-reviews \\
+            --input commit=\$(git rev-parse HEAD) \\
+            --input branch=\$(git branch --show-current)
+          \`\`\`
+          EOF
             exit 0
           fi
 
           if ! jq . attestation.json > /dev/null 2>&1; then
             echo "found=false" >> "$GITHUB_OUTPUT"
-            {
-              echo "## Attestation Validation"
-              echo ""
-              echo "❌ Attestation response is not valid JSON."
-            } >> "$GITHUB_STEP_SUMMARY"
+            cat >> "$GITHUB_STEP_SUMMARY" << 'EOF'
+          ## Attestation Validation
+
+          ❌ Attestation response is not valid JSON.
+          EOF
             exit 1
           fi
 
@@ -846,9 +846,11 @@ jobs:
           fi
 
           # -- 5. Config integrity checksums --
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### Config Integrity" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo ""
+            echo "### Config Integrity"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
 
           check_hash() {
             local label="$1" jq_path="$2" file="$3"
@@ -882,31 +884,37 @@ jobs:
           check_hash "verify-reviews workflow" '.configIntegrity.workflows."verify-reviews"' "verification/workflow-verify-reviews.yaml"
 
           # -- 6. Steps summary table --
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### Steps" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Job | Step | Status | Duration | Verdict |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|-----|------|--------|----------|---------|" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo ""
+            echo "### Steps"
+            echo ""
+            echo "| Job | Step | Status | Duration | Verdict |"
+            echo "|-----|------|--------|----------|---------|"
+          } >> "$GITHUB_STEP_SUMMARY"
           jq -r '.steps // [] | .[] | "| \(.job) | \(.step) | \(.status) | \(if .durationMs then "\(.durationMs / 1000)s" else "—" end) | \(.verdict // .reason // "—") |"' attestation.json >> "$GITHUB_STEP_SUMMARY" || true
 
           # -- 7. Review config --
           if jq -e '.reviewConfig' attestation.json > /dev/null 2>&1; then
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "### Reviews" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "| Review | Model | Ran |" >> "$GITHUB_STEP_SUMMARY"
-            echo "|--------|-------|-----|" >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo ""
+              echo "### Reviews"
+              echo ""
+              echo "| Review | Model | Ran |"
+              echo "|--------|-------|-----|"
+            } >> "$GITHUB_STEP_SUMMARY"
             jq -r '.reviewConfig | to_entries[] | "| \(.key) | \(.value.model) | \(if .value.ran then "✅" else "⏭️ \(.value.reason // "skipped")" end) |"' attestation.json >> "$GITHUB_STEP_SUMMARY" || true
           fi
 
           # -- Result --
-          echo "" >> "$GITHUB_STEP_SUMMARY"
           total_duration=$(jq -r '.timing.totalDurationMs // 0' attestation.json)
           total_secs=$((total_duration / 1000))
           total_mins=$((total_secs / 60))
           remaining_secs=$((total_secs % 60))
-          echo "**Verification ran in ${total_mins}m ${remaining_secs}s**" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo ""
+            echo "**Verification ran in ${total_mins}m ${remaining_secs}s**"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$errors" -gt 0 ]; then
             echo "### ❌ Validation Failed ($errors errors, $warnings warnings)" >> "$GITHUB_STEP_SUMMARY"
