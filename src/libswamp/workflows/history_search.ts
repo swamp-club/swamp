@@ -71,6 +71,7 @@ export interface WorkflowHistorySearchDeps {
  */
 export interface WorkflowHistorySearchInput {
   query?: string;
+  workflow?: string;
   inputs?: Record<string, string>;
 }
 
@@ -140,6 +141,13 @@ export async function* workflowHistorySearch(
           stepProgress: run.stepProgress,
         };
       });
+
+      if (input.workflow) {
+        const name = input.workflow.toLowerCase();
+        results = results.filter(
+          (r) => r.workflowName.toLowerCase() === name,
+        );
+      }
 
       if (input.inputs) {
         const inputEntries = Object.entries(input.inputs);

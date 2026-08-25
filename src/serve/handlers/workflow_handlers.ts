@@ -693,6 +693,7 @@ export async function handleWorkflowHistorySearch(
     await consumeStream(
       workflowHistorySearch(libCtx, deps, {
         query: payload?.query,
+        workflow: payload?.workflow,
         inputs: payload?.inputs,
       }),
       {
