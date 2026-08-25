@@ -44,8 +44,8 @@ function stripAnsi(str: string): string {
 
 /** Mask an API key, showing prefix and last 4 chars. */
 function maskApiKey(key: string): string {
-  if (key.length <= 16) return key.slice(0, 8) + dim("\u2022\u2022\u2022");
-  return key.slice(0, 12) + dim("\u2022\u2022\u2022") + key.slice(-4);
+  if (key.length <= 16) return key.slice(0, 8) + dim("•••");
+  return key.slice(0, 12) + dim("•••") + key.slice(-4);
 }
 
 /**
@@ -69,23 +69,23 @@ function renderCard(
   const lines: string[] = [];
 
   // Top border
-  lines.push(green(`  \u2554${"\u2550".repeat(contentWidth)}\u2557`));
+  lines.push(green(`  ╔${"═".repeat(contentWidth)}╗`));
 
   // Header
   const headerPad = " ".repeat(contentWidth - headerTextWidth - 2);
   lines.push(
-    green("  \u2551") + `  ${header}${headerPad}` + green("\u2551"),
+    green("  ║") + `  ${header}${headerPad}` + green("║"),
   );
 
   // Divider
-  lines.push(green(`  \u2560${"\u2550".repeat(contentWidth)}\u2563`));
+  lines.push(green(`  ╠${"═".repeat(contentWidth)}╣`));
 
   // Body groups
   for (let gi = 0; gi < groups.length; gi++) {
     const group = groups[gi];
 
     // Spacer before each group
-    lines.push(green("  \u2551") + " ".repeat(contentWidth) + green("\u2551"));
+    lines.push(green("  ║") + " ".repeat(contentWidth) + green("║"));
 
     for (const row of group) {
       const paddedLabel = row.label.padEnd(labelWidth);
@@ -93,34 +93,42 @@ function renderCard(
       const valuePad = " ".repeat(rawValueWidth - visibleValueLen);
       const extraPad = " ".repeat(contentWidth - rowInnerWidth);
       lines.push(
-        green("  \u2551") + "  " + bold(cyan(paddedLabel)) + "   " +
+        green("  ║") + "  " + bold(cyan(paddedLabel)) + "   " +
           row.value +
-          valuePad + extraPad + "  " + green("\u2551"),
+          valuePad + extraPad + "  " + green("║"),
       );
     }
 
     // Spacer after last group
     if (gi === groups.length - 1) {
       lines.push(
-        green("  \u2551") + " ".repeat(contentWidth) + green("\u2551"),
+        green("  ║") + " ".repeat(contentWidth) + green("║"),
       );
     }
   }
 
   // Bottom border
-  lines.push(green(`  \u255a${"\u2550".repeat(contentWidth)}\u255d`));
+  lines.push(green(`  ╚${"═".repeat(contentWidth)}╝`));
 
   return lines;
 }
 
-function renderDeviceVerification(deviceCode: string): void {
+function renderDeviceVerification(
+  userCode: string,
+  verificationUri: string,
+  verificationUriComplete?: string,
+): void {
+  const url = verificationUriComplete ?? verificationUri;
   const lines = renderCard(
     bold("Verify your device"),
-    [[{ label: "Code", value: bold(yellow(deviceCode)) }]],
+    [[
+      { label: "Code", value: bold(yellow(userCode)) },
+      { label: "URL", value: url },
+    ]],
   );
   lines.push("");
   lines.push(
-    "  Confirm this code matches in your browser before signing in.",
+    "  Open the URL above and enter the code to sign in.",
   );
 
   writeOutput(lines.join("\n"));
@@ -145,7 +153,7 @@ function renderAuthLoginSuccess(data: AuthLoginData): void {
   ];
 
   const lines = renderCard(
-    `${green("\u2714")} ${bold("Authenticated")}`,
+    `${green("✔")} ${bold("Authenticated")}`,
     [identity, session],
   );
 
@@ -156,36 +164,31 @@ function renderAuthLoginSuccess(data: AuthLoginData): void {
 
 class LogAuthLoginRenderer implements Renderer<AuthLoginEvent> {
   private spinner: Spinner | null = null;
+  private pollingSpinnerStarted = false;
 
   constructor(private showSpinner: boolean) {}
 
   handlers(): EventHandlers<AuthLoginEvent> {
     return {
-      opening_browser: () => {
-        if (this.showSpinner) {
-          this.spinner = new Spinner();
-          this.spinner.start("Opening browser...");
-        }
-      },
-      browser_open_failed: (e) => {
-        this.spinner?.stop();
-        console.log(e.message);
-        if (this.showSpinner) {
-          this.spinner = new Spinner();
-          this.spinner.start("Waiting for authentication...");
-        }
-      },
       device_verification: (e) => {
         this.spinner?.stop();
-        renderDeviceVerification(e.deviceCode);
+        renderDeviceVerification(
+          e.userCode,
+          e.verificationUri,
+          e.verificationUriComplete,
+        );
         console.log();
-        if (this.showSpinner) {
+      },
+      opening_browser: () => {},
+      browser_open_failed: (e) => {
+        console.log(yellow(e.message));
+      },
+      polling: () => {
+        if (this.showSpinner && !this.pollingSpinnerStarted) {
+          this.pollingSpinnerStarted = true;
           this.spinner = new Spinner();
           this.spinner.start("Waiting for authentication...");
         }
-      },
-      waiting_for_auth: () => {
-        // Spinner already started in device_verification handler
       },
       securing_session: () => {
         if (this.spinner) {
@@ -209,8 +212,15 @@ class JsonAuthLoginRenderer implements Renderer<AuthLoginEvent> {
     return {
       opening_browser: () => {},
       browser_open_failed: () => {},
-      device_verification: () => {},
-      waiting_for_auth: () => {},
+      device_verification: (e) => {
+        console.log(JSON.stringify({
+          status: "device_verification",
+          userCode: e.userCode,
+          verificationUri: e.verificationUri,
+          verificationUriComplete: e.verificationUriComplete,
+        }));
+      },
+      polling: () => {},
       securing_session: () => {},
       completed: (e) => {
         console.log(JSON.stringify(

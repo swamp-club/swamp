@@ -23,16 +23,17 @@ import {
   SwampClubClient,
 } from "../../infrastructure/http/swamp_club_client.ts";
 import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
-import { startCallbackServer } from "../../infrastructure/http/callback_server.ts";
 import { openBrowser } from "../../infrastructure/process/browser.ts";
 import { UserError } from "../../domain/errors.ts";
 import { readSecretFromTty } from "../../infrastructure/io/stdin_reader.ts";
-import { generateDeviceCode } from "../../domain/auth/device_code.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+
+export const CLI_CLIENT_ID = "swamp-cli";
+
 /** Data returned on successful authentication. */
 export interface AuthLoginData {
   username: string;
@@ -46,8 +47,13 @@ export interface AuthLoginData {
 export type AuthLoginEvent =
   | { kind: "opening_browser" }
   | { kind: "browser_open_failed"; message: string }
-  | { kind: "device_verification"; deviceCode: string }
-  | { kind: "waiting_for_auth" }
+  | {
+    kind: "device_verification";
+    userCode: string;
+    verificationUri: string;
+    verificationUriComplete?: string;
+  }
+  | { kind: "polling" }
   | { kind: "securing_session" }
   | { kind: "completed"; data: AuthLoginData }
   | { kind: "error"; error: SwampError };
@@ -60,22 +66,48 @@ export interface AuthLoginInput {
   password?: string;
 }
 
-/** Handle returned by the callback server dependency. */
-export interface CallbackServerHandle {
-  port: number;
-  token: Promise<string>;
-  shutdown: () => Promise<void>;
+/** Device authorization response from swamp-club. */
+export interface DeviceAuthResponse {
+  readonly deviceCode: string;
+  readonly userCode: string;
+  readonly verificationUri: string;
+  readonly verificationUriComplete?: string;
+  readonly expiresIn: number;
+  readonly interval: number;
+}
+
+/** Token response from a device code poll. */
+export interface DeviceTokenResponse {
+  readonly accessToken: string;
+}
+
+/** Error thrown when the device token poll receives a pending response. */
+export class DeviceAuthPendingError extends Error {
+  readonly slowDown: boolean;
+  constructor(slowDown = false) {
+    super(slowDown ? "slow_down" : "authorization_pending");
+    this.name = "DeviceAuthPendingError";
+    this.slowDown = slowDown;
+  }
 }
 
 /** Dependencies for the auth login operation, injected for testability. */
 export interface AuthLoginDeps {
-  /** Try to open a URL in the browser. Returns error message if it fails, null on success. */
-  openBrowser: (url: string) => Promise<string | null>;
-  /** Start callback server, returns port, token promise, and shutdown function. */
-  startCallbackServer: (
-    state: string,
+  /** Try to open a URL in the browser. Returns true on success, false on failure. */
+  openBrowser: (url: string) => Promise<boolean>;
+  /** Start device authorization, returns device code and verification URI. */
+  startDeviceAuth: (
     serverUrl: string,
-  ) => CallbackServerHandle;
+    clientId: string,
+    signal: AbortSignal,
+  ) => Promise<DeviceAuthResponse>;
+  /** Poll for device token approval. Throws DeviceAuthPendingError while pending. */
+  pollDeviceToken: (
+    serverUrl: string,
+    deviceCode: string,
+    clientId: string,
+    signal: AbortSignal,
+  ) => Promise<DeviceTokenResponse>;
   /** Sign in with username/password, returns session token and username. */
   signIn: (
     serverUrl: string,
@@ -111,8 +143,6 @@ export interface AuthLoginDeps {
     username: string;
     collectives?: string[];
   }) => Promise<void>;
-  /** Generate a device verification code. */
-  generateDeviceCode: () => string;
   /** Get hostname for API key naming. */
   getHostname: () => string;
 }
@@ -147,6 +177,25 @@ async function readPassword(prompt: string): Promise<string> {
   }
 }
 
+/** Delay helper that respects AbortSignal. */
+function delay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 /**
  * Wires real infrastructure into AuthLoginDeps.
  *
@@ -160,20 +209,99 @@ export function createAuthLoginDeps(
 ): AuthLoginDeps {
   const repo = new AuthRepository();
   return {
-    openBrowser: async (url: string): Promise<string | null> => {
+    openBrowser: async (url: string): Promise<boolean> => {
       try {
         await openBrowser(url);
-        return null;
-      } catch (err) {
-        if (err instanceof UserError) {
-          return err.message;
-        }
-        const message = err instanceof Error ? err.message : String(err);
-        return `Failed to open browser: ${message}`;
+        return true;
+      } catch {
+        return false;
       }
     },
-    startCallbackServer: (state: string, serverUrl: string) =>
-      startCallbackServer(state, serverUrl),
+    startDeviceAuth: async (
+      serverUrl: string,
+      clientId: string,
+      signal: AbortSignal,
+    ): Promise<DeviceAuthResponse> => {
+      const resp = await fetch(`${serverUrl}/api/auth/device/code`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_id: clientId }),
+        signal,
+      });
+      const body = await resp.text();
+      if (!resp.ok) {
+        throw new UserError(
+          `Failed to start device authorization: ${resp.status} ${body}`,
+        );
+      }
+      let data: Record<string, unknown>;
+      try {
+        data = JSON.parse(body);
+      } catch {
+        throw new UserError(
+          `Failed to start device authorization: server returned invalid JSON`,
+        );
+      }
+      return {
+        deviceCode: data.device_code as string,
+        userCode: data.user_code as string,
+        verificationUri: data.verification_uri as string,
+        verificationUriComplete: data.verification_uri_complete as
+          | string
+          | undefined,
+        expiresIn: data.expires_in as number,
+        interval: data.interval as number,
+      };
+    },
+    pollDeviceToken: async (
+      serverUrl: string,
+      deviceCode: string,
+      clientId: string,
+      signal: AbortSignal,
+    ): Promise<DeviceTokenResponse> => {
+      const resp = await fetch(`${serverUrl}/api/auth/device/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+          device_code: deviceCode,
+          client_id: clientId,
+        }),
+        signal,
+      });
+      if (resp.status === 403 || resp.status === 410) {
+        const body = await resp.text();
+        throw new UserError(
+          `Device authorization failed: ${body || resp.statusText}`,
+        );
+      }
+      const body = await resp.text();
+      let data: Record<string, unknown>;
+      try {
+        data = JSON.parse(body);
+      } catch {
+        throw new UserError(
+          `Failed to poll device token: ${resp.status} ${body}`,
+        );
+      }
+      if (data.error === "authorization_pending") {
+        throw new DeviceAuthPendingError(false);
+      }
+      if (data.error === "slow_down") {
+        throw new DeviceAuthPendingError(true);
+      }
+      if (!resp.ok) {
+        throw new UserError(
+          `Failed to poll device token: ${resp.status} ${body}`,
+        );
+      }
+      if (typeof data.access_token !== "string" || !data.access_token) {
+        throw new UserError(
+          `Server returned 200 but no access_token in response`,
+        );
+      }
+      return { accessToken: data.access_token };
+    },
     signIn: async (serverUrl: string, username: string, password: string) => {
       const client = new SwampClubClient(serverUrl, identity);
       const result = await client.signIn(username, password);
@@ -205,12 +333,11 @@ export function createAuthLoginDeps(
       };
     },
     saveCredentials: (credentials) => repo.save(credentials),
-    generateDeviceCode,
     getHostname: () => Deno.hostname?.() ?? "unknown",
   };
 }
 
-/** Authenticates with a swamp-club server via browser or stdin flow. */
+/** Authenticates with a swamp-club server via device flow or stdin flow. */
 export async function* authLogin(
   ctx: LibSwampContext,
   deps: AuthLoginDeps,
@@ -226,32 +353,87 @@ export async function* authLogin(
       let knownUsername: string | undefined;
 
       if (input.useBrowserFlow) {
-        // Browser flow
-        const state = crypto.randomUUID();
-        const deviceCode = deps.generateDeviceCode();
-        const server = deps.startCallbackServer(state, input.serverUrl);
+        const deviceAuth = await deps.startDeviceAuth(
+          input.serverUrl,
+          CLI_CLIENT_ID,
+          AbortSignal.timeout(10_000),
+        );
 
-        const callbackUrl = `http://localhost:${server.port}/callback`;
-        const loginUrl = `${input.serverUrl}/login?cli_callback=${
-          encodeURIComponent(callbackUrl)
-        }&state=${encodeURIComponent(state)}&device_code=${
-          encodeURIComponent(deviceCode)
-        }`;
+        const expiryMs = deviceAuth.expiresIn * 1000;
+        const signal = AbortSignal.timeout(Math.max(expiryMs, 60_000));
 
+        yield {
+          kind: "device_verification",
+          userCode: deviceAuth.userCode,
+          verificationUri: deviceAuth.verificationUri,
+          verificationUriComplete: deviceAuth.verificationUriComplete,
+        };
+
+        const urlToOpen = deviceAuth.verificationUriComplete ??
+          deviceAuth.verificationUri;
         yield { kind: "opening_browser" };
-        const browserError = await deps.openBrowser(loginUrl);
-        if (browserError) {
-          yield { kind: "browser_open_failed", message: browserError };
+        const opened = await deps.openBrowser(urlToOpen);
+        if (!opened) {
+          yield {
+            kind: "browser_open_failed",
+            message:
+              `Could not open browser automatically. Please visit the URL above.`,
+          };
         }
 
-        yield { kind: "device_verification", deviceCode };
-        yield { kind: "waiting_for_auth" };
+        let intervalMs = (deviceAuth.interval > 0 ? deviceAuth.interval : 5) *
+          1000;
+        const deadline = Date.now() + expiryMs;
 
-        try {
-          sessionToken = await server.token;
-        } finally {
-          await server.shutdown();
+        let token: string | undefined;
+        while (Date.now() < deadline) {
+          yield { kind: "polling" };
+          try {
+            const result = await deps.pollDeviceToken(
+              input.serverUrl,
+              deviceAuth.deviceCode,
+              CLI_CLIENT_ID,
+              signal,
+            );
+            token = result.accessToken;
+            break;
+          } catch (err) {
+            if (err instanceof DeviceAuthPendingError) {
+              if (err.slowDown) {
+                intervalMs += 5000;
+              }
+              try {
+                await delay(intervalMs, signal);
+              } catch {
+                break;
+              }
+              continue;
+            }
+            yield {
+              kind: "error",
+              error: err instanceof UserError
+                ? { code: "user_error", message: err.message }
+                : {
+                  code: "unknown",
+                  message: err instanceof Error ? err.message : String(err),
+                },
+            };
+            return;
+          }
         }
+
+        if (!token) {
+          yield {
+            kind: "error",
+            error: {
+              code: "user_error",
+              message: "Device authorization timed out",
+            },
+          };
+          return;
+        }
+
+        sessionToken = token;
       } else {
         // Stdin flow
         let username = input.username;
