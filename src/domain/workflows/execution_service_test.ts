@@ -5015,3 +5015,179 @@ Deno.test("suspend: sibling step failure is recorded during drain", async () => 
     assertEquals(cleanupJob.getStep("gc")!.status, "failed");
   });
 });
+
+Deno.test("step output stored on WorkflowRun has stripped content and attributes (swamp-club#1673)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new ModelMethodMockExecutor();
+
+    // Use the real nested structure: specName → instanceName → DataRecord
+    // The executor spreads output into the returned object, so we bypass
+    // the mock's type constraint with a direct set on the execute method.
+    const largePayload = "x".repeat(10000);
+    const originalExecute = executor.execute.bind(executor);
+    executor.execute = (step: Step, ctx: StepExecutionContext) => {
+      if (step.name === "step1") {
+        executor.executedSteps.push(`${ctx.jobName}/${ctx.stepName}`);
+        if (ctx.expressionContext) {
+          executor.capturedContexts.set(
+            ctx.stepName,
+            JSON.parse(JSON.stringify(ctx.expressionContext.model)),
+          );
+        }
+        return Promise.resolve({
+          type: "model_method",
+          method: "generate",
+          model: "data-model",
+          resources: {
+            result: {
+              "default": {
+                id: "data-123",
+                name: "result",
+                version: 1,
+                createdAt: "2024-01-01T00:00:00Z",
+                attributes: { largePayload },
+                content: { largePayload },
+                tags: { type: "resource" },
+                modelName: "data-model",
+                modelId: "model-id-1",
+                modelType: "data-generator",
+                specName: "result",
+                dataType: "resource",
+                contentType: "application/json",
+                lifetime: "infinite",
+                ownerType: "model-method",
+                streaming: false,
+                size: 10000,
+                isLatest: true,
+                namespace: "",
+                ownerRef: "",
+                workflowRunId: "",
+                workflowName: "",
+                jobName: "",
+                stepName: "",
+                source: "",
+              },
+            },
+          },
+          dataHandles: [
+            {
+              name: "default",
+              specName: "result",
+              kind: "resource",
+              dataId: "data-123",
+              version: 1,
+              size: 10000,
+              tags: { type: "resource" },
+              metadata: {},
+              attributes: { largePayload },
+            },
+          ],
+        });
+      }
+      if (step.name === "step2") {
+        executor.executedSteps.push(`${ctx.jobName}/${ctx.stepName}`);
+        if (ctx.expressionContext) {
+          executor.capturedContexts.set(
+            ctx.stepName,
+            JSON.parse(JSON.stringify(ctx.expressionContext.model)),
+          );
+        }
+        return Promise.resolve({ executed: true, step: step.name });
+      }
+      return originalExecute(step, ctx);
+    };
+
+    const workflow = Workflow.create({
+      name: "strip-content-test",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "step1",
+              task: StepTask.model("data-model", "generate"),
+            }),
+            Step.create({
+              name: "step2",
+              task: StepTask.model("consumer-model", "consume"),
+              dependsOn: [
+                { step: "step1", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const run = await service.execute(workflow.name);
+    assertEquals(run.status, "succeeded");
+
+    // Expression context should still have full content for downstream steps
+    const step2Context = executor.capturedContexts.get("step2");
+    const dataModel = step2Context?.["data-model"] as {
+      resource?: Record<
+        string,
+        Record<string, { attributes: Record<string, unknown> }>
+      >;
+    };
+    assertEquals(
+      dataModel?.resource?.["result"]?.["default"]?.attributes?.largePayload,
+      "x".repeat(10000),
+    );
+
+    // Step run output should have stripped content and attributes
+    const step1Run = run.getJob("job1")!.getStep("step1")!;
+    const step1Output = step1Run.toData().output as {
+      resources?: Record<
+        string,
+        Record<
+          string,
+          {
+            content: unknown;
+            attributes: unknown;
+            id: string;
+            name: string;
+            version: number;
+          }
+        >
+      >;
+    };
+    assertEquals(
+      step1Output?.resources?.["result"]?.["default"]?.content,
+      null,
+    );
+    assertEquals(
+      step1Output?.resources?.["result"]?.["default"]?.attributes,
+      null,
+    );
+
+    // Metadata should still be present
+    const record = step1Output?.resources?.["result"]?.["default"];
+    assertEquals(record?.id, "data-123");
+    assertEquals(record?.name, "result");
+    assertEquals(record?.version, 1);
+
+    // DataHandle attributes should also be stripped
+    const step1Handles = (step1Run.toData().output as {
+      dataHandles?: Array<{ attributes: unknown; name: string }>;
+    })?.dataHandles;
+    assert(step1Handles);
+    assertEquals(step1Handles.length, 1);
+    assertEquals(step1Handles[0].name, "default");
+    assertEquals(step1Handles[0].attributes, null);
+  });
+});
