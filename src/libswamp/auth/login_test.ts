@@ -25,16 +25,24 @@ import {
   type AuthLoginDeps,
   type AuthLoginEvent,
   type AuthLoginInput,
+  DeviceAuthPendingError,
 } from "./login.ts";
 
 function makeDeps(overrides: Partial<AuthLoginDeps> = {}): AuthLoginDeps {
   return {
-    openBrowser: () => Promise.resolve(null),
-    startCallbackServer: (_state: string, _serverUrl: string) => ({
-      port: 9999,
-      token: Promise.resolve("session-token-abc"),
-      shutdown: () => Promise.resolve(),
-    }),
+    openBrowser: () => Promise.resolve(true),
+    startDeviceAuth: () =>
+      Promise.resolve({
+        deviceCode: "device-abc-123",
+        userCode: "ABCD-1234",
+        verificationUri: "https://swamp-club.com/device",
+        verificationUriComplete:
+          "https://swamp-club.com/device?user_code=ABCD-1234",
+        expiresIn: 900,
+        interval: 0.001,
+      }),
+    pollDeviceToken: () =>
+      Promise.resolve({ accessToken: "session-token-abc" }),
     signIn: (_serverUrl: string, _username: string, _password: string) =>
       Promise.resolve({ token: "session-token-abc", username: "testuser" }),
     readCredentials: (_prefilled) =>
@@ -52,7 +60,6 @@ function makeDeps(overrides: Partial<AuthLoginDeps> = {}): AuthLoginDeps {
         collectives: ["org1"],
       }),
     saveCredentials: () => Promise.resolve(),
-    generateDeviceCode: () => "ABCD-1234",
     getHostname: () => "testhost",
     ...overrides,
   };
@@ -66,7 +73,7 @@ function makeInput(overrides: Partial<AuthLoginInput> = {}): AuthLoginInput {
   };
 }
 
-Deno.test("authLogin: successful browser flow emits correct event sequence", async () => {
+Deno.test("authLogin: successful device flow emits correct event sequence", async () => {
   let savedCreds: Record<string, unknown> = {};
   const deps = makeDeps({
     saveCredentials: (creds) => {
@@ -82,18 +89,26 @@ Deno.test("authLogin: successful browser flow emits correct event sequence", asy
 
   const kinds = events.map((e) => e.kind);
   assertEquals(kinds, [
-    "opening_browser",
     "device_verification",
-    "waiting_for_auth",
+    "opening_browser",
+    "polling",
     "securing_session",
     "completed",
   ]);
 
-  const deviceEvent = events[1] as Extract<
+  const deviceEvent = events[0] as Extract<
     AuthLoginEvent,
     { kind: "device_verification" }
   >;
-  assertEquals(deviceEvent.deviceCode, "ABCD-1234");
+  assertEquals(deviceEvent.userCode, "ABCD-1234");
+  assertEquals(
+    deviceEvent.verificationUri,
+    "https://swamp-club.com/device",
+  );
+  assertEquals(
+    deviceEvent.verificationUriComplete,
+    "https://swamp-club.com/device?user_code=ABCD-1234",
+  );
 
   const completed = events[4] as Extract<
     AuthLoginEvent,
@@ -108,11 +123,71 @@ Deno.test("authLogin: successful browser flow emits correct event sequence", asy
   assertEquals(savedCreds.apiKey, "swamp_testapikey123456");
 });
 
-Deno.test("authLogin: browser open failure emits browser_open_failed event", async () => {
+Deno.test("authLogin: browser open failure emits browser_open_failed but completes", async () => {
   const deps = makeDeps({
-    openBrowser: () =>
-      Promise.resolve(
-        "Could not open a browser. Please open this URL manually:\n  https://example.com",
+    openBrowser: () => Promise.resolve(false),
+  });
+  const input = makeInput({ useBrowserFlow: true });
+
+  const events = await collect<AuthLoginEvent>(
+    authLogin(createLibSwampContext(), deps, input),
+  );
+
+  const kinds = events.map((e) => e.kind);
+  assertEquals(kinds, [
+    "device_verification",
+    "opening_browser",
+    "browser_open_failed",
+    "polling",
+    "securing_session",
+    "completed",
+  ]);
+
+  const failedEvent = events[2] as Extract<
+    AuthLoginEvent,
+    { kind: "browser_open_failed" }
+  >;
+  assertEquals(
+    failedEvent.message.includes("Could not open browser"),
+    true,
+  );
+});
+
+Deno.test("authLogin: retries polling on pending status", async () => {
+  let pollCount = 0;
+  const deps = makeDeps({
+    pollDeviceToken: () => {
+      pollCount++;
+      if (pollCount < 3) {
+        return Promise.reject(new DeviceAuthPendingError());
+      }
+      return Promise.resolve({ accessToken: "session-token-abc" });
+    },
+  });
+  const input = makeInput({ useBrowserFlow: true });
+
+  const events = await collect<AuthLoginEvent>(
+    authLogin(createLibSwampContext(), deps, input),
+  );
+
+  const kinds = events.map((e) => e.kind);
+  assertEquals(kinds, [
+    "device_verification",
+    "opening_browser",
+    "polling",
+    "polling",
+    "polling",
+    "securing_session",
+    "completed",
+  ]);
+  assertEquals(pollCount, 3);
+});
+
+Deno.test("authLogin: yields error on poll failure", async () => {
+  const deps = makeDeps({
+    pollDeviceToken: () =>
+      Promise.reject(
+        new Error("Device authorization failed: access_denied"),
       ),
   });
   const input = makeInput({ useBrowserFlow: true });
@@ -123,20 +198,18 @@ Deno.test("authLogin: browser open failure emits browser_open_failed event", asy
 
   const kinds = events.map((e) => e.kind);
   assertEquals(kinds, [
-    "opening_browser",
-    "browser_open_failed",
     "device_verification",
-    "waiting_for_auth",
-    "securing_session",
-    "completed",
+    "opening_browser",
+    "polling",
+    "error",
   ]);
 
-  const failedEvent = events[1] as Extract<
+  const errorEvent = events[3] as Extract<
     AuthLoginEvent,
-    { kind: "browser_open_failed" }
+    { kind: "error" }
   >;
   assertEquals(
-    failedEvent.message.includes("Could not open a browser"),
+    errorEvent.error.message.includes("Device authorization failed"),
     true,
   );
 });
@@ -298,23 +371,93 @@ Deno.test("authLogin: stdin flow with both --username and --password skips all p
   assertEquals(kinds, ["securing_session", "completed"]);
 });
 
-Deno.test("authLogin: callback server is shut down after browser flow", async () => {
-  let shutdownCalled = false;
+Deno.test("authLogin: device flow passes correct client_id and server URL", async () => {
+  let capturedServerUrl = "";
+  let capturedClientId = "";
   const deps = makeDeps({
-    startCallbackServer: (_state: string, _serverUrl: string) => ({
-      port: 8888,
-      token: Promise.resolve("tok"),
-      shutdown: () => {
-        shutdownCalled = true;
-        return Promise.resolve();
-      },
-    }),
+    startDeviceAuth: (serverUrl, clientId) => {
+      capturedServerUrl = serverUrl;
+      capturedClientId = clientId;
+      return Promise.resolve({
+        deviceCode: "device-abc-123",
+        userCode: "WXYZ-5678",
+        verificationUri: "https://swamp-club.com/device",
+        expiresIn: 900,
+        interval: 0.001,
+      });
+    },
   });
-  const input = makeInput({ useBrowserFlow: true });
+  const input = makeInput({
+    useBrowserFlow: true,
+    serverUrl: "https://custom-server.example.com",
+  });
 
   await collect<AuthLoginEvent>(
     authLogin(createLibSwampContext(), deps, input),
   );
 
-  assertEquals(shutdownCalled, true);
+  assertEquals(capturedServerUrl, "https://custom-server.example.com");
+  assertEquals(capturedClientId, "swamp-cli");
+});
+
+Deno.test("authLogin: device flow times out when expiresIn elapses", async () => {
+  const deps = makeDeps({
+    startDeviceAuth: () =>
+      Promise.resolve({
+        deviceCode: "device-abc-123",
+        userCode: "ABCD-1234",
+        verificationUri: "https://swamp-club.com/device",
+        expiresIn: 0.001,
+        interval: 0.001,
+      }),
+    pollDeviceToken: () => Promise.reject(new DeviceAuthPendingError()),
+  });
+  const input = makeInput({ useBrowserFlow: true });
+
+  const events = await collect<AuthLoginEvent>(
+    authLogin(createLibSwampContext(), deps, input),
+  );
+
+  const last = events[events.length - 1];
+  assertEquals(last.kind, "error");
+  if (last.kind === "error") {
+    assertEquals(last.error.message, "Device authorization timed out");
+  }
+});
+
+Deno.test("authLogin: slow_down increases polling interval", async () => {
+  let pollCount = 0;
+  const deps = makeDeps({
+    startDeviceAuth: () =>
+      Promise.resolve({
+        deviceCode: "device-abc-123",
+        userCode: "ABCD-1234",
+        verificationUri: "https://swamp-club.com/device",
+        expiresIn: 900,
+        interval: 0.001,
+      }),
+    pollDeviceToken: () => {
+      pollCount++;
+      if (pollCount === 1) {
+        return Promise.reject(new DeviceAuthPendingError(true));
+      }
+      return Promise.resolve({ accessToken: "session-token-abc" });
+    },
+  });
+  const input = makeInput({ useBrowserFlow: true });
+
+  const events = await collect<AuthLoginEvent>(
+    authLogin(createLibSwampContext(), deps, input),
+  );
+
+  const kinds = events.map((e) => e.kind);
+  assertEquals(kinds, [
+    "device_verification",
+    "opening_browser",
+    "polling",
+    "polling",
+    "securing_session",
+    "completed",
+  ]);
+  assertEquals(pollCount, 2);
 });

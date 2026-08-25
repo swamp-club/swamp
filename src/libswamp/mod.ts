@@ -1271,7 +1271,7 @@ export {
   type AuthLoginDeps,
   type AuthLoginEvent,
   type AuthLoginInput,
-  type CallbackServerHandle,
+  CLI_CLIENT_ID,
   createAuthLoginDeps,
 } from "./auth/login.ts";
 
