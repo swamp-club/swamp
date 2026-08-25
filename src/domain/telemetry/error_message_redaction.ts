@@ -22,8 +22,7 @@
 // destructive strategy (replaces the entire message). Telemetry preserves
 // diagnostic structure by normalizing in-place instead.
 
-const HOME_PATH_RE =
-  /(\/Users\/|\/home\/|C:\\Users\\|C:\/Users\/)([^\s/\\]+)/g;
+const HOME_PATH_RE = /(\/Users\/|\/home\/|C:\\Users\\|C:\/Users\/)([^\s/\\]+)/g;
 
 const INTERNAL_HOST_RE =
   /\b[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.(?:internal|local|lan|corp|intranet|private|home)\b/g;
