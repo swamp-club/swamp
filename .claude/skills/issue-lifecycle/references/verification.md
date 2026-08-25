@@ -73,8 +73,7 @@ failed" below.
 
 1. Construct the combined attestation JSON including the `configIntegrity`
    checksums (see `agent-constraints/verification-conventions.md` for the full
-   schema). The attestation is posted to swamp-club as part of the
-   `verification_passed` call so the team has a permanent, shared record.
+   schema).
 
 2. Call `verification_passed` with the attestation data:
 
@@ -90,16 +89,29 @@ failed" below.
    with its actual status (succeeded, failed, or skipped).
 
 3. **Present the full verification checklist to the user and wait for their
-   approval before opening the PR.** The checklist must show every step from
-   both the build and review workflows — status, model, duration, and for
-   reviews the VERDICT and finding count. Include the workflow run file paths so
-   the user can inspect the raw data. See
-   `agent-constraints/verification-conventions.md` for the checklist format.
+   confirmation to proceed.** The checklist must show every step from both the
+   build and review workflows — status, model, duration, and for reviews the
+   VERDICT and finding count. Include the workflow run file paths so the user
+   can inspect the raw data. See `agent-constraints/verification-conventions.md`
+   for the checklist format.
 
-   Do NOT proceed to open a PR until the user has seen the checklist and
-   confirmed they are happy with the results.
+   **Stop here and wait.** Do NOT post the attestation or open a PR until the
+   user has seen the checklist and explicitly said they are ready to open the
+   PR.
 
-4. Then proceed to open a PR — read the "Create a PR" section in
+4. **After the user confirms**, post the attestation to swamp-club. This is a
+   **hard block** — the PR MUST NOT open until the attestation has been
+   successfully posted. See `agent-constraints/verification-conventions.md` step
+   7 for the exact command and failure handling.
+
+   The user's confirmation is what triggers the attestation push. Do not post it
+   automatically after verification passes — the user decides when to ship.
+
+   If the POST fails, report the error to the user and fix the issue (auth,
+   connectivity) before retrying. Without a stored attestation, the CI
+   `validate-attestation` check will report "no attestation found."
+
+5. Then proceed to open a PR — read the "Create a PR" section in
    [implementation.md](implementation.md).
 
 ### Any step failed
@@ -121,10 +133,21 @@ This transitions back to `implementing`. Fix the failing code:
 
 After fixing, return to step 1 and re-verify. Repeat until all steps pass.
 
-## 5. Do NOT Open a PR Without Verification
+## 5. Do NOT Open a PR Without Verification and Attestation
 
 The `link_pr` method requires a passing verification result. If you skip
 verification and try to link a PR directly, it will be missing the
 `verificationResult` data that the lifecycle checks for.
 
-The loop is: implement → conformance review → verify → fix → re-verify → PR.
+**Two hard gates before a PR opens:**
+
+1. **Verification passes** — `gate.allPassed` is true
+2. **Attestation posted** — the attestation JSON has been successfully stored in
+   swamp-club via `POST /api/v1/admin/attestations`
+
+If either gate fails, do NOT open a PR. The CI `validate-attestation` job reads
+the attestation from swamp-club and validates commit match, config integrity,
+and freshness. A missing attestation will be flagged.
+
+The loop is: implement → conformance review → verify → fix → re-verify → present
+checklist → user confirms → post attestation → PR.
