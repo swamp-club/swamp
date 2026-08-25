@@ -104,10 +104,17 @@ failed" below.
    what triggers the attestation push. Do not post it automatically after
    verification passes — the user decides when to ship.
 
+   Write the attestation JSON to a file first, then pass it as a stringified
+   JSON value:
+
    ```
    swamp model @swamp/issue-lifecycle method run post_attestation issue-<N> \
-     --input attestation='<attestation JSON string>'
+     --input attestation="$(cat <path-to-attestation.json>)" \
+     --repo-dir <repo-root>
    ```
+
+   The `attestation` input must be the full attestation JSON as a single string
+   — use `$(cat file)` to inline it from the file you wrote in step 1.
 
    The method posts the attestation to swamp-club using the CLI's existing auth
    credentials. It throws on failure — if it fails, fix the auth or connectivity

@@ -1769,7 +1769,7 @@ export const model = {
           job: z.string(),
           step: z.string(),
           model: z.string(),
-          method: z.string(),
+          method: z.string().default("execute"),
           status: z.enum(["succeeded", "failed", "skipped"]),
         })),
       }),
