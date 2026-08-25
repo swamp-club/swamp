@@ -59,6 +59,8 @@ export {
   RELEVANT_ENV_VARS,
 } from "./agent_harness_detection.ts";
 
+export { redactErrorMessage } from "./error_message_redaction.ts";
+
 export {
   createErrorResult,
   createSuccessResult,

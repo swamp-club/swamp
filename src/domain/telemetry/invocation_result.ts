@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { redactErrorMessage } from "./error_message_redaction.ts";
+
 /**
  * Status of a command invocation.
  */
@@ -63,13 +65,12 @@ export function createErrorResult(
   error: Error,
   isUserError: boolean = false,
 ): InvocationResult {
-  // Get first line of error message only (sanitize)
   const firstLine = error.message.split("\n")[0];
 
   return {
     status: isUserError ? "user_error" : "error",
     errorType: error.constructor.name,
-    errorMessage: firstLine,
+    errorMessage: redactErrorMessage(firstLine),
     exitCode: 1,
   };
 }
