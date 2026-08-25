@@ -294,6 +294,7 @@ export interface WorkflowHistoryLogsPayload {
 
 export interface WorkflowHistorySearchPayload {
   query?: string;
+  workflow?: string;
   inputs?: Record<string, string>;
 }
 

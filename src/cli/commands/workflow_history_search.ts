@@ -150,7 +150,11 @@ export async function workflowHistorySearchAction(
       { server, token },
       {
         type: "workflow.history.search",
-        payload: { query, inputs: parsedInputs },
+        payload: {
+          query,
+          workflow: options.workflow as string | undefined,
+          inputs: parsedInputs,
+        },
       },
     );
     const renderer = createWorkflowHistorySearchRenderer(effectiveMode);
@@ -207,7 +211,11 @@ export async function workflowHistorySearchAction(
   };
 
   await consumeStream(
-    workflowHistorySearch(libCtx, deps, { query, inputs: parsedInputs }),
+    workflowHistorySearch(libCtx, deps, {
+      query,
+      workflow: options.workflow as string | undefined,
+      inputs: parsedInputs,
+    }),
     handlers,
   );
 
@@ -259,6 +267,10 @@ export const workflowHistorySearchCommand = withRemoteOptions(
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option(
+      "--workflow <name:string>",
+      "Filter by workflow name",
     )
     .option(
       "--input <input:string>",
