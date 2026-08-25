@@ -163,7 +163,7 @@ Deno.test("CatalogStore: upsertNewVersion does not touch unrelated data names", 
   store.close();
 });
 
-Deno.test("CatalogStore: upsertNewVersion scopes is_latest by step_name", () => {
+Deno.test("CatalogStore: upsertNewVersion keeps independent latests for different workflow steps", () => {
   const dbPath = makeTempDbPath();
   const store = new CatalogStore(dbPath);
 
@@ -201,6 +201,97 @@ Deno.test("CatalogStore: upsertNewVersion clears is_latest within same step_name
   const latestRows = rows.filter((r) => r.is_latest === 1);
   assertEquals(latestRows.length, 1);
   assertEquals(latestRows[0].version, 2);
+  store.close();
+});
+
+Deno.test("CatalogStore: upsertNewVersion model-method demotes all step_names", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsertNewVersion(
+    makeRow({ version: 1, step_name: "step-a" }),
+  );
+  store.upsertNewVersion(
+    makeRow({ version: 2, step_name: "step-b" }),
+  );
+  store.upsertNewVersion(
+    makeRow({ version: 3, step_name: "" }),
+  );
+
+  const rows = [...store.iterate()];
+  assertEquals(rows.length, 3);
+  const latestRows = rows.filter((r) => r.is_latest === 1);
+  assertEquals(latestRows.length, 1);
+  assertEquals(latestRows[0].version, 3);
+  assertEquals(latestRows[0].step_name, "");
+  store.close();
+});
+
+Deno.test("CatalogStore: upsertNewVersion workflow step demotes model-method rows", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsertNewVersion(
+    makeRow({ version: 1, step_name: "" }),
+  );
+  store.upsertNewVersion(
+    makeRow({ version: 2, step_name: "approve" }),
+  );
+
+  const rows = [...store.iterate()];
+  assertEquals(rows.length, 2);
+  const latestRows = rows.filter((r) => r.is_latest === 1);
+  assertEquals(latestRows.length, 1);
+  assertEquals(latestRows[0].version, 2);
+  assertEquals(latestRows[0].step_name, "approve");
+  store.close();
+});
+
+Deno.test("CatalogStore: upsertNewVersion workflow step does not demote other steps", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsertNewVersion(
+    makeRow({ version: 1, step_name: "step-a" }),
+  );
+  store.upsertNewVersion(
+    makeRow({ version: 2, step_name: "step-b" }),
+  );
+
+  const rows = [...store.iterate()];
+  assertEquals(rows.length, 2);
+  const latestRows = rows.filter((r) => r.is_latest === 1);
+  assertEquals(latestRows.length, 2);
+  assertEquals(latestRows.map((r) => r.step_name).sort(), [
+    "step-a",
+    "step-b",
+  ]);
+  store.close();
+});
+
+Deno.test("CatalogStore: upsertNewVersion model-method after workflow steps demotes all", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsertNewVersion(
+    makeRow({ version: 1, step_name: "" }),
+  );
+  store.upsertNewVersion(
+    makeRow({ version: 2, step_name: "step-a" }),
+  );
+  store.upsertNewVersion(
+    makeRow({ version: 3, step_name: "step-b" }),
+  );
+  store.upsertNewVersion(
+    makeRow({ version: 4, step_name: "" }),
+  );
+
+  const rows = [...store.iterate()];
+  assertEquals(rows.length, 4);
+  const latestRows = rows.filter((r) => r.is_latest === 1);
+  assertEquals(latestRows.length, 1);
+  assertEquals(latestRows[0].version, 4);
+  assertEquals(latestRows[0].step_name, "");
   store.close();
 });
 

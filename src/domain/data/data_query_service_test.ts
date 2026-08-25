@@ -26,7 +26,7 @@ import {
   CatalogStore,
 } from "../../infrastructure/persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
-import { DataQueryService } from "./data_query_service.ts";
+import { computeLatestFlags, DataQueryService } from "./data_query_service.ts";
 import type { DataRecord } from "./data_record.ts";
 import { createNamespace } from "./namespace.ts";
 import { UserError } from "../errors.ts";
@@ -1746,4 +1746,74 @@ Deno.test("DataQueryService: filterStaleRows skips foreign namespace rows (no lo
   assertEquals(results[0].modelId, "foreign-model-id");
 
   catalog.close();
+});
+
+// --- computeLatestFlags tests ---
+
+Deno.test("computeLatestFlags: model-method write demotes all prior step outputs", () => {
+  const rows: CatalogRow[] = [
+    makeRow({ version: 1, step_name: "step-a" }),
+    makeRow({ version: 2, step_name: "step-b" }),
+    makeRow({ version: 3, step_name: "" }),
+  ];
+  computeLatestFlags(rows);
+
+  assertEquals(rows[0].is_latest, 0);
+  assertEquals(rows[1].is_latest, 0);
+  assertEquals(rows[2].is_latest, 1);
+});
+
+Deno.test("computeLatestFlags: different workflow steps keep independent latests above watermark", () => {
+  const rows: CatalogRow[] = [
+    makeRow({ version: 1, step_name: "" }),
+    makeRow({ version: 2, step_name: "step-a" }),
+    makeRow({ version: 3, step_name: "step-b" }),
+  ];
+  computeLatestFlags(rows);
+
+  assertEquals(rows[0].is_latest, 0);
+  assertEquals(rows[1].is_latest, 1);
+  assertEquals(rows[2].is_latest, 1);
+});
+
+Deno.test("computeLatestFlags: rows below global watermark are demoted", () => {
+  const rows: CatalogRow[] = [
+    makeRow({ version: 1, step_name: "" }),
+    makeRow({ version: 2, step_name: "step-a" }),
+    makeRow({ version: 3, step_name: "" }),
+    makeRow({ version: 4, step_name: "step-b" }),
+  ];
+  computeLatestFlags(rows);
+
+  assertEquals(rows[0].is_latest, 0);
+  assertEquals(rows[1].is_latest, 0);
+  assertEquals(rows[2].is_latest, 0);
+  assertEquals(rows[3].is_latest, 1);
+});
+
+Deno.test("computeLatestFlags: no model-method rows means each step gets own latest", () => {
+  const rows: CatalogRow[] = [
+    makeRow({ version: 1, step_name: "step-a" }),
+    makeRow({ version: 2, step_name: "step-a" }),
+    makeRow({ version: 3, step_name: "step-b" }),
+  ];
+  computeLatestFlags(rows);
+
+  assertEquals(rows[0].is_latest, 0);
+  assertEquals(rows[1].is_latest, 1);
+  assertEquals(rows[2].is_latest, 1);
+});
+
+Deno.test("computeLatestFlags: model-method as latest version demotes everything", () => {
+  const rows: CatalogRow[] = [
+    makeRow({ version: 1, step_name: "step-a" }),
+    makeRow({ version: 2, step_name: "step-b" }),
+    makeRow({ version: 3, step_name: "" }),
+  ];
+  computeLatestFlags(rows);
+
+  const latestRows = rows.filter((r) => r.is_latest === 1);
+  assertEquals(latestRows.length, 1);
+  assertEquals(latestRows[0].version, 3);
+  assertEquals(latestRows[0].step_name, "");
 });
