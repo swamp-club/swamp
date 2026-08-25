@@ -161,10 +161,10 @@ override inputs are merged on top of built-in inputs.
 The signature scheme is set per endpoint on `swamp serve`'s `--webhook` flag:
 `<route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]`, where `scheme`
 is `github` (default), `jira`, `linear`, `stripe`, `slack`, or `generic`
-(requires header; optional prefix). Omitting the scheme preserves the original behavior.
-The secret field supports indirection to avoid exposing secrets in argv:
-`@env=VAR_NAME` reads from an environment variable, `@file=/path` reads from a
-file (trailing newline trimmed). Plain strings are literal secrets.
+(requires header; optional prefix). Omitting the scheme preserves the original
+behavior. The secret field supports indirection to avoid exposing secrets in
+argv: `@env=VAR_NAME` reads from an environment variable, `@file=/path` reads
+from a file (trailing newline trimmed). Plain strings are literal secrets.
 
 ## Edit a Workflow
 
