@@ -3130,7 +3130,17 @@ export class WorkflowExecutionService {
         }
       }
 
-      stepRun.succeed(output);
+      // Store a lightweight copy of the output on the step run — strip
+      // content and attributes from DataRecords to avoid accumulating
+      // gigabytes of parsed data in the WorkflowRun aggregate. The full
+      // content is already persisted in the datastore and available via
+      // `swamp data get`. The expression context (updated above) retains
+      // the original references for downstream CEL evaluation.
+      const lightOutput = step.task.isModelMethod() && output &&
+          typeof output === "object"
+        ? stripResourceContent(output as Record<string, unknown>)
+        : output;
+      stepRun.succeed(lightOutput);
       stepSpan.setStatus({ code: SpanStatusCode.OK });
       const executor = output && typeof output === "object" &&
           "executor" in output
@@ -3697,6 +3707,58 @@ export class WorkflowExecutionService {
       evalSpan.end();
     }
   }
+}
+
+/**
+ * Create a lightweight copy of step output, stripping heavy payload fields
+ * from DataRecords (`resources`) and DataHandles (`dataHandles`). The full
+ * data is already persisted in the datastore; keeping it on the WorkflowRun
+ * causes the run aggregate to grow proportionally to cumulative step
+ * output, which triggers OOM on large workflows (swamp-club#1673).
+ */
+function stripResourceContent(
+  output: Record<string, unknown>,
+): Record<string, unknown> {
+  const result = { ...output };
+
+  const resources = output.resources as
+    | Record<string, Record<string, DataRecord>>
+    | undefined;
+  if (resources) {
+    const lightResources: Record<
+      string,
+      Record<
+        string,
+        Omit<DataRecord, "content" | "attributes"> & {
+          content: null;
+          attributes: null;
+        }
+      >
+    > = {};
+    for (const [specName, instances] of Object.entries(resources)) {
+      lightResources[specName] = {};
+      for (const [instanceName, record] of Object.entries(instances)) {
+        lightResources[specName][instanceName] = {
+          ...record,
+          content: null,
+          attributes: null,
+        };
+      }
+    }
+    result.resources = lightResources;
+  }
+
+  const dataHandles = output.dataHandles as
+    | Array<{ attributes?: Record<string, unknown>; [key: string]: unknown }>
+    | undefined;
+  if (dataHandles) {
+    result.dataHandles = dataHandles.map((handle) => {
+      if (!handle.attributes) return handle;
+      return { ...handle, attributes: undefined };
+    });
+  }
+
+  return result;
 }
 
 function readGlobalConcurrencyLimit(): number | undefined {
