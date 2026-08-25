@@ -23,8 +23,8 @@
  * Every supported provider authenticates with the same primitive — an
  * HMAC-SHA256 digest of a provider-specific message — and differs only in the
  * header it uses, how the digest is encoded in that header, and what bytes are
- * signed. This module hosts a closed, hardcoded set of schemes (github, linear,
- * stripe, slack, generic) over shared HMAC and constant-time-comparison
+ * signed. This module hosts a closed, hardcoded set of schemes (github, jira,
+ * linear, stripe, slack, generic) over shared HMAC and constant-time-comparison
  * primitives. Each verifier is a stateless function of (body, headers, secret).
  *
  * Generalizing this into a data-driven/templated engine so new providers need
