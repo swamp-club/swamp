@@ -78,7 +78,7 @@ async function readState(
 
 export const model = {
   type: "@swamp/issue-lifecycle",
-  version: "2026.08.21.1",
+  version: "2026.08.25.1",
   globalArguments: GlobalArgsSchema,
 
   upgrades: [
@@ -192,6 +192,14 @@ export const model = {
         "verification_failed (return to implementing). " +
         "New verificationResult resource stores the checklist data. " +
         "No globalArguments changes.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.08.25.1",
+      description:
+        "Add post_attestation method — posts verification attestation to " +
+        "swamp-club before opening a PR. New TRANSITIONS entry for " +
+        "post_attestation from verifying phase. No globalArguments changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
@@ -1912,6 +1920,70 @@ export const model = {
         });
 
         return { dataHandles: [stateHandle] };
+      },
+    },
+
+    post_attestation: {
+      description:
+        "Post the verification attestation to swamp-club. Must be called " +
+        "after verification passes and the user confirms the checklist, " +
+        "before opening a PR. The PR must not open without a stored " +
+        "attestation — this is a hard gate.",
+      arguments: z.object({
+        attestation: z.string().min(1).describe(
+          "The verification attestation JSON as a string. Must include " +
+            "version, subject, gate, configIntegrity, steps, and timing.",
+        ),
+      }),
+      execute: async (
+        args: { attestation: string },
+        context: {
+          globalArgs: GlobalArgs;
+          logger: {
+            info: (msg: string, props: Record<string, unknown>) => void;
+            warning: (msg: string, props: Record<string, unknown>) => void;
+          };
+        },
+      ) => {
+        const sc = await createSwampClubClient(
+          context.globalArgs,
+          context.logger,
+        );
+        if (!sc) {
+          throw new Error(
+            "swamp-club is not reachable or credentials are missing. " +
+              "Set SWAMP_API_KEY or run `swamp auth login`.",
+          );
+        }
+
+        let parsed: Record<string, unknown>;
+        try {
+          parsed = JSON.parse(args.attestation) as Record<string, unknown>;
+        } catch {
+          throw new Error("attestation input is not valid JSON");
+        }
+
+        const result = await sc.postAttestation(parsed);
+
+        context.logger.info(
+          "Attestation posted to swamp-club: id={id} postedBy={postedBy}",
+          { id: result.id, postedBy: result.postedBy },
+        );
+
+        await sc.postLifecycleEntry({
+          step: "attestation_posted",
+          targetStatus: "in_progress",
+          summary: "Verification attestation posted to swamp-club",
+          emoji: "\u{1F4DC}",
+          payload: {
+            attestationId: result.id,
+            commit: (parsed.subject as Record<string, unknown>)?.commit,
+            gatePassed: (parsed.gate as Record<string, unknown>)?.allPassed,
+          },
+          isVerbose: false,
+        });
+
+        return { dataHandles: [] };
       },
     },
 

@@ -99,20 +99,27 @@ failed" below.
    user has seen the checklist and explicitly said they are ready to open the
    PR.
 
-4. **After the user confirms**, post the attestation to swamp-club. This is a
-   **hard block** — the PR MUST NOT open until the attestation has been
-   successfully posted. See `agent-constraints/verification-conventions.md` step
-   7 for the exact command and failure handling.
+4. **After the user confirms**, post the attestation to swamp-club using the
+   issue-lifecycle model's `post_attestation` method. The user's confirmation is
+   what triggers the attestation push. Do not post it automatically after
+   verification passes — the user decides when to ship.
 
-   The user's confirmation is what triggers the attestation push. Do not post it
-   automatically after verification passes — the user decides when to ship.
+   ```
+   swamp model @swamp/issue-lifecycle method run post_attestation issue-<N> \
+     --input attestation='<attestation JSON string>'
+   ```
 
-   If the POST fails, report the error to the user and fix the issue (auth,
-   connectivity) before retrying. Without a stored attestation, the CI
-   `validate-attestation` check will report "no attestation found."
+   The method posts the attestation to swamp-club using the CLI's existing auth
+   credentials. It throws on failure — if it fails, fix the auth or connectivity
+   issue and retry.
 
-5. Then proceed to open a PR — read the "Create a PR" section in
-   [implementation.md](implementation.md).
+   **Do NOT proceed until `post_attestation` succeeds.** The CI
+   `validate-attestation` check will fail if no attestation exists for the
+   commit.
+
+5. **Only after `post_attestation` succeeds**, proceed to open a PR — read the
+   "Create a PR" section in [implementation.md](implementation.md). If you
+   skipped step 4, implementation.md will send you back here.
 
 ### Any step failed
 

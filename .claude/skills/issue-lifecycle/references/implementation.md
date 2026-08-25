@@ -53,6 +53,12 @@ Do NOT proceed to create a PR until verification passes.
 
 ## 4. Create a PR
 
+**PREREQUISITE: The verification attestation MUST be posted to swamp-club before
+opening a PR.** If you have not yet posted the attestation via
+`POST /api/v1/admin/attestations`, STOP — go back to
+[verification.md](verification.md) step 4 and complete the attestation flow
+first. Do NOT skip this step. Do NOT open a PR without a posted attestation.
+
 **Always ask the human before opening a PR.** Do not create the PR automatically
 — present a summary of the changes and ask if they are ready to open it. Only
 proceed after explicit confirmation.
