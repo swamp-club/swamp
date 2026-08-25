@@ -784,8 +784,34 @@ jobs:
           errors=0
           warnings=0
 
+          # -- Extract metadata for the header --
+          att_commit=$(jq -r '.subject.commit // empty' attestation.json)
+          att_branch=$(jq -r '.subject.branch // empty' attestation.json)
+          posted_by=$(jq -r '.postedBy // empty' attestation.json)
+          posted_at=$(jq -r '.postedAt // empty' attestation.json)
+          all_passed=$(jq -r '.gate.allPassed // false' attestation.json)
+          steps_completed=$(jq -r '.gate.stepsCompleted // 0' attestation.json)
+          steps_total=$(jq -r '.gate.stepsTotal // 0' attestation.json)
+          steps_skipped=$(jq -r '.gate.stepsSkipped // 0' attestation.json)
+          env_os=$(jq -r '.environment.os // "—"' attestation.json)
+          env_deno=$(jq -r '.environment.denoVersion // "—"' attestation.json)
+          env_swamp=$(jq -r '.environment.swampVersion // "—"' attestation.json)
+          total_duration=$(jq -r '.timing.totalDurationMs // 0' attestation.json)
+          total_secs=$((total_duration / 1000))
+          total_mins=$((total_secs / 60))
+          remaining_secs=$((total_secs % 60))
+
+          # -- Header --
           {
             echo "## Attestation Validation"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| **Commit** | \`${att_commit:0:8}\` (\`${att_branch}\`) |"
+            echo "| **Posted by** | ${posted_by:-unknown} |"
+            echo "| **Posted at** | ${posted_at:-unknown} |"
+            echo "| **Environment** | ${env_os} · Deno ${env_deno} · swamp ${env_swamp} |"
+            echo "| **Duration** | ${total_mins}m ${remaining_secs}s |"
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -798,20 +824,15 @@ jobs:
           fi
 
           # -- 2. Commit match --
-          att_commit=$(jq -r '.subject.commit // empty' attestation.json)
           if [ "$att_commit" != "$head_sha" ]; then
             echo "::error::Commit mismatch: attestation=${att_commit:0:8} PR=${head_sha:0:8}"
             echo "❌ Commit mismatch: attestation \`${att_commit:0:8}\` ≠ PR \`${head_sha:0:8}\`" >> "$GITHUB_STEP_SUMMARY"
             errors=$((errors + 1))
           else
-            echo "✅ Commit: \`${head_sha:0:8}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "✅ Commit matches PR head" >> "$GITHUB_STEP_SUMMARY"
           fi
 
           # -- 3. Gate --
-          all_passed=$(jq -r '.gate.allPassed // false' attestation.json)
-          steps_completed=$(jq -r '.gate.stepsCompleted // 0' attestation.json)
-          steps_total=$(jq -r '.gate.stepsTotal // 0' attestation.json)
-          steps_skipped=$(jq -r '.gate.stepsSkipped // 0' attestation.json)
           if [ "$all_passed" != "true" ]; then
             echo "::error::Gate failed: allPassed=$all_passed ($steps_completed/$steps_total)"
             echo "❌ Gate: **failed** ($steps_completed/$steps_total completed, $steps_skipped skipped)" >> "$GITHUB_STEP_SUMMARY"
@@ -886,43 +907,37 @@ jobs:
           # -- 6. Steps summary table --
           {
             echo ""
-            echo "### Steps"
+            echo "### Verification Steps"
             echo ""
             echo "| Job | Step | Status | Duration | Verdict |"
             echo "|-----|------|--------|----------|---------|"
           } >> "$GITHUB_STEP_SUMMARY"
-          jq -r '.steps // [] | .[] | "| \(.job) | \(.step) | \(.status) | \(if .durationMs then "\(.durationMs / 1000)s" else "—" end) | \(.verdict // .reason // "—") |"' attestation.json >> "$GITHUB_STEP_SUMMARY" || true
+          jq -r '.steps // [] | .[] | "| \(.job) | \(.step) | \(if .status == "succeeded" then "✅ passed" elif .status == "skipped" then "⏭️ skipped" else "❌ \(.status)" end) | \(if .durationMs then "\(.durationMs / 1000)s" else "—" end) | \(.verdict // .reason // "—") |"' attestation.json >> "$GITHUB_STEP_SUMMARY" || true
 
           # -- 7. Review config --
           if jq -e '.reviewConfig' attestation.json > /dev/null 2>&1; then
             {
               echo ""
-              echo "### Reviews"
+              echo "### Agent Reviews"
               echo ""
-              echo "| Review | Model | Ran |"
-              echo "|--------|-------|-----|"
+              echo "| Review | Model | Status |"
+              echo "|--------|-------|--------|"
             } >> "$GITHUB_STEP_SUMMARY"
-            jq -r '.reviewConfig | to_entries[] | "| \(.key) | \(.value.model) | \(if .value.ran then "✅" else "⏭️ \(.value.reason // "skipped")" end) |"' attestation.json >> "$GITHUB_STEP_SUMMARY" || true
+            jq -r '.reviewConfig | to_entries[] | "| \(.key) | \(.value.model) | \(if .value.ran then "✅ ran" else "⏭️ \(.value.reason // "skipped")" end) |"' attestation.json >> "$GITHUB_STEP_SUMMARY" || true
           fi
 
           # -- Result --
-          total_duration=$(jq -r '.timing.totalDurationMs // 0' attestation.json)
-          total_secs=$((total_duration / 1000))
-          total_mins=$((total_secs / 60))
-          remaining_secs=$((total_secs % 60))
-          {
-            echo ""
-            echo "**Verification ran in ${total_mins}m ${remaining_secs}s**"
-            echo ""
-          } >> "$GITHUB_STEP_SUMMARY"
-
+          echo "" >> "$GITHUB_STEP_SUMMARY"
           if [ "$errors" -gt 0 ]; then
-            echo "### ❌ Validation Failed ($errors errors, $warnings warnings)" >> "$GITHUB_STEP_SUMMARY"
+            echo "### ❌ Validation Failed" >> "$GITHUB_STEP_SUMMARY"
+            echo "$errors error(s), $warnings warning(s)" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           elif [ "$warnings" -gt 0 ]; then
-            echo "### ⚠️ Passed with Warnings ($warnings warnings)" >> "$GITHUB_STEP_SUMMARY"
+            echo "### ⚠️ Validation Passed with Warnings" >> "$GITHUB_STEP_SUMMARY"
+            echo "$warnings warning(s)" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "### ✅ Validation Passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "All checks passed — commit, gate, freshness, and config integrity verified." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   auto-merge:
