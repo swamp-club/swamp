@@ -812,6 +812,20 @@ export class ModelResolver {
                 dataName,
               );
               if (data) {
+                if (
+                  data.tags["specName"] && this.dataQueryService
+                ) {
+                  const targetNs = ns.namespacePredicate
+                    ? ns.namespacePredicate.match(
+                      /ns == "([^"]*)"/,
+                    )?.[1]
+                    : (ownNamespace || undefined);
+                  this.dataQueryService.checkSpecNameAmbiguity(
+                    data.tags["specName"],
+                    ns.modelName,
+                    targetNs,
+                  );
+                }
                 const record = this.dataToRecord(
                   data,
                   modelType,
@@ -861,7 +875,17 @@ export class ModelResolver {
           loadAttributes: true,
         }) as DataRecord[];
         checkWildcardAmbiguity(results, rawModelName);
-        return results.length > 0 ? results[0] : null;
+        if (results.length > 0) {
+          const specName = results[0].specName;
+          if (specName) {
+            this.dataQueryService.checkSpecNameAmbiguity(
+              specName,
+              ns.modelName,
+            );
+          }
+          return results[0];
+        }
+        return null;
       },
       listVersions: (rawModelName: string, dataName: string): number[] => {
         if (!this.dataQueryService) return [];

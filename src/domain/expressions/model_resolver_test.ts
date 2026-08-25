@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertExists } from "@std/assert";
+import { assertEquals, assertExists, assertRejects } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { ModelResolver } from "./model_resolver.ts";
@@ -1555,6 +1555,145 @@ Deno.test("invalidateLatest: clears cached null so new data is visible", async (
     const found = await ctx.data.latest("late-writer", "result");
     assertExists(found);
     assertEquals(found.attributes.appeared, true);
+    catalog.close();
+  });
+});
+
+// ============================================================================
+// data.latest() throws on ambiguous specName matches
+// ============================================================================
+
+Deno.test("data.latest() throws on ambiguous specName matches", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const type = ModelType.create("test/model");
+
+    const model = Definition.create({
+      name: "fleet",
+      globalArguments: {},
+    });
+    await defRepo.save(type, model);
+
+    const data1 = Data.create({
+      name: "run-exec-thinkpad",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", specName: "runResult", modelName: "fleet" },
+      ownerDefinition: owner,
+    });
+    await dataRepo.save(
+      type,
+      model.id,
+      data1,
+      new TextEncoder().encode(JSON.stringify({ hostname: "thinkpad" })),
+    );
+
+    const data2 = Data.create({
+      name: "run-exec-clara",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", specName: "runResult", modelName: "fleet" },
+      ownerDefinition: owner,
+    });
+    await dataRepo.save(
+      type,
+      model.id,
+      data2,
+      new TextEncoder().encode(JSON.stringify({ hostname: "clara" })),
+    );
+
+    const data3 = Data.create({
+      name: "runResult",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", specName: "runResult", modelName: "fleet" },
+      ownerDefinition: owner,
+    });
+    await dataRepo.save(
+      type,
+      model.id,
+      data3,
+      new TextEncoder().encode(JSON.stringify({ hostname: "default" })),
+    );
+
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
+    const ctx = await resolver.buildContext();
+
+    assertExists(ctx.data);
+    const data = ctx.data;
+    await assertRejects(
+      () => data.latest("fleet", "runResult"),
+      Error,
+      "Ambiguous data.latest() match",
+    );
+    catalog.close();
+  });
+});
+
+Deno.test("data.latest() passes when specName is unique", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const type = ModelType.create("test/model");
+
+    const model = Definition.create({
+      name: "fleet",
+      globalArguments: {},
+    });
+    await defRepo.save(type, model);
+
+    const data1 = Data.create({
+      name: "scan-result",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", specName: "scanResult", modelName: "fleet" },
+      ownerDefinition: owner,
+    });
+    await dataRepo.save(
+      type,
+      model.id,
+      data1,
+      new TextEncoder().encode(JSON.stringify({ status: "ok" })),
+    );
+
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
+    const ctx = await resolver.buildContext();
+
+    assertExists(ctx.data);
+    const result = await ctx.data.latest("fleet", "scan-result");
+    assertExists(result);
+    assertEquals(result.attributes.status, "ok");
     catalog.close();
   });
 });
