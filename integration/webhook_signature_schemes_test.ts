@@ -130,6 +130,49 @@ function post(route: string, headers: HeadersInit, body: string): Request {
 }
 
 Deno.test({
+  name: "webhook scheme: a valid jira signature is accepted",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withService(
+      "/hooks/jira:jira-wf:shhh:jira",
+      "jira-wf",
+      async (service) => {
+        const body = '{"webhookEvent":"jira:issue_updated"}';
+        const sig = await hmacSha256Hex(new TextEncoder().encode(body), SECRET);
+        const res = await service.handleRequest(
+          post("/hooks/jira", { "x-hub-signature": `sha256=${sig}` }, body),
+        );
+        assertEquals(res?.status, 200);
+        assertEquals((await res!.json()).status, "queued");
+      },
+    );
+  },
+});
+
+Deno.test({
+  name: "webhook scheme: a forged jira signature is rejected with 401",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withService(
+      "/hooks/jira:jira-wf:shhh:jira",
+      "jira-wf",
+      async (service) => {
+        const res = await service.handleRequest(
+          post(
+            "/hooks/jira",
+            { "x-hub-signature": `sha256=${"00".repeat(32)}` },
+            '{"webhookEvent":"jira:issue_updated"}',
+          ),
+        );
+        assertEquals(res?.status, 401);
+      },
+    );
+  },
+});
+
+Deno.test({
   name: "webhook scheme: a valid linear signature is accepted",
   sanitizeOps: false,
   sanitizeResources: false,

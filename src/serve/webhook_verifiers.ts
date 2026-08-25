@@ -23,8 +23,8 @@
  * Every supported provider authenticates with the same primitive — an
  * HMAC-SHA256 digest of a provider-specific message — and differs only in the
  * header it uses, how the digest is encoded in that header, and what bytes are
- * signed. This module hosts a closed, hardcoded set of schemes (github, linear,
- * stripe, slack, generic) over shared HMAC and constant-time-comparison
+ * signed. This module hosts a closed, hardcoded set of schemes (github, jira,
+ * linear, stripe, slack, generic) over shared HMAC and constant-time-comparison
  * primitives. Each verifier is a stateless function of (body, headers, secret).
  *
  * Generalizing this into a data-driven/templated engine so new providers need
@@ -37,6 +37,7 @@ const TIMESTAMP_TOLERANCE_SECONDS = 300;
 /** The closed set of supported verification schemes. */
 export type WebhookScheme =
   | "github"
+  | "jira"
   | "linear"
   | "stripe"
   | "slack"
@@ -45,6 +46,7 @@ export type WebhookScheme =
 /** Schemes selectable on the --webhook flag, in stable order. */
 export const WEBHOOK_SCHEMES: readonly WebhookScheme[] = [
   "github",
+  "jira",
   "linear",
   "stripe",
   "slack",
@@ -57,7 +59,7 @@ export const WEBHOOK_SCHEMES: readonly WebhookScheme[] = [
  * strip); the named schemes are fully determined by their scheme tag.
  */
 export type VerifierConfig =
-  | { readonly scheme: "github" | "linear" | "stripe" | "slack" }
+  | { readonly scheme: "github" | "jira" | "linear" | "stripe" | "slack" }
   | {
     readonly scheme: "generic";
     readonly header: string;
@@ -251,6 +253,8 @@ export function createVerifier(config: VerifierConfig): WebhookVerifier {
   switch (config.scheme) {
     case "github":
       return prefixedBodyVerifier("x-hub-signature-256", "sha256=");
+    case "jira":
+      return prefixedBodyVerifier("x-hub-signature", "sha256=");
     case "linear":
       return prefixedBodyVerifier("linear-signature", "");
     case "stripe":
