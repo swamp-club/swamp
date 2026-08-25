@@ -45,24 +45,60 @@ import { resolveVaultRefsInData } from "../models/data_writer.ts";
 const logger = getLogger(["swamp", "domain", "data", "query"]);
 
 /**
- * Sets `is_latest` on each row so that the highest version per
- * (model_id, data_name, step_name) group is marked latest.
- * Different workflow steps writing to the same data name keep
- * independent latest markers; non-workflow data (step_name = "")
- * collapses as before.
+ * Sets `is_latest` on each row to match the demotion semantics of
+ * `CatalogStore.upsertNewVersion`:
+ *
+ * - Model-method rows (step_name = "") are demoted by ANY later write
+ *   (model-method or workflow-step), so they keep is_latest only when
+ *   they are the absolute highest version in the group.
+ * - Workflow-step rows (step_name != "") are demoted by later writes
+ *   with the same step_name or by later model-method writes. Above
+ *   the highest model-method version, each step_name gets its own
+ *   latest.
  */
-function markLatestPerStep(rows: CatalogRow[]): void {
-  const maxVersions = new Map<string, number>();
+export function computeLatestFlags(rows: CatalogRow[]): void {
+  const groups = new Map<string, CatalogRow[]>();
   for (const row of rows) {
-    const key = `${row.model_id}\0${row.data_name}\0${row.step_name}`;
-    const cur = maxVersions.get(key);
-    if (cur === undefined || row.version > cur) {
-      maxVersions.set(key, row.version);
+    const key = `${row.model_id}\0${row.data_name}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = [];
+      groups.set(key, group);
     }
+    group.push(row);
   }
-  for (const row of rows) {
-    const key = `${row.model_id}\0${row.data_name}\0${row.step_name}`;
-    row.is_latest = row.version === maxVersions.get(key) ? 1 : 0;
+
+  for (const group of groups.values()) {
+    let overallMax = -1;
+    let globalMax = -1;
+    for (const row of group) {
+      if (row.version > overallMax) overallMax = row.version;
+      if (row.step_name === "" && row.version > globalMax) {
+        globalMax = row.version;
+      }
+    }
+
+    const maxVersionPerStep = new Map<string, number>();
+    for (const row of group) {
+      if (row.step_name !== "" && row.version < globalMax) continue;
+      if (row.step_name !== "") {
+        const cur = maxVersionPerStep.get(row.step_name);
+        if (cur === undefined || row.version > cur) {
+          maxVersionPerStep.set(row.step_name, row.version);
+        }
+      }
+    }
+
+    for (const row of group) {
+      if (row.step_name === "") {
+        row.is_latest = row.version === overallMax ? 1 : 0;
+      } else if (row.version < globalMax) {
+        row.is_latest = 0;
+      } else {
+        const maxForStep = maxVersionPerStep.get(row.step_name);
+        row.is_latest = row.version === maxForStep ? 1 : 0;
+      }
+    }
   }
 }
 
@@ -594,10 +630,7 @@ export class DataQueryService {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
     }
 
-    // Compute is_latest per (data_name, step_name) group so different
-    // workflow steps writing to the same name keep independent latest
-    // markers.
-    markLatestPerStep(rows);
+    computeLatestFlags(rows);
 
     this.catalogStore.bulkUpsert(rows);
     this.catalogStore.markPopulated();
@@ -659,7 +692,7 @@ export class DataQueryService {
         }
       }
     }
-    markLatestPerStep(rows);
+    computeLatestFlags(rows);
     this.catalogStore.bulkUpsert(rows);
     this.catalogStore.markPopulated();
   }

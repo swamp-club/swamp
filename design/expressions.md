@@ -455,8 +455,9 @@ want to scope to the current run.
 
 When the same model is invoked by different workflow steps that produce data
 with the same spec/instance name, each step's output is treated as a distinct
-record. The version chain is scoped per step: step A's latest version and step
-B's latest version are both returned.
+record. Each step maintains its own latest version, so step A's latest and
+step B's latest are both returned. A standalone model-method write to the
+same data name demotes all prior step outputs.
 
 ### data.findByTag(tagKey, tagValue)
 

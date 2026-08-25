@@ -278,13 +278,16 @@ export class CatalogStore {
 
   /**
    * Inserts a row as the new latest version for (type, model, name), clearing
-   * `is_latest` on any prior rows for that quadruple including step_name.
-   * The `is_latest` field on the supplied row is ignored — this method
-   * always writes `1`.
+   * `is_latest` on prior rows. The `is_latest` field on the supplied row is
+   * ignored — this method always writes `1`.
    *
-   * Step-name scoping ensures that different workflow steps writing to the
-   * same data name maintain independent version chains.  Non-workflow data
-   * has step_name = "" and collapses as before.
+   * Demotion scope depends on the incoming step_name:
+   * - Model-method writes (step_name = "") demote ALL prior latest rows
+   *   regardless of their step_name.
+   * - Workflow-step writes (step_name != "") demote rows with the same
+   *   step_name AND rows with step_name = "" (model-method rows), but
+   *   leave other steps' latest rows untouched so different workflow
+   *   steps maintain independent version chains.
    *
    * Runs in an IMMEDIATE transaction so concurrent writers serialize
    * through SQLite's reserved lock rather than racing on the flag.
@@ -295,13 +298,14 @@ export class CatalogStore {
       this.db.prepare(
         `UPDATE catalog SET is_latest = 0
          WHERE namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ?
-           AND step_name = ?
+           AND (step_name = ? OR ? = '' OR step_name = '')
            AND is_latest = 1`,
       ).run(
         row.namespace,
         row.type_normalized,
         row.model_id,
         row.data_name,
+        row.step_name,
         row.step_name,
       );
       this.upsert({ ...row, is_latest: 1 });
