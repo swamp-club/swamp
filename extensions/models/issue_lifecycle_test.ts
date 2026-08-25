@@ -322,6 +322,14 @@ Deno.test("model: exposes the new link_pr method definition", () => {
   );
 });
 
+Deno.test("model: exposes the new post_attestation method definition", () => {
+  assertEquals(
+    "post_attestation" in model.methods,
+    true,
+    "post_attestation method must be registered in model.methods",
+  );
+});
+
 Deno.test("model: version is 2026.08.25.1", () => {
   assertEquals(model.version, "2026.08.25.1");
 });

@@ -67,6 +67,10 @@ Deno.test("TRANSITIONS: notify and skip_notify accept only notify phase", () => 
   assertEquals(TRANSITIONS.skip_notify, ["notify"]);
 });
 
+Deno.test("TRANSITIONS: post_attestation accepts only verifying", () => {
+  assertEquals(TRANSITIONS.post_attestation, ["verifying"]);
+});
+
 Deno.test("TRANSITIONS: link_pr is rejected from earlier lifecycle phases", () => {
   // link_pr requires verification — it's not allowed from implementing
   // or any earlier phase.
