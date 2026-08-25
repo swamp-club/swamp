@@ -258,9 +258,43 @@ To construct this checklist:
    If any step failed, call `verification_failed` instead. Do not treat a
    partial pass as success.
 
-   - **All pass** → post the attestation JSON to swamp-club as part of the
-     `verification_passed` call so the team has a permanent, shared record
+   - **All pass** → present checklist to user, wait for confirmation
    - **Any fail** → call `verification_failed`, fix the issues, re-verify
+
+7. **Wait for the user to confirm they are ready to open the PR.** Present
+   the full verification checklist and stop. Do NOT post the attestation or
+   open a PR until the user explicitly says to proceed. The user's
+   confirmation is the trigger for the attestation push.
+
+8. **After the user confirms, post the attestation to swamp-club.** This is
+   a **hard requirement** — the PR MUST NOT open until the attestation has
+   been successfully posted.
+
+   ```bash
+   curl -sf -X POST \
+     -H "Content-Type: application/json" \
+     -H "Cookie: $(cat ~/.config/swamp/session-cookie)" \
+     -d @attestation.json \
+     "https://swamp.club/api/v1/admin/attestations"
+   ```
+
+   The endpoint requires swamp admin authentication. The attestation JSON is
+   the same object constructed in step 4.
+
+   **If the POST fails, do NOT open a PR.** Report the failure to the user
+   and fix the auth or connectivity issue before retrying. The attestation
+   record in swamp-club is what CI validates — without it, the
+   `validate-attestation` CI check will report "no attestation found."
+
+   **If the POST succeeds**, the response includes the server-stamped
+   `postedBy` and `postedAt` fields. Log these so the user can confirm
+   attribution.
+
+   Verify the attestation was stored correctly:
+
+   ```bash
+   curl -sf "https://swamp.club/api/v1/admin/attestations?commit=<SHA>" | jq .
+   ```
 
 ## Handling Failures
 
@@ -330,8 +364,10 @@ Repeat steps 1–4 until all build steps pass and all reviews return
 `VERDICT: pass`. Present the full verification checklist to the user after
 each run.
 
-Do NOT open a PR until the user has seen a fully green checklist and
-confirmed they want to proceed.
+Do NOT open a PR until the user has seen a fully green checklist,
+confirmed they want to proceed, and the attestation has been posted to
+swamp-club (step 8). The user's confirmation triggers the attestation
+push — do not post it automatically.
 
 ## Review Prompts
 

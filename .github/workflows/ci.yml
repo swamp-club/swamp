@@ -722,6 +722,209 @@ jobs:
             exit 1
           fi
 
+  validate-attestation:
+    name: Validate Attestation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Informational only — not a merge gate. Validates that local verification
+    # ran on this commit and that config integrity checksums match.
+    if: github.event.pull_request.draft == false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Fetch attestation from swamp-club
+        id: find
+        run: |
+          head_sha="${{ github.event.pull_request.head.sha }}"
+
+          http_code=$(curl -s -w '%{http_code}' -o attestation.json \
+            "https://swamp.club/api/v1/admin/attestations?commit=${head_sha}" \
+            2>/dev/null) || true
+
+          if [ "$http_code" != "200" ] || [ ! -s attestation.json ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            cat >> "$GITHUB_STEP_SUMMARY" << EOF
+          ## Attestation Validation
+
+          ⚠️ No verification attestation found for \`${head_sha:0:8}\`.
+
+          Run local verification before opening the PR:
+          \`\`\`bash
+          SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-build \\
+            --input commit=\$(git rev-parse HEAD) \\
+            --input branch=\$(git branch --show-current)
+
+          SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-reviews \\
+            --input commit=\$(git rev-parse HEAD) \\
+            --input branch=\$(git branch --show-current)
+          \`\`\`
+          EOF
+            exit 0
+          fi
+
+          if ! jq . attestation.json > /dev/null 2>&1; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            cat >> "$GITHUB_STEP_SUMMARY" << 'EOF'
+          ## Attestation Validation
+
+          ❌ Attestation response is not valid JSON.
+          EOF
+            exit 1
+          fi
+
+          echo "found=true" >> "$GITHUB_OUTPUT"
+
+      - name: Validate attestation
+        if: steps.find.outputs.found == 'true'
+        run: |
+          head_sha="${{ github.event.pull_request.head.sha }}"
+          errors=0
+          warnings=0
+
+          {
+            echo "## Attestation Validation"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # -- 1. Schema version --
+          version=$(jq -r '.version // empty' attestation.json)
+          if [ "$version" != "1" ]; then
+            echo "::error::Unknown attestation version: $version"
+            echo "❌ Unknown attestation version: \`$version\`" >> "$GITHUB_STEP_SUMMARY"
+            errors=$((errors + 1))
+          fi
+
+          # -- 2. Commit match --
+          att_commit=$(jq -r '.subject.commit // empty' attestation.json)
+          if [ "$att_commit" != "$head_sha" ]; then
+            echo "::error::Commit mismatch: attestation=${att_commit:0:8} PR=${head_sha:0:8}"
+            echo "❌ Commit mismatch: attestation \`${att_commit:0:8}\` ≠ PR \`${head_sha:0:8}\`" >> "$GITHUB_STEP_SUMMARY"
+            errors=$((errors + 1))
+          else
+            echo "✅ Commit: \`${head_sha:0:8}\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # -- 3. Gate --
+          all_passed=$(jq -r '.gate.allPassed // false' attestation.json)
+          steps_completed=$(jq -r '.gate.stepsCompleted // 0' attestation.json)
+          steps_total=$(jq -r '.gate.stepsTotal // 0' attestation.json)
+          steps_skipped=$(jq -r '.gate.stepsSkipped // 0' attestation.json)
+          if [ "$all_passed" != "true" ]; then
+            echo "::error::Gate failed: allPassed=$all_passed ($steps_completed/$steps_total)"
+            echo "❌ Gate: **failed** ($steps_completed/$steps_total completed, $steps_skipped skipped)" >> "$GITHUB_STEP_SUMMARY"
+            errors=$((errors + 1))
+          else
+            echo "✅ Gate: $steps_completed/$steps_total passed, $steps_skipped skipped" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # -- 4. Freshness (24h window) --
+          completed_at=$(jq -r '.timing.completedAt // empty' attestation.json)
+          if [ -n "$completed_at" ]; then
+            att_epoch=$(date -d "$completed_at" +%s 2>/dev/null || echo "0")
+            now_epoch=$(date +%s)
+            if [ "$att_epoch" -gt 0 ]; then
+              age_secs=$((now_epoch - att_epoch))
+              age_hours=$((age_secs / 3600))
+              age_mins=$(( (age_secs % 3600) / 60 ))
+              if [ "$age_secs" -gt 86400 ]; then
+                echo "::warning::Attestation is ${age_hours}h ${age_mins}m old (max 24h)"
+                echo "⚠️ Freshness: ${age_hours}h ${age_mins}m old (exceeds 24h)" >> "$GITHUB_STEP_SUMMARY"
+                warnings=$((warnings + 1))
+              else
+                echo "✅ Freshness: ${age_hours}h ${age_mins}m old" >> "$GITHUB_STEP_SUMMARY"
+              fi
+            else
+              echo "⚠️ Freshness: could not parse timestamp" >> "$GITHUB_STEP_SUMMARY"
+              warnings=$((warnings + 1))
+            fi
+          else
+            echo "⚠️ Freshness: no timestamp in attestation" >> "$GITHUB_STEP_SUMMARY"
+            warnings=$((warnings + 1))
+          fi
+
+          # -- 5. Config integrity checksums --
+          {
+            echo ""
+            echo "### Config Integrity"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          check_hash() {
+            local label="$1" jq_path="$2" file="$3"
+            local att_hash actual_hash
+            att_hash=$(jq -r "$jq_path // empty" attestation.json)
+            if [ -z "$att_hash" ]; then
+              echo "⚠️ \`$label\`: not in attestation" >> "$GITHUB_STEP_SUMMARY"
+              warnings=$((warnings + 1))
+              return
+            fi
+            if [ ! -f "$file" ]; then
+              echo "⚠️ \`$label\`: file not found at commit" >> "$GITHUB_STEP_SUMMARY"
+              warnings=$((warnings + 1))
+              return
+            fi
+            actual_hash=$(sha256sum "$file" | awk '{print $1}')
+            if [ "$att_hash" = "$actual_hash" ]; then
+              echo "✅ \`$label\`" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "❌ \`$label\`: checksum mismatch" >> "$GITHUB_STEP_SUMMARY"
+              errors=$((errors + 1))
+            fi
+          }
+
+          check_hash "CLAUDE.md" '.configIntegrity.claudeMd' "CLAUDE.md"
+          check_hash "code-review prompt" '.configIntegrity.prompts."code-review"' "verification/review-prompts/code-review.md"
+          check_hash "adversarial-review prompt" '.configIntegrity.prompts."adversarial-review"' "verification/review-prompts/adversarial-review.md"
+          check_hash "ux-review prompt" '.configIntegrity.prompts."ux-review"' "verification/review-prompts/ux-review.md"
+          check_hash "ci-security-review prompt" '.configIntegrity.prompts."ci-security-review"' "verification/review-prompts/ci-security-review.md"
+          check_hash "verify-build workflow" '.configIntegrity.workflows."verify-build"' "verification/workflow-verify-build.yaml"
+          check_hash "verify-reviews workflow" '.configIntegrity.workflows."verify-reviews"' "verification/workflow-verify-reviews.yaml"
+
+          # -- 6. Steps summary table --
+          {
+            echo ""
+            echo "### Steps"
+            echo ""
+            echo "| Job | Step | Status | Duration | Verdict |"
+            echo "|-----|------|--------|----------|---------|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          jq -r '.steps // [] | .[] | "| \(.job) | \(.step) | \(.status) | \(if .durationMs then "\(.durationMs / 1000)s" else "—" end) | \(.verdict // .reason // "—") |"' attestation.json >> "$GITHUB_STEP_SUMMARY" || true
+
+          # -- 7. Review config --
+          if jq -e '.reviewConfig' attestation.json > /dev/null 2>&1; then
+            {
+              echo ""
+              echo "### Reviews"
+              echo ""
+              echo "| Review | Model | Ran |"
+              echo "|--------|-------|-----|"
+            } >> "$GITHUB_STEP_SUMMARY"
+            jq -r '.reviewConfig | to_entries[] | "| \(.key) | \(.value.model) | \(if .value.ran then "✅" else "⏭️ \(.value.reason // "skipped")" end) |"' attestation.json >> "$GITHUB_STEP_SUMMARY" || true
+          fi
+
+          # -- Result --
+          total_duration=$(jq -r '.timing.totalDurationMs // 0' attestation.json)
+          total_secs=$((total_duration / 1000))
+          total_mins=$((total_secs / 60))
+          remaining_secs=$((total_secs % 60))
+          {
+            echo ""
+            echo "**Verification ran in ${total_mins}m ${remaining_secs}s**"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$errors" -gt 0 ]; then
+            echo "### ❌ Validation Failed ($errors errors, $warnings warnings)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          elif [ "$warnings" -gt 0 ]; then
+            echo "### ⚠️ Passed with Warnings ($warnings warnings)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### ✅ Validation Passed" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   auto-merge:
     name: Auto-merge PR
     needs:
