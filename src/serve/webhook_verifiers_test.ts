@@ -91,6 +91,45 @@ Deno.test("github verifier: requiredHeaders contains only the signature header",
   assertEquals(verifier.requiredHeaders, ["x-hub-signature-256"]);
 });
 
+// ── jira ───────────────────────────────────────────────────────────────
+
+Deno.test("jira verifier: accepts a valid signature", async () => {
+  const verifier = createVerifier({ scheme: "jira" });
+  const body = '{"webhookEvent":"jira:issue_updated"}';
+  const headers = new Headers({
+    "x-hub-signature": `sha256=${await sign(body)}`,
+  });
+  assertEquals(await verifier.verify(enc(body), headers, SECRET), true);
+});
+
+Deno.test("jira verifier: rejects a wrong secret", async () => {
+  const verifier = createVerifier({ scheme: "jira" });
+  const body = "payload";
+  const headers = new Headers({
+    "x-hub-signature": `sha256=${await sign(body, "other")}`,
+  });
+  assertEquals(await verifier.verify(enc(body), headers, SECRET), false);
+});
+
+Deno.test("jira verifier: rejects a missing header", async () => {
+  const verifier = createVerifier({ scheme: "jira" });
+  assertEquals(await verifier.verify(enc("x"), new Headers(), SECRET), false);
+});
+
+Deno.test("jira verifier: rejects a missing sha256= prefix", async () => {
+  const verifier = createVerifier({ scheme: "jira" });
+  const headers = new Headers({
+    "x-hub-signature": await sign("body"),
+  });
+  assertEquals(await verifier.verify(enc("body"), headers, SECRET), false);
+});
+
+Deno.test("jira verifier: uses x-hub-signature header (not x-hub-signature-256)", () => {
+  const verifier = createVerifier({ scheme: "jira" });
+  assertEquals(verifier.signatureHeader, "x-hub-signature");
+  assertEquals(verifier.requiredHeaders, ["x-hub-signature"]);
+});
+
 // ── linear ──────────────────────────────────────────────────────────────
 
 Deno.test("linear verifier: accepts a valid bare-hex signature", async () => {
@@ -253,6 +292,7 @@ Deno.test("slack verifier: requiredHeaders includes both signature and timestamp
 
 Deno.test("isWebhookScheme: recognizes known schemes", () => {
   assertEquals(isWebhookScheme("github"), true);
+  assertEquals(isWebhookScheme("jira"), true);
   assertEquals(isWebhookScheme("generic"), true);
 });
 
