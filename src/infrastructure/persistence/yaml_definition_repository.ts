@@ -24,6 +24,13 @@ import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { isIoError } from "./io_errors.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
+import {
+  type Document as YamlDocument,
+  isMap,
+  isSeq,
+  parseDocument,
+  type YAMLMap,
+} from "yaml";
 import { assertSafePath } from "./safe_path.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
@@ -486,44 +493,73 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     }
 
     // Remove undefined values since YAML can't stringify them
-    const cleanData = JSON.parse(JSON.stringify(data));
-    const content = stringifyYaml(cleanData as Record<string, unknown>);
+    const cleanData = JSON.parse(JSON.stringify(data)) as Record<
+      string,
+      unknown
+    >;
+
+    // When the file already exists at the target path, check whether the
+    // definition data has actually changed. If it hasn't, skip the write
+    // entirely to avoid destroying YAML comments and producing git noise.
+    // When the data HAS changed, use npm:yaml's Document API to merge the
+    // new values onto the existing AST so that comments on unchanged nodes
+    // are preserved.
+    if (!isNew && await this.exists(targetPath)) {
+      try {
+        const existingRaw = await Deno.readTextFile(targetPath);
+        const existingParsed = parseYaml(existingRaw) as Record<
+          string,
+          unknown
+        >;
+        const normalizedExisting = JSON.parse(
+          JSON.stringify(existingParsed),
+        ) as Record<string, unknown>;
+
+        if (
+          canonicalJson(cleanData) === canonicalJson(normalizedExisting)
+        ) {
+          this.idToActualPath.set(definition.id, targetPath);
+          logger.debug`Definition ${definition.name} unchanged, skipping write`;
+          return;
+        }
+
+        // Data changed — merge onto existing document to preserve comments
+        const doc = parseDocument(existingRaw);
+        mergeIntoDocument(doc, cleanData);
+        await atomicWriteTextFile(targetPath, doc.toString());
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) {
+          // File disappeared between exists() and read — fall through to
+          // fresh write below.
+        } else {
+          throw error;
+        }
+      }
+
+      if (await this.exists(targetPath)) {
+        await this.cleanupOldPaths(
+          targetPath,
+          previousPath,
+          legacyPath,
+        );
+        this.idToActualPath.set(definition.id, targetPath);
+        if (this.eventBus) {
+          await this.eventBus.publish(
+            createDefinitionUpdated(
+              type.normalized,
+              definition.id,
+              definition.name,
+            ),
+          );
+        }
+        return;
+      }
+    }
+
+    const content = stringifyYaml(cleanData);
     await atomicWriteTextFile(targetPath, content);
 
-    // Clean up old file if we wrote to a different path
-    if (previousPath && previousPath !== targetPath) {
-      try {
-        await Deno.remove(previousPath);
-        logger.debug`Migrated definition file from ${
-          basename(previousPath)
-        } to ${basename(targetPath)}`;
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) {
-          logger.warn`Failed to remove old definition file ${previousPath}: ${
-            error instanceof Error ? error.message : String(error)
-          }`;
-        }
-      }
-    }
-
-    // Also check the legacy UUID path if it wasn't the previousPath
-    if (
-      targetPath !== legacyPath && previousPath !== legacyPath &&
-      await this.exists(legacyPath)
-    ) {
-      try {
-        await Deno.remove(legacyPath);
-        logger.debug`Migrated definition file from ${basename(legacyPath)} to ${
-          basename(targetPath)
-        }`;
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) {
-          logger.warn`Failed to remove legacy definition file ${legacyPath}: ${
-            error instanceof Error ? error.message : String(error)
-          }`;
-        }
-      }
-    }
+    await this.cleanupOldPaths(targetPath, previousPath, legacyPath);
 
     this.idToActualPath.set(definition.id, targetPath);
 
@@ -609,6 +645,45 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     return this.idToActualPath.get(id) ?? this.getLegacyPath(type, id);
   }
 
+  private async cleanupOldPaths(
+    targetPath: string,
+    previousPath: string | undefined,
+    legacyPath: string,
+  ): Promise<void> {
+    if (previousPath && previousPath !== targetPath) {
+      try {
+        await Deno.remove(previousPath);
+        logger.debug`Migrated definition file from ${
+          basename(previousPath)
+        } to ${basename(targetPath)}`;
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          logger.warn`Failed to remove old definition file ${previousPath}: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+        }
+      }
+    }
+
+    if (
+      targetPath !== legacyPath && previousPath !== legacyPath &&
+      await this.exists(legacyPath)
+    ) {
+      try {
+        await Deno.remove(legacyPath);
+        logger.debug`Migrated definition file from ${basename(legacyPath)} to ${
+          basename(targetPath)
+        }`;
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          logger.warn`Failed to remove legacy definition file ${legacyPath}: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+        }
+      }
+    }
+  }
+
   private resolveWritePath(
     type: ModelType,
     definition: Definition,
@@ -629,5 +704,75 @@ export class YamlDefinitionRepository implements DefinitionRepository {
 
   private getTypeDir(type: ModelType): string {
     return join(this.baseDir, type.toDirectoryPath());
+  }
+}
+
+function canonicalJson(data: Record<string, unknown>): string {
+  return JSON.stringify(data, (_key, value) => {
+    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+      const sorted: Record<string, unknown> = {};
+      for (const k of Object.keys(value as Record<string, unknown>).sort()) {
+        sorted[k] = (value as Record<string, unknown>)[k];
+      }
+      return sorted;
+    }
+    return value;
+  });
+}
+
+function mergeIntoDocument(
+  doc: YamlDocument,
+  newData: Record<string, unknown>,
+): void {
+  const root = doc.contents;
+  if (!isMap(root)) {
+    doc.contents = doc.createNode(newData);
+    return;
+  }
+  mergeMap(doc, root, newData);
+
+  // Remove keys from the document that are no longer in the new data
+  for (let i = root.items.length - 1; i >= 0; i--) {
+    const key = String(root.items[i].key);
+    if (!(key in newData)) {
+      root.items.splice(i, 1);
+    }
+  }
+}
+
+function mergeMap(
+  doc: YamlDocument,
+  map: YAMLMap,
+  data: Record<string, unknown>,
+): void {
+  for (const [key, newValue] of Object.entries(data)) {
+    const existing = map.get(key, true);
+
+    if (
+      existing !== undefined && isMap(existing) &&
+      newValue !== null && typeof newValue === "object" &&
+      !Array.isArray(newValue)
+    ) {
+      // Both sides are objects — recurse to preserve nested comments
+      mergeMap(doc, existing, newValue as Record<string, unknown>);
+
+      // Remove keys from the map that are no longer in the new data
+      for (let i = existing.items.length - 1; i >= 0; i--) {
+        const childKey = String(existing.items[i].key);
+        if (!(childKey in (newValue as Record<string, unknown>))) {
+          existing.items.splice(i, 1);
+        }
+      }
+    } else if (
+      existing !== undefined && isSeq(existing) && Array.isArray(newValue)
+    ) {
+      // Replace arrays wholesale — element-level merge would lose ordering semantics
+      map.set(key, doc.createNode(newValue));
+    } else {
+      const existingScalar = map.get(key);
+      if (existingScalar === undefined || existingScalar !== newValue) {
+        map.set(key, doc.createNode(newValue));
+      }
+    }
   }
 }
