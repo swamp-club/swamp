@@ -258,7 +258,7 @@ export function validateWorkflowRunFilter(
     return {
       valid: false,
       error:
-        `Filter exceeds maximum length of ${MAX_FILTER_LENGTH} bytes (got ${filter.length})`,
+        `Filter exceeds maximum length of ${MAX_FILTER_LENGTH} characters (got ${filter.length})`,
     };
   }
 
@@ -357,6 +357,10 @@ export function evaluateWorkflowRunFilter(
     failureReason: run.failureReason ?? "",
   };
 
-  const result = env.evaluate(filter, context);
-  return result === true;
+  try {
+    const result = env.evaluate(filter, context);
+    return result === true;
+  } catch {
+    return false;
+  }
 }

@@ -222,3 +222,15 @@ Deno.test("evaluateWorkflowRunFilter: non-boolean result returns false", () => {
     false,
   );
 });
+
+Deno.test("evaluateWorkflowRunFilter: missing input key returns false instead of throwing", () => {
+  const runWithoutCommit: WorkflowRunFilterContext = {
+    workflowName: "deploy",
+    status: "succeeded",
+    inputs: { branch: "main" },
+  };
+  assertEquals(
+    evaluateWorkflowRunFilter('inputs.commit == "abc123"', runWithoutCommit),
+    false,
+  );
+});

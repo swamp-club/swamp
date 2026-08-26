@@ -407,6 +407,49 @@ Deno.test("workflowHistorySearch: filter with compound expression", async () => 
   assertEquals(completed.data.results[0].runId, "run-a");
 });
 
+Deno.test("workflowHistorySearch: filter handles runs with missing input keys", async () => {
+  const deps: WorkflowHistorySearchDeps = {
+    findAllWorkflows: () =>
+      Promise.resolve([{ id: "wf-1", name: "verify" }]),
+    findAllRunsByWorkflowId: () =>
+      Promise.resolve([
+        {
+          id: "run-with-commit",
+          workflowId: "wf-1",
+          workflowName: "verify",
+          status: "succeeded",
+          startedAt: new Date(now - 1000),
+          completedAt: new Date(now),
+          tags: {},
+          inputs: { commit: "abc123", branch: "main" },
+        },
+        {
+          id: "run-without-commit",
+          workflowId: "wf-1",
+          workflowName: "verify",
+          status: "succeeded",
+          startedAt: new Date(now - 2000),
+          completedAt: new Date(now - 1000),
+          tags: {},
+          inputs: { branch: "feature/x" },
+        },
+      ]),
+  };
+
+  const events = await collect<WorkflowHistorySearchEvent>(
+    workflowHistorySearch(createLibSwampContext(), deps, {
+      filter: 'inputs.commit == "abc123"',
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    WorkflowHistorySearchEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.results.length, 1);
+  assertEquals(completed.data.results[0].runId, "run-with-commit");
+});
+
 Deno.test("workflowHistorySearch: invalid filter yields error event", async () => {
   const deps = makeDepsWithInputs();
   const events = await collect<WorkflowHistorySearchEvent>(
