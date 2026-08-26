@@ -150,7 +150,7 @@ steps:
 failed. No resume needed.
 
 `swamp workflow approvals` lists all suspended runs awaiting approval. Supports
-`--server` / `SWAMP_SERVE_URL` via the `workflow.approvals` wire-protocol
+`--server` / `SWAMP_SERVE_URL` / `SWAMP_SERVER_URL` via the `workflow.approvals` wire-protocol
 endpoint (read-only, `read` authorization verb).
 
 **Programmatic gate control:** Gates can also be approved or rejected from within
