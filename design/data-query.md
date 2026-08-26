@@ -369,6 +369,19 @@ materialized on demand. Under the previous destructive replace semantics, a
 walk gap was data loss in the catalog; under additive upsert, a walk gap is a
 no-op for the rows it misses.
 
+### Stale-Row Filtering
+
+`DataQueryService` accepts a `filterStaleRows` option. When enabled, the
+query hydration loop calls `Deno.statSync` on each row's `raw` content file
+and drops rows where the file is absent. This catches catalog rows orphaned
+by a model retype (type field changed, UUID kept), where data moves to a new
+type directory path and the old catalog row becomes stale.
+
+`filterStaleRows` must be **disabled** for remote datastores (S3/GCS) where
+content may not yet be hydrated into the local cache. A missing `raw` file in
+that context means "not yet downloaded", not "stale". The repo-context
+composition root sets `filterStaleRows: !isCustomDatastoreConfig(...)`.
+
 The trade-off is that the catalog can accumulate orphaned rows for data that
 was genuinely deleted or renamed outside the write-through path (e.g. manual
 file deletion). Write-through handles normal deletes and renames, and
