@@ -24,42 +24,45 @@ import {
   dataSearch,
   type DataSearchDeps,
   type DataSearchEvent,
+  type DataSearchItem,
   parseDuration,
   parseTags,
 } from "./search.ts";
 import { UserError } from "../../domain/errors.ts";
 
-function makeDataItem(overrides: Record<string, unknown> = {}) {
+function makeSearchItem(
+  overrides: Record<string, unknown> = {},
+): DataSearchItem {
+  const tags = (overrides.tags as Record<string, string>) ?? {};
   return {
-    data: {
-      id: (overrides.id as string) ?? "d1",
-      name: (overrides.name as string) ?? "output",
-      version: (overrides.version as number) ?? 1,
-      contentType: (overrides.contentType as string) ?? "application/json",
-      type: (overrides.type as string) ?? "data",
-      lifetime: (overrides.lifetime as string) ?? "persistent",
-      ownerDefinition: {
-        ownerType: (overrides.ownerType as string) ?? "model",
-        ownerRef: (overrides.ownerRef as string) ?? "ref-1",
-      },
-      streaming: (overrides.streaming as boolean) ?? false,
-      size: (overrides.size as number) ?? 100,
-      createdAt: (overrides.createdAt as Date) ?? new Date("2026-01-15"),
-      tags: (overrides.tags as Record<string, string>) ?? {},
-    },
-    modelType: { normalized: (overrides.modelType as string) ?? "aws/ec2" },
+    id: (overrides.id as string) ?? "d1",
+    name: (overrides.name as string) ?? "output",
+    version: (overrides.version as number) ?? 1,
+    contentType: (overrides.contentType as string) ?? "application/json",
+    type: (overrides.type as string) ?? "data",
+    lifetime: (overrides.lifetime as string) ?? "persistent",
+    ownerType: (overrides.ownerType as string) ?? "model",
+    ownerRef: (overrides.ownerRef as string) ?? "ref-1",
     modelId: (overrides.modelId as string) ?? "model-1",
+    modelName: (overrides.modelName as string) ?? "my-model",
+    modelType: (overrides.modelType as string) ?? "aws/ec2",
+    streaming: (overrides.streaming as boolean) ?? false,
+    size: (overrides.size as number) ?? 100,
+    createdAt: (overrides.createdAt as string) ??
+      new Date("2026-01-15").toISOString(),
+    tags,
+    workflowTag: tags.workflow,
+    jobTag: tags.job,
+    stepTag: tags.step,
   };
 }
 
 function makeDeps(
-  items: ReturnType<typeof makeDataItem>[] = [],
+  items: DataSearchItem[] = [],
   overrides?: Partial<DataSearchDeps>,
 ): DataSearchDeps {
   return {
-    findAllGlobal: () => Promise.resolve(items),
-    findDefinitionById: (_type, defId) =>
-      Promise.resolve({ name: `name-${defId}` }),
+    findLatestItems: () => Promise.resolve(items),
     findDefinitionByIdOrName: () =>
       Promise.resolve({ definition: { name: "my-model" } }),
     ...overrides,
@@ -68,8 +71,8 @@ function makeDeps(
 
 Deno.test("dataSearch: returns all data items with no query or filters", async () => {
   const items = [
-    makeDataItem({ id: "d1", name: "alpha" }),
-    makeDataItem({ id: "d2", name: "beta" }),
+    makeSearchItem({ id: "d1", name: "alpha" }),
+    makeSearchItem({ id: "d2", name: "beta" }),
   ];
   const deps = makeDeps(items);
   const events = await collect<DataSearchEvent>(
@@ -89,9 +92,9 @@ Deno.test("dataSearch: returns all data items with no query or filters", async (
 
 Deno.test("dataSearch: filters by type", async () => {
   const items = [
-    makeDataItem({ id: "d1", type: "data" }),
-    makeDataItem({ id: "d2", type: "log" }),
-    makeDataItem({ id: "d3", type: "data" }),
+    makeSearchItem({ id: "d1", type: "data" }),
+    makeSearchItem({ id: "d2", type: "log" }),
+    makeSearchItem({ id: "d3", type: "data" }),
   ];
   const deps = makeDeps(items);
   const events = await collect<DataSearchEvent>(
@@ -112,8 +115,8 @@ Deno.test("dataSearch: filters by since duration", async () => {
   const recent = new Date(now.getTime() - 1 * 60 * 60 * 1000); // 1 hour ago
   const old = new Date(now.getTime() - 48 * 60 * 60 * 1000); // 48 hours ago
   const items = [
-    makeDataItem({ id: "d1", createdAt: recent }),
-    makeDataItem({ id: "d2", createdAt: old }),
+    makeSearchItem({ id: "d1", createdAt: recent.toISOString() }),
+    makeSearchItem({ id: "d2", createdAt: old.toISOString() }),
   ];
   const deps = makeDeps(items);
   const events = await collect<DataSearchEvent>(
@@ -130,15 +133,15 @@ Deno.test("dataSearch: filters by since duration", async () => {
 
 Deno.test("dataSearch: filters by tags with AND logic", async () => {
   const items = [
-    makeDataItem({
+    makeSearchItem({
       id: "d1",
       tags: { env: "prod", team: "infra" },
     }),
-    makeDataItem({
+    makeSearchItem({
       id: "d2",
       tags: { env: "prod", team: "app" },
     }),
-    makeDataItem({
+    makeSearchItem({
       id: "d3",
       tags: { env: "staging" },
     }),
@@ -160,7 +163,7 @@ Deno.test("dataSearch: filters by tags with AND logic", async () => {
 
 Deno.test("dataSearch: surfaces workflowTag/jobTag/stepTag from data tags", async () => {
   const items = [
-    makeDataItem({
+    makeSearchItem({
       id: "d1",
       tags: { workflow: "my-wf", job: "my-job", step: "my-step" },
     }),
@@ -182,7 +185,7 @@ Deno.test("dataSearch: surfaces workflowTag/jobTag/stepTag from data tags", asyn
 
 Deno.test("dataSearch: jobTag is undefined when data has no job tag", async () => {
   const items = [
-    makeDataItem({ id: "d1", tags: {} }),
+    makeSearchItem({ id: "d1", tags: {} }),
   ];
   const deps = makeDeps(items);
   const events = await collect<DataSearchEvent>(
@@ -213,9 +216,9 @@ Deno.test("dataSearch: yields error when model not found", async () => {
 
 Deno.test("dataSearch: applies limit and reports total/limited correctly", async () => {
   const items = [
-    makeDataItem({ id: "d1" }),
-    makeDataItem({ id: "d2" }),
-    makeDataItem({ id: "d3" }),
+    makeSearchItem({ id: "d1" }),
+    makeSearchItem({ id: "d2" }),
+    makeSearchItem({ id: "d3" }),
   ];
   const deps = makeDeps(items);
   const events = await collect<DataSearchEvent>(
@@ -233,9 +236,18 @@ Deno.test("dataSearch: applies limit and reports total/limited correctly", async
 
 Deno.test("dataSearch: sorts results by createdAt descending", async () => {
   const items = [
-    makeDataItem({ id: "d1", createdAt: new Date("2026-01-01") }),
-    makeDataItem({ id: "d2", createdAt: new Date("2026-03-01") }),
-    makeDataItem({ id: "d3", createdAt: new Date("2026-02-01") }),
+    makeSearchItem({
+      id: "d1",
+      createdAt: new Date("2026-01-01").toISOString(),
+    }),
+    makeSearchItem({
+      id: "d2",
+      createdAt: new Date("2026-03-01").toISOString(),
+    }),
+    makeSearchItem({
+      id: "d3",
+      createdAt: new Date("2026-02-01").toISOString(),
+    }),
   ];
   const deps = makeDeps(items);
   const events = await collect<DataSearchEvent>(

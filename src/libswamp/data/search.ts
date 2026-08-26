@@ -67,29 +67,7 @@ export type DataSearchEvent =
  * Dependencies for the data search generator.
  */
 export interface DataSearchDeps {
-  findAllGlobal(): Promise<
-    Array<{
-      data: {
-        id: string;
-        name: string;
-        version: number;
-        contentType: string;
-        type: string;
-        lifetime: string;
-        ownerDefinition: { ownerType: string; ownerRef: string };
-        streaming: boolean;
-        size?: number;
-        createdAt: Date;
-        tags: Record<string, string>;
-      };
-      modelType: { normalized: string };
-      modelId: string;
-    }>
-  >;
-  findDefinitionById(
-    type: { normalized: string },
-    defId: string,
-  ): Promise<{ name: string } | null>;
+  findLatestItems(): Promise<DataSearchItem[]>;
   findDefinitionByIdOrName(
     idOrName: string,
   ): Promise<{ definition: { name: string } } | null>;
@@ -276,38 +254,8 @@ export async function* dataSearch(
         }
       }
 
-      // Fetch and convert all data
-      const allResults = await deps.findAllGlobal();
-      const items: DataSearchItem[] = [];
-
-      for (const { data, modelType, modelId } of allResults) {
-        let modelName = modelId;
-        const definition = await deps.findDefinitionById(modelType, modelId);
-        if (definition) {
-          modelName = definition.name;
-        }
-
-        items.push({
-          id: data.id,
-          name: data.name,
-          version: data.version,
-          contentType: data.contentType,
-          type: data.type,
-          lifetime: data.lifetime,
-          ownerType: data.ownerDefinition.ownerType,
-          ownerRef: data.ownerDefinition.ownerRef,
-          modelId,
-          modelName,
-          modelType: modelType.normalized,
-          streaming: data.streaming,
-          size: data.size ?? 0,
-          createdAt: data.createdAt.toISOString(),
-          tags: data.tags,
-          workflowTag: data.tags.workflow,
-          jobTag: data.tags.job,
-          stepTag: data.tags.step,
-        });
-      }
+      // Fetch latest items from the catalog index
+      const items = await deps.findLatestItems();
 
       // Apply filters
       const filtered = filterData(items, input);
