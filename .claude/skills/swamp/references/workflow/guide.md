@@ -56,6 +56,10 @@ skill.
 | Query wf data      | `swamp data query 'tags.workflow == "<name>"'`                           |
 | Get workflow data  | `swamp data get --workflow <name> <data_name> --json`                    |
 
+`--filter` accepts a CEL expression over run metadata (`status`, `inputs.*`,
+`tags.*`, `duration`, `startedAt`, `workflowName`, etc.). See
+[reference.md](reference.md) for the full field list.
+
 ## Repository Structure
 
 Workflow files are stored directly in the `workflows/` directory:
