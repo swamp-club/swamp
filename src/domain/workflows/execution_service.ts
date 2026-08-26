@@ -3778,7 +3778,7 @@ function resolveEffectiveConcurrency(
  * to reset for a --from resume. The result includes the fromStep itself and
  * all its transitive downstream dependents across all jobs.
  */
-function computeStepsToReset(
+export function computeStepsToReset(
   workflow: Workflow,
   run: WorkflowRun,
   fromStep: string,
@@ -3875,10 +3875,16 @@ function computeStepsToReset(
       const name = stepRun.stepName;
       if (templateNamesToReset.has(name)) {
         stepsToReset.add(name);
+      } else if (
+        stepRun.forEachTemplate &&
+        templateNamesToReset.has(stepRun.forEachTemplate)
+      ) {
+        stepsToReset.add(name);
       } else if (!allTemplateNames.has(name)) {
-        // Only prefix-match against steps that are NOT themselves template
-        // names. This prevents a forEach template "read" from matching a
-        // non-forEach step "read-plate".
+        // Backward-compat fallback for runs persisted before forEachTemplate
+        // was recorded: prefix-match against forEach templates. Only applies
+        // to steps that are NOT themselves template names (prevents a forEach
+        // template "read" from matching a non-forEach step "read-plate").
         for (const tmpl of templateNamesToReset) {
           if (
             forEachTemplates.has(tmpl) &&
@@ -3890,6 +3896,13 @@ function computeStepsToReset(
         }
       }
     }
+  }
+
+  if (stepsToReset.size === 0) {
+    throw new UserError(
+      `--from "${fromStep}" matched zero persisted steps in the run. ` +
+        `The step may not have been reached during execution.`,
+    );
   }
 
   return stepsToReset;

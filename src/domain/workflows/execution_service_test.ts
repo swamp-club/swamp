@@ -23,9 +23,11 @@ import {
   assertNotEquals,
   assertRejects,
   assertStringIncludes,
+  assertThrows,
 } from "@std/assert";
 import { join } from "@std/path";
 import {
+  computeStepsToReset,
   DefaultStepExecutor,
   type StepExecutionContext,
   type StepExecutor,
@@ -50,7 +52,7 @@ import type {
   WorkflowRepository,
   WorkflowRunRepository,
 } from "./repositories.ts";
-import type { WorkflowRun } from "./workflow_run.ts";
+import { WorkflowRun } from "./workflow_run.ts";
 import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
 import type { ExportResult } from "@opentelemetry/core";
 
@@ -5190,4 +5192,125 @@ Deno.test("step output stored on WorkflowRun has stripped content and attributes
     assertEquals(step1Handles[0].name, "default");
     assertEquals(step1Handles[0].attributes, null);
   });
+});
+
+// ---------------------------------------------------------------------------
+// computeStepsToReset
+// ---------------------------------------------------------------------------
+
+function makeWorkflowWithForEach(
+  templateName: string,
+  opts?: { extraSteps?: Step[] },
+): Workflow {
+  const forEachStep = Step.create({
+    name: templateName,
+    task: StepTask.model("m", "run"),
+    forEach: { item: "env", in: '${{ ["dev", "qa"] }}' },
+  });
+  return Workflow.create({
+    name: "test-wf",
+    jobs: [
+      Job.create({
+        name: "deploy",
+        steps: [
+          ...(opts?.extraSteps ?? []),
+          forEachStep,
+        ],
+      }),
+    ],
+  });
+}
+
+function makeRunWithExpandedSteps(
+  workflow: Workflow,
+  expandedSteps: { name: string; forEachTemplate?: string }[],
+): WorkflowRun {
+  const wfId = workflow.id;
+  return WorkflowRun.fromData({
+    id: crypto.randomUUID(),
+    workflowId: wfId,
+    workflowName: workflow.name,
+    status: "failed",
+    jobs: [{
+      jobName: "deploy",
+      status: "failed",
+      steps: expandedSteps.map((s) => ({
+        stepName: s.name,
+        status: s.name.endsWith("-qa") ? "failed" : "succeeded",
+        forEachTemplate: s.forEachTemplate,
+      })),
+    }],
+  });
+}
+
+Deno.test("computeStepsToReset: matches expression-containing template via forEachTemplate", () => {
+  const tmpl = "deploy-${{ self.env }}";
+  const workflow = makeWorkflowWithForEach(tmpl);
+  const run = makeRunWithExpandedSteps(workflow, [
+    { name: "deploy-dev", forEachTemplate: tmpl },
+    { name: "deploy-qa", forEachTemplate: tmpl },
+  ]);
+
+  const result = computeStepsToReset(workflow, run, tmpl);
+  assertEquals(result, new Set(["deploy-dev", "deploy-qa"]));
+});
+
+Deno.test("computeStepsToReset: matches plain template via prefix (non-regression)", () => {
+  const tmpl = "deploy";
+  const workflow = makeWorkflowWithForEach(tmpl);
+  const run = makeRunWithExpandedSteps(workflow, [
+    { name: "deploy-dev", forEachTemplate: tmpl },
+    { name: "deploy-qa", forEachTemplate: tmpl },
+  ]);
+
+  const result = computeStepsToReset(workflow, run, tmpl);
+  assertEquals(result, new Set(["deploy-dev", "deploy-qa"]));
+});
+
+Deno.test("computeStepsToReset: falls back to prefix when forEachTemplate absent (backward compat)", () => {
+  const tmpl = "deploy";
+  const workflow = makeWorkflowWithForEach(tmpl);
+  const run = makeRunWithExpandedSteps(workflow, [
+    { name: "deploy-dev" },
+    { name: "deploy-qa" },
+  ]);
+
+  const result = computeStepsToReset(workflow, run, tmpl);
+  assertEquals(result, new Set(["deploy-dev", "deploy-qa"]));
+});
+
+Deno.test("computeStepsToReset: throws when --from resolves to zero steps", () => {
+  const tmpl = "deploy-${{ self.env }}";
+  const workflow = makeWorkflowWithForEach(tmpl);
+  // Simulate a run where the forEach step was never reached
+  const run = WorkflowRun.fromData({
+    id: crypto.randomUUID(),
+    workflowId: workflow.id,
+    workflowName: workflow.name,
+    status: "failed",
+    jobs: [{
+      jobName: "deploy",
+      status: "failed",
+      steps: [],
+    }],
+  });
+
+  assertThrows(
+    () => computeStepsToReset(workflow, run, tmpl),
+    Error,
+    "matched zero persisted steps",
+  );
+});
+
+Deno.test("computeStepsToReset: throws for unknown step name", () => {
+  const workflow = makeWorkflowWithForEach("deploy");
+  const run = makeRunWithExpandedSteps(workflow, [
+    { name: "deploy-dev", forEachTemplate: "deploy" },
+  ]);
+
+  assertThrows(
+    () => computeStepsToReset(workflow, run, "nonexistent"),
+    Error,
+    'Step "nonexistent" not found',
+  );
 });
