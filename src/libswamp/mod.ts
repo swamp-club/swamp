@@ -466,6 +466,13 @@ export {
   type ServerTokenRevokeInput,
 } from "./access/token_revoke.ts";
 export {
+  createServerTokenRevealDeps,
+  serverTokenReveal,
+  type ServerTokenRevealData,
+  type ServerTokenRevealDeps,
+  type ServerTokenRevealEvent,
+} from "./access/token_reveal.ts";
+export {
   createServerTokenRotateDeps,
   serverTokenRotate,
   type ServerTokenRotateData,
