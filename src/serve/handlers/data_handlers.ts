@@ -43,7 +43,6 @@ import {
   dataRename,
   dataSearch,
   type DataSearchDeps,
-  type DataSearchItem,
   dataVersions,
   DEFAULT_WORKFLOW_RUN_RETENTION_DAYS,
   parseDuration,
@@ -64,11 +63,7 @@ import type {
   SummarisePayload,
 } from "../protocol.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
-import type { DataQueryService } from "../../domain/data/data_query_service.ts";
-import type {
-  CatalogRow,
-  CatalogStore,
-} from "../../infrastructure/persistence/catalog_store.ts";
+import { findLatestItemsFromCatalog } from "../../infrastructure/persistence/catalog_search_adapter.ts";
 import type { Principal } from "../../domain/access/principal.ts";
 import {
   authorizeOrReject,
@@ -79,47 +74,6 @@ import {
   send,
   sendError,
 } from "./shared.ts";
-
-function catalogRowToSearchItem(row: CatalogRow): DataSearchItem {
-  let tags: Record<string, string> = {};
-  try {
-    tags = JSON.parse(row.tags) as Record<string, string>;
-  } catch {
-    // Invalid tags JSON, use empty
-  }
-  return {
-    id: row.id,
-    name: row.data_name,
-    version: row.version,
-    contentType: row.content_type,
-    type: row.data_type,
-    lifetime: row.lifetime,
-    ownerType: row.owner_type,
-    ownerRef: row.owner_ref,
-    modelId: row.model_id,
-    modelName: row.model_name,
-    modelType: row.type_normalized,
-    streaming: row.streaming === 1,
-    size: row.size,
-    createdAt: row.created_at,
-    tags,
-    workflowTag: tags.workflow,
-    jobTag: tags.job,
-    stepTag: tags.step,
-  };
-}
-
-async function findLatestItemsFromCatalog(
-  dataQueryService: DataQueryService,
-  catalogStore: CatalogStore,
-): Promise<DataSearchItem[]> {
-  await dataQueryService.ensurePopulated();
-  const items: DataSearchItem[] = [];
-  for (const row of catalogStore.iterateFiltered("is_latest = ?", [1])) {
-    items.push(catalogRowToSearchItem(row));
-  }
-  return items;
-}
 
 export async function handleDataGet(
   socket: WebSocket,

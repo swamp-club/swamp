@@ -52,55 +52,10 @@ import type { OutputMode } from "../../presentation/output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { toRelativePath } from "../../infrastructure/persistence/paths.ts";
 import type { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
-import type { DataQueryService } from "../../domain/data/data_query_service.ts";
-import type {
-  CatalogRow,
-  CatalogStore,
-} from "../../infrastructure/persistence/catalog_store.ts";
+import { findLatestItemsFromCatalog } from "../../infrastructure/persistence/catalog_search_adapter.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
-
-function catalogRowToSearchItem(row: CatalogRow): DataSearchItem {
-  let tags: Record<string, string> = {};
-  try {
-    tags = JSON.parse(row.tags) as Record<string, string>;
-  } catch {
-    // Invalid tags JSON, use empty
-  }
-  return {
-    id: row.id,
-    name: row.data_name,
-    version: row.version,
-    contentType: row.content_type,
-    type: row.data_type,
-    lifetime: row.lifetime,
-    ownerType: row.owner_type,
-    ownerRef: row.owner_ref,
-    modelId: row.model_id,
-    modelName: row.model_name,
-    modelType: row.type_normalized,
-    streaming: row.streaming === 1,
-    size: row.size,
-    createdAt: row.created_at,
-    tags,
-    workflowTag: tags.workflow,
-    jobTag: tags.job,
-    stepTag: tags.step,
-  };
-}
-
-async function findLatestItemsFromCatalog(
-  dataQueryService: DataQueryService,
-  catalogStore: CatalogStore,
-): Promise<DataSearchItem[]> {
-  await dataQueryService.ensurePopulated();
-  const items: DataSearchItem[] = [];
-  for (const row of catalogStore.iterateFiltered("is_latest = ?", [1])) {
-    items.push(catalogRowToSearchItem(row));
-  }
-  return items;
-}
 
 /**
  * Creates a fetchPreview closure for the data search picker.
