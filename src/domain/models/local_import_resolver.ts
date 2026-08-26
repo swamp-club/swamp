@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { dirname, normalize, resolve } from "@std/path";
+import { dirname, extname, normalize, resolve } from "@std/path";
 
 /** Result of resolving local imports from entry points. */
 export interface ImportResolverResult {
@@ -93,8 +93,7 @@ export async function resolveLocalImports(
 function resolveImportPath(fromFile: string, importPath: string): string {
   const dir = dirname(fromFile);
   let resolved = resolve(dir, importPath);
-  // Add .ts extension if missing
-  if (!resolved.endsWith(".ts") && !resolved.endsWith(".js")) {
+  if (!extname(resolved)) {
     resolved = resolved + ".ts";
   }
   return normalize(resolved);
