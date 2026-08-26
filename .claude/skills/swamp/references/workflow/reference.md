@@ -315,7 +315,35 @@ swamp workflow history search "deploy" --json
 swamp workflow history search --filter 'inputs.commit == "b3ff3a8a"' --json
 swamp workflow history search --filter 'status == "failed"' --json
 swamp workflow history search verify-reviews --filter 'inputs.branch == "main"' --json
+
+# Combine --filter with --workflow and --input
+swamp workflow history search --workflow verify-build --filter 'duration > 60000' --json
 ```
+
+### Filter Fields
+
+The `--filter` flag accepts a
+[CEL expression](https://github.com/google/cel-spec) evaluated against each
+run's metadata. Available fields:
+
+| Field           | Type              | Description                         |
+| --------------- | ----------------- | ----------------------------------- |
+| `workflowName`  | string            | Workflow name                       |
+| `status`        | string            | `succeeded`, `failed`, `running`, … |
+| `startedAt`     | string (ISO 8601) | Run start time                      |
+| `completedAt`   | string (ISO 8601) | Run completion time                 |
+| `duration`      | double (ms)       | Elapsed time in milliseconds        |
+| `inputs`        | map               | Workflow input values               |
+| `tags`          | map               | Run tags                            |
+| `instanceId`    | string            | Instance identifier                 |
+| `triggerSource` | string            | What triggered the run              |
+| `failedStep`    | string            | Name of the failed step (if any)    |
+| `failureReason` | string            | Failure message (if any)            |
+
+Timestamps are ISO 8601 strings — lexicographic comparison works (e.g.
+`startedAt > "2026-08-01"`). Duration is milliseconds as a double. Missing map
+keys (e.g. `inputs.commit` on a run without a `commit` input) return false
+rather than erroring.
 
 **Output shape:**
 
