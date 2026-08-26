@@ -409,8 +409,7 @@ Deno.test("workflowHistorySearch: filter with compound expression", async () => 
 
 Deno.test("workflowHistorySearch: filter handles runs with missing input keys", async () => {
   const deps: WorkflowHistorySearchDeps = {
-    findAllWorkflows: () =>
-      Promise.resolve([{ id: "wf-1", name: "verify" }]),
+    findAllWorkflows: () => Promise.resolve([{ id: "wf-1", name: "verify" }]),
     findAllRunsByWorkflowId: () =>
       Promise.resolve([
         {
