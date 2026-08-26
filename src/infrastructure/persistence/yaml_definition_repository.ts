@@ -537,6 +537,11 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       }
 
       if (await this.exists(targetPath)) {
+        await this.cleanupOldPaths(
+          targetPath,
+          previousPath,
+          legacyPath,
+        );
         this.idToActualPath.set(definition.id, targetPath);
         if (this.eventBus) {
           await this.eventBus.publish(
@@ -554,40 +559,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     const content = stringifyYaml(cleanData);
     await atomicWriteTextFile(targetPath, content);
 
-    // Clean up old file if we wrote to a different path
-    if (previousPath && previousPath !== targetPath) {
-      try {
-        await Deno.remove(previousPath);
-        logger.debug`Migrated definition file from ${
-          basename(previousPath)
-        } to ${basename(targetPath)}`;
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) {
-          logger.warn`Failed to remove old definition file ${previousPath}: ${
-            error instanceof Error ? error.message : String(error)
-          }`;
-        }
-      }
-    }
-
-    // Also check the legacy UUID path if it wasn't the previousPath
-    if (
-      targetPath !== legacyPath && previousPath !== legacyPath &&
-      await this.exists(legacyPath)
-    ) {
-      try {
-        await Deno.remove(legacyPath);
-        logger.debug`Migrated definition file from ${basename(legacyPath)} to ${
-          basename(targetPath)
-        }`;
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) {
-          logger.warn`Failed to remove legacy definition file ${legacyPath}: ${
-            error instanceof Error ? error.message : String(error)
-          }`;
-        }
-      }
-    }
+    await this.cleanupOldPaths(targetPath, previousPath, legacyPath);
 
     this.idToActualPath.set(definition.id, targetPath);
 
@@ -671,6 +643,45 @@ export class YamlDefinitionRepository implements DefinitionRepository {
 
   getPath(type: ModelType, id: DefinitionId): string {
     return this.idToActualPath.get(id) ?? this.getLegacyPath(type, id);
+  }
+
+  private async cleanupOldPaths(
+    targetPath: string,
+    previousPath: string | undefined,
+    legacyPath: string,
+  ): Promise<void> {
+    if (previousPath && previousPath !== targetPath) {
+      try {
+        await Deno.remove(previousPath);
+        logger.debug`Migrated definition file from ${
+          basename(previousPath)
+        } to ${basename(targetPath)}`;
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          logger.warn`Failed to remove old definition file ${previousPath}: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+        }
+      }
+    }
+
+    if (
+      targetPath !== legacyPath && previousPath !== legacyPath &&
+      await this.exists(legacyPath)
+    ) {
+      try {
+        await Deno.remove(legacyPath);
+        logger.debug`Migrated definition file from ${basename(legacyPath)} to ${
+          basename(targetPath)
+        }`;
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          logger.warn`Failed to remove legacy definition file ${legacyPath}: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+        }
+      }
+    }
   }
 
   private resolveWritePath(
