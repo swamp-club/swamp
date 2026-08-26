@@ -22,8 +22,8 @@
  *
  * Runs the `mint` method on the built-in `swamp/server-token` model via
  * direct type execution — auto-creating the model instance named after the
- * token — then reads the plaintext back from the vault so the CLI can show
- * it exactly once.
+ * token. The plaintext is stored in the vault; use `swamp access token
+ * reveal` to retrieve it.
  */
 
 import type { LibSwampContext } from "../context.ts";

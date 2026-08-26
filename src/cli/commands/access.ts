@@ -26,6 +26,7 @@ import { accessCheckCommand } from "./access_check.ts";
 import { accessReloadCommand } from "./access_reload.ts";
 import { accessTokenMintCommand } from "./access_token_mint.ts";
 import { accessTokenListCommand } from "./access_token_list.ts";
+import { accessTokenRevealCommand } from "./access_token_reveal.ts";
 import { accessTokenRevokeCommand } from "./access_token_revoke.ts";
 import { accessTokenRotateCommand } from "./access_token_rotate.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
@@ -37,6 +38,7 @@ export const accessTokenCommand = new Command()
   .action(groupCommandAction)
   .command("mint", accessTokenMintCommand)
   .command("list", accessTokenListCommand)
+  .command("reveal", accessTokenRevealCommand)
   .command("revoke", accessTokenRevokeCommand)
   .command("rotate", accessTokenRotateCommand);
 

@@ -17,14 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
 import type {
   ServerTokenCreateData,
+  ServerTokenRevealData,
   ServerTokenRotateData,
 } from "../../libswamp/mod.ts";
 import {
   renderServerTokenCreate,
+  renderServerTokenReveal,
   renderServerTokenRotate,
 } from "./access_token_output.ts";
 
@@ -54,28 +56,47 @@ const rotateData: ServerTokenRotateData = {
   vaultRef: { vaultName: "serve-local", secretKey: "server-token-swamp-ui" },
 };
 
-Deno.test("renderServerTokenCreate: hint uses vault read-secret, not vault get", () => {
+const revealData: ServerTokenRevealData = {
+  name: "swamp-ui",
+  token: "swamp-ui.abc123secret",
+  expired: false,
+  vaultRef: { vaultName: "serve-local", secretKey: "server-token-swamp-ui" },
+};
+
+Deno.test("renderServerTokenCreate: hint uses access token reveal", () => {
   const output = captureLogs(() => renderServerTokenCreate(createData, "log"));
-  assertStringIncludes(
-    output,
-    "swamp vault read-secret serve-local server-token-swamp-ui --yes",
-  );
+  assertStringIncludes(output, "swamp access token reveal swamp-ui --yes");
 });
 
-Deno.test("renderServerTokenCreate: includes wire-format guidance", () => {
-  const output = captureLogs(() => renderServerTokenCreate(createData, "log"));
-  assertStringIncludes(output, "swamp-ui.<secret>");
-});
-
-Deno.test("renderServerTokenRotate: hint uses vault read-secret, not vault get", () => {
+Deno.test("renderServerTokenRotate: hint uses access token reveal", () => {
   const output = captureLogs(() => renderServerTokenRotate(rotateData, "log"));
-  assertStringIncludes(
-    output,
-    "swamp vault read-secret serve-local server-token-swamp-ui --yes",
-  );
+  assertStringIncludes(output, "swamp access token reveal swamp-ui --yes");
 });
 
-Deno.test("renderServerTokenRotate: includes wire-format guidance", () => {
-  const output = captureLogs(() => renderServerTokenRotate(rotateData, "log"));
-  assertStringIncludes(output, "swamp-ui.<secret>");
+Deno.test("renderServerTokenReveal: log mode shows token credential", () => {
+  const output = captureLogs(() => renderServerTokenReveal(revealData, "log"));
+  assertStringIncludes(output, "swamp-ui.abc123secret");
+  assertStringIncludes(output, "Store this token securely");
+});
+
+Deno.test("renderServerTokenReveal: json mode outputs name and token", () => {
+  const output = captureLogs(() => renderServerTokenReveal(revealData, "json"));
+  const parsed = JSON.parse(output);
+  assertEquals(parsed.name, "swamp-ui");
+  assertEquals(parsed.token, "swamp-ui.abc123secret");
+});
+
+Deno.test("renderServerTokenReveal: json mode excludes vault ref", () => {
+  const output = captureLogs(() => renderServerTokenReveal(revealData, "json"));
+  const parsed = JSON.parse(output);
+  assertEquals(parsed.vaultRef, undefined);
+});
+
+Deno.test("renderServerTokenReveal: log mode shows expiry warning when expired", () => {
+  const expiredData: ServerTokenRevealData = {
+    ...revealData,
+    expired: true,
+  };
+  const output = captureLogs(() => renderServerTokenReveal(expiredData, "log"));
+  assertStringIncludes(output, "this token has expired");
 });

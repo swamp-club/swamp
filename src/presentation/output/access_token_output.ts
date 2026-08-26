@@ -23,11 +23,12 @@
  * terminal-output design system.
  */
 
-import { bold, cyan, dim, green, red } from "@std/fmt/colors";
+import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type {
   ServerTokenCreateData,
   ServerTokenListData,
+  ServerTokenRevealData,
   ServerTokenRevokeData,
   ServerTokenRotateData,
 } from "../../libswamp/mod.ts";
@@ -90,12 +91,7 @@ export function renderServerTokenCreate(
     }`,
     "",
     `Retrieve the token with: ${
-      bold(
-        `swamp vault read-secret ${data.vaultRef.vaultName} ${data.vaultRef.secretKey} --yes`,
-      )
-    }`,
-    `The client token is ${bold("<name>.<secret>")} — prepend the token name: ${
-      bold(`${data.name}.<secret>`)
+      bold(`swamp access token reveal ${data.name} --yes`)
     }`,
   ];
   writeOutput(lines.join("\n"));
@@ -171,13 +167,34 @@ export function renderServerTokenRotate(
     }`,
     "",
     `Retrieve the new token with: ${
-      bold(
-        `swamp vault read-secret ${data.vaultRef.vaultName} ${data.vaultRef.secretKey} --yes`,
-      )
-    }`,
-    `The client token is ${bold("<name>.<secret>")} — prepend the token name: ${
-      bold(`${data.name}.<secret>`)
+      bold(`swamp access token reveal ${data.name} --yes`)
     }`,
   ];
   writeOutput(lines.join("\n"));
+}
+
+export function renderServerTokenReveal(
+  data: ServerTokenRevealData,
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    // Secret goes directly to stdout — never through the logger.
+    console.log(
+      JSON.stringify(
+        { name: data.name, token: data.token, expired: data.expired },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+  writeOutput(`${bold(cyan("Token:"))} ${bold(data.name)}`);
+  if (data.expired) {
+    writeOutput(yellow("Warning: this token has expired."));
+  }
+  // Secret goes directly to stdout — never through the logger.
+  console.log(`\n  ${bold(data.token)}\n`);
+  writeOutput(
+    yellow("Store this token securely — do not share it in logs or messages."),
+  );
 }
