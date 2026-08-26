@@ -1,0 +1,53 @@
+name: Windows Compatibility
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'integration/**'
+      - 'deno.json'
+      - 'deno.lock'
+
+jobs:
+  windows-test:
+    name: Windows Lint, Test, and Compile
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.8.x
+
+      - name: Run deno lint
+        run: deno lint
+
+      - name: Run deno fmt --check
+        run: deno fmt --check
+
+      - name: Run deno check
+        run: deno task check
+
+      - name: Run deno test
+        run: deno task test
+
+      - name: Build dashboard
+        working-directory: packages/dashboard
+        run: |
+          npm ci
+          npm run build
+
+      - name: Compile binary
+        run: deno task compile
+
+      - name: Smoke test compiled binary
+        shell: bash
+        run: |
+          ./swamp.exe --version
+          ./swamp.exe --help > /dev/null

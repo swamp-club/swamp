@@ -58,16 +58,9 @@ jobs:
 
   test:
     name: Lint, Test, and Format Check
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     permissions:
       contents: read
-    strategy:
-      # Surface failures on every platform rather than aborting the whole
-      # matrix on the first failure — Linux signal stays clean if Windows
-      # flakes, and vice versa.
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
 
     steps:
       - name: Checkout code
@@ -100,19 +93,9 @@ jobs:
         run: deno task compile
 
       - name: Smoke test compiled binary
-        # Compiling proves the binary builds; running --version and --help
-        # proves it actually boots, registers the command tree, and exits
-        # cleanly. Catches runtime regressions (e.g. a top-level import
-        # that throws on load) that the compile step alone doesn't.
-        shell: bash
         run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            binary="./swamp.exe"
-          else
-            binary="./swamp"
-          fi
-          "$binary" --version
-          "$binary" --help > /dev/null
+          ./swamp --version
+          ./swamp --help > /dev/null
 
   deps-audit:
     name: Dependency Audit
