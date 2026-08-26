@@ -72,6 +72,7 @@ export const StepRunSchema = z.object({
   approvalDecision: ApprovalDecisionSchema.optional(),
   approvalPrompt: z.string().optional(),
   assertResult: AssertResultSchema.optional(),
+  forEachTemplate: z.string().optional(),
 });
 
 /**
@@ -169,12 +170,16 @@ export class StepRun {
     private _approvalDecision: ApprovalDecisionData | undefined = undefined,
     private _approvalPrompt: string | undefined = undefined,
     private _assertResult: AssertResultData | undefined = undefined,
+    private _forEachTemplate: string | undefined = undefined,
   ) {}
 
   /**
    * Creates a pending step run.
    */
-  static pending(stepName: string): StepRun {
+  static pending(
+    stepName: string,
+    forEachTemplate?: string,
+  ): StepRun {
     return new StepRun(
       stepName,
       "pending",
@@ -184,6 +189,10 @@ export class StepRun {
       undefined,
       [],
       false,
+      undefined,
+      undefined,
+      undefined,
+      forEachTemplate,
     );
   }
 
@@ -204,6 +213,7 @@ export class StepRun {
       validated.approvalDecision,
       validated.approvalPrompt,
       validated.assertResult,
+      validated.forEachTemplate,
     );
   }
 
@@ -251,6 +261,10 @@ export class StepRun {
 
   get assertResult(): AssertResultData | undefined {
     return this._assertResult;
+  }
+
+  get forEachTemplate(): string | undefined {
+    return this._forEachTemplate;
   }
 
   /**
@@ -363,6 +377,9 @@ export class StepRun {
     }
     if (this._assertResult) {
       data.assertResult = { ...this._assertResult };
+    }
+    if (this._forEachTemplate) {
+      data.forEachTemplate = this._forEachTemplate;
     }
     return data;
   }
@@ -500,7 +517,7 @@ export class JobRun implements TriggerEvaluationContext {
     const insertions: StepRun[] = [];
     for (const name of expandedNames) {
       if (!existing.has(name)) {
-        insertions.push(StepRun.pending(name));
+        insertions.push(StepRun.pending(name, templateName));
       }
     }
     this._steps.splice(templateIndex, 1, ...insertions);
