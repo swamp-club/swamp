@@ -24,6 +24,7 @@ import {
   extractExpressions,
   extractInputReferences,
   extractInputReferencesFromCel,
+  extractWholeFieldInputRef,
   isAssertMessagePath,
   isTaskGlobalArgsPath,
   isTaskInputsPath,
@@ -545,4 +546,60 @@ Deno.test("extractCelExpression: extracts expression spanning newlines", () => {
     ),
     'webhook.route == "/hooks/github"\n? webhook.headers["x"]',
   );
+});
+
+Deno.test("extractWholeFieldInputRef: returns input name for dot notation", () => {
+  assertEquals(extractWholeFieldInputRef("${{ inputs.dryRun }}"), "dryRun");
+});
+
+Deno.test("extractWholeFieldInputRef: returns input name for bracket notation", () => {
+  assertEquals(
+    extractWholeFieldInputRef('${{ inputs["dry-run"] }}'),
+    "dry-run",
+  );
+});
+
+Deno.test("extractWholeFieldInputRef: returns null for non-input expression", () => {
+  assertEquals(extractWholeFieldInputRef("${{ data.latest() }}"), null);
+  assertEquals(extractWholeFieldInputRef("${{ model.foo.input.x }}"), null);
+  assertEquals(extractWholeFieldInputRef("${{ self.name }}"), null);
+});
+
+Deno.test("extractWholeFieldInputRef: returns null for multi-expression string", () => {
+  assertEquals(
+    extractWholeFieldInputRef("${{ inputs.a }} and ${{ inputs.b }}"),
+    null,
+  );
+});
+
+Deno.test("extractWholeFieldInputRef: returns null for expression with operators", () => {
+  assertEquals(
+    extractWholeFieldInputRef("${{ inputs.a || inputs.b }}"),
+    null,
+  );
+  assertEquals(
+    extractWholeFieldInputRef("${{ inputs.a == true }}"),
+    null,
+  );
+});
+
+Deno.test("extractWholeFieldInputRef: returns null for embedded expression", () => {
+  assertEquals(
+    extractWholeFieldInputRef("prefix-${{ inputs.name }}-suffix"),
+    null,
+  );
+});
+
+Deno.test("extractWholeFieldInputRef: returns null for non-expression string", () => {
+  assertEquals(extractWholeFieldInputRef("plain string"), null);
+  assertEquals(extractWholeFieldInputRef(""), null);
+});
+
+Deno.test("extractWholeFieldInputRef: handles trailing whitespace", () => {
+  assertEquals(extractWholeFieldInputRef("${{ inputs.foo }}  "), "foo");
+});
+
+Deno.test("extractWholeFieldInputRef: handles inner whitespace variations", () => {
+  assertEquals(extractWholeFieldInputRef("${{inputs.foo}}"), "foo");
+  assertEquals(extractWholeFieldInputRef("${{  inputs.foo  }}"), "foo");
 });

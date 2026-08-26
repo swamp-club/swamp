@@ -320,17 +320,21 @@ export function extractInputReferencesFromCel(
   return inputNames;
 }
 
-/**
- * Scans a data structure for `${{ ... }}` expressions and returns the unique
- * set of `inputs.*` field names referenced. Handles both CEL syntaxes:
- * - Dot notation: `inputs.fieldName`
- * - Bracket notation: `inputs["field-name"]` (for hyphenated names)
- *
- * Excludes cross-model references like `model.foo.input.bar`.
- *
- * @param data - The data structure to scan (object, array, or primitive)
- * @returns Set of unique input field names referenced
- */
+export function extractWholeFieldInputRef(value: string): string | null {
+  const singleMatch = value.match(SINGLE_EXPRESSION_PATTERN);
+  if (!singleMatch) return null;
+
+  const cel = singleMatch[1].replace(/^\$\{\{\s*/, "").replace(/\s*\}\}$/, "");
+
+  const dotMatch = cel.match(/^inputs\.([a-zA-Z_][a-zA-Z0-9_]*)$/);
+  if (dotMatch) return dotMatch[1];
+
+  const bracketMatch = cel.match(/^inputs\["([^"]+)"\]$/);
+  if (bracketMatch) return bracketMatch[1];
+
+  return null;
+}
+
 export function extractInputReferences(data: unknown): Set<string> {
   const expressions = extractExpressions(data);
   const inputNames = new Set<string>();
