@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertNotEquals, assertThrows } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+  assertThrows,
+} from "@std/assert";
 import { join } from "@std/path";
 import { ensureDirSync } from "@std/fs";
 import { stringify as stringifyYaml } from "@std/yaml";
@@ -1248,6 +1253,70 @@ Deno.test("getLatestRecord: namespace filtering works in scoped path", async () 
 
   catalog.close();
   Deno.removeSync(dir, { recursive: true });
+});
+
+Deno.test("getLatestRecord: exact data name skips specName ambiguity check (swamp-club#1838)", async () => {
+  const { catalog, service } = setupTest();
+
+  // Two data items with different names but the same specName "state"
+  catalog.upsert(
+    makeRow({
+      data_name: "hs",
+      spec_name: "state",
+      id: "00000000-0000-1000-8000-000000001838",
+      tags:
+        '{"type":"resource","specName":"state","modelName":"ingest"}',
+    }),
+  );
+  catalog.upsert(
+    makeRow({
+      data_name: "learning",
+      spec_name: "state",
+      id: "00000000-0000-1000-8000-000000001839",
+      tags:
+        '{"type":"resource","specName":"state","modelName":"ingest"}',
+    }),
+  );
+
+  // Calling with exact data name "hs" must NOT throw — the caller is
+  // unambiguously requesting a specific data item, not a specName.
+  const record = await service.getLatestRecord("ingest", "hs");
+  assertNotEquals(record, null);
+  assertEquals(record!.name, "hs");
+
+  catalog.close();
+});
+
+Deno.test("getLatestRecord: dataName matching specName still throws on ambiguity", async () => {
+  const { catalog, service } = setupTest();
+
+  // Data name "state" matches its own specName "state" — ambiguity check fires
+  catalog.upsert(
+    makeRow({
+      data_name: "state",
+      spec_name: "state",
+      id: "00000000-0000-1000-8000-000000001840",
+      tags:
+        '{"type":"resource","specName":"state","modelName":"ingest"}',
+    }),
+  );
+  catalog.upsert(
+    makeRow({
+      data_name: "learning",
+      spec_name: "state",
+      id: "00000000-0000-1000-8000-000000001841",
+      tags:
+        '{"type":"resource","specName":"state","modelName":"ingest"}',
+    }),
+  );
+
+  await assertRejects(
+    () => service.getLatestRecord("ingest", "state"),
+    Error,
+    "Ambiguous data.latest() match",
+  );
+
+  catalog.close();
 });
 
 // ---------------------------------------------------------------------------

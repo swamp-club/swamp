@@ -201,7 +201,9 @@ export class DataQueryService {
     const row = this.catalogStore.findLatestRow(modelName, dataName, namespace);
     if (row) {
       if (populated) {
-        this.checkSpecNameAmbiguity(row.spec_name, modelName, namespace);
+        if (dataName === row.spec_name) {
+          this.checkSpecNameAmbiguity(row.spec_name, modelName, namespace);
+        }
         return this.buildRecordFromRow(modelName, dataName, namespace, row);
       }
       // Catalog not populated — verify the data still exists on disk to

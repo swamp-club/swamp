@@ -813,7 +813,9 @@ export class ModelResolver {
               );
               if (data) {
                 if (
-                  data.tags["specName"] && this.dataQueryService
+                  data.tags["specName"] &&
+                  dataName === data.tags["specName"] &&
+                  this.dataQueryService
                 ) {
                   const targetNs = ns.namespacePredicate
                     ? ns.namespacePredicate.match(
@@ -877,7 +879,7 @@ export class ModelResolver {
         checkWildcardAmbiguity(results, rawModelName);
         if (results.length > 0) {
           const specName = results[0].specName;
-          if (specName) {
+          if (specName && dataName === specName) {
             this.dataQueryService.checkSpecNameAmbiguity(
               specName,
               ns.modelName,
