@@ -204,3 +204,31 @@ Deno.test("accessCanIRenderer json: enumeration outputs principal and decisions"
   assertEquals(parsed.decisions.length, 2);
   assertEquals(parsed.effect, undefined);
 });
+
+// ── Deny-first verdict ─────────────────────────────────────────────────
+
+Deno.test("accessCanIRenderer log: specific check shows DENY when deny decision comes first", () => {
+  const output = captureRender("log", {
+    principal: "user:adam",
+    decisions: [
+      makeDecision({ effect: "deny", via: "user:adam" }),
+      makeDecision({ effect: "allow" }),
+    ],
+    query: { action: "run", resource: "workflow:@acme/deploy" },
+  });
+  assertStringIncludes(output[0], "DENY");
+});
+
+Deno.test("accessCanIRenderer json: specific check verdict is deny when deny decision comes first", () => {
+  const output = captureRender("json", {
+    principal: "user:adam",
+    decisions: [
+      makeDecision({ effect: "deny", via: "user:adam" }),
+      makeDecision({ effect: "allow" }),
+    ],
+    query: { action: "run", resource: "workflow:@acme/deploy" },
+  });
+  const parsed = JSON.parse(output.join(""));
+  assertEquals(parsed.effect, "deny");
+  assertEquals(parsed.decisions.length, 2);
+});

@@ -202,7 +202,8 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     const principalContext = buildPrincipalContext(principal, localGroups);
 
     let conditionsEvaluated = 0;
-    const decisions: AccessDecision[] = [];
+    const denyDecisions: AccessDecision[] = [];
+    const allowDecisions: AccessDecision[] = [];
     for (const grant of candidates) {
       if (!grantMatchesResource(grant, resource)) continue;
       if (!grantMatchesAction(grant, action)) continue;
@@ -215,10 +216,14 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
         }
       }
       if (evaluateGrant(grant, snapshot, resource, principalContext)) {
-        decisions.push(toDecision(grant));
+        if (grant.effect === "deny") {
+          denyDecisions.push(toDecision(grant));
+        } else {
+          allowDecisions.push(toDecision(grant));
+        }
       }
     }
 
-    return decisions;
+    return [...denyDecisions, ...allowDecisions];
   }
 }
