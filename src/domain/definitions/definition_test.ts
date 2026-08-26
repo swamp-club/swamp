@@ -327,6 +327,7 @@ Deno.test("Definition.toData returns correct structure", () => {
     typeVersion: undefined,
     id: "550e8400-e29b-41d4-a716-446655440000",
     name: "test-definition",
+    description: undefined,
     version: 2,
     tags: { env: "prod" },
     globalArguments: { message: "hello" },
@@ -681,4 +682,78 @@ Deno.test("Definition.parse: resources without vaultName remain backwards compat
   const definition = Definition.fromData(data);
   assertEquals(definition.resources?.result?.vaultName, undefined);
   assertEquals(definition.resources?.result?.lifetime, "infinite");
+});
+
+// --- Description field tests ---
+
+Deno.test("Definition.create: accepts description", () => {
+  const def = Definition.create({
+    name: "with-desc",
+    description: "EC2 instance for ML workloads",
+  });
+  assertEquals(def.description, "EC2 instance for ML workloads");
+});
+
+Deno.test("Definition.create: description is optional", () => {
+  const def = Definition.create({ name: "no-desc" });
+  assertEquals(def.description, undefined);
+});
+
+Deno.test("Definition.fromData: round-trips description", () => {
+  const original = Definition.create({
+    name: "round-trip-desc",
+    description: "Important context about this definition",
+  });
+  const data = original.toData();
+  assertEquals(data.description, "Important context about this definition");
+
+  const restored = Definition.fromData(data);
+  assertEquals(restored.description, "Important context about this definition");
+});
+
+Deno.test("Definition.fromData: parses without description (backwards compatible)", () => {
+  const data = {
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "legacy-def",
+    version: 1,
+    tags: {},
+    globalArguments: {},
+    methods: {},
+  };
+  const def = Definition.fromData(data as DefinitionData);
+  assertEquals(def.description, undefined);
+  assertEquals(def.name, "legacy-def");
+});
+
+Deno.test("Definition.computeHash: excludes description", async () => {
+  const defA = Definition.create({
+    name: "hash-test",
+    description: "First description",
+    globalArguments: { key: "value" },
+  });
+  const defB = Definition.create({
+    id: defA.id,
+    name: "hash-test",
+    description: "Different description",
+    globalArguments: { key: "value" },
+  });
+
+  const hashA = await defA.computeHash();
+  const hashB = await defB.computeHash();
+  assertEquals(hashA, hashB, "description should not affect computeHash");
+});
+
+Deno.test("Definition.withUpgradedGlobalArguments: preserves description", () => {
+  const original = Definition.create({
+    name: "upgrade-desc",
+    description: "Preserved across upgrades",
+    globalArguments: { old: "value" },
+  });
+  const upgraded = Definition.withUpgradedGlobalArguments(
+    original,
+    { new: "value" },
+    "2026.1.0",
+  );
+  assertEquals(upgraded.description, "Preserved across upgrades");
+  assertEquals(upgraded.globalArguments.new, "value");
 });

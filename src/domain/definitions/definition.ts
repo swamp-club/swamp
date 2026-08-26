@@ -207,6 +207,7 @@ const DefinitionObjectSchema = z.object({
   ),
   id: z.string().uuid(),
   name: definitionNameBase,
+  description: z.string().optional(),
   version: z.number().int().positive(),
   tags: z.record(z.string(), z.string()).default({}),
   globalArguments: z.record(z.string(), z.unknown()).default({}),
@@ -225,6 +226,7 @@ const DefinitionStrictObjectSchema = z.object({
   ),
   id: z.string().uuid(),
   name: definitionNameStrict,
+  description: z.string().optional(),
   version: z.number().int().positive(),
   tags: z.record(z.string(), z.string()).default({}),
   globalArguments: z.record(z.string(), z.unknown()).default({}),
@@ -274,6 +276,7 @@ export interface CreateDefinitionProps {
   typeVersion?: string;
   id?: string;
   name: string;
+  description?: string;
   version?: number;
   tags?: Record<string, string>;
   globalArguments?: Record<string, unknown>;
@@ -299,6 +302,7 @@ export class Definition {
     readonly typeVersion: string | undefined,
     readonly id: DefinitionId,
     readonly name: string,
+    readonly description: string | undefined,
     readonly version: number,
     private _tags: Record<string, string>,
     private _globalArguments: Record<string, unknown>,
@@ -324,6 +328,7 @@ export class Definition {
       typeVersion: props.typeVersion,
       id,
       name: props.name,
+      description: props.description,
       version,
       tags: props.tags ?? {},
       globalArguments: props.globalArguments ?? {},
@@ -339,6 +344,7 @@ export class Definition {
       validated.typeVersion,
       createDefinitionId(validated.id),
       validated.name,
+      validated.description,
       validated.version,
       validated.tags,
       validated.globalArguments,
@@ -363,6 +369,7 @@ export class Definition {
       validated.typeVersion,
       createDefinitionId(validated.id),
       validated.name,
+      validated.description,
       validated.version,
       validated.tags,
       validated.globalArguments,
@@ -393,6 +400,7 @@ export class Definition {
       newTypeVersion,
       original.id,
       original.name,
+      original.description,
       original.version,
       { ...original._tags },
       structuredClone(newGlobalArguments),
@@ -527,6 +535,7 @@ export class Definition {
       typeVersion: this.typeVersion,
       id: this.id,
       name: this.name,
+      description: this.description,
       version: this.version,
       tags: { ...this._tags },
       globalArguments: structuredClone(this._globalArguments),
@@ -543,7 +552,12 @@ export class Definition {
    * This hash uniquely identifies the definition configuration.
    */
   async computeHash(): Promise<string> {
-    const { type: _type, typeVersion: _tv, ...contentData } = this.toData();
+    const {
+      type: _type,
+      typeVersion: _tv,
+      description: _desc,
+      ...contentData
+    } = this.toData();
     // Recursively sort keys for consistent hashing
     const sortedData = JSON.stringify(contentData, (_key, value) => {
       if (

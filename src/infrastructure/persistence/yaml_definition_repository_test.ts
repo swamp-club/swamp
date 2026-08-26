@@ -926,3 +926,149 @@ Deno.test("YamlDefinitionRepository.findAllGlobal throws UserError on EACCES", a
     }
   });
 });
+
+// --- Skip-write and comment-preservation tests ---
+
+Deno.test("YamlDefinitionRepository.save: skips write when data is unchanged", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const definition = createTestDefinition("unchanged-def");
+
+    await repo.save(testType, definition);
+
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    const filePath = join(typeDir, "unchanged-def.yaml");
+
+    // Advance mtime so we can detect a rewrite
+    await Deno.utime(filePath, new Date(), new Date(0));
+    const statAfterUtime = await Deno.stat(filePath);
+    assertEquals(statAfterUtime.mtime?.getTime(), 0);
+
+    // Save again with the same data
+    await repo.save(testType, definition);
+
+    const statAfterSave = await Deno.stat(filePath);
+    // mtime should still be 0 — file was not rewritten
+    assertEquals(
+      statAfterSave.mtime?.getTime(),
+      0,
+      "File was rewritten despite unchanged data",
+    );
+
+    // Content should still be readable and correct
+    const loaded = await repo.findById(testType, definition.id);
+    assertEquals(loaded!.name, "unchanged-def");
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save: writes when data has changed", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const definition = createTestDefinition("changed-def");
+
+    await repo.save(testType, definition);
+
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    const filePath = join(typeDir, "changed-def.yaml");
+
+    // Set mtime to epoch so we can detect a rewrite
+    await Deno.utime(filePath, new Date(), new Date(0));
+
+    // Mutate the definition and save again
+    definition.setGlobalArgument("newKey", "newValue");
+    await repo.save(testType, definition);
+
+    const statAfterSave = await Deno.stat(filePath);
+    assertNotEquals(
+      statAfterSave.mtime?.getTime(),
+      0,
+      "File was not rewritten despite changed data",
+    );
+
+    const loaded = await repo.findById(testType, definition.id);
+    assertEquals(loaded!.globalArguments.newKey, "newValue");
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save: preserves YAML comments when data changes", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const definition = createTestDefinition("commented-def");
+
+    await repo.save(testType, definition);
+
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    const filePath = join(typeDir, "commented-def.yaml");
+
+    // Manually add comments to the saved file
+    const original = await Deno.readTextFile(filePath);
+    const withComments = "# This is an important header comment\n" + original
+      .replace(
+        "globalArguments:",
+        "globalArguments: # inline comment on globalArguments",
+      );
+    await Deno.writeTextFile(filePath, withComments);
+
+    // Change a tag (not globalArguments) and save
+    definition.setTag("env", "prod");
+    await repo.save(testType, definition);
+
+    const saved = await Deno.readTextFile(filePath);
+    assertStringIncludes(saved, "# This is an important header comment");
+    assertStringIncludes(saved, "# inline comment on globalArguments");
+    assertStringIncludes(saved, "env: prod");
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save: preserves comments inside globalArguments on unchanged keys", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const definition = Definition.create({
+      name: "deep-comments",
+      globalArguments: {
+        rootVolume: 64,
+        instanceType: "m5.large",
+      },
+    });
+
+    await repo.save(testType, definition);
+
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    const filePath = join(typeDir, "deep-comments.yaml");
+
+    // Add a comment inside globalArguments explaining a sizing decision
+    const original = await Deno.readTextFile(filePath);
+    const withComment = original.replace(
+      "rootVolume: 64",
+      "# 64GB needed for the ML model cache — do not reduce\n  rootVolume: 64",
+    );
+    await Deno.writeTextFile(filePath, withComment);
+
+    // Change instanceType but NOT rootVolume
+    definition.setGlobalArgument("instanceType", "m5.xlarge");
+    await repo.save(testType, definition);
+
+    const saved = await Deno.readTextFile(filePath);
+    assertStringIncludes(
+      saved,
+      "# 64GB needed for the ML model cache",
+      "Comment inside globalArguments was lost",
+    );
+    assertStringIncludes(saved, "rootVolume: 64");
+    assertStringIncludes(saved, "m5.xlarge");
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save: new definitions always write", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const definition = createTestDefinition("brand-new");
+
+    await repo.save(testType, definition);
+
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    const filePath = join(typeDir, "brand-new.yaml");
+    const content = await Deno.readTextFile(filePath);
+    assertStringIncludes(content, "brand-new");
+  });
+});
