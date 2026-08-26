@@ -2141,3 +2141,235 @@ Deno.test("validate: warns when job affinity is set without placement", async ()
   assertEquals(warning?.passed, true);
   assertEquals(warning?.warning, true);
 });
+
+// --- Guard expression type validation tests ---
+
+Deno.test("validate: fails when guard references boolean input", async () => {
+  const workflow = Workflow.create({
+    name: "guard-bool",
+    inputs: {
+      type: "object",
+      properties: {
+        dryRun: { type: "boolean" },
+      },
+    },
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "deploy",
+            task: StepTask.model("test-model", "run"),
+            guard: "${{ inputs.dryRun }}",
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const guardResult = results.find((r) => r.name.includes("Guard type"));
+  assertEquals(guardResult?.passed, false);
+  assertEquals(guardResult?.error?.includes("boolean"), true);
+});
+
+Deno.test("validate: fails when guard references number input", async () => {
+  const workflow = Workflow.create({
+    name: "guard-number",
+    inputs: {
+      type: "object",
+      properties: {
+        count: { type: "number" },
+      },
+    },
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "deploy",
+            task: StepTask.model("test-model", "run"),
+            guard: "${{ inputs.count }}",
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const guardResult = results.find((r) => r.name.includes("Guard type"));
+  assertEquals(guardResult?.passed, false);
+  assertEquals(guardResult?.error?.includes("number"), true);
+});
+
+Deno.test("validate: fails when guard references array input", async () => {
+  const workflow = Workflow.create({
+    name: "guard-array",
+    inputs: {
+      type: "object",
+      properties: {
+        items: { type: "array" },
+      },
+    },
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "deploy",
+            task: StepTask.model("test-model", "run"),
+            guard: "${{ inputs.items }}",
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const guardResult = results.find((r) => r.name.includes("Guard type"));
+  assertEquals(guardResult?.passed, false);
+  assertEquals(guardResult?.error?.includes("array"), true);
+});
+
+Deno.test("validate: passes when guard references string input", async () => {
+  const workflow = Workflow.create({
+    name: "guard-string",
+    inputs: {
+      type: "object",
+      properties: {
+        condition: { type: "string" },
+      },
+    },
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "deploy",
+            task: StepTask.model("test-model", "run"),
+            guard: "${{ inputs.condition }}",
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const guardResult = results.find((r) => r.name.includes("Guard type"));
+  assertEquals(guardResult, undefined);
+});
+
+Deno.test("validate: passes when guard references untyped input", async () => {
+  const workflow = Workflow.create({
+    name: "guard-untyped",
+    inputs: {
+      type: "object",
+      properties: {
+        flag: { description: "no type declared" },
+      },
+    },
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "deploy",
+            task: StepTask.model("test-model", "run"),
+            guard: "${{ inputs.flag }}",
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const guardResult = results.find((r) => r.name.includes("Guard type"));
+  assertEquals(guardResult, undefined);
+});
+
+Deno.test("validate: passes when guard uses embedded expression", async () => {
+  const workflow = Workflow.create({
+    name: "guard-embedded",
+    inputs: {
+      type: "object",
+      properties: {
+        dryRun: { type: "boolean" },
+      },
+    },
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "deploy",
+            task: StepTask.model("test-model", "run"),
+            guard: "prefix-${{ inputs.dryRun }}-suffix",
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const guardResult = results.find((r) => r.name.includes("Guard type"));
+  assertEquals(guardResult, undefined);
+});
+
+Deno.test("validate: passes when guard uses non-input expression", async () => {
+  const workflow = Workflow.create({
+    name: "guard-data",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "deploy",
+            task: StepTask.model("test-model", "run"),
+            guard: '${{ data.latest("m", "r").attributes.done }}',
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const guardResult = results.find((r) => r.name.includes("Guard type"));
+  assertEquals(guardResult, undefined);
+});
+
+Deno.test("validate: passes when step has no guard", async () => {
+  const workflow = createSimpleWorkflow();
+  const results = await service.validate(workflow);
+  const guardResult = results.find((r) => r.name.includes("Guard type"));
+  assertEquals(guardResult, undefined);
+});
+
+Deno.test("validate: fails when guard references boolean input via bracket notation", async () => {
+  const workflow = Workflow.create({
+    name: "guard-bracket",
+    inputs: {
+      type: "object",
+      properties: {
+        "dry-run": { type: "boolean" },
+      },
+    },
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "deploy",
+            task: StepTask.model("test-model", "run"),
+            guard: '${{ inputs["dry-run"] }}',
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const guardResult = results.find((r) => r.name.includes("Guard type"));
+  assertEquals(guardResult?.passed, false);
+  assertEquals(guardResult?.error?.includes("boolean"), true);
+  assertEquals(guardResult?.error?.includes('inputs["dry-run"]'), true);
+});
