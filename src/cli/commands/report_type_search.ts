@@ -108,6 +108,7 @@ export async function reportTypeSearchAction(
 export const reportTypeSearchCommand = withRemoteOptions(
   new Command()
     .name("search")
+    .alias("list")
     .description("Search for report types")
     .example("Browse report types", "swamp report type search")
     .example("Search by keyword", "swamp report type search cost")

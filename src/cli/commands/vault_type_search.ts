@@ -104,6 +104,7 @@ export async function vaultTypeSearchAction(
 export const vaultTypeSearchCommand = withRemoteOptions(
   new Command()
     .name("search")
+    .alias("list")
     .description("Search for vault types")
     .example("Browse vault types", "swamp vault type-search")
     .example("Search by keyword", "swamp vault type-search aws")

@@ -32,25 +32,14 @@ import {
   datastoreNamespaceUnsetCommand,
 } from "./datastore_namespace.ts";
 import { datastoreNamespacesCommand } from "./datastore_namespaces.ts";
-import {
-  datastoreTypeSearchAction,
-  datastoreTypeSearchCommand,
-} from "./datastore_type_search.ts";
+import { datastoreTypeSearchCommand } from "./datastore_type_search.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 
 export const datastoreTypeCommand = new Command()
   .name("type")
   .description("Inspect datastore types")
   .action(groupCommandAction)
-  .command("search", datastoreTypeSearchCommand)
-  .command(
-    "list",
-    new Command()
-      .description("Alias for datastore type search")
-      .hidden()
-      .arguments("[query:string]")
-      .action(datastoreTypeSearchAction),
-  );
+  .command("search", datastoreTypeSearchCommand);
 
 const datastoreCatalogCommand = new Command()
   .name("catalog")

@@ -23,10 +23,7 @@ import {
   modelOutputGetAction,
   modelOutputGetCommand,
 } from "./model_output_get.ts";
-import {
-  modelOutputSearchAction,
-  modelOutputSearchCommand,
-} from "./model_output_search.ts";
+import { modelOutputSearchCommand } from "./model_output_search.ts";
 import { modelOutputLogsCommand } from "./model_output_logs.ts";
 import { modelOutputDataCommand } from "./model_output_data.ts";
 
@@ -44,16 +41,4 @@ export const modelOutputCommand = new Command()
   .command("get", modelOutputGetCommand)
   .command("search", modelOutputSearchCommand)
   .command("logs", modelOutputLogsCommand)
-  .command("data", modelOutputDataCommand)
-  .command(
-    "list",
-    new Command()
-      .description("Alias for model output search")
-      .hidden()
-      .arguments("[query:string]")
-      .option(
-        "--repo-dir <dir:string>",
-        "Repository directory (env: SWAMP_REPO_DIR)",
-      )
-      .action(modelOutputSearchAction),
-  );
+  .command("data", modelOutputDataCommand);

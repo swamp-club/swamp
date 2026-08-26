@@ -17,93 +17,127 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStrictEquals } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 // Initialize logging for tests
 await initializeLogging({});
 
-Deno.test("model list is registered as a hidden subcommand", async () => {
+Deno.test("model search has list as a native alias", async () => {
+  const { modelSearchCommand } = await import("./model_search.ts");
+  assertEquals(
+    modelSearchCommand.getAliases().includes("list"),
+    true,
+    "search command should have 'list' alias",
+  );
+});
+
+Deno.test("model list resolves to the search command", async () => {
   const { modelCommand } = await import("./model_create.ts");
-
-  // getCommand with second arg true includes hidden commands
+  const searchCmd = modelCommand.getCommand("search");
   const listCmd = modelCommand.getCommand("list", true);
-  assertEquals(
-    listCmd !== undefined,
-    true,
-    "list command should be registered",
-  );
+  assertStrictEquals(listCmd, searchCmd, "list should resolve to search");
+});
 
-  // Verify it's hidden: not in getCommands() (which excludes hidden)
-  const visibleCommands = modelCommand.getCommands();
-  const visibleList = visibleCommands.find((c) => c.getName() === "list");
+Deno.test("workflow search has list as a native alias", async () => {
+  const { workflowSearchCommand } = await import("./workflow_search.ts");
   assertEquals(
-    visibleList,
-    undefined,
-    "list should not appear in visible commands",
+    workflowSearchCommand.getAliases().includes("list"),
+    true,
+    "search command should have 'list' alias",
   );
 });
 
-Deno.test("workflow history list is registered as a hidden subcommand", async () => {
-  const { workflowHistoryCommand } = await import("./workflow_history.ts");
-
-  // getCommand with second arg true includes hidden commands
-  const listCmd = workflowHistoryCommand.getCommand("list", true);
-  assertEquals(
-    listCmd !== undefined,
-    true,
-    "list command should be registered",
+Deno.test("workflow run search has list as a native alias", async () => {
+  const { workflowRunSearchCommand } = await import(
+    "./workflow_run_search.ts"
   );
-
-  // Verify it's hidden: not in getCommands() (which excludes hidden)
-  const visibleCommands = workflowHistoryCommand.getCommands();
-  const visibleList = visibleCommands.find((c) => c.getName() === "list");
   assertEquals(
-    visibleList,
-    undefined,
-    "list should not appear in visible commands",
+    workflowRunSearchCommand.getAliases().includes("list"),
+    true,
+    "search command should have 'list' alias",
   );
 });
 
-Deno.test("vault list is registered as a hidden subcommand", async () => {
-  const { vaultCommand } = await import("./vault.ts");
-
-  // getCommand with second arg true includes hidden commands
-  const listCmd = vaultCommand.getCommand("list", true);
-  assertEquals(
-    listCmd !== undefined,
-    true,
-    "list command should be registered",
+Deno.test("workflow history search has list as a native alias", async () => {
+  const { workflowHistorySearchCommand } = await import(
+    "./workflow_history_search.ts"
   );
-
-  // Verify it's hidden: not in getCommands() (which excludes hidden)
-  const visibleCommands = vaultCommand.getCommands();
-  const visibleList = visibleCommands.find((c) => c.getName() === "list");
   assertEquals(
-    visibleList,
-    undefined,
-    "list should not appear in visible commands",
+    workflowHistorySearchCommand.getAliases().includes("list"),
+    true,
+    "search command should have 'list' alias",
   );
 });
 
-Deno.test("vault type list is registered as a hidden subcommand", async () => {
-  const { vaultTypeCommand } = await import("./vault.ts");
-
-  // getCommand with second arg true includes hidden commands
-  const listCmd = vaultTypeCommand.getCommand("list", true);
-  assertEquals(
-    listCmd !== undefined,
-    true,
-    "list command should be registered",
+Deno.test("model output search has list as a native alias", async () => {
+  const { modelOutputSearchCommand } = await import(
+    "./model_output_search.ts"
   );
-
-  // Verify it's hidden: not in getCommands() (which excludes hidden)
-  const visibleCommands = vaultTypeCommand.getCommands();
-  const visibleList = visibleCommands.find((c) => c.getName() === "list");
   assertEquals(
-    visibleList,
-    undefined,
-    "list should not appear in visible commands",
+    modelOutputSearchCommand.getAliases().includes("list"),
+    true,
+    "search command should have 'list' alias",
+  );
+});
+
+Deno.test("model type search has list as a native alias", async () => {
+  const { typeSearchCommand } = await import("./type_search.ts");
+  assertEquals(
+    typeSearchCommand.getAliases().includes("list"),
+    true,
+    "search command should have 'list' alias",
+  );
+});
+
+Deno.test("model method history search has list as a native alias", async () => {
+  const { modelMethodHistorySearchCommand } = await import(
+    "./model_method_history_search.ts"
+  );
+  assertEquals(
+    modelMethodHistorySearchCommand.getAliases().includes("list"),
+    true,
+    "search command should have 'list' alias",
+  );
+});
+
+Deno.test("vault search has list as a native alias", async () => {
+  const { vaultSearchCommand } = await import("./vault_search.ts");
+  assertEquals(
+    vaultSearchCommand.getAliases().includes("list"),
+    true,
+    "search command should have 'list' alias",
+  );
+});
+
+Deno.test("vault type search has list as a native alias", async () => {
+  const { vaultTypeSearchCommand } = await import("./vault_type_search.ts");
+  assertEquals(
+    vaultTypeSearchCommand.getAliases().includes("list"),
+    true,
+    "search command should have 'list' alias",
+  );
+});
+
+Deno.test("report type search has list as a native alias", async () => {
+  const { reportTypeSearchCommand } = await import(
+    "./report_type_search.ts"
+  );
+  assertEquals(
+    reportTypeSearchCommand.getAliases().includes("list"),
+    true,
+    "search command should have 'list' alias",
+  );
+});
+
+Deno.test("datastore type search has list as a native alias", async () => {
+  const { datastoreTypeSearchCommand } = await import(
+    "./datastore_type_search.ts"
+  );
+  assertEquals(
+    datastoreTypeSearchCommand.getAliases().includes("list"),
+    true,
+    "search command should have 'list' alias",
   );
 });
 

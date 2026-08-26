@@ -32,15 +32,7 @@ export const reportTypeCommand = new Command()
   .name("type")
   .description("Inspect report types")
   .action(groupCommandAction)
-  .command("search", reportTypeSearchCommand)
-  .command(
-    "list",
-    new Command()
-      .description("Alias for report type search")
-      .hidden()
-      .arguments("[query:string]")
-      .action(reportTypeSearchAction),
-  );
+  .command("search", reportTypeSearchCommand);
 
 export const reportCommand = new Command()
   .name("report")

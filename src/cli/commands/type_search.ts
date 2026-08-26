@@ -146,6 +146,7 @@ export async function typeSearchAction(
 export const typeSearchCommand = withRemoteOptions(
   new Command()
     .name("search")
+    .alias("list")
     .description("Search for model types")
     .example("Browse all types", "swamp type search")
     .example("Search by keyword", "swamp type search aws")
