@@ -353,10 +353,13 @@ The catalog builds up incrementally:
    and the row is missing (or stale), it runs a scoped filesystem walk for just
    the requested `(modelName, dataName)` pair, upserts matching rows, and
    retries. The `populated` flag is not set by scoped backfill.
-3. **Full backfill on first query** — on the first call to
-   `DataQueryService.query()`, if the catalog is not marked as populated, a
-   one-time `findAllGlobal()` runs, commits every row it found, and sets a
-   `populated` flag in the `catalog_meta` table.
+3. **Full backfill on first query or search** — on the first call to
+   `DataQueryService.query()` or `ensurePopulated()` (used by `data search`),
+   if the catalog is not marked as populated, a one-time `findAllGlobal()` runs,
+   commits every row it found, and sets a `populated` flag in the
+   `catalog_meta` table. Both `data search` and `data query` use the catalog
+   after backfill — `data search` iterates `is_latest` rows directly rather
+   than re-walking the filesystem.
 4. **Self-healing** — if `_catalog.db` is deleted or corrupted, the next query
    triggers a backfill automatically.
 

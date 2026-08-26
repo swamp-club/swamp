@@ -63,8 +63,7 @@ import type {
   SummarisePayload,
 } from "../protocol.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
-import { createDefinitionId } from "../../domain/definitions/definition.ts";
-import { ModelType } from "../../domain/models/model_type.ts";
+import { findLatestItemsFromCatalog } from "../../infrastructure/persistence/catalog_search_adapter.ts";
 import type { Principal } from "../../domain/access/principal.ts";
 import {
   authorizeOrReject,
@@ -299,15 +298,12 @@ export async function handleDataSearch(
   try {
     const libCtx = createLibSwampContext();
     const definitionRepo = ctx.repoContext.definitionRepo;
-    const dataRepo = ctx.repoContext.unifiedDataRepo;
+    const dataQueryService = ctx.repoContext.dataQueryService;
+    const catalogStore = ctx.repoContext.catalogStore;
 
     const deps: DataSearchDeps = {
-      findAllGlobal: () => dataRepo.findAllGlobal(),
-      findDefinitionById: (type, defId) =>
-        definitionRepo.findById(
-          ModelType.create(type.normalized),
-          createDefinitionId(defId),
-        ),
+      findLatestItems: () =>
+        findLatestItemsFromCatalog(dataQueryService, catalogStore),
       findDefinitionByIdOrName: (idOrName) =>
         findDefinitionByIdOrName(definitionRepo, idOrName),
     };

@@ -47,12 +47,12 @@ import {
 } from "../remote_run.ts";
 import type { DataSearchResponse } from "../../serve/protocol.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
-import { createDefinitionId } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { OutputMode } from "../../presentation/output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { toRelativePath } from "../../infrastructure/persistence/paths.ts";
 import type { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import { findLatestItemsFromCatalog } from "../../infrastructure/persistence/catalog_search_adapter.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -278,6 +278,8 @@ export const dataSearchCommand = withRemoteOptions(
   });
   const definitionRepo = repoContext.definitionRepo;
   const dataRepo = repoContext.unifiedDataRepo;
+  const dataQueryService = repoContext.dataQueryService;
+  const catalogStore = repoContext.catalogStore;
 
   // Parse --tag values into Record<string, string>
   const parsedTags = options.tag
@@ -285,12 +287,8 @@ export const dataSearchCommand = withRemoteOptions(
     : undefined;
 
   const deps: DataSearchDeps = {
-    findAllGlobal: () => dataRepo.findAllGlobal(),
-    findDefinitionById: (type, defId) =>
-      definitionRepo.findById(
-        ModelType.create(type.normalized),
-        createDefinitionId(defId),
-      ),
+    findLatestItems: () =>
+      findLatestItemsFromCatalog(dataQueryService, catalogStore),
     findDefinitionByIdOrName: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),
   };

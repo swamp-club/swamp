@@ -306,6 +306,25 @@ export class DataQueryService {
   }
 
   /**
+   * Ensures the catalog is populated, triggering a backfill if needed.
+   * Reuses the same backfill-coalescing logic as query().
+   */
+  async ensurePopulated(): Promise<void> {
+    if (this.catalogStore.isPopulated()) return;
+    if (this.backfillPromise) {
+      await this.backfillPromise;
+      return;
+    }
+    const promise = this.backfillAsync();
+    this.backfillPromise = promise;
+    try {
+      await promise;
+    } finally {
+      this.backfillPromise = null;
+    }
+  }
+
+  /**
    * Queries data artifacts matching a CEL predicate.
    * Triggers backfill if the catalog is not yet populated.
    * Vault references in JSON attributes are resolved when a VaultService
@@ -315,19 +334,7 @@ export class DataQueryService {
     predicate: string,
     options?: DataQueryOptions,
   ): Promise<DataRecord[] | unknown[]> {
-    if (!this.catalogStore.isPopulated()) {
-      if (this.backfillPromise) {
-        await this.backfillPromise;
-      } else {
-        const promise = this.backfillAsync();
-        this.backfillPromise = promise;
-        try {
-          await promise;
-        } finally {
-          this.backfillPromise = null;
-        }
-      }
-    }
+    await this.ensurePopulated();
     const results = this.executeQuery(predicate, options);
 
     // Hydrate foreign namespace records whose content isn't available locally.
