@@ -238,30 +238,11 @@ export function requestServerResponse<T>(
       if (!settled) {
         settled = true;
         cleanup();
-
-        const errorMsg = connectErrorDetail;
-        if (errorMsg.includes(H2_MASKED_ERROR)) {
-          diagnoseTlsError(baseUrl).then((diagnosis) => {
-            const detail = diagnosis ? `: ${diagnosis}` : connectErrorDetail;
-            reject(
-              new UserError(
-                `Could not connect to ${baseUrl}${detail}`,
-              ),
-            );
-          }).catch(() => {
-            reject(
-              new UserError(
-                `Could not connect to ${baseUrl}${connectErrorDetail}`,
-              ),
-            );
-          });
-        } else {
-          reject(
-            new UserError(
-              `Could not connect to ${baseUrl}${connectErrorDetail}`,
-            ),
-          );
-        }
+        reject(
+          new UserError(
+            `Could not connect to ${baseUrl}${connectErrorDetail}`,
+          ),
+        );
       }
     };
 
@@ -407,29 +388,15 @@ async function classifyConnectionError(
       return `Authentication failed — run: swamp auth server-login --server ${wsUrl}`;
     }
   }
-  if (originalMessage.includes(H2_MASKED_ERROR)) {
-    try {
-      const diagnosis = await diagnoseTlsError(wsUrl);
-      if (diagnosis) return diagnosis;
-    } catch { /* fall through to other checks */ }
-  }
+  const tlsGuidance = diagnoseTlsMessage(originalMessage);
+  if (tlsGuidance) return tlsGuidance;
   if (await probeServerHealth(wsUrl)) {
     return `Authentication failed — run: swamp auth server-login --server ${wsUrl}`;
   }
   return originalMessage;
 }
 
-// Force HTTP/1.1 ALPN for wss:// connections so WebSocket upgrades succeed
-// through HTTP/2-capable reverse proxies (Caddy, Traefik, nginx). Without
-// this, Deno's default client advertises h2 ALPN, the proxy selects h2, and
-// the HTTP/1.1 WebSocket Upgrade is invalid over HTTP/2.
-// See: https://github.com/denoland/deno/issues/16923
-//
-// Caveat: this flag causes Deno to mask all TLS errors (UnknownIssuer,
-// CaUsedAsEndEntity, expired, etc.) as "HTTP/2 not supported by this
-// client" in the WebSocket code path. diagnoseTlsError() below works
-// around this by probing with fetch() when that message appears.
-const wsHttpClient = Deno.createHttpClient({ http2: false });
+const wsHttpClient = Deno.createHttpClient({});
 
 let resolvedEnvCaCerts: string[] | undefined;
 
@@ -491,7 +458,6 @@ function createSocket(
   if (effectiveCaCerts?.length) {
     if (!cachedCaCertClient) {
       cachedCaCertClient = Deno.createHttpClient({
-        http2: false,
         caCerts: effectiveCaCerts,
       });
     }
@@ -506,72 +472,49 @@ function createSocket(
   return new WebSocket(url, opts);
 }
 
-const H2_MASKED_ERROR = "HTTP/2 not supported by this client";
-
 /**
- * When `createHttpClient({ http2: false })` is used, Deno's WebSocket
- * masks every TLS validation error — and also HTTP error codes like 401
- * — as "HTTP/2 not supported by this client". Probe with `fetch()` to
- * surface the real error. Uses the CA cert from `--ca-cert` /
- * `SWAMP_CA_CERT` when available so the probe reflects the same trust
- * configuration as the WebSocket connection; without this, a server
- * that rejects an unauthenticated upgrade (401) is misdiagnosed as a
- * TLS failure because the bare probe fails on an untrusted issuer.
- * Returns a more helpful message or `undefined` if the probe succeeds
- * (meaning the WebSocket failure has a different cause).
+ * Matches known TLS error patterns in the WebSocket error message and
+ * returns user-friendly guidance. Returns `undefined` when the message
+ * does not look like a TLS error.
  */
-export async function diagnoseTlsError(
-  wsUrl: string,
-): Promise<string | undefined> {
-  let parsed: URL;
-  try {
-    parsed = new URL(wsUrl);
-  } catch {
-    return undefined;
+export function diagnoseTlsMessage(
+  message: string,
+): string | undefined {
+  if (message.includes("CaUsedAsEndEntity")) {
+    return (
+      `TLS certificate rejected: the server certificate has ` +
+      `basicConstraints CA:TRUE, which is invalid for a server ` +
+      `(end-entity) certificate. Regenerate with ` +
+      `"basicConstraints=critical,CA:FALSE" — restart swamp serve ` +
+      `to see the exact openssl command`
+    );
   }
-  if (parsed.protocol !== "wss:") return undefined;
 
-  parsed.protocol = "https:";
-  const fetchClient = getCaCertFetchClient();
-  const fetchOpts: Record<string, unknown> = {
-    signal: AbortSignal.timeout(3_000),
-  };
-  if (fetchClient) fetchOpts.client = fetchClient;
-  try {
-    const resp = await fetch(parsed.href, fetchOpts);
-    await resp.body?.cancel();
-    return undefined;
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-
-    if (msg.includes("CaUsedAsEndEntity")) {
-      return (
-        `TLS certificate rejected: the server certificate has ` +
-        `basicConstraints CA:TRUE, which is invalid for a server ` +
-        `(end-entity) certificate. Regenerate with ` +
-        `"basicConstraints=critical,CA:FALSE" — restart swamp serve ` +
-        `to see the exact openssl command`
-      );
-    }
-
-    if (msg.includes("UnknownIssuer")) {
-      return (
-        `TLS certificate rejected: the server's certificate issuer is ` +
-        `not trusted. If using a self-signed certificate, pass it with ` +
-        `--ca-cert /path/to/cert.pem or set SWAMP_CA_CERT=/path/to/cert.pem`
-      );
-    }
-
-    if (msg.includes("expired") || msg.includes("NotValidYet")) {
-      return `TLS certificate rejected: ${msg}`;
-    }
-
-    if (msg.includes("AbortError") || msg.includes("timed out")) {
-      return undefined;
-    }
-
-    return `TLS connection failed: ${msg}`;
+  if (message.includes("UnknownIssuer")) {
+    return (
+      `TLS certificate rejected: the server's certificate issuer is ` +
+      `not trusted. If using a self-signed certificate, pass it with ` +
+      `--ca-cert /path/to/cert.pem or set SWAMP_CA_CERT=/path/to/cert.pem`
+    );
   }
+
+  if (message.includes("not valid for name")) {
+    return (
+      `TLS certificate rejected: the server's certificate does not ` +
+      `match the hostname you connected to. Check that the URL matches ` +
+      `the certificate's subject or SAN entries`
+    );
+  }
+
+  if (message.includes("expired") || message.includes("NotValidYet")) {
+    return `TLS certificate rejected: ${message}`;
+  }
+
+  if (message.includes("invalid peer certificate")) {
+    return `TLS certificate rejected: ${message}`;
+  }
+
+  return undefined;
 }
 
 interface OutboundRequest {
