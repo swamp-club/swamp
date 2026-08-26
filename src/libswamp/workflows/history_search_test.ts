@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -291,4 +291,177 @@ Deno.test("workflowHistorySearch: returns empty results when no runs exist", asy
   >;
   assertEquals(completed.data.query, "foo");
   assertEquals(completed.data.results.length, 0);
+});
+
+// --- CEL filter tests ---
+
+function makeDepsWithInputs(): WorkflowHistorySearchDeps {
+  return {
+    findAllWorkflows: () =>
+      Promise.resolve([
+        { id: "wf-1", name: "verify-reviews" },
+      ]),
+    findAllRunsByWorkflowId: () =>
+      Promise.resolve([
+        {
+          id: "run-a",
+          workflowId: "wf-1",
+          workflowName: "verify-reviews",
+          status: "succeeded",
+          startedAt: new Date(now - 1000),
+          completedAt: new Date(now),
+          tags: { env: "ci" },
+          inputs: { commit: "abc123", branch: "main" },
+        },
+        {
+          id: "run-b",
+          workflowId: "wf-1",
+          workflowName: "verify-reviews",
+          status: "failed",
+          startedAt: new Date(now - 3000),
+          completedAt: new Date(now - 2000),
+          tags: { env: "ci" },
+          inputs: { commit: "def456", branch: "feature/foo" },
+        },
+      ]),
+  };
+}
+
+Deno.test("workflowHistorySearch: filter by inputs.commit", async () => {
+  const deps = makeDepsWithInputs();
+  const events = await collect<WorkflowHistorySearchEvent>(
+    workflowHistorySearch(createLibSwampContext(), deps, {
+      filter: 'inputs.commit == "abc123"',
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    WorkflowHistorySearchEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.results.length, 1);
+  assertEquals(completed.data.results[0].runId, "run-a");
+});
+
+Deno.test("workflowHistorySearch: filter by status", async () => {
+  const deps = makeDepsWithInputs();
+  const events = await collect<WorkflowHistorySearchEvent>(
+    workflowHistorySearch(createLibSwampContext(), deps, {
+      filter: 'status == "failed"',
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    WorkflowHistorySearchEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.results.length, 1);
+  assertEquals(completed.data.results[0].runId, "run-b");
+});
+
+Deno.test("workflowHistorySearch: filter combined with workflow name", async () => {
+  const deps = makeDepsWithInputs();
+  const events = await collect<WorkflowHistorySearchEvent>(
+    workflowHistorySearch(createLibSwampContext(), deps, {
+      workflow: "verify-reviews",
+      filter: 'inputs.branch == "main"',
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    WorkflowHistorySearchEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.results.length, 1);
+  assertEquals(completed.data.results[0].runId, "run-a");
+});
+
+Deno.test("workflowHistorySearch: filter with no matches returns empty", async () => {
+  const deps = makeDepsWithInputs();
+  const events = await collect<WorkflowHistorySearchEvent>(
+    workflowHistorySearch(createLibSwampContext(), deps, {
+      filter: 'inputs.commit == "nonexistent"',
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    WorkflowHistorySearchEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.results.length, 0);
+});
+
+Deno.test("workflowHistorySearch: filter with compound expression", async () => {
+  const deps = makeDepsWithInputs();
+  const events = await collect<WorkflowHistorySearchEvent>(
+    workflowHistorySearch(createLibSwampContext(), deps, {
+      filter: 'status == "succeeded" && tags.env == "ci"',
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    WorkflowHistorySearchEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.results.length, 1);
+  assertEquals(completed.data.results[0].runId, "run-a");
+});
+
+Deno.test("workflowHistorySearch: filter handles runs with missing input keys", async () => {
+  const deps: WorkflowHistorySearchDeps = {
+    findAllWorkflows: () => Promise.resolve([{ id: "wf-1", name: "verify" }]),
+    findAllRunsByWorkflowId: () =>
+      Promise.resolve([
+        {
+          id: "run-with-commit",
+          workflowId: "wf-1",
+          workflowName: "verify",
+          status: "succeeded",
+          startedAt: new Date(now - 1000),
+          completedAt: new Date(now),
+          tags: {},
+          inputs: { commit: "abc123", branch: "main" },
+        },
+        {
+          id: "run-without-commit",
+          workflowId: "wf-1",
+          workflowName: "verify",
+          status: "succeeded",
+          startedAt: new Date(now - 2000),
+          completedAt: new Date(now - 1000),
+          tags: {},
+          inputs: { branch: "feature/x" },
+        },
+      ]),
+  };
+
+  const events = await collect<WorkflowHistorySearchEvent>(
+    workflowHistorySearch(createLibSwampContext(), deps, {
+      filter: 'inputs.commit == "abc123"',
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    WorkflowHistorySearchEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.results.length, 1);
+  assertEquals(completed.data.results[0].runId, "run-with-commit");
+});
+
+Deno.test("workflowHistorySearch: invalid filter yields error event", async () => {
+  const deps = makeDepsWithInputs();
+  const events = await collect<WorkflowHistorySearchEvent>(
+    workflowHistorySearch(createLibSwampContext(), deps, {
+      filter: "status ==",
+    }),
+  );
+
+  assertEquals(events.length, 2);
+  const errorEvent = events[1] as Extract<
+    WorkflowHistorySearchEvent,
+    { kind: "error" }
+  >;
+  assertEquals(errorEvent.kind, "error");
+  assertStringIncludes(errorEvent.error.message, "Invalid --filter expression");
 });

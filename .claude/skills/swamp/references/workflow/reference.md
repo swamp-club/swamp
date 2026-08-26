@@ -310,6 +310,11 @@ stdin item.
 ```bash
 swamp workflow history search --json
 swamp workflow history search "deploy" --json
+
+# Filter with a CEL expression over run metadata
+swamp workflow history search --filter 'inputs.commit == "b3ff3a8a"' --json
+swamp workflow history search --filter 'status == "failed"' --json
+swamp workflow history search verify-reviews --filter 'inputs.branch == "main"' --json
 ```
 
 **Output shape:**

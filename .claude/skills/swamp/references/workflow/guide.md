@@ -28,32 +28,33 @@ skill.
 
 ## Quick Reference
 
-| Task               | Command                                                       |
-| ------------------ | ------------------------------------------------------------- |
-| Get schema         | `swamp workflow schema get --json`                            |
-| Search workflows   | `swamp workflow search [query] --json`                        |
-| Get a workflow     | `swamp workflow get <id_or_name> --json`                      |
-| Create a workflow  | `swamp workflow create <name> --json`                         |
-| Edit a workflow    | `swamp workflow edit [id_or_name]`                            |
-| Delete a workflow  | `swamp workflow delete <id_or_name> --json`                   |
-| Validate workflow  | `swamp workflow validate [id_or_name] --json`                 |
-| Evaluate workflow  | `swamp workflow evaluate <id_or_name> --json`                 |
-| Run a workflow     | `swamp workflow run <id_or_name>`                             |
-| Run with inputs    | `swamp workflow run <id_or_name> --input key=value`           |
-| Run from stdin     | `echo '{"k":"v"}' \| swamp workflow run <id_or_name> --stdin` |
-| Approve step       | `swamp workflow approve <workflow> <step>`                    |
-| Reject step        | `swamp workflow reject <workflow> <step>`                     |
-| Resume workflow    | `swamp workflow resume <workflow> [--input k=v]`              |
-| Resume from step   | `swamp workflow resume <wf> --from <step>`                    |
-| List approvals     | `swamp workflow approvals`                                    |
-| Active runs        | `swamp run history --active`                                  |
-| Recent runs        | `swamp run history`                                           |
-| View run history   | `swamp workflow history search --json`                        |
-| Get latest run     | `swamp workflow history get <workflow> --json`                |
-| View run logs      | `swamp workflow history logs <run_or_workflow> --json`        |
-| List workflow data | `swamp data list --workflow <name> --json`                    |
-| Query wf data      | `swamp data query 'tags.workflow == "<name>"'`                |
-| Get workflow data  | `swamp data get --workflow <name> <data_name> --json`         |
+| Task               | Command                                                                  |
+| ------------------ | ------------------------------------------------------------------------ |
+| Get schema         | `swamp workflow schema get --json`                                       |
+| Search workflows   | `swamp workflow search [query] --json`                                   |
+| Get a workflow     | `swamp workflow get <id_or_name> --json`                                 |
+| Create a workflow  | `swamp workflow create <name> --json`                                    |
+| Edit a workflow    | `swamp workflow edit [id_or_name]`                                       |
+| Delete a workflow  | `swamp workflow delete <id_or_name> --json`                              |
+| Validate workflow  | `swamp workflow validate [id_or_name] --json`                            |
+| Evaluate workflow  | `swamp workflow evaluate <id_or_name> --json`                            |
+| Run a workflow     | `swamp workflow run <id_or_name>`                                        |
+| Run with inputs    | `swamp workflow run <id_or_name> --input key=value`                      |
+| Run from stdin     | `echo '{"k":"v"}' \| swamp workflow run <id_or_name> --stdin`            |
+| Approve step       | `swamp workflow approve <workflow> <step>`                               |
+| Reject step        | `swamp workflow reject <workflow> <step>`                                |
+| Resume workflow    | `swamp workflow resume <workflow> [--input k=v]`                         |
+| Resume from step   | `swamp workflow resume <wf> --from <step>`                               |
+| List approvals     | `swamp workflow approvals`                                               |
+| Active runs        | `swamp run history --active`                                             |
+| Recent runs        | `swamp run history`                                                      |
+| View run history   | `swamp workflow history search --json`                                   |
+| Filter run history | `swamp workflow history search --filter 'inputs.commit == "abc"' --json` |
+| Get latest run     | `swamp workflow history get <workflow> --json`                           |
+| View run logs      | `swamp workflow history logs <run_or_workflow> --json`                   |
+| List workflow data | `swamp data list --workflow <name> --json`                               |
+| Query wf data      | `swamp data query 'tags.workflow == "<name>"'`                           |
+| Get workflow data  | `swamp data get --workflow <name> <data_name> --json`                    |
 
 ## Repository Structure
 

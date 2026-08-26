@@ -626,6 +626,7 @@ const WorkflowHistorySearchRequestSchema = z.object({
     query: z.string().optional(),
     workflow: z.string().optional(),
     inputs: z.record(z.string(), z.string()).optional(),
+    filter: z.string().max(1024).optional(),
   }).optional(),
 });
 

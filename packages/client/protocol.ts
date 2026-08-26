@@ -215,6 +215,7 @@ export interface WorkflowHistorySearchPayload {
   query?: string;
   workflow?: string;
   inputs?: Record<string, string>;
+  filter?: string;
 }
 
 export interface WorkflowRunSearchPayload {
