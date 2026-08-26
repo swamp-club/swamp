@@ -83,24 +83,23 @@ The agent launches the build and review workflows simultaneously. Both must
 pass for verification to succeed.
 
 After each workflow completes, present the commands to the user so they can
-inspect the attestations:
+inspect the attestations. Use `--input commit=<SHA>` to find the correct run
+when multiple verifications run in parallel:
 
 ```
-# Build attestation (human-readable)
-SWAMP_WORKFLOWS_DIR=verification swamp workflow history verify-build
+# 1. Find the run IDs for this commit
+SWAMP_WORKFLOWS_DIR=verification swamp workflow history search \
+  --workflow verify-build --input commit=<SHA> --json
+SWAMP_WORKFLOWS_DIR=verification swamp workflow history search \
+  --workflow verify-reviews --input commit=<SHA> --json
 
-# Build attestation (JSON for programmatic use)
-SWAMP_WORKFLOWS_DIR=verification swamp workflow history verify-build --json
+# 2. Get detailed step data (duration, status, data artifacts)
+SWAMP_WORKFLOWS_DIR=verification swamp workflow history get <build-run-id> --json
+SWAMP_WORKFLOWS_DIR=verification swamp workflow history get <reviews-run-id> --json
 
-# Review attestation — shows which reviews ran, passed, failed, or skipped
-SWAMP_WORKFLOWS_DIR=verification swamp workflow history verify-reviews
-SWAMP_WORKFLOWS_DIR=verification swamp workflow history verify-reviews --json
-
-# Review findings — each review type has its own model name
-swamp data get review-code log              # code review
-swamp data get review-adversarial log       # adversarial review
-swamp data get review-ux log                # UX review
-swamp data get review-ci-security log       # CI security review
+# 3. Read step output (e.g. review findings or build errors)
+SWAMP_WORKFLOWS_DIR=verification swamp data get \
+  --workflow verify-reviews --run <reviews-run-id> log --json
 ```
 
 ## Verification Checklist
@@ -145,19 +144,32 @@ Total: 1m 45s
 
 To construct this checklist:
 
-1. Read the build workflow run:
+1. Find the run IDs for this commit:
    ```
-   SWAMP_WORKFLOWS_DIR=verification swamp workflow history verify-build --json
+   SWAMP_WORKFLOWS_DIR=verification swamp workflow history search \
+     --workflow verify-build --input commit=<SHA> --json
+   SWAMP_WORKFLOWS_DIR=verification swamp workflow history search \
+     --workflow verify-reviews --input commit=<SHA> --json
    ```
+   The `--input commit=<SHA>` filter ensures you get the correct run when
+   multiple verifications run in parallel across worktrees.
 
-2. Read the review workflow run:
+2. Get detailed step data for each run:
    ```
-   SWAMP_WORKFLOWS_DIR=verification swamp workflow history verify-reviews --json
+   SWAMP_WORKFLOWS_DIR=verification swamp workflow history get <build-run-id> --json
+   SWAMP_WORKFLOWS_DIR=verification swamp workflow history get <reviews-run-id> --json
    ```
+   The `history get` output includes per-step `duration` (in ms) and status.
 
 3. For each step, extract: job name, step name, model name, duration, and
    status (succeeded/failed/skipped). For review steps that ran, include the
    VERDICT from the review log.
+
+   **Timing**: Each step in the `history get` output has a `duration` field
+   in milliseconds — use it directly as `durationMs`. For `totalDurationMs`,
+   use the run's top-level `duration` field. Do NOT estimate or omit timing
+   — the attestation must carry actual measured durations from the workflow
+   run.
 
 4. Construct the combined attestation JSON:
 
@@ -308,20 +320,26 @@ user what went wrong and what you're going to do:
 
 ### 2. Read the failure details
 
-For failed build steps:
-```bash
-swamp data list <model-name>
-swamp data get <model-name> <data-name> --json
-```
-The `stderr` field has the full error output. The `exitCode` confirms the
-failure.
+Use `swamp data` with `--workflow` and `--run` flags to read step output
+without needing model names. The run ID comes from the `workflow history
+search` output.
 
-For failed reviews:
+List all data for a run:
 ```bash
-swamp data get review-code log              # code review
-swamp data get review-adversarial log       # adversarial review
-swamp data get review-ux log                # UX review
-swamp data get review-ci-security log       # CI security review
+SWAMP_WORKFLOWS_DIR=verification swamp data list \
+  --workflow verify-build --run <run-id> --json
+```
+
+Get a specific data item (e.g. the log for a failed step):
+```bash
+SWAMP_WORKFLOWS_DIR=verification swamp data get \
+  --workflow verify-build --run <run-id> log --json
+```
+
+For review output, query the reviews workflow:
+```bash
+SWAMP_WORKFLOWS_DIR=verification swamp data get \
+  --workflow verify-reviews --run <run-id> log --json
 ```
 
 ### 3. Fix the issues
