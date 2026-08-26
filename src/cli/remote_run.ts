@@ -46,13 +46,14 @@ import { FileServerCredentialRepository } from "../infrastructure/persistence/se
 import { resolveExtraHeaders } from "../domain/auth/extra_headers.ts";
 
 /**
- * Resolves the server URL from the `--server` flag with `SWAMP_SERVE_URL`
- * env var as fallback. Flag takes precedence when both are provided.
+ * Resolves the server URL from the `--server` flag with env var fallbacks.
+ * Precedence: flag > SWAMP_SERVE_URL > SWAMP_SERVER_URL.
  */
 export function resolveServeUrl(
   flagValue: string | undefined,
 ): string | undefined {
-  return flagValue ?? Deno.env.get("SWAMP_SERVE_URL");
+  return flagValue ?? Deno.env.get("SWAMP_SERVE_URL") ??
+    Deno.env.get("SWAMP_SERVER_URL");
 }
 
 /** How long to keep draining after sending `cancel` before giving up. */
@@ -335,7 +336,7 @@ export function withRemoteOptions<T extends AnyCommand>(command: T): T {
   return command
     .option(
       "--server <url:string>",
-      "Run through a 'swamp serve' server (ws:// or http://) instead of locally; no local repo required (env: SWAMP_SERVE_URL). For proxy/tunnel pass-through headers see SWAMP_SERVE_EXTRA_HEADERS.",
+      "Run through a 'swamp serve' server (ws:// or http://) instead of locally; no local repo required (env: SWAMP_SERVE_URL or SWAMP_SERVER_URL). For proxy/tunnel pass-through headers see SWAMP_SERVE_EXTRA_HEADERS.",
     )
     .option(
       "--token <token:string>",

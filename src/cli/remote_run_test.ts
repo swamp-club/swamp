@@ -103,13 +103,46 @@ Deno.test("resolveServeUrl: falls back to SWAMP_SERVE_URL env var", () => {
   }
 });
 
-Deno.test("resolveServeUrl: returns undefined when neither flag nor env var set", () => {
-  const prev = Deno.env.get("SWAMP_SERVE_URL");
+Deno.test("resolveServeUrl: falls back to SWAMP_SERVER_URL when SWAMP_SERVE_URL is not set", () => {
+  const prevServe = Deno.env.get("SWAMP_SERVE_URL");
+  const prevServer = Deno.env.get("SWAMP_SERVER_URL");
   try {
     Deno.env.delete("SWAMP_SERVE_URL");
+    Deno.env.set("SWAMP_SERVER_URL", "wss://server-env.example.com");
+    assertEquals(resolveServeUrl(undefined), "wss://server-env.example.com");
+  } finally {
+    if (prevServe !== undefined) Deno.env.set("SWAMP_SERVE_URL", prevServe);
+    else Deno.env.delete("SWAMP_SERVE_URL");
+    if (prevServer !== undefined) Deno.env.set("SWAMP_SERVER_URL", prevServer);
+    else Deno.env.delete("SWAMP_SERVER_URL");
+  }
+});
+
+Deno.test("resolveServeUrl: SWAMP_SERVE_URL takes precedence over SWAMP_SERVER_URL", () => {
+  const prevServe = Deno.env.get("SWAMP_SERVE_URL");
+  const prevServer = Deno.env.get("SWAMP_SERVER_URL");
+  try {
+    Deno.env.set("SWAMP_SERVE_URL", "wss://serve.example.com");
+    Deno.env.set("SWAMP_SERVER_URL", "wss://server.example.com");
+    assertEquals(resolveServeUrl(undefined), "wss://serve.example.com");
+  } finally {
+    if (prevServe !== undefined) Deno.env.set("SWAMP_SERVE_URL", prevServe);
+    else Deno.env.delete("SWAMP_SERVE_URL");
+    if (prevServer !== undefined) Deno.env.set("SWAMP_SERVER_URL", prevServer);
+    else Deno.env.delete("SWAMP_SERVER_URL");
+  }
+});
+
+Deno.test("resolveServeUrl: returns undefined when no flag or env var set", () => {
+  const prevServe = Deno.env.get("SWAMP_SERVE_URL");
+  const prevServer = Deno.env.get("SWAMP_SERVER_URL");
+  try {
+    Deno.env.delete("SWAMP_SERVE_URL");
+    Deno.env.delete("SWAMP_SERVER_URL");
     assertEquals(resolveServeUrl(undefined), undefined);
   } finally {
-    if (prev !== undefined) Deno.env.set("SWAMP_SERVE_URL", prev);
+    if (prevServe !== undefined) Deno.env.set("SWAMP_SERVE_URL", prevServe);
+    if (prevServer !== undefined) Deno.env.set("SWAMP_SERVER_URL", prevServer);
   }
 });
 
