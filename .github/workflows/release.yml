@@ -76,12 +76,6 @@ jobs:
             --target aarch64-apple-darwin \
             --output dist/swamp-darwin-aarch64
 
-          # Windows x86_64
-          deno run -A scripts/compile.ts \
-            --version "$VERSION" \
-            --target x86_64-pc-windows-msvc \
-            --output dist/swamp-windows-x86_64.exe
-
       - name: Create checksums
         working-directory: dist
         run: |
@@ -159,7 +153,6 @@ jobs:
             dist/swamp-linux-aarch64
             dist/swamp-darwin-x86_64
             dist/swamp-darwin-aarch64
-            dist/swamp-windows-x86_64.exe
             dist/checksums.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
