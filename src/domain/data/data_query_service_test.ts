@@ -1264,8 +1264,7 @@ Deno.test("getLatestRecord: exact data name skips specName ambiguity check (swam
       data_name: "hs",
       spec_name: "state",
       id: "00000000-0000-1000-8000-000000001838",
-      tags:
-        '{"type":"resource","specName":"state","modelName":"ingest"}',
+      tags: '{"type":"resource","specName":"state","modelName":"ingest"}',
     }),
   );
   catalog.upsert(
@@ -1273,8 +1272,7 @@ Deno.test("getLatestRecord: exact data name skips specName ambiguity check (swam
       data_name: "learning",
       spec_name: "state",
       id: "00000000-0000-1000-8000-000000001839",
-      tags:
-        '{"type":"resource","specName":"state","modelName":"ingest"}',
+      tags: '{"type":"resource","specName":"state","modelName":"ingest"}',
     }),
   );
 
@@ -1296,8 +1294,7 @@ Deno.test("getLatestRecord: dataName matching specName still throws on ambiguity
       data_name: "state",
       spec_name: "state",
       id: "00000000-0000-1000-8000-000000001840",
-      tags:
-        '{"type":"resource","specName":"state","modelName":"ingest"}',
+      tags: '{"type":"resource","specName":"state","modelName":"ingest"}',
     }),
   );
   catalog.upsert(
@@ -1305,8 +1302,7 @@ Deno.test("getLatestRecord: dataName matching specName still throws on ambiguity
       data_name: "learning",
       spec_name: "state",
       id: "00000000-0000-1000-8000-000000001841",
-      tags:
-        '{"type":"resource","specName":"state","modelName":"ingest"}',
+      tags: '{"type":"resource","specName":"state","modelName":"ingest"}',
     }),
   );
 

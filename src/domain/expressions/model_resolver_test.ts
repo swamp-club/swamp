@@ -1721,7 +1721,11 @@ Deno.test("data.latest() with exact data name skips specName ambiguity check (sw
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "resource", specName: "state", modelName: "node-provisioner" },
+      tags: {
+        type: "resource",
+        specName: "state",
+        modelName: "node-provisioner",
+      },
       ownerDefinition: owner,
     });
     await dataRepo.save(
@@ -1736,7 +1740,11 @@ Deno.test("data.latest() with exact data name skips specName ambiguity check (sw
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "resource", specName: "state", modelName: "node-provisioner" },
+      tags: {
+        type: "resource",
+        specName: "state",
+        modelName: "node-provisioner",
+      },
       ownerDefinition: owner,
     });
     await dataRepo.save(
