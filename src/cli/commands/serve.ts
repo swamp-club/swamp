@@ -336,6 +336,13 @@ export function validateWebSocketOrigin(
     if (tlsEnabled) {
       TRUSTED_ORIGINS.add(`https://${bindHost.toLowerCase()}`);
     }
+    if (trustedHosts) {
+      for (const h of trustedHosts) {
+        const lh = h.toLowerCase();
+        TRUSTED_ORIGINS.add(`http://${lh}`);
+        TRUSTED_ORIGINS.add(`https://${lh}`);
+      }
+    }
 
     let originBase: string;
     try {
