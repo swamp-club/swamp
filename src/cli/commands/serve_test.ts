@@ -351,16 +351,69 @@ Deno.test("validateWebSocketOrigin: multiple trusted hosts", () => {
   assertEquals(result2.allowed, true);
 });
 
-Deno.test("validateWebSocketOrigin: trusted hosts do not affect origin validation", () => {
+Deno.test("validateWebSocketOrigin: trusted hosts seed origin allowlist with https", () => {
   const result = validateWebSocketOrigin(
-    "http://host.docker.internal",
-    "host.docker.internal:9090",
+    "https://swamp.k3s-dev.example.com",
+    "swamp.k3s-dev.example.com:9090",
     "0.0.0.0",
     true,
-    ["host.docker.internal"],
+    ["swamp.k3s-dev.example.com"],
+  );
+  assertEquals(result.allowed, true);
+});
+
+Deno.test("validateWebSocketOrigin: trusted hosts seed origin allowlist with http", () => {
+  const result = validateWebSocketOrigin(
+    "http://swamp.k3s-dev.example.com",
+    "swamp.k3s-dev.example.com:9090",
+    "0.0.0.0",
+    false,
+    ["swamp.k3s-dev.example.com"],
+  );
+  assertEquals(result.allowed, true);
+});
+
+Deno.test("validateWebSocketOrigin: untrusted origin still rejected with trusted hosts set", () => {
+  const result = validateWebSocketOrigin(
+    "https://evil.com",
+    "swamp.k3s-dev.example.com:9090",
+    "0.0.0.0",
+    true,
+    ["swamp.k3s-dev.example.com"],
   );
   assertEquals(result.allowed, false);
   assertStringIncludes(result.reason!, "untrusted origin");
+});
+
+Deno.test("validateWebSocketOrigin: multiple trusted hosts seed origin allowlist", () => {
+  const result1 = validateWebSocketOrigin(
+    "https://host-a.example.com",
+    "host-a.example.com:9090",
+    "0.0.0.0",
+    true,
+    ["host-a.example.com", "host-b.example.com"],
+  );
+  assertEquals(result1.allowed, true);
+
+  const result2 = validateWebSocketOrigin(
+    "https://host-b.example.com",
+    "host-b.example.com:9090",
+    "0.0.0.0",
+    true,
+    ["host-a.example.com", "host-b.example.com"],
+  );
+  assertEquals(result2.allowed, true);
+});
+
+Deno.test("validateWebSocketOrigin: trusted hosts origin check is case-insensitive", () => {
+  const result = validateWebSocketOrigin(
+    "https://Swamp.K3S-Dev.Example.Com",
+    "swamp.k3s-dev.example.com:9090",
+    "0.0.0.0",
+    true,
+    ["swamp.k3s-dev.example.com"],
+  );
+  assertEquals(result.allowed, true);
 });
 
 Deno.test("validateWebSocketOrigin: empty trusted hosts array has no effect", () => {
