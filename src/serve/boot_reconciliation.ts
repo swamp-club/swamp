@@ -92,10 +92,12 @@ export async function hydrateLocalCache(
       ...(deps.namespace ? { namespace: deps.namespace } : {}),
     });
     const count = typeof pulled === "number" ? pulled : 0;
-    if (count > 0) {
-      logger.info`Pulled ${count} file(s) from remote datastore`;
+    if (pulled !== 0) {
+      if (count > 0) {
+        logger.info`Pulled ${count} file(s) from remote datastore`;
+      }
+      deps.catalogInvalidate();
     }
-    deps.catalogInvalidate();
     return { pulled: count };
   } catch (err: unknown) {
     logger.warn(

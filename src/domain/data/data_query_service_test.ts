@@ -1709,6 +1709,40 @@ Deno.test("DataQueryService: skips stale catalog rows with missing backing files
   catalog.close();
 });
 
+Deno.test("DataQueryService: filterStaleRows disabled preserves rows with missing backing files (remote datastore)", () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-no-stale-" });
+  const dbPath = join(dir, ".swamp", "data", "_catalog.db");
+  const catalog = new CatalogStore(dbPath);
+  catalog.markPopulated();
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const service = new DataQueryService(catalog, dataRepo, {
+    filterStaleRows: false,
+  });
+
+  catalog.upsert(makeRow({
+    model_name: "remote-model",
+    data_name: "state-main",
+    type_normalized: "test/remote-type",
+    model_id: "remote-model-id",
+    version: 1,
+    is_latest: 1,
+    id: "00000000-0000-1000-8000-000000000077",
+  }));
+
+  const results = service.querySync(
+    'modelName == "remote-model"',
+  ) as DataRecord[];
+
+  assertEquals(
+    results.length,
+    1,
+    "rows with missing backing files must be kept when filterStaleRows is disabled",
+  );
+  assertEquals(results[0].modelId, "remote-model-id");
+
+  catalog.close();
+});
+
 Deno.test("DataQueryService: filterStaleRows skips foreign namespace rows (no local backing file expected)", () => {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-foreign-stale-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");

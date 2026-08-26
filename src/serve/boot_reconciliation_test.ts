@@ -1266,11 +1266,17 @@ Deno.test("hydrateLocalCache: invalidates catalog after successful pull", async 
   assertEquals(h.invalidated.length, 1);
 });
 
-Deno.test("hydrateLocalCache: handles void return from pullChanged", async () => {
+Deno.test("hydrateLocalCache: invalidates on void return (unknown count = be safe)", async () => {
   const h = createHydrateDeps({ pullResult: undefined });
   const result = await hydrateLocalCache(h.deps);
   assertEquals(result.pulled, 0);
   assertEquals(h.invalidated.length, 1);
+});
+
+Deno.test("hydrateLocalCache: does not invalidate catalog when zero files pulled", async () => {
+  const h = createHydrateDeps({ pullResult: 0 });
+  await hydrateLocalCache(h.deps);
+  assertEquals(h.invalidated.length, 0);
 });
 
 Deno.test("hydrateLocalCache: catches pull failure and returns zero", async () => {

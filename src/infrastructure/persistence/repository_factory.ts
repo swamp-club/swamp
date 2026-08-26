@@ -328,6 +328,15 @@ export interface RepositoryFactoryConfig {
    */
   namespace?: string;
   autoGc?: boolean;
+  /**
+   * When true, catalog query hydration drops rows whose backing `raw` file
+   * is absent on local disk. Correct for filesystem datastores where a
+   * missing file means the catalog row is stale (e.g. model retype moved
+   * data to a different type path). Must be false for remote datastores
+   * where content may not yet be hydrated into the local cache.
+   * Defaults to true for backward compatibility.
+   */
+  filterStaleRows?: boolean;
 }
 
 /**
@@ -448,7 +457,7 @@ export function createRepositoryContext(
   // never need to reach into the repo to rebuild it. This keeps the
   // catalog handle as an infrastructure detail of the composition root.
   const dataQueryService = new DataQueryService(catalogStore, unifiedDataRepo, {
-    filterStaleRows: true,
+    filterStaleRows: config.filterStaleRows ?? true,
   });
   const outputRepo = new YamlOutputRepository(
     repoDir,

@@ -465,6 +465,7 @@ export async function requireInitializedRepoReadOnly(
     namespace: datastoreConfig.namespace,
     hydrateFile: hydrateFileHook,
     autoGc: marker?.autoGc === true,
+    filterStaleRows: !isCustomDatastoreConfig(datastoreConfig),
     ...factoryConfig,
   });
 
@@ -684,6 +685,7 @@ export function requireInitializedRepo(
         : undefined,
       namespace: datastoreConfig.namespace,
       autoGc: marker?.autoGc === true,
+      filterStaleRows: !isCustomDatastoreConfig(datastoreConfig),
       ...factoryConfig,
     });
 
@@ -837,6 +839,7 @@ export async function requireInitializedRepoUnlocked(
       : undefined,
     namespace: datastoreConfig.namespace,
     autoGc: marker?.autoGc === true,
+    filterStaleRows: !isCustomDatastoreConfig(datastoreConfig),
     ...factoryConfig,
   });
 
