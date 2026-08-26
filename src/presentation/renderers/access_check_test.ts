@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type AccessCheckResult,
   createAccessCheckRenderer,
@@ -95,4 +95,58 @@ Deno.test("accessCheckRenderer json: implicit deny when no grants", () => {
   }
   const parsed = JSON.parse(output.join(""));
   assertStringIncludes(parsed.effect, "deny");
+});
+
+Deno.test("accessCheckRenderer log: shows DENY when deny grant precedes allow", () => {
+  const renderer = createAccessCheckRenderer("log");
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => output.push(args.join(" "));
+  try {
+    renderer.render(makeResult({
+      decisions: [
+        {
+          effect: "deny",
+          grantId: "deny-uuid-1234-5678-abcd-ef0123456789",
+          subject: { kind: "user", name: "adam" },
+        },
+        {
+          effect: "allow",
+          grantId: "allow-uuid-1234-5678-abcd-ef012345678",
+          subject: { kind: "user", name: "adam" },
+        },
+      ],
+    }));
+  } finally {
+    console.log = origLog;
+  }
+  assertStringIncludes(output[0], "DENY");
+});
+
+Deno.test("accessCheckRenderer json: verdict is deny when deny grant comes first", () => {
+  const renderer = createAccessCheckRenderer("json");
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => output.push(args.join(" "));
+  try {
+    renderer.render(makeResult({
+      decisions: [
+        {
+          effect: "deny",
+          grantId: "deny-uuid-1234-5678-abcd-ef0123456789",
+          subject: { kind: "user", name: "adam" },
+        },
+        {
+          effect: "allow",
+          grantId: "allow-uuid-1234-5678-abcd-ef012345678",
+          subject: { kind: "user", name: "adam" },
+        },
+      ],
+    }));
+  } finally {
+    console.log = origLog;
+  }
+  const parsed = JSON.parse(output.join(""));
+  assertEquals(parsed.effect, "deny");
+  assertEquals(parsed.matchingGrants.length, 2);
 });

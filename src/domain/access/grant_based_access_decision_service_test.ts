@@ -293,6 +293,79 @@ Deno.test("explain: returns all matching grants without short-circuit", () => {
   const effects = result.map((d) => d.effect);
   assertEquals(effects.includes("deny"), true);
   assertEquals(effects.filter((e) => e === "allow").length, 2);
+  assertEquals(result[0].effect, "deny");
+});
+
+Deno.test("explain: sorts deny grants before allow grants regardless of input order", () => {
+  const allow = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    effect: "allow",
+    actions: ["run"],
+    resource: { kind: "workflow", pattern: "*" },
+  });
+  const deny = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    effect: "deny",
+    actions: ["run"],
+    resource: { kind: "workflow", pattern: "@acme/deploy" },
+  });
+  const snapshot = new PolicySnapshot([allow, deny], [], celEvaluator);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const result = service.explain(
+    makePrincipal("adam"),
+    "run",
+    makeResource(),
+  );
+  assertEquals(result.length, 2);
+  assertEquals(result[0].effect, "deny");
+  assertEquals(result[0].grantId, deny.id);
+  assertEquals(result[1].effect, "allow");
+  assertEquals(result[1].grantId, allow.id);
+});
+
+Deno.test("explain: preserves relative order within deny and allow buckets", () => {
+  const deny1 = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    effect: "deny",
+    actions: ["read"],
+    resource: { kind: "workflow", pattern: "@acme/deploy" },
+  });
+  const allow1 = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    effect: "allow",
+    actions: ["read"],
+    resource: { kind: "workflow", pattern: "*" },
+  });
+  const deny2 = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    effect: "deny",
+    actions: ["read"],
+    resource: { kind: "workflow", pattern: "@acme/*" },
+  });
+  const allow2 = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    effect: "allow",
+    actions: ["read"],
+    resource: { kind: "workflow", pattern: "@acme/*" },
+  });
+  const snapshot = new PolicySnapshot(
+    [deny1, allow1, deny2, allow2],
+    [],
+    celEvaluator,
+  );
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const result = service.explain(
+    makePrincipal("adam"),
+    "read",
+    makeResource(),
+  );
+  assertEquals(result.length, 4);
+  assertEquals(result[0].grantId, deny1.id);
+  assertEquals(result[1].grantId, deny2.id);
+  assertEquals(result[2].grantId, allow1.id);
+  assertEquals(result[3].grantId, allow2.id);
 });
 
 Deno.test("explain: returns empty when no grants match", () => {
