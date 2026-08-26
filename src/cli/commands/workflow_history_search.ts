@@ -154,6 +154,7 @@ export async function workflowHistorySearchAction(
           query,
           workflow: options.workflow as string | undefined,
           inputs: parsedInputs,
+          filter: options.filter as string | undefined,
         },
       },
     );
@@ -215,6 +216,7 @@ export async function workflowHistorySearchAction(
       query,
       workflow: options.workflow as string | undefined,
       inputs: parsedInputs,
+      filter: options.filter as string | undefined,
     }),
     handlers,
   );
@@ -263,6 +265,14 @@ export const workflowHistorySearchCommand = withRemoteOptions(
     .description("Search workflow run history")
     .example("Browse run history", "swamp workflow history search")
     .example("Search runs", "swamp workflow history search deploy")
+    .example(
+      "Filter by commit",
+      "swamp workflow history search --filter 'inputs.commit == \"b3ff3a8a\"'",
+    )
+    .example(
+      "Filter failed runs",
+      "swamp workflow history search --filter 'status == \"failed\"'",
+    )
     .arguments("[query:string]")
     .option(
       "--repo-dir <dir:string>",
@@ -276,5 +286,9 @@ export const workflowHistorySearchCommand = withRemoteOptions(
       "--input <input:string>",
       "Filter by workflow input (KEY=VALUE), can be repeated",
       { collect: true },
+    )
+    .option(
+      "--filter <expression:string>",
+      "Filter results with a CEL expression over run metadata (inputs, tags, status, timing)",
     ),
 ).action(workflowHistorySearchAction);

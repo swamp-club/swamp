@@ -695,6 +695,7 @@ export async function handleWorkflowHistorySearch(
         query: payload?.query,
         workflow: payload?.workflow,
         inputs: payload?.inputs,
+        filter: payload?.filter,
       }),
       {
         resolving: () => {},

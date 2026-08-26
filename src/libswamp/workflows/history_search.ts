@@ -20,9 +20,14 @@
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import type { WorkflowRunSearchItem } from "./run_search.ts";
+import { validationFailed } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { collectBounded, RUN_FANOUT_CONCURRENCY } from "./run_fanout.ts";
+import {
+  evaluateWorkflowRunFilter,
+  validateWorkflowRunFilter,
+} from "../../infrastructure/cel/workflow_run_filter.ts";
 /**
  * Re-export the shared item type for history search consumers.
  */
@@ -73,6 +78,7 @@ export interface WorkflowHistorySearchInput {
   query?: string;
   workflow?: string;
   inputs?: Record<string, string>;
+  filter?: string;
 }
 
 /**
@@ -153,6 +159,35 @@ export async function* workflowHistorySearch(
         const inputEntries = Object.entries(input.inputs);
         results = results.filter((r) =>
           inputEntries.every(([k, v]) => String(r.inputs?.[k]) === v)
+        );
+      }
+
+      if (input.filter) {
+        const validation = validateWorkflowRunFilter(input.filter);
+        if (!validation.valid) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              `Invalid --filter expression: ${validation.error}`,
+            ),
+          };
+          return;
+        }
+
+        results = results.filter((r) =>
+          evaluateWorkflowRunFilter(input.filter!, {
+            workflowName: r.workflowName,
+            status: r.status,
+            startedAt: r.startedAt,
+            completedAt: r.completedAt,
+            duration: r.duration,
+            inputs: r.inputs,
+            tags: r.tags,
+            instanceId: r.instanceId,
+            triggerSource: r.triggerSource,
+            failedStep: r.failedStep,
+            failureReason: r.failureReason,
+          })
         );
       }
 
