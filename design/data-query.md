@@ -50,11 +50,12 @@ Results from any shortcut are structurally identical to the equivalent
 `data.query()` call — same `DataRecord[]` type, same fields, same semantics.
 
 **specName ambiguity detection:** `data.latest()` throws a `UserError` when the
-matched data item's `specName` tag is shared by other data items under the same
-model. This prevents silent resolution to a single item when multiple items
-share the same spec. Use the specific data name or `data.findBySpec()` to
-explicitly query by specName. The raw `data.query()` equivalent does not perform
-this check.
+lookup argument matches a `specName` tag that is shared by multiple data items
+under the same model. This fires only when the argument equals the specName —
+callers who pass an exact data name that differs from the specName are not
+affected, even when sibling items share the same spec. Use `data.findBySpec()`
+to explicitly query by specName. The raw `data.query()` equivalent does not
+perform this check.
 
 ### Null-safe access (.?)
 

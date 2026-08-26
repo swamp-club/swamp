@@ -1697,3 +1697,77 @@ Deno.test("data.latest() passes when specName is unique", async () => {
     catalog.close();
   });
 });
+
+Deno.test("data.latest() with exact data name skips specName ambiguity check (swamp-club#1838)", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const type = ModelType.create("test/model");
+
+    const model = Definition.create({
+      name: "node-provisioner",
+      globalArguments: {},
+    });
+    await defRepo.save(type, model);
+
+    const data1 = Data.create({
+      name: "hs",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: {
+        type: "resource",
+        specName: "state",
+        modelName: "node-provisioner",
+      },
+      ownerDefinition: owner,
+    });
+    await dataRepo.save(
+      type,
+      model.id,
+      data1,
+      new TextEncoder().encode(JSON.stringify({ ipv4: "10.0.0.1" })),
+    );
+
+    const data2 = Data.create({
+      name: "learning",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: {
+        type: "resource",
+        specName: "state",
+        modelName: "node-provisioner",
+      },
+      ownerDefinition: owner,
+    });
+    await dataRepo.save(
+      type,
+      model.id,
+      data2,
+      new TextEncoder().encode(JSON.stringify({ ipv4: "10.0.0.2" })),
+    );
+
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
+    const ctx = await resolver.buildContext();
+
+    assertExists(ctx.data);
+    const result = await ctx.data.latest("node-provisioner", "hs");
+    assertExists(result);
+    assertEquals(result.attributes.ipv4, "10.0.0.1");
+    catalog.close();
+  });
+});
