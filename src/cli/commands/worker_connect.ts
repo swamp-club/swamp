@@ -34,6 +34,7 @@ import { VERSION } from "./version.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { parseTimeout } from "../duration_parser.ts";
 import { resolveExtraHeaders } from "../../domain/auth/extra_headers.ts";
+import { getEnvCaCerts } from "../remote_run.ts";
 
 // Import models barrel so built-in models resolve from the worker's own
 // registry when a `builtin:` bundle fingerprint is dispatched.
@@ -133,6 +134,10 @@ export const workerConnectCommand = new Command()
   .option(
     "--concurrency <n:string>",
     'Number of concurrent dispatch slots ("auto" = CPU count, min 1). Default: 1 (env: SWAMP_WORKER_CONCURRENCY)',
+  )
+  .option(
+    "--ca-cert <path:string>",
+    "Path to PEM-encoded CA certificate to trust for TLS connections to the orchestrator (env: SWAMP_CA_CERT)",
   )
   .action(async function (options: AnyOptions, urlArg?: string) {
     const cliCtx = createContext(options as GlobalOptions, [
@@ -243,6 +248,7 @@ export const workerConnectCommand = new Command()
         dataPlaneUrl: options.dataPlaneUrl,
         cacheDir,
         headers: extraHeaders,
+        caCerts: getEnvCaCerts(),
         reconnect: options.reconnect !== false,
         maxDispatches: maxDispatchesRaw,
         idleTimeoutMs,

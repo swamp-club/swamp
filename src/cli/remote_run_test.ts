@@ -25,7 +25,7 @@ import {
 } from "@std/assert";
 import { UserError } from "../domain/errors.ts";
 import {
-  diagnoseTlsError,
+  diagnoseTlsMessage,
   normalizeServerUrl,
   probeServerHealth,
   requestServerResponse,
@@ -1236,22 +1236,39 @@ Deno.test({
   },
 });
 
-// ── diagnoseTlsError tests ────────────────────────────────────────────
+// ── diagnoseTlsMessage tests ──────────────────────────────────────────
 
-Deno.test({
-  name: "diagnoseTlsError: returns undefined for non-wss URLs",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  fn: async () => {
-    assertEquals(await diagnoseTlsError("ws://127.0.0.1:9999"), undefined);
-  },
+Deno.test("diagnoseTlsMessage: returns guidance for CaUsedAsEndEntity", () => {
+  const result = diagnoseTlsMessage(
+    "invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))",
+  );
+  assertStringIncludes(result!, "CA:TRUE");
+  assertStringIncludes(result!, "CA:FALSE");
 });
 
-Deno.test({
-  name: "diagnoseTlsError: returns undefined for invalid URL",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  fn: async () => {
-    assertEquals(await diagnoseTlsError("not-a-url"), undefined);
-  },
+Deno.test("diagnoseTlsMessage: returns guidance for UnknownIssuer", () => {
+  const result = diagnoseTlsMessage(
+    "invalid peer certificate: UnknownIssuer",
+  );
+  assertStringIncludes(result!, "--ca-cert");
+  assertStringIncludes(result!, "SWAMP_CA_CERT");
+});
+
+Deno.test("diagnoseTlsMessage: returns guidance for hostname mismatch", () => {
+  const result = diagnoseTlsMessage(
+    'certificate not valid for name "localhost"; certificate is only valid for DnsName("external.example.com")',
+  );
+  assertStringIncludes(result!, "does not match the hostname");
+});
+
+Deno.test("diagnoseTlsMessage: returns message for expired cert", () => {
+  const result = diagnoseTlsMessage(
+    "invalid peer certificate: expired",
+  );
+  assertStringIncludes(result!, "TLS certificate rejected");
+});
+
+Deno.test("diagnoseTlsMessage: returns undefined for non-TLS errors", () => {
+  assertEquals(diagnoseTlsMessage("connection refused"), undefined);
+  assertEquals(diagnoseTlsMessage("DNS lookup failed"), undefined);
 });

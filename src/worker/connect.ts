@@ -45,18 +45,11 @@ import {
   type WorkerDispatchEvent,
 } from "./dispatch_handler.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import { diagnoseTlsMessage } from "../cli/remote_run.ts";
 
 const logger = getSwampLogger(["worker", "connect"]);
 
-// Force HTTP/1.1 ALPN for wss:// so WebSocket upgrades succeed through
-// HTTP/2-capable reverse proxies. See: https://github.com/denoland/deno/issues/16923
-//
-// Caveat: this flag causes Deno to mask all TLS errors as "HTTP/2 not
-// supported by this client" in the WebSocket code path. The CLI side
-// (remote_run.ts) diagnoses the real error; here we log it as-is since
-// the worker connect loop retries and the serve-side startup warning
-// catches the most common cert issue (CA:TRUE).
-const wsHttpClient = Deno.createHttpClient({ http2: false });
+const defaultHttpClient = Deno.createHttpClient({});
 
 /** Refresh the session credential when 2/3 of its lifetime has elapsed. */
 const REFRESH_FRACTION = 2 / 3;
@@ -120,6 +113,8 @@ export interface RunWorkerOptions {
   onDrainAvailable?: (requestDrain: (reason: WorkerExitReason) => void) => void;
   /** Extra headers for proxy/tunnel pass-through (env: SWAMP_SERVE_EXTRA_HEADERS). */
   headers?: Record<string, string>;
+  /** PEM-encoded CA certificates to trust for TLS connections. */
+  caCerts?: string[];
   /** Test seam: WebSocket factory. */
   createSocket?: (url: string, headers?: Record<string, string>) => WebSocket;
   /** Test seam: override the runner command for the dispatch child process. */
@@ -146,6 +141,9 @@ export async function runWorker(
   const cacheDir = options.cacheDir ??
     await Deno.makeTempDir({ prefix: "swamp-worker-cache-" });
   const machineId = await loadOrCreateMachineId(cacheDir);
+  const httpClient = options.caCerts?.length
+    ? Deno.createHttpClient({ caCerts: options.caCerts })
+    : defaultHttpClient;
 
   const concurrency = options.concurrency ?? 1;
   let drainReason: WorkerExitReason | null = null;
@@ -213,6 +211,7 @@ export async function runWorker(
     try {
       const outcome = await connectOnce({
         options,
+        httpClient,
         instanceUuid,
         machineId,
         session,
@@ -250,11 +249,12 @@ export async function runWorker(
       options.onStatus?.({ kind: "disconnected", reason: outcome });
       delayMs = RECONNECT_BASE_DELAY_MS;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (isPermanentEnrollmentFailure(message)) {
-        options.onStatus?.({ kind: "stopped", reason: message });
+      const raw = error instanceof Error ? error.message : String(error);
+      if (isPermanentEnrollmentFailure(raw)) {
+        options.onStatus?.({ kind: "stopped", reason: raw });
         throw error;
       }
+      const message = diagnoseTlsMessage(raw) ?? raw;
       consecutivePreEnrollFailures++;
       if (consecutivePreEnrollFailures >= MAX_PRE_ENROLL_FAILURES) {
         const reason =
@@ -338,6 +338,7 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
 
 interface ConnectOnceArgs {
   options: RunWorkerOptions;
+  httpClient: Deno.HttpClient;
   instanceUuid: string;
   machineId: string;
   session: SessionState;
@@ -358,7 +359,7 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
   const { options, instanceUuid, machineId, session } = args;
   return new Promise<string>((resolve, reject) => {
     const defaultCreate = (url: string, headers?: Record<string, string>) => {
-      const opts: Record<string, unknown> = { client: wsHttpClient };
+      const opts: Record<string, unknown> = { client: args.httpClient };
       if (headers && Object.keys(headers).length > 0) {
         opts.headers = headers;
       }
