@@ -565,3 +565,19 @@ models:
   const error = assertThrows(() => parseExtensionManifest(yaml));
   assertStringIncludes((error as Error).message, "paths");
 });
+
+Deno.test("parseExtensionManifest: rejects repository URL with control characters", () => {
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+repository: "https://github.com/f\tveronezzi/repo"
+models:
+  - foo.ts
+`;
+  const error = assertThrows(() => parseExtensionManifest(yaml));
+  assertStringIncludes(
+    (error as Error).message,
+    "control characters",
+  );
+});

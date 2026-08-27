@@ -178,3 +178,43 @@ Deno.test("buildGithubSecuritySettingsUrl: shape", () => {
     "https://github.com/adam/cfgmgmt/settings/security_analysis",
   );
 });
+
+Deno.test("parseRepositoryUrl: rejects URL with tab in owner name", () => {
+  assertThrows(
+    () =>
+      parseRepositoryUrl(
+        "https://github.com/f\tveronezzi/swamp-extensions",
+      ),
+    UserError,
+    "invisible character",
+  );
+});
+
+Deno.test("parseRepositoryUrl: rejects URL with newline", () => {
+  assertThrows(
+    () =>
+      parseRepositoryUrl(
+        "https://github.com/owner\n/repo",
+      ),
+    UserError,
+    "invisible character",
+  );
+});
+
+Deno.test("parseRepositoryUrl: rejects URL with carriage return", () => {
+  assertThrows(
+    () =>
+      parseRepositoryUrl(
+        "https://github.com/owner\r/repo",
+      ),
+    UserError,
+    "invisible character",
+  );
+});
+
+Deno.test("parseRepositoryUrl: accepts normal URL without invisible chars", () => {
+  const parsed = parseRepositoryUrl(
+    "https://github.com/ftveronezzi/swamp-extensions",
+  );
+  assertEquals(parsed.ownerRepo, "ftveronezzi/swamp-extensions");
+});

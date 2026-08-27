@@ -48,6 +48,8 @@ const URL_BODY_TRUNCATION_SUFFIX = "\n\n…(body truncated; see terminal output)
  * surfaces the right guidance.
  */
 export function parseRepositoryUrl(url: string): ParsedRepositoryUrl {
+  rejectInvisibleCharacters(url);
+
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -167,4 +169,30 @@ function extractOwnerRepo(parsed: URL): string | undefined {
   const segments = cleaned.split("/").filter((s) => s.length > 0);
   if (segments.length < 2) return undefined;
   return `${segments[0]}/${segments[1]}`;
+}
+
+// deno-lint-ignore no-control-regex
+const INVISIBLE_CHAR_PATTERN = /[\x00-\x08\x0b\x0c\x0e-\x1f\t\n\r]/;
+
+/**
+ * Rejects repository URLs that contain ASCII control characters. The WHATWG
+ * URL parser silently strips tabs (U+0009) and newlines (U+000A, U+000D),
+ * which corrupts the extracted owner/repo — e.g. `f\tveronezzi` becomes
+ * `fveronezzi` after `new URL()` drops the tab.
+ */
+function rejectInvisibleCharacters(url: string): void {
+  const match = INVISIBLE_CHAR_PATTERN.exec(url);
+  if (match) {
+    const codePoint = match[0].codePointAt(0)!;
+    const position = match.index;
+    throw new UserError(
+      `Repository URL contains an invisible character ` +
+        `(U+${codePoint.toString(16).toUpperCase().padStart(4, "0")} ` +
+        `at position ${position}): "${url}". ` +
+        `This corrupts issue routing. The extension publisher needs to ` +
+        `fix the \`repository\` field in their manifest.yaml and re-push. ` +
+        `As a workaround, file the issue directly via ` +
+        `\`gh issue create --repo <owner>/<repo>\`.`,
+    );
+  }
 }

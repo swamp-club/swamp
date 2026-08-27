@@ -89,7 +89,14 @@ const ExtensionManifestSchemaV1 = z.object({
     message: "Version must be valid CalVer format: YYYY.MM.DD.MICRO",
   }),
   description: z.string().optional(),
-  repository: z.string().url().optional(),
+  repository: z.string().url().refine(
+    // deno-lint-ignore no-control-regex
+    (u) => !/[\x00-\x1f]/.test(u),
+    {
+      message:
+        "Repository URL must not contain ASCII control characters (tabs, newlines, etc.)",
+    },
+  ).optional(),
   paths: PathsConfigSchema.optional(),
   workflows: z.array(safePathString).optional(),
   models: z.array(safePathString).optional(),
