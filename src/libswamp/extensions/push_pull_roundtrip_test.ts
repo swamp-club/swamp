@@ -571,3 +571,94 @@ Deno.test(
     }
   },
 );
+
+Deno.test(
+  "round-trip: paths.base=manifest nested model entry doubles archive path (issue 1855)",
+  async () => {
+    const { collectEntrypoints, findManifestRoot } = await import(
+      "../../domain/extensions/extension_rubric_scorer.ts"
+    );
+    const src = await Deno.makeTempDir({ prefix: "rt-1855-src-" });
+    const dst = await Deno.makeTempDir({ prefix: "rt-1855-dst-" });
+    try {
+      // Layout matching the reporter's scenario: manifest beside a
+      // models/ subdirectory, with paths.base=manifest.
+      const extDir = join(src, "extensions", "myext");
+      await Deno.mkdir(join(extDir, "models"), { recursive: true });
+      await Deno.writeTextFile(
+        join(extDir, "models", "project.ts"),
+        'export const model = { type: "@t/nested", version: "1.0.0" };',
+      );
+      await Deno.writeTextFile(join(extDir, "README.md"), "# README");
+
+      const manifest = makeManifest({
+        paths: { base: "manifest" },
+        models: ["models/project.ts"],
+        additionalFiles: ["README.md"],
+      });
+
+      // modelsDir = manifestDir (paths.base=manifest), so the archive
+      // will place the file at models/models/project.ts (doubled).
+      const input: ExtensionPushPrepareInput = {
+        manifest,
+        repoDir: src,
+        modelsDir: extDir,
+        allModelFiles: [join(extDir, "models", "project.ts")],
+        modelEntryPoints: [join(extDir, "models", "project.ts")],
+        vaultsDir: extDir,
+        allVaultFiles: [],
+        vaultEntryPoints: [],
+        driversDir: extDir,
+        allDriverFiles: [],
+        driverEntryPoints: [],
+        datastoresDir: extDir,
+        allDatastoreFiles: [],
+        datastoreEntryPoints: [],
+        reportsDir: extDir,
+        allReportFiles: [],
+        reportEntryPoints: [],
+        workflowFiles: [],
+        skillDirs: [],
+        allSkillFiles: [],
+        includeFilePaths: [],
+        additionalFilePaths: [join(extDir, "README.md")],
+        binaryFilePaths: [],
+        dryRun: true,
+      };
+
+      const ctx = createLibSwampContext();
+      const prepared = await extensionPushPrepare(
+        ctx,
+        makePrepareDeps(),
+        input,
+      );
+
+      await untarArchiveTo(prepared.archiveBytes, dst);
+      const extRoot = await findManifestRoot(dst);
+
+      // The archive places the model at the doubled path.
+      await Deno.stat(join(extRoot, "models", "models", "project.ts"));
+
+      // The scorer looks for it at the un-doubled path, which does NOT exist.
+      const entrypoints = collectEntrypoints(extRoot, extRoot, manifest);
+      assertEquals(entrypoints, [
+        join(extRoot, "models", "project.ts"),
+      ]);
+
+      // The entrypoint the scorer expects does not exist in the archive —
+      // this is the mismatch that causes empty contentTypes/contentMetadata.
+      // CLI-layer validation in resolveExtensionFiles now rejects this
+      // manifest shape before it reaches extensionPushPrepare.
+      let found = true;
+      try {
+        await Deno.stat(entrypoints[0]);
+      } catch {
+        found = false;
+      }
+      assertEquals(found, false);
+    } finally {
+      await Deno.remove(src, { recursive: true }).catch(() => {});
+      await Deno.remove(dst, { recursive: true }).catch(() => {});
+    }
+  },
+);
