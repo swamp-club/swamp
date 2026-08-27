@@ -296,6 +296,13 @@ export interface MethodContext {
   };
 
   /**
+   * When true, the step has declared that it performs external writes
+   * (API calls, kubectl, SSH) that are not tracked by the data-plane
+   * write path. Forces fail-instead-of-redispatch on worker disconnect.
+   */
+  declaredWrites?: boolean;
+
+  /**
    * Optional callback for emitting domain events during method execution.
    * Used for process output streaming, vault storage, schema warnings, etc.
    * Output lines are emitted as `{ type: "output", line, stream }` events.

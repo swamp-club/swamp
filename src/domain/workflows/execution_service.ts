@@ -309,6 +309,11 @@ export interface StepExecutionContext {
    * to the same remote worker. Computed from workflow/job affinity settings.
    */
   affinityKey?: string;
+  /**
+   * Effective `writes` declaration, merged workflow → job → step (child wins).
+   * When true, forces fail-instead-of-redispatch on worker disconnect.
+   */
+  declaredWrites?: boolean;
 }
 
 /**
@@ -1159,6 +1164,7 @@ export class DefaultStepExecutor implements StepExecutor {
           ),
           vaultSecrets: secretBag,
           placement: resolvedPlacement,
+          declaredWrites: ctx.declaredWrites,
           skipCheckNames: ctx.skipCheckNames,
           skipCheckLabels: ctx.skipCheckLabels,
           skipAllChecks: ctx.skipAllChecks,
@@ -3048,6 +3054,7 @@ export class WorkflowExecutionService {
             : job.affinity
             ? `${run.id}:${job.name}`
             : undefined,
+          declaredWrites: step.writes ?? job.writes ?? workflow.writes,
         };
         return this.executor.execute(step, ctx);
       });

@@ -2373,3 +2373,128 @@ Deno.test("validate: fails when guard references boolean input via bracket notat
   assertEquals(guardResult?.error?.includes("boolean"), true);
   assertEquals(guardResult?.error?.includes('inputs["dry-run"]'), true);
 });
+
+Deno.test("validate: warns when step writes is set without placement", async () => {
+  const workflow = Workflow.create({
+    name: "writes-no-placement",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "deploy",
+            task: StepTask.model("test-model", "run"),
+            writes: true,
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const warning = results.find((r) =>
+    r.name.includes("writes without placement")
+  );
+  assertEquals(warning?.passed, true);
+  assertEquals(warning?.warning, true);
+});
+
+Deno.test("validate: no warning when step writes is set with placement", async () => {
+  const workflow = Workflow.create({
+    name: "writes-with-placement",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "deploy",
+            task: StepTask.model("test-model", "run"),
+            writes: true,
+            target: "deploy-worker",
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const warning = results.find((r) =>
+    r.name.includes("writes without placement")
+  );
+  assertEquals(warning, undefined);
+});
+
+Deno.test("validate: warns when job writes is inherited without placement", async () => {
+  const workflow = Workflow.create({
+    name: "job-writes-no-placement",
+    jobs: [
+      Job.create({
+        name: "main",
+        writes: true,
+        steps: [
+          Step.create({
+            name: "deploy",
+            task: StepTask.model("test-model", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const warning = results.find((r) =>
+    r.name.includes("writes without placement")
+  );
+  assertEquals(warning?.passed, true);
+  assertEquals(warning?.warning, true);
+});
+
+Deno.test("validate: warns when workflow writes is inherited without placement", async () => {
+  const workflow = Workflow.create({
+    name: "wf-writes-no-placement",
+    writes: true,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "deploy",
+            task: StepTask.model("test-model", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const warning = results.find((r) =>
+    r.name.includes("writes without placement")
+  );
+  assertEquals(warning?.passed, true);
+  assertEquals(warning?.warning, true);
+});
+
+Deno.test("validate: step writes false overrides job writes true — no warning", async () => {
+  const workflow = Workflow.create({
+    name: "writes-child-wins",
+    jobs: [
+      Job.create({
+        name: "main",
+        writes: true,
+        steps: [
+          Step.create({
+            name: "read-only",
+            task: StepTask.model("test-model", "run"),
+            writes: false,
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const warning = results.find((r) =>
+    r.name.includes("writes without placement")
+  );
+  assertEquals(warning, undefined);
+});

@@ -138,6 +138,11 @@ authentication yet — same trust model as `swamp serve` itself.
   orchestrator — workers hold no credentials or repository. Writes are durable
   at the orchestrator immediately; a step that wrote and then lost its worker
   fails the run (no-write steps re-dispatch automatically).
+- Steps that mutate external systems (API calls, `kubectl apply`, SSH) without
+  calling `writeResource` should declare `writes: true` to prevent re-dispatch
+  on worker disconnect. Without the declaration, the orchestrator classifies the
+  step as no-write (based on runtime data-plane inference) and re-dispatches it,
+  potentially double-executing non-idempotent side effects.
 - The orchestrator ships its environment variables with each dispatch
   (process-identity vars like HOME/PATH excluded), so ambient credentials work
   remotely as they do locally.

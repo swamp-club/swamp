@@ -574,6 +574,33 @@ jobs:
   since there are no remote steps to co-locate)
 - Requires `swamp serve` (same as all placement features)
 
+## Write-Bearing Declaration
+
+Add `writes: true` at the **step**, **job**, or **workflow** level to declare
+that the step performs external mutations (API calls, `kubectl apply`, SSH
+commands) that the orchestrator cannot observe through data-plane writes. When
+declared, a worker disconnect fails the run immediately instead of
+re-dispatching the step — preventing double-execution of non-idempotent side
+effects.
+
+```yaml
+steps:
+  - name: deploy
+    writes: true
+    target: deploy-worker
+    task:
+      model: k8s-deployer
+      method: apply
+```
+
+Inheritance is child-wins: step overrides job, job overrides workflow.
+Validation warns when `writes: true` is set without any remote placement (a
+no-op since local steps are never re-dispatched).
+
+Without the declaration, write-bearing status is inferred at runtime from
+data-plane writes (`writeResource` / `createFileWriter`). Steps that only
+perform orchestrator-visible writes do not need `writes: true`.
+
 ## Concurrency Limits
 
 Add `concurrency: N` at the workflow, job, or step level to cap parallel

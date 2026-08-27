@@ -989,6 +989,28 @@ re-dispatch never race into double execution:
   as a local mid-method crash leaves partial data today. swamp does not
   auto-retry crashed methods locally either, so this is not a regression.
 
+### Write-bearing classification
+
+Write-bearing status is determined by **two complementary mechanisms**:
+
+- **Runtime inference (default):** The `DispatchService` tracks whether a
+  dispatch performed any durable data-plane write via `recordFirstWrite`. This
+  is automatic and requires no workflow author action — any `writeResource` or
+  `createFileWriter` call through the orchestrator marks the dispatch as
+  write-bearing.
+
+- **Declared at the step level (`writes: true`):** A step, job, or workflow may
+  declare `writes: true` in the workflow YAML. When set, the dispatch is
+  pre-marked as write-bearing **before the method body runs** — a worker
+  disconnect fails the run immediately instead of re-dispatching, even if no
+  data-plane write has occurred. This is necessary for steps that mutate
+  external systems (API calls, `kubectl apply`, SSH commands) without calling
+  `writeResource`, because the orchestrator cannot observe those side effects.
+  Inheritance is child-wins: step overrides job, job overrides workflow.
+
+A step with both `writes: true` and runtime data-plane writes is handled
+correctly — `recordFirstWrite` is a no-op when the dispatch is already marked.
+
 Transparent re-dispatch (or mid-step resume) of a write-bearing step is a later
 feature that must first solve write idempotency. It is not promised in v1.
 

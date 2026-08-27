@@ -1094,3 +1094,24 @@ Deno.test("Workflow.fromData handles missing tags (backward compat)", () => {
   );
   assertEquals(workflow.tags, {});
 });
+
+Deno.test("Workflow: writes field roundtrips through toData", () => {
+  const workflow = Workflow.create({
+    name: "wf-writes",
+    writes: true,
+    jobs: [createTestJob("main")],
+  });
+  assertEquals(workflow.writes, true);
+  const data = workflow.toData();
+  assertEquals(data.writes, true);
+  const restored = Workflow.fromData(data);
+  assertEquals(restored.writes, true);
+});
+
+Deno.test("Workflow: writes field is undefined when absent", () => {
+  const workflow = Workflow.create({
+    name: "wf-no-writes",
+    jobs: [createTestJob("main")],
+  });
+  assertEquals(workflow.writes, undefined);
+});

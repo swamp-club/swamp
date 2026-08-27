@@ -70,6 +70,7 @@ const JobObjectSchema = z.object({
   weight: z.number().default(0),
   concurrency: z.number().int().nonnegative().optional(),
   affinity: z.boolean().optional(),
+  writes: z.boolean().optional(),
   ...PlacementFieldsSchema.shape,
 });
 
@@ -115,6 +116,7 @@ export interface CreateJobProps {
   weight?: number;
   concurrency?: number;
   affinity?: boolean;
+  writes?: boolean;
   target?: string;
   labels?: Record<string, string>;
   platform?: string;
@@ -140,6 +142,7 @@ export class Job {
     readonly weight: number,
     readonly concurrency: number | undefined,
     readonly affinity: boolean | undefined,
+    readonly writes: boolean | undefined,
     readonly target: string | undefined,
     readonly labels: Record<string, string> | undefined,
     readonly platform: string | undefined,
@@ -165,6 +168,7 @@ export class Job {
       weight: props.weight ?? 0,
       concurrency: props.concurrency,
       affinity: props.affinity,
+      writes: props.writes,
       target: props.target,
       labels: props.labels,
       platform: props.platform,
@@ -193,6 +197,7 @@ export class Job {
       validated.weight,
       validated.concurrency,
       validated.affinity,
+      validated.writes,
       validated.target,
       validated.labels,
       validated.platform,
@@ -252,6 +257,7 @@ export class Job {
       weight: this.weight,
       concurrency: this.concurrency,
       affinity: this.affinity,
+      writes: this.writes,
       target: this.target,
       labels: this.labels,
       platform: this.platform,

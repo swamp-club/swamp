@@ -416,6 +416,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         signal: context.signal,
         dataRepo: context.dataRepository,
         secretValues: secretValues.length > 0 ? secretValues : undefined,
+        declaredWrites: context.declaredWrites,
         onEvent: context.onEvent
           ? (event: RpcStreamEvent) => {
             if (event.kind === "method_event" && "event" in event) {

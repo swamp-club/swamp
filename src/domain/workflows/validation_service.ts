@@ -184,6 +184,9 @@ export class DefaultWorkflowValidationService
     // 13. Guard expression type matches input type
     results.push(...this.validateGuardExpressionTypes(workflow));
 
+    // 14. writes without placement is a no-op
+    results.push(...this.validateWritesPlacement(workflow));
+
     return results;
   }
 
@@ -270,6 +273,48 @@ export class DefaultWorkflowValidationService
                 `affinity only applies to remote-execution steps with placement requirements`,
             ),
           );
+        }
+      }
+    }
+
+    return results;
+  }
+
+  private validateWritesPlacement(
+    workflow: Workflow,
+  ): WorkflowValidationResult[] {
+    const results: WorkflowValidationResult[] = [];
+
+    const effectiveWrites = (
+      step: (typeof workflow.jobs)[number]["steps"][number],
+      job: (typeof workflow.jobs)[number],
+    ): boolean | undefined => step.writes ?? job.writes ?? workflow.writes;
+
+    for (const job of workflow.jobs) {
+      for (const step of job.steps) {
+        if (effectiveWrites(step, job)) {
+          const wfFields = mergePlacementFields(
+            workflow.placementFields,
+            job.placementFields,
+          );
+          const effective = mergePlacementFields(
+            wfFields,
+            step.placementFields,
+          );
+          if (resolvePlacement(effective) === undefined) {
+            const source = step.writes !== undefined
+              ? `step '${step.name}'`
+              : job.writes !== undefined
+              ? `job '${job.name}'`
+              : "workflow";
+            results.push(
+              WorkflowValidationResult.warning(
+                `writes without placement on ${source}`,
+                `Step '${step.name}' in job '${job.name}' has effective 'writes: true' (from ${source}) ` +
+                  `but no remote placement — writes only affects failure semantics for remote-execution steps`,
+              ),
+            );
+          }
         }
       }
     }
