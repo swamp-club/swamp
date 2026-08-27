@@ -82,6 +82,7 @@ export const PER_EXTENSION_SCAFFOLD_DIRS: readonly string[] = [
 ];
 
 const PULLED_PREFIX = `${SWAMP_DATA_DIR}/pulled-extensions/`;
+const MANAGED_PULLED_PREFIX = `${SWAMP_DATA_DIR}/config/pulled-extensions/`;
 const GEN1_PREFIX = "extensions/";
 
 /**
@@ -116,10 +117,15 @@ export function classifyExtensionFile(file: string): ExtensionLayoutGeneration {
       return "gen-1";
     }
   }
-  if (!file.startsWith(PULLED_PREFIX)) {
+  const activePulledPrefix = file.startsWith(MANAGED_PULLED_PREFIX)
+    ? MANAGED_PULLED_PREFIX
+    : file.startsWith(PULLED_PREFIX)
+    ? PULLED_PREFIX
+    : undefined;
+  if (!activePulledPrefix) {
     return "current";
   }
-  const firstSegment = file.slice(PULLED_PREFIX.length).split("/")[0];
+  const firstSegment = file.slice(activePulledPrefix.length).split("/")[0];
   if (PULLED_TYPE_DIRS.has(firstSegment)) {
     return "gen-2";
   }
@@ -222,15 +228,18 @@ export function extractTopLevelRoot(
   }
 
   // Per-extension subtree: pulled-extensions/<extensionName>/...
-  // (current-layout always begins with .swamp/pulled-extensions/).
-  if (filePath.startsWith(PULLED_PREFIX)) {
+  // (current-layout or managed-config layout).
+  const pfx = filePath.startsWith(MANAGED_PULLED_PREFIX)
+    ? MANAGED_PULLED_PREFIX
+    : filePath.startsWith(PULLED_PREFIX)
+    ? PULLED_PREFIX
+    : undefined;
+  if (pfx) {
     const nameSegments = extensionName.split("/");
-    const rest = filePath.slice(PULLED_PREFIX.length);
+    const rest = filePath.slice(pfx.length);
     const segments = rest.split("/");
     if (segments.length < nameSegments.length) return null;
-    return `${PULLED_PREFIX}${
-      segments.slice(0, nameSegments.length).join("/")
-    }`;
+    return `${pfx}${segments.slice(0, nameSegments.length).join("/")}`;
   }
 
   // Bundle namespaces: <kind>/<hash>/...
@@ -273,14 +282,17 @@ export function extractTopLevelRootMulti(
       return null;
     }
   }
-  if (filePath.startsWith(PULLED_PREFIX)) {
+  const pfx2 = filePath.startsWith(MANAGED_PULLED_PREFIX)
+    ? MANAGED_PULLED_PREFIX
+    : filePath.startsWith(PULLED_PREFIX)
+    ? PULLED_PREFIX
+    : undefined;
+  if (pfx2) {
     const nameSegments = extensionName.split("/");
-    const rest = filePath.slice(PULLED_PREFIX.length);
+    const rest = filePath.slice(pfx2.length);
     const segments = rest.split("/");
     if (segments.length < nameSegments.length) return null;
-    return `${PULLED_PREFIX}${
-      segments.slice(0, nameSegments.length).join("/")
-    }`;
+    return `${pfx2}${segments.slice(0, nameSegments.length).join("/")}`;
   }
   const BUNDLE_KINDS = [
     "bundles",

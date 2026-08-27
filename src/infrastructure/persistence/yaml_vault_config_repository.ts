@@ -19,6 +19,7 @@
 
 import { ensureDir, walk } from "@std/fs";
 import { join, resolve, SEPARATOR } from "@std/path";
+import { resolveEffectiveVaultsDir } from "./paths.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { assertSafePath } from "./safe_path.ts";
@@ -51,7 +52,7 @@ export class YamlVaultConfigRepository {
     baseDir?: string,
   ) {
     this.eventBus = eventBus ?? null;
-    this.baseDir = baseDir ?? join(repoDir, "vaults");
+    this.baseDir = baseDir ?? resolveEffectiveVaultsDir(repoDir);
   }
 
   /**

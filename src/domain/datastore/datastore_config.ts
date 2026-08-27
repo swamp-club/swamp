@@ -21,17 +21,18 @@
  * Datastore configuration types for configurable runtime data storage.
  *
  * The datastore determines where runtime data (versioned model data,
- * workflow runs, outputs, audit logs, etc.) is stored. Model definitions,
- * workflow definitions, and vault configs always stay in the local
- * `.swamp/` directory.
+ * workflow runs, outputs, audit logs, etc.) is stored. By default, model
+ * definitions, workflow definitions, and vault configs live in top-level
+ * directories. When `managedConfig` is enabled, they move into the
+ * `.swamp/config/` datastore tier so the datastore becomes the single
+ * source of truth across all instances.
  */
 
 /**
  * Subdirectories that always remain in local `.swamp/` regardless of
- * datastore configuration.
- *
- * Note: definitions, workflows, and vault configs now live in top-level
- * directories (models/, workflows/, vaults/) and are no longer .swamp/ subdirs.
+ * datastore configuration. These contain security-sensitive or
+ * platform-specific derived artifacts that should not traverse the
+ * datastore.
  */
 export const ALWAYS_LOCAL_SUBDIRS = [
   "secrets",
@@ -49,6 +50,7 @@ export const DEFAULT_DATASTORE_SUBDIRS = [
   "auto-definitions",
   "definitions-evaluated",
   "workflows-evaluated",
+  "config",
   "data",
   "outputs",
   "workflow-runs",
@@ -184,6 +186,14 @@ export interface DatastoreConfigData {
   exclude?: string[];
   hydrationStrategy?: "full" | "lazy";
   namespace?: string;
+  /**
+   * When `true`, model definitions, workflow definitions, vault configs,
+   * the extension lockfile, and pulled extension sources are stored in the
+   * `.swamp/config/` datastore tier instead of top-level directories.
+   * The datastore becomes the single source of truth — instances hydrate
+   * from it on startup and a ConfigPoller refreshes periodically.
+   */
+  managedConfig?: boolean;
 }
 
 /**

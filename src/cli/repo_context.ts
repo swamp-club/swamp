@@ -61,7 +61,10 @@ import {
 } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { summarizeSyncError } from "../infrastructure/persistence/sync_error_diagnostic.ts";
 import { FileLock } from "../infrastructure/persistence/file_lock.ts";
-import { swampPath } from "../infrastructure/persistence/paths.ts";
+import {
+  registerManagedConfig,
+  swampPath,
+} from "../infrastructure/persistence/paths.ts";
 import {
   type DistributedLock,
   type LockInfo,
@@ -235,6 +238,53 @@ export interface RequireRepoOptions {
 }
 
 /**
+ * Resolves the pulled-extensions root and lockfile path based on
+ * whether managed config is enabled. When managedConfig is true,
+ * these paths point into .swamp/config/ (the datastore interface
+ * layer). When false, they use the traditional locations.
+ */
+export function resolveManagedConfigPaths(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+  configBasePath?: string,
+  options?: { skipSentinelCheck?: boolean },
+): { pulledExtensionsRoot: string; lockfilePath: string; active: boolean } {
+  const managedConfig = marker?.datastore?.managedConfig === true;
+  const effectiveBase = configBasePath ?? swampPath(repoDir, "config");
+
+  let active = false;
+  if (managedConfig) {
+    if (options?.skipSentinelCheck) {
+      active = true;
+    } else {
+      try {
+        Deno.statSync(join(effectiveBase, "managed-config-migrated.json"));
+        active = true;
+      } catch {
+        // Sentinel not found — migration hasn't run yet, fall back
+      }
+    }
+  }
+
+  registerManagedConfig(repoDir, active, effectiveBase);
+  if (active) {
+    return {
+      pulledExtensionsRoot: join(effectiveBase, "pulled-extensions"),
+      lockfilePath: join(effectiveBase, "upstream_extensions.json"),
+      active,
+    };
+  }
+  const modelsDir = isAbsolute(resolveModelsDir(marker))
+    ? resolveModelsDir(marker)
+    : resolve(repoDir, resolveModelsDir(marker));
+  return {
+    pulledExtensionsRoot: swampPath(repoDir, "pulled-extensions"),
+    lockfilePath: join(modelsDir, "upstream_extensions.json"),
+    active,
+  };
+}
+
+/**
  * Result of successful repo validation containing the validated directory
  * and repository context.
  */
@@ -242,6 +292,8 @@ export interface RepoValidationContext {
   repoDir: string;
   repoContext: RepositoryContext;
   datastoreResolver: DatastorePathResolver;
+  pulledExtensionsRoot: string;
+  lockfilePath: string;
 }
 
 /**
@@ -433,10 +485,25 @@ export async function requireInitializedRepoReadOnly(
     // No lock acquisition — read-only path
   }
 
-  // Compute top-level directories for definitions, workflows, and vaults
-  const definitionsDir = join(repoPath.value, "models");
-  const yamlWorkflowsDir = join(repoPath.value, "workflows");
-  const vaultsDir = join(repoPath.value, "vaults");
+  const configBase = datastoreResolver.resolvePath("config");
+  const {
+    pulledExtensionsRoot,
+    lockfilePath,
+    active: managedActive,
+  } = resolveManagedConfigPaths(
+    repoPath.value,
+    marker,
+    configBase,
+  );
+  const definitionsDir = managedActive
+    ? join(configBase, "models")
+    : join(repoPath.value, "models");
+  const yamlWorkflowsDir = managedActive
+    ? join(configBase, "workflows")
+    : join(repoPath.value, "workflows");
+  const vaultsDir = managedActive
+    ? join(configBase, "vaults")
+    : join(repoPath.value, "vaults");
 
   // Resolve source workflow directories from .swamp-sources.yaml
   const sourceWorkflowDirs = await getSourceWorkflowDirs(repoPath.value);
@@ -448,12 +515,7 @@ export async function requireInitializedRepoReadOnly(
     additionalWorkflowsDirs: [
       ...sourceWorkflowDirs,
       ...(await enumeratePulledExtensionDirs(
-        join(
-          isAbsolute(resolveModelsDir(marker))
-            ? resolveModelsDir(marker)
-            : resolve(repoPath.value, resolveModelsDir(marker)),
-          "upstream_extensions.json",
-        ),
+        lockfilePath,
         repoPath.value,
         "workflows",
       )),
@@ -480,6 +542,8 @@ export async function requireInitializedRepoReadOnly(
     repoDir: repoPath.value,
     repoContext,
     datastoreResolver,
+    pulledExtensionsRoot,
+    lockfilePath,
   };
 }
 
@@ -638,10 +702,25 @@ export function requireInitializedRepo(
       }
     }
 
-    // Compute top-level directories for definitions, workflows, and vaults
-    const definitionsDir = join(repoPath.value, "models");
-    const yamlWorkflowsDir = join(repoPath.value, "workflows");
-    const vaultsDir = join(repoPath.value, "vaults");
+    const configBase = datastoreResolver.resolvePath("config");
+    const {
+      pulledExtensionsRoot,
+      lockfilePath,
+      active: managedActive,
+    } = resolveManagedConfigPaths(
+      repoPath.value,
+      marker,
+      configBase,
+    );
+    const definitionsDir = managedActive
+      ? join(configBase, "models")
+      : join(repoPath.value, "models");
+    const yamlWorkflowsDir = managedActive
+      ? join(configBase, "workflows")
+      : join(repoPath.value, "workflows");
+    const vaultsDir = managedActive
+      ? join(configBase, "vaults")
+      : join(repoPath.value, "vaults");
 
     // Resolve source workflow directories from .swamp-sources.yaml
     const sourceWorkflowDirs = await getSourceWorkflowDirs(repoPath.value);
@@ -653,12 +732,7 @@ export function requireInitializedRepo(
       additionalWorkflowsDirs: [
         ...sourceWorkflowDirs,
         ...(await enumeratePulledExtensionDirs(
-          join(
-            isAbsolute(resolveModelsDir(marker))
-              ? resolveModelsDir(marker)
-              : resolve(repoPath.value, resolveModelsDir(marker)),
-            "upstream_extensions.json",
-          ),
+          lockfilePath,
           repoPath.value,
           "workflows",
         )),
@@ -706,6 +780,8 @@ export function requireInitializedRepo(
       repoDir: repoPath.value,
       repoContext,
       datastoreResolver,
+      pulledExtensionsRoot,
+      lockfilePath,
     };
   });
 }
@@ -792,10 +868,26 @@ export async function requireInitializedRepoUnlocked(
     }
   }
 
-  // Compute top-level directories for definitions, workflows, and vaults
-  const definitionsDir = join(repoPath.value, "models");
-  const yamlWorkflowsDir = join(repoPath.value, "workflows");
-  const vaultsDir = join(repoPath.value, "vaults");
+  const configBase = datastoreResolver.resolvePath("config");
+  const {
+    pulledExtensionsRoot,
+    lockfilePath,
+    active: managedActive,
+  } = resolveManagedConfigPaths(
+    repoPath.value,
+    marker,
+    configBase,
+    { skipSentinelCheck: true },
+  );
+  const definitionsDir = managedActive
+    ? join(configBase, "models")
+    : join(repoPath.value, "models");
+  const yamlWorkflowsDir = managedActive
+    ? join(configBase, "workflows")
+    : join(repoPath.value, "workflows");
+  const vaultsDir = managedActive
+    ? join(configBase, "vaults")
+    : join(repoPath.value, "vaults");
 
   // Resolve source workflow directories from .swamp-sources.yaml
   const sourceWorkflowDirs = await getSourceWorkflowDirs(repoPath.value);
@@ -807,12 +899,7 @@ export async function requireInitializedRepoUnlocked(
     additionalWorkflowsDirs: [
       ...sourceWorkflowDirs,
       ...(await enumeratePulledExtensionDirs(
-        join(
-          isAbsolute(resolveModelsDir(marker))
-            ? resolveModelsDir(marker)
-            : resolve(repoPath.value, resolveModelsDir(marker)),
-          "upstream_extensions.json",
-        ),
+        lockfilePath,
         repoPath.value,
         "workflows",
       )),
@@ -849,6 +936,8 @@ export async function requireInitializedRepoUnlocked(
     datastoreResolver,
     datastoreConfig,
     syncService,
+    pulledExtensionsRoot,
+    lockfilePath,
   };
 }
 

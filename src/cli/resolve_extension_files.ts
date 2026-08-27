@@ -114,9 +114,19 @@ export function isPulledExtensionManifest(
   const absolute = isAbsolute(manifestPath)
     ? manifestPath
     : resolve(repoDir, manifestPath);
-  const pulledRoot = join(resolve(repoDir), ".swamp", "pulled-extensions");
-  return resolve(absolute).startsWith(pulledRoot + "/") ||
-    resolve(absolute).startsWith(pulledRoot + "\\");
+  const resolved = resolve(absolute);
+  const repoResolved = resolve(repoDir);
+  const pulledRoot = join(repoResolved, ".swamp", "pulled-extensions");
+  const managedPulledRoot = join(
+    repoResolved,
+    ".swamp",
+    "config",
+    "pulled-extensions",
+  );
+  return resolved.startsWith(pulledRoot + "/") ||
+    resolved.startsWith(pulledRoot + "\\") ||
+    resolved.startsWith(managedPulledRoot + "/") ||
+    resolved.startsWith(managedPulledRoot + "\\");
 }
 
 export async function resolveExtensionFiles(

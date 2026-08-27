@@ -722,7 +722,10 @@ export async function handleModelCreate(
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = await createModelCreateDeps(ctx.repoDir);
+    const deps = await createModelCreateDeps(
+      ctx.repoDir,
+      ctx.managedDefinitionsDir,
+    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -755,6 +758,11 @@ export async function handleModelCreate(
         "Model creation failed",
       );
       return;
+    }
+
+    if (ctx.syncService) {
+      ctx.syncService.markDirty();
+      await ctx.syncService.pushChanged();
     }
 
     send(socket, {
@@ -840,6 +848,11 @@ export async function handleModelDelete(
         "Model deletion failed",
       );
       return;
+    }
+
+    if (ctx.syncService) {
+      ctx.syncService.markDirty();
+      await ctx.syncService.pushChanged();
     }
 
     send(socket, {

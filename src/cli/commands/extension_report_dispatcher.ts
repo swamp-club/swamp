@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join, resolve } from "@std/path";
 import type { Logger } from "@logtape/logtape";
 import { UserError } from "../../domain/errors.ts";
 import {
@@ -39,10 +38,10 @@ import {
   assembleExtensionReportBody,
   type ReporterContext,
 } from "../../domain/extensions/reporter_context.ts";
-import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import { resolvePulledExtensionsRoot } from "../../infrastructure/persistence/paths.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
-import { resolveModelsDir } from "../resolve_models_dir.ts";
+import { resolveManagedConfigPaths } from "../repo_context.ts";
 import { readSwampSources } from "../../infrastructure/persistence/swamp_sources_repository.ts";
 import {
   checkGithubPvrEnabled,
@@ -135,6 +134,7 @@ export interface DispatcherDeps {
 export async function resolveExtensionTarget(
   repoDir: string,
   extensionName: string,
+  pulledExtensionsRoot?: string,
 ): Promise<ExtensionTarget> {
   validateExtensionName(extensionName);
 
@@ -152,7 +152,8 @@ export async function resolveExtensionTarget(
     );
   }
 
-  const pulledExtRoot = swampPath(repoDir, "pulled-extensions");
+  const pulledExtRoot = pulledExtensionsRoot ??
+    resolvePulledExtensionsRoot(repoDir);
   const manifest = await loadInstalledExtensionManifest(
     pulledExtRoot,
     extensionName,
@@ -168,11 +169,7 @@ export async function resolveExtensionTarget(
     };
   }
 
-  const modelsDir = resolveModelsDir(marker);
-  const lockfilePath = join(
-    resolve(repoDir, modelsDir),
-    "upstream_extensions.json",
-  );
+  const { lockfilePath } = resolveManagedConfigPaths(repoDir, marker);
   const extensionVersion =
     (await readInstalledExtensionVersion(lockfilePath, extensionName)) ??
       manifest.version;

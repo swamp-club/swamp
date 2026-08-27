@@ -57,6 +57,7 @@ import {
   type CommonMethodContextDeps,
 } from "../../domain/models/method_context.ts";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
+import { resolvePulledExtensionsRoot } from "../../infrastructure/persistence/paths.ts";
 import type {
   DataArtifactView,
   ModelMethodRunView,
@@ -699,6 +700,9 @@ export async function* modelMethodRun(
                 executionService,
                 commonDeps,
                 repoDir: deps.repoDir,
+                pulledExtensionsRoot: resolvePulledExtensionsRoot(
+                  deps.repoDir,
+                ),
               });
           }
 

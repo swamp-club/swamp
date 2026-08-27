@@ -33,7 +33,7 @@ import {
 } from "../context.ts";
 import { resolveDatastoreForRepo } from "../repo_context.ts";
 import { resolveWorkflowsDir } from "../resolve_workflows_dir.ts";
-import { resolveModelsDir } from "../resolve_models_dir.ts";
+import { resolveManagedConfigPaths } from "../repo_context.ts";
 import {
   collectDirsForKind,
   expandSourcePaths,
@@ -125,12 +125,9 @@ export const doctorWorkflowsCommand = withRemoteOptions(
 
   const sourceWorkflowDirs = await getSourceWorkflowDirs(repoDir);
 
-  const modelsDirRel = resolveModelsDir(marker);
-  const modelsDir = isAbsolute(modelsDirRel)
-    ? modelsDirRel
-    : resolve(repoDir, modelsDirRel);
+  const { lockfilePath } = resolveManagedConfigPaths(repoDir, marker);
   const pulledWorkflowDirs = await enumeratePulledExtensionDirs(
-    join(modelsDir, "upstream_extensions.json"),
+    lockfilePath,
     repoDir,
     "workflows",
   );

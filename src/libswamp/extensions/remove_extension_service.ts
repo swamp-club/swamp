@@ -24,6 +24,7 @@ import type { ExtensionRepository } from "../../infrastructure/persistence/exten
 import type { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import {
   bundleNamespace,
+  resolvePulledExtensionsRoot,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -71,15 +72,19 @@ export class RemoveExtensionService {
   private readonly repository: ExtensionRepository;
   private readonly lockfileRepository: LockfileRepository;
   private readonly repoDir: string;
+  private readonly pulledExtensionsRoot: string;
 
   constructor(args: {
     repository: ExtensionRepository;
     lockfileRepository: LockfileRepository;
     repoDir: string;
+    pulledExtensionsRoot?: string;
   }) {
     this.repository = args.repository;
     this.lockfileRepository = args.lockfileRepository;
     this.repoDir = args.repoDir;
+    this.pulledExtensionsRoot = args.pulledExtensionsRoot ??
+      resolvePulledExtensionsRoot(this.repoDir);
   }
 
   /**
@@ -164,7 +169,7 @@ export class RemoveExtensionService {
     //    `Deno.readDir` absorbs the resulting `NotFound` safely, so
     //    the push is unconditional.
     const extensionRoot = join(
-      swampPath(this.repoDir, "pulled-extensions"),
+      this.pulledExtensionsRoot,
       name,
     );
     for (const scaffoldDir of PER_EXTENSION_SCAFFOLD_DIRS) {

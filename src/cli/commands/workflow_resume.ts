@@ -42,6 +42,7 @@ import {
   WorkflowExecutionService,
 } from "../../domain/workflows/execution_service.ts";
 import {
+  resolvePulledExtensionsRoot,
   SWAMP_SUBDIRS,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
@@ -414,6 +415,7 @@ export const workflowResumeCommand = withRemoteOptions(
       RunTrackerStore.fromSwampDir(swampPath(repoDir)),
       ephemeral.repo,
       ephemeral.catalog,
+      resolvePulledExtensionsRoot(repoDir),
     );
 
     const abort = new AbortController();

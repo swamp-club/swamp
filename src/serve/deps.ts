@@ -61,6 +61,7 @@ import {
   runFileSink,
 } from "../infrastructure/logging/logger.ts";
 import {
+  resolvePulledExtensionsRoot,
   SWAMP_SUBDIRS,
   swampPath,
 } from "../infrastructure/persistence/paths.ts";
@@ -190,6 +191,7 @@ export async function createWorkflowRunDeps(
         runTracker,
         ephRepo,
         ephCatalog,
+        resolvePulledExtensionsRoot(dir),
       );
     },
     catalogStore: repoContext.catalogStore,

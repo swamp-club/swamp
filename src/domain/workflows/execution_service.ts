@@ -240,6 +240,7 @@ export interface StepExecutionContext {
   jobName: string;
   stepName: string;
   repoDir: string;
+  pulledExtensionsRoot?: string;
   /** Cancellation signal threaded from the libswamp entry point. */
   signal: AbortSignal;
   /** Expression context for evaluating ${{ }} expressions */
@@ -565,6 +566,7 @@ export class DefaultStepExecutor implements StepExecutor {
           createCelEnvironment: createExtensionCelEnvironment,
         },
         repoDir: ctx.repoDir,
+        pulledExtensionsRoot: ctx.pulledExtensionsRoot,
       });
     }
 
@@ -1546,6 +1548,7 @@ export class WorkflowExecutionService {
     private readonly runTracker?: RunTrackerRepository,
     private readonly ephemeralRepo?: UnifiedDataRepository,
     private readonly ephemeralCatalog?: CatalogStore,
+    private readonly pulledExtensionsRoot?: string,
   ) {
     this.executor = executor ??
       new DefaultStepExecutor(
@@ -3012,6 +3015,7 @@ export class WorkflowExecutionService {
           jobName: job.name,
           stepName,
           repoDir: this.repoDir,
+          pulledExtensionsRoot: this.pulledExtensionsRoot,
           signal: options.signal ?? new AbortController().signal,
           expressionContext: stepExprContext,
           workflowRun: run,
@@ -3340,6 +3344,7 @@ export class WorkflowExecutionService {
       this.runTracker,
       this.ephemeralRepo,
       this.ephemeralCatalog,
+      this.pulledExtensionsRoot,
     );
 
     let childRun: WorkflowRun | undefined;

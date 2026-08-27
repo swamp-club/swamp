@@ -92,19 +92,19 @@ export function extractExtensionNameFromPath(
   if (!repoDir) return undefined;
 
   const cheapRepoDir = resolve(repoDir);
-  const cheapPulledRoot = join(
-    cheapRepoDir,
-    SWAMP_DATA_DIR,
-    "pulled-extensions",
-  );
+  const pulledRoots = [
+    join(cheapRepoDir, SWAMP_DATA_DIR, "pulled-extensions"),
+    join(cheapRepoDir, SWAMP_DATA_DIR, "config", "pulled-extensions"),
+  ];
   const cheapResolved = resolve(absolutePath);
 
   let relative: string;
-  if (cheapResolved.startsWith(cheapPulledRoot + SEPARATOR)) {
-    relative = cheapResolved.slice(cheapPulledRoot.length + 1);
+  const matchedCheap = pulledRoots.find((r) =>
+    cheapResolved.startsWith(r + SEPARATOR)
+  );
+  if (matchedCheap) {
+    relative = cheapResolved.slice(matchedCheap.length + 1);
   } else {
-    // Symlink-aware fallback — only pay for realPathSync when the cheap
-    // check fails (e.g. /tmp -> /private/tmp on macOS).
     let realRepoDir: string;
     try {
       realRepoDir = Deno.realPathSync(repoDir);
@@ -112,19 +112,21 @@ export function extractExtensionNameFromPath(
       return undefined;
     }
     if (realRepoDir === cheapRepoDir) return undefined;
-    const realPulledRoot = join(
-      realRepoDir,
-      SWAMP_DATA_DIR,
-      "pulled-extensions",
-    );
+    const realPulledRoots = [
+      join(realRepoDir, SWAMP_DATA_DIR, "pulled-extensions"),
+      join(realRepoDir, SWAMP_DATA_DIR, "config", "pulled-extensions"),
+    ];
     let realResolved: string;
     try {
       realResolved = Deno.realPathSync(absolutePath);
     } catch {
       return undefined;
     }
-    if (!realResolved.startsWith(realPulledRoot + SEPARATOR)) return undefined;
-    relative = realResolved.slice(realPulledRoot.length + 1);
+    const matchedReal = realPulledRoots.find((r) =>
+      realResolved.startsWith(r + SEPARATOR)
+    );
+    if (!matchedReal) return undefined;
+    relative = realResolved.slice(matchedReal.length + 1);
   }
 
   const segments = relative.split(SEPARATOR);
@@ -1182,11 +1184,20 @@ export class ExtensionLoader {
         // No bundle on disk yet — first-run bootstrap.
       }
 
-      const isPulled = this.repoDir &&
-        resolve(boundaryDir).startsWith(
+      const resolvedBoundary = resolve(boundaryDir);
+      const isPulled = this.repoDir && (
+        resolvedBoundary.startsWith(
           join(resolve(this.repoDir), SWAMP_DATA_DIR, "pulled-extensions") +
             SEPARATOR,
-        );
+        ) || resolvedBoundary.startsWith(
+          join(
+            resolve(this.repoDir),
+            SWAMP_DATA_DIR,
+            "config",
+            "pulled-extensions",
+          ) + SEPARATOR,
+        )
+      );
       if (
         bundleExists && isPulled &&
         (options?.trustPulledCache ||
