@@ -473,6 +473,11 @@ export class DispatchService {
       stepName: request.stepName,
     });
 
+    if (request.declaredWrites) {
+      this.#writesByDispatch.add(dispatchId);
+      await this.#leaseTransition("mark_writes", { leaseId });
+    }
+
     this.#options.dispatches.register({
       workerName,
       dispatchId,

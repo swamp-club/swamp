@@ -94,6 +94,7 @@ const StepObjectSchema = z.object({
   allowFailure: z.boolean().default(false),
   ...PlacementFieldsSchema.shape,
   guard: z.string().optional(),
+  writes: z.boolean().optional(),
 });
 
 /**
@@ -155,6 +156,7 @@ export interface CreateStepProps {
   platform?: string;
   queueTimeout?: number;
   guard?: string;
+  writes?: boolean;
 }
 
 /**
@@ -184,6 +186,7 @@ export class Step {
     readonly platform: string | undefined,
     readonly queueTimeout: number | undefined,
     readonly guard: string | undefined,
+    readonly writes: boolean | undefined,
   ) {}
 
   /**
@@ -208,6 +211,7 @@ export class Step {
       platform: props.platform,
       queueTimeout: props.queueTimeout,
       guard: props.guard,
+      writes: props.writes,
     });
 
     return Step.fromData(data);
@@ -254,6 +258,7 @@ export class Step {
       validated.platform,
       validated.queueTimeout,
       validated.guard,
+      validated.writes,
     );
   }
 
@@ -317,6 +322,7 @@ export class Step {
       platform: this.platform,
       queueTimeout: this.queueTimeout,
       guard: this.guard,
+      writes: this.writes,
     };
   }
 

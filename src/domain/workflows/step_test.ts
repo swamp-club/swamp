@@ -530,3 +530,27 @@ Deno.test("Step.create: guard field is passed through", () => {
   const step = Step.create({ name: "guarded", task, guard });
   assertEquals(step.guard, guard);
 });
+
+Deno.test("Step: writes field is undefined when absent", () => {
+  const task = StepTask.model("my-model", "run");
+  const step = Step.create({ name: "no-writes", task });
+  assertEquals(step.writes, undefined);
+});
+
+Deno.test("Step: writes field roundtrips through toData", () => {
+  const task = StepTask.model("my-model", "run");
+  const step = Step.create({ name: "has-writes", task, writes: true });
+  assertEquals(step.writes, true);
+  const data = step.toData();
+  assertEquals(data.writes, true);
+  const restored = Step.fromData(data);
+  assertEquals(restored.writes, true);
+});
+
+Deno.test("StepSchema: accepts writes field", () => {
+  const task = StepTask.model("deploy-model", "apply");
+  const step = Step.create({ name: "deploy", task, writes: true });
+  assertEquals(step.writes, true);
+  const step2 = Step.create({ name: "deploy-no-writes", task });
+  assertEquals(step2.writes, undefined);
+});

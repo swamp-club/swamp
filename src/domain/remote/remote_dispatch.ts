@@ -77,6 +77,12 @@ export interface RemoteStepRequest {
    * Requires `placement.target` to be set.
    */
   skipScheduler?: boolean;
+  /**
+   * When true, the dispatch is pre-marked as write-bearing before the
+   * method body runs. A worker disconnect fails the run immediately
+   * instead of re-dispatching — even if no data-plane write has occurred.
+   */
+  declaredWrites?: boolean;
 }
 
 export interface RemoteStepResult {

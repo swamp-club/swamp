@@ -411,6 +411,65 @@ Deno.test("DispatchService: recordFirstWrite marks the lease exactly once", asyn
   );
 });
 
+Deno.test("DispatchService: declaredWrites pre-marks dispatch as write-bearing", async () => {
+  const h = createHarness({
+    workers: [snapshot({ name: "w1" }), snapshot({ name: "w2" })],
+  });
+  let attempts = 0;
+  h.setBehavior((name) => {
+    attempts++;
+    if (attempts === 1) {
+      h.pool.delete(name);
+      h.service.notifyGraceExpired(snapshot({ name }));
+      return Promise.reject(new ChannelClosedError("control socket closed"));
+    }
+    return Promise.resolve({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+
+  await assertRejects(
+    () => h.service.executeRemote(stepRequest({ declaredWrites: true })),
+    Error,
+    "write-then-drop",
+  );
+  assertEquals(
+    h.transitions.map((t) => t.methodName),
+    ["acquire", "mark_writes", "fail"],
+  );
+  assertEquals(attempts, 1);
+});
+
+Deno.test("DispatchService: declaredWrites false behaves like no declaration", async () => {
+  const h = createHarness({
+    workers: [snapshot({ name: "w1" }), snapshot({ name: "w2" })],
+  });
+  let attempts = 0;
+  h.setBehavior((name) => {
+    attempts++;
+    if (attempts === 1) {
+      h.pool.delete(name);
+      h.service.notifyGraceExpired(snapshot({ name }));
+      return Promise.reject(new ChannelClosedError("control socket closed"));
+    }
+    return Promise.resolve({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+
+  const result = await h.service.executeRemote(
+    stepRequest({ declaredWrites: false }),
+  );
+  assertEquals(result.durationMs, 1);
+  assertEquals(attempts, 2);
+});
+
 Deno.test("DispatchService: abort during queue wait rejects", async () => {
   const h = createHarness({
     workers: [
