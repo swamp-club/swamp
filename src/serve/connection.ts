@@ -42,6 +42,7 @@ import {
   handleDataVersions,
   handleRunGc,
   handleSummarise,
+  resolveDataFields,
 } from "./handlers/data_handlers.ts";
 import {
   handleModelCreate,
@@ -84,6 +85,7 @@ import {
   handleWorkflowTriggerRemove,
   handleWorkflowTriggerSet,
   handleWorkflowValidate,
+  resolveWorkflowFields,
 } from "./handlers/workflow_handlers.ts";
 import {
   handleVaultAnnotate,
@@ -1364,23 +1366,35 @@ export function handleMessage(
   const request: ServerRequest = validated;
 
   if (request.type === "cancel") {
-    const controller = activeRequests.get(request.id);
-    if (controller) {
-      controller.abort();
+    const pendingController = activeRequests.get(request.id);
+    if (pendingController) {
+      pendingController.abort();
       return;
     }
     const run = ctx.activeRunRegistry?.get(request.id);
     if (run) {
       const resourceKind = run.kind === "method-run" ? "model" : "workflow";
-      if (
-        authorizeOrReject(socket, request.id, principal, "run", {
-          kind: resourceKind,
-          name: run.resourceName,
-          fields: {},
-        }, ctx)
-      ) {
-        ctx.activeRunRegistry!.cancel(request.id);
-      }
+      resolveRunFields(ctx, resourceKind, run.resourceName).then(
+        (cancelFields) => {
+          if (
+            authorizeOrReject(socket, request.id, principal, "run", {
+              kind: resourceKind,
+              name: run.resourceName,
+              fields: cancelFields,
+            }, ctx)
+          ) {
+            ctx.activeRunRegistry!.cancel(request.id);
+          }
+        },
+      ).catch((error: unknown) => {
+        logger.error(
+          "Failed to resolve fields for cancel {requestId}: {error}",
+          {
+            requestId: request.id,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+      });
     }
     return;
   }
@@ -2473,6 +2487,27 @@ export function handleMessage(
 
 // ── Run attach handler ───────────────────────────────────────────────
 
+async function resolveRunFields(
+  ctx: ConnectionContext,
+  resourceKind: "model" | "workflow",
+  resourceName: string,
+): Promise<Record<string, unknown>> {
+  try {
+    if (resourceKind === "model") {
+      return await resolveDataFields(
+        ctx.repoContext.definitionRepo,
+        resourceName,
+      );
+    }
+    return await resolveWorkflowFields(
+      ctx.repoContext.workflowRepo,
+      resourceName,
+    );
+  } catch {
+    return { name: resourceName };
+  }
+}
+
 async function handleRunAttach(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -2492,11 +2527,16 @@ async function handleRunAttach(
         const resourceKind = result.record.runKind === "method-run"
           ? "model"
           : "workflow";
+        const remoteFields = await resolveRunFields(
+          ctx,
+          resourceKind,
+          result.record.resourceName,
+        );
         if (
           !authorizeOrReject(socket, requestId, principal, "run", {
             kind: resourceKind,
             name: result.record.resourceName,
-            fields: {},
+            fields: remoteFields,
           }, ctx)
         ) return;
 
@@ -2539,11 +2579,16 @@ async function handleRunAttach(
   }
 
   const resourceKind = run.kind === "method-run" ? "model" : "workflow";
+  const localFields = await resolveRunFields(
+    ctx,
+    resourceKind,
+    run.resourceName,
+  );
   if (
     !authorizeOrReject(socket, requestId, principal, "run", {
       kind: resourceKind,
       name: run.resourceName,
-      fields: {},
+      fields: localFields,
     }, ctx)
   ) return;
 
