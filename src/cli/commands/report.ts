@@ -26,6 +26,7 @@ import {
   reportTypeSearchAction,
   reportTypeSearchCommand,
 } from "./report_type_search.ts";
+import { withRemoteOptions } from "../remote_run.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 
 export const reportTypeCommand = new Command()
@@ -45,8 +46,9 @@ export const reportCommand = new Command()
   .command("describe", reportDescribeCommand)
   .command(
     "list",
-    new Command()
-      .description("List registered report definitions")
-      .arguments("[query:string]")
-      .action(reportTypeSearchAction),
+    withRemoteOptions(
+      new Command()
+        .description("List registered report definitions")
+        .arguments("[query:string]"),
+    ).action(reportTypeSearchAction),
   );
