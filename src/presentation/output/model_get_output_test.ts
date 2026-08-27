@@ -34,6 +34,11 @@ const testData: ModelGetData = {
   globalArguments: { message: "Hello World" },
 };
 
+const testDataWithDescription: ModelGetData = {
+  ...testData,
+  description: "An echo model for testing",
+};
+
 Deno.test("renderModelGet with json mode outputs valid JSON", () => {
   const logs: string[] = [];
   const originalLog = console.log;
@@ -70,6 +75,63 @@ Deno.test("renderModelGet JSON includes tags and attributes", () => {
 
 Deno.test("renderModelGet with log mode does not throw", () => {
   renderModelGet(testData, "log");
+});
+
+Deno.test("renderModelGet JSON includes description when set", () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    renderModelGet(testDataWithDescription, "json");
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.description, "An echo model for testing");
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("renderModelGet JSON omits description when undefined", () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    renderModelGet(testData, "json");
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.description, undefined);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("renderModelGet log mode shows description when set", () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    renderModelGet(testDataWithDescription, "log");
+    const combined = stripAnsiCode(logs.join("\n"));
+    assertStringIncludes(combined, "Description:");
+    assertStringIncludes(combined, "An echo model for testing");
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("renderModelGet log mode omits description when undefined", () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    renderModelGet(testData, "log");
+    const combined = stripAnsiCode(logs.join("\n"));
+    assertEquals(combined.includes("Description:"), false);
+  } finally {
+    console.log = originalLog;
+  }
 });
 
 Deno.test("renderModelGet log mode shows model details", () => {

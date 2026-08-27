@@ -40,6 +40,7 @@ import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 export interface ModelGetData {
   id: string;
   name: string;
+  description?: string;
   type: string;
   version: number;
   tags: Record<string, string>;
@@ -132,6 +133,7 @@ export async function* modelGet(
       const data: ModelGetData = {
         id: definition.id,
         name: definition.name,
+        description: definition.description,
         type: modelType.normalized,
         version: definition.version,
         tags: definition.tags,
