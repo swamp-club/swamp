@@ -69,10 +69,7 @@ import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { parseTags } from "../../libswamp/mod.ts";
-import {
-  workflowRunSearchAction,
-  workflowRunSearchCommand,
-} from "./workflow_run_search.ts";
+import { workflowRunSearchCommand } from "./workflow_run_search.ts";
 import {
   consumeStream,
   createLibSwampContext,
@@ -574,19 +571,7 @@ export const workflowRunCommand = new Command()
       exitSuppress.dispose();
     }
   })
-  .command("search", workflowRunSearchCommand)
-  .command(
-    "list",
-    new Command()
-      .description("Alias for workflow run search")
-      .hidden()
-      .arguments("[query:string]")
-      .option(
-        "--repo-dir <dir:string>",
-        "Repository directory (env: SWAMP_REPO_DIR)",
-      )
-      .action(workflowRunSearchAction),
-  );
+  .command("search", workflowRunSearchCommand);
 
 /**
  * The --server branch: dispatch the run through a `swamp serve` server and

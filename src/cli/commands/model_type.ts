@@ -20,7 +20,7 @@
 import { Command } from "@cliffy/command";
 import { groupCommandAction } from "../group_action.ts";
 import { typeDescribeCommand } from "./type_describe.ts";
-import { typeSearchAction, typeSearchCommand } from "./type_search.ts";
+import { typeSearchCommand } from "./type_search.ts";
 
 /**
  * Parent command for model type operations.
@@ -30,16 +30,4 @@ export const modelTypeCommand = new Command()
   .description("Inspect model types")
   .action(groupCommandAction)
   .command("describe", typeDescribeCommand)
-  .command("search", typeSearchCommand)
-  .command(
-    "list",
-    new Command()
-      .description("Alias for type search")
-      .hidden()
-      .arguments("[query:string]")
-      .option(
-        "--repo-dir <dir:string>",
-        "Repository directory (env: SWAMP_REPO_DIR; not required for type search)",
-      )
-      .action(typeSearchAction),
-  );
+  .command("search", typeSearchCommand);

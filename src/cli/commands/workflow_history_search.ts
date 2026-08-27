@@ -262,6 +262,7 @@ export async function workflowHistorySearchAction(
 export const workflowHistorySearchCommand = withRemoteOptions(
   new Command()
     .name("search")
+    .alias("list")
     .description("Search workflow run history")
     .example("Browse run history", "swamp workflow history search")
     .example("Search runs", "swamp workflow history search deploy")

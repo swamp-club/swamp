@@ -250,6 +250,7 @@ export async function workflowRunSearchAction(
 export const workflowRunSearchCommand = withRemoteOptions(
   new Command()
     .name("search")
+    .alias("list")
     .description("Search workflow run history")
     .example("Browse all runs", "swamp workflow run search")
     .example("Search runs", "swamp workflow run search deploy")

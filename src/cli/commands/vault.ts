@@ -19,12 +19,9 @@
 
 import { Command } from "@cliffy/command";
 import { groupCommandAction } from "../group_action.ts";
-import {
-  vaultTypeSearchAction,
-  vaultTypeSearchCommand,
-} from "./vault_type_search.ts";
+import { vaultTypeSearchCommand } from "./vault_type_search.ts";
 import { vaultCreateCommand } from "./vault_create.ts";
-import { vaultSearchAction, vaultSearchCommand } from "./vault_search.ts";
+import { vaultSearchCommand } from "./vault_search.ts";
 import { vaultGetCommand } from "./vault_get.ts";
 import { vaultDescribeCommand } from "./vault_describe.ts";
 import { vaultEditCommand } from "./vault_edit.ts";
@@ -45,15 +42,7 @@ export const vaultTypeCommand = new Command()
   .name("type")
   .description("Inspect vault types")
   .action(groupCommandAction)
-  .command("search", vaultTypeSearchCommand)
-  .command(
-    "list",
-    new Command()
-      .description("Alias for vault type search")
-      .hidden()
-      .arguments("[query:string]")
-      .action(vaultTypeSearchAction),
-  );
+  .command("search", vaultTypeSearchCommand);
 
 /**
  * Parent command for vault operations.
@@ -76,16 +65,4 @@ export const vaultCommand = new Command()
   .command("migrate", vaultMigrateCommand)
   .command("read-secret", vaultReadSecretCommand)
   .command("list-keys", vaultListKeysCommand)
-  .command("audit-trail", vaultAuditTrailCommand)
-  .command(
-    "list",
-    new Command()
-      .description("Alias for vault search")
-      .hidden()
-      .arguments("[query:string]")
-      .option(
-        "--repo-dir <dir:string>",
-        "Repository directory (env: SWAMP_REPO_DIR)",
-      )
-      .action(vaultSearchAction),
-  );
+  .command("audit-trail", vaultAuditTrailCommand);

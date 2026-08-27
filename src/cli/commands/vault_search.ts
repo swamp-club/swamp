@@ -155,6 +155,7 @@ export async function vaultSearchAction(
 export const vaultSearchCommand = withRemoteOptions(
   new Command()
     .name("search")
+    .alias("list")
     .description("Search for vaults in the repository")
     .example("Browse all vaults", "swamp vault search")
     .example("Search by keyword", "swamp vault search aws")

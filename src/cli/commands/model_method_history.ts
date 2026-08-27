@@ -23,10 +23,7 @@ import {
   modelMethodHistoryGetAction,
   modelMethodHistoryGetCommand,
 } from "./model_method_history_get.ts";
-import {
-  modelMethodHistorySearchAction,
-  modelMethodHistorySearchCommand,
-} from "./model_method_history_search.ts";
+import { modelMethodHistorySearchCommand } from "./model_method_history_search.ts";
 import { modelMethodHistoryLogsCommand } from "./model_method_history_logs.ts";
 
 export const modelMethodHistoryCommand = new Command()
@@ -45,16 +42,4 @@ export const modelMethodHistoryCommand = new Command()
   .action(modelMethodHistoryGetAction)
   .command("get", modelMethodHistoryGetCommand)
   .command("search", modelMethodHistorySearchCommand)
-  .command("logs", modelMethodHistoryLogsCommand)
-  .command(
-    "list",
-    new Command()
-      .description("Alias for model method history search")
-      .hidden()
-      .arguments("[query:string]")
-      .option(
-        "--repo-dir <dir:string>",
-        "Repository directory (env: SWAMP_REPO_DIR)",
-      )
-      .action(modelMethodHistorySearchAction),
-  );
+  .command("logs", modelMethodHistoryLogsCommand);

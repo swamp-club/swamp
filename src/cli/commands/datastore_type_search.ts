@@ -73,6 +73,7 @@ export async function datastoreTypeSearchAction(
 
 export const datastoreTypeSearchCommand = new Command()
   .name("search")
+  .alias("list")
   .description("Search for datastore types")
   .example("Browse datastore types", "swamp datastore type search")
   .example("Search by keyword", "swamp datastore type search s3")

@@ -167,6 +167,7 @@ export async function modelOutputSearchAction(
 export const modelOutputSearchCommand = withRemoteOptions(
   new Command()
     .name("search")
+    .alias("list")
     .description("Search for model outputs")
     .example("Browse all outputs", "swamp model output search")
     .example("Search by keyword", "swamp model output search deploy")

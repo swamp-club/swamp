@@ -133,6 +133,7 @@ export async function modelMethodHistorySearchAction(
 export const modelMethodHistorySearchCommand = withRemoteOptions(
   new Command()
     .name("search")
+    .alias("list")
     .description("Search model method run history")
     .example("Browse all history", "swamp model method history search")
     .example("Search by keyword", "swamp model method history search deploy")

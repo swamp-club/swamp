@@ -36,7 +36,7 @@ import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { parseKeyValueInputs } from "../input_parser.ts";
 import { modelValidateCommand } from "./model_validate.ts";
 import { modelMethodCommand } from "./model_method_run.ts";
-import { modelSearchAction, modelSearchCommand } from "./model_search.ts";
+import { modelSearchCommand } from "./model_search.ts";
 import { modelGetCommand } from "./model_get.ts";
 import { modelDeleteCommand } from "./model_delete.ts";
 import { modelEditCommand } from "./model_edit.ts";
@@ -146,17 +146,4 @@ export const modelCommand = new Command()
   .command("validate", modelValidateCommand)
   .command("method", modelMethodCommand)
   .command("output", modelOutputCommand)
-  .command("type", modelTypeCommand)
-  .command(
-    "list",
-    new Command()
-      .description("Alias for model search")
-      .hidden()
-      .arguments("[query:string]")
-      .option(
-        "--repo-dir <dir:string>",
-        "Repository directory (env: SWAMP_REPO_DIR)",
-      )
-      .option("--all", "Include internal model types")
-      .action(modelSearchAction),
-  );
+  .command("type", modelTypeCommand);

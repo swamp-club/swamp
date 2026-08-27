@@ -141,6 +141,7 @@ export async function modelSearchAction(
 export const modelSearchCommand = withRemoteOptions(
   new Command()
     .name("search")
+    .alias("list")
     .description("Search for model definitions")
     .example("Browse all models", "swamp model search")
     .example("Search by keyword", "swamp model search aws")
