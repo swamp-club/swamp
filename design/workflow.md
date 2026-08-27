@@ -945,6 +945,32 @@ API checks both the registry and the `ScheduledExecutionService` running map.
 The same mechanism applies to model method runs via
 `swamp model cancel <model> [--all] [--reason <reason>]`.
 
+### Post-Cancellation Cleanup
+
+When a workflow is cancelled (via `--timeout`, Ctrl+C, or `swamp workflow
+cancel`), steps with `always` or `completed` dependency conditions still run.
+This allows cleanup branches (notifications, resource teardown, metric
+reporting) to execute even after cancellation.
+
+The execution engine evaluates remaining steps in topological order after
+cancellation:
+
+- Steps whose dependency conditions are met (`always` returns true
+  unconditionally; `completed` returns true when the dependency reached
+  `succeeded` or `failed`) run with a fresh 30-second cleanup signal.
+- Steps whose conditions are not met (`succeeded` on a failed dependency) are
+  skipped.
+- In-flight steps interrupted by the cancellation signal are marked `failed`
+  with reason `cancelled`.
+
+The same behavior applies after normal step failure (without cancellation):
+steps with `always` or `completed` conditions in subsequent topological levels
+run instead of being skipped.
+
+The `--timeout` flag kills in-flight subprocesses (SIGTERM) when the deadline
+elapses, then runs cleanup steps. It does not wait for the subprocess to finish
+before marking it failed.
+
 ## Domain Events
 
 The WorkflowRepository and WorkflowRunRepository emit domain events:

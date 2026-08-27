@@ -2535,7 +2535,7 @@ Deno.test("workflow-task step without allowFailure: child fails, job fails", asy
     const stepRun = run.getJob("job1")?.getStep("workflow-step");
     assertEquals(stepRun?.status, "failed");
     assertEquals(stepRun?.allowedFailure, false);
-    assertEquals(run.getJob("job1")?.getStep("second")?.status, "pending");
+    assertEquals(run.getJob("job1")?.getStep("second")?.status, "succeeded");
   });
 });
 
@@ -5313,4 +5313,273 @@ Deno.test("computeStepsToReset: throws for unknown step name", () => {
     Error,
     'Step "nonexistent" not found',
   );
+});
+
+// --- Post-failure cleanup: always/completed step conditions (swamp-club#1785) ---
+
+Deno.test(
+  "step with always condition runs after dependency failure (swamp-club#1785)",
+  async () => {
+    await withTempDir(async (tempDir) => {
+      const workflowRepo = new InMemoryWorkflowRepository();
+      const runRepo = new InMemoryWorkflowRunRepository();
+      const executor = new MockStepExecutor();
+      executor.shouldFail.add("build");
+
+      const workflow = Workflow.create({
+        name: "always-after-failure",
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "build",
+                task: StepTask.model("test-model", "run"),
+              }),
+              Step.create({
+                name: "cleanup",
+                task: StepTask.model("test-model", "run"),
+                dependsOn: [
+                  { step: "build", condition: TriggerCondition.always() },
+                ],
+              }),
+            ],
+          }),
+        ],
+      });
+
+      await workflowRepo.save(workflow);
+
+      const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        executor,
+        undefined,
+        catalogStore,
+      );
+
+      const run = await service.execute(workflow.name);
+
+      assertEquals(run.getJob("main")?.getStep("build")?.status, "failed");
+      assertEquals(run.getJob("main")?.getStep("cleanup")?.status, "succeeded");
+      assert(
+        executor.executedSteps.includes("main/cleanup"),
+        "cleanup step should have been executed",
+      );
+    });
+  },
+);
+
+Deno.test(
+  "step with completed condition runs after dependency failure (swamp-club#1785)",
+  async () => {
+    await withTempDir(async (tempDir) => {
+      const workflowRepo = new InMemoryWorkflowRepository();
+      const runRepo = new InMemoryWorkflowRunRepository();
+      const executor = new MockStepExecutor();
+      executor.shouldFail.add("build");
+
+      const workflow = Workflow.create({
+        name: "completed-after-failure",
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "build",
+                task: StepTask.model("test-model", "run"),
+              }),
+              Step.create({
+                name: "notify",
+                task: StepTask.model("test-model", "run"),
+                dependsOn: [
+                  { step: "build", condition: TriggerCondition.completed() },
+                ],
+              }),
+            ],
+          }),
+        ],
+      });
+
+      await workflowRepo.save(workflow);
+
+      const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        executor,
+        undefined,
+        catalogStore,
+      );
+
+      const run = await service.execute(workflow.name);
+
+      assertEquals(run.getJob("main")?.getStep("build")?.status, "failed");
+      assertEquals(run.getJob("main")?.getStep("notify")?.status, "succeeded");
+      assert(
+        executor.executedSteps.includes("main/notify"),
+        "notify step should have been executed",
+      );
+    });
+  },
+);
+
+Deno.test(
+  "step with succeeded condition is skipped after dependency failure (swamp-club#1785)",
+  async () => {
+    await withTempDir(async (tempDir) => {
+      const workflowRepo = new InMemoryWorkflowRepository();
+      const runRepo = new InMemoryWorkflowRunRepository();
+      const executor = new MockStepExecutor();
+      executor.shouldFail.add("build");
+
+      const workflow = Workflow.create({
+        name: "succeeded-after-failure",
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "build",
+                task: StepTask.model("test-model", "run"),
+              }),
+              Step.create({
+                name: "deploy",
+                task: StepTask.model("test-model", "run"),
+                dependsOn: [
+                  { step: "build", condition: TriggerCondition.succeeded() },
+                ],
+              }),
+              Step.create({
+                name: "cleanup",
+                task: StepTask.model("test-model", "run"),
+                dependsOn: [
+                  { step: "build", condition: TriggerCondition.always() },
+                ],
+              }),
+            ],
+          }),
+        ],
+      });
+
+      await workflowRepo.save(workflow);
+
+      const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        executor,
+        undefined,
+        catalogStore,
+      );
+
+      const run = await service.execute(workflow.name);
+
+      assertEquals(run.getJob("main")?.getStep("build")?.status, "failed");
+      assertEquals(run.getJob("main")?.getStep("deploy")?.status, "skipped");
+      assertEquals(
+        run.getJob("main")?.getStep("cleanup")?.status,
+        "succeeded",
+      );
+      assertEquals(
+        executor.executedSteps.includes("main/deploy"),
+        false,
+        "deploy should NOT have been executed",
+      );
+      assert(
+        executor.executedSteps.includes("main/cleanup"),
+        "cleanup should have been executed",
+      );
+    });
+  },
+);
+
+Deno.test({
+  name:
+    "cancellation runs cleanup steps with always condition (swamp-club#1785)",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (tempDir) => {
+      const workflowRepo = new InMemoryWorkflowRepository();
+      const runRepo = new InMemoryWorkflowRunRepository();
+      const executor = new MockStepExecutor();
+
+      // Make the first step slow so the signal fires while it's running
+      const originalExecute = executor.execute.bind(executor);
+      executor.execute = async (step: Step, ctx: StepExecutionContext) => {
+        if (step.name === "slow") {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          // Check if signal was aborted
+          if (ctx.signal?.aborted) {
+            throw new DOMException("The operation was aborted.", "AbortError");
+          }
+        }
+        return originalExecute(step, ctx);
+      };
+
+      const workflow = Workflow.create({
+        name: "cancel-with-cleanup",
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "slow",
+                task: StepTask.model("test-model", "run"),
+              }),
+              Step.create({
+                name: "cleanup",
+                task: StepTask.model("test-model", "run"),
+                dependsOn: [
+                  { step: "slow", condition: TriggerCondition.always() },
+                ],
+              }),
+            ],
+          }),
+        ],
+      });
+
+      await workflowRepo.save(workflow);
+
+      const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        executor,
+        undefined,
+        catalogStore,
+      );
+
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 100);
+
+      const events = [];
+      for await (
+        const event of service.run(workflow.name, {
+          signal: controller.signal,
+        })
+      ) {
+        events.push(event);
+      }
+
+      const cancelledEvent = events.find((e) => e.kind === "cancelled");
+      assert(cancelledEvent !== undefined, "expected cancelled event");
+      const run = cancelledEvent!.run;
+
+      assertEquals(run.getJob("main")?.getStep("slow")?.status, "failed");
+      assertEquals(
+        run.getJob("main")?.getStep("cleanup")?.status,
+        "succeeded",
+      );
+      assert(
+        executor.executedSteps.includes("main/cleanup"),
+        "cleanup step should have been executed after cancellation",
+      );
+    });
+  },
 });

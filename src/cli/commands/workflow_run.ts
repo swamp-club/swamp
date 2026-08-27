@@ -195,7 +195,7 @@ export const workflowRunCommand = new Command()
   )
   .option(
     "--timeout <duration:string>",
-    "Cancellation deadline — seconds (e.g. 30, 1800) or duration string (e.g. 30s, 5m, 1h). Cooperative — only honored by methods that check AbortSignal.",
+    "Cancellation deadline — seconds (e.g. 30, 1800) or duration string (e.g. 30s, 5m, 1h). Kills in-flight subprocesses (SIGTERM) and runs cleanup steps with always/completed conditions.",
   )
   .option(
     "--server <url:string>",

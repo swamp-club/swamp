@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { executeProcess, streamLines } from "./process_executor.ts";
 import { SecretRedactor } from "../../domain/secrets/mod.ts";
 
@@ -383,4 +383,96 @@ Deno.test("executeProcess redacts secrets from streamed stdout lines", async () 
   // Raw captured output is NOT redacted by process executor (shell model handles that)
   assertStringIncludes(result.stdout, "my-secret-token");
   assertStringIncludes(result.stderr, "my-secret-token");
+});
+
+// --- Abort signal in buffered mode (no logger, no timeout) ---
+
+Deno.test({
+  name:
+    "executeProcess: AbortSignal aborted mid-execution surfaces AbortError (buffered mode)",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 100);
+
+    let caught: unknown;
+    try {
+      await executeProcess({
+        command: "sleep",
+        args: ["5"],
+        signal: controller.signal,
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    assertEquals(
+      caught !== undefined,
+      true,
+      "expected executeProcess to reject when signal aborts",
+    );
+    const err = caught as { name?: string; message?: string };
+    assertEquals(
+      err.name,
+      "AbortError",
+      `expected AbortError; got name=${err.name} message=${err.message}`,
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "executeProcess: AbortSignal kills subprocess before it completes (streaming mode)",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const infoLines: string[] = [];
+    const mockLogger = {
+      info: (line: string) => infoLines.push(line),
+      warn: () => {},
+    } as unknown as import("@logtape/logtape").Logger;
+
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 200);
+
+    let caught: unknown;
+    try {
+      await executeProcess({
+        command: "sh",
+        args: ["-c", "echo start; sleep 20; echo end"],
+        logger: mockLogger,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    assert(caught !== undefined, "expected rejection");
+    assert(
+      !infoLines.includes("end"),
+      "subprocess should have been killed before printing 'end'",
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "executeProcess: AbortSignal kills subprocess before it completes (buffered mode)",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 200);
+
+    let caught: unknown;
+    try {
+      await executeProcess({
+        command: "sh",
+        args: ["-c", "echo start; sleep 20; echo end"],
+        signal: controller.signal,
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    assert(caught !== undefined, "expected rejection");
+  },
 });
