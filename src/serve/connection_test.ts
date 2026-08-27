@@ -631,7 +631,7 @@ Deno.test("authorizeOrReject: null principal rejected in token mode", () => {
 
 // ── Authorization: authorized request succeeds ────────────────────────────
 
-Deno.test("authorizeOrReject: authorized workflow.run proceeds", () => {
+Deno.test("authorizeOrReject: authorized workflow.run proceeds", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
   const grant = makeGrant({
@@ -653,6 +653,7 @@ Deno.test("authorizeOrReject: authorized workflow.run proceeds", () => {
     testPrincipal,
   );
 
+  await waitFor(() => mock.sent.length >= 1, "workflow.run response sent");
   // Should not get an unauthorized error — the request proceeds to the handler
   for (const sent of mock.sent) {
     const msg = JSON.parse(sent);

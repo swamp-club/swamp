@@ -72,3 +72,17 @@ Deno.test("resolveDataFields: falls back to name-only when model not found", asy
   assertEquals(fields.name, "missing-model");
   assertEquals(fields.tags, undefined);
 });
+
+Deno.test("resolveDataFields: falls back to name-only when repo throws", async () => {
+  const repo = {
+    findByNameGlobal: () => Promise.reject(new Error("PermissionDenied")),
+    findById: () => Promise.reject(new Error("PermissionDenied")),
+    listTypes: () => Promise.resolve([]),
+    listByType: () => Promise.resolve([]),
+  } as unknown as DefinitionRepository;
+
+  const fields = await resolveDataFields(repo, "erroring-model");
+
+  assertEquals(fields.name, "erroring-model");
+  assertEquals(fields.tags, undefined);
+});

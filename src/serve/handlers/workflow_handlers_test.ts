@@ -86,3 +86,18 @@ Deno.test("resolveWorkflowFields: falls back to findById when findByName returns
   assertEquals(fields.name, "id-workflow");
   assertEquals(fields.tags, { env: "prod" });
 });
+
+Deno.test("resolveWorkflowFields: falls back to name-only when repo throws", async () => {
+  const repo = {
+    findByName: () => Promise.reject(new Error("PermissionDenied")),
+    findById: () => Promise.reject(new Error("PermissionDenied")),
+    findAll: () => Promise.resolve([]),
+    save: () => Promise.resolve(),
+    delete: () => Promise.resolve(),
+  } as unknown as WorkflowRepository;
+
+  const fields = await resolveWorkflowFields(repo, "erroring-workflow");
+
+  assertEquals(fields.name, "erroring-workflow");
+  assertEquals(fields.tags, undefined);
+});
