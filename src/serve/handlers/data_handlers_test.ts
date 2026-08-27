@@ -22,14 +22,17 @@ import { resolveDataFields } from "./data_handlers.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 
 function makeDefinitionRepo(
-  definitions: Map<string, { name: string; tags?: Record<string, string> }>,
+  definitions: Map<
+    string,
+    { name: string; tags?: Record<string, string>; type?: string }
+  >,
 ): DefinitionRepository {
   return {
     findByNameGlobal: (name: string) => {
       const def = definitions.get(name);
       if (!def) return Promise.resolve(null);
       return Promise.resolve({
-        type: { normalized: "test/type" },
+        type: { normalized: def.type ?? "test/type" },
         definition: { name: def.name, tags: def.tags, id: "test-id" },
       });
     },
@@ -71,6 +74,36 @@ Deno.test("resolveDataFields: falls back to name-only when model not found", asy
 
   assertEquals(fields.name, "missing-model");
   assertEquals(fields.tags, undefined);
+});
+
+Deno.test("resolveDataFields: returns ns from user namespace type", async () => {
+  const repo = makeDefinitionRepo(
+    new Map([["ns-model", {
+      name: "ns-model",
+      tags: { env: "prod" },
+      type: "@myns/model-type",
+    }]]),
+  );
+
+  const fields = await resolveDataFields(repo, "ns-model");
+
+  assertEquals(fields.name, "ns-model");
+  assertEquals(fields.ns, "myns");
+  assertEquals(fields.tags, { env: "prod" });
+});
+
+Deno.test("resolveDataFields: omits ns for non-namespaced type", async () => {
+  const repo = makeDefinitionRepo(
+    new Map([["plain-type-model", {
+      name: "plain-type-model",
+      type: "command/shell",
+    }]]),
+  );
+
+  const fields = await resolveDataFields(repo, "plain-type-model");
+
+  assertEquals(fields.name, "plain-type-model");
+  assertEquals(fields.ns, undefined);
 });
 
 Deno.test("resolveDataFields: falls back to name-only when repo throws", async () => {

@@ -63,6 +63,7 @@ import type {
   SummarisePayload,
 } from "../protocol.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
 import { findLatestItemsFromCatalog } from "../../infrastructure/persistence/catalog_search_adapter.ts";
 import type { Principal } from "../../domain/access/principal.ts";
 import {
@@ -88,6 +89,8 @@ export async function resolveDataFields(
     );
     if (result) {
       fields.name = result.definition.name;
+      const ns = ModelType.getUserNamespace(result.type.normalized);
+      if (ns) fields.ns = ns;
       const tags = result.definition.tags;
       if (tags && Object.keys(tags).length > 0) fields.tags = tags;
     }
