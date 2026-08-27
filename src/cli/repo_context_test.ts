@@ -24,7 +24,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { ensureDir } from "@std/fs";
-import { join } from "@std/path";
+import { join, resolve } from "@std/path";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import {
   acquireModelLocks,
@@ -2203,48 +2203,61 @@ Deno.test("acquireModelLocks: uses two-phase push when twoPhaseSync is advertise
 // ============================================================================
 
 Deno.test("resolveManagedConfigPaths: null marker returns default pulled-extensions root", () => {
-  const { pulledExtensionsRoot } = resolveManagedConfigPaths("/repo", null);
-  assertPathEquals(pulledExtensionsRoot, "/repo/.swamp/pulled-extensions");
+  const repo = resolve("/repo");
+  const { pulledExtensionsRoot } = resolveManagedConfigPaths(repo, null);
+  assertPathEquals(
+    pulledExtensionsRoot,
+    join(repo, ".swamp", "pulled-extensions"),
+  );
 });
 
 Deno.test("resolveManagedConfigPaths: null marker returns default lockfile path", () => {
-  const { lockfilePath } = resolveManagedConfigPaths("/repo", null);
+  const repo = resolve("/repo");
+  const { lockfilePath } = resolveManagedConfigPaths(repo, null);
   assertPathEquals(
     lockfilePath,
-    "/repo/extensions/models/upstream_extensions.json",
+    join(repo, "extensions", "models", "upstream_extensions.json"),
   );
 });
 
 Deno.test("resolveManagedConfigPaths: marker without datastore returns default paths", () => {
+  const repo = resolve("/repo");
   const marker: RepoMarkerData = {
     swampVersion: "1.0.0",
     initializedAt: "2026-01-01T00:00:00.000Z",
   };
   const { pulledExtensionsRoot, lockfilePath } = resolveManagedConfigPaths(
-    "/repo",
+    repo,
     marker,
   );
-  assertPathEquals(pulledExtensionsRoot, "/repo/.swamp/pulled-extensions");
+  assertPathEquals(
+    pulledExtensionsRoot,
+    join(repo, ".swamp", "pulled-extensions"),
+  );
   assertPathEquals(
     lockfilePath,
-    "/repo/extensions/models/upstream_extensions.json",
+    join(repo, "extensions", "models", "upstream_extensions.json"),
   );
 });
 
 Deno.test("resolveManagedConfigPaths: managedConfig=false returns default paths", () => {
+  const repo = resolve("/repo");
   const marker: RepoMarkerData = {
     swampVersion: "1.0.0",
     initializedAt: "2026-01-01T00:00:00.000Z",
     datastore: { type: "filesystem", managedConfig: false },
   };
   const { pulledExtensionsRoot, lockfilePath } = resolveManagedConfigPaths(
-    "/repo",
+    repo,
     marker,
   );
-  assertPathEquals(pulledExtensionsRoot, "/repo/.swamp/pulled-extensions");
+  assertPathEquals(
+    pulledExtensionsRoot,
+    join(repo, ".swamp", "pulled-extensions"),
+  );
   assertPathEquals(
     lockfilePath,
-    "/repo/extensions/models/upstream_extensions.json",
+    join(repo, "extensions", "models", "upstream_extensions.json"),
   );
 });
 
@@ -2322,34 +2335,36 @@ Deno.test("resolveManagedConfigPaths: managedConfig=true with custom modelsDir s
 });
 
 Deno.test("resolveManagedConfigPaths: managedConfig=true without sentinel falls back to default paths", () => {
+  const repo = resolve("/nonexistent-repo");
   const marker: RepoMarkerData = {
     swampVersion: "1.0.0",
     initializedAt: "2026-01-01T00:00:00.000Z",
     datastore: { type: "@swamp/s3-datastore", managedConfig: true },
   };
   const { pulledExtensionsRoot, lockfilePath } = resolveManagedConfigPaths(
-    "/nonexistent-repo",
+    repo,
     marker,
   );
   assertPathEquals(
     pulledExtensionsRoot,
-    "/nonexistent-repo/.swamp/pulled-extensions",
+    join(repo, ".swamp", "pulled-extensions"),
   );
   assertPathEquals(
     lockfilePath,
-    "/nonexistent-repo/extensions/models/upstream_extensions.json",
+    join(repo, "extensions", "models", "upstream_extensions.json"),
   );
 });
 
 Deno.test("resolveManagedConfigPaths: custom modelsDir is used when managedConfig=false", () => {
+  const repo = resolve("/repo");
   const marker: RepoMarkerData = {
     swampVersion: "1.0.0",
     initializedAt: "2026-01-01T00:00:00.000Z",
     modelsDir: "custom/models",
   };
-  const { lockfilePath } = resolveManagedConfigPaths("/repo", marker);
+  const { lockfilePath } = resolveManagedConfigPaths(repo, marker);
   assertPathEquals(
     lockfilePath,
-    "/repo/custom/models/upstream_extensions.json",
+    join(repo, "custom", "models", "upstream_extensions.json"),
   );
 });
