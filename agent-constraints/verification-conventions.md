@@ -171,7 +171,17 @@ To construct this checklist:
    — the attestation must carry actual measured durations from the workflow
    run.
 
-4. Construct the combined attestation JSON:
+4. **NEVER reuse or edit a previous attestation.** Every attestation must be
+   built from scratch using the actual data from the workflow runs for the
+   current commit. Editing an old attestation to swap the commit SHA, run IDs,
+   or any other field is a trust chain violation — the attestation would claim
+   durations, timestamps, and config hashes from a different run against a
+   different commit. Always query `workflow history get <run-id> --json` for
+   each workflow, extract the real step durations and statuses, recompute
+   config integrity hashes from the files at the verified commit
+   (`sha256sum`), and construct a fresh JSON object.
+
+5. Construct the combined attestation JSON:
 
    ```json
    {
@@ -257,7 +267,7 @@ To construct this checklist:
    sha256sum CLAUDE.md verification/review-prompts/*.md verification/workflow-verify-*.yaml
    ```
 
-5. Present the checklist AND the workflow run file paths to the user so they
+6. Present the checklist AND the workflow run file paths to the user so they
    can inspect the full details:
 
    ```
@@ -265,7 +275,7 @@ To construct this checklist:
    Review run: .swamp/workflow-runs/<id>/workflow-run-<review-run-id>.yaml
    ```
 
-6. Determine the overall result. **Only call `verification_passed` when
+7. Determine the overall result. **Only call `verification_passed` when
    `gate.allPassed` is true — every non-skipped step must have succeeded.**
    If any step failed, call `verification_failed` instead. Do not treat a
    partial pass as success.
@@ -273,12 +283,12 @@ To construct this checklist:
    - **All pass** → present checklist to user, wait for confirmation
    - **Any fail** → call `verification_failed`, fix the issues, re-verify
 
-7. **Wait for the user to confirm they are ready to open the PR.** Present
+8. **Wait for the user to confirm they are ready to open the PR.** Present
    the full verification checklist and stop. Do NOT post the attestation or
    open a PR until the user explicitly says to proceed. The user's
    confirmation is the trigger for the attestation push.
 
-8. **After the user confirms, post the attestation to swamp-club** using the
+9. **After the user confirms, post the attestation to swamp-club** using the
    issue-lifecycle model's `post_attestation` method. This is a **hard
    requirement** — the PR MUST NOT open until the attestation has been
    successfully posted.
@@ -375,7 +385,7 @@ each run.
 
 Do NOT open a PR until the user has seen a fully green checklist,
 confirmed they want to proceed, and the attestation has been posted to
-swamp-club (step 8). The user's confirmation triggers the attestation
+swamp-club (step 9). The user's confirmation triggers the attestation
 push — do not post it automatically.
 
 ## Review Prompts
