@@ -20,14 +20,16 @@
 /**
  * Normalize a server URL for use as a credential map key.
  *
- * Lowercases the hostname, strips trailing slashes from the path,
- * and removes default ports (80 for http, 443 for https).
+ * Converts WebSocket schemes to their HTTP equivalents, lowercases the
+ * hostname, strips trailing slashes from the path, and removes default ports.
  *
  * @throws {TypeError} if the input is not a valid URL
  */
 export function normalizeServerUrl(url: string): string {
   const parsed = new URL(url);
 
+  if (parsed.protocol === "ws:") parsed.protocol = "http:";
+  if (parsed.protocol === "wss:") parsed.protocol = "https:";
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new TypeError(
       `Unsupported protocol: ${parsed.protocol} (expected http: or https:)`,

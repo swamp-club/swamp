@@ -69,6 +69,13 @@ Deno.test("normalizeServerUrl: preserves non-root path", () => {
   );
 });
 
+Deno.test("normalizeServerUrl: removes query and fragment", () => {
+  assertEquals(
+    normalizeServerUrl("https://swamp.example.com/api/v1/?run=1#events"),
+    "https://swamp.example.com/api/v1",
+  );
+});
+
 Deno.test("normalizeServerUrl: handles IPv6 address", () => {
   assertEquals(
     normalizeServerUrl("https://[::1]:9090"),
@@ -97,6 +104,17 @@ Deno.test("normalizeServerUrl: throws on unsupported protocol", () => {
 Deno.test("normalizeServerUrl: http scheme preserved", () => {
   assertEquals(
     normalizeServerUrl("http://localhost:8080"),
+    "http://localhost:8080",
+  );
+});
+
+Deno.test("normalizeServerUrl: converts WebSocket schemes", () => {
+  assertEquals(
+    normalizeServerUrl("wss://swamp.example.com/base/"),
+    "https://swamp.example.com/base",
+  );
+  assertEquals(
+    normalizeServerUrl("ws://localhost:8080/"),
     "http://localhost:8080",
   );
 });
