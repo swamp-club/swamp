@@ -545,6 +545,10 @@ const stubRepoContext = {
     listTypes: () => Promise.resolve([]),
     listByType: () => Promise.resolve([]),
   },
+  workflowRepo: {
+    findByName: () => Promise.resolve(null),
+    findById: () => Promise.resolve(null),
+  },
 } as unknown as ConnectionContext["repoContext"];
 
 const stubRepoDir = await Deno.makeTempDir({ prefix: "swamp_conn_test_" });
@@ -662,7 +666,7 @@ Deno.test("authorizeOrReject: authorized workflow.run proceeds", () => {
 
 // ── Authorization: unauthorized request gets error frame ──────────────────
 
-Deno.test("authorizeOrReject: unauthorized workflow.run returns error frame", () => {
+Deno.test("authorizeOrReject: unauthorized workflow.run returns error frame", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
   const ctx = makeCtx(modeTokenConfig, []);
@@ -679,6 +683,7 @@ Deno.test("authorizeOrReject: unauthorized workflow.run returns error frame", ()
     testPrincipal,
   );
 
+  await new Promise((r) => setTimeout(r, 0));
   assertEquals(mock.sent.length, 1);
   const msg = parseSent(mock);
   assertEquals(msg.type, "error");
@@ -940,7 +945,7 @@ Deno.test("authorizeOrReject: explicit deny beats admin on access:*", () => {
   assertStringIncludes(errorMessage, "explicitly denied");
 });
 
-Deno.test("authorizeOrReject: explicit deny returns denied error frame", () => {
+Deno.test("authorizeOrReject: explicit deny returns denied error frame", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
   const grants: Grant[] = [
@@ -973,6 +978,7 @@ Deno.test("authorizeOrReject: explicit deny returns denied error frame", () => {
     testPrincipal,
   );
 
+  await new Promise((r) => setTimeout(r, 0));
   assertEquals(mock.sent.length, 1);
   const msg = parseSent(mock);
   assertEquals(msg.type, "error");
@@ -981,7 +987,7 @@ Deno.test("authorizeOrReject: explicit deny returns denied error frame", () => {
   assertStringIncludes(errorMessage, "explicitly denied");
 });
 
-Deno.test("authorizeOrReject: resolvedUserNames replaces raw ID in error message", () => {
+Deno.test("authorizeOrReject: resolvedUserNames replaces raw ID in error message", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
   const opaqueId = "699e486007f77116ebf44bd2";
@@ -1001,6 +1007,7 @@ Deno.test("authorizeOrReject: resolvedUserNames replaces raw ID in error message
     principal,
   );
 
+  await new Promise((r) => setTimeout(r, 0));
   assertEquals(mock.sent.length, 1);
   const msg = parseSent(mock);
   assertEquals(msg.type, "error");
@@ -1010,7 +1017,7 @@ Deno.test("authorizeOrReject: resolvedUserNames replaces raw ID in error message
   assertEquals(errorMessage.includes(opaqueId), false);
 });
 
-Deno.test("authorizeOrReject: falls back to raw ID when resolvedUserNames absent", () => {
+Deno.test("authorizeOrReject: falls back to raw ID when resolvedUserNames absent", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
   const opaqueId = "699e486007f77116ebf44bd2";
@@ -1029,6 +1036,7 @@ Deno.test("authorizeOrReject: falls back to raw ID when resolvedUserNames absent
     principal,
   );
 
+  await new Promise((r) => setTimeout(r, 0));
   assertEquals(mock.sent.length, 1);
   const msg = parseSent(mock);
   assertEquals(msg.type, "error");
