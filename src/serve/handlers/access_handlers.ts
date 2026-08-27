@@ -727,6 +727,21 @@ export async function handleAccessReload(
       });
     }
 
+    if (ctx.syncService) {
+      const pulled = await ctx.syncService.pullChanged({
+        subdirs: [
+          "data/swamp/grant",
+          "data/swamp/group",
+          "data/@swamp/grant",
+          "data/@swamp/group",
+        ],
+      });
+      if (typeof pulled === "number" && pulled > 0) {
+        logger.info`Pulled ${pulled} access data file(s) from remote datastore`;
+        ctx.repoContext.catalogStore.invalidate();
+      }
+    }
+
     const snapshotResult = await ctx.policySnapshotLoader.loadWithCounts();
 
     logger

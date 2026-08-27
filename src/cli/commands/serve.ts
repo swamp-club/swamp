@@ -204,6 +204,7 @@ import {
   sweepStaleRecords,
   sweepTokenConsistency,
 } from "../../serve/boot_reconciliation.ts";
+import { AccessDataPoller } from "../../serve/access_data_poller.ts";
 import { ConfigPoller } from "../../serve/config_poller.ts";
 
 import {
@@ -1423,6 +1424,7 @@ export const serveCommand = new Command()
     });
 
     let configPoller: ConfigPoller | null = null;
+    let accessDataPoller: AccessDataPoller | null = null;
     let repoMarker = null;
     try {
       const markerRepo = new RepoMarkerRepository();
@@ -2426,6 +2428,16 @@ export const serveCommand = new Command()
         policySnapshotLoader,
       });
       await grantsDirectoryPoller.start();
+    }
+
+    if (syncService) {
+      accessDataPoller = new AccessDataPoller({
+        syncService,
+        policySnapshotLoader,
+        catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+        namespace: serveNamespace,
+      });
+      accessDataPoller.start();
     }
 
     const cancelRegistry = new RunCancelRegistry();
@@ -4022,6 +4034,9 @@ export const serveCommand = new Command()
       }
       if (grantsDirectoryPoller) {
         await grantsDirectoryPoller.stop();
+      }
+      if (accessDataPoller) {
+        await accessDataPoller.stop();
       }
       if (configPoller) {
         await configPoller.stop();

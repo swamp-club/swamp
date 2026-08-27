@@ -17,8 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
-import { handleAccessCheck } from "./access_handlers.ts";
+import { assertEquals, assertGreater } from "@std/assert";
+import { handleAccessCheck, handleAccessReload } from "./access_handlers.ts";
 import { type ConnectionContext, setConnectionCollectives } from "./shared.ts";
 import type { AccessCheckPayload } from "../protocol.ts";
 import type {
@@ -29,6 +29,10 @@ import type {
 import type { Action } from "../../domain/access/action.ts";
 import type { Principal } from "../../domain/access/principal.ts";
 import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
+import type {
+  DatastoreSyncOptions,
+  DatastoreSyncService,
+} from "../../domain/datastore/datastore_sync_service.ts";
 
 interface CapturedExplainCall {
   principal: AccessPrincipal;
@@ -169,4 +173,101 @@ Deno.test("handleAccessCheck: null principal evaluates with empty groups", async
   assertEquals(calls[0].principal.principal, { kind: "user", id: "anyone" });
   assertEquals(calls[0].principal.collectives, []);
   assertEquals(calls[0].principal.groups, []);
+});
+
+function createMockSyncService(): {
+  service: DatastoreSyncService;
+  pullCalls: DatastoreSyncOptions[];
+} {
+  const pullCalls: DatastoreSyncOptions[] = [];
+  const service: DatastoreSyncService = {
+    async pullChanged(
+      options?: DatastoreSyncOptions,
+    ): Promise<number | void> {
+      pullCalls.push(options ?? {});
+      return 0;
+    },
+    pushChanged(): Promise<number | void> {
+      return Promise.resolve(0);
+    },
+    async markDirty(): Promise<void> {},
+  };
+  return { service, pullCalls };
+}
+
+function createMockUnifiedDataRepo() {
+  return {
+    findAllForType() {
+      return Promise.resolve([]);
+    },
+    getContent() {
+      return Promise.resolve(null);
+    },
+  };
+}
+
+function createReloadCtx(
+  syncService?: DatastoreSyncService,
+): ConnectionContext {
+  let loadCalled = false;
+  return {
+    repoDir: "/tmp/test-reload-nonexistent",
+    repoContext: {
+      catalogStore: { invalidate() {} },
+      eventBus: { subscribe() {} },
+      definitionRepo: { save() {} },
+      unifiedDataRepo: createMockUnifiedDataRepo(),
+    } as unknown as ConnectionContext["repoContext"],
+    datastoreConfig: {} as ConnectionContext["datastoreConfig"],
+    datastoreResolver: {} as ConnectionContext["datastoreResolver"],
+    syncService,
+    policySnapshotLoader: {
+      async loadWithCounts() {
+        loadCalled = true;
+        return { grantCount: 0, groupCount: 0 };
+      },
+      get _loadCalled() {
+        return loadCalled;
+      },
+    } as unknown as PolicySnapshotLoader,
+    authConfig: {
+      mode: "none" as const,
+      admins: [],
+      allowedCollectives: [],
+      allowedUsers: [],
+      oauthProvider: "",
+      groupsField: "collectives",
+      restrictedModelTypes: [],
+      restrictedCommands: [],
+    },
+  };
+}
+
+Deno.test("handleAccessReload: pulls remote access data before loading snapshot when syncService present", async () => {
+  const { service: syncService, pullCalls } = createMockSyncService();
+  const ctx = createReloadCtx(syncService);
+  const socket = createMockSocket();
+
+  await handleAccessReload(socket, ctx, "req-reload", null);
+
+  assertGreater(pullCalls.length, 0);
+  assertEquals(pullCalls[0].subdirs, [
+    "data/swamp/grant",
+    "data/swamp/group",
+    "data/@swamp/grant",
+    "data/@swamp/group",
+  ]);
+
+  const response = JSON.parse(socket.sent[0]);
+  assertEquals(response.payload.success, true);
+});
+
+Deno.test("handleAccessReload: works without syncService (local-only mode)", async () => {
+  const ctx = createReloadCtx(undefined);
+  const socket = createMockSocket();
+
+  await handleAccessReload(socket, ctx, "req-reload", null);
+
+  const response = JSON.parse(socket.sent[0]);
+  assertEquals(response.payload.success, true);
 });
