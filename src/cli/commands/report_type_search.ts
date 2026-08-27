@@ -66,7 +66,7 @@ export async function reportTypeSearchAction(
         payload: { query },
       },
     );
-    const renderer = createReportTypeSearchRenderer(ctx.outputMode);
+    const renderer = createReportTypeSearchRenderer(interactiveOutputMode(ctx));
     renderer.handlers().completed({
       kind: "completed",
       data: response.data as unknown as ReportTypeSearchData,

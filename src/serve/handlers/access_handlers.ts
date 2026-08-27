@@ -377,7 +377,7 @@ export function handleAccessCheck(
       return Promise.resolve();
     }
 
-    const principal = parsePrincipal(payload.subject);
+    const targetPrincipal = parsePrincipal(payload.subject);
     const actionResult = ActionSchema.safeParse(payload.action);
     if (!actionResult.success) {
       sendError(
@@ -390,11 +390,14 @@ export function handleAccessCheck(
     }
 
     const resource = parseResourceSelector(payload.resource);
-    const collectives = getConnectionCollectives(socket);
-    const groups = getConnectionGroups(socket);
+    const isSelfCheck = principal !== null &&
+      principal.kind === targetPrincipal.kind &&
+      principal.id === targetPrincipal.id;
+    const collectives = isSelfCheck ? getConnectionCollectives(socket) : [];
+    const groups = isSelfCheck ? getConnectionGroups(socket) : [];
     const service = ctx.policySnapshotLoader.decisionService;
     const decisions = service.explain(
-      { principal, collectives, groups },
+      { principal: targetPrincipal, collectives, groups },
       actionResult.data,
       { kind: resource.kind, name: resource.pattern, fields: {} },
     );
