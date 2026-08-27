@@ -632,7 +632,7 @@ export async function handleExtensionInstall(
     }
 
     if (ctx.syncService) {
-      ctx.syncService.markDirty();
+      await ctx.syncService.markDirty();
       await ctx.syncService.pushChanged();
     }
 
@@ -749,7 +749,7 @@ export async function handleExtensionPull(
     }
 
     if (ctx.syncService) {
-      ctx.syncService.markDirty();
+      await ctx.syncService.markDirty();
       await ctx.syncService.pushChanged();
     }
 
@@ -824,7 +824,7 @@ export async function handleExtensionRm(
     }
 
     if (ctx.syncService) {
-      ctx.syncService.markDirty();
+      await ctx.syncService.markDirty();
       await ctx.syncService.pushChanged();
     }
 
@@ -1015,7 +1015,7 @@ export async function handleExtensionUpdate(
     }
 
     if (ctx.syncService) {
-      ctx.syncService.markDirty();
+      await ctx.syncService.markDirty();
       await ctx.syncService.pushChanged();
     }
 
@@ -1184,7 +1184,7 @@ export async function handleVaultMigrate(
     }
 
     if (ctx.syncService) {
-      ctx.syncService.markDirty();
+      await ctx.syncService.markDirty();
       await ctx.syncService.pushChanged();
     }
 

@@ -145,7 +145,7 @@ export const modelCreateCommand = withRemoteOptions(
     );
 
     if (syncService && managedConfig) {
-      syncService.markDirty();
+      await syncService.markDirty();
       await syncService.pushChanged();
     }
 
