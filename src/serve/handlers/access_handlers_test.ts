@@ -33,6 +33,7 @@ import type {
   DatastoreSyncOptions,
   DatastoreSyncService,
 } from "../../domain/datastore/datastore_sync_service.ts";
+import { ACCESS_DATA_SUBDIRS } from "../access_data_poller.ts";
 
 interface CapturedExplainCall {
   principal: AccessPrincipal;
@@ -80,7 +81,9 @@ function createCtx(
   return {
     repoDir: "/tmp/test",
     repoContext: {} as ConnectionContext["repoContext"],
-    datastoreConfig: {} as ConnectionContext["datastoreConfig"],
+    datastoreConfig: {
+      type: "filesystem",
+    } as ConnectionContext["datastoreConfig"],
     datastoreResolver: {} as ConnectionContext["datastoreResolver"],
     policySnapshotLoader: {
       decisionService: service,
@@ -218,7 +221,9 @@ function createReloadCtx(
       definitionRepo: { save() {} },
       unifiedDataRepo: createMockUnifiedDataRepo(),
     } as unknown as ConnectionContext["repoContext"],
-    datastoreConfig: {} as ConnectionContext["datastoreConfig"],
+    datastoreConfig: {
+      type: "filesystem",
+    } as ConnectionContext["datastoreConfig"],
     datastoreResolver: {} as ConnectionContext["datastoreResolver"],
     syncService,
     policySnapshotLoader: {
@@ -251,12 +256,7 @@ Deno.test("handleAccessReload: pulls remote access data before loading snapshot 
   await handleAccessReload(socket, ctx, "req-reload", null);
 
   assertGreater(pullCalls.length, 0);
-  assertEquals(pullCalls[0].subdirs, [
-    "data/swamp/grant",
-    "data/swamp/group",
-    "data/@swamp/grant",
-    "data/@swamp/group",
-  ]);
+  assertEquals(pullCalls[0].subdirs, [...ACCESS_DATA_SUBDIRS]);
 
   const response = JSON.parse(socket.sent[0]);
   assertEquals(response.payload.success, true);

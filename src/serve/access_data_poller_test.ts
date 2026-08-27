@@ -313,6 +313,43 @@ Deno.test("AccessDataPoller: stop on never-started poller is a no-op", async () 
   assertEquals(sync.pullCalls.length, 0);
 });
 
+Deno.test("AccessDataPoller: retries policy reload on next tick if load fails", async () => {
+  let loadCallCount = 0;
+  let shouldFail = true;
+  const sync = createMockSyncService({ pullResult: 2 });
+  const loader: MockPolicySnapshotLoader = {
+    loadCalls: 0,
+    load(): Promise<void> {
+      loadCallCount++;
+      if (shouldFail && loadCallCount === 1) {
+        return Promise.reject(new Error("transient failure"));
+      }
+      loader.loadCalls++;
+      return Promise.resolve();
+    },
+  };
+  const { state, catalogInvalidate } = createCallbackTrackers();
+
+  const poller = new AccessDataPoller({
+    syncService: sync,
+    policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+    catalogInvalidate,
+    pollIntervalMs: 30,
+  });
+
+  poller.start();
+  // First tick: pull returns 2 (changes), load fails
+  await waitFor(() => loadCallCount >= 1, "first load attempt");
+  // Second tick: pull returns 2 (still returning changes), load succeeds
+  shouldFail = false;
+  sync.pullResult = 0;
+  await waitFor(() => loader.loadCalls >= 1, "successful reload after retry");
+  await poller.stop();
+
+  assertGreater(loader.loadCalls, 0);
+  assertGreater(state.catalogInvalidateCalls, 0);
+});
+
 Deno.test("AccessDataPoller: can be restarted after stop", async () => {
   const sync = createMockSyncService();
   const loader = createMockPolicySnapshotLoader();

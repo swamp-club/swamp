@@ -22,6 +22,8 @@
  */
 
 import { join } from "@std/path";
+import { ACCESS_DATA_SUBDIRS } from "../access_data_poller.ts";
+import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import type {
   AccessCanIPayload,
   AccessCheckPayload,
@@ -728,13 +730,12 @@ export async function handleAccessReload(
     }
 
     if (ctx.syncService) {
+      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+        ? ctx.datastoreConfig.namespace
+        : undefined;
       const pulled = await ctx.syncService.pullChanged({
-        subdirs: [
-          "data/swamp/grant",
-          "data/swamp/group",
-          "data/@swamp/grant",
-          "data/@swamp/group",
-        ],
+        subdirs: [...ACCESS_DATA_SUBDIRS],
+        namespace,
       });
       if (typeof pulled === "number" && pulled > 0) {
         logger.info`Pulled ${pulled} access data file(s) from remote datastore`;

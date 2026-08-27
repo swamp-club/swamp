@@ -25,12 +25,12 @@ const logger = getLogger(["swamp", "serve", "access-data-poller"]);
 
 const DEFAULT_ACCESS_DATA_POLL_INTERVAL_MS = 30_000;
 
-const ACCESS_DATA_SUBDIRS = [
+export const ACCESS_DATA_SUBDIRS: readonly string[] = [
   "data/swamp/grant",
   "data/swamp/group",
   "data/@swamp/grant",
   "data/@swamp/group",
-] as const;
+];
 
 export interface AccessDataPollerOptions {
   syncService: DatastoreSyncService;
@@ -49,6 +49,7 @@ export class AccessDataPoller {
   #timer: ReturnType<typeof setInterval> | null = null;
   #pendingPull: Promise<void> = Promise.resolve();
   #pulling = false;
+  #needsReload = false;
 
   constructor(options: AccessDataPollerOptions) {
     this.#syncService = options.syncService;
@@ -97,7 +98,11 @@ export class AccessDataPoller {
         logger
           .info`Access data poller: ${count} file(s) updated, reloading policy snapshot`;
         this.#catalogInvalidate();
+        this.#needsReload = true;
+      }
+      if (this.#needsReload) {
         await this.#policySnapshotLoader.load();
+        this.#needsReload = false;
       }
     } catch (error) {
       logger
