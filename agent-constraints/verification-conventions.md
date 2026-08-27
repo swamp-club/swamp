@@ -45,9 +45,9 @@ The workflow:
    worktree
 4. Each review uses the factory pattern — one `reviewer` model, called once per
    review type with different prompt files and models
-5. Review diffs use `git merge-base main HEAD` so only the branch's own changes
-   are reviewed — not the inverse of what landed on main since the branch
-   diverged
+5. Review diffs use `git merge-base origin/main HEAD` so only the branch's own
+   changes are reviewed — the setup step fetches `origin main` first to ensure
+   the diff base is current regardless of local branch state
 6. Cleans up the worktree regardless of pass/fail
 
 ### Guards

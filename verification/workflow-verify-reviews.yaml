@@ -38,6 +38,7 @@ jobs:
           inputs:
             run: |
               set -e
+              git fetch origin main
               CHECKOUT_DIR="/tmp/swamp-verify-reviews-${{ run.id }}"
               rm -rf "$CHECKOUT_DIR"
               git worktree prune
@@ -58,7 +59,7 @@ jobs:
           modelName: repo
           methodName: diff
           inputs:
-            base: "main"
+            base: "origin/main"
 
       - name: changed-files
         dependsOn:
@@ -71,7 +72,7 @@ jobs:
           modelName: repo
           methodName: diff
           inputs:
-            base: "main"
+            base: "origin/main"
             nameOnly: true
 
   # ── Agent Reviews ────────────────────────────────────────────
@@ -91,7 +92,7 @@ jobs:
           inputs:
             run: |
               set -o pipefail
-              MERGE_BASE=$(git merge-base main HEAD)
+              MERGE_BASE=$(git merge-base origin/main HEAD)
               DIFF_FILE=$(mktemp)
               PROMPT_FILE=$(mktemp)
               RESULT_FILE=$(mktemp)
@@ -120,7 +121,7 @@ jobs:
           inputs:
             run: |
               set -o pipefail
-              MERGE_BASE=$(git merge-base main HEAD)
+              MERGE_BASE=$(git merge-base origin/main HEAD)
               DIFF_FILE=$(mktemp)
               PROMPT_FILE=$(mktemp)
               RESULT_FILE=$(mktemp)
@@ -149,7 +150,7 @@ jobs:
           inputs:
             run: |
               set -o pipefail
-              MERGE_BASE=$(git merge-base main HEAD)
+              MERGE_BASE=$(git merge-base origin/main HEAD)
               DIFF_FILE=$(mktemp)
               PROMPT_FILE=$(mktemp)
               RESULT_FILE=$(mktemp)
@@ -178,7 +179,7 @@ jobs:
           inputs:
             run: |
               set -o pipefail
-              MERGE_BASE=$(git merge-base main HEAD)
+              MERGE_BASE=$(git merge-base origin/main HEAD)
               DIFF_FILE=$(mktemp)
               PROMPT_FILE=$(mktemp)
               RESULT_FILE=$(mktemp)
