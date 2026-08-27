@@ -92,15 +92,16 @@ jobs:
             run: |
               set -o pipefail
               MERGE_BASE=$(git merge-base main HEAD)
+              DIFF_FILE=$(mktemp)
               PROMPT_FILE=$(mktemp)
               RESULT_FILE=$(mktemp)
+              git diff "$MERGE_BASE" > "$DIFF_FILE"
               cat verification/review-prompts/code-review.md > "$PROMPT_FILE"
-              printf '\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n\nDIFF:\n' >> "$PROMPT_FILE"
-              git diff "$MERGE_BASE" >> "$PROMPT_FILE"
+              printf '\n\nThe diff to review is at: %s\nRead that file to see the changes.\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n' "$DIFF_FILE" >> "$PROMPT_FILE"
               claude -p - \
                 --model claude-opus-4-6 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
-              rm -f "$PROMPT_FILE"
+              rm -f "$PROMPT_FILE" "$DIFF_FILE"
               VERDICT=$(head -5 "$RESULT_FILE" | grep -o 'VERDICT: [a-z]*' | head -1 | cut -d' ' -f2)
               rm -f "$RESULT_FILE"
               if [ "$VERDICT" != "pass" ]; then
@@ -120,15 +121,16 @@ jobs:
             run: |
               set -o pipefail
               MERGE_BASE=$(git merge-base main HEAD)
+              DIFF_FILE=$(mktemp)
               PROMPT_FILE=$(mktemp)
               RESULT_FILE=$(mktemp)
+              git diff "$MERGE_BASE" > "$DIFF_FILE"
               cat verification/review-prompts/adversarial-review.md > "$PROMPT_FILE"
-              printf '\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n\nDIFF:\n' >> "$PROMPT_FILE"
-              git diff "$MERGE_BASE" >> "$PROMPT_FILE"
+              printf '\n\nThe diff to review is at: %s\nRead that file to see the changes.\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n' "$DIFF_FILE" >> "$PROMPT_FILE"
               claude -p - \
                 --model claude-opus-4-6 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
-              rm -f "$PROMPT_FILE"
+              rm -f "$PROMPT_FILE" "$DIFF_FILE"
               VERDICT=$(head -5 "$RESULT_FILE" | grep -o 'VERDICT: [a-z]*' | head -1 | cut -d' ' -f2)
               rm -f "$RESULT_FILE"
               if [ "$VERDICT" != "pass" ]; then
@@ -148,15 +150,16 @@ jobs:
             run: |
               set -o pipefail
               MERGE_BASE=$(git merge-base main HEAD)
+              DIFF_FILE=$(mktemp)
               PROMPT_FILE=$(mktemp)
               RESULT_FILE=$(mktemp)
+              git diff "$MERGE_BASE" > "$DIFF_FILE"
               cat verification/review-prompts/ux-review.md > "$PROMPT_FILE"
-              printf '\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n\nDIFF:\n' >> "$PROMPT_FILE"
-              git diff "$MERGE_BASE" >> "$PROMPT_FILE"
+              printf '\n\nThe diff to review is at: %s\nRead that file to see the changes.\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n' "$DIFF_FILE" >> "$PROMPT_FILE"
               claude -p - \
                 --model claude-sonnet-4-6 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
-              rm -f "$PROMPT_FILE"
+              rm -f "$PROMPT_FILE" "$DIFF_FILE"
               VERDICT=$(head -5 "$RESULT_FILE" | grep -o 'VERDICT: [a-z]*' | head -1 | cut -d' ' -f2)
               rm -f "$RESULT_FILE"
               if [ "$VERDICT" != "pass" ]; then
@@ -176,15 +179,16 @@ jobs:
             run: |
               set -o pipefail
               MERGE_BASE=$(git merge-base main HEAD)
+              DIFF_FILE=$(mktemp)
               PROMPT_FILE=$(mktemp)
               RESULT_FILE=$(mktemp)
+              git diff "$MERGE_BASE" > "$DIFF_FILE"
               cat verification/review-prompts/ci-security-review.md > "$PROMPT_FILE"
-              printf '\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n\nDIFF:\n' >> "$PROMPT_FILE"
-              git diff "$MERGE_BASE" >> "$PROMPT_FILE"
+              printf '\n\nThe diff to review is at: %s\nRead that file to see the changes.\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n' "$DIFF_FILE" >> "$PROMPT_FILE"
               claude -p - \
                 --model claude-opus-4-6 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
-              rm -f "$PROMPT_FILE"
+              rm -f "$PROMPT_FILE" "$DIFF_FILE"
               VERDICT=$(head -5 "$RESULT_FILE" | grep -o 'VERDICT: [a-z]*' | head -1 | cut -d' ' -f2)
               rm -f "$RESULT_FILE"
               if [ "$VERDICT" != "pass" ]; then
