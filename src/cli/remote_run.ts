@@ -44,6 +44,7 @@ import { deserializeEvent } from "../serve/serializer.ts";
 import type { ServerCredentialRepository } from "../domain/auth/server_credential.ts";
 import { FileServerCredentialRepository } from "../infrastructure/persistence/server_credential_repository.ts";
 import { resolveExtraHeaders } from "../domain/auth/extra_headers.ts";
+import { normalizeServerUrl as normalizeCredentialServerUrl } from "../domain/auth/server_url.ts";
 
 /**
  * Resolves the server URL from the `--server` flag with env var fallbacks.
@@ -91,10 +92,7 @@ export interface ServerRunOptions {
  */
 function toHttpUrl(serverUrl: string): string {
   try {
-    const parsed = new URL(serverUrl);
-    if (parsed.protocol === "ws:") parsed.protocol = "http:";
-    else if (parsed.protocol === "wss:") parsed.protocol = "https:";
-    return parsed.href.replace(/\/+$/, "");
+    return normalizeCredentialServerUrl(serverUrl);
   } catch {
     return serverUrl;
   }
@@ -359,7 +357,7 @@ const HEALTH_PROBE_TIMEOUT_MS = 3_000;
 export async function probeServerHealth(wsUrl: string): Promise<boolean> {
   const httpUrl = toHttpUrl(wsUrl);
   try {
-    const healthUrl = new URL("/health", httpUrl);
+    const healthUrl = new URL(`${httpUrl}/health`);
     const fetchClient = getCaCertFetchClient();
     const fetchOpts: Record<string, unknown> = {
       signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
@@ -379,6 +377,7 @@ async function classifyConnectionError(
   wsUrl: string,
   originalMessage: string,
 ): Promise<string> {
+  const loginUrl = toHttpUrl(wsUrl);
   const statusMatch = originalMessage.match(/Invalid status code: (\d+)/);
   if (statusMatch) {
     const statusCode = parseInt(statusMatch[1], 10);
@@ -386,15 +385,23 @@ async function classifyConnectionError(
       return "Rate-limited by server — try again later";
     }
     if (statusCode === 401 || statusCode === 403) {
-      return `Authentication failed — run: swamp auth server-login --server ${wsUrl}`;
+      return `Authentication failed — run: swamp auth server-login --server ${
+        shellQuote(loginUrl)
+      }`;
     }
   }
   const tlsGuidance = diagnoseTlsMessage(originalMessage);
   if (tlsGuidance) return tlsGuidance;
   if (await probeServerHealth(wsUrl)) {
-    return `Authentication failed — run: swamp auth server-login --server ${wsUrl}`;
+    return `Authentication failed — run: swamp auth server-login --server ${
+      shellQuote(loginUrl)
+    }`;
   }
   return originalMessage;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
 const wsHttpClient = Deno.createHttpClient({});

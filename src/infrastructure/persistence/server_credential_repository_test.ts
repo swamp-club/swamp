@@ -352,3 +352,15 @@ Deno.test("FileServerCredentialRepository.get: SWAMP_SERVER_TOKEN normalizes env
   assertExists(loaded);
   assertEquals(loaded.token, "env_token_normalized");
 });
+
+Deno.test("FileServerCredentialRepository.get: accepts a WebSocket env URL", async () => {
+  const repo = new FileServerCredentialRepository({
+    getServerToken: () => "env_token_ws",
+    getServerUrl: () => "wss://swamp.example.com/base/",
+  });
+
+  const loaded = await repo.get("https://swamp.example.com/base");
+
+  assertExists(loaded);
+  assertEquals(loaded.token, "env_token_ws");
+});

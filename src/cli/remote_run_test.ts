@@ -494,6 +494,26 @@ Deno.test("resolveServerToken: converts ws URL to http for credential lookup", a
   assertEquals(result, "stored.ws-lookup");
 });
 
+Deno.test("resolveServerToken: canonicalizes path, query, and fragment", async () => {
+  const lookedUp: string[] = [];
+  const mockRepo: ServerCredentialRepository = {
+    get: (url: string): Promise<ServerCredential | null> => {
+      lookedUp.push(url);
+      return Promise.resolve(null);
+    },
+    save: () => Promise.resolve(),
+    remove: () => Promise.resolve(),
+    list: () => Promise.resolve([]),
+  };
+
+  await resolveServerToken(
+    "wss://SWAMP.example.com:443/base/path///?run=1#events",
+    undefined,
+    mockRepo,
+  );
+  assertEquals(lookedUp, ["https://swamp.example.com/base/path"]);
+});
+
 // ── extra headers tests ────────────────────────────────────────────────
 
 function headerCapturingServer(): {
@@ -665,7 +685,7 @@ Deno.test("resolveServerToken: returns undefined when no credential", async () =
  * credentials.
  */
 function authRejectingServer(
-  opts?: { healthBody?: unknown; healthStatus?: number },
+  opts?: { healthBody?: unknown; healthStatus?: number; basePath?: string },
 ): {
   url: string;
   shutdown: () => Promise<void>;
@@ -677,7 +697,10 @@ function authRejectingServer(
         return new Response("Unauthorized", { status: 401 });
       }
       const url = new URL(req.url);
-      if (url.pathname === "/health" || url.pathname === "/") {
+      if (
+        url.pathname === `${opts?.basePath ?? ""}/health` ||
+        url.pathname === "/"
+      ) {
         return Response.json(
           opts?.healthBody ?? { status: "ok" },
           { status: opts?.healthStatus ?? 200 },
@@ -687,7 +710,7 @@ function authRejectingServer(
     },
   );
   return {
-    url: `ws://127.0.0.1:${server.addr.port}`,
+    url: `ws://127.0.0.1:${server.addr.port}${opts?.basePath ?? ""}`,
     shutdown: () => server.shutdown(),
   };
 }
@@ -698,6 +721,20 @@ Deno.test({
   sanitizeResources: false,
   fn: async () => {
     const server = authRejectingServer();
+    try {
+      assertEquals(await probeServerHealth(server.url), true);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name: "probeServerHealth: preserves a server base path",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = authRejectingServer({ basePath: "/base" });
     try {
       assertEquals(await probeServerHealth(server.url), true);
     } finally {
@@ -749,6 +786,8 @@ Deno.test({
       }, UserError);
       assertStringIncludes(error.message, "Authentication failed");
       assertStringIncludes(error.message, "swamp auth server-login");
+      assertStringIncludes(error.message, "--server 'http://127.0.0.1:");
+      assertEquals(error.message.includes("--server ws://"), false);
     } finally {
       await server.shutdown();
     }
@@ -773,6 +812,8 @@ Deno.test({
       );
       assertStringIncludes(error.message, "Authentication failed");
       assertStringIncludes(error.message, "swamp auth server-login");
+      assertStringIncludes(error.message, "--server 'http://127.0.0.1:");
+      assertEquals(error.message.includes("--server ws://"), false);
     } finally {
       await server.shutdown();
     }
