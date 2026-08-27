@@ -23,8 +23,9 @@ reference it.
 Diff the branch against main to see all changes:
 
 ```
-git diff main...HEAD --stat
-git diff main...HEAD
+git fetch origin main
+git diff origin/main...HEAD --stat
+git diff origin/main...HEAD
 ```
 
 For each plan step, read the files listed in the step and verify the described
