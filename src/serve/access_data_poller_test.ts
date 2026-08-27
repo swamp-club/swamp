@@ -69,8 +69,9 @@ interface MockPolicySnapshotLoader {
 function createMockPolicySnapshotLoader(): MockPolicySnapshotLoader {
   const mock: MockPolicySnapshotLoader = {
     loadCalls: 0,
-    async load(): Promise<void> {
+    load(): Promise<void> {
       mock.loadCalls++;
+      return Promise.resolve();
     },
   };
   return mock;

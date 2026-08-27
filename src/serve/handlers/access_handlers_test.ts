@@ -181,11 +181,11 @@ function createMockSyncService(): {
 } {
   const pullCalls: DatastoreSyncOptions[] = [];
   const service: DatastoreSyncService = {
-    async pullChanged(
+    pullChanged(
       options?: DatastoreSyncOptions,
     ): Promise<number | void> {
       pullCalls.push(options ?? {});
-      return 0;
+      return Promise.resolve(0);
     },
     pushChanged(): Promise<number | void> {
       return Promise.resolve(0);
@@ -222,9 +222,9 @@ function createReloadCtx(
     datastoreResolver: {} as ConnectionContext["datastoreResolver"],
     syncService,
     policySnapshotLoader: {
-      async loadWithCounts() {
+      loadWithCounts() {
         loadCalled = true;
-        return { grantCount: 0, groupCount: 0 };
+        return Promise.resolve({ grantCount: 0, groupCount: 0 });
       },
       get _loadCalled() {
         return loadCalled;
