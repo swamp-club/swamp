@@ -1372,30 +1372,26 @@ export function handleMessage(
       return;
     }
     const run = ctx.activeRunRegistry?.get(request.id);
-    if (run) {
-      const resourceKind = run.kind === "method-run" ? "model" : "workflow";
-      resolveRunFields(ctx, resourceKind, run.resourceName).then(
-        (cancelFields) => {
-          if (
-            authorizeOrReject(socket, request.id, principal, "run", {
-              kind: resourceKind,
-              name: run.resourceName,
-              fields: cancelFields,
-            }, ctx)
-          ) {
-            ctx.activeRunRegistry!.cancel(request.id);
-          }
-        },
-      ).catch((error: unknown) => {
-        logger.error(
-          "Failed to resolve fields for cancel {requestId}: {error}",
-          {
-            requestId: request.id,
-            error: error instanceof Error ? error.message : String(error),
-          },
-        );
-      });
-    }
+    if (!run) return;
+
+    const cancelController = new AbortController();
+    activeRequests.set(request.id, cancelController);
+
+    const cancelTask = handleCancelRun(
+      socket,
+      ctx,
+      request.id,
+      run,
+      principal,
+    );
+    cancelTask
+      .catch((error: unknown) => {
+        logger.error("Unhandled request error for {requestId}: {error}", {
+          requestId: request.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => activeRequests.delete(request.id));
     return;
   }
 
@@ -2486,6 +2482,30 @@ export function handleMessage(
 }
 
 // ── Run attach handler ───────────────────────────────────────────────
+
+async function handleCancelRun(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  run: import("./active_run_registry.ts").ActiveRun,
+  principal: Principal | null,
+): Promise<void> {
+  const resourceKind = run.kind === "method-run" ? "model" : "workflow";
+  const cancelFields = await resolveRunFields(
+    ctx,
+    resourceKind,
+    run.resourceName,
+  );
+  if (
+    authorizeOrReject(socket, requestId, principal, "run", {
+      kind: resourceKind,
+      name: run.resourceName,
+      fields: cancelFields,
+    }, ctx)
+  ) {
+    ctx.activeRunRegistry!.cancel(requestId);
+  }
+}
 
 async function resolveRunFields(
   ctx: ConnectionContext,
