@@ -208,6 +208,39 @@ export async function resolveExtensionFiles(
     ? manifestDir
     : resolve(extensionsDir, resolveReportsDir(marker));
 
+  // 2b. When paths.base=manifest, reject entries that start with their own
+  // archive directory prefix — the archive places each typed-key file under
+  // its directory name, so `models: [models/foo.ts]` would land at
+  // `extension/models/models/foo.ts` instead of `extension/models/foo.ts`.
+  if (useManifestBase) {
+    const typedFieldPrefixes: Array<{ field: string; prefix: string }> = [
+      { field: "models", prefix: "models/" },
+      { field: "vaults", prefix: "vaults/" },
+      { field: "drivers", prefix: "drivers/" },
+      { field: "datastores", prefix: "datastores/" },
+      { field: "reports", prefix: "reports/" },
+      { field: "include", prefix: "models/" },
+    ];
+    for (const { field, prefix } of typedFieldPrefixes) {
+      const entries = manifest[field as keyof typeof manifest];
+      if (!Array.isArray(entries)) continue;
+      for (const entry of entries) {
+        if (typeof entry !== "string") continue;
+        const normalized = entry.replace(/^\.\//, "");
+        if (normalized.startsWith(prefix)) {
+          throw new UserError(
+            `Manifest field '${field}' entry '${entry}' starts with '${prefix}', ` +
+              `which would double the archive path to ${prefix}${normalized}. ` +
+              `With paths.base: manifest, use the bare filename (e.g. '${
+                normalized.slice(prefix.length)
+              }') ` +
+              `and place the file next to the manifest, or remove paths.base to resolve from the repository's typed directory.`,
+          );
+        }
+      }
+    }
+  }
+
   // 3. Collect model files from manifest
   const modelEntryPoints: string[] = [];
   for (const modelRef of manifest.models) {

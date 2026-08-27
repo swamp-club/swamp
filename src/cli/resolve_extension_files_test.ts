@@ -1257,3 +1257,173 @@ Deno.test("resolveExtensionFiles paths.base=manifest prefers manifest-relative f
     assertEquals(result.workflowFiles[0].sourcePath, manifestRelativePath);
   });
 });
+
+Deno.test("resolveExtensionFiles paths.base=manifest rejects models entry starting with models/", async () => {
+  await withTempRepo(async (dir) => {
+    const subdir = join(dir, "extensions", "models", "myext");
+    await Deno.mkdir(join(subdir, "models"), { recursive: true });
+    await Deno.writeTextFile(
+      join(subdir, "models", "project.ts"),
+      'export const name = "project";',
+    );
+    const manifestPath = join(subdir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/nested-model",
+        version: "2026.08.27.1",
+        paths: { base: "manifest" },
+        models: ["models/project.ts"],
+      }),
+    );
+
+    await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath,
+          repoContext: stubRepoContext,
+          logger,
+        }),
+      UserError,
+      "starts with 'models/'",
+    );
+  });
+});
+
+Deno.test("resolveExtensionFiles paths.base=manifest rejects vaults entry starting with vaults/", async () => {
+  await withTempRepo(async (dir) => {
+    const subdir = join(dir, "extensions", "vaults", "myvault");
+    await Deno.mkdir(join(subdir, "vaults"), { recursive: true });
+    await Deno.writeTextFile(
+      join(subdir, "vaults", "secret.ts"),
+      'export const name = "secret";',
+    );
+    const manifestPath = join(subdir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/nested-vault",
+        version: "2026.08.27.1",
+        paths: { base: "manifest" },
+        vaults: ["vaults/secret.ts"],
+      }),
+    );
+
+    await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath,
+          repoContext: stubRepoContext,
+          logger,
+        }),
+      UserError,
+      "starts with 'vaults/'",
+    );
+  });
+});
+
+Deno.test("resolveExtensionFiles paths.base=manifest rejects include entry starting with models/", async () => {
+  await withTempRepo(async (dir) => {
+    const subdir = join(dir, "extensions", "models", "myext");
+    await Deno.mkdir(join(subdir, "models"), { recursive: true });
+    await Deno.writeTextFile(
+      join(subdir, "models", "helper.sh"),
+      "#!/bin/sh\necho hello",
+    );
+    await Deno.writeTextFile(
+      join(subdir, "entry.ts"),
+      'export const name = "entry";',
+    );
+    const manifestPath = join(subdir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/nested-include",
+        version: "2026.08.27.1",
+        paths: { base: "manifest" },
+        models: ["entry.ts"],
+        include: ["models/helper.sh"],
+      }),
+    );
+
+    await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath,
+          repoContext: stubRepoContext,
+          logger,
+        }),
+      UserError,
+      "starts with 'models/'",
+    );
+  });
+});
+
+Deno.test("resolveExtensionFiles paths.base=manifest allows unrelated subdirectory in models entry", async () => {
+  await withTempRepo(async (dir) => {
+    const subdir = join(dir, "extensions", "models", "myext");
+    await Deno.mkdir(join(subdir, "aws"), { recursive: true });
+    await Deno.writeTextFile(
+      join(subdir, "aws", "ec2.ts"),
+      'export const name = "ec2";',
+    );
+    const manifestPath = join(subdir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/aws-subdir",
+        version: "2026.08.27.1",
+        paths: { base: "manifest" },
+        models: ["aws/ec2.ts"],
+      }),
+    );
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubRepoContext,
+      logger,
+    });
+
+    assertEquals(result.modelEntryPoints, [join(subdir, "aws", "ec2.ts")]);
+  });
+});
+
+Deno.test("resolveExtensionFiles paths.base=typedDir allows models/ prefix in entry", async () => {
+  await withTempRepo(async (dir) => {
+    const modelsDir = join(dir, "extensions", "models");
+    await Deno.mkdir(join(modelsDir, "models"), { recursive: true });
+    await Deno.writeTextFile(
+      join(modelsDir, "models", "project.ts"),
+      'export const name = "project";',
+    );
+    const manifestPath = join(dir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/typeddir-nested",
+        version: "2026.08.27.1",
+        models: ["models/project.ts"],
+      }),
+    );
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubRepoContext,
+      logger,
+    });
+
+    assertEquals(result.modelEntryPoints, [
+      join(modelsDir, "models", "project.ts"),
+    ]);
+  });
+});

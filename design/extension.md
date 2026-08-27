@@ -293,7 +293,10 @@ containing `..` or starting with `/`.
   (`modelsDir`, `vaultsDir`, etc.). `"manifest"` resolves every typed entry plus
   `additionalFiles` relative to the manifest's own directory — pick this for
   per-extension-subdir layouts where manifest, source, README, and LICENSE all
-  sit alongside each other. See "Path resolution" below.
+  sit alongside each other. Under `"manifest"`, entries must not repeat the
+  typed directory prefix — e.g. `models: ["project.ts"]`, not
+  `models: ["models/project.ts"]` — because the archive already places each
+  entry under its typed directory. See "Path resolution" below.
 - `models`: Array of relative paths to TypeScript model files (e.g.,
   `["aws/ec2/instance.ts"]`). Resolved via `paths.base`.
 - `workflows`: Array of relative paths to YAML workflow files. Resolved via
