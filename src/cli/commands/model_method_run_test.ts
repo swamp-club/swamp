@@ -163,3 +163,105 @@ Deno.test({
     assertEquals(await runMethodRunAgainst({ status: "succeeded" }), 0);
   },
 });
+
+/**
+ * Captures the payload sent over the WebSocket by the --server path.
+ */
+function payloadCapturingServer(): {
+  url: string;
+  shutdown: () => Promise<void>;
+  payload: () => Record<string, unknown> | undefined;
+} {
+  let captured: Record<string, unknown> | undefined;
+  const server = Deno.serve(
+    { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+    (req) => {
+      const { socket, response } = Deno.upgradeWebSocket(req);
+      socket.onmessage = (message) => {
+        const request = JSON.parse(message.data as string) as {
+          id: string;
+          payload: Record<string, unknown>;
+        };
+        captured = request.payload;
+        socket.send(JSON.stringify({
+          type: "event",
+          id: request.id,
+          event: { kind: "completed", run: { status: "succeeded" } },
+        }));
+        socket.send(JSON.stringify({ type: "done", id: request.id }));
+      };
+      return response;
+    },
+  );
+  return {
+    url: `ws://127.0.0.1:${server.addr.port}`,
+    shutdown: () => server.shutdown(),
+    payload: () => captured,
+  };
+}
+
+Deno.test({
+  name:
+    "modelMethodRunCommand: direct type execution sends typeArg and definitionName to server",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = payloadCapturingServer();
+    try {
+      const { modelMethodRunCommand } = await import("./model_method_run.ts");
+      const root = new Command()
+        .globalType("model_name", new ModelNameType())
+        .globalOption("--json", "JSON output")
+        .command("run", modelMethodRunCommand);
+      await root.parse([
+        "run",
+        "@swamp/echo",
+        "echo",
+        "my-def",
+        "--json",
+        "--server",
+        server.url,
+        "--token",
+        "test.token",
+      ]);
+      const payload = server.payload();
+      assertEquals(payload?.typeArg, "@swamp/echo");
+      assertEquals(payload?.definitionName, "my-def");
+      assertEquals(payload?.modelIdOrName, "my-def");
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "modelMethodRunCommand: direct type execution without definition name rejects before server call",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const { modelMethodRunCommand } = await import("./model_method_run.ts");
+    const root = new Command()
+      .globalType("model_name", new ModelNameType())
+      .globalOption("--json", "JSON output")
+      .command("run", modelMethodRunCommand);
+    try {
+      await root.parse([
+        "run",
+        "@swamp/echo",
+        "echo",
+        "--json",
+        "--server",
+        "ws://localhost:9999",
+        "--token",
+        "test.token",
+      ]);
+      throw new Error("expected UserError");
+    } catch (err) {
+      assertStringIncludes(
+        (err as Error).message,
+        "Direct type execution requires a definition name",
+      );
+    }
+  },
+});

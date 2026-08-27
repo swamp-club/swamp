@@ -225,16 +225,6 @@ Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — 
       methodName: string,
       definitionNameArg?: string,
     ) {
-      const server = resolveServeUrl(options.server as string | undefined);
-      if (server) {
-        await runMethodViaServer(
-          { ...options, server },
-          modelOrType,
-          methodName,
-          { isDirectExecution: modelOrType.startsWith("@") },
-        );
-        return;
-      }
       const isDirectExecution = modelOrType.startsWith("@");
 
       if (isDirectExecution && !definitionNameArg) {
@@ -249,6 +239,17 @@ Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — 
         ? definitionNameArg!
         : modelOrType;
       const definitionName = isDirectExecution ? definitionNameArg : undefined;
+
+      const server = resolveServeUrl(options.server as string | undefined);
+      if (server) {
+        await runMethodViaServer(
+          { ...options, server },
+          modelIdOrName,
+          methodName,
+          { typeArg, definitionName },
+        );
+        return;
+      }
       const ctx = createContext(options as GlobalOptions, [
         "model",
         "method",
@@ -544,20 +545,13 @@ async function runMethodViaServer(
   options: AnyOptions,
   modelIdOrName: string,
   methodName: string,
-  info: { isDirectExecution: boolean },
+  info: { typeArg?: string; definitionName?: string },
 ): Promise<void> {
   const ctx = createContext(options as GlobalOptions, [
     "model",
     "method",
     "run",
   ]);
-
-  if (info.isDirectExecution) {
-    throw new UserError(
-      "Direct type execution (@type) is not supported with --server yet — " +
-        "run against an existing model name instead",
-    );
-  }
   const stdinContent = options.stdin ? await readStdin() : null;
   let stdinItems: Record<string, unknown>[] | null = null;
   if (stdinContent !== null) {
@@ -620,6 +614,8 @@ async function runMethodViaServer(
             inputs: inputSets[i],
             lastEvaluated: options.lastEvaluated as boolean,
             runtimeTags,
+            typeArg: info.typeArg,
+            definitionName: info.definitionName,
             skipAllReports: options.skipReports as boolean | undefined,
             skipReportNames: options.skipReport as string[] | undefined,
             skipReportLabels: options.skipReportLabel as
