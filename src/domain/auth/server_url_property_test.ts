@@ -174,7 +174,7 @@ Deno.test("normalizeServerUrl: default ports are stripped, others are kept", () 
 Deno.test("normalizeServerUrl: rejects non-http(s) schemes", () => {
   fc.assert(
     fc.property(
-      fc.constantFrom("ftp", "file", "swamp"),
+      fc.constantFrom("ftp", "file", "ws", "wss", "swamp"),
       arbHost,
       (scheme, host) => {
         assertThrows(
