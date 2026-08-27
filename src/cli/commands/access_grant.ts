@@ -292,6 +292,20 @@ const accessGrantCreateCommand = new Command()
             },
           );
         }
+      } else if (syncService) {
+        try {
+          await syncService.markDirty();
+          await syncService.pushChanged();
+        } catch (pushError) {
+          ctx.logger.warn(
+            "Failed to push changes to remote datastore: {error}",
+            {
+              error: pushError instanceof Error
+                ? pushError.message
+                : String(pushError),
+            },
+          );
+        }
       }
     }
   });

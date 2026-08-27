@@ -730,10 +730,19 @@ export async function handleAccessReload(
     }
 
     if (ctx.syncService) {
+      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+        ? ctx.datastoreConfig.namespace
+        : undefined;
       try {
-        const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-          ? ctx.datastoreConfig.namespace
-          : undefined;
+        await ctx.syncService.markDirty();
+        await ctx.syncService.pushChanged({ namespace });
+      } catch (error) {
+        logger
+          .warn`Remote access data push failed, proceeding with local reload: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
+      }
+      try {
         const pulled = await ctx.syncService.pullChanged({
           subdirs: [...ACCESS_DATA_SUBDIRS],
           namespace,

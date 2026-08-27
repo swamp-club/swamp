@@ -249,6 +249,18 @@ export async function handleModelMethodRun(
       } else {
         await runMethod();
       }
+      if (ctx.syncService && !flushLocks) {
+        try {
+          await ctx.syncService.markDirty();
+          await ctx.syncService.pushChanged();
+        } catch (pushError) {
+          logger.warn("Failed to push changes to remote datastore: {error}", {
+            error: pushError instanceof Error
+              ? pushError.message
+              : String(pushError),
+          });
+        }
+      }
       await telemetry?.finish(null);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
@@ -454,6 +466,18 @@ export async function handleModelMethodRun(
         await doRun();
       }
 
+      if (ctx.syncService && !flushLocks) {
+        try {
+          await ctx.syncService.markDirty();
+          await ctx.syncService.pushChanged();
+        } catch (pushError) {
+          logger.warn("Failed to push changes to remote datastore: {error}", {
+            error: pushError instanceof Error
+              ? pushError.message
+              : String(pushError),
+          });
+        }
+      }
       buffer.finish({ kind: "done" });
       await detachedTelemetry?.finish(null);
     } catch (error) {
