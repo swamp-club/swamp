@@ -286,8 +286,8 @@ export class DefaultWorkflowValidationService
     const results: WorkflowValidationResult[] = [];
 
     const effectiveWrites = (
-      step: import("./step.ts").Step,
-      job: import("./job.ts").Job,
+      step: (typeof workflow.jobs)[number]["steps"][number],
+      job: (typeof workflow.jobs)[number],
     ): boolean | undefined => step.writes ?? job.writes ?? workflow.writes;
 
     for (const job of workflow.jobs) {
