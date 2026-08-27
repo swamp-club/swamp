@@ -134,9 +134,29 @@ import {
   validateTriggerOverrideEntry,
   writeServeConfigFile,
 } from "../serve_config.ts";
+import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 
 const logger = getSwampLogger(["serve", "connection"]);
 const DEFAULT_BUFFER_CAPACITY = 10_000;
+
+export async function resolveWorkflowFields(
+  workflowRepo: WorkflowRepository,
+  idOrName: string,
+): Promise<Record<string, unknown>> {
+  const fields: Record<string, unknown> = { name: idOrName };
+  try {
+    const workflow = await workflowRepo.findByName(idOrName) ??
+      await workflowRepo.findById(createWorkflowId(idOrName));
+    if (workflow) {
+      fields.name = workflow.name;
+      const tags = workflow.tags;
+      if (tags && Object.keys(tags).length > 0) fields.tags = tags;
+    }
+  } catch {
+    // Fall back to name-only fields on lookup failure
+  }
+  return fields;
+}
 
 export async function handleWorkflowRun(
   socket: WebSocket,
@@ -146,11 +166,15 @@ export async function handleWorkflowRun(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  const workflowFields = await resolveWorkflowFields(
+    ctx.repoContext.workflowRepo,
+    payload.workflowIdOrName,
+  );
   if (
     !authorizeOrReject(socket, requestId, principal, "run", {
       kind: "workflow",
       name: payload.workflowIdOrName,
-      fields: { name: payload.workflowIdOrName },
+      fields: workflowFields,
     }, ctx)
   ) return;
 
@@ -487,11 +511,15 @@ export async function handleWorkflowGet(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  const workflowFields = await resolveWorkflowFields(
+    ctx.repoContext.workflowRepo,
+    payload.workflowIdOrName,
+  );
   if (
     !authorizeOrReject(socket, requestId, principal, "read", {
       kind: "workflow",
       name: payload.workflowIdOrName,
-      fields: {},
+      fields: workflowFields,
     }, ctx)
   ) return;
 
@@ -542,11 +570,15 @@ export async function handleWorkflowHistoryGet(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  const workflowFields = await resolveWorkflowFields(
+    ctx.repoContext.workflowRepo,
+    payload.workflowIdOrName,
+  );
   if (
     !authorizeOrReject(socket, requestId, principal, "read", {
       kind: "workflow",
       name: payload.workflowIdOrName,
-      fields: {},
+      fields: workflowFields,
     }, ctx)
   ) return;
 
@@ -606,11 +638,15 @@ export async function handleWorkflowHistoryLogs(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  const workflowFields = await resolveWorkflowFields(
+    ctx.repoContext.workflowRepo,
+    payload.runIdOrWorkflow,
+  );
   if (
     !authorizeOrReject(socket, requestId, principal, "read", {
       kind: "workflow",
       name: payload.runIdOrWorkflow,
-      fields: {},
+      fields: workflowFields,
     }, ctx)
   ) return;
 
@@ -851,11 +887,15 @@ export async function handleWorkflowApprove(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  const workflowFields = await resolveWorkflowFields(
+    ctx.repoContext.workflowRepo,
+    payload.workflowIdOrName,
+  );
   if (
     !authorizeOrReject(socket, requestId, principal, "run", {
       kind: "workflow",
       name: payload.workflowIdOrName,
-      fields: {},
+      fields: workflowFields,
     }, ctx)
   ) return;
 
@@ -920,11 +960,15 @@ export async function handleWorkflowReject(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  const workflowFields = await resolveWorkflowFields(
+    ctx.repoContext.workflowRepo,
+    payload.workflowIdOrName,
+  );
   if (
     !authorizeOrReject(socket, requestId, principal, "run", {
       kind: "workflow",
       name: payload.workflowIdOrName,
-      fields: {},
+      fields: workflowFields,
     }, ctx)
   ) return;
 
@@ -990,11 +1034,15 @@ export async function handleWorkflowResume(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  const workflowFields = await resolveWorkflowFields(
+    ctx.repoContext.workflowRepo,
+    payload.workflowIdOrName,
+  );
   if (
     !authorizeOrReject(socket, requestId, principal, "run", {
       kind: "workflow",
       name: payload.workflowIdOrName,
-      fields: { name: payload.workflowIdOrName },
+      fields: workflowFields,
     }, ctx)
   ) return;
 
@@ -1353,7 +1401,7 @@ export async function handleWorkflowCreate(
     !authorizeOrReject(socket, requestId, principal, "write", {
       kind: "workflow",
       name: payload.name,
-      fields: {},
+      fields: { name: payload.name },
     }, ctx)
   ) return;
 
@@ -1399,11 +1447,15 @@ export async function handleWorkflowDelete(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  const workflowFields = await resolveWorkflowFields(
+    ctx.repoContext.workflowRepo,
+    payload.workflowIdOrName,
+  );
   if (
     !authorizeOrReject(socket, requestId, principal, "write", {
       kind: "workflow",
       name: payload.workflowIdOrName,
-      fields: {},
+      fields: workflowFields,
     }, ctx)
   ) return;
 
@@ -1451,11 +1503,15 @@ export async function handleWorkflowEdit(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  const workflowFields = await resolveWorkflowFields(
+    ctx.repoContext.workflowRepo,
+    payload.workflowIdOrName,
+  );
   if (
     !authorizeOrReject(socket, requestId, principal, "write", {
       kind: "workflow",
       name: payload.workflowIdOrName,
-      fields: {},
+      fields: workflowFields,
     }, ctx)
   ) return;
 
@@ -1507,11 +1563,15 @@ export async function handleWorkflowValidate(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  const resourceName = payload?.workflowIdOrName ?? "*";
+  const workflowFields = resourceName !== "*"
+    ? await resolveWorkflowFields(ctx.repoContext.workflowRepo, resourceName)
+    : {};
   if (
     !authorizeOrReject(socket, requestId, principal, "read", {
       kind: "workflow",
-      name: payload?.workflowIdOrName ?? "*",
-      fields: {},
+      name: resourceName,
+      fields: workflowFields,
     }, ctx)
   ) return;
 
@@ -1563,11 +1623,15 @@ export async function handleWorkflowEvaluate(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  const resourceName = payload?.workflowIdOrName ?? "*";
+  const workflowFields = resourceName !== "*"
+    ? await resolveWorkflowFields(ctx.repoContext.workflowRepo, resourceName)
+    : {};
   if (
     !authorizeOrReject(socket, requestId, principal, "read", {
       kind: "workflow",
-      name: payload?.workflowIdOrName ?? "*",
-      fields: {},
+      name: resourceName,
+      fields: workflowFields,
     }, ctx)
   ) return;
 
@@ -1622,11 +1686,15 @@ export async function handleWorkflowTriggerSet(
   _controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  const workflowFields = await resolveWorkflowFields(
+    ctx.repoContext.workflowRepo,
+    payload.workflowName,
+  );
   if (
     !authorizeOrReject(socket, requestId, principal, "write", {
       kind: "workflow",
       name: payload.workflowName,
-      fields: {},
+      fields: workflowFields,
     }, ctx)
   ) return;
 
@@ -1668,11 +1736,15 @@ export async function handleWorkflowTriggerGet(
   _controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  const workflowFields = await resolveWorkflowFields(
+    ctx.repoContext.workflowRepo,
+    payload.workflowName,
+  );
   if (
     !authorizeOrReject(socket, requestId, principal, "read", {
       kind: "workflow",
       name: payload.workflowName,
-      fields: {},
+      fields: workflowFields,
     }, ctx)
   ) return;
 
@@ -1728,11 +1800,15 @@ export async function handleWorkflowTriggerRemove(
   _controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  const workflowFields = await resolveWorkflowFields(
+    ctx.repoContext.workflowRepo,
+    payload.workflowName,
+  );
   if (
     !authorizeOrReject(socket, requestId, principal, "write", {
       kind: "workflow",
       name: payload.workflowName,
-      fields: {},
+      fields: workflowFields,
     }, ctx)
   ) return;
 

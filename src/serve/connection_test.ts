@@ -33,6 +33,7 @@ import { PolicySnapshot } from "../domain/access/policy_snapshot.ts";
 import type { PolicySnapshotLoader } from "../domain/access/policy_snapshot_loader.ts";
 import type { Grant } from "../domain/models/access/grant_model.ts";
 import { GrantBasedAccessDecisionService } from "../domain/access/grant_based_access_decision_service.ts";
+import { waitFor } from "@swamp-club/swamp-testing";
 
 await initializeLogging({});
 
@@ -545,6 +546,10 @@ const stubRepoContext = {
     listTypes: () => Promise.resolve([]),
     listByType: () => Promise.resolve([]),
   },
+  workflowRepo: {
+    findByName: () => Promise.resolve(null),
+    findById: () => Promise.resolve(null),
+  },
 } as unknown as ConnectionContext["repoContext"];
 
 const stubRepoDir = await Deno.makeTempDir({ prefix: "swamp_conn_test_" });
@@ -626,7 +631,7 @@ Deno.test("authorizeOrReject: null principal rejected in token mode", () => {
 
 // ── Authorization: authorized request succeeds ────────────────────────────
 
-Deno.test("authorizeOrReject: authorized workflow.run proceeds", () => {
+Deno.test("authorizeOrReject: authorized workflow.run proceeds", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
   const grant = makeGrant({
@@ -648,6 +653,7 @@ Deno.test("authorizeOrReject: authorized workflow.run proceeds", () => {
     testPrincipal,
   );
 
+  await waitFor(() => mock.sent.length >= 1, "workflow.run response sent");
   // Should not get an unauthorized error — the request proceeds to the handler
   for (const sent of mock.sent) {
     const msg = JSON.parse(sent);
@@ -662,7 +668,7 @@ Deno.test("authorizeOrReject: authorized workflow.run proceeds", () => {
 
 // ── Authorization: unauthorized request gets error frame ──────────────────
 
-Deno.test("authorizeOrReject: unauthorized workflow.run returns error frame", () => {
+Deno.test("authorizeOrReject: unauthorized workflow.run returns error frame", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
   const ctx = makeCtx(modeTokenConfig, []);
@@ -679,7 +685,7 @@ Deno.test("authorizeOrReject: unauthorized workflow.run returns error frame", ()
     testPrincipal,
   );
 
-  assertEquals(mock.sent.length, 1);
+  await waitFor(() => mock.sent.length >= 1, "unauthorized error frame sent");
   const msg = parseSent(mock);
   assertEquals(msg.type, "error");
   assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
@@ -940,7 +946,7 @@ Deno.test("authorizeOrReject: explicit deny beats admin on access:*", () => {
   assertStringIncludes(errorMessage, "explicitly denied");
 });
 
-Deno.test("authorizeOrReject: explicit deny returns denied error frame", () => {
+Deno.test("authorizeOrReject: explicit deny returns denied error frame", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
   const grants: Grant[] = [
@@ -973,7 +979,7 @@ Deno.test("authorizeOrReject: explicit deny returns denied error frame", () => {
     testPrincipal,
   );
 
-  assertEquals(mock.sent.length, 1);
+  await waitFor(() => mock.sent.length >= 1, "deny error frame sent");
   const msg = parseSent(mock);
   assertEquals(msg.type, "error");
   assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
@@ -981,7 +987,7 @@ Deno.test("authorizeOrReject: explicit deny returns denied error frame", () => {
   assertStringIncludes(errorMessage, "explicitly denied");
 });
 
-Deno.test("authorizeOrReject: resolvedUserNames replaces raw ID in error message", () => {
+Deno.test("authorizeOrReject: resolvedUserNames replaces raw ID in error message", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
   const opaqueId = "699e486007f77116ebf44bd2";
@@ -1001,7 +1007,7 @@ Deno.test("authorizeOrReject: resolvedUserNames replaces raw ID in error message
     principal,
   );
 
-  assertEquals(mock.sent.length, 1);
+  await waitFor(() => mock.sent.length >= 1, "resolved-name error frame sent");
   const msg = parseSent(mock);
   assertEquals(msg.type, "error");
   assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
@@ -1010,7 +1016,7 @@ Deno.test("authorizeOrReject: resolvedUserNames replaces raw ID in error message
   assertEquals(errorMessage.includes(opaqueId), false);
 });
 
-Deno.test("authorizeOrReject: falls back to raw ID when resolvedUserNames absent", () => {
+Deno.test("authorizeOrReject: falls back to raw ID when resolvedUserNames absent", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
   const opaqueId = "699e486007f77116ebf44bd2";
@@ -1029,7 +1035,7 @@ Deno.test("authorizeOrReject: falls back to raw ID when resolvedUserNames absent
     principal,
   );
 
-  assertEquals(mock.sent.length, 1);
+  await waitFor(() => mock.sent.length >= 1, "raw-id error frame sent");
   const msg = parseSent(mock);
   assertEquals(msg.type, "error");
   const errorMessage = String((msg.error as Record<string, unknown>).message);
@@ -1693,7 +1699,7 @@ Deno.test("validateServerRequest accepts report.type.search", () => {
 
 // ── Authorization: new request types ────────────────────────────────────
 
-Deno.test("authorizeOrReject: data.get rejected without read grant", () => {
+Deno.test("authorizeOrReject: data.get rejected without read grant", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
   const ctx = makeCtx(modeTokenConfig, []);
@@ -1710,7 +1716,10 @@ Deno.test("authorizeOrReject: data.get rejected without read grant", () => {
     testPrincipal,
   );
 
-  assertEquals(mock.sent.length, 1);
+  await waitFor(
+    () => mock.sent.length >= 1,
+    "data.get unauthorized frame sent",
+  );
   const msg = parseSent(mock);
   assertEquals(msg.type, "error");
   assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
@@ -1964,7 +1973,7 @@ Deno.test("authorizeOrReject: audit.timeline rejected without read grant", () =>
   );
 });
 
-Deno.test("authorizeOrReject: admin on access:* grants data.get (superuser)", () => {
+Deno.test("authorizeOrReject: admin on access:* grants data.get (superuser)", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
   const grant = makeGrant({
@@ -1986,6 +1995,10 @@ Deno.test("authorizeOrReject: admin on access:* grants data.get (superuser)", ()
     testPrincipal,
   );
 
+  await waitFor(
+    () => mock.sent.length >= 1,
+    "data.get superuser response sent",
+  );
   const unauthorizedErrors = mock.sent
     .map((s) => JSON.parse(s))
     .filter((m) =>
