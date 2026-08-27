@@ -144,12 +144,16 @@ export async function resolveWorkflowFields(
   idOrName: string,
 ): Promise<Record<string, unknown>> {
   const fields: Record<string, unknown> = { name: idOrName };
-  const workflow = await workflowRepo.findByName(idOrName) ??
-    await workflowRepo.findById(createWorkflowId(idOrName));
-  if (workflow) {
-    fields.name = workflow.name;
-    const tags = workflow.tags;
-    if (tags && Object.keys(tags).length > 0) fields.tags = tags;
+  try {
+    const workflow = await workflowRepo.findByName(idOrName) ??
+      await workflowRepo.findById(createWorkflowId(idOrName));
+    if (workflow) {
+      fields.name = workflow.name;
+      const tags = workflow.tags;
+      if (tags && Object.keys(tags).length > 0) fields.tags = tags;
+    }
+  } catch {
+    // Fall back to name-only fields on lookup failure
   }
   return fields;
 }

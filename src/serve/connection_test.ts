@@ -33,6 +33,7 @@ import { PolicySnapshot } from "../domain/access/policy_snapshot.ts";
 import type { PolicySnapshotLoader } from "../domain/access/policy_snapshot_loader.ts";
 import type { Grant } from "../domain/models/access/grant_model.ts";
 import { GrantBasedAccessDecisionService } from "../domain/access/grant_based_access_decision_service.ts";
+import { waitFor } from "@swamp-club/swamp-testing";
 
 await initializeLogging({});
 
@@ -683,8 +684,7 @@ Deno.test("authorizeOrReject: unauthorized workflow.run returns error frame", as
     testPrincipal,
   );
 
-  await new Promise((r) => setTimeout(r, 0));
-  assertEquals(mock.sent.length, 1);
+  await waitFor(() => mock.sent.length >= 1, "unauthorized error frame sent");
   const msg = parseSent(mock);
   assertEquals(msg.type, "error");
   assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
@@ -978,8 +978,7 @@ Deno.test("authorizeOrReject: explicit deny returns denied error frame", async (
     testPrincipal,
   );
 
-  await new Promise((r) => setTimeout(r, 0));
-  assertEquals(mock.sent.length, 1);
+  await waitFor(() => mock.sent.length >= 1, "deny error frame sent");
   const msg = parseSent(mock);
   assertEquals(msg.type, "error");
   assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
@@ -1007,8 +1006,7 @@ Deno.test("authorizeOrReject: resolvedUserNames replaces raw ID in error message
     principal,
   );
 
-  await new Promise((r) => setTimeout(r, 0));
-  assertEquals(mock.sent.length, 1);
+  await waitFor(() => mock.sent.length >= 1, "resolved-name error frame sent");
   const msg = parseSent(mock);
   assertEquals(msg.type, "error");
   assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
@@ -1036,8 +1034,7 @@ Deno.test("authorizeOrReject: falls back to raw ID when resolvedUserNames absent
     principal,
   );
 
-  await new Promise((r) => setTimeout(r, 0));
-  assertEquals(mock.sent.length, 1);
+  await waitFor(() => mock.sent.length >= 1, "raw-id error frame sent");
   const msg = parseSent(mock);
   assertEquals(msg.type, "error");
   const errorMessage = String((msg.error as Record<string, unknown>).message);
@@ -1718,8 +1715,10 @@ Deno.test("authorizeOrReject: data.get rejected without read grant", async () =>
     testPrincipal,
   );
 
-  await new Promise((r) => setTimeout(r, 0));
-  assertEquals(mock.sent.length, 1);
+  await waitFor(
+    () => mock.sent.length >= 1,
+    "data.get unauthorized frame sent",
+  );
   const msg = parseSent(mock);
   assertEquals(msg.type, "error");
   assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
@@ -1995,7 +1994,10 @@ Deno.test("authorizeOrReject: admin on access:* grants data.get (superuser)", as
     testPrincipal,
   );
 
-  await new Promise((r) => setTimeout(r, 0));
+  await waitFor(
+    () => mock.sent.length >= 1,
+    "data.get superuser response sent",
+  );
   const unauthorizedErrors = mock.sent
     .map((s) => JSON.parse(s))
     .filter((m) =>

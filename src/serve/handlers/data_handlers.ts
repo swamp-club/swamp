@@ -81,11 +81,18 @@ export async function resolveDataFields(
   modelIdOrName: string,
 ): Promise<Record<string, unknown>> {
   const fields: Record<string, unknown> = { name: modelIdOrName };
-  const result = await findDefinitionByIdOrName(definitionRepo, modelIdOrName);
-  if (result) {
-    fields.name = result.definition.name;
-    const tags = result.definition.tags;
-    if (tags && Object.keys(tags).length > 0) fields.tags = tags;
+  try {
+    const result = await findDefinitionByIdOrName(
+      definitionRepo,
+      modelIdOrName,
+    );
+    if (result) {
+      fields.name = result.definition.name;
+      const tags = result.definition.tags;
+      if (tags && Object.keys(tags).length > 0) fields.tags = tags;
+    }
+  } catch {
+    // Fall back to name-only fields on lookup failure
   }
   return fields;
 }
