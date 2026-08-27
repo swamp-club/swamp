@@ -106,7 +106,7 @@ export class AccessDataPoller {
       }
     } catch (error) {
       logger
-        .warn`Access data poller pull failed: ${
+        .warn`Access data poller cycle failed: ${
         error instanceof Error ? error.message : String(error)
       }`;
     } finally {

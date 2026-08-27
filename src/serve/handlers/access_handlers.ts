@@ -730,16 +730,24 @@ export async function handleAccessReload(
     }
 
     if (ctx.syncService) {
-      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-        ? ctx.datastoreConfig.namespace
-        : undefined;
-      const pulled = await ctx.syncService.pullChanged({
-        subdirs: [...ACCESS_DATA_SUBDIRS],
-        namespace,
-      });
-      if (typeof pulled === "number" && pulled > 0) {
-        logger.info`Pulled ${pulled} access data file(s) from remote datastore`;
-        ctx.repoContext.catalogStore.invalidate();
+      try {
+        const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+          ? ctx.datastoreConfig.namespace
+          : undefined;
+        const pulled = await ctx.syncService.pullChanged({
+          subdirs: [...ACCESS_DATA_SUBDIRS],
+          namespace,
+        });
+        if (typeof pulled === "number" && pulled > 0) {
+          logger
+            .info`Pulled ${pulled} access data file(s) from remote datastore`;
+          ctx.repoContext.catalogStore.invalidate();
+        }
+      } catch (error) {
+        logger
+          .warn`Remote access data pull failed, proceeding with local reload: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
       }
     }
 
