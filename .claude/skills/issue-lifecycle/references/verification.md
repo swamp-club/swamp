@@ -71,9 +71,13 @@ swamp data get <model-name> <data-name>
 succeeded.** A partial pass is NOT a pass. If any step failed, go to "Any step
 failed" below.
 
-1. Construct the combined attestation JSON including the `configIntegrity`
-   checksums (see `agent-constraints/verification-conventions.md` for the full
-   schema).
+1. **Build a fresh attestation from the actual run data.** Query
+   `workflow history get <run-id> --json` for both workflows, extract real step
+   durations and statuses, and recompute `configIntegrity` checksums from the
+   files at the verified commit (`sha256sum`). **NEVER reuse or edit a previous
+   attestation** — swapping the commit SHA or run IDs in an old attestation is a
+   trust chain violation. See `agent-constraints/verification-conventions.md`
+   for the full schema.
 
 2. Call `verification_passed` with the attestation data:
 
