@@ -128,12 +128,11 @@ export const datastoreConfigMigrateCommand = new Command()
       result.copiedPulledExtensions && "pulled-extensions",
     ].filter(Boolean);
 
+    let pushed = false;
     if (syncService && (copied.length > 0 || managedConfigSet)) {
       await syncService.markDirty();
       await syncService.pushChanged();
-      if (ctx.outputMode !== "json") {
-        ctx.logger.info`Pushed config to datastore`;
-      }
+      pushed = true;
     }
 
     if (ctx.outputMode === "json") {
@@ -146,11 +145,17 @@ export const datastoreConfigMigrateCommand = new Command()
         copiedPulledExtensions: result.copiedPulledExtensions,
         managedConfigSet,
         configRoot,
+        pushed,
       }));
-    } else if (copied.length > 0) {
-      ctx.logger
-        .info`Migrated ${copied.join(", ")} into datastore config tier`;
     } else {
-      ctx.logger.info`No config files found to migrate`;
+      if (copied.length > 0) {
+        ctx.logger
+          .info`Migrated ${copied.join(", ")} into datastore config tier`;
+      } else {
+        ctx.logger.info`No config files found to migrate`;
+      }
+      if (pushed) {
+        ctx.logger.info`Pushed config to datastore`;
+      }
     }
   });
