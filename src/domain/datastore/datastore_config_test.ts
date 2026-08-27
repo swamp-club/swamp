@@ -21,6 +21,7 @@ import { assertEquals, assertFalse } from "@std/assert";
 import {
   ALWAYS_LOCAL_SUBDIRS,
   type CustomDatastoreConfig,
+  type DatastoreConfigData,
   DEFAULT_DATASTORE_SUBDIRS,
   DEFAULT_LOCK_TIMEOUT_MS,
   DEFAULT_SYNC_TIMEOUT_MS,
@@ -281,4 +282,26 @@ Deno.test("DEFAULT_DATASTORE_SUBDIRS: still lists secrets for backwards compatib
     (DEFAULT_DATASTORE_SUBDIRS as readonly string[]).includes("secrets"),
     true,
   );
+});
+
+Deno.test("DEFAULT_DATASTORE_SUBDIRS: includes config subdir", () => {
+  assertEquals(
+    (DEFAULT_DATASTORE_SUBDIRS as readonly string[]).includes("config"),
+    true,
+  );
+});
+
+Deno.test("getDatastoreDirectories: config subdir is included in defaults", () => {
+  const dirs = getDatastoreDirectories(filesystemConfig);
+  assertEquals(dirs.includes("config"), true);
+});
+
+Deno.test("DatastoreConfigData: managedConfig defaults to undefined", () => {
+  const data: DatastoreConfigData = { type: "filesystem" };
+  assertEquals(data.managedConfig, undefined);
+});
+
+Deno.test("DatastoreConfigData: managedConfig can be set to true", () => {
+  const data: DatastoreConfigData = { type: "filesystem", managedConfig: true };
+  assertEquals(data.managedConfig, true);
 });

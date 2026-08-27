@@ -194,6 +194,7 @@ import "../domain/models/models.ts";
 // separate files to avoid circular imports through mod.ts.
 import { resolveModelsDir } from "./resolve_models_dir.ts";
 export { resolveModelsDir };
+import { resolveManagedConfigPaths } from "./repo_context.ts";
 import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
 export { resolveWorkflowsDir };
 import { resolveVaultsDir } from "./resolve_vaults_dir.ts";
@@ -297,6 +298,7 @@ export async function configureExtensionLoaders(
   deferredWarnings: DeferredWarning[],
   quiet = false,
   extensionsDir?: string,
+  managedLockfilePath?: string,
 ): Promise<void> {
   const effectiveExtDir = extensionsDir ?? repoDir;
 
@@ -385,7 +387,7 @@ export async function configureExtensionLoaders(
   // getter so the lockfile is read on first need rather than at every
   // configureExtensionLoaders call.
   const repoModelsDir = resolveModelsDir(marker);
-  const lockfilePath = join(
+  const lockfilePath = managedLockfilePath ?? join(
     isAbsolute(repoModelsDir) ? repoModelsDir : resolve(repoDir, repoModelsDir),
     "upstream_extensions.json",
   );
@@ -422,6 +424,7 @@ export async function configureExtensionLoaders(
       repository,
       quiet,
       effectiveExtDir,
+      lockfilePath,
     )
   );
   vaultTypeRegistry.setLoader(() =>
@@ -434,6 +437,7 @@ export async function configureExtensionLoaders(
       repository,
       quiet,
       effectiveExtDir,
+      lockfilePath,
     )
   );
   datastoreTypeRegistry.setLoader(() =>
@@ -445,6 +449,7 @@ export async function configureExtensionLoaders(
       repository,
       quiet,
       effectiveExtDir,
+      lockfilePath,
     )
   );
   reportRegistry.setLoader(() =>
@@ -457,6 +462,7 @@ export async function configureExtensionLoaders(
       repository,
       quiet,
       effectiveExtDir,
+      lockfilePath,
     )
   );
 
@@ -464,7 +470,12 @@ export async function configureExtensionLoaders(
   // instance — the local repo may be a thin checkout whose lockfile
   // references files that only exist on the server.
   if (!Deno.env.get("SWAMP_SERVE_URL")) {
-    await checkForMissingPulledExtensions(repoDir, marker, deferredWarnings);
+    await checkForMissingPulledExtensions(
+      repoDir,
+      marker,
+      deferredWarnings,
+      lockfilePath,
+    );
     await checkForSupersededSkills(repoDir, marker, deferredWarnings);
   }
 }
@@ -479,6 +490,7 @@ export function configureExtensionAutoResolver(
   authCollectives: string[] | undefined,
   outputMode: "log" | "json",
   identity: ClientIdentity = {},
+  managedLockfilePath?: string,
 ): void {
   const trustedCollectives = resolveTrustedCollectives(marker, authCollectives);
   if (trustedCollectives.length === 0 || !marker) {
@@ -489,6 +501,10 @@ export function configureExtensionAutoResolver(
   const extensionClient = new ExtensionApiClient(serverUrl, identity);
   const apiKey = identity.bearerToken;
   const modelsDir = resolveModelsDir(marker);
+  const effectiveLockfilePath = managedLockfilePath ?? join(
+    resolve(repoDir, modelsDir),
+    "upstream_extensions.json",
+  );
   const denoRuntime = new EmbeddedDenoRuntime();
   setAutoResolver(
     new ExtensionAutoResolver({
@@ -504,24 +520,15 @@ export function configureExtensionAutoResolver(
           extensionClient.downloadArchive(name, version, apiKey, channel),
         getChecksum: (name, version, channel) =>
           extensionClient.getChecksum(name, version, apiKey, channel),
-        lockfilePath: join(
-          resolve(repoDir, modelsDir),
-          "upstream_extensions.json",
-        ),
+        lockfilePath: effectiveLockfilePath,
         repoDir,
         denoRuntime,
-        // W1b/(a-2): wrap the auto-resolver-context catalog in its own
-        // ExtensionRepository so the loaders constructed inside
-        // hotLoadModels/hotLoadVaults/hotLoadDatastores can route their
-        // catalog operations through the repository. The
-        // lockfile snapshot is taken here at adapter-creation time;
-        // long-lived repository instances do not refresh.
         repository: new ExtensionRepository({
           catalog: new ExtensionCatalogStore(
             swampPath(repoDir, "_extension_catalog.db"),
           ),
           lockfileRepository: new LockfileRepository(
-            join(resolve(repoDir, modelsDir), "upstream_extensions.json"),
+            effectiveLockfilePath,
             {},
           ),
           repoRoot: repoDir,
@@ -613,25 +620,24 @@ async function loadUserModels(
   repository?: ExtensionRepository,
   _quiet = false,
   extensionsDir?: string,
+  managedLockfilePath?: string,
 ): Promise<void> {
   try {
     const extBase = extensionsDir ?? repoDir;
     const modelsDir = resolveModelsDir(marker);
-    // Handle both absolute and relative paths (cross-platform)
     const absoluteModelsDir = isAbsolute(modelsDir)
       ? modelsDir
       : resolve(extBase, modelsDir);
 
-    // W1b/(a-2): if no repository was passed, bootstrap one with an
-    // empty lockfile lookup. The catalog stays open for the process
-    // lifetime so the ExtensionLoader can query it via getCatalogStore()
-    // when loadSingleType() is called later.
+    const lockfilePath = managedLockfilePath ??
+      join(absoluteModelsDir, "upstream_extensions.json");
+
     const effectiveRepository = repository ?? new ExtensionRepository({
       catalog: new ExtensionCatalogStore(
         swampPath(repoDir, "_extension_catalog.db"),
       ),
       lockfileRepository: new LockfileRepository(
-        join(absoluteModelsDir, "upstream_extensions.json"),
+        lockfilePath,
         {},
       ),
       repoRoot: repoDir,
@@ -645,7 +651,6 @@ async function loadUserModels(
       resolver,
       effectiveRepository,
     );
-    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
     const pulledDirs = await enumeratePulledExtensionDirs(
       lockfilePath,
       repoDir,
@@ -721,6 +726,7 @@ async function loadUserVaults(
   repository?: ExtensionRepository,
   _quiet = false,
   extensionsDir?: string,
+  managedLockfilePath?: string,
 ): Promise<void> {
   try {
     const extBase = extensionsDir ?? repoDir;
@@ -738,7 +744,7 @@ async function loadUserVaults(
       repository,
     );
     const modelsDir = resolveModelsDir(marker);
-    const lockfilePath = join(
+    const lockfilePath = managedLockfilePath ?? join(
       isAbsolute(modelsDir) ? modelsDir : resolve(repoDir, modelsDir),
       "upstream_extensions.json",
     );
@@ -805,6 +811,7 @@ async function loadUserDatastores(
   repository?: ExtensionRepository,
   _quiet = false,
   extensionsDir?: string,
+  managedLockfilePath?: string,
 ): Promise<void> {
   try {
     const extBase = extensionsDir ?? repoDir;
@@ -821,7 +828,7 @@ async function loadUserDatastores(
       repository,
     );
     const modelsDir = resolveModelsDir(marker);
-    const lockfilePath = join(
+    const lockfilePath = managedLockfilePath ?? join(
       isAbsolute(modelsDir) ? modelsDir : resolve(repoDir, modelsDir),
       "upstream_extensions.json",
     );
@@ -892,6 +899,7 @@ async function loadUserReports(
   repository?: ExtensionRepository,
   _quiet = false,
   extensionsDir?: string,
+  managedLockfilePath?: string,
 ): Promise<void> {
   try {
     const extBase = extensionsDir ?? repoDir;
@@ -909,7 +917,7 @@ async function loadUserReports(
       repository,
     );
     const modelsDir = resolveModelsDir(marker);
-    const lockfilePath = join(
+    const lockfilePath = managedLockfilePath ?? join(
       isAbsolute(modelsDir) ? modelsDir : resolve(repoDir, modelsDir),
       "upstream_extensions.json",
     );
@@ -977,13 +985,15 @@ async function checkForMissingPulledExtensions(
   repoDir: string,
   marker: RepoMarkerData | null,
   deferredWarnings: DeferredWarning[],
+  managedLockfilePath?: string,
 ): Promise<void> {
   try {
     const modelsDir = resolveModelsDir(marker);
     const absoluteModelsDir = isAbsolute(modelsDir)
       ? modelsDir
       : resolve(repoDir, modelsDir);
-    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+    const lockfilePath = managedLockfilePath ??
+      join(absoluteModelsDir, "upstream_extensions.json");
 
     const lockfileRepository = await LockfileRepository.create(lockfilePath);
     const upstream = lockfileRepository.getAllEntries();
@@ -1347,6 +1357,10 @@ export async function runCli(args: string[]): Promise<void> {
     const loaderSpan = getTracer().startSpan(
       "swamp.cli.configure_extension_loaders",
     );
+    const { lockfilePath: managedLockfilePath } = resolveManagedConfigPaths(
+      repoDir,
+      marker,
+    );
     await configureExtensionLoaders(
       repoDir,
       marker,
@@ -1354,6 +1368,7 @@ export async function runCli(args: string[]): Promise<void> {
       deferredWarnings,
       isQuietFromArgs(args),
       extensionsDir,
+      managedLockfilePath,
     );
     loaderSpan.end();
   }
@@ -1435,12 +1450,15 @@ export async function runCli(args: string[]): Promise<void> {
   if (!hookMode) {
     const autoResolverIdentity = await loadIdentity();
     setAuthenticated(Boolean(autoResolverIdentity.bearerToken));
+    const { lockfilePath: autoResolverLockfilePath } =
+      resolveManagedConfigPaths(repoDir, marker);
     configureExtensionAutoResolver(
       repoDir,
       marker,
       authCollectives,
       getOutputModeFromArgs(args),
       autoResolverIdentity,
+      autoResolverLockfilePath,
     );
   }
 

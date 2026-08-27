@@ -101,7 +101,10 @@ import {
 } from "../../domain/access/principal.ts";
 import { createEphemeralStore } from "../../infrastructure/persistence/ephemeral_store.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
-import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import {
+  resolvePulledExtensionsRoot,
+  SWAMP_SUBDIRS,
+} from "../../infrastructure/persistence/paths.ts";
 import {
   extractTraceContext,
   runWithParentTrace,
@@ -1058,6 +1061,7 @@ export async function handleWorkflowResume(
         ctx.runTracker,
         ephemeral.repo,
         ephemeral.catalog,
+        resolvePulledExtensionsRoot(ctx.repoDir),
       );
 
       const resumeGenerator = async function* (): AsyncGenerator<
@@ -1237,6 +1241,7 @@ export async function handleWorkflowResume(
         ctx.runTracker,
         ephemeral.repo,
         ephemeral.catalog,
+        resolvePulledExtensionsRoot(ctx.repoDir),
       );
 
       const doResume = async () => {

@@ -44,6 +44,10 @@ import { RepoPath } from "../domain/repo/repo_path.ts";
 import { getAutoResolver } from "../domain/extensions/auto_resolver_context.ts";
 import { AuthRepository } from "../infrastructure/persistence/auth_repository.ts";
 import { resolveTrustedCollectives } from "../libswamp/mod.ts";
+import {
+  managedConfigLockfilePath,
+  resolvePulledExtensionsRoot,
+} from "../infrastructure/persistence/paths.ts";
 import { resolveModelsDir } from "../cli/resolve_models_dir.ts";
 import type { ServeReloadResponse } from "./protocol.ts";
 import { readServeConfigFile } from "./serve_config.ts";
@@ -60,6 +64,7 @@ export function isReloading(): boolean {
 export async function reloadPulledExtensions(
   repoDir: string,
   lockfilePath: string,
+  pulledExtensionsRoot?: string,
 ): Promise<number> {
   incrementReloadGeneration();
 
@@ -70,7 +75,8 @@ export async function reloadPulledExtensions(
     const lockfile = await LockfileRepository.create(lockfilePath);
     const entries = lockfile.getAllEntries();
 
-    const pulledRoot = join(repoDir, ".swamp", "pulled-extensions");
+    const pulledRoot = pulledExtensionsRoot ??
+      resolvePulledExtensionsRoot(repoDir);
     const rebundled = new Set<string>();
     let denoRuntime: EmbeddedDenoRuntime | undefined;
     let denoPath: string | undefined;
@@ -223,7 +229,10 @@ export async function resolveLockfilePath(
     const markerRepo = new RepoMarkerRepository();
     marker = await markerRepo.read(RepoPath.create(repoDir));
   } catch {
-    // Not in a swamp repo or marker unreadable — resolveModelsDir(null) returns the default
+    // Not in a swamp repo or marker unreadable — resolveManagedConfigPaths uses default paths
+  }
+  if (marker?.datastore?.managedConfig) {
+    return managedConfigLockfilePath(repoDir);
   }
   const modelsDir = resolveModelsDir(marker);
   return join(
@@ -242,6 +251,7 @@ export async function performServeReload(
   repoDir: string,
   lockfilePath: string,
   options?: ServeReloadOptions,
+  pulledExtensionsRoot?: string,
 ): Promise<ServeReloadResponse> {
   if (reloading) {
     return {
@@ -257,7 +267,11 @@ export async function performServeReload(
   let triggerOverridesChanged = 0;
 
   try {
-    reloadedCount = await reloadPulledExtensions(repoDir, lockfilePath);
+    reloadedCount = await reloadPulledExtensions(
+      repoDir,
+      lockfilePath,
+      pulledExtensionsRoot,
+    );
 
     try {
       await reloadTrustedCollectives(repoDir);

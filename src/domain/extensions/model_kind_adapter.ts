@@ -346,10 +346,12 @@ function resolveExtensionFilesRoot(
     try {
       Deno.lstatSync(manifestPath);
       const normalized = currentDir.replace(/\\/g, "/");
-      const pulledMarker = `/${SWAMP_DATA_DIR}/pulled-extensions/`;
-      const result = normalized.includes(pulledMarker)
-        ? join(currentDir, "files")
-        : currentDir;
+      const isPulled = normalized.includes(
+        `/${SWAMP_DATA_DIR}/pulled-extensions/`,
+      ) || normalized.includes(
+        `/${SWAMP_DATA_DIR}/config/pulled-extensions/`,
+      );
+      const result = isPulled ? join(currentDir, "files") : currentDir;
       extensionFilesRootCache.set(currentDir, result);
       return result;
     } catch {

@@ -18,14 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { join, relative, resolve } from "@std/path";
+import { relative } from "@std/path";
 import {
   createContext,
   type GlobalOptions,
   interactiveOutputMode,
 } from "../context.ts";
 import { requireRepoMarker } from "../repo_context.ts";
-import { resolveModelsDir } from "../resolve_models_dir.ts";
+import { resolveManagedConfigPaths } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { ReleaseChannel } from "../../domain/extensions/release_channel.ts";
 import {
@@ -258,12 +258,7 @@ export const extensionSearchCommand = withRemoteOptions(
     // Extension install writes to local files only (pulled-extensions/,
     // lockfile) — no datastore needed; see #445.
     const { repoDir, marker } = await requireRepoMarker(".");
-    const modelsDir = resolveModelsDir(marker);
-    const absoluteModelsDir = resolve(repoDir, modelsDir);
-    const lockfilePath = join(
-      absoluteModelsDir,
-      "upstream_extensions.json",
-    );
+    const { lockfilePath } = resolveManagedConfigPaths(repoDir, marker);
 
     const tools = marker?.tools?.length ? marker.tools : ["claude"];
     const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);

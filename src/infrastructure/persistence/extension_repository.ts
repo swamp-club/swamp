@@ -406,9 +406,10 @@ export class ExtensionRepository {
     };
     const groups = new Map<string, Group>();
 
-    const pulledPrefix = this.repoRoot.endsWith("/")
-      ? `${this.repoRoot}.swamp/pulled-extensions/`
-      : `${this.repoRoot}/.swamp/pulled-extensions/`;
+    const sep = this.repoRoot.endsWith("/") ? "" : "/";
+    const pulledPrefix = `${this.repoRoot}${sep}.swamp/pulled-extensions/`;
+    const managedPulledPrefix =
+      `${this.repoRoot}${sep}.swamp/config/pulled-extensions/`;
 
     for (const row of rows) {
       const identity = this.resolveIdentity(row, pruneOrphans);
@@ -417,7 +418,8 @@ export class ExtensionRepository {
       const origin = (
           this.localManifestIdentity &&
           identity.name === this.localManifestIdentity.name &&
-          !row.source_path.startsWith(pulledPrefix)
+          !row.source_path.startsWith(pulledPrefix) &&
+          !row.source_path.startsWith(managedPulledPrefix)
         )
         ? "local" as ExtensionOrigin
         : inferOrigin(identity.name);
@@ -645,10 +647,15 @@ function computeExtensionRoot(
   origin: ExtensionOrigin,
   extensionName: string,
   repoRoot: string,
+  pulledExtensionsRoot?: string,
 ): string {
   if (origin === "local") return repoRoot;
-  // Pulled: <repoRoot>/.swamp/pulled-extensions/<name>
-  // Use forward slashes so the result matches canonicalized paths.
+  if (pulledExtensionsRoot) {
+    const trimmed = pulledExtensionsRoot.endsWith("/")
+      ? pulledExtensionsRoot.slice(0, -1)
+      : pulledExtensionsRoot;
+    return `${trimmed}/${extensionName}`;
+  }
   const trimmedRoot = repoRoot.endsWith("/") ? repoRoot.slice(0, -1) : repoRoot;
   return `${trimmedRoot}/.swamp/pulled-extensions/${extensionName}`;
 }

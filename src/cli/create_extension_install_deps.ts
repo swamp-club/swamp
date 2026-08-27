@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join, relative, resolve } from "@std/path";
+import { relative, resolve } from "@std/path";
 import type { Logger } from "@logtape/logtape";
 import { RepoPath } from "../domain/repo/repo_path.ts";
 import { resolveUniqueLocalSkillsDirs } from "../domain/repo/skill_dirs.ts";
@@ -29,7 +29,7 @@ import {
   LockfileRepository,
   resolveServerUrl,
 } from "../libswamp/mod.ts";
-import { resolveModelsDir } from "./resolve_models_dir.ts";
+import { resolveManagedConfigPaths } from "./repo_context.ts";
 
 /**
  * Wires `ExtensionInstallDeps` from a repo directory and a logger.
@@ -52,9 +52,7 @@ export async function createExtensionInstallDeps(
   const repoPath = RepoPath.create(absoluteRepoDir);
   const markerRepo = new RepoMarkerRepository();
   const marker = await markerRepo.read(repoPath);
-  const modelsDir = resolveModelsDir(marker);
-  const absoluteModelsDir = resolve(absoluteRepoDir, modelsDir);
-  const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+  const { lockfilePath } = resolveManagedConfigPaths(absoluteRepoDir, marker);
   const tools = marker?.tools?.length ? marker.tools : ["claude"];
   const absoluteSkillsDirs = resolveUniqueLocalSkillsDirs(
     absoluteRepoDir,

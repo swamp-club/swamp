@@ -30,7 +30,7 @@ import { isSafeRelativePath } from "./extension_manifest.ts";
 // Anchored to a path boundary (start-of-string OR forward slash) so the
 // match works regardless of whether `root` begins with a separator. The
 // caller normalizes backslashes to forward slashes before testing.
-const PULLED_MARKER = /(^|\/)\.swamp\/pulled-extensions\//;
+const PULLED_MARKER = /(^|\/)\.swamp\/(config\/)?pulled-extensions\//;
 
 /**
  * Resolve a relative `additionalFiles` path against an extension's files

@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join, resolve } from "@std/path";
+import { join } from "@std/path";
+import { resolvePulledExtensionsRoot } from "../../infrastructure/persistence/paths.ts";
 import { UserError } from "../../domain/errors.ts";
 import { readInstalledExtensionDigest } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
@@ -45,17 +46,15 @@ export async function detectLocalEditsForExtension(
   repoDir: string,
   name: string,
   lockfilePath: string,
+  pulledExtensionsRoot?: string,
 ): Promise<LocalEditsStatus> {
   try {
     const repo = await LockfileRepository.create(lockfilePath);
     const stored = repo.getEntry(name)?.filesChecksum;
     if (!stored) return "no-anchor";
-    const extRoot = join(
-      resolve(repoDir),
-      ".swamp",
-      "pulled-extensions",
-      name,
-    );
+    const effectivePulledRoot = pulledExtensionsRoot ??
+      resolvePulledExtensionsRoot(repoDir);
+    const extRoot = join(effectivePulledRoot, name);
     const onDisk = await readInstalledExtensionDigest(extRoot);
     if (onDisk === null) return "no-anchor";
     return onDisk === stored ? "match" : "mismatch";

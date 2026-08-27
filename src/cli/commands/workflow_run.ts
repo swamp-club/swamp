@@ -48,6 +48,7 @@ import { resolveModelType } from "../../domain/extensions/extension_auto_resolve
 import { getAutoResolver } from "../auto_resolver_context.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import {
+  resolvePulledExtensionsRoot,
   SWAMP_SUBDIRS,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
@@ -424,6 +425,7 @@ export const workflowRunCommand = new Command()
             tracker,
             ephRepo,
             ephCatalog,
+            resolvePulledExtensionsRoot(dir),
           );
         },
         catalogStore: repoContext.catalogStore,

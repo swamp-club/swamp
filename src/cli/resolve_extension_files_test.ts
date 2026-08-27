@@ -895,6 +895,26 @@ Deno.test("isPulledExtensionManifest: returns false for path containing pulled-e
   assertEquals(isPulledExtensionManifest(repoDir, manifestPath), false);
 });
 
+Deno.test("isPulledExtensionManifest: returns true for managed config absolute path", () => {
+  const repoDir = "/repo";
+  const manifestPath =
+    "/repo/.swamp/config/pulled-extensions/@scope/ext/manifest.yaml";
+  assertEquals(isPulledExtensionManifest(repoDir, manifestPath), true);
+});
+
+Deno.test("isPulledExtensionManifest: returns true for managed config relative path", () => {
+  const repoDir = "/repo";
+  const manifestPath =
+    ".swamp/config/pulled-extensions/@scope/ext/manifest.yaml";
+  assertEquals(isPulledExtensionManifest(repoDir, manifestPath), true);
+});
+
+Deno.test("isPulledExtensionManifest: returns false for path containing config but not pulled-extensions", () => {
+  const repoDir = "/repo";
+  const manifestPath = "/repo/.swamp/config/models/manifest.yaml";
+  assertEquals(isPulledExtensionManifest(repoDir, manifestPath), false);
+});
+
 // ── .ts/.js file rejection ──────────────────────────────────────────────
 
 Deno.test("resolveExtensionFiles: rejects .ts file with UserError", async () => {

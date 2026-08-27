@@ -120,6 +120,8 @@ export interface ConnectionContext {
   serveOptions?: MergedServeOptions;
   /** Health collector — used by cluster.instances to enrich the local instance. */
   healthCollector?: HealthCollector;
+  /** Managed definitions directory when managedConfig is active. */
+  managedDefinitionsDir?: string;
 }
 
 // SECURITY: Authorization must operate on canonical (normalized) model types,

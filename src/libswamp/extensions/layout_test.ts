@@ -668,3 +668,52 @@ Deno.test(
     );
   },
 );
+
+// ============================================================================
+// Managed Config Path Detection (managedConfig: true)
+// ============================================================================
+
+Deno.test("classifyExtensionFile: managed config flat under .swamp/config is gen-2", () => {
+  assertEquals(
+    classifyExtensionFile(".swamp/config/pulled-extensions/models/foo.ts"),
+    "gen-2",
+  );
+  assertEquals(
+    classifyExtensionFile(
+      ".swamp/config/pulled-extensions/workflows/foo.yaml",
+    ),
+    "gen-2",
+  );
+  assertEquals(
+    classifyExtensionFile(
+      ".swamp/config/pulled-extensions/vaults/sub/bar.ts",
+    ),
+    "gen-2",
+  );
+});
+
+Deno.test("classifyExtensionFile: managed config per-extension subtree is current", () => {
+  assertEquals(
+    classifyExtensionFile(
+      ".swamp/config/pulled-extensions/@scope/name/models/foo.ts",
+    ),
+    "current",
+  );
+  assertEquals(
+    classifyExtensionFile(
+      ".swamp/config/pulled-extensions/flat-name/models/foo.ts",
+    ),
+    "current",
+  );
+});
+
+Deno.test("classifyExtensionFile: managed config paths outside pulled-extensions are current", () => {
+  assertEquals(
+    classifyExtensionFile(".swamp/config/models/foo.yaml"),
+    "current",
+  );
+  assertEquals(
+    classifyExtensionFile(".swamp/config/workflows/bar.yaml"),
+    "current",
+  );
+});

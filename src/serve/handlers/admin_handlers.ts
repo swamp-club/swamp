@@ -96,7 +96,7 @@ import {
 import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
-import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
+
 import {
   datastoreBasePath,
   resolveDatastoreConfig,
@@ -106,6 +106,7 @@ import {
 } from "../../infrastructure/persistence/namespace_manifest.ts";
 import { createExtensionInstallDeps } from "../../cli/create_extension_install_deps.ts";
 import { loadIdentity } from "../../cli/load_identity.ts";
+import { managedConfigLockfilePath } from "../../infrastructure/persistence/paths.ts";
 import { resolveModelsDir } from "../../cli/resolve_models_dir.ts";
 import type {
   AuditTimelinePayload,
@@ -630,6 +631,11 @@ export async function handleExtensionInstall(
       return;
     }
 
+    if (ctx.syncService) {
+      ctx.syncService.markDirty();
+      await ctx.syncService.pushChanged();
+    }
+
     send(socket, {
       type: "extension.install",
       id: requestId,
@@ -665,11 +671,14 @@ export async function handleExtensionPull(
 
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(RepoPath.create(repoDir));
-    const modelsDir = resolveModelsDir(marker);
-    const absoluteModelsDir = isAbsolute(modelsDir)
-      ? modelsDir
-      : resolve(repoDir, modelsDir);
-    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+    const lockfilePath = marker?.datastore?.managedConfig
+      ? managedConfigLockfilePath(repoDir)
+      : join(
+        isAbsolute(resolveModelsDir(marker))
+          ? resolveModelsDir(marker)
+          : resolve(repoDir, resolveModelsDir(marker)),
+        "upstream_extensions.json",
+      );
 
     const tools = marker?.tools?.length ? marker.tools : ["claude"];
     const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
@@ -739,6 +748,11 @@ export async function handleExtensionPull(
       return;
     }
 
+    if (ctx.syncService) {
+      ctx.syncService.markDirty();
+      await ctx.syncService.pushChanged();
+    }
+
     send(socket, {
       type: "extension.pull",
       id: requestId,
@@ -778,11 +792,14 @@ export async function handleExtensionRm(
     const repoDir = ctx.repoDir;
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(RepoPath.create(repoDir));
-    const modelsDir = resolveModelsDir(marker);
-    const absoluteModelsDir = isAbsolute(modelsDir)
-      ? modelsDir
-      : resolve(repoDir, modelsDir);
-    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+    const lockfilePath = marker?.datastore?.managedConfig
+      ? managedConfigLockfilePath(repoDir)
+      : join(
+        isAbsolute(resolveModelsDir(marker))
+          ? resolveModelsDir(marker)
+          : resolve(repoDir, resolveModelsDir(marker)),
+        "upstream_extensions.json",
+      );
 
     deps = await createExtensionRmDeps(repoDir, lockfilePath);
     const libCtx = createLibSwampContext();
@@ -804,6 +821,11 @@ export async function handleExtensionRm(
     if (controller.signal.aborted) {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
       return;
+    }
+
+    if (ctx.syncService) {
+      ctx.syncService.markDirty();
+      await ctx.syncService.pushChanged();
     }
 
     send(socket, {
@@ -839,11 +861,14 @@ export async function handleExtensionOutdated(
     const repoDir = ctx.repoDir;
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(RepoPath.create(repoDir));
-    const modelsDir = resolveModelsDir(marker);
-    const absoluteModelsDir = isAbsolute(modelsDir)
-      ? modelsDir
-      : resolve(repoDir, modelsDir);
-    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+    const lockfilePath = marker?.datastore?.managedConfig
+      ? managedConfigLockfilePath(repoDir)
+      : join(
+        isAbsolute(resolveModelsDir(marker))
+          ? resolveModelsDir(marker)
+          : resolve(repoDir, resolveModelsDir(marker)),
+        "upstream_extensions.json",
+      );
 
     const identity = await loadIdentity();
     const deps = await createExtensionUpdateDeps({
@@ -913,11 +938,14 @@ export async function handleExtensionUpdate(
     const repoDir = ctx.repoDir;
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(RepoPath.create(repoDir));
-    const modelsDir = resolveModelsDir(marker);
-    const absoluteModelsDir = isAbsolute(modelsDir)
-      ? modelsDir
-      : resolve(repoDir, modelsDir);
-    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+    const lockfilePath = marker?.datastore?.managedConfig
+      ? managedConfigLockfilePath(repoDir)
+      : join(
+        isAbsolute(resolveModelsDir(marker))
+          ? resolveModelsDir(marker)
+          : resolve(repoDir, resolveModelsDir(marker)),
+        "upstream_extensions.json",
+      );
 
     const tools = marker?.tools?.length ? marker.tools : ["claude"];
     const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
@@ -984,6 +1012,11 @@ export async function handleExtensionUpdate(
     if (controller.signal.aborted) {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
       return;
+    }
+
+    if (ctx.syncService) {
+      ctx.syncService.markDirty();
+      await ctx.syncService.pushChanged();
     }
 
     send(socket, {
@@ -1150,6 +1183,11 @@ export async function handleVaultMigrate(
       return;
     }
 
+    if (ctx.syncService) {
+      ctx.syncService.markDirty();
+      await ctx.syncService.pushChanged();
+    }
+
     send(socket, {
       type: "vault.migrate",
       id: requestId,
@@ -1260,7 +1298,7 @@ export async function handleDoctorDatastores(
         }
       },
       getVaultConfigs: async () => {
-        const vaultRepo = new YamlVaultConfigRepository(repoDir);
+        const vaultRepo = ctx.repoContext.vaultConfigRepo;
         try {
           const vaultConfigs = await vaultRepo.findAll();
           return vaultConfigs.map((vc) => ({
@@ -1427,11 +1465,14 @@ export async function handleDoctorExtensions(
     const repoPath = RepoPath.create(repoDir);
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(repoPath);
-    const modelsDir = resolveModelsDir(marker);
-    const absoluteModelsDir = isAbsolute(modelsDir)
-      ? modelsDir
-      : resolve(repoDir, modelsDir);
-    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+    const lockfilePath = marker?.datastore?.managedConfig
+      ? managedConfigLockfilePath(repoDir)
+      : join(
+        isAbsolute(resolveModelsDir(marker))
+          ? resolveModelsDir(marker)
+          : resolve(repoDir, resolveModelsDir(marker)),
+        "upstream_extensions.json",
+      );
 
     const catalogDbPath = swampPath(repoDir, "_extension_catalog.db");
     sharedCatalog = new ExtensionCatalogStore(catalogDbPath);

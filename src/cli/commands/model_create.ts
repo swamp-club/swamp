@@ -33,6 +33,11 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import {
+  RepoMarkerRepository,
+} from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { join } from "@std/path";
 import { parseKeyValueInputs } from "../input_parser.ts";
 import { modelValidateCommand } from "./model_validate.ts";
 import { modelMethodCommand } from "./model_method_run.ts";
@@ -114,18 +119,35 @@ export const modelCreateCommand = withRemoteOptions(
     cliCtx.logger
       .debug`Creating model definition: type=${typeArg}, name=${name}`;
 
-    const { repoDir } = await requireInitializedRepoUnlocked({
-      repoDir: resolveRepoDir(options.repoDir),
+    const resolvedRepoDir = resolveRepoDir(options.repoDir);
+    const {
+      repoDir,
+      datastoreResolver: resolver,
+      syncService,
+    } = await requireInitializedRepoUnlocked({
+      repoDir: resolvedRepoDir,
       outputMode: cliCtx.outputMode,
     });
 
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(RepoPath.create(repoDir));
+    const managedConfig = marker?.datastore?.managedConfig === true;
+    const definitionsDir = managedConfig
+      ? join(resolver.resolvePath("config"), "models")
+      : undefined;
+
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = await createModelCreateDeps(repoDir);
+    const deps = await createModelCreateDeps(repoDir, definitionsDir);
     const renderer = createModelCreateRenderer(cliCtx.outputMode);
     await consumeStream(
       modelCreate(ctx, deps, { typeArg, name, globalArguments }),
       renderer.handlers(),
     );
+
+    if (syncService && managedConfig) {
+      syncService.markDirty();
+      await syncService.pushChanged();
+    }
 
     cliCtx.logger.debug("Model create command completed");
   },
