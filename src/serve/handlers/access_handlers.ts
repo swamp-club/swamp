@@ -22,6 +22,8 @@
  */
 
 import { join } from "@std/path";
+import { ACCESS_DATA_SUBDIRS } from "../access_data_poller.ts";
+import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import type {
   AccessCanIPayload,
   AccessCheckPayload,
@@ -725,6 +727,28 @@ export async function handleAccessReload(
         reactivated: perFile.reactivated,
         unchanged: perFile.unchanged,
       });
+    }
+
+    if (ctx.syncService) {
+      try {
+        const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+          ? ctx.datastoreConfig.namespace
+          : undefined;
+        const pulled = await ctx.syncService.pullChanged({
+          subdirs: [...ACCESS_DATA_SUBDIRS],
+          namespace,
+        });
+        if (typeof pulled === "number" && pulled > 0) {
+          logger
+            .info`Pulled ${pulled} access data file(s) from remote datastore`;
+          ctx.repoContext.catalogStore.invalidate();
+        }
+      } catch (error) {
+        logger
+          .warn`Remote access data pull failed, proceeding with local reload: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
+      }
     }
 
     const snapshotResult = await ctx.policySnapshotLoader.loadWithCounts();
