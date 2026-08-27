@@ -895,8 +895,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    # Informational only — not a merge gate. Validates that local verification
-    # ran on this commit and that config integrity checksums match.
+    # Mandatory merge gate. Validates that local verification ran on this commit
+    # and that config integrity checksums match.
     if: github.event.pull_request.draft == false
 
     steps:
@@ -930,7 +930,7 @@ jobs:
             --input branch=\$(git branch --show-current)
           \`\`\`
           EOF
-            exit 0
+            exit 1
           fi
 
           if ! jq . attestation.json > /dev/null 2>&1; then
@@ -1120,6 +1120,8 @@ jobs:
         claude-adversarial-review,
         claude-ux-review,
         claude-ci-security-review,
+        validate-attestation,
+        claude-review-integrity,
       ]
     runs-on: ubuntu-latest
     permissions:
