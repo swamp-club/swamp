@@ -179,6 +179,25 @@ swamp access can-i --action run --on workflow:@acme/deploy --server wss://...
 
 ## Token Management
 
+Swamp has two token families — picking the wrong one is a common mistake.
+
+| &nbsp;        | Collective API token                                    | Server access token                 |
+| ------------- | ------------------------------------------------------- | ----------------------------------- |
+| **Mint with** | `swamp auth token create`                               | `swamp access token mint`           |
+| **Format**    | `swamp_org_<hex>`                                       | `<name>.<secret>`                   |
+| **Env var**   | `SWAMP_API_KEY`                                         | `SWAMP_SERVER_TOKEN`                |
+| **Scopes**    | `serve:*`, `oauth:manage`, …                            | principal-based (no scopes)         |
+| **Used by**   | `swamp serve` → swamp-club (features, OAuth client reg) | Clients → a specific serve instance |
+
+If you set `SWAMP_API_KEY` where `SWAMP_SERVER_TOKEN` is expected, serve rejects
+every connection with:
+
+```
+WebSocket auth rejected … "Invalid token format: expected <name>.<secret>"
+```
+
+### Server access token commands
+
 ```bash
 swamp access token mint <name> --principal user:<id>   # plaintext stored in vault
 swamp access token list
@@ -186,6 +205,25 @@ swamp access token revoke <name>
 swamp access token rotate <name>                       # revoke + mint replacement
 swamp access token rotate <name> --vault <vault>       # rotate into a different vault
 ```
+
+### Wiring a token into an external secret store
+
+Use `reveal` to pipe the plaintext directly into a secret store without it
+touching a terminal:
+
+```bash
+swamp access token reveal <name> --repo-dir /repo -y --json \
+  | jq -re .token \
+  | <store-command>   # e.g. kubectl create secret generic …
+```
+
+`reveal --json` outputs `{ "name": "…", "token": "…", "expired": false }`.
+
+### Minting for a remote serve
+
+`swamp access token mint` runs against a local repo and vault. For headless
+deployments targeting a remote serve, mint inside the serve process's own
+environment — e.g. via `kubectl exec` — not on the operator's laptop.
 
 ## OAuth Login
 
