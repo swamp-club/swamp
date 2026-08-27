@@ -181,8 +181,12 @@ Deno.test("handleAccessCheck: null principal evaluates with empty groups", async
 function createMockSyncService(): {
   service: DatastoreSyncService;
   pullCalls: DatastoreSyncOptions[];
+  pushCalls: DatastoreSyncOptions[];
+  markDirtyCalls: DatastoreSyncOptions[];
 } {
   const pullCalls: DatastoreSyncOptions[] = [];
+  const pushCalls: DatastoreSyncOptions[] = [];
+  const markDirtyCalls: DatastoreSyncOptions[] = [];
   const service: DatastoreSyncService = {
     pullChanged(
       options?: DatastoreSyncOptions,
@@ -190,12 +194,16 @@ function createMockSyncService(): {
       pullCalls.push(options ?? {});
       return Promise.resolve(0);
     },
-    pushChanged(): Promise<number | void> {
+    pushChanged(options?: DatastoreSyncOptions): Promise<number | void> {
+      pushCalls.push(options ?? {});
       return Promise.resolve(0);
     },
-    async markDirty(): Promise<void> {},
+    markDirty(options?: DatastoreSyncOptions): Promise<void> {
+      markDirtyCalls.push(options ?? {});
+      return Promise.resolve();
+    },
   };
-  return { service, pullCalls };
+  return { service, pullCalls, pushCalls, markDirtyCalls };
 }
 
 function createMockUnifiedDataRepo() {
@@ -257,6 +265,22 @@ Deno.test("handleAccessReload: pulls remote access data before loading snapshot 
 
   assertGreater(pullCalls.length, 0);
   assertEquals(pullCalls[0].subdirs, [...ACCESS_DATA_SUBDIRS]);
+
+  const response = JSON.parse(socket.sent[0]);
+  assertEquals(response.payload.success, true);
+});
+
+Deno.test("handleAccessReload: pushes reconciled grants to remote datastore before pulling", async () => {
+  const { service: syncService, pushCalls, pullCalls, markDirtyCalls } =
+    createMockSyncService();
+  const ctx = createReloadCtx(syncService);
+  const socket = createMockSocket();
+
+  await handleAccessReload(socket, ctx, "req-reload", null);
+
+  assertGreater(markDirtyCalls.length, 0);
+  assertGreater(pushCalls.length, 0);
+  assertGreater(pullCalls.length, 0);
 
   const response = JSON.parse(socket.sent[0]);
   assertEquals(response.payload.success, true);
