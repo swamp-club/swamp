@@ -78,6 +78,7 @@ Deno.test("modelGet yields resolving -> completed with model data on success", a
       data: {
         id: "def-1",
         name: "my-model",
+        description: undefined,
         type: "aws/s3-bucket",
         version: 3,
         tags: { env: "prod" },
@@ -89,6 +90,22 @@ Deno.test("modelGet yields resolving -> completed with model data on success", a
       },
     },
   ]);
+});
+
+Deno.test("modelGet: surfaces description when definition has one", async () => {
+  const deps = makeDeps({
+    lookupResult: {
+      definition: { ...testDefinition, description: "A test model" },
+      type: testModelType,
+    },
+    modelDef: undefined,
+  });
+
+  const events = await collect<ModelGetEvent>(
+    modelGet(createLibSwampContext(), deps, "my-model"),
+  );
+
+  assertEquals(completedData(events).description, "A test model");
 });
 
 Deno.test("modelGet: surfaces autoCreated flag when lookup returns it", async () => {

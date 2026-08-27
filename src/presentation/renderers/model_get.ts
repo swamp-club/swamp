@@ -120,9 +120,16 @@ class LogModelGetRenderer implements Renderer<ModelGetEvent> {
         const data = e.data;
         const lines = [
           `${bold(cyan("Name:"))} ${bold(data.name)} ${dim(`(${data.type})`)}`,
+        ];
+
+        if (data.description) {
+          lines.push(`${bold(cyan("Description:"))} ${data.description}`);
+        }
+
+        lines.push(
           `${bold(cyan("ID:"))} ${dim(data.id)}`,
           `${bold(cyan("Version:"))} ${data.version}`,
-        ];
+        );
 
         if (data.autoCreated) {
           lines.push(`${bold(cyan("Auto-created:"))} ${dim("yes")}`);
