@@ -171,7 +171,7 @@ export async function reportSearchAction(
       },
     );
     const renderer = createReportSearchRenderer(
-      ctx.outputMode,
+      interactiveOutputMode(ctx),
       query ?? "",
       undefined,
     );
