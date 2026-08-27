@@ -330,6 +330,13 @@ export interface StepExecutor {
 const MAX_WORKFLOW_NESTING_DEPTH = 10;
 
 /**
+ * Grace period for cleanup steps (always/completed dependents) after
+ * cancellation. Cleanup steps run with a fresh signal bounded by this
+ * timeout so they cannot hang indefinitely.
+ */
+const CLEANUP_GRACE_TIMEOUT_MS = 30_000;
+
+/**
  * Decode the step-name segment of a `${jobId}:${stepName}` composite key.
  *
  * Splits on the FIRST colon only, so step names that themselves contain
@@ -1854,7 +1861,36 @@ export class WorkflowExecutionService {
       >();
 
       // Execute jobs level by level
+      let anyJobFailed = false;
       for (const level of sortedJobs.levels) {
+        // After a job failure with an aborted signal, give subsequent
+        // levels a fresh cleanup signal so always/completed job
+        // dependents can run. shouldJobRun() handles filtering.
+        const cleanupMode = anyJobFailed &&
+          (options?.signal?.aborted ?? false);
+        const levelSignal = cleanupMode
+          ? AbortSignal.timeout(CLEANUP_GRACE_TIMEOUT_MS)
+          : options?.signal;
+        const levelStepOpts = cleanupMode
+          ? { ...stepOpts, signal: levelSignal }
+          : stepOpts;
+
+        if (cleanupMode) {
+          // Mark any jobs/steps still in "running" status as failed —
+          // the signal aborted their execution but the generators were
+          // abandoned before they could record the failure.
+          for (const jobRun of run.jobs) {
+            for (const step of jobRun.steps) {
+              if (step.status === "running") {
+                step.fail("cancelled");
+              }
+            }
+            if (jobRun.status === "running") {
+              jobRun.fail();
+            }
+          }
+        }
+
         // Merge parallel job generators within each level
         const jobStreams = level.map((jobName) =>
           this.runJob(
@@ -1862,14 +1898,14 @@ export class WorkflowExecutionService {
             run,
             jobName,
             expressionContext,
-            stepOpts,
+            levelStepOpts,
           )
         );
         for await (
           const event of mergeWithConcurrency(
             jobStreams,
             jobConcurrency,
-            options?.signal,
+            levelSignal,
           )
         ) {
           if (event.kind === "model_resolved") {
@@ -1891,8 +1927,21 @@ export class WorkflowExecutionService {
           } else if (event.kind === "step_skipped") {
             stepStatuses.set(`${event.jobId}:${event.stepId}`, "skipped");
           }
+          if (event.kind === "job_completed" && event.status === "failed") {
+            anyJobFailed = true;
+          }
           yield event;
         }
+
+        // When the signal aborts mid-level with parallel jobs,
+        // mergeWithConcurrency may exit before job_completed events are
+        // consumed. Derive anyJobFailed from model state.
+        if (!anyJobFailed && options?.signal?.aborted) {
+          anyJobFailed = run.jobs.some((j) =>
+            j.status === "running" || j.status === "failed"
+          );
+        }
+
         await this.saveRun(workflow.id, run);
 
         if (run.status === "suspended") {
@@ -2509,7 +2558,28 @@ export class WorkflowExecutionService {
       // Execute steps level by level
       let jobFailed = false;
       for (const level of sortedSteps.levels) {
-        if (jobFailed) break;
+        // After a step failure with an aborted signal, give subsequent
+        // levels a fresh cleanup signal so always/completed dependents
+        // can run. shouldStepRun() handles condition-based filtering —
+        // steps whose conditions aren't met are skipped naturally.
+        const cleanupMode = jobFailed && (options.signal?.aborted ?? false);
+        const levelSignal = cleanupMode
+          ? AbortSignal.timeout(CLEANUP_GRACE_TIMEOUT_MS)
+          : options.signal;
+        const levelOptions = cleanupMode
+          ? { ...options, signal: levelSignal }
+          : options;
+
+        if (cleanupMode) {
+          // Mark any steps still in "running" status as failed — the
+          // signal aborted their execution but the generators were
+          // abandoned before they could record the failure.
+          for (const step of jobRun.steps) {
+            if (step.status === "running") {
+              step.fail("cancelled");
+            }
+          }
+        }
 
         // Merge parallel step generators within each level
         const stepConcurrencies: number[] = [];
@@ -2554,7 +2624,7 @@ export class WorkflowExecutionService {
             originalStep,
             forEachVar,
             expressionContext,
-            options,
+            levelOptions,
             forEachIndex,
             forEachTemplate,
           );
@@ -2573,13 +2643,22 @@ export class WorkflowExecutionService {
           const event of mergeWithConcurrency(
             stepStreams,
             stepConcurrency,
-            options.signal,
+            levelSignal,
           )
         ) {
           yield event;
           if (event.kind === "step_failed" && !event.allowedFailure) {
             jobFailed = true;
           }
+        }
+
+        // When the signal aborts mid-level with parallel steps,
+        // mergeWithConcurrency may exit before step_failed events are
+        // consumed. Derive jobFailed from model state so cleanup kicks in.
+        if (!jobFailed && options.signal?.aborted) {
+          jobFailed = jobRun.steps.some((s) =>
+            s.status === "running" || s.status === "failed"
+          );
         }
 
         if (run.status === "suspended") {
@@ -2589,8 +2668,8 @@ export class WorkflowExecutionService {
 
       // When the run is suspended and this job still has non-terminal steps
       // (pending or waiting_approval), leave the job running so resume picks
-      // it up. In all other cases — normal completion, normal failure (where
-      // pending steps remain because jobFailed broke early) — complete the job.
+      // it up. In all other cases — normal completion or failure — complete
+      // the job.
       const suspendedWithPendingSteps = run.status === "suspended" &&
         jobRun.steps.some((s) =>
           s.status !== "succeeded" && s.status !== "failed" &&

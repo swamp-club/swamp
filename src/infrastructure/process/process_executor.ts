@@ -289,6 +289,7 @@ export async function executeProcess(
   } else if (options.logger) {
     // Streaming mode without timeout
     const process = command.spawn();
+    const pipeAbort = new AbortController();
 
     // Kill subprocess when abort signal fires
     let abortHandler: (() => void) | undefined;
@@ -299,6 +300,7 @@ export async function executeProcess(
         } catch {
           // Process may have already exited
         }
+        pipeAbort.abort();
       } else {
         abortHandler = () => {
           try {
@@ -306,6 +308,7 @@ export async function executeProcess(
           } catch {
             // Process may have already exited
           }
+          pipeAbort.abort();
         };
         options.signal.addEventListener("abort", abortHandler, { once: true });
       }
@@ -321,12 +324,12 @@ export async function executeProcess(
           const redacted = redact(line);
           if (onOutput) onOutput(redacted, "stdout");
           logger.info(escapeLogTemplate(redacted));
-        }),
+        }, pipeAbort.signal),
         streamLines(process.stderr, (line) => {
           const redacted = redact(line);
           if (onOutput) onOutput(redacted, "stderr");
           logger.warn(escapeLogTemplate(redacted));
-        }),
+        }, pipeAbort.signal),
         process.status,
       ]);
 
@@ -345,10 +348,49 @@ export async function executeProcess(
     }
   } else {
     // Simple buffered execution
-    const output = await command.output();
-    stdout = new TextDecoder().decode(output.stdout);
-    stderr = new TextDecoder().decode(output.stderr);
-    exitCode = output.code;
+    const process = command.spawn();
+    const pipeAbort = new AbortController();
+
+    let abortHandler: (() => void) | undefined;
+    if (options.signal) {
+      if (options.signal.aborted) {
+        try {
+          process.kill("SIGTERM");
+        } catch {
+          // Process may have already exited
+        }
+        pipeAbort.abort();
+      } else {
+        abortHandler = () => {
+          try {
+            process.kill("SIGTERM");
+          } catch {
+            // Process may have already exited
+          }
+          pipeAbort.abort();
+        };
+        options.signal.addEventListener("abort", abortHandler, { once: true });
+      }
+    }
+
+    try {
+      const [stdoutResult, stderrResult, status] = await Promise.all([
+        streamLines(process.stdout, undefined, pipeAbort.signal),
+        streamLines(process.stderr, undefined, pipeAbort.signal),
+        process.status,
+      ]);
+      stdout = stdoutResult;
+      stderr = stderrResult;
+      exitCode = status.code;
+    } finally {
+      if (abortHandler && options.signal) {
+        options.signal.removeEventListener("abort", abortHandler);
+      }
+    }
+
+    if (options.signal?.aborted) {
+      throw new DOMException("The operation was aborted.", "AbortError");
+    }
   }
 
   const durationMs = Date.now() - startTime;
