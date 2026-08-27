@@ -75,7 +75,9 @@ export async function modelMethodHistorySearchAction(
         payload: { query },
       },
     );
-    const renderer = createModelOutputSearchRenderer(ctx.outputMode);
+    const renderer = createModelOutputSearchRenderer(
+      interactiveOutputMode(ctx),
+    );
     await consumeStream(
       (async function* () {
         yield {

@@ -87,7 +87,7 @@ export async function workflowSearchAction(
         payload: { query },
       },
     );
-    const renderer = createWorkflowSearchRenderer(ctx.outputMode);
+    const renderer = createWorkflowSearchRenderer(interactiveOutputMode(ctx));
     renderer.handlers().completed({
       kind: "completed",
       data: response.data as unknown as WorkflowSearchData,

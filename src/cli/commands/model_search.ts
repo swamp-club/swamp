@@ -96,7 +96,7 @@ export async function modelSearchAction(
         payload: { query, includeInternal },
       },
     );
-    const renderer = createModelSearchRenderer(ctx.outputMode);
+    const renderer = createModelSearchRenderer(interactiveOutputMode(ctx));
     renderer.handlers().completed({
       kind: "completed",
       data: response.data as unknown as ModelSearchData,
