@@ -132,10 +132,13 @@ export function registerManagedConfig(
   active: boolean,
   configBasePath?: string,
 ): void {
+  const key = resolve(repoDir);
+  const existing = managedConfigRegistry.get(key);
+  if (typeof existing === "string") return;
   if (active && configBasePath) {
-    managedConfigRegistry.set(resolve(repoDir), configBasePath);
-  } else {
-    managedConfigRegistry.set(resolve(repoDir), false);
+    managedConfigRegistry.set(key, configBasePath);
+  } else if (existing === undefined) {
+    managedConfigRegistry.set(key, false);
   }
 }
 

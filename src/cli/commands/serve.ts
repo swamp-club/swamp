@@ -1727,6 +1727,9 @@ export const serveCommand = new Command()
         configPoller = new ConfigPoller({
           syncService,
           catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+          // No-op: extension type registries (model/vault/datastore/report)
+          // require a full ensureLoaded() reload, not just catalog invalidation.
+          // Deferred to a future extension hot-reload feature.
           extensionCatalogInvalidate: () => {},
           namespace: serveNamespace,
         });

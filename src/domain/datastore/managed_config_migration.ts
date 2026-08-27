@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { copy, ensureDir } from "@std/fs";
-import { join, resolve } from "@std/path";
+import { dirname, join, resolve } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 
 const logger = getLogger(["swamp", "datastore", "managed-config-migration"]);
@@ -107,7 +107,7 @@ export async function migrateConfigToDatastore(
       const stat = await Deno.stat(src);
       if (isFile ? stat.isFile : stat.isDirectory) {
         if (isFile) {
-          await ensureDir(join(dest, "..").replace(/\/\.\.$/, ""));
+          await ensureDir(dirname(dest));
           await Deno.copyFile(src, dest);
         } else {
           await copy(src, dest, { overwrite: true });

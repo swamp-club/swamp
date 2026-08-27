@@ -761,7 +761,7 @@ export async function handleModelCreate(
     }
 
     if (ctx.syncService) {
-      ctx.syncService.markDirty();
+      await ctx.syncService.markDirty();
       await ctx.syncService.pushChanged();
     }
 
@@ -851,7 +851,7 @@ export async function handleModelDelete(
     }
 
     if (ctx.syncService) {
-      ctx.syncService.markDirty();
+      await ctx.syncService.markDirty();
       await ctx.syncService.pushChanged();
     }
 

@@ -108,16 +108,32 @@ export const datastoreConfigMigrateCommand = new Command()
       return;
     }
 
-    if (!marker.datastore.managedConfig) {
+    const managedConfigSet = !marker.datastore.managedConfig;
+    if (managedConfigSet) {
       const updated: RepoMarkerData = {
         ...marker,
         datastore: { ...marker.datastore, managedConfig: true },
       };
       await markerRepo.write(repoPath, updated);
+      if (ctx.outputMode !== "json") {
+        ctx.logger.info`Set managedConfig: true in .swamp.yaml`;
+      }
     }
 
-    if (syncService) {
-      syncService.markDirty();
+    const copied = [
+      result.copiedModels && "models",
+      result.copiedWorkflows && "workflows",
+      result.copiedVaults && "vaults",
+      result.copiedLockfile && "lockfile",
+      result.copiedPulledExtensions && "pulled-extensions",
+    ].filter(Boolean);
+
+    if (syncService && (copied.length > 0 || managedConfigSet)) {
+      await syncService.markDirty();
+      await syncService.pushChanged();
+      if (ctx.outputMode !== "json") {
+        ctx.logger.info`Pushed config to datastore`;
+      }
     }
 
     if (ctx.outputMode === "json") {
@@ -128,24 +144,13 @@ export const datastoreConfigMigrateCommand = new Command()
         copiedVaults: result.copiedVaults,
         copiedLockfile: result.copiedLockfile,
         copiedPulledExtensions: result.copiedPulledExtensions,
-        managedConfigSet: !marker.datastore.managedConfig,
+        managedConfigSet,
         configRoot,
       }));
-    } else {
-      const copied = [
-        result.copiedModels && "models",
-        result.copiedWorkflows && "workflows",
-        result.copiedVaults && "vaults",
-        result.copiedLockfile && "lockfile",
-        result.copiedPulledExtensions && "pulled-extensions",
-      ].filter(Boolean);
-      if (copied.length > 0) {
-        ctx.logger
-          .info`Migrated ${copied.join(", ")} into datastore config tier`;
-      } else {
-        ctx.logger.info`No config files found to migrate`;
-      }
+    } else if (copied.length > 0) {
       ctx.logger
-        .info`Config will be pushed to the datastore on command exit`;
+        .info`Migrated ${copied.join(", ")} into datastore config tier`;
+    } else {
+      ctx.logger.info`No config files found to migrate`;
     }
   });
