@@ -56,7 +56,9 @@ import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_st
 import {
   createWorkflowId,
   createWorkflowRunId,
+  type WorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
+import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import {
   deepMerge,
   mergeInputArgs,
@@ -212,6 +214,10 @@ export const workflowRunCommand = new Command()
   .option(
     "--tracestate <value:string>",
     "W3C tracestate for per-invocation trace context (env: TRACESTATE)",
+  )
+  .option(
+    "--no-supersede",
+    "Do not cancel matching-input suspended runs before starting",
   )
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, workflowIdOrName: string) {
@@ -432,6 +438,16 @@ export const workflowRunCommand = new Command()
         dataRepo: repoContext.unifiedDataRepo,
         definitionRepo: repoContext.definitionRepo,
         telemetrySink,
+        findSuspendedRuns: async (workflowId) => {
+          const suspended = await runRepo
+            .findSummariesByStatus(workflowId, "suspended");
+          const runs = await Promise.all(
+            suspended.map((s) =>
+              runRepo.findById(workflowId, s.id as WorkflowRunId)
+            ),
+          );
+          return runs.filter((r): r is WorkflowRun => r !== null);
+        },
       };
 
       const timeoutMs = options.timeout
@@ -505,6 +521,7 @@ export const workflowRunCommand = new Command()
           assertFailOnSeverity: failOnSeverity,
           initiatedBy,
           triggerSource: "manual",
+          noSupersede: options.supersede === false,
         });
 
         const baseHandlers = renderer.handlers();
@@ -669,6 +686,7 @@ async function runWorkflowViaServer(
             tracestate: resolveTracestate(
               options.tracestate as string | undefined,
             ),
+            noSupersede: options.supersede === false || undefined,
           },
         }) as AsyncIterable<WorkflowRunEvent>,
         renderer.handlers(),

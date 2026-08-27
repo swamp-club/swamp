@@ -781,15 +781,20 @@ task:
   timeout: 3600 # Optional: seconds before approve is rejected
 ```
 
-The workflow suspends to disk. Approve, reject, or resume from CLI:
+The workflow suspends to disk. Approve, reject, or resume from CLI (use
+`--run <id>` when multiple runs are suspended):
 
 ```
-swamp workflow approve <workflow-name> <step-name>
-swamp workflow reject  <workflow-name> <step-name> --reason "Not ready"
-swamp workflow resume  <workflow-name>
-swamp workflow resume  <workflow-name> --input authKey=tskey-abc123
-swamp workflow approvals  # list all pending approvals
+swamp workflow approve <workflow-name> <step-name> --run <run-id>
+swamp workflow reject  <workflow-name> <step-name> --run <run-id> --reason "Not ready"
+swamp workflow resume  <workflow-name> --run <run-id>
+swamp workflow resume  <workflow-name> --run <run-id> --input authKey=tskey-abc123
+swamp workflow approvals  # list all pending approvals with run IDs
 ```
+
+A fresh `workflow run` automatically supersedes (cancels) prior suspended runs
+of the same workflow whose resolved inputs match. Use `--no-supersede` to keep
+prior runs alive.
 
 Resume accepts `--input`/`--input-file`/`--stdin` (same parsing as
 `workflow run`). Resume inputs merge over the inputs the run had when it

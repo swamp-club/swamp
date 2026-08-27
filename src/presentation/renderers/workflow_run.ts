@@ -82,6 +82,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
   private jobStartTimes = new Map<string, number>();
   private pendingJobStarts = new Map<string, string>();
   private pendingStartLine: (() => void) | null = null;
+  private pendingSupersededRuns: (() => void) | null = null;
   private assertResults: Array<{
     stepId: string;
     passed: boolean;
@@ -222,6 +223,27 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
   handlers(): EventHandlers<WorkflowRunEvent> {
     return {
       validating_inputs: () => {},
+      superseded_runs: (e) => {
+        const emitSuperseded = () => {
+          if (!this.pipe) return;
+          for (const runId of e.cancelledRunIds) {
+            writeOutput(
+              this.pipe.statusLine(
+                "system",
+                "Superseded",
+                STATUS_COLORS.warn,
+                `cancelled suspended run ${runId} (matching inputs)`,
+                formatTimestamp(),
+              ),
+            );
+          }
+        };
+        if (this.pipe) {
+          emitSuperseded();
+        } else {
+          this.pendingSupersededRuns = emitSuperseded;
+        }
+      },
       evaluating_workflow: () => {},
       started: (e) => {
         if (!this.pipe) {
@@ -230,6 +252,10 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
         const jobNames = [...e.jobs.map((j) => j.id), "system"];
         this.pipe = new PipeWriter(jobNames);
         setSystemPipeWidth(this.pipe.maxWidth);
+        if (this.pendingSupersededRuns) {
+          this.pendingSupersededRuns();
+          this.pendingSupersededRuns = null;
+        }
         const ts = formatTimestamp();
         const wfName = e.workflowName;
         this.pendingStartLine = () => {
@@ -368,7 +394,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             name,
             `${
               yellow("To approve:")
-            }  swamp workflow approve ${this.workflowName} ${e.stepId}`,
+            }  swamp workflow approve ${this.workflowName} ${e.stepId} --run ${e.runId}`,
           ),
         );
         writeOutput(
@@ -376,7 +402,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             name,
             `${
               yellow("To reject:")
-            }   swamp workflow reject ${this.workflowName} ${e.stepId}`,
+            }   swamp workflow reject ${this.workflowName} ${e.stepId} --run ${e.runId}`,
           ),
         );
       },
@@ -662,7 +688,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             "system",
             `${
               yellow("To approve:")
-            }  swamp workflow approve ${this.workflowName} ${e.stepId}`,
+            }  swamp workflow approve ${this.workflowName} ${e.stepId} --run ${e.run.id}`,
           ),
         );
         writeOutput(
@@ -670,7 +696,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             "system",
             `${
               dim("After approval:")
-            }  swamp workflow resume ${this.workflowName}`,
+            }  swamp workflow resume ${this.workflowName} --run ${e.run.id}`,
           ),
         );
       },
@@ -728,6 +754,12 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
   handlers(): EventHandlers<WorkflowRunEvent> {
     return {
       validating_inputs: () => {},
+      superseded_runs: (e) => {
+        console.log(JSON.stringify({
+          event: "superseded_runs",
+          cancelledRunIds: e.cancelledRunIds,
+        }));
+      },
       evaluating_workflow: () => {},
       started: () => {},
       job_started: () => {},

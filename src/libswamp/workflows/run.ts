@@ -43,6 +43,7 @@ import type {
 import {
   createWorkflowId,
   createWorkflowRunId,
+  type WorkflowId,
 } from "../../domain/workflows/workflow_id.ts";
 import {
   coerceInputTypes,
@@ -59,6 +60,7 @@ import {
 } from "../../infrastructure/tracing/mod.ts";
 import { WorkflowTelemetryBridge } from "./telemetry_bridge.ts";
 import { findBrokenWorkflow, workflowsDirFor } from "./broken_workflow.ts";
+import { supersedeSuspendedRuns } from "./supersede.ts";
 
 /**
  * Events emitted by the libswamp workflow run generator.
@@ -75,6 +77,7 @@ export interface WorkflowRunJobInfo {
 
 export type WorkflowRunEvent =
   | { kind: "validating_inputs" }
+  | { kind: "superseded_runs"; cancelledRunIds: string[] }
   | { kind: "evaluating_workflow" }
   | {
     kind: "started";
@@ -285,6 +288,9 @@ export interface WorkflowRunDeps {
   dataRepo?: UnifiedDataRepository;
   definitionRepo?: DefinitionRepository;
   telemetrySink?: WorkflowTelemetrySink;
+  findSuspendedRuns?: (
+    workflowId: WorkflowId,
+  ) => Promise<WorkflowRun[]>;
 }
 
 /**
@@ -323,6 +329,8 @@ export interface WorkflowRunInput {
   instanceId?: string;
   /** How this run was triggered (schedule, webhook, api). */
   triggerSource?: string;
+  /** Skip superseding matching-input suspended runs. */
+  noSupersede?: boolean;
 }
 
 /**
@@ -610,6 +618,18 @@ export async function* workflowRun(
             ...input,
             inputs: coerceInputTypes(input.inputs ?? {}, workflow.inputs),
           };
+        }
+
+        if (!resolvedInput.noSupersede && deps.findSuspendedRuns) {
+          const { cancelledRunIds } = await supersedeSuspendedRuns(
+            workflow.id as WorkflowId,
+            resolvedInput.inputs ?? {},
+            deps.findSuspendedRuns,
+            deps.runRepo,
+          );
+          if (cancelledRunIds.length > 0) {
+            yield { kind: "superseded_runs", cancelledRunIds };
+          }
         }
 
         yield { kind: "evaluating_workflow" };

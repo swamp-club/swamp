@@ -41,9 +41,9 @@ skill.
 | Run a workflow     | `swamp workflow run <id_or_name>`                                        |
 | Run with inputs    | `swamp workflow run <id_or_name> --input key=value`                      |
 | Run from stdin     | `echo '{"k":"v"}' \| swamp workflow run <id_or_name> --stdin`            |
-| Approve step       | `swamp workflow approve <workflow> <step>`                               |
-| Reject step        | `swamp workflow reject <workflow> <step>`                                |
-| Resume workflow    | `swamp workflow resume <workflow> [--input k=v]`                         |
+| Approve step       | `swamp workflow approve <workflow> <step> [--run <id>]`                  |
+| Reject step        | `swamp workflow reject <workflow> <step> [--run <id>]`                   |
+| Resume workflow    | `swamp workflow resume <workflow> [--run <id>] [--input k=v]`            |
 | Resume from step   | `swamp workflow resume <wf> --from <step>`                               |
 | List approvals     | `swamp workflow approvals`                                               |
 | Active runs        | `swamp run history --active`                                             |
