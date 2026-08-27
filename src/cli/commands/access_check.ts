@@ -121,12 +121,12 @@ export const accessCheckCommand = new Command()
       }
       if (options.groups) {
         throw new UserError(
-          "--groups is not supported with --server: the server uses the IdP groups from your authenticated token",
+          "--groups is not supported with --server: the server resolves IdP groups from the subject's own session",
         );
       }
       if (options.collectives) {
         throw new UserError(
-          "--collectives is not supported with --server: the server uses the collectives from your authenticated token",
+          "--collectives is not supported with --server: the server resolves collectives from the subject's own session",
         );
       }
 
