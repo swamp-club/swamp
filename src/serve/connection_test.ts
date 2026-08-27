@@ -1701,7 +1701,7 @@ Deno.test("validateServerRequest accepts report.type.search", () => {
 
 // ── Authorization: new request types ────────────────────────────────────
 
-Deno.test("authorizeOrReject: data.get rejected without read grant", () => {
+Deno.test("authorizeOrReject: data.get rejected without read grant", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
   const ctx = makeCtx(modeTokenConfig, []);
@@ -1718,6 +1718,7 @@ Deno.test("authorizeOrReject: data.get rejected without read grant", () => {
     testPrincipal,
   );
 
+  await new Promise((r) => setTimeout(r, 0));
   assertEquals(mock.sent.length, 1);
   const msg = parseSent(mock);
   assertEquals(msg.type, "error");
@@ -1972,7 +1973,7 @@ Deno.test("authorizeOrReject: audit.timeline rejected without read grant", () =>
   );
 });
 
-Deno.test("authorizeOrReject: admin on access:* grants data.get (superuser)", () => {
+Deno.test("authorizeOrReject: admin on access:* grants data.get (superuser)", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
   const grant = makeGrant({
@@ -1994,6 +1995,7 @@ Deno.test("authorizeOrReject: admin on access:* grants data.get (superuser)", ()
     testPrincipal,
   );
 
+  await new Promise((r) => setTimeout(r, 0));
   const unauthorizedErrors = mock.sent
     .map((s) => JSON.parse(s))
     .filter((m) =>

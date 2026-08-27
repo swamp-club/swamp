@@ -74,6 +74,21 @@ import {
   send,
   sendError,
 } from "./shared.ts";
+import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
+
+export async function resolveDataFields(
+  definitionRepo: DefinitionRepository,
+  modelIdOrName: string,
+): Promise<Record<string, unknown>> {
+  const fields: Record<string, unknown> = { name: modelIdOrName };
+  const result = await findDefinitionByIdOrName(definitionRepo, modelIdOrName);
+  if (result) {
+    fields.name = result.definition.name;
+    const tags = result.definition.tags;
+    if (tags && Object.keys(tags).length > 0) fields.tags = tags;
+  }
+  return fields;
+}
 
 export async function handleDataGet(
   socket: WebSocket,
@@ -84,8 +99,9 @@ export async function handleDataGet(
   principal: Principal | null,
 ): Promise<void> {
   const resourceName = payload.modelIdOrName ?? "*";
-  const dataFields: Record<string, unknown> = {};
-  if (payload.modelIdOrName) dataFields.name = payload.modelIdOrName;
+  const dataFields = resourceName !== "*"
+    ? await resolveDataFields(ctx.repoContext.definitionRepo, resourceName)
+    : {};
   if (
     !authorizeOrReject(socket, requestId, principal, "read", {
       kind: "data",
@@ -219,8 +235,9 @@ export async function handleDataList(
   principal: Principal | null,
 ): Promise<void> {
   const resourceName = payload.modelIdOrName ?? "*";
-  const listFields: Record<string, unknown> = {};
-  if (payload.modelIdOrName) listFields.name = payload.modelIdOrName;
+  const listFields = resourceName !== "*"
+    ? await resolveDataFields(ctx.repoContext.definitionRepo, resourceName)
+    : {};
   if (
     !authorizeOrReject(socket, requestId, principal, "read", {
       kind: "data",
@@ -361,11 +378,15 @@ export async function handleDataVersions(
   principal: Principal | null,
 ): Promise<void> {
   const resourceName = payload.modelIdOrName;
+  const versionFields = await resolveDataFields(
+    ctx.repoContext.definitionRepo,
+    resourceName,
+  );
   if (
     !authorizeOrReject(socket, requestId, principal, "read", {
       kind: "data",
       name: resourceName,
-      fields: { name: resourceName },
+      fields: versionFields,
     }, ctx)
   ) return;
 
@@ -423,11 +444,15 @@ export async function handleDataDelete(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  const deleteFields = await resolveDataFields(
+    ctx.repoContext.definitionRepo,
+    payload.modelIdOrName,
+  );
   if (
     !authorizeOrReject(socket, requestId, principal, "write", {
       kind: "data",
       name: payload.modelIdOrName,
-      fields: { name: payload.modelIdOrName },
+      fields: deleteFields,
     }, ctx)
   ) return;
 
@@ -486,11 +511,15 @@ export async function handleDataRename(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  const renameFields = await resolveDataFields(
+    ctx.repoContext.definitionRepo,
+    payload.modelIdOrName,
+  );
   if (
     !authorizeOrReject(socket, requestId, principal, "write", {
       kind: "data",
       name: payload.modelIdOrName,
-      fields: { name: payload.modelIdOrName },
+      fields: renameFields,
     }, ctx)
   ) return;
 
