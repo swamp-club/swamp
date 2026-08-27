@@ -19,6 +19,7 @@
 
 import { ensureDir } from "@std/fs";
 import { basename, join } from "@std/path";
+import { resolveEffectiveWorkflowsDir } from "./paths.ts";
 import { getLogger } from "@logtape/logtape";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { isIoError } from "./io_errors.ts";
@@ -62,7 +63,7 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     private readonly eventBus?: EventBus,
     baseDir?: string,
   ) {
-    this.baseDir = baseDir ?? join(repoDir, "workflows");
+    this.baseDir = baseDir ?? resolveEffectiveWorkflowsDir(repoDir);
   }
 
   async findById(id: WorkflowId): Promise<Workflow | null> {

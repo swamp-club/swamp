@@ -49,6 +49,7 @@ export interface ModelInvocationServiceDeps {
   executionService: MethodExecutionService;
   commonDeps: CommonMethodContextDeps;
   repoDir: string;
+  pulledExtensionsRoot?: string;
 }
 
 function isRunModelByType(
@@ -497,7 +498,7 @@ export class ModelInvocationService {
     }
 
     try {
-      const pulledRoot = join(
+      const pulledRoot = this.#deps.pulledExtensionsRoot ?? join(
         this.#deps.repoDir,
         ".swamp",
         "pulled-extensions",

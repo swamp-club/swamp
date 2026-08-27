@@ -72,6 +72,13 @@ export interface SyncCapabilities {
    * pending run entries) in HA deployments.
    */
   controlPlane?: boolean;
+  /**
+   * When `true`, the extension supports the `subdirs` option on
+   * `pullChanged` — restricting the pull to a subset of datastore
+   * subdirectories (e.g. `config/` only). Used by the ConfigPoller
+   * to refresh managed configuration without pulling the entire datastore.
+   */
+  configRefresh?: boolean;
 }
 
 /**
@@ -139,6 +146,17 @@ export interface DatastoreSyncOptions {
    * (those always download everything the partition lists).
    */
   metadataOnly?: boolean;
+  /**
+   * Restricts `pullChanged` to the listed datastore subdirectories.
+   * When set, the extension SHOULD only pull paths under these prefixes
+   * instead of walking the entire datastore. Extensions that advertise
+   * `configRefresh` in their capabilities SHOULD honor this option;
+   * extensions that don't can safely ignore it and pull everything.
+   *
+   * Used by the ConfigPoller to efficiently refresh only the `config/`
+   * prefix without pulling runtime data.
+   */
+  subdirs?: readonly string[];
 }
 
 /**

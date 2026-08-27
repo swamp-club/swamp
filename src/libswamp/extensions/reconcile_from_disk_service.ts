@@ -57,7 +57,7 @@ import type {
 } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { BUNDLE_LAYOUT_VERSION } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import type { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
-import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import { resolvePulledExtensionsRoot } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionLoader } from "../../domain/extensions/extension_loader.ts";
 import { modelKindAdapter } from "../../domain/extensions/model_kind_adapter.ts";
 import { vaultKindAdapter } from "../../domain/extensions/vault_kind_adapter.ts";
@@ -136,6 +136,7 @@ export class ReconcileFromDiskService {
   private readonly lockfileRepository: LockfileRepository;
   private readonly repoDir: string;
   private readonly localManifestIdentity: LocalManifestIdentity | null;
+  private readonly pulledExtensionsRoot: string;
 
   constructor(args: {
     denoRuntime: DenoRuntime;
@@ -143,12 +144,15 @@ export class ReconcileFromDiskService {
     lockfileRepository: LockfileRepository;
     repoDir: string;
     localManifestIdentity?: LocalManifestIdentity | null;
+    pulledExtensionsRoot?: string;
   }) {
     this.denoRuntime = args.denoRuntime;
     this.repository = args.repository;
     this.lockfileRepository = args.lockfileRepository;
     this.repoDir = resolve(args.repoDir);
     this.localManifestIdentity = args.localManifestIdentity ?? null;
+    this.pulledExtensionsRoot = args.pulledExtensionsRoot ??
+      resolvePulledExtensionsRoot(this.repoDir);
   }
 
   async execute(
@@ -456,7 +460,7 @@ export class ReconcileFromDiskService {
     transitions: ReconcileTransition[],
     cache: FreshnessCache,
   ): Promise<Extension[]> {
-    const pulledRoot = swampPath(this.repoDir, "pulled-extensions");
+    const pulledRoot = this.pulledExtensionsRoot;
     const result: Extension[] = [];
     const lockfileEntries = this.lockfileRepository.getAllEntries();
 

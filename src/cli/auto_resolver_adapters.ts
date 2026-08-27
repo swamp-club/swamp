@@ -19,6 +19,7 @@
 
 import { getLogger } from "@logtape/logtape";
 import {
+  resolvePulledExtensionsRoot,
   SWAMP_SUBDIRS,
   swampPath,
 } from "../infrastructure/persistence/paths.ts";
@@ -94,6 +95,7 @@ interface InstallerAdapterConfig {
   repoDir: string;
   denoRuntime: DenoRuntime;
   datastoreResolver?: DatastorePathResolver;
+  pulledExtensionsRoot?: string;
   /**
    * W1b/(a-2) wiring: shared ExtensionRepository used by hotLoadModels
    * to attach user extensions whose base type was just registered, and
@@ -155,7 +157,9 @@ export function createAutoResolveInstallerAdapter(
       // A lockfile entry exists; carry its pinned version so the installer's
       // progress output reports the version that will actually be installed
       // (the install path pins to it) rather than registry-latest.
-      const path = swampPath(repoDir, "pulled-extensions", extensionName);
+      const pulledRoot = config.pulledExtensionsRoot ??
+        resolvePulledExtensionsRoot(repoDir);
+      const path = join(pulledRoot, extensionName);
       try {
         const stat = await Deno.stat(path);
         if (!stat.isDirectory) {

@@ -19,7 +19,7 @@
 
 import { Command } from "@cliffy/command";
 import type { Logger } from "@logtape/logtape";
-import { join, relative, resolve } from "@std/path";
+import { relative } from "@std/path";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
@@ -32,7 +32,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireRepoMarker } from "../repo_context.ts";
-import { resolveModelsDir } from "../resolve_models_dir.ts";
+import { resolveManagedConfigPaths } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { loadIdentity } from "../load_identity.ts";
@@ -271,9 +271,7 @@ export const extensionPullCommand = withRemoteOptions(
 
   // 3. Validate name format
   validateExtensionName(ref.name);
-  const modelsDir = resolveModelsDir(marker);
-  const absoluteModelsDir = resolve(repoDir, modelsDir);
-  const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+  const { lockfilePath } = resolveManagedConfigPaths(repoDir, marker);
 
   const tools = marker?.tools?.length ? marker.tools : ["claude"];
   const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);

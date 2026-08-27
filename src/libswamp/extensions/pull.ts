@@ -37,6 +37,7 @@ import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 import { InstallExtensionService } from "./install_extension_service.ts";
 import {
   bundleNamespace,
+  resolvePulledExtensionsRoot,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
@@ -197,6 +198,12 @@ export interface InstallContext {
   expectedChecksum?: string;
   /** Release channel to record in the lockfile entry. */
   channel?: string;
+  /**
+   * Root directory for pulled extension sources. Defaults to
+   * `.swamp/pulled-extensions` when not provided. With managedConfig,
+   * callers pass `.swamp/config/pulled-extensions`.
+   */
+  pulledExtensionsRoot?: string;
 }
 
 /** Thrown when file conflicts are detected and force is false. */
@@ -890,7 +897,7 @@ export async function installExtension(
     // @swamp/aws/ec2 and @swamp/aws/eks, or README.md across unrelated
     // extensions). Skills fan out to ctx.skillsDirs — one per enrolled tool.
     const absoluteExtRoot = join(
-      swampPath(repoDir, "pulled-extensions"),
+      ctx.pulledExtensionsRoot ?? resolvePulledExtensionsRoot(repoDir),
       ref.name,
     );
     const absoluteModelsDir = join(absoluteExtRoot, "models");

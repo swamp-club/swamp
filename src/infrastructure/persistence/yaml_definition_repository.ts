@@ -32,7 +32,11 @@ import {
   type YAMLMap,
 } from "yaml";
 import { assertSafePath } from "./safe_path.ts";
-import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
+import {
+  resolveEffectiveDefinitionsDir,
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "./paths.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import {
@@ -79,7 +83,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     /** Pass `false` to disable secondary search. Omit to auto-compute from repoDir. */
     secondaryBaseDir?: string | false,
   ) {
-    this.baseDir = baseDir ?? join(repoDir, "models");
+    this.baseDir = baseDir ?? resolveEffectiveDefinitionsDir(repoDir);
     this.secondaryBaseDir = secondaryBaseDir === false
       ? undefined
       : (secondaryBaseDir ??

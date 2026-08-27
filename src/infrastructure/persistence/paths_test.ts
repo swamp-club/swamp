@@ -25,6 +25,8 @@ import {
   globalTelemetryDir,
   homeDirectory,
   homeDirectoryIsSet,
+  managedConfigLockfilePath,
+  resolvePulledExtensionsRoot,
   SWAMP_DATA_DIR,
   SWAMP_MARKER_FILE,
   SWAMP_SUBDIRS,
@@ -555,4 +557,27 @@ Deno.test("bundleNamespace: returns 8-char hex string", () => {
   const hash = bundleNamespace("/repo/extensions/models", "/repo");
   assertEquals(hash.length, 8);
   assertEquals(/^[0-9a-f]{8}$/.test(hash), true);
+});
+
+// --- resolvePulledExtensionsRoot / managedConfigLockfilePath ---
+
+Deno.test("resolvePulledExtensionsRoot: managedConfig=false returns .swamp/pulled-extensions", () => {
+  assertPathEquals(
+    resolvePulledExtensionsRoot("/repo", false),
+    "/repo/.swamp/pulled-extensions",
+  );
+});
+
+Deno.test("resolvePulledExtensionsRoot: managedConfig=true returns .swamp/config/pulled-extensions", () => {
+  assertPathEquals(
+    resolvePulledExtensionsRoot("/repo", true),
+    "/repo/.swamp/config/pulled-extensions",
+  );
+});
+
+Deno.test("managedConfigLockfilePath: returns .swamp/config/upstream_extensions.json", () => {
+  assertPathEquals(
+    managedConfigLockfilePath("/repo"),
+    "/repo/.swamp/config/upstream_extensions.json",
+  );
 });

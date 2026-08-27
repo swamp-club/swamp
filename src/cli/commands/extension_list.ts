@@ -34,7 +34,7 @@ import {
   result,
   warnLegacyExtensionLayout,
 } from "../../libswamp/mod.ts";
-import { resolveModelsDir } from "../resolve_models_dir.ts";
+import { resolveManagedConfigPaths } from "../repo_context.ts";
 import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -150,9 +150,7 @@ export const extensionListCommand = withRemoteOptions(
   const repoPath = RepoPath.create(repoDir);
   const markerRepo = new RepoMarkerRepository();
   const marker = await markerRepo.read(repoPath);
-  const modelsDir = resolveModelsDir(marker);
-  const absoluteModelsDir = resolve(repoDir, modelsDir);
-  const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+  const { lockfilePath } = resolveManagedConfigPaths(repoDir, marker);
   const tool = resolvePrimaryTool(marker);
   const skillsDirRelative = relative(
     repoDir,

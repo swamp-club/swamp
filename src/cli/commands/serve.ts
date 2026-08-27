@@ -181,7 +181,6 @@ import {
   normalize,
   resolve,
 } from "@std/path";
-import { resolveModelsDir } from "../resolve_models_dir.ts";
 import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -192,6 +191,7 @@ import {
 } from "../../infrastructure/persistence/run_tracker_store.ts";
 import {
   getSwampConfigDir,
+  registerManagedConfig,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
@@ -204,6 +204,8 @@ import {
   sweepStaleRecords,
   sweepTokenConsistency,
 } from "../../serve/boot_reconciliation.ts";
+import { ConfigPoller } from "../../serve/config_poller.ts";
+
 import {
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   InstanceHeartbeatService,
@@ -1412,12 +1414,15 @@ export const serveCommand = new Command()
       repoDir: resolvedRepoDir,
       repoContext,
       datastoreConfig,
+      datastoreResolver: initialResolver,
       syncService,
+      lockfilePath: managedLockfilePath,
     } = await requireInitializedRepoUnlocked({
       repoDir,
       outputMode: ctx.outputMode,
     });
 
+    let configPoller: ConfigPoller | null = null;
     let repoMarker = null;
     try {
       const markerRepo = new RepoMarkerRepository();
@@ -1425,13 +1430,12 @@ export const serveCommand = new Command()
     } catch {
       // Not in a swamp repo or marker unreadable — resolveModelsDir(null) returns the default
     }
-    const resolvedModelsDir = resolveModelsDir(repoMarker);
-    const extensionLockfilePath = join(
-      isAbsolute(resolvedModelsDir)
-        ? resolvedModelsDir
-        : resolve(resolvedRepoDir, resolvedModelsDir),
-      "upstream_extensions.json",
+    registerManagedConfig(
+      resolvedRepoDir,
+      repoMarker?.datastore?.managedConfig === true,
+      initialResolver.resolvePath("config"),
     );
+    const extensionLockfilePath = managedLockfilePath;
 
     // Remote-execution control plane: capability verbs, worker enrollment,
     // and the dispatch/lease registries shared with the HTTP data plane.
@@ -1502,6 +1506,19 @@ export const serveCommand = new Command()
     dispatchService.setOnDispatchEnd((dispatchId) =>
       dataPlane.releaseDispatch(dispatchId)
     );
+
+    // When managedConfig is active, pull the config prefix from the
+    // datastore BEFORE loading extensions. This ensures .swamp/config/
+    // is populated so extension loaders can scan the managed dirs.
+    if (repoMarker?.datastore?.managedConfig && syncService) {
+      await syncService.pullChanged({
+        subdirs: ["config"],
+        namespace: isCustomDatastoreConfig(datastoreConfig)
+          ? datastoreConfig.namespace
+          : undefined,
+      });
+      repoContext.catalogStore.invalidate();
+    }
 
     // Index extension registries so types are discoverable at startup.
     // Bundles are imported on demand when workflow steps target them.
@@ -1705,6 +1722,16 @@ export const serveCommand = new Command()
         signal: AbortSignal.timeout(hydrationTimeoutMs),
         namespace: serveNamespace,
       });
+
+      if (repoMarker?.datastore?.managedConfig) {
+        configPoller = new ConfigPoller({
+          syncService,
+          catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+          extensionCatalogInvalidate: () => {},
+          namespace: serveNamespace,
+        });
+        configPoller.start();
+      }
 
       if (serveNamespace && rootReadErrors.length > 0) {
         const namespacedStore = syncService.controlPlaneStore!();
@@ -2648,6 +2675,9 @@ export const serveCommand = new Command()
           ? { resolvedUserNames }
           : {}),
         serveOptions: merged,
+        managedDefinitionsDir: repoMarker?.datastore?.managedConfig
+          ? join(datastoreResolver.resolvePath("config"), "models")
+          : undefined,
       };
 
     const ac = new AbortController();
@@ -3989,6 +4019,9 @@ export const serveCommand = new Command()
       }
       if (grantsDirectoryPoller) {
         await grantsDirectoryPoller.stop();
+      }
+      if (configPoller) {
+        await configPoller.stop();
       }
       await policySnapshotLoader.dispose();
       // Final telemetry flush, after runs have drained so their entries are

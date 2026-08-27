@@ -19,7 +19,7 @@
 
 import { join } from "@std/path";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
-import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import { resolvePulledExtensionsRoot } from "../../infrastructure/persistence/paths.ts";
 
 /** Types that can appear under a per-extension subtree. */
 export type PulledExtensionType =
@@ -50,10 +50,12 @@ export async function enumeratePulledExtensionDirs(
   lockfilePath: string,
   repoDir: string,
   type: PulledExtensionType,
+  pulledExtensionsRoot?: string,
 ): Promise<string[]> {
   const repo = await LockfileRepository.create(lockfilePath);
   const upstream = repo.getAllEntries();
-  const pulledRoot = swampPath(repoDir, "pulled-extensions");
+  const pulledRoot = pulledExtensionsRoot ??
+    resolvePulledExtensionsRoot(repoDir);
   const dirs: string[] = [];
 
   for (const name of Object.keys(upstream)) {

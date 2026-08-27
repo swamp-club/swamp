@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join, resolve } from "@std/path";
+import { join } from "@std/path";
+import { resolvePulledExtensionsRoot } from "../../infrastructure/persistence/paths.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
 import { readInstalledExtensionDigest } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
@@ -122,6 +123,12 @@ export interface ExtensionInstallDeps {
    * registry to exercise the success path.
    */
   installExtensionFn?: InstallExtensionFn;
+  /**
+   * Root directory for pulled extension sources. Defaults to
+   * `.swamp/pulled-extensions` when not provided. With managedConfig,
+   * callers pass `.swamp/config/pulled-extensions`.
+   */
+  pulledExtensionsRoot?: string;
 }
 
 /**
@@ -179,12 +186,9 @@ export async function* extensionInstall(
         // on-disk files weren't re-fetched (swamp-club#1021).
         if (needs === "up_to_date" && entry.filesChecksum) {
           try {
-            const extRoot = join(
-              resolve(deps.repoDir),
-              ".swamp",
-              "pulled-extensions",
-              name,
-            );
+            const effectivePulledRoot = deps.pulledExtensionsRoot ??
+              resolvePulledExtensionsRoot(deps.repoDir);
+            const extRoot = join(effectivePulledRoot, name);
             const onDisk = await readInstalledExtensionDigest(extRoot);
             if (onDisk !== entry.filesChecksum) {
               needs = "install";

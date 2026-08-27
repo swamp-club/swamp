@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { isAbsolute, join, relative } from "@std/path";
+import { isAbsolute, join, relative, resolve } from "@std/path";
 
 /**
  * Central constants for swamp data storage paths.
@@ -115,6 +115,77 @@ export const SWAMP_SUBDIRS = {
  */
 export function swampPath(repoDir: string, ...segments: string[]): string {
   return join(repoDir, SWAMP_DATA_DIR, ...segments);
+}
+
+/**
+ * Module-level managed config state. Set once at CLI/serve startup after
+ * reading the marker file. Stores the resolved config base path from the
+ * datastore resolver — for custom datastores this is the cache path
+ * (.swamp/config/), for filesystem datastores this is the datastore path
+ * (<path>/config/). Repo constructors check this to resolve their
+ * default baseDir when managedConfig is active.
+ */
+const managedConfigRegistry = new Map<string, string | false>();
+
+export function registerManagedConfig(
+  repoDir: string,
+  active: boolean,
+  configBasePath?: string,
+): void {
+  if (active && configBasePath) {
+    managedConfigRegistry.set(resolve(repoDir), configBasePath);
+  } else {
+    managedConfigRegistry.set(resolve(repoDir), false);
+  }
+}
+
+export function isManagedConfig(repoDir: string): boolean {
+  return managedConfigRegistry.get(resolve(repoDir)) !== false &&
+    managedConfigRegistry.get(resolve(repoDir)) !== undefined;
+}
+
+export function getManagedConfigBase(repoDir: string): string | undefined {
+  const val = managedConfigRegistry.get(resolve(repoDir));
+  return typeof val === "string" ? val : undefined;
+}
+
+export function resolveEffectiveDefinitionsDir(repoDir: string): string {
+  const base = getManagedConfigBase(repoDir);
+  return base ? join(base, "models") : join(repoDir, "models");
+}
+
+export function resolveEffectiveWorkflowsDir(repoDir: string): string {
+  const base = getManagedConfigBase(repoDir);
+  return base ? join(base, "workflows") : join(repoDir, "workflows");
+}
+
+export function resolveEffectiveVaultsDir(repoDir: string): string {
+  const base = getManagedConfigBase(repoDir);
+  return base ? join(base, "vaults") : join(repoDir, "vaults");
+}
+
+/**
+ * Resolves the pulled-extensions root for a repository.
+ * When managedConfig is explicitly passed, uses that value.
+ * Otherwise checks the module-level registry.
+ */
+export function resolvePulledExtensionsRoot(
+  repoDir: string,
+  managedConfig?: boolean,
+): string {
+  const active = managedConfig ?? isManagedConfig(repoDir);
+  return active
+    ? swampPath(repoDir, "config", "pulled-extensions")
+    : swampPath(repoDir, "pulled-extensions");
+}
+
+/**
+ * Resolves the lockfile path for a repository when managedConfig is true.
+ * Returns the .swamp/config/upstream_extensions.json path.
+ * When managedConfig is false, callers should derive it from resolveModelsDir.
+ */
+export function managedConfigLockfilePath(repoDir: string): string {
+  return join(swampPath(repoDir, "config"), "upstream_extensions.json");
 }
 
 /**

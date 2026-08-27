@@ -36,7 +36,7 @@ import type { ExtensionRepository } from "../../infrastructure/persistence/exten
 import { DuplicateTypeError } from "../../infrastructure/persistence/duplicate_type_error.ts";
 import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
 import { UserError } from "../../domain/errors.ts";
-import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import { resolvePulledExtensionsRoot } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionLoader } from "../../domain/extensions/extension_loader.ts";
 import { modelKindAdapter } from "../../domain/extensions/model_kind_adapter.ts";
 import { vaultKindAdapter } from "../../domain/extensions/vault_kind_adapter.ts";
@@ -223,20 +223,12 @@ export class InstallExtensionService {
   private async buildExtensionFromDisk(
     result: InstallResult,
     repoDir: string,
+    pulledExtensionsRoot?: string,
   ): Promise<Extension> {
-    // Resolve to an absolute path so the source_path written to the
-    // catalog matches the absolute paths the legacy user_*_loader
-    // bootstrap path uses (`populateCatalogFromDir`). Without this, a
-    // relative `repoDir` (e.g. `.`) would have phase 8 writing relative
-    // source_paths while the loader writes absolute ones, leaving
-    // duplicate rows in the catalog and the legacy upsert's empty-
-    // identity rows would shadow phase 8's properly-identified rows on
-    // the next `loadByName` call.
     const absoluteRepoDir = resolvePath(repoDir);
-    const extRoot = join(
-      swampPath(absoluteRepoDir, "pulled-extensions"),
-      result.name,
-    );
+    const effectivePulledRoot = pulledExtensionsRoot ??
+      resolvePulledExtensionsRoot(absoluteRepoDir);
+    const extRoot = join(effectivePulledRoot, result.name);
     const sources: ReturnType<typeof makeSource>[] = [];
 
     for (const kindDir of KIND_DIRS) {

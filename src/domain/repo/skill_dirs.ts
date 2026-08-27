@@ -56,9 +56,16 @@ export const GLOBAL_SKILL_DIRS: Record<string, string> = {
  * Resolves the absolute skill directory for a repo, based on the active AI tool.
  * Falls back to `.swamp/pulled-extensions/skills/` when tool is "none" or unknown.
  */
-export function resolveSkillsDir(repoDir: string, tool: string): string {
+export function resolveSkillsDir(
+  repoDir: string,
+  tool: string,
+  pulledExtensionsRoot?: string,
+): string {
   if (tool !== "none" && SKILL_DIRS[tool]) {
     return join(repoDir, SKILL_DIRS[tool]);
+  }
+  if (pulledExtensionsRoot) {
+    return join(pulledExtensionsRoot, "skills");
   }
   return swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills);
 }
