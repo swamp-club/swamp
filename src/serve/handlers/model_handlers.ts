@@ -97,6 +97,7 @@ import { modelRegistry } from "../../domain/models/model.ts";
 import { RegistryCapacityError } from "../active_run_registry.ts";
 import { RunEventBuffer } from "../run_event_buffer.ts";
 import { deleteActiveRun, writeActiveRun } from "../active_run_tracker.ts";
+import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import {
   authorizeOrReject,
   type ConnectionContext,
@@ -250,9 +251,12 @@ export async function handleModelMethodRun(
         await runMethod();
       }
       if (ctx.syncService && !flushLocks) {
+        const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+          ? ctx.datastoreConfig.namespace
+          : undefined;
         try {
           await ctx.syncService.markDirty();
-          await ctx.syncService.pushChanged();
+          await ctx.syncService.pushChanged({ namespace });
         } catch (pushError) {
           logger.warn("Failed to push changes to remote datastore: {error}", {
             error: pushError instanceof Error
@@ -467,9 +471,12 @@ export async function handleModelMethodRun(
       }
 
       if (ctx.syncService && !flushLocks) {
+        const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+          ? ctx.datastoreConfig.namespace
+          : undefined;
         try {
           await ctx.syncService.markDirty();
-          await ctx.syncService.pushChanged();
+          await ctx.syncService.pushChanged({ namespace });
         } catch (pushError) {
           logger.warn("Failed to push changes to remote datastore: {error}", {
             error: pushError instanceof Error

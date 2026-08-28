@@ -58,6 +58,7 @@ import {
   validateServerRepoExclusivity,
 } from "./access_helpers.ts";
 import type { ModelMethodRunEvent } from "../../libswamp/mod.ts";
+import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import {
   requestServerResponse,
   resolveServerToken,
@@ -293,9 +294,12 @@ const accessGrantCreateCommand = new Command()
           );
         }
       } else if (syncService) {
+        const namespace = isCustomDatastoreConfig(datastoreConfig)
+          ? datastoreConfig.namespace
+          : undefined;
         try {
           await syncService.markDirty();
-          await syncService.pushChanged();
+          await syncService.pushChanged({ namespace });
         } catch (pushError) {
           ctx.logger.warn(
             "Failed to push changes to remote datastore: {error}",
