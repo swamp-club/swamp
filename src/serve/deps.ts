@@ -40,7 +40,11 @@ import {
   type StepLockHook,
   WorkflowExecutionService,
 } from "../domain/workflows/execution_service.ts";
-import { createWorkflowId } from "../domain/workflows/workflow_id.ts";
+import {
+  createWorkflowId,
+  type WorkflowRunId,
+} from "../domain/workflows/workflow_id.ts";
+import type { WorkflowRun } from "../domain/workflows/workflow_run.ts";
 import type { RunTrackerRepository } from "../domain/models/run_tracker_repository.ts";
 import { TriggerInputResolver } from "../domain/workflows/trigger_input_resolver.ts";
 import { buildEnvContext } from "../domain/expressions/model_resolver.ts";
@@ -198,6 +202,17 @@ export async function createWorkflowRunDeps(
     dataRepo: repoContext.unifiedDataRepo,
     definitionRepo: repoContext.definitionRepo,
     telemetrySink: options?.telemetrySink,
+    findSuspendedRuns: async (workflowId) => {
+      const runRepo = repoContext.workflowRunRepo;
+      const suspended = await runRepo
+        .findSummariesByStatus(workflowId, "suspended");
+      const runs = await Promise.all(
+        suspended.map((s) =>
+          runRepo.findById(workflowId, s.id as WorkflowRunId)
+        ),
+      );
+      return runs.filter((r): r is WorkflowRun => r !== null);
+    },
   };
 }
 

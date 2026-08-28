@@ -43,6 +43,7 @@ export interface WorkflowRunPayload {
   skipCheckLabels?: string[];
   traceparent?: string;
   tracestate?: string;
+  noSupersede?: boolean;
 }
 
 export interface ModelMethodRunPayload {

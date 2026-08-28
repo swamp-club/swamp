@@ -48,7 +48,21 @@ import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistenc
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-function renderApprovals(
+function formatInputsDigest(
+  inputs: Readonly<Record<string, unknown>>,
+): string | undefined {
+  const keys = Object.keys(inputs);
+  if (keys.length === 0) return undefined;
+  const pairs = keys.sort().map((k) => {
+    const v = inputs[k];
+    const s = typeof v === "string" ? v : JSON.stringify(v);
+    return `${k}=${s}`;
+  });
+  const digest = pairs.join(", ");
+  return digest.length > 80 ? digest.slice(0, 77) + "..." : digest;
+}
+
+export function renderApprovals(
   cliCtx: CommandContext,
   pending: PendingApproval[],
 ): void {
@@ -59,6 +73,7 @@ function renderApprovals(
       cliCtx.logger.info("No workflows awaiting approval");
     } else {
       for (const item of pending) {
+        const inputsDigest = formatInputsDigest(item.inputs);
         cliCtx.logger.info(
           "{workflowName} / {stepName} — {prompt}",
           {
@@ -68,16 +83,40 @@ function renderApprovals(
           },
         );
         cliCtx.logger.info(
-          "  swamp workflow approve {workflowName} {stepName}",
-          { workflowName: item.workflowName, stepName: item.stepName },
+          "  Run:          {runId}",
+          { runId: item.runId },
+        );
+        if (item.suspendedAt) {
+          cliCtx.logger.info(
+            "  Suspended at: {suspendedAt}",
+            { suspendedAt: item.suspendedAt },
+          );
+        }
+        if (inputsDigest) {
+          cliCtx.logger.info(
+            "  Inputs:       {inputs}",
+            { inputs: inputsDigest },
+          );
+        }
+        cliCtx.logger.info(
+          "  swamp workflow approve {workflowName} {stepName} --run {runId}",
+          {
+            workflowName: item.workflowName,
+            stepName: item.stepName,
+            runId: item.runId,
+          },
         );
         cliCtx.logger.info(
-          "  swamp workflow reject  {workflowName} {stepName}",
-          { workflowName: item.workflowName, stepName: item.stepName },
+          "  swamp workflow reject  {workflowName} {stepName} --run {runId}",
+          {
+            workflowName: item.workflowName,
+            stepName: item.stepName,
+            runId: item.runId,
+          },
         );
         cliCtx.logger.info(
-          "  After approval: swamp workflow resume {workflowName}",
-          { workflowName: item.workflowName },
+          "  After approval: swamp workflow resume {workflowName} --run {runId}",
+          { workflowName: item.workflowName, runId: item.runId },
         );
       }
     }

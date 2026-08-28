@@ -83,6 +83,11 @@ export {
   type WorkflowRunJobInfo,
   type WorkflowTelemetrySink,
 } from "./workflows/run.ts";
+export {
+  type SupersedeResult,
+  supersedeSuspendedRuns,
+} from "./workflows/supersede.ts";
+export { inputsMatch } from "../domain/workflows/input_matching.ts";
 export type { MethodExecutionEvent } from "../domain/models/method_events.ts";
 export {
   type AssertResultView,

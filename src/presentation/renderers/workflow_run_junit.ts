@@ -72,6 +72,7 @@ export class JUnitWorkflowRunRenderer implements WorkflowRunRenderer {
   handlers(): EventHandlers<WorkflowRunEvent> {
     return {
       validating_inputs: () => {},
+      superseded_runs: () => {},
       evaluating_workflow: () => {},
       started: (e) => {
         this.workflowName = e.workflowName;

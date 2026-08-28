@@ -140,18 +140,28 @@ steps:
    they reach a terminal state (succeeded, failed, or skipped) — the executor
    drains all generators at the current level before persisting. The saved run
    record is a consistent checkpoint: every step is either completed or has not
-   started. The CLI then exits.
-2. `swamp workflow approve <workflow> <step>` marks the step as succeeded in the
-   persisted run record. Lightweight — no execution, any authorized user.
-3. `swamp workflow resume <workflow>` re-enters the executor, skips completed
-   steps, and runs remaining pending steps.
+   started. Before starting execution, `workflow run` **supersedes** any prior
+   suspended runs of the same workflow whose resolved inputs match the new run's
+   inputs (deep equality). Matching suspended runs are cancelled with reason
+   "Superseded by new run with matching inputs". Runs with different inputs are
+   left alone — they represent independent intents. Serve-owned suspended runs
+   are also skipped (cancel those via the serve API). Use `--no-supersede` to
+   opt out. The CLI then exits once the new run suspends.
+2. `swamp workflow approve <workflow> <step> --run <id>` marks the step as
+   succeeded in the persisted run record. Lightweight — no execution, any
+   authorized user. The `--run` flag disambiguates when multiple runs are
+   suspended; it is optional when only one run is suspended.
+3. `swamp workflow resume <workflow> --run <id>` re-enters the executor, skips
+   completed steps, and runs remaining pending steps.
 
-`swamp workflow reject <workflow> <step>` marks the step as failed and the run as
-failed. No resume needed.
+`swamp workflow reject <workflow> <step> --run <id>` marks the step as failed and
+the run as failed. No resume needed.
 
-`swamp workflow approvals` lists all suspended runs awaiting approval. Supports
-`--server` / `SWAMP_SERVE_URL` / `SWAMP_SERVER_URL` via the `workflow.approvals` wire-protocol
-endpoint (read-only, `read` authorization verb).
+`swamp workflow approvals` lists all suspended runs awaiting approval, showing
+each run's id, suspended-at timestamp, inputs digest, and ready-to-run
+`--run <id>` approve/reject/resume commands. Supports `--server` /
+`SWAMP_SERVE_URL` / `SWAMP_SERVER_URL` via the `workflow.approvals`
+wire-protocol endpoint (read-only, `read` authorization verb).
 
 **Programmatic gate control:** Gates can also be approved or rejected from within
 a model method via `context.approveWorkflowGate()` and
