@@ -40,6 +40,7 @@ function formatToolsList(tools: readonly string[]): string {
 }
 
 const TOOL_NEXT_STEPS: Record<string, string> = {
+  amp: 'Run `amp` in this directory and say "I am new to swamp"',
   claude: "Start Claude Code and run /swamp-getting-started",
   cursor: "Open this project in Cursor and run /swamp-getting-started",
   codex: "Run `codex` and invoke $swamp-getting-started",
@@ -55,11 +56,12 @@ const TOOL_NEXT_STEPS: Record<string, string> = {
  * the user which files were left behind when a tool is dropped from the
  * enrolled list.
  *
- * Some paths are shared (`.agents/skills/` for opencode/codex/copilot),
+ * Some paths are shared (`.agents/skills/` for amp/opencode/codex/copilot),
  * so the renderer subtracts paths that are still in use by another
  * remaining tool before warning the user — see {@link orphanedPathsFor}.
  */
 const TOOL_CLEANUP_PATHS: Partial<Record<string, readonly string[]>> = {
+  amp: [".amp/", ".agents/skills/"],
   claude: [".claude/"],
   cursor: [".cursor/"],
   kiro: [".kiro/", ".vscode/settings.local.json"],
