@@ -798,6 +798,14 @@ export class RepoService {
           if (changed) changedFiles.push(".github/hooks/swamp-audit.json");
           break;
         }
+        case "amp": {
+          const changed = alreadyExists
+            ? await this.updateAmpSettings(repoPath)
+            : await this.createAmpSettingsIfNotExists(repoPath);
+          settingsChanged = changed;
+          if (changed) changedFiles.push(".amp/settings.json");
+          break;
+        }
         case "codex":
         case "none":
           break;
@@ -1599,6 +1607,83 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
       },
       hooks: mergedHooks,
     };
+    await atomicWriteTextFile(
+      settingsPath,
+      JSON.stringify(newSettings, null, 2) + "\n",
+    );
+    return true;
+  }
+
+  private generateAmpSettingsContent(): string {
+    const settings = {
+      "amp.commands": {
+        allowlist: ["swamp *"],
+        strict: true,
+      },
+    };
+    return JSON.stringify(settings, null, 2) + "\n";
+  }
+
+  private createAmpSettingsIfNotExists(
+    repoPath: RepoPath,
+  ): Promise<boolean> {
+    const settingsPath = join(repoPath.value, ".amp", "settings.json");
+    return this.createFileIfNotExists(
+      settingsPath,
+      this.generateAmpSettingsContent(),
+    );
+  }
+
+  private async updateAmpSettings(repoPath: RepoPath): Promise<boolean> {
+    const ampDir = join(repoPath.value, ".amp");
+    const settingsPath = join(ampDir, "settings.json");
+
+    await ensureDir(ampDir);
+
+    let existingSettings: Record<string, unknown> = {};
+    let settingsExisted = false;
+
+    try {
+      const content = await Deno.readTextFile(settingsPath);
+      existingSettings = JSON.parse(content);
+      settingsExisted = true;
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+
+    const ourSettings = JSON.parse(this.generateAmpSettingsContent());
+    const existingCommands =
+      (existingSettings as Record<string, Record<string, unknown>>)
+        ?.["amp.commands"] as
+          | { allowlist?: string[]; strict?: boolean }
+          | undefined;
+
+    const mergedAllowlist = [
+      ...new Set([
+        ...(existingCommands?.allowlist ?? []),
+        ...ourSettings["amp.commands"].allowlist,
+      ]),
+    ];
+
+    const hasChanges =
+      mergedAllowlist.length !== (existingCommands?.allowlist?.length ?? 0) ||
+      existingCommands?.strict !== true;
+
+    if (!hasChanges && settingsExisted) {
+      return false;
+    }
+
+    const newSettings = {
+      ...existingSettings,
+      "amp.commands": {
+        ...existingCommands,
+        allowlist: mergedAllowlist,
+        strict: true,
+      },
+    };
+
     await atomicWriteTextFile(
       settingsPath,
       JSON.stringify(newSettings, null, 2) + "\n",

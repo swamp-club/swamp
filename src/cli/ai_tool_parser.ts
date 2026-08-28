@@ -22,6 +22,7 @@ import type { AiTool } from "../infrastructure/persistence/repo_marker_repositor
 
 /** The canonical list of valid AI tool names. */
 export const VALID_AI_TOOLS: readonly AiTool[] = [
+  "amp",
   "claude",
   "cursor",
   "kiro",

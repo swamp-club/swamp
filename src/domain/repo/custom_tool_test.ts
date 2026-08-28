@@ -32,6 +32,7 @@ import {
 import { UserError } from "../errors.ts";
 
 Deno.test("isBuiltInTool: recognizes built-in tools", () => {
+  assertEquals(isBuiltInTool("amp"), true);
   assertEquals(isBuiltInTool("claude"), true);
   assertEquals(isBuiltInTool("cursor"), true);
   assertEquals(isBuiltInTool("opencode"), true);
@@ -131,8 +132,18 @@ Deno.test("builtInToolConfig: kiro config", () => {
   assertEquals(config.skillReferenceStyle, "name");
 });
 
-Deno.test("builtInToolConfig: opencode/codex/copilot share AGENTS.md", () => {
-  for (const tool of ["opencode", "codex", "copilot"] as const) {
+Deno.test("builtInToolConfig: amp config", () => {
+  const config = builtInToolConfig("amp");
+  assertEquals(config.name, "amp");
+  assertEquals(config.isBuiltIn, true);
+  assertEquals(config.skillsDir, ".agents/skills");
+  assertEquals(config.instructionsFile, "AGENTS.md");
+  assertEquals(config.instructionsMode, "shared");
+  assertEquals(config.skillReferenceStyle, "name");
+});
+
+Deno.test("builtInToolConfig: amp/opencode/codex/copilot share AGENTS.md", () => {
+  for (const tool of ["amp", "opencode", "codex", "copilot"] as const) {
     const config = builtInToolConfig(tool);
     assertEquals(config.instructionsFile, "AGENTS.md");
     assertEquals(config.instructionsMode, "shared");

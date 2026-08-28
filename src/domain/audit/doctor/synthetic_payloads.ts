@@ -135,6 +135,7 @@ export function syntheticPayloadFor(
       };
       return { stdin: JSON.stringify(raw), env: {}, expectedCommand };
     }
+    case "amp":
     case "codex":
     case "none":
     default:

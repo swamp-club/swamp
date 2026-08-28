@@ -78,6 +78,7 @@ Deno.test("binaryOnPath: appliesTo returns true for all five audit tools, false 
   assertEquals(check.appliesTo("kiro"), true);
   assertEquals(check.appliesTo("opencode"), true);
   assertEquals(check.appliesTo("copilot"), true);
+  assertEquals(check.appliesTo("amp"), false);
   assertEquals(check.appliesTo("codex"), false);
   assertEquals(check.appliesTo("none"), false);
 });

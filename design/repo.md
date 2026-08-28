@@ -18,8 +18,8 @@ agent should attempt to use swamp for most tasks.
 
 ## Multi-tool Repos
 
-A swamp repo can be enrolled for multiple AI agent tools at once (Claude
-Code, Cursor, OpenCode, Codex, Copilot, Kiro). The marker file stores the
+A swamp repo can be enrolled for multiple AI agent tools at once (Amp,
+Claude Code, Cursor, OpenCode, Codex, Copilot, Kiro). The marker file stores the
 full enrolled list as `tools: AiTool[]`. Each tool's scaffolding (skills
 directory, instructions file, settings/hooks) is written independently
 since the paths don't conflict.

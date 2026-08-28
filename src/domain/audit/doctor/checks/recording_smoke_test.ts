@@ -129,6 +129,7 @@ Deno.test("recordingSmokeTest: appliesTo returns true only for audit-hook tools"
   assertEquals(recordingSmokeTestCheck.appliesTo("claude"), true);
   assertEquals(recordingSmokeTestCheck.appliesTo("kiro"), true);
   assertEquals(recordingSmokeTestCheck.appliesTo("copilot"), true);
+  assertEquals(recordingSmokeTestCheck.appliesTo("amp"), false);
   assertEquals(recordingSmokeTestCheck.appliesTo("codex"), false);
   assertEquals(recordingSmokeTestCheck.appliesTo("none"), false);
 });

@@ -23,6 +23,7 @@ it reads at runtime:
 
 | Tool     | Global skills path                       | Reads `~/.agents/skills/`? |
 | -------- | ---------------------------------------- | -------------------------- |
+| amp      | reads from `~/.agents/skills/` directly  | Yes                        |
 | claude   | `~/.claude/skills/`                      | No                         |
 | cursor   | reads from `~/.agents/skills/` directly  | Yes                        |
 | opencode | reads from `~/.agents/skills/` directly  | Yes                        |
@@ -30,7 +31,7 @@ it reads at runtime:
 | copilot  | reads from `~/.agents/skills/` directly  | Yes                        |
 | kiro     | `~/.kiro/skills/`                        | No                         |
 
-Tools that read from `~/.agents/skills/` natively (Cursor, OpenCode, Codex,
+Tools that read from `~/.agents/skills/` natively (Amp, Cursor, OpenCode, Codex,
 Copilot) share a single copy. Claude Code and Kiro require their own copies at
 their vendor-specific global paths.
 
@@ -41,6 +42,7 @@ built-in tool:
 
 ```typescript
 const GLOBAL_SKILL_DIRS: Record<string, string> = {
+  amp: ".agents/skills",
   claude: ".claude/skills",
   cursor: ".agents/skills",
   opencode: ".agents/skills",
@@ -108,7 +110,7 @@ Today these commands copy skills into the repo. Under the new model:
 
 1. Detect enrolled tools (same as today)
 2. Write skills to each tool's **global** directory (deduplicated — write to
-   `~/.agents/skills/` once even if codex + copilot + opencode are all enrolled)
+   `~/.agents/skills/` once even if amp + codex + copilot + opencode are all enrolled)
 3. Write instructions files to the **repo** (CLAUDE.md, AGENTS.md,
    `.cursor/rules/swamp.mdc`, `.kiro/steering/swamp-rules.md`) — these stay
    per-repo because they reference repo-specific context (model names,

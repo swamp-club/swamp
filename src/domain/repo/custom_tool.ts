@@ -43,6 +43,7 @@ export interface ToolConfig {
 }
 
 export const BUILT_IN_TOOL_NAMES: readonly string[] = [
+  "amp",
   "claude",
   "cursor",
   "opencode",
@@ -95,6 +96,15 @@ export function assertPathContained(
 
 export function builtInToolConfig(tool: AiTool): ToolConfig {
   switch (tool) {
+    case "amp":
+      return {
+        name: "amp",
+        isBuiltIn: true,
+        skillsDir: ".agents/skills",
+        instructionsFile: "AGENTS.md",
+        instructionsMode: "shared",
+        skillReferenceStyle: "name",
+      };
     case "claude":
       return {
         name: "claude",
