@@ -1,0 +1,19 @@
+---
+title: "Extension author: publish to my collective"
+---
+graph LR
+  Author@{ icon: "fa:user", shape: rounded, label: "Extension author" }
+  SwampCli@{ shape: rectangle, label: "swamp CLI" }
+  SwampUserconfig@{ shape: disk, label: "~/.config/swamp" }
+  Club@{ shape: rectangle, label: "swamp-club" }
+  SwampRepo@{ shape: disk, label: ".swamp/ repo datastore" }
+  Author -. "`swamp extension push`" .-> SwampCli
+  SwampCli -. "`load API key`" .-> SwampUserconfig
+  SwampCli -. "`GET /api/whoami — collective ownership`" .-> Club
+  SwampCli -. "`safety analysis, dependency trust, fmt 
+and lint, review rules, bundle`" .-> SwampCli
+  SwampCli -. "`POST push → presigned URL; upload 
+archive; POST confirm`" .-> Club
+  Author -. "`teammate: swamp extension pull`" .-> SwampCli
+  SwampCli -. "`download, checksum`" .-> Club
+  SwampCli -. "`safe extract, lockfile, catalog commit`" .-> SwampRepo

@@ -57,8 +57,8 @@ the date on its doc.
 | [workflows](./primitives/workflows.md)       |                                                                                                |
 | [vaults](./primitives/vaults.md)             | AWS SM, Azure KV and 1Password are extensions, not built-ins                                   |
 | [extensions](./primitives/extensions.md)     | To be split into authoring (author-facing) and lifecycle (maintainer-facing)                   |
-| data                                         | **Not yet written.** Today: models.md §Data, data-query.md §DataRecord, datastores.md intro    |
-| serve                                        | **Not yet written.** Today: remote-execution.md §Topology/§Enrollment, workflows.md §Triggers  |
+| [data](./primitives/data.md)                 | The record, write path, lifecycle, where it lives                                              |
+| [serve](./primitives/serve.md)               | Configuration, surface, auth modes, detached runs, triggers, HA, operations                    |
 
 ### Enablers
 
@@ -97,6 +97,32 @@ the date on its doc.
 
 ## Diagrams
 
-Architecture diagrams are planned as a LikeC4 model under
-`design/architecture/` with generated Mermaid committed beside it. Not yet
-present.
+The C4 model lives in `design/architecture/` as [LikeC4](https://likec4.dev)
+source — `model.c4` (people, external systems, containers, components) and
+`views.c4` (context, containers, components, and one dynamic view per user
+journey). Mermaid is generated into `design/architecture/generated/` and
+spliced into [architecture.md](./architecture.md) between
+`<!-- diagram: <view> -->` markers so GitHub renders it inline.
+
+**Viewing.** Nothing to install: open
+[architecture.md](./architecture.md) on GitHub, or in any editor with a
+Mermaid-capable markdown preview (Zed, VS Code). For the interactive version
+— pan, zoom, click through from a container to its components — run
+`npx likec4 start design/architecture` and open the URL it prints, or install
+the [LikeC4 VS Code extension](https://marketplace.visualstudio.com/items?itemName=likec4.likec4-vscode)
+and open a `.c4` file.
+
+**Editing.** Change `model.c4` / `views.c4`, then:
+
+- `deno task diagrams:render` — regenerate the Mermaid and re-splice it into
+  architecture.md. Needs `npx` (Node); the pinned `likec4` version is
+  fetched on first use.
+- `deno task diagrams:check` — what CI runs; fails if the generated files or
+  the spliced blocks are stale.
+
+Rules for the model: people are the swamp-uat personas; element ids under
+`swamp` mirror `src/` directories and carry a `link` to the path; every
+dynamic view is a journey a person actually runs and links to the swamp-uat
+test that proves it. When a UAT journey is added or renamed, the view follows.
+Context and container views are hand-curated; there are no code-level
+diagrams.

@@ -1,0 +1,16 @@
+---
+title: "Components — layering inside the CLI (and serve, which reuses libswamp)"
+---
+graph TB
+  subgraph SwampCli["`swamp CLI`"]
+    SwampCli.Commands@{ shape: rectangle, label: "commands" }
+    SwampCli.Infrastructure@{ shape: rectangle, label: "infrastructure" }
+    SwampCli.Presentation@{ shape: rectangle, label: "presentation" }
+    SwampCli.Libswamp@{ shape: rectangle, label: "libswamp" }
+    SwampCli.Domain@{ shape: rectangle, label: "domain" }
+  end
+  SwampCli.Commands -. "`renders events`" .-> SwampCli.Presentation
+  SwampCli.Commands -. "`consumes use-case streams`" .-> SwampCli.Libswamp
+  SwampCli.Presentation -. "`event types only`" .-> SwampCli.Libswamp
+  SwampCli.Libswamp -. "`orchestrates`" .-> SwampCli.Domain
+  SwampCli.Infrastructure -. "`implements ports`" .-> SwampCli.Domain

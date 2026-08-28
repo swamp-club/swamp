@@ -1,0 +1,17 @@
+---
+title: "Builder: run my model and see the data"
+---
+graph LR
+  Builder@{ icon: "fa:user", shape: rounded, label: "Builder" }
+  SwampCli@{ shape: rectangle, label: "swamp CLI" }
+  SwampRepo@{ shape: disk, label: ".swamp/ repo datastore" }
+  Wrapped@{ shape: rectangle, label: "Systems wrapped by models" }
+  Builder -. "`agent runs: swamp model method run 
+hello-world execute`" .-> SwampCli
+  SwampCli -. "`load definition, bundle the type, 
+evaluate CEL, resolve vault sentinels`" .-> SwampRepo
+  SwampCli -. "`execute the method in-process`" .-> Wrapped
+  SwampCli -. "`write versioned data, update 
+_catalog.db, record output`" .-> SwampRepo
+  Builder -. "`agent runs: swamp data query`" .-> SwampCli
+  SwampCli -. "`read latest`" .-> SwampRepo

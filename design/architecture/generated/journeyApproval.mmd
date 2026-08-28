@@ -1,0 +1,15 @@
+---
+title: "Builder: run a workflow that waits for my approval"
+---
+graph LR
+  Builder@{ icon: "fa:user", shape: rounded, label: "Builder" }
+  SwampCli@{ shape: rectangle, label: "swamp CLI" }
+  SwampRepo@{ shape: disk, label: ".swamp/ repo datastore" }
+  Builder -. "`swamp workflow run`" .-> SwampCli
+  SwampCli -. "`topological levels, forEach expansion, 
+run steps`" .-> SwampRepo
+  SwampCli -. "`manual_approval step: persist run as 
+suspended`" .-> SwampRepo
+  Builder -. "`swamp workflow approve`" .-> SwampCli
+  SwampCli -. "`record decision, resume from the 
+suspended level`" .-> SwampRepo

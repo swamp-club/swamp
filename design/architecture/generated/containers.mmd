@@ -1,0 +1,56 @@
+---
+title: "Containers — one binary, four runtime roles"
+---
+graph TB
+  Builder@{ icon: "fa:user", shape: rounded, label: "Builder" }
+  Author@{ icon: "fa:user", shape: rounded, label: "Extension author" }
+  Operator@{ icon: "fa:user", shape: rounded, label: "Platform operator" }
+  Member@{ icon: "fa:user", shape: rounded, label: "Team member" }
+  Integrator@{ icon: "fa:user", shape: rounded, label: "Integrator system" }
+  Osd@{ shape: rectangle, label: "OS service manager" }
+  subgraph Swamp["`swamp`"]
+    Swamp.Cli@{ shape: rectangle, label: "swamp CLI" }
+    Swamp.Worker@{ shape: rectangle, label: "swamp worker connect" }
+    Swamp.Userconfig@{ shape: disk, label: "~/.config/swamp" }
+    Swamp.Runner@{ shape: rectangle, label: "dispatch runner" }
+    Swamp.Serve@{ shape: rectangle, label: "swamp serve" }
+    Swamp.Dashboard@{ shape: rectangle, label: "Dashboard SPA" }
+    Swamp.Repo@{ shape: disk, label: ".swamp/ repo datastore" }
+    Swamp.Control@{ shape: disk, label: "control-plane store" }
+  end
+  Wrapped@{ shape: rectangle, label: "Systems wrapped by models" }
+  Club@{ shape: rectangle, label: "swamp-club" }
+  Backends@{ shape: rectangle, label: "Extension-provided backends" }
+  Otel@{ shape: rectangle, label: "OpenTelemetry collector" }
+  Builder -. "`prompts the agent; the agent runs swamp`" .-> Swamp.Cli
+  Author -. "`auth login, extension push and pull`" .-> Swamp.Cli
+  Operator -. "`serve, access token mint, grants, worker 
+token create`" .-> Swamp.Serve
+  Operator -. "`worker connect on each machine`" .-> Swamp.Worker
+  Member -. "`auth server-login, --server commands`" .-> Swamp.Cli
+  Member -. "`browser`" .-> Swamp.Dashboard
+  Integrator -. "`HMAC-signed webhook POST`" .-> Swamp.Serve
+  Osd -. "`spawns and restarts`" .-> Swamp.Serve
+  Osd -. "`spawns and restarts`" .-> Swamp.Worker
+  Swamp.Cli -. "`runs commands with --server`" .-> Swamp.Serve
+  Swamp.Cli -. "`reads and writes`" .-> Swamp.Repo
+  Swamp.Cli -. "`stores credentials, spools telemetry`" .-> Swamp.Userconfig
+  Swamp.Serve -. "`serves`" .-> Swamp.Dashboard
+  Swamp.Serve -. "`reads and writes`" .-> Swamp.Repo
+  Swamp.Serve -. "`heartbeats, leases, dedup`" .-> Swamp.Control
+  Swamp.Worker -. "`enrol, receive dispatches, capability 
+verbs`" .-> Swamp.Serve
+  Swamp.Runner -. "`reads and writes data, fetches bundles`" .-> Swamp.Serve
+  Swamp.Dashboard -. "`commands and health stream`" .-> Swamp.Serve
+  Swamp.Worker -. "`spawns one per dispatch`" .-> Swamp.Runner
+  Swamp.Cli -. "`login, whoami, extension push and pull, 
+issues, update check`" .-> Club
+  Swamp.Cli -. "`executes model methods`" .-> Wrapped
+  Swamp.Cli -. "`in-process datastore and vault providers`" .-> Backends
+  Swamp.Cli -. "`traces and logs, opt-in`" .-> Otel
+  Swamp.Serve -. "`instance heartbeat, collective refresh, 
+OAuth device grant`" .-> Club
+  Swamp.Serve -. "`in-process datastore and vault 
+providers; shared control plane`" .-> Backends
+  Swamp.Serve -. "`traces and logs, opt-in`" .-> Otel
+  Swamp.Runner -. "`executes placed model methods`" .-> Wrapped
