@@ -21,11 +21,25 @@ import { useCallback, useEffect, useState } from "react";
 import { useSwamp } from "../client/SwampProvider";
 import { Logo } from "../components/Logo";
 
+function providerHost(verificationBaseUri: string | null): string {
+  if (!verificationBaseUri) return "swamp-club.com";
+  try {
+    return new URL(verificationBaseUri).hostname;
+  } catch {
+    return "swamp-club.com";
+  }
+}
+
 export function Login() {
-  const { authMode, login } = useSwamp();
+  const { authMode, verificationBaseUri, login } = useSwamp();
 
   if (authMode === "oauth") {
-    return <OAuthLogin onToken={login} />;
+    return (
+      <OAuthLogin
+        onToken={login}
+        providerHost={providerHost(verificationBaseUri)}
+      />
+    );
   }
 
   return <TokenLogin onToken={login} />;
@@ -112,7 +126,12 @@ interface DeviceGrant {
 
 type OAuthState = "idle" | "starting" | "waiting" | "error";
 
-function OAuthLogin({ onToken }: { onToken: (t: string) => void }) {
+function OAuthLogin(
+  { onToken, providerHost }: {
+    onToken: (t: string) => void;
+    providerHost: string;
+  },
+) {
   const [state, setState] = useState<OAuthState>("idle");
   const [grant, setGrant] = useState<DeviceGrant | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -174,8 +193,8 @@ function OAuthLogin({ onToken }: { onToken: (t: string) => void }) {
             <>
               <h2>Sign in to your dashboard</h2>
               <p>
-                You'll be redirected to swamp-club.com to authenticate with your
-                account.
+                You'll be redirected to {providerHost}{" "}
+                to authenticate with your account.
               </p>
               <button
                 type="button"
@@ -193,7 +212,7 @@ function OAuthLogin({ onToken }: { onToken: (t: string) => void }) {
                   cursor: "pointer",
                 }}
               >
-                Login with swamp-club
+                Login with {providerHost}
               </button>
             </>
           )}
@@ -212,8 +231,8 @@ function OAuthLogin({ onToken }: { onToken: (t: string) => void }) {
             <>
               <h2>Complete login in your browser</h2>
               <p>
-                A new tab has opened at swamp-club.com. Enter the code below to
-                confirm it's you.
+                A new tab has opened at{" "}
+                {providerHost}. Enter the code below to confirm it's you.
               </p>
               <div className="login-code-block">
                 <div className="login-code-label">Confirmation code</div>
@@ -230,7 +249,7 @@ function OAuthLogin({ onToken }: { onToken: (t: string) => void }) {
                   target="_blank"
                   rel="noopener noreferrer"
                 >
-                  Open swamp-club.com manually
+                  Open {providerHost} manually
                 </a>
               </p>
             </>
