@@ -1516,3 +1516,66 @@ Deno.test("sweepTokenConsistency: orders by severity", async () => {
   assertEquals(modes[1], "missing-secret");
   assertEquals(modes[2], "orphaned-secret");
 });
+
+// ── Root control-plane isolation regression test ────────────────────
+
+Deno.test("hydrateLocalCache: separate root sync service prevents namespace mismatch", async () => {
+  let mainBoundNamespace: string | undefined | null = null;
+
+  const mainSyncService = {
+    pullChanged: (
+      options?: { namespace?: string },
+    ): Promise<number | void> => {
+      const ns = options?.namespace;
+      if (mainBoundNamespace === null) {
+        mainBoundNamespace = ns;
+      } else if (mainBoundNamespace !== ns) {
+        throw new Error(
+          `Namespace mismatch: bound to ${
+            JSON.stringify(mainBoundNamespace)
+          } but called with ${JSON.stringify(ns)}`,
+        );
+      }
+      return Promise.resolve(0);
+    },
+    controlPlaneStore: () => ({
+      get: () => {
+        if (mainBoundNamespace === null) mainBoundNamespace = undefined;
+        return Promise.resolve(null);
+      },
+      list: () => {
+        if (mainBoundNamespace === null) mainBoundNamespace = undefined;
+        return Promise.resolve([]);
+      },
+      put: () => Promise.resolve(),
+      delete: () => Promise.resolve(),
+      putIfAbsent: () => Promise.resolve(true),
+    }),
+  } as unknown as DatastoreSyncService;
+
+  const rootSyncService = {
+    pullChanged: (): Promise<number | void> => Promise.resolve(0),
+    controlPlaneStore: () => ({
+      get: () => Promise.resolve(null),
+      list: () => Promise.resolve([]),
+      put: () => Promise.resolve(),
+      delete: () => Promise.resolve(),
+      putIfAbsent: () => Promise.resolve(true),
+    }),
+  } as unknown as DatastoreSyncService;
+
+  const rootStore = rootSyncService.controlPlaneStore!();
+  await rootStore.list("token-secrets/");
+  await rootStore.list("pending-runs/");
+
+  assertEquals(mainBoundNamespace, null, "main service should be unbound");
+
+  const result = await hydrateLocalCache({
+    syncService: mainSyncService,
+    catalogInvalidate: () => {},
+    namespace: "my-namespace",
+  });
+
+  assertEquals(result.pulled, 0);
+  assertEquals(mainBoundNamespace, "my-namespace");
+});
