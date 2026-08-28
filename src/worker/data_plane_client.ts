@@ -19,7 +19,7 @@
 
 /**
  * Worker-side client for the orchestrator's HTTP data plane (see
- * design/remote-execution.md, "Data plane: two transports").
+ * design/enablers/remote-execution.md, "Data plane: two transports").
  *
  * All byte-heavy traffic rides here: artifact reads (cached by immutable
  * (dataId, version) identity), writes through orchestrator-side writers,

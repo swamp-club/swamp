@@ -159,8 +159,8 @@ deno run compile      # Compile the binary
 
 `deno run sbom` generates a [CycloneDX](https://cyclonedx.org/) SBOM of every
 npm and JSR dependency for license-compliance scanning. See
-[design/license-compliance.md](design/license-compliance.md) for details on the
-generator, license resolution, and scanning with FOSSA.
+[scripts/README.md](scripts/README.md) for details on the generator, license
+resolution, and scanning with FOSSA.
 
 ### Contributing
 

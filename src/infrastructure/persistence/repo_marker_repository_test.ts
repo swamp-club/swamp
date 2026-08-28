@@ -256,7 +256,7 @@ Deno.test("RepoMarkerRepository.read rejects removed defaultDriver with actionab
       error.message,
       "The 'defaultDriver' field has been removed",
     );
-    assertStringIncludes(error.message, "design/remote-execution.md");
+    assertStringIncludes(error.message, "design/enablers/remote-execution.md");
   });
 });
 

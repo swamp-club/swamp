@@ -1,11 +1,16 @@
+---
+audience: maintainer, operator
+enables: [models, workflows]
+last-verified: 2026-08-28 @ 3d5955a9
+---
+
 # Expressions
 
 Model definitions and Workflows are stored as YAML files, and they can contain
 Google CEL expressions which get evaluated into the data structures they return
 and injected into the final data structure after parsing. These expressions
-should be able to reference models by name, then grab data from definitions or
-data, and manipulate it in place (such as string manipulation, concatenating
-array members, etc).
+reference models by name, read their definitions or data, and manipulate the
+result in place (string manipulation, concatenating array members, etc).
 
 ## Three CEL Surfaces
 
@@ -44,32 +49,35 @@ They diverge on what variables and receiver methods are visible.
 
 ## Model Data
 
-You should be able to access models by name or id, and then definition
-attributes or data through dot notation.
+The `model` namespace is keyed by both definition name and definition id
+(`context.model[name]` and `context.model[id]`,
+`src/domain/expressions/expression_evaluation_service.ts`), and exposes
+`definition.{id,name,version,tags,globalArguments,inputs}` through dot notation
+(`ModelData` in `src/domain/expressions/model_resolver.ts`).
 
 ## Examples
 
-The results of the expression should be inserted into the resulting data
-structure. Given a definition like this:
+The result of the expression is inserted into the resulting data structure.
+Given a definition like this:
 
 ```yaml
 id: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
 name: foo
 version: 1
 tags: {}
-attributes:
+globalArguments:
   message: "I like cheese"
 ```
 
-Another can use a CEL expression to extract the message attribute:
+Another can use a CEL expression to extract the message global argument:
 
 ```yaml
 id: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
 name: bar
 version: 1
 tags: {}
-attributes:
-  message: ${{ model.foo.definition.attributes.message }}
+globalArguments:
+  message: ${{ model.foo.definition.globalArguments.message }}
 ```
 
 Or the data output of the same model:
@@ -79,7 +87,7 @@ id: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
 name: baz
 version: 1
 tags: {}
-attributes:
+globalArguments:
   message: ${{ data.latest('foo', 'result').attributes.message }}
 ```
 
@@ -91,14 +99,13 @@ predicate, a projection, tag filters beyond a single key, or history access
 beyond a single version. See [data-query.md](./data-query.md) for the
 primitive, the full field set, and the shortcut mapping table.
 
-You can refer to your own model with `self`, for things like name, version,
-tags, and a model's other attributes.
+You can refer to your own model with `self` (`id`, `name`, `version`, `tags`,
+`globalArguments`); inside a forEach step `self` also carries the iteration
+variable.
 
 You can also use the uuid of a model in order to reference it, rather than the
-name.
-
-For workflows, you should be able to reference other workflows by name or id, in
-addition to any model.
+name. There is no `workflow.*` namespace — workflows are not addressable from
+expressions.
 
 ## Workers Namespace
 
@@ -143,24 +150,20 @@ expressions:
 **Model Inputs:** Within a model definition, access inputs with:
 
 ```yaml
-attributes:
+globalArguments:
   message: ${{ inputs.someParameter }}
 ```
 
 **Workflow Inputs:** Within a workflow definition, access workflow inputs with:
 
 ```yaml
-attributes:
+globalArguments:
   message: ${{ inputs.someWorkflowParameter }}
 ```
 
-**Cross-Reference:** Reference inputs from other models/workflows:
-
-```yaml
-attributes:
-  message: ${{ model.foo.inputs.someParameter }}
-  workflowParam: ${{ workflow.bar.inputs.someWorkflowParameter }}
-```
+Another model's declared inputs _schema_ is visible as
+`model.foo.definition.inputs`; there is no cross-model or cross-workflow access
+to input _values_.
 
 Inputs can be required or optional (specified in JsonSchema), and provide
 dynamic configuration without modifying definition files.
@@ -207,7 +210,7 @@ missing field surfaces an error and the run does not start. Sensitive headers
 (authentication, proxy credentials, and headers ending in `-token` or `-secret`)
 are redacted before the payload is exposed to workflow expressions — redacted
 headers are omitted entirely, so a workflow referencing one will fail on the
-missing field. See `design/workflow.md` for the full walkthrough.
+missing field. See `design/primitives/workflows.md` for the full walkthrough.
 
 **Run-scoped resource keys** — use `run.id` to prevent collisions when the
 same workflow runs concurrently:
@@ -251,7 +254,7 @@ release.
 Returns the latest version of a data artifact for a model:
 
 ```yaml
-attributes:
+globalArguments:
   result: ${{ data.latest('my-model', 'output').attributes.value }}
 ```
 
@@ -273,7 +276,7 @@ string.
 Returns a specific version of a data artifact:
 
 ```yaml
-attributes:
+globalArguments:
   # Get version 1 specifically
   oldResult: ${{ data.version('my-model', 'output', 1).attributes.value }}
   # Get version 3
@@ -286,7 +289,7 @@ Returns an array of available version numbers for a data artifact, sorted in
 ascending order (oldest first):
 
 ```yaml
-attributes:
+globalArguments:
   # Get all available versions
   versions: ${{ data.listVersions('my-model', 'output') }}
   # Use with size() to count versions
@@ -295,7 +298,7 @@ attributes:
 
 ### Vary Dimensions
 
-When data is stored with `vary` dimensions (see [Workflows](./workflow.md)),
+When data is stored with `vary` dimensions (see [Workflows](../primitives/workflows.md)),
 each dimension value produces a composite data name. Use the 3-argument form
 of `data.latest()`, `data.version()`, and `data.listVersions()` to access
 varied data by passing a list of dimension values:
@@ -325,41 +328,15 @@ The 2-argument forms continue to work for data stored without vary dimensions.
 
 ### Cross-Namespace Queries
 
-Point-lookup helpers support namespace-prefixed model names for cross-namespace
-data access. The syntax uses a colon separator: `namespace:model-name`.
-
-```yaml
-attributes:
-  # Own namespace (default — same as today):
-  result: ${{ data.latest('scanner', 'result').attributes.value }}
-
-  # Specific namespace:
-  infraResult: ${{ data.latest('infra:scanner', 'result').attributes.value }}
-
-  # All namespaces (errors if model exists in multiple):
-  anyResult: ${{ data.latest('*:scanner', 'result').attributes.value }}
-```
-
-`data.findByTag()` does not take a model name, so it always queries the own
-namespace. `data.query()` spans all namespaces by default — use the `ns` field
-to filter:
-
-```yaml
-attributes:
-  # All namespaces:
-  allVpcs: ${{ data.query('modelType == "aws/ec2/vpc"') }}
-
-  # Specific namespace:
-  secVpcs: ${{ data.query('ns == "security" && modelType == "aws/ec2/vpc"') }}
-```
-
-The `ns` field name (not `namespace`) is used because `namespace` is a reserved
-identifier in the CEL language.
+Point-lookup helpers accept a `namespace:model-name` prefix (`infra:scanner`,
+`*:scanner`), and `data.query()` filters by the `ns` field. See
+[data-query.md § Cross-namespace queries](./data-query.md#cross-namespace-queries-giga-swamp-phase-4)
+for the syntax and examples.
 
 ### Combined Example
 
 ```yaml
-attributes:
+globalArguments:
   # Get latest result
   current: ${{ data.latest('processor', 'result').attributes.value }}
   # Get the first result ever produced
@@ -371,21 +348,10 @@ attributes:
 ### Null-safe Optional Access (.?)
 
 `data.latest()` and `data.version()` return `null` when the named instance
-doesn't exist. Accessing properties on `null` with `.` throws an error. Use
-`.?` (optional select) to chain through a potentially null result — the
-expression returns `null` instead of throwing:
-
-```yaml
-inputs:
-  # Throws if the data doesn't exist:
-  findings: ${{ data.latest('factory', 'code-review').attributes.findings }}
-
-  # Returns null if the data doesn't exist:
-  findings: ${{ data.latest('factory', 'code-review').?attributes.?findings }}
-
-  # Use .orValue() for an inline default:
-  findings: ${{ data.latest('factory', 'code-review').?attributes.?findings.orValue([]) }}
-```
+doesn't exist; chain through a possibly-null result with `.?` and supply a
+default with `.orValue()`. See
+[data-query.md § Null-safe access](./data-query.md#null-safe-access-) for the
+syntax and examples.
 
 Use `.?` when the data **might not exist yet** — for example, referencing a
 prior cycle's output on the first cycle of a rework loop. Use regular `.` when
@@ -508,22 +474,24 @@ against the current data store.
 
 ## Sensitive Data
 
-You should be able to access sensitive data by referencing the storage keys they
-were stored with, under a subkey of the vault where they reside.
+Vault secrets are read with `vault.get('<vault-name>', '<key>')` — the only
+vault expression form recognized (`VAULT_GET_PATTERN` in
+`src/domain/expressions/vault_reference_extractor.ts`). Vault expressions are
+never evaluated at definition-evaluation time; they are resolved at runtime and
+never persisted.
 
-## Examples
+### Example
 
-Setting keyData out of the configured aws vault from the machineKeyData key
-value
+Setting `keyData` out of the configured `aws` vault from the `machineKeyData`
+key:
 
 ```yaml
 id: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
-resourceId: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
 name: baz
 version: 1
 tags: {}
-attributes:
-  keyData: ${{ vault.get(aws, machineKeyData) }}
+globalArguments:
+  keyData: ${{ vault.get('aws', 'machineKeyData') }}
 ```
 
 ### Shell Safety
@@ -565,7 +533,7 @@ namespace as `env.VAR_NAME`.
 ### Basic Usage
 
 ```yaml
-attributes:
+globalArguments:
   homeDir: ${{ env.HOME }}
   configValue: ${{ env.MY_CONFIG_VALUE }}
 ```
@@ -589,14 +557,14 @@ For API keys, tokens, passwords, and other secrets, always use
 **Wrong — secret will be stored in the datastore `data/` directory on disk:**
 
 ```yaml
-attributes:
+globalArguments:
   apiKey: ${{ env.API_KEY }}
 ```
 
 **Right — secret is fetched at runtime and never persisted:**
 
 ```yaml
-attributes:
+globalArguments:
   apiKey: ${{ vault.get('my-vault', 'API_KEY') }}
 ```
 
@@ -604,19 +572,22 @@ See the [Sensitive Data](#sensitive-data) section for more on vault usage.
 
 ## Extensibility
 
-Users should be able to extend the functions available to the CEL expressions by
-registering custom types, functions, etc in their swamp repo.
+Extension model methods extend CEL through `ctx.createCelEnvironment()` (surface
+2 above), registering their own functions, types, and operators on an isolated
+environment. There is no repo-level mechanism for registering custom CEL
+functions into the internal evaluator.
 
 ## Runtime Guidance
 
-When loading the YAML, first parse the CEL expressions. Then take the data
-structures they emit and embed them in the data structure. Write those to the
-datastore at `definitions-evaluated/` (default `.swamp/definitions-evaluated/`),
-whose structure mirrors the `models/` directory. This directory should be in a
-swamp repo's .gitignore file.
-
-The same is true for `workflows-evaluated/` (default
-`.swamp/workflows-evaluated/`), and it should also be in .gitignore.
+When loading the YAML, swamp first parses the CEL expressions, then embeds the
+values they emit into the data structure. Evaluated definitions are written to
+the datastore at `definitions-evaluated/` (default
+`.swamp/definitions-evaluated/`), whose structure mirrors the `models/`
+directory; evaluated workflows go to `workflows-evaluated/` (default
+`.swamp/workflows-evaluated/`) — see `SWAMP_SUBDIRS` in
+`src/infrastructure/persistence/paths.ts`. Both live under `.swamp/`, which
+`swamp repo init` adds to the managed `.gitignore` section
+(`src/domain/repo/repo_service.ts`).
 
 These evaluated directories are internal working directories in the datastore,
 used by the expression evaluation system.

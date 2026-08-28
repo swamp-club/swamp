@@ -54,7 +54,7 @@ class LogExtensionOutdatedRenderer implements Renderer<ExtensionOutdatedEvent> {
         // not_found and failed render as warnings to match
         // `extension update --check` parity. They do NOT fail the exit
         // code (only update_available does) — see the command-level
-        // exit-code logic and design/extension.md for the rationale.
+        // exit-code logic and design/primitives/extensions.md for the rationale.
         for (const ext of exts) {
           const paddedName = ext.name.padEnd(maxName);
           switch (ext.status) {

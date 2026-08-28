@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The remote-execution HTTP data plane (see design/remote-execution.md,
+ * The remote-execution HTTP data plane (see design/enablers/remote-execution.md,
  * "Data plane: two transports").
  *
  * Byte-heavy operations only — artifact reads, writes, appends, bundle and

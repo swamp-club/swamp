@@ -366,7 +366,7 @@ export interface WebhookServiceDeps {
   repoContext: RepositoryContext;
   datastoreConfig: DatastoreConfig;
   endpoints: WebhookEndpoint[];
-  /** Shared sync service; see `design/datastores.md` markDirty contract. */
+  /** Shared sync service; see `design/enablers/datastores.md` markDirty contract. */
   syncService?: DatastoreSyncService;
   runTracker?:
     import("../infrastructure/persistence/run_tracker_store.ts").RunTrackerStore;

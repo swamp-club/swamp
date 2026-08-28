@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Environment snapshot for remote dispatch (see design/remote-execution.md,
+ * Environment snapshot for remote dispatch (see design/enablers/remote-execution.md,
  * "The execution environment").
  *
  * The orchestrator snapshots its environment and ships it with every

@@ -737,7 +737,7 @@ Deno.test("findAllForType: returns empty for missing type directory", async () =
   }
 });
 
-// Pins the markDirty contract from design/datastores.md: every public mutation
+// Pins the markDirty contract from design/enablers/datastores.md: every public mutation
 // that writes into the cache must call the sync service's markDirty hook before
 // the write begins, so the fast-path sidecar cannot short-circuit past it. Also
 // pins the per-call relPath granularity — pre-write notify sites (save, append,

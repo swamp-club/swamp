@@ -1,3 +1,8 @@
+---
+audience: maintainer
+last-verified: 2026-08-28 @ 3d5955a9
+---
+
 # Skill Lifecycle
 
 This document describes how skills are authored, tested, and shipped through CI.
@@ -224,9 +229,11 @@ the same model, then reports a combined pass rate:
 | 3     | `guide_sufficiency_evals.json` | `generate_sufficiency_config.ts` | Is the guide enough, or is `reference.md` needed? |
 
 Generators live in `evals/promptfoo/` and turn each eval file into a promptfoo
-config where every choice is a tool the model can call. Each phase writes its
-raw results to `evals/promptfoo/<phase>_results.json` — generated artifacts that
-are gitignored, not committed.
+config where every choice is a tool the model can call. The driver is
+`scripts/eval_skill_triggers_promptfoo.ts`; each phase writes its raw results
+to `evals/promptfoo/results.json` (phase 1), `routing_results.json` (phase
+2), and `sufficiency_results.json` (phase 3) — generated artifacts that are
+gitignored, not committed.
 
 Phase 2 and 3 generators keep a topic map (`GUIDE_TOPICS` / `GUIDE_DIRS`) that
 must list every directory under `references/`; a missing entry makes the
@@ -238,6 +245,12 @@ generator exit with an error naming the unknown topic.
 export ANTHROPIC_API_KEY=<your-key>
 deno run eval-skill-triggers
 ```
+
+The CLI default is `opus` (`default: { model: "opus" }` in
+`scripts/eval_skill_triggers_promptfoo.ts`). The header comment in that script
+and the generator headers in `evals/promptfoo/generate_*.ts` still say
+"sonnet (default)" — that comment drift is stale; the parsed default is what
+runs.
 
 **Run against a specific model:**
 
@@ -278,7 +291,8 @@ detection filter triggers on modifications to:
 
 Two jobs run in parallel on every PR that touches skill files:
 
-**skill-review** — runs `deno run review-skills` (tessl) against all skills.
+**skill-review** — runs `scripts/review_skills.ts` directly (the same script
+behind `deno run review-skills`) with `TESSL_TOKEN` from repository secrets.
 Fails the PR if any skill scores below 90%.
 
 **skill-trigger-eval** — runs `deno run eval-skill-triggers` (promptfoo) with
@@ -291,7 +305,10 @@ review.
 ### Weekly Multi-Model Regression
 
 A scheduled workflow (`multi-model-eval.yml`) runs every Saturday at 08:00 UTC.
-It tests trigger routing against six models in parallel:
+It runs `deno run eval-skill-triggers --model <m> --concurrency <n>` — all
+three phases — against six models in parallel, and uploads
+`evals/promptfoo/results.json` and `routing_results.json` as a per-model
+artifact (retained 14 days):
 
 | Model          | Provider  | Concurrency | API Key Env        |
 | -------------- | --------- | ----------- | ------------------ |

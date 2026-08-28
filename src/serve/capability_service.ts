@@ -19,7 +19,7 @@
 
 /**
  * Orchestrator-side implementation of the capability protocol's metadata
- * verbs (see design/remote-execution.md, "The capability protocol").
+ * verbs (see design/enablers/remote-execution.md, "The capability protocol").
  *
  * Each verb runs a worker's proxied context call against the orchestrator's
  * real repositories and services. Byte transfer is NOT here — `getData`

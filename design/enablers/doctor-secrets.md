@@ -1,3 +1,9 @@
+---
+audience: maintainer
+enables: [models]
+last-verified: 2026-08-28 @ 3d5955a9
+---
+
 # Doctor Secrets — cleartext sensitive-argument scan
 
 `swamp doctor secrets` is a read-only diagnostic that reports model
@@ -33,7 +39,8 @@ It enumerates two definition trees:
 - The locally auto-created definitions under `.swamp/auto-definitions`.
 
 The public `findAllGlobal()` only walks its own `baseDir`, so the deps point a
-second repository at the auto-definitions tree and concatenate the results.
+second `YamlDefinitionRepository` at the auto-definitions tree and concatenate
+the results (`src/libswamp/models/doctor_secrets.ts`).
 
 ## The rule it applies
 

@@ -62,7 +62,7 @@ Were the identified risks and challenges properly addressed?
 
 ## Convention Compliance
 
-Does the code follow project patterns from `design/*.md`?
+Does the code follow project patterns from `design/`?
 
 - Verify naming conventions, file placement, and architectural patterns
 - Check that CLAUDE.md conventions were followed (license headers, no `any`

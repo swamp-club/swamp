@@ -24,7 +24,7 @@ import type { DataHandle } from "./model.ts";
  *
  * Built by the method execution service for every run; the same shape is
  * the basis for what remote dispatch ships to workers (see
- * design/remote-execution.md).
+ * design/enablers/remote-execution.md).
  */
 export interface ExecutionRequest {
   /** Protocol version for forward compatibility. */

@@ -227,7 +227,7 @@ Deno.test("Step.fromData and toData roundtrip with allowFailure", () => {
   assertEquals(restored.allowFailure, original.allowFailure);
 });
 
-// Removed driver field tests (see design/remote-execution.md)
+// Removed driver field tests (see design/enablers/remote-execution.md)
 
 Deno.test("StepSchema rejects removed driver field with actionable error", () => {
   const error = assertThrows(
@@ -247,7 +247,7 @@ Deno.test("StepSchema rejects removed driver field with actionable error", () =>
     error.message,
     "The 'driver' field has been removed",
   );
-  assertStringIncludes(error.message, "design/remote-execution.md");
+  assertStringIncludes(error.message, "design/enablers/remote-execution.md");
   assertStringIncludes(error.message, "labels");
 });
 

@@ -179,7 +179,7 @@ export interface DatastoreSyncService {
    * directory that does not go through a sync-service method, so the next
    * `pushChanged` fast path cannot short-circuit past the write. Implementations
    * that cache a clean/dirty watermark (e.g. the s3/gcs zero-diff fast path
-   * described in `design/datastores.md`) MUST invalidate the watermark here.
+   * described in `design/enablers/datastores.md`) MUST invalidate the watermark here.
    * Implementations without a fast path MAY no-op.
    *
    * Implementations must be idempotent and cheap — swamp core calls this at

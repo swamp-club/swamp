@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Built-in fleet probe model (see design/remote-execution.md,
+ * Built-in fleet probe model (see design/enablers/remote-execution.md,
  * "Verification: swamp worker verify").
  *
  * A lightweight model whose single method exercises every seam that can

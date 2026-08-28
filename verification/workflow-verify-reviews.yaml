@@ -103,7 +103,7 @@ jobs:
                 --model claude-opus-4-6 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
               rm -f "$PROMPT_FILE" "$DIFF_FILE"
-              VERDICT=$(head -5 "$RESULT_FILE" | grep -o 'VERDICT: [a-z]*' | head -1 | cut -d' ' -f2)
+              VERDICT=$(grep -oi 'VERDICT: *\**pass\**\|VERDICT: *\**fail\**' "$RESULT_FILE" | head -1 | grep -oi 'pass\|fail')
               rm -f "$RESULT_FILE"
               if [ "$VERDICT" != "pass" ]; then
                 echo "::error::Code review did not pass (verdict: ${VERDICT:-missing})"
@@ -132,7 +132,7 @@ jobs:
                 --model claude-opus-4-6 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
               rm -f "$PROMPT_FILE" "$DIFF_FILE"
-              VERDICT=$(head -5 "$RESULT_FILE" | grep -o 'VERDICT: [a-z]*' | head -1 | cut -d' ' -f2)
+              VERDICT=$(grep -oi 'VERDICT: *\**pass\**\|VERDICT: *\**fail\**' "$RESULT_FILE" | head -1 | grep -oi 'pass\|fail')
               rm -f "$RESULT_FILE"
               if [ "$VERDICT" != "pass" ]; then
                 echo "::error::Adversarial review did not pass (verdict: ${VERDICT:-missing})"
@@ -161,7 +161,7 @@ jobs:
                 --model claude-sonnet-4-6 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
               rm -f "$PROMPT_FILE" "$DIFF_FILE"
-              VERDICT=$(head -5 "$RESULT_FILE" | grep -o 'VERDICT: [a-z]*' | head -1 | cut -d' ' -f2)
+              VERDICT=$(grep -oi 'VERDICT: *\**pass\**\|VERDICT: *\**fail\**' "$RESULT_FILE" | head -1 | grep -oi 'pass\|fail')
               rm -f "$RESULT_FILE"
               if [ "$VERDICT" != "pass" ]; then
                 echo "::error::UX review did not pass (verdict: ${VERDICT:-missing})"
@@ -190,7 +190,7 @@ jobs:
                 --model claude-opus-4-6 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
               rm -f "$PROMPT_FILE" "$DIFF_FILE"
-              VERDICT=$(head -5 "$RESULT_FILE" | grep -o 'VERDICT: [a-z]*' | head -1 | cut -d' ' -f2)
+              VERDICT=$(grep -oi 'VERDICT: *\**pass\**\|VERDICT: *\**fail\**' "$RESULT_FILE" | head -1 | grep -oi 'pass\|fail')
               rm -f "$RESULT_FILE"
               if [ "$VERDICT" != "pass" ]; then
                 echo "::error::CI security review did not pass (verdict: ${VERDICT:-missing})"

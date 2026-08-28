@@ -70,6 +70,7 @@
   },
   "exclude": [
     "design/",
+    "contributing/",
     ".github/",
     ".agents/",
     "agent-constraints/",

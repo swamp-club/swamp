@@ -83,5 +83,5 @@ view the report in the FOSSA web app, to inspect violations.
 
 - `scripts/audit_deps.ts` (`deno run audit`) — the separate OSV-based
   vulnerability audit, which scans the same dependency set for known CVEs.
-  Note: `design/audit.md` documents the AI agent activity audit, not the OSV
+  Note: `design/surfaces/audit.md` documents the AI agent activity audit, not the OSV
   scanner.

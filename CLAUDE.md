@@ -47,7 +47,7 @@ After creating or modifying a skill, verify it before submitting:
   bundled skills (needs `ANTHROPIC_API_KEY`); run when a bundled skill's
   description or `trigger_evals.json` changed.
 
-See `design/skills.md` for the full skill testing pipeline.
+See `contributing/skills-pipeline.md` for the full skill testing pipeline.
 
 ## Code Style
 
@@ -123,7 +123,8 @@ them.
 - Uses LogTape for logging and non-interactive output (`"log"` mode)
 - Uses JSON for structured output (`"json"` mode via `--json`)
 - Every command _must_ support both `"log"` and `"json"` output modes
-- You can read the files in `design/*.md` to understand elements of the design
+- Start at `design/README.md` (the six primitives and the index) and
+  `design/architecture.md` to understand the design
 
 IMPORTANT: CLI commands and presentation renderers must import libswamp types
 and functions from `src/libswamp/mod.ts` — never from internal module paths like

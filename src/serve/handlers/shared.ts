@@ -83,7 +83,7 @@ export interface ConnectionContext {
   datastoreResolver: DatastorePathResolver;
   /**
    * Shared sync service instance. Same one the repo context's markDirty hook
-   * references — see `design/datastores.md`. Undefined for filesystem
+   * references — see `design/enablers/datastores.md`. Undefined for filesystem
    * datastores or custom datastores without a cache.
    */
   syncService?: DatastoreSyncService;
@@ -91,7 +91,7 @@ export interface ConnectionContext {
    * Remote-execution worker gateway. When present, `rpc.*` frames on this
    * socket are routed to it (worker enrollment and capability verbs); the
    * legacy client protocol on the same listener is unaffected. See
-   * design/remote-execution.md.
+   * design/enablers/remote-execution.md.
    */
   workerGateway?: WorkerGateway;
   policySnapshotLoader?: PolicySnapshotLoader;

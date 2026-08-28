@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The orchestrator's step dispatcher (see design/remote-execution.md,
+ * The orchestrator's step dispatcher (see design/enablers/remote-execution.md,
  * "Scheduling, fan-out, and provisioning" and "Failure, reconnection, and
  * retry").
  *

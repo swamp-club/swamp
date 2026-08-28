@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Wire protocol for remote execution (see design/remote-execution.md).
+ * Wire protocol for remote execution (see design/enablers/remote-execution.md).
  *
  * The control plane is a symmetric request/response protocol carried over the
  * existing serve WebSocket. Frames are distinguished from the legacy client
@@ -244,7 +244,7 @@ export const DispatchParamsSchema = z.object({
   reportBundleFingerprints: z.array(z.string()).default([]),
   /**
    * The orchestrator's environment snapshot (identity-denylisted), applied
-   * for the duration of the step. See design/remote-execution.md.
+   * for the duration of the step. See design/enablers/remote-execution.md.
    */
   environmentSnapshot: z.record(z.string(), z.string()),
   /**

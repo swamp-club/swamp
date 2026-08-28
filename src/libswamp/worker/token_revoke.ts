@@ -19,7 +19,7 @@
 
 /**
  * Revoke a worker enrollment token before its lifetime expires (see
- * design/remote-execution.md, "Enrollment tokens").
+ * design/enablers/remote-execution.md, "Enrollment tokens").
  *
  * Runs the `revoke` method on the existing `swamp/enrollment-token` model
  * instance named by the token. Revoking an already-revoked token is a

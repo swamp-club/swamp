@@ -148,7 +148,7 @@ export async function enrichExtensionList(
   // The "stale and failed THIS run" case gets unknown_offline so the
   // caller can render the failure-to-fetch state distinctly. Stamped
   // entries served from a fresh cache appear up_to_date for 24h — see
-  // design/extension.md for the user-visible 24h-window semantics.
+  // design/primitives/extensions.md for the user-visible 24h-window semantics.
   const fetchedByIndex = new Map<number, FetchResult>(
     fetched.map((r) => [r.index, r]),
   );

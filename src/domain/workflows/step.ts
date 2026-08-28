@@ -99,7 +99,7 @@ const StepObjectSchema = z.object({
 
 /**
  * Zod schema for Step entity. Rejects the removed `driver`/`driverConfig`
- * fields with an actionable error (see design/remote-execution.md), and
+ * fields with an actionable error (see design/enablers/remote-execution.md), and
  * rejects unknown keys — Zod's silent stripping would otherwise discard a
  * typo'd placement key (e.g. `lables:`) and run the step locally
  * (swamp-club#1240).

@@ -1,3 +1,8 @@
+---
+audience: maintainer, operator
+last-verified: 2026-08-28 @ 3d5955a9
+---
+
 # swamp vaults
 
 A swamp vault is a secure storage system that allows workflows and models to
@@ -11,8 +16,9 @@ The vault system is built around a named vault architecture where:
 
 - **Named Vaults**: Each vault instance has a user-defined name configured in
   `vaults/{vault-type}/{id}.yaml`
-- **Vault Types**: The underlying storage system (AWS Secrets Manager, HashiCorp
-  Vault, etc.) is specified per vault
+- **Vault Types**: The underlying storage system (`local_encryption` built in;
+  `@swamp/aws-sm`, `@swamp/azure-kv`, `@swamp/1password` as extensions) is
+  specified per vault
 - **Clean Interface**: All vaults implement a common interface for consistent
   access patterns
 - **Expression Integration**: Vaults are accessed through CEL expressions using
@@ -37,7 +43,7 @@ vaults/
 
 The secrets path is computed at runtime through the datastore path resolver. The
 vault configuration stores the `base_dir` (repository root), and the full path
-is derived through the datastore abstraction. See [./datastores.md] for details.
+is derived through the datastore abstraction. See [datastores](../enablers/datastores.md) for details.
 
 ## Vault Provider Interface
 
@@ -48,8 +54,13 @@ interface VaultProvider {
   // Retrieve a secret value by key
   get(secretKey: string): Promise<string>;
 
-  // Store a secret value with the given key
-  put(secretKey: string, secretValue: string): Promise<void>;
+  // Store a secret value with the given key. `options.tags` carries
+  // provider-native tags (populated from `swamp vault put --label k=v`).
+  put(
+    secretKey: string,
+    secretValue: string,
+    options?: VaultPutOptions,
+  ): Promise<void>;
 
   // List all secret keys in the vault (returns key names only, not values)
   list(): Promise<string[]>;
@@ -112,8 +123,12 @@ interface VaultDeleteProvider {
 ```
 
 Detection is via runtime type guard (`isVaultDeleteProvider()`), mirroring the
-annotation and refresh hook patterns. When a secret is deleted, its associated
-annotation and refresh hook are also removed.
+annotation and refresh hook patterns. `VaultService.delete()` only calls
+`provider.delete()` (`src/domain/vaults/vault_service.ts`); the
+`local_encryption` provider additionally removes the secret's annotation and
+refresh hook as a best-effort cleanup inside its own `delete()`
+(`src/domain/vaults/local_encryption_vault_provider.ts`). Extension providers
+must do their own cascade.
 
 Built-in providers (`local_encryption`, `mock`) implement this interface.
 Extension providers (e.g. `@swamp/1password`, `@swamp/aws-sm`) may opt in by
@@ -140,7 +155,8 @@ When `VaultService.get()` is called with refresh options configured:
 3. If stale: run the command via `executeProcess`, trim trailing whitespace from
    stdout, write the fresh value back via `provider.put()`, update
    `lastRefreshedAt`, return the fresh value
-4. If the refresh command fails: log a warning and return the stale value
+4. If the refresh command fails, or succeeds with empty stdout: log a warning
+   and return the stale value (an empty result is never written back)
 
 This is transparent to callers — `vault.get()` in CEL expressions and workflows
 auto-refreshes without any workflow-level boilerplate.
@@ -177,7 +193,7 @@ encrypted JSON in a `.refresh/` subdirectory alongside `.annotations/`:
 ### Annotation Storage (local_encryption)
 
 For the built-in `local_encryption` provider, annotations are stored as
-encrypted `.meta.enc` files alongside the secret's `.enc` file:
+encrypted files under `.annotations/`:
 
 ```
 .swamp/secrets/local_encryption/{vault-name}/
@@ -251,8 +267,7 @@ the number — the secret never enters the operation's scope.
 
 ## Expression Syntax
 
-Vaults are accessed in CEL expressions using the `vault.get()` and `vault.put()`
-functions:
+Vaults are read in expressions using `vault.get()`:
 
 ```yaml
 # Basic vault access
@@ -261,18 +276,41 @@ keyData: ${{ vault.get(aws, machineKeyData) }}
 # Different vault for different environments
 prodSecret: ${{ vault.get(prod-vault, apiKey) }}
 devSecret: ${{ vault.get(dev-vault, apiKey) }}
-
-# Store sensitive output to vault
-apiKeyStorage: ${{ vault.put(aws, generated-api-key, self.data.attributes.apiKey) }}
 ```
 
 The expression syntax is:
 
 - `vault.get(vault_name, key)` - Retrieve a secret from the named vault
-- `vault.put(vault_name, key, value)` - Store a secret value in the named vault
 - `vault_name` - References a configured vault
 - `key` - The secret identifier within that vault
-- `value` - The value to store (for put operations)
+
+`vault.get` is not a CEL function. It is matched by a regex and substituted
+before CEL evaluation (`resolveVaultExpressions` in
+`src/domain/expressions/model_resolver.ts`): each match is resolved through
+`VaultService.get()` and replaced with a sentinel string (or an escaped literal
+when no secret bag is present). There is no `vault.put` expression — writes go
+through `swamp vault put` or sensitive-field marking (below).
+
+## CLI Surface
+
+Vault commands live in `src/cli/commands/vault_*.ts`. Beyond `create`, `put`,
+`delete`, `annotate`, `inspect`, `migrate`, `audit-trail`, and `read-secret`
+(documented in their own sections), the command group provides:
+
+- `swamp vault list-keys <vault>` — secret keys only, never values
+- `swamp vault get <vault>` / `swamp vault describe <vault>` — show a vault's
+  configuration
+- `swamp vault edit [vault]` — open the vault YAML in `$EDITOR` (interactive
+  search when no name is given)
+- `swamp vault search [keyword]` — browse configured vaults
+- `swamp vault type-search [keyword]` — browse registered vault types
+  (built-in and extension)
+- `swamp vault put ... --label k=v` — attach provider-native tags via
+  `VaultPutOptions.tags` (repeatable)
+
+`swamp doctor secrets` scans definitions for `sensitive: true` arguments that
+hold cleartext literals instead of `vault.get(...)` expressions — see
+[doctor-secrets](../enablers/doctor-secrets.md).
 
 ## CLI Secret Retrieval
 
@@ -347,11 +385,12 @@ audit repository is wired.
 4. Audit writes are awaited but wrapped in try/catch — they never block or fail
    the vault operation
 
-All `VaultService.fromRepository()` call sites automatically wire the audit
-repository when any vault has `auditReads` enabled. This covers CLI commands
-(`vault put`, `vault delete`, `vault annotate`, `vault read-secret`,
-`vault inspect`, `vault migrate`), CEL expression evaluation, model method
-execution, serve/WebSocket, and token operations.
+`VaultService.fromRepository()` always wires a `JsonlVaultAuditRepository`
+(`src/domain/vaults/vault_service.ts`); `auditReads` only gates whether reads
+are recorded. This covers CLI commands (`vault put`, `vault delete`,
+`vault annotate`, `vault read-secret`, `vault inspect`, `vault migrate`),
+expression evaluation, model method execution, serve/WebSocket, and token
+operations.
 
 ### Audit Entry Fields
 
@@ -362,8 +401,13 @@ Each entry captures:
 - `vaultName` — which vault was accessed
 - `vaultType` — the provider type (e.g. `local_encryption`, `@swamp/aws-sm`)
 - `secretKey` — which secret was accessed
-- `callerContext` — who/what initiated the operation (e.g. `cli:vault-put`,
-  `cli:vault-read-secret`, `model:mytype/myid:exec`, `unknown`)
+- `callerContext` — who/what initiated the operation. Values in use:
+  `cli:vault-put`, `cli:vault-delete`, `cli:vault-inspect`,
+  `cli:vault-read-secret`, `cli:vault-annotate`, `cli:vault-migrate`,
+  `expression:vault-resolve` (`src/domain/expressions/model_resolver.ts`),
+  `access:server-token-reveal`, `worker:token-create`,
+  `model:<definition>/<method>` (`src/libswamp/models/workflow_gate.ts`), and
+  `unknown`
 
 Secret values are never recorded.
 
@@ -405,7 +449,7 @@ Legacy entries without an `action` field default to `"get"` on deserialization.
 - **Interception**: `VaultService` records writes unconditionally when audit repo
   exists; reads are gated by per-vault `auditReads` flag.
   `setAuditRepository()` injects the repository post-construction, avoiding
-  changes to the ~20 `fromRepository()` call sites
+  changes to the ~29 `fromRepository()` call sites
 
 ### Provider-Native Logs
 
@@ -463,16 +507,18 @@ resources: {
 
 ### Vault Key Naming
 
-Auto-generated vault keys are built from the model type, ID, method name, and
-field path, then sanitized to replace characters that are invalid in vault secret
-keys (`@` is removed, `/` and `\` are replaced with `-`):
+Auto-generated vault keys are built from the model type, ID, method name, spec
+name, instance name, and field path, then passed through `sanitizeVaultKey()`
+(`src/domain/models/data_writer.ts`): `@` is removed, `/` and `\` become `-`,
+`..` collapses to `.`, and NUL bytes are stripped:
 
 ```
-{sanitized modelType}-{modelId}-{methodName}-{fieldPath}
+{modelType}/{modelId}/{methodName}/{specName}/{instanceName}/{fieldPath}
 ```
 
-For example: `@user/aws/ec2-keypair` with field `KeyMaterial` becomes
-`user-aws-ec2-keypair-abc-123-createKeyPair-KeyMaterial`
+For example: `@user/aws/ec2-keypair` (id `abc-123`, method `createKeyPair`,
+spec `result`, instance `result`) with field `KeyMaterial` becomes
+`user-aws-ec2-keypair-abc-123-createKeyPair-result-result-KeyMaterial`
 
 Custom keys can be specified via `vaultKey` in field metadata:
 
@@ -518,7 +564,10 @@ The vault used for storing a sensitive field is resolved in this order:
 2. Spec-level `vaultName` from `ResourceOutputSpec` (set by extension author or
    overridden via definition YAML `resources.<specName>.vaultName`)
 3. Repo-level `defaultVault` from `.swamp.yaml`
-4. First available vault from `VaultService`
+4. First available vault from `VaultService`, skipping `_`-prefixed internal
+   vaults (e.g. the control-plane vault) — a `_` vault is never chosen for
+   user data and an explicit `_` target is rejected
+   (`src/domain/models/data_writer.ts`)
 
 ### Definition-Level Vault Override
 
@@ -550,14 +599,6 @@ applies to `swamp serve` vault operations (OAuth credentials, device auth
 tokens). If not set, the system falls back to the first available vault —
 identical to the behaviour before this feature.
 
-### Sensitive Method Arguments
-
-Sensitive method arguments are the user's responsibility to vault. The runtime
-enforces that `sensitive: true` global arguments must not be literal values (they
-must be `${{ vault.get(...) }}` expressions), but it does not automatically
-route argument values into a vault. Use `swamp vault put` to store argument
-values before referencing them in definitions.
-
 ### Processing Behavior
 
 - Values are **snapshotted** before processing to prevent cross-contamination
@@ -588,8 +629,11 @@ The expression evaluation system resolves these at runtime.
 ## Sensitive Method Arguments
 
 The same `z.meta({ sensitive: true })` annotation applies to **method input
-argument schemas**, not just output resource schemas. When a method argument field
-is marked sensitive, the framework:
+argument schemas**, not just output resource schemas. Sensitive arguments are
+not routed into a vault automatically — the user stores them with
+`swamp vault put` and references them as `${{ vault.get(...) }}` expressions,
+and the runtime rejects literal values for `sensitive: true` global arguments.
+When a method argument field is marked sensitive, the framework:
 
 1. Registers all resolved values from that field with `SecretRedactor` before
    executing the method — scrubbing them from the per-run log file automatically.
@@ -625,106 +669,51 @@ log output is scrubbed.
 | Result resource attributes | Stored in vault, replaced with vault ref | Scrubbed by redactor at write time |
 | Per-run log file | Vault secrets scrubbed | Argument values scrubbed |
 | Method summary report | Rendered as vault ref | Rendered as `***` |
-| Audit log | Not covered | Not covered (see follow-up #244) |
+| Audit log | Not covered | Not covered |
 
 Use output-schema sensitive marking when the value must be retrievable later via
 `vault.get()`. Use argument-schema sensitive marking when the value is a
 short-lived credential that should never be stored anywhere.
 
-## AWS Secrets Manager Provider
+## External Providers Are Extensions
 
-The AWS Secrets Manager provider is the initial implementation supporting:
+The only built-in vault type registered in `vaultTypeRegistry` is
+`local_encryption` (`src/domain/vaults/vault_types.ts`); `mock` is compiled in
+for tests but not registered as a user-facing type. Every other backend is an
+extension that exports `export const vault` with a `createProvider` factory —
+`@swamp/aws-sm`, `@swamp/azure-kv`, and `@swamp/1password` are the first-party
+ones. Their configuration, key mapping, and authentication behaviour are
+documented in those extensions, not here.
 
-### Authentication
+What this repository does for an extension vault type:
 
-- **IAM Roles**: Preferred method using instance/task roles
-- **Environment Variables**: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
-- **AWS Profiles**: Named profiles from `~/.aws/credentials`
-- **Default Credential Chain**: Standard AWS SDK credential resolution
+- **Type registry**: `createVaultProvider()`
+  (`src/domain/vaults/vault_provider_factory.ts`) looks the type up in
+  `vaultTypeRegistry`, validates `config` against the type's optional
+  `configSchema`, calls `createProvider(name, config)`, and asserts the result
+  implements `VaultProvider`. Missing `@collective/...` types are auto-resolved
+  from trusted collectives on load.
+- **Renamed-type remap**: legacy type strings (`aws`, `aws-sm`, `azure`,
+  `azure-kv`, `1password`) are mapped to their extension names by
+  `RENAMED_VAULT_TYPES` (`src/domain/vaults/vault_types.ts`).
+  `VaultService.fromRepository()` remaps them transparently and logs a warning
+  asking the user to update the config file.
+- **Configuration**: each vault is one YAML file under
+  `vaults/{vault-type}/{id}.yaml`. Provider-specific settings are passed as
+  JSON at creation time and stored under `config`:
 
-### Configuration Options
+  ```bash
+  swamp vault create @swamp/1password my-vault --config '{"op_vault":"Engineering"}'
+  swamp vault create local_encryption my-vault --audit-reads
+  ```
 
-```yaml
-vaults:
-  aws:
-    type: "aws"
-    region: "us-east-1" # Required: AWS region
-    profile: "production" # Optional: AWS profile name
-    endpoint_url: "https://custom.com" # Optional: Custom endpoint
-    secret_prefix: "myapp/" # Optional: Prefix for all secret names
-```
-
-### Secret Organization
-
-- Secrets are stored with optional prefixes for organization
-- Key names in expressions map to secret names in AWS Secrets Manager
-- Support for both string secrets and JSON secrets with key extraction
-
-### Error Handling
-
-- **Missing Secrets**: Throws descriptive error with vault and key information
-- **Authentication Failures**: Clear error messages for credential issues
-- **Network Errors**: Retry logic with exponential backoff
-- **Invalid Configuration**: Validation during vault initialization
-
-## Vault Model
-
-> **Planned -- not yet implemented.** The `swamp/lets-get-sensitive` vault model
-> described below is a design target. It is not yet present in the codebase.
-
-A dedicated `swamp/lets-get-sensitive` model provides direct vault operations in
-workflows:
-
-### Input Attributes
-
-- `vaultName: string` - Name of the vault to use
-- `secretKey: string` - Key identifier for the secret
-- `secretValue?: string` - Value to store (for put operations, marked as
-  sensitive)
-- `operation: "get" | "put"` - Operation to perform
-
-### Methods
-
-- **get**: Retrieve a secret value from the specified vault
-- **put**: Store a secret value in the specified vault
-
-### Usage Examples
-
-**Retrieve Secret:**
-
-```yaml
-id: vault-get-example
-type: swamp/lets-get-sensitive
-name: get-api-key
-version: 1
-attributes:
-  vaultName: aws
-  secretKey: production-api-key
-  operation: get
-```
-
-**Store Secret:**
-
-```yaml
-id: vault-put-example
-type: swamp/lets-get-sensitive
-name: store-generated-token
-version: 1
-attributes:
-  vaultName: aws
-  secretKey: new-auth-token
-  secretValue: ${{ data.latest('api-generator', 'result').attributes.token }}
-  operation: put
-```
-
-### Output Data
-
-- `success: boolean` - Whether the operation succeeded
-- `retrievedValue?: string` - Retrieved secret value (for get operations, marked
-  as sensitive)
-- `storedKey?: string` - Key where value was stored (for put operations)
-- `error?: string` - Error message if operation failed
-- `timestamp: string` - Operation timestamp
+  `vault create` accepts only `--config <json>` and `--audit-reads`
+  (`src/cli/commands/vault_create.ts`); there are no provider-specific flags.
+- **No implicit vaults**: `VaultService.ensureDefaultVaults()` is a no-op kept
+  for its call site — it used to auto-create an AWS vault when credentials were
+  present. Vault names starting with `_` are reserved for swamp-internal use
+  (e.g. the control-plane vault) and are never chosen as a fallback for user
+  data.
 
 ## Workflow Integration
 
@@ -750,16 +739,15 @@ evaluated, ensuring:
 
 ### Caching Strategy
 
-- **No Persistent Caching**: Secrets are not cached between workflow runs
-- **Expression-Level Caching**: Same vault/key combinations within a single
-  evaluation are cached
-- **Error Caching**: Failed lookups are not retried within the same evaluation
+- **No Caching**: Secrets are not cached between workflow runs, and every
+  `vault.get` match is resolved independently through `VaultService.get()`
+  (`resolveVaultExpressions` in `src/domain/expressions/model_resolver.ts`)
 
 ## Security Considerations
 
 ### Credential Management
 
-- Never store AWS credentials in workflow files or version control
+- Never store provider credentials in workflow files or version control
 - Use IAM roles and policies for fine-grained access control
 - Rotate credentials regularly and update vault configurations accordingly
 
@@ -767,66 +755,16 @@ evaluated, ensuring:
 
 - Use descriptive but not revealing secret names
 - Implement least-privilege access to specific secrets
-- Monitor vault access through AWS CloudTrail or provider audit logs
+- Monitor vault access through provider audit logs
 
 ### Expression Security
 
-- Vault expressions are evaluated server-side only
 - Vault secrets resolved via `vault.get()` are automatically redacted from
   stdout/stderr output, log files, and persisted data artifacts
 - Redaction replaces secret values with `***` using the `SecretRedactor`
 - The redactor is threaded through `MethodContext` and available to all model
   implementations
 - Expression evaluation errors don't expose secret values
-
-## 1Password Provider
-
-The 1Password provider uses the `op` CLI to access secrets stored in 1Password
-vaults.
-
-### Authentication
-
-- **Service Account Token**: `export OP_SERVICE_ACCOUNT_TOKEN=<token>`
-  (recommended for CI/CD)
-- **Desktop App**: Enable CLI integration in 1Password desktop app settings
-  (recommended for local development)
-- **Connect Server**: Set `OP_CONNECT_HOST` and `OP_CONNECT_TOKEN` environment
-  variables
-- **Manual Sign-in**: `op signin` for interactive sessions
-
-### Configuration Options
-
-```yaml
-# Created via: swamp vault create 1password my-vault --op-vault Engineering
-type: "1password"
-config:
-  op_vault: "Engineering" # Required: 1Password vault name
-  op_account: "my-team" # Optional: Account shorthand (multi-account)
-```
-
-### Secret Key Mapping
-
-Secret keys are mapped to `op://` URIs:
-
-| Expression                               | Maps to                                       | Notes                     |
-| ---------------------------------------- | --------------------------------------------- | ------------------------- |
-| `vault.get(my-1p, api-key)`              | `op read op://Engineering/api-key/password`   | Default field: `password` |
-| `vault.get(my-1p, api-key/token)`        | `op read op://Engineering/api-key/token`      | Explicit field            |
-| `vault.get(my-1p, db/connection/host)`   | `op read op://Engineering/db/connection/host` | Section + field           |
-| `vault.get(my-1p, op://Shared/cert/pem)` | `op read op://Shared/cert/pem`                | Full `op://` override     |
-
-### Usage Examples
-
-```yaml
-# Retrieve a secret using default "password" field
-apiKey: ${{ vault.get(my-1p, api-key) }}
-
-# Retrieve a specific field
-dbHost: ${{ vault.get(my-1p, database/host) }}
-
-# Override vault with full op:// URI
-sharedCert: ${{ vault.get(my-1p, op://Shared/tls-cert/pem) }}
-```
 
 ## Vault Migration
 
@@ -873,38 +811,19 @@ provider creation behavior.
 
 ## Extensibility
 
-The vault system is designed for easy extension to new providers:
+The built-in `switch` in `createVaultProvider()` is closed — it handles only
+`mock` and `local_encryption`. New vault types are added as extensions, never by
+editing the factory:
 
-### Adding New Vault Types
-
-1. Implement the `VaultProvider` interface
-2. Add configuration schema validation
-3. Register the provider with the vault factory
-4. Add provider-specific documentation
-
-### Example: HashiCorp Vault Provider
-
-```typescript
-class HashiCorpVaultProvider implements VaultProvider {
-  constructor(config: HashiCorpVaultConfig) {
-    // Initialize with endpoint, token, mount path
-  }
-
-  async get(key: string): Promise<string> {
-    // Implement HashiCorp Vault API calls
-  }
-
-  // ... other interface methods
-}
-```
-
-### Future Vault Types
-
-The architecture supports adding:
-
-- **HashiCorp Vault**: Enterprise secret management
-- **Google Secret Manager**: Google Cloud Platform secrets
-- **Environment Variables**: Simple local development
+1. In an extension, export `vault` with `type`, `name`, `description`, an
+   optional `configSchema`, and `createProvider(name, config)` returning an
+   object that implements `VaultProvider` (plus any of the optional annotation,
+   refresh hook, or delete interfaces).
+2. The vault loader registers it in `vaultTypeRegistry`
+   (`src/domain/vaults/vault_type_registry.ts`); the factory prefers registry
+   entries over built-ins for any non-built-in type.
+3. Users create instances with `swamp vault create <type> <name> --config
+   <json>`.
 
 ## Error Handling
 

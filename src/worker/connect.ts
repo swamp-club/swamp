@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The worker dial-home loop (see design/remote-execution.md, "Enrollment").
+ * The worker dial-home loop (see design/enablers/remote-execution.md, "Enrollment").
  *
  * A worker is a swamp binary plus a token and a URL: it opens the control
  * socket outbound, enrolls (or re-authenticates after a blip or restart),

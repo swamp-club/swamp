@@ -1,3 +1,9 @@
+---
+audience: maintainer, extension-author
+enables: [models, workflows]
+last-verified: 2026-08-28 @ 3d5955a9
+---
+
 # Reports
 
 Reports are post-execution analysis functions that produce markdown and JSON
@@ -101,11 +107,13 @@ contexts additionally carry `extensionFile`.
 | `workflowRunId`    | `string`                         | Run UUID                                      |
 | `workflowName`     | `string`                         | Workflow name                                 |
 | `workflowStatus`   | `"succeeded"` / `"failed"`      | Overall run outcome                           |
+| `inputs?`          | `Record<string, unknown>`        | Workflow inputs captured for the run          |
 | `stepExecutions`   | `StepExecution[]`                | Per-step details (job, task, status)          |
 
 Each `stepExecutions` entry contains `jobName`, `stepName`, `taskType`,
-`modelName`, `modelType`, `methodName`, `status`, `dataHandles`, `methodArgs`,
-`modelId`, `globalArgs`, and an optional `errorMessage`. The `taskType` field
+`modelName`, `modelType`, `methodName`, `status` (`"succeeded"`, `"failed"`, or
+`"skipped"`), `dataHandles`, `methodArgs`, `modelId`, `globalArgs`, and an
+optional `errorMessage`. The `taskType` field
 identifies the step's task kind (`model_method`, `assert`, `manual_approval`,
 `workflow`). For non-model tasks, the model-specific fields (`modelName`,
 `modelType`, `methodName`, `modelId`) are empty strings and `errorMessage`
@@ -142,11 +150,16 @@ collective must match the extension's collective when distributed via
 
 ### Loader Validation
 
-`UserReportLoader` discovers `.ts` files recursively in the reports directory
-(excluding `_test.ts`), bundles each with Deno (zod externalized), and
-validates the export against a Zod schema requiring:
+The shared extension loader (`src/domain/extensions/extension_loader.ts`),
+configured with `reportKindAdapter`
+(`src/domain/extensions/report_kind_adapter.ts`), discovers `.ts` files
+recursively in the reports directory (excluding `_test.ts`), bundles each with
+Deno (zod externalized), and validates the `report` export against the
+adapter's Zod schema (`UserReportSchema`) requiring:
 
-- `name` — matches `@collective/name[/subname/...]` or `collective/name[/subname/...]`
+- `name` — matches `@collective/name[/subname/...]` or
+  `collective/name[/subname/...]`, lowercase `[a-z0-9_-]` segments only
+  (`USER_REPORT_NAME_PATTERN`)
 - `description` — non-empty string
 - `scope` — one of `"method"`, `"model"`, `"workflow"`
 - `labels` — optional `string[]`
@@ -157,9 +170,6 @@ modules). Bundles are cached in `.swamp/report-bundles/` with
 content-fingerprint invalidation (sha-256 over the entry point plus every
 local `.ts` dep) — mtime-based freshness was unreliable under atomic-rename
 saves, mtime-preserving sync tools, and sub-millisecond edits (issue #125).
-
-See `src/domain/extensions/extension_loader.ts` (with
-`src/domain/extensions/report_kind_adapter.ts`).
 
 ## Report Registry
 
@@ -354,6 +364,11 @@ Report results are automatically persisted as data artifacts via
 | Markdown   | `report-{reportName}`         | `text/markdown`      |
 | JSON       | `report-{reportName}-json`    | `application/json`   |
 
+`{reportName}` is the report name passed through `sanitizeReportNameForData`
+(path-unsafe characters such as `/` are replaced). For forEach iterations the
+vary suffix is appended: `report-{reportName}-{suffix}` and
+`report-{reportName}-{suffix}-json`.
+
 Both artifacts are written with:
 
 - **Lifetime**: `30d`
@@ -456,8 +471,8 @@ type is unavailable the schema is unknown, so values are fully redacted via
 Additionally, report contexts receive **pre-vault** arguments — args are
 captured before `resolveRuntimeExpressionsInDefinition` replaces vault
 expressions with sentinel tokens. This ensures vault expression strings like
-`${{ vault.default.password }}` appear in reports, never the resolved secret
-values.
+`${{ vault.get('default', 'password') }}` appear in reports, never the resolved
+secret values.
 
 ## CLI
 
@@ -494,8 +509,9 @@ swamp report get cost-summary --workflow deploy-pipeline
 | ----------------------- | ---------------------------------------------------- |
 | `--model <name>`        | Scope to a specific model                            |
 | `--workflow <name>`     | Scope to a specific workflow                         |
-| `--version <version>`   | Get specific version (default: latest)               |
-| `--markdown`            | Output as plain markdown instead of terminal-formatted|
+| `--version <version>`   | Get specific version number (default: latest)        |
+| `--variant <variant>`   | Select a specific forEach variant                    |
+| `--markdown`            | Output as plain markdown instead of terminal-formatted (conflicts with `--json`) |
 | `--json`                | Output in JSON format                                |
 | `--max-width <width>`   | Cap total output width in columns                    |
 | `--max-col-width <width>` | Cap individual table column width in characters   |
@@ -545,6 +561,7 @@ Additionally, reports co-located with models in `paths.base: manifest`
 extensions are discovered automatically. When a manifest in e.g.
 `extensions/models/myext/manifest.yaml` declares `reports:` entries with
 `paths.base: manifest`, the manifest's directory is added as an additional
-report source directory at startup.
+report source directory at startup (`discoverManifestCrossKindDirs` in
+`src/cli/mod.ts`).
 
 See `src/cli/resolve_reports_dir.ts`.

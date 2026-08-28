@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The remote MethodContext (see design/remote-execution.md, "The remote
+ * The remote MethodContext (see design/enablers/remote-execution.md, "The remote
  * `MethodContext`" and "The capability protocol").
  *
  * Built from proxy adapters: metadata capability verbs ride the control
@@ -64,7 +64,7 @@ export class UnsupportedOnRemoteWorkerError extends Error {
   constructor(member: string) {
     super(
       `${member} is not supported on a remote worker — it has no proxied ` +
-        "capability verb (see design/remote-execution.md). Run this method " +
+        "capability verb (see design/enablers/remote-execution.md). Run this method " +
         "on the loopback executor instead.",
     );
     this.name = "UnsupportedOnRemoteWorkerError";

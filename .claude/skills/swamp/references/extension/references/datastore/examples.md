@@ -243,7 +243,7 @@ export const datastore = {
       // relPaths plus a bulkInvalidated boolean. pushChanged consumes
       // the set when bulkInvalidated is false, doing exactly the work
       // core attributed; otherwise it falls back to a full walk. See
-      // `design/datastores.md` "markDirty() contract" for the eight
+      // `design/enablers/datastores.md` "markDirty() contract" for the eight
       // load-bearing rules — pre-write timing, absence-on-disk = delete,
       // restart-loses-set, etc.
       //

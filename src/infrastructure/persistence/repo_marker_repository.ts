@@ -83,7 +83,7 @@ function normalizeMarker(data: RepoMarkerData): RepoMarkerData {
 /**
  * Rejects the removed `defaultDriver`/`defaultDriverConfig` fields with an
  * actionable error instead of silently ignoring them (see
- * design/remote-execution.md).
+ * design/enablers/remote-execution.md).
  */
 function rejectRemovedDriverFields(data: RepoMarkerData, path: string): void {
   for (const field of ["defaultDriver", "defaultDriverConfig"]) {
