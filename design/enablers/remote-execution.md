@@ -1,7 +1,7 @@
 ---
 audience: maintainer, operator
 enables: [serve]
-last-verified: 2026-08-28 @ 4bde205b
+last-verified: 2026-08-28 @ 3d5955a9
 ---
 
 # Remote Execution
@@ -70,7 +70,7 @@ Three properties drove the design:
 | **Fleet probe**      | A built-in model (`swamp/fleet-probe`) whose single `verify` method exercises every seam between worker and orchestrator: dispatch metadata (`probeMarker`), capability RPC (`queryData`), and the HTTP data plane (`writeResource`/`readResource`). Used by `swamp worker verify` and `--verify-on-enroll`. |
 | **Probe marker**     | A dispatch-level string (`probeMarker` on `DispatchParams`) that the worker merges into the method's args. Confirms dispatch-level metadata arrives intact. Travels via `DispatchParams`, not the environment snapshot (which denylists `SWAMP_*` variables). |
 | **Verify-on-enroll** | Opt-in orchestrator flag (`--verify-on-enroll`) that dispatches the fleet probe to each enrolling worker before it becomes schedulable. Workers that fail enter `unverified` status and are excluded from scheduling. |
-| **Unverified**       | A worker status indicating the enrollment verification probe failed. Unverified workers are visible in `swamp worker list` with their failure reason but are excluded from `eligibleWorkers` and never receive dispatches. |
+| **Unverified**       | A worker status indicating the enrollment verification probe failed. Unverified workers are visible in `swamp worker list` (the failure reason is in the `--json` record only, `src/presentation/output/worker_output.ts`) and are excluded from label/platform scheduling; a step that pins a `target:` by name bypasses that filter (`eligibleWorkers` in `src/domain/remote/scheduler.ts`). |
 
 The orchestrator's own bookkeeping — the worker pool, token lifecycle, and step
 leases — is **persisted as swamp data** by first-class built-in models, written
@@ -136,26 +136,27 @@ parameters, which would appear in reverse proxy and load balancer access logs.
 
 ### A symmetric control protocol, two handler registries
 
-Today `src/serve/` couples two roles: the websocket *server* is also the
-*executor* — it listens, receives `model.method.run` / `workflow.run`, and runs
-the work locally (`src/serve/connection.ts`, `src/serve/protocol.ts`). Remote
-execution splits those apart:
+`src/serve/` serves two roles over one listener: the websocket *server* that
+receives client requests such as `model.method.run` / `workflow.run`
+(`src/serve/connection.ts`, `src/serve/protocol.ts`), and the *orchestrator*
+that decides where each step runs. Remote execution keeps those apart:
 
 - The **orchestrator** is the server but *dispatches* work.
 - The **worker** is the client but *executes* work.
 
-Because the control protocol is already request/response with a client-assigned
-`id` for multiplexing, the clean framing is a single protocol module with **two
-handler registries**, symmetric in both directions over the control socket:
+Two protocol modules cover this. `src/serve/protocol.ts` is the client
+protocol (below). `src/domain/remote/protocol.ts` is the worker control
+protocol: a generic `rpc.request` / `rpc.response` / `rpc.error` /
+`rpc.stream` / `rpc.cancel` frame set carried by `RpcChannel`
+(`src/domain/remote/rpc_channel.ts`), with a **handler registry on each side**:
 
-| Direction               | Messages the receiver handles                                                |
-| ----------------------- | ---------------------------------------------------------------------------- |
-| orchestrator → worker   | `dispatch` (run an `ExecutionRequest`), `cancel`                             |
-| worker → orchestrator   | `enroll`, the metadata capability verbs, and streamed run events             |
+| Direction               | Methods the receiver handles                                                  |
+| ----------------------- | ----------------------------------------------------------------------------- |
+| orchestrator → worker   | `WorkerMethod.dispatch` (`worker.dispatch`); cancellation is the `rpc.cancel` frame |
+| worker → orchestrator   | `RemoteMethod`: `worker.enroll`, `worker.session.refresh`, `worker.drain`, and the nine `capability.*` verbs; run events ride `rpc.stream` |
 
-The request-dispatch half of `connection.ts` moves to the dial-*out* side; both
-sides share the framing, error envelope, and `serializeEvent()` machinery that
-already exists. Byte-heavy transfers do *not* go over this socket — they ride the
+Both sides share the framing, error envelope, and `serializeEvent()`
+machinery. Byte-heavy transfers do *not* go over this socket — they ride the
 HTTP/2 data plane (see [Data plane](#data-plane-two-transports)).
 
 The serve endpoint keeps its client protocol side by side with the worker
@@ -165,32 +166,31 @@ ordinary client and an enrolling worker share one listener without ambiguity.
 The client protocol supports two interaction patterns:
 
 - **Streaming operations** (`workflow.run`, `model.method.run`,
-  `workflow.resume`) send an event stream followed by a terminal `done` frame,
-  so clients can distinguish "run ended" from "stream stalled".
+  `workflow.resume`, and `run.attach`, which replays and follows a live run's
+  buffer) send an event stream followed by a terminal `done` frame, so clients
+  can distinguish "run ended" from "stream stalled".
 - **Request-response operations** (everything else) send a single response
   frame with a `payload` field, matching the request's `type`.
 
-The full set of client protocol frame types:
+The authoritative list of client request types is the `ServerRequest` union
+in `src/serve/protocol.ts` (107 members at last verification); this table
+lists only the families and the authorization verb each handler asks
+`authorizeOrReject` for:
 
-| Category       | Frame types                                                                                                    | Auth    |
-| -------------- | -------------------------------------------------------------------------------------------------------------- | ------- |
-| Data           | `data.get`, `data.list`, `data.query`, `data.search`, `data.versions`, `data.delete`, `data.rename`            | read/write |
-| Model          | `model.get`, `model.create`, `model.delete`, `model.search`, `model.method.describe`, `model.method.run`       | read/write/run |
-| Model output   | `model.output.get`, `model.output.data`, `model.output.logs`, `model.output.search`                            | read    |
-| Model history  | `model.method.history.get`, `model.method.history.logs`, `model.method.history.search`                         | read    |
-| Model validate | `model.validate`, `model.evaluate`                                                                             | read    |
-| Workflow       | `workflow.get`, `workflow.search`, `workflow.run`, `workflow.resume`, `workflow.schema`                         | read/run |
-| Workflow history | `workflow.history.get`, `workflow.history.logs`, `workflow.history.search`, `workflow.run.search`             | read    |
-| Workflow approval | `workflow.approvals`, `workflow.approve`, `workflow.reject`                                                  | run     |
-| Vault          | `vault.get`, `vault.put`, `vault.delete`, `vault.describe`, `vault.inspect`, `vault.list-keys`, `vault.search`, `vault.annotate` | read/write |
-| Access         | `access.grant.list`, `access.group.list`, `access.check`, `access.can-i`, `access.reload`                     | admin   |
-| Audit/summary  | `audit.timeline`, `summarise`                                                                                  | read    |
-| Reports        | `report.get`, `report.search`, `report.describe`, `report.type.search`                                        | read    |
-| Extensions     | `extension.list`, `extension.search`, `extension.info`, `extension.install`, `extension.rm`, `extension.outdated` | read/admin |
-| Doctor         | `doctor.vaults`, `doctor.datastores`, `doctor.secrets`, `doctor.workflows`, `doctor.extensions`                 | admin   |
-| Server admin   | `worker.list`, `worker.queue.list`, `worker.verify`, `datastore.status`                                        | admin   |
-| Run            | `run.history`, `run.doctor`                                                                                    | admin   |
-| Control        | `cancel`                                                                                                       | —       |
+| Family (`type` prefix)                           | Typical auth verb                                                                              |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| `data.*`                                         | `read` for lookups; `write` for `delete` / `rename`                                            |
+| `model.*` (incl. `model.output.*`, `model.method.history.*`) | `read`; `write` for create/delete; `run` for `model.method.run`; conditional `admin` on some handlers |
+| `workflow.*` (incl. history, approvals)          | `read` for lookups and `workflow.approvals`; `run` for run/resume/approve/reject                |
+| `vault.*`                                        | `read` / `write`; conditional `admin` on some handlers                                          |
+| `access.*`                                       | `read` for `grant.list` / `group.list`; `access.can-i` requires an authenticated principal but no verb; the rest `admin` |
+| `audit.*`, `summarise`, `report.*`               | `read`                                                                                         |
+| `extension.*`, `doctor.*`, `worker.*`, `datastore.*`, `cluster.*`, `serve.*` | `read` for listings (`cluster.instances`, `serve.config`); `admin` for mutations and `serve.reload` |
+| `run.*` (`history`, `doctor`, `gc`, `attach`)    | `admin` for history/doctor; `write` for `run.gc`; `run` on the attached resource for `run.attach` |
+| `cancel`                                         | `run` on the active run's resource (`src/serve/connection.ts`)                                 |
+
+Any type named in `--restricted-commands` is escalated to `admin` regardless
+of its handler's own verb (`isRestrictedCommand` in `src/serve/connection.ts`).
 
 The CLI consumes this protocol via `--server <url>` on each command:
 repo-less, streaming the run's events through the same renderers as a local
@@ -219,7 +219,9 @@ relay — it holds client credentials (auto-registered on first start or
 supplied via `--oauth-client-id` or via headless API key bootstrap) and
 proxies the device authorization flow. The flow:
 
-1. User runs `swamp auth login --server <url>`
+1. User runs `swamp auth server-login --server <url>`
+   (`src/cli/commands/auth_server_login.ts`; `swamp auth login --server` is
+   the swamp-club registry login, a different command)
 2. CLI calls `GET /auth/info` on the serve instance to discover auth mode
 3. CLI calls `POST /auth/device` — serve starts a device grant against
    swamp-club, returns a user code and verification URL
@@ -262,8 +264,11 @@ registration paths exist:
   admin to approve in a browser. The device grant access token is
   stored in the vault for subsequent admin resolution.
 
-Collectives are snapshotted at login time and become stale if the user's
-collective membership changes in swamp-club. Refresh is a later phase.
+Collectives are snapshotted at login time. The `CollectiveRefreshService`
+(`src/serve/collective_refresh_service.ts`) re-resolves them for active tokens
+on a timer — `--group-refresh-interval`, default 4 h, `0` to disable
+(`src/cli/commands/serve.ts`) — so membership changes in swamp-club converge
+within one interval.
 
 v1 is swamp-club-specific: the OAuth client endpoint paths
 (`/api/auth/device/code`, `/api/auth/device/token`,
@@ -293,8 +298,7 @@ export SWAMP_SERVE_EXTRA_HEADERS=$'Tunnel-Token: abc123\nX-Proxy-Auth: def456'
 These headers are applied to the WebSocket upgrade request (using Deno 2.x's
 non-standard `WebSocket({ headers })` extension) and, for workers, to all HTTP
 data-plane requests. They are pure pass-through — `swamp serve` itself does not
-read or require them. Header values may contain secrets and are never logged;
-only header names appear in debug output (as a count).
+read or require them. Header values may contain secrets and are never logged.
 
 Reserved header names (`Authorization`, `Host`, `Upgrade`, `Connection`) are
 rejected to prevent conflicts with swamp's internal protocol headers. Values
@@ -304,13 +308,14 @@ containing control characters are also rejected to prevent header injection.
 
 There is no driver abstraction. The `ExecutionDriver` interface,
 `raw`/`docker`/custom selection, the driver type registry, and the docker
-bundle-mounting machinery are all removed. The `driver:`/`driverConfig:` fields
-live in the workflow, job, step, and definition schemas, plus
+bundle-mounting machinery were all removed. The `driver:`/`driverConfig:`
+fields that lived in the workflow, job, step, and definition schemas, plus
 `defaultDriver`/`defaultDriverConfig` in `.swamp.yaml`, the `--driver` CLI
-flags, the serve protocol payloads, and `driver` fields on run events — *not*
-on `ExecutionRequest`, which never carried them. Removing the axis is a
-user-facing schema deprecation across all of those surfaces, scoped as part of
-this work. Execution reduces to two code paths:
+flags, the serve protocol payloads, and `driver` fields on run events are gone
+(`ExecutionRequest` never carried them). Old YAML that still names those
+fields fails loudly with an actionable message
+(`src/domain/removed_driver_fields.ts`) rather than being silently stripped.
+Execution reduces to two code paths:
 
 - **Execute in-process** on the orchestrator's loopback executor — the
   single-host case, no socket, no websockets forced. This is the old `raw` path,
@@ -344,8 +349,12 @@ worker → orchestrator   enroll {
   resourceLimits: { ... },
 }
 
-orchestrator → worker   enrolled { workerId, sessionCredential }   |   error { ... }
+orchestrator → worker   enrolled { workerId, sessionCredential, sessionExpiresAtMs, protocolVersion }   |   error { ... }
 ```
+
+(`EnrollParamsSchema` / `EnrollResult` in `src/domain/remote/protocol.ts`; the
+session credential TTL is 15 min, `DEFAULT_SESSION_TTL_MS` in
+`src/domain/remote/session_credential.ts`, refreshed at 2/3 of the TTL.)
 
 A worker advertises **labels** and platform/arch, not runtimes — there is no
 runtime axis to negotiate. Shipping the swamp binary keeps the orchestrator and
@@ -353,9 +362,9 @@ worker in version lockstep, so the capability interfaces match; `protocolVersion
 (already present on `ExecutionRequest`) rejects an incompatible worker at
 enrollment rather than mid-run. The `sessionCredential` is a short-lived bearer
 token that authenticates the worker's data-plane HTTP/2 requests. The worker is
-addressable in the pool by its token
-`--name` and its `instanceUuid`; a step may target it directly by either (see
-[Scheduling](#scheduling-fan-out-and-provisioning)).
+addressable in the pool by its token name (the positional `<name>` given to
+`swamp worker token create`) and its `instanceUuid`; a step may target it
+directly by either (see [Scheduling](#scheduling-fan-out-and-provisioning)).
 
 ### Enrollment tokens
 
@@ -395,7 +404,7 @@ The CLI surface:
 
 ```bash
 swamp worker token create <name> --duration <dur>   # mint; prints the credential once
-swamp worker token list                             # state, expiry, name, bound machine
+swamp worker token list                             # NAME, STATE, EXPIRES, ENROLLMENTS
 swamp worker token revoke <name>                    # invalidate before expiry
 ```
 
@@ -441,7 +450,8 @@ These ship with swamp and are registered at startup like its other built-ins.
 This is not incidental — it is *why* the rest of the design composes:
 
 - **Provisioning and autoscaling become workflows.** A workflow can
-  `data.query('modelName == "worker" && attributes.status == "idle"')` (content
+  `data.query('modelType == "swamp/worker" && attributes.status == "idle"')`
+  (definition names are `worker-<name>`, so filter on `modelType`; content
   fields live under `attributes` and load on demand; or count busy workers, or
   filter by label) to decide whether to mint a token and launch another host.
   The control plane is introspectable through the exact primitive workflows
@@ -459,12 +469,16 @@ parallel store that can drift from it.
 
 Versioned-immutable state has a churn cost: every busy/idle flip and lease
 change is a new version, and garbage collection is an explicit operation
-(`swamp data gc`), not automatic. The built-in models therefore **declare
-retention up front** — bounded `garbageCollection` version counts (and duration
-`lifetime`s where appropriate) on worker-status and step-lease data — and the
-orchestrator runs data GC over its own bookkeeping models periodically, so
-control-plane churn cannot grow the datastore without bound while recent
-history stays queryable.
+(`swamp data gc`), not automatic. The built-in models **declare retention up
+front** — bounded `garbageCollection` version counts (worker 20; token, lease,
+pending-dispatch 10; fleet-probe 1) with `lifetime: "infinite"` on all but the
+fleet probe (`src/domain/models/worker/*_model.ts`).
+
+**Known limit:** the orchestrator does **not** run periodic data GC over its
+bookkeeping models; the only automatic sweep is the boot reconciliation below.
+Until an operator runs `swamp data gc`, the record *count* for workers, tokens,
+leases, and pending dispatches grows without bound (each record's version
+history is what the declared counts cap).
 
 ### Boot reconciliation
 
@@ -487,14 +501,17 @@ startup; a single corrupted record cannot prevent the orchestrator from serving.
 The sweep completes before `Deno.serve` accepts traffic. Workers that reconnect
 during the sweep re-enroll normally after it finishes — the sweep transitions
 their stale record, and re-enrollment creates a fresh one. On a clean boot (no
-stale records match the predicates) the sweep is a no-op and logs nothing.
+stale records match the predicates) the sweep transitions nothing; the
+`"Boot: sweeping stale records"` line is logged either way
+(`src/cli/commands/serve.ts`).
 
 ## The remote `MethodContext`
 
-The heart of the design: on a worker, the injected `MethodContext`
-(`src/domain/models/method_context.ts`) is built from **proxy adapters**. Each
-capability call serializes to a request to the orchestrator, which runs it against
-the real repository and returns the result.
+The heart of the design: on a worker, the injected `MethodContext` (interface
+in `src/domain/models/model.ts`) is built from **proxy adapters**
+(`createRemoteMethodContext` in `src/worker/remote_method_context.ts`). Each
+capability call serializes to a request to the orchestrator, which runs it
+against the real repository and returns the result.
 
 ```
 WORKER                                  ORCHESTRATOR
@@ -515,10 +532,12 @@ The method author API (`context.writeResource`, `context.createFileWriter`,
 differ: local in-process repositories on the loopback executor, remote proxies on
 a worker — control-plane RPCs for metadata, the HTTP/2 data plane for bytes.
 
-Not every injected dependency is a flat RPC stub. Some are *factories* that
-produce more behavior — `createCelEnvironment` returns a CEL `Environment` whose
-own data-access calls must proxy home. The boundary there is "construct the
-object locally on the worker, but inject *its* leaves as remote proxies."
+Not every injected dependency is a flat RPC stub. `createCelEnvironment` is a
+*factory*: on a worker it is the plain local `createExtensionCelEnvironment`
+(`src/infrastructure/cel/cel_evaluator.ts`), which registers arithmetic
+overloads only — it has no data-access leaves, so nothing in it proxies home.
+A method that wants data inside a CEL expression fetches it through
+`context.queryData` / `readResource` first.
 
 ## The capability protocol
 
@@ -528,30 +547,37 @@ The inventory below is generated by walking the actual `MethodContext`
 (`src/domain/models/model.ts`), the `DataWriter` interface, and the injected
 service ports (`UnifiedDataRepository`, `VaultService`, `DefinitionRepository`,
 `OutputRepository`, `DataQueryService`); every context member gets an explicit
-disposition — a proxy verb, worker-local, or shipped state. Fourteen verbs:
+disposition — a proxy verb, a data-plane route, worker-local, or shipped
+state. Nine control-plane verbs (`RemoteMethod.capability.*` in
+`src/domain/remote/protocol.ts`, served by `src/serve/capability_service.ts`)
+plus the data-plane routes (`src/serve/data_plane.ts`):
 
-| Verb               | Backed by                                                                  | Transport | Notes                                  |
+| Operation          | Backed by                                                                  | Transport | Notes                                  |
 | ------------------ | -------------------------------------------------------------------------- | --------- | -------------------------------------- |
-| `getData`          | repo reads (`findByName`/`findById`/`getContent`/`stream`), `context.readResource`, `readModelData` | ws + h2   | ws resolves `latest`→version; h2 streams bytes |
+| `getData`          | repo reads (`findByName`/`findById`/`getContent`/`stream`), `context.readResource`, `readModelData` | ws + h2   | ws resolves `latest`→version; `GET /data/{type}/{modelId}/{dataName}/{version}` streams bytes |
 | `queryData`        | `dataQueryService` / `context.queryData`, attribute loading (`select` projection rejected — bypasses denylist) | ws        | CEL predicate over the catalog; always live |
-| `listVersions`     | `repo.listVersions`, `findAllGlobal`/`findAllForModel` enumeration         | ws        | Version-history and cross-model enumeration |
-| `persistResource`  | resource writer (`writeResource`)                                          | h2        | Streams bytes; durable immediately     |
-| `persistFile`      | file writer `writeAll`/`writeText`/`writeStream`                           | h2        | Streams bytes; durable immediately     |
-| `appendData`       | `DataWriter.writeLine` → `repo.append`                                     | h2        | Incremental append; durable per request (live logs) |
+| `listVersions`     | `repo.listVersions`                                                        | ws        | Version history for one data item. The only verb without a dispatch-scope assertion |
 | `deleteData`       | `repo.delete`, `repo.removeLatestMarker`                                   | ws        | Lifecycle/GC-aware methods use these   |
-| `resolveSecret`    | `vaultService.get` / `getAnnotation`                                       | ws        | Authorized per step: infrastructure key denylist (`server-token-*`, `worker-token-*`) + expression-based allowlist from dispatched step's args |
-| `putSecret`        | `vaultService.put` / `putAnnotation` / `deleteAnnotation`                  | ws        | Infrastructure key denylist (`server-token-*`, `worker-token-*`); no expression-based allowlist (write targets are not declared in vault expressions) |
-| `readDefinition`   | `definitionRepository` reads                                               | ws        | Lazy-load; cacheable for the run       |
-| `readOutput`       | `outputRepository` execution-history reads                                 | ws        | Optional context member; same lazy/cache rule |
-| `resolveModel`     | catalog / `catalogStore`                                                   | ws        | Workflow step model resolution         |
-| `getExtensionFile` | `context.extensionFile(relPath)` co-located assets                         | h2        | `GET /bundle/{fingerprint}/file/{relPath}`; cacheable by fingerprint |
-| `log` / `event`    | run-event stream                                                           | ws        | Already serializable; flows to client  |
+| `resolveSecret`    | `vaultService.get` / `getAnnotation`                                       | ws        | Authorized per step: infrastructure denylist + expression-based allowlist from the dispatched step's args (allowlist disabled when the step has dynamic vault references) |
+| `putSecret`        | `vaultService.put` / `putAnnotation` / `deleteAnnotation`                  | ws        | Infrastructure denylist; no expression-based allowlist (write targets are not declared in vault expressions) |
+| `readDefinition`   | `definitionRepository.findByName`                                          | ws        | Lazy-load; no cache                    |
+| `readOutput`       | `outputRepository` execution-history reads                                 | ws        | Optional context member                |
+| `resolveModel`     | `findDefinitionByIdOrName` over the definition repository                  | ws        | Workflow step model resolution         |
+| resource write     | `POST /data/resource` → `writeResource`                                    | h2        | Durable immediately                    |
+| resource delete    | `DELETE /data/resource`                                                    | h2        |                                        |
+| file write         | `POST /data/writers` (open) → `/content` (stream + finalize) or `/line` + `/finalize` | h2 | `writeLine` is durable per request (live logs) |
+| extension assets   | `GET /bundle/{fingerprint}`, `GET /bundle/{fingerprint}/file/{relPath}`    | h2        | Cacheable by fingerprint               |
+| `log` / `event`    | run-event stream                                                           | ws        | `rpc.stream` frames; flows to client   |
+
+The infrastructure denylist (`src/serve/capability_service.ts`) covers the
+`server-token-*` and `worker-token-*` key prefixes, `oauth-client-secret`,
+`oauth-access-token-*`, `oauth-bootstrap-access-token`,
+`oauth-resolved-admins`, and the control-plane token-secrets vault by name.
 
 Completeness of this inventory is the correctness-critical task; it must be
 re-walked against `MethodContext` whenever a context member is added, and it is
 pinned behind the negotiated `protocolVersion`. Workers still hold no datastore:
-artifact *bytes* (`getData` / `persistResource` / `persistFile` / `appendData` /
-`getExtensionFile`) ride the HTTP/2 data plane, which also terminates at the
+artifact *bytes* ride the HTTP data plane, which also terminates at the
 orchestrator; everything else is control-plane metadata.
 
 Implementation note: the data-repository port also has synchronous members
@@ -571,23 +597,33 @@ The remaining context members deliberately do **not** proxy:
   loopback executor, or on a worker deployed with a checkout and labeled
   accordingly.
 - **Local compute stays local.** Subprocess spawning (`Deno.Command` — the shell
-  model), outbound network calls, and SDK clients (`cloudControlClientFactory`)
-  execute on the worker. That is the point of remote execution: the compute —
-  including the processes it spawns and the APIs it calls — runs where the
-  worker runs. The credentials and environment such calls need arrive via the
-  shipped environment (below) or vault-resolved inputs.
-- **`createCelEnvironment`** constructs the CEL environment locally on the
-  worker; its data-access leaves are the same remote proxies.
+  model) and outbound network calls execute on the worker. That is the point
+  of remote execution: the compute — including the processes it spawns and the
+  APIs it calls — runs where the worker runs. The credentials and environment
+  such calls need arrive via the shipped environment (below) or vault-resolved
+  inputs. `cloudControlClientFactory` is `undefined` on a worker
+  (`src/worker/remote_method_context.ts`); a method that needs it runs on the
+  orchestrator.
+- **`createCelEnvironment`** is the local extension environment (see above);
+  it has no data-access leaves.
+- **Not available on a worker.** `context.runModel()`,
+  `context.approveWorkflowGate()`, and `context.rejectWorkflowGate()` resolve
+  to `{ ok: false }` with an error naming the call
+  (`src/worker/remote_method_context.ts`); nested runs and gate control stay
+  on the orchestrator.
 - **Provider code never ships.** Vault and datastore providers execute
   orchestrator-side *behind* `resolveSecret`/`putSecret` and the data verbs — a
-  worker speaks verbs, never providers. Report providers are the exception:
-  checks and reports run on the executor (see
-  [Checks and reports](#checks-and-reports-run-on-the-executor)).
+  worker speaks verbs, never providers. Report providers do not ship either:
+  checks are skipped for remote steps and reports run at the orchestrator (see
+  [Checks and reports](#pre-flight-checks-are-skipped-for-remote-steps-reports-run-at-the-orchestrator)).
 - **`followUpActions`** returned by a method ride back serialized on the
-  dispatch result (`methodName`/`delayMs`/`maxRetries`; the
-  `continueCondition` function cannot cross the wire — the orchestrator
-  re-evaluates conditions against the returned handles), and the orchestrator
-  performs them.
+  dispatch result (`methodName`/`delayMs`/`maxRetries` only,
+  `serializeFollowUpActions` in `src/worker/exec_dispatch.ts`), and the
+  orchestrator performs them. **Known divergence:** the `continueCondition`
+  function cannot cross the wire and is **dropped**, so the orchestrator's
+  follow-up loop (`src/domain/models/method_execution_service.ts`) never sees
+  it — a remote step's follow-ups always run, where the same method run
+  locally would stop when its condition returned false.
 
 ## The execution environment
 
@@ -602,17 +638,19 @@ persisted on the worker, and an idle worker holds no environment at all.
 
 The snapshot **overlays** the worker's base environment rather than replacing
 it, and a small fixed denylist of process-identity and host-runtime variables is
-never shipped — the worker host's own values win for `HOME`, `USER`, `LOGNAME`,
-`SHELL`, `PATH`, `PWD`, `TMPDIR`/`TEMP`/`TMP`, `HOSTNAME`, `TERM`, `XDG_*`,
-`DENO_*`, and swamp's own `SWAMP_*` runtime variables. Shipping the
+never shipped — the worker host's own values win for `HOME`, `USER`,
+`USERNAME`, `USERPROFILE`, `LOGNAME`, `SHELL`, `PATH`, `PWD`,
+`TMPDIR`/`TEMP`/`TMP`, `HOSTNAME`, `TERM`, `XDG_*`, `DENO_*`, and swamp's own
+`SWAMP_*` runtime variables (matched case-insensitively;
+`src/domain/remote/environment_snapshot.ts`). Shipping the
 orchestrator's `HOME` or `PATH` would silently corrupt the worker's own runtime
 (tool resolution, cache and config locations, subprocess lookup); these
 variables describe *where the process is running*, which is precisely the thing
 remote execution changes. The denylist is pinned in code and versioned with the
 `protocolVersion`, so both sides agree on it.
 
-This is also the secret-injection path for ambient credentials: cloud SDK calls
-(`cloudControlClientFactory`), CLIs invoked by the shell model, and anything
+This is also the secret-injection path for ambient credentials: cloud SDKs
+constructed by extension code, CLIs invoked by the shell model, and anything
 else that authenticates from the environment works on a worker exactly as it
 does on the orchestrator host. `env.*` runtime expressions are unaffected — they
 already resolve orchestrator-side at dispatch time, consistently with
@@ -634,11 +672,12 @@ orchestrator.
 
 Each dispatch spawns a **dispatch runner** — a child process of the same swamp
 binary (`swamp worker exec-dispatch`, a hidden subcommand). The environment
-snapshot is applied as the child's spawn environment via `overlayEnvironment`
-(no global mutation of `Deno.env`). W3C trace context headers are overlaid on
+snapshot is overlaid onto the worker's own environment to form the child's
+spawn environment via `overlayEnvironment` (no global mutation of `Deno.env`;
+`src/worker/dispatch_handler.ts`). W3C trace context headers are overlaid on
 top of the snapshot at spawn time. Worker control-plane credentials
 (`SWAMP_WORKER_TOKEN`, `SWAMP_SERVER_TOKEN`, `SWAMP_ORCHESTRATOR_URL`) are
-stripped from the spawn environment before the child is started — the runner
+stripped by `stripWorkerCredentials` before the child is started — the runner
 receives its data-plane credential via `RunnerBootstrapParams` over stdio and
 has no need for worker enrollment or server authentication tokens.
 
@@ -658,10 +697,13 @@ encodes the `dispatchId`; session refreshes on the control channel do not
 invalidate dispatch credentials. The data plane cross-checks
 `credential.dispatchId` against the authenticated dispatch to prevent spoofing.
 
-**Cancel propagation** is nested: the orchestrator's `CANCEL_GRACE_MS` (30 s)
-bounds the supervisor, which forwards `rpc.cancel` to the runner immediately
-and kills the child process after `RUNNER_CANCEL_GRACE_MS` (~10 s) if it does
-not respond. This leaves ~20 s for cleanup and the response frame.
+**Cancel propagation** is nested: the RPC channel's `CANCEL_GRACE_MS` (30 s,
+`src/domain/remote/rpc_channel.ts` — shared by the control socket and the
+stdio channel) bounds the supervisor, which forwards `rpc.cancel` to the runner
+immediately and kills the child process after `RUNNER_CANCEL_GRACE_MS` (~10 s)
+if it does not respond. This leaves ~20 s for cleanup and the response frame.
+(The identically named `CANCEL_GRACE_MS` in `src/cli/commands/serve.ts` is a
+different constant — 5 s — governing the serve run-cancel endpoint.)
 
 **Crash isolation**: a runner crash (non-zero exit or stdio channel close) fails
 only that dispatch — the worker stays enrolled and accepts the next dispatch.
@@ -673,9 +715,10 @@ path, plus crash isolation and clean environment handling.
 
 Phase 4b adds `--concurrency N` (or `"auto"` for CPU count) to `worker connect`.
 The worker advertises its capacity via `resourceLimits.capacity` at enrollment
-(protocol version 4). The scheduler picks the worker with the most free slots
-(least-loaded tiebreak, then name for determinism). The `DispatchRegistry`
-tracks N active dispatches per worker keyed by `(workerName, dispatchId)`.
+(protocol version 4). The scheduler picks the worker with the most free slots,
+then name for determinism (`scheduleStep` in `src/domain/remote/scheduler.ts`).
+The `DispatchRegistry` tracks N active dispatches per worker keyed by
+`(workerName, dispatchId)`.
 
 **Per-dispatch credentials**: each runner receives its own credential from
 `SessionCredentialService.issueForDispatch(workerId, dispatchId)`. This
@@ -763,9 +806,9 @@ does today.
 Two `DataWriter` modes need an explicit remote shape:
 
 - **`writeLine` (append)** promises per-line durability via `repo.append` — the
-  live-log contract. Remotely it maps to the `appendData` verb: each request (a
-  line or a small batch) is durable at the orchestrator once acknowledged, so a
-  worker crash loses at most the unacknowledged tail — same as today.
+  live-log contract. Remotely it maps to `POST /data/writers/{id}/line` on the
+  data plane: each request is durable at the orchestrator once acknowledged,
+  so a worker crash loses at most the unacknowledged tail — same as today.
 - **`getFilePath` (direct file I/O)** hands the method a real path, typically so
   a subprocess can write output straight to it. There is no orchestrator path on
   a worker, so remotely the path is a **worker-local spool file**; `finalize()`
@@ -857,9 +900,12 @@ single-host semantics and needs almost no new code:
   the orchestrator persists a worker's `POST` through that same writer, a worker
   can only write to specs its model declares — no new authorization layer
   required.
-- **Reads are unrestricted** — the status quo for `getData` / `queryData` on a
-  single host. Tightening reads to a lease-scoped subset is a later refinement, not
-  a v1 requirement.
+- **Reads are dispatch-scoped.** `getData` is refused for a model type
+  outside the active dispatch's scope (`#assertDispatchScope` in
+  `src/serve/capability_service.ts`); `queryData` caps predicate length and
+  post-filters results so a query that touches access-control or
+  infrastructure model data is rejected outright. `listVersions` is the one
+  verb with no scope assertion.
 
 ## Scheduling, fan-out, and provisioning
 
@@ -878,14 +924,18 @@ Dispatch matches a ready step against the pool:
    labels (`region=us-east`, `gpu`, a container/sandbox tag, etc.)? Isolation and
    environment requirements are expressed here, since there is no runtime axis.
 3. **Platform/arch** — does the worker satisfy any platform constraint?
-4. **Tiebreak** — least-loaded (or round-robin) among matching workers; queue
-   when all matching workers are busy.
+4. **Tiebreak** — most free slots, then worker name, among matching workers
+   (`src/domain/remote/scheduler.ts`; there is no round-robin); queue when all
+   matching workers are busy, up to `queueTimeout` (default
+   `DEFAULT_QUEUE_TIMEOUT_MS` = 600 s, `src/serve/dispatch_service.ts`).
 
 ### Disconnected-worker early warning
 
 When a step explicitly targets a worker by name and that worker is in the live
 pool but disconnected (within the grace window), the dispatch service emits a
-`step_target_disconnected` warning event before entering the queue loop. This
+`target_disconnected` event before entering the queue loop
+(`src/serve/dispatch_service.ts`), surfaced to run consumers as
+`step_target_disconnected` (`src/domain/models/method_execution_service.ts`). This
 is defense-in-depth — the primary prevention mechanism is `workers.connected()`
 (see [expressions.md](./expressions.md#workers-namespace)), which filters out
 disconnected workers at query time so fleet fan-out workflows never create
@@ -919,13 +969,16 @@ The dispatch service maintains the pins in an in-memory `affinityKey → worker`
 map, keyed by `runId` (workflow-level) or `runId:jobName` (job-level). Pins are
 released when the group completes.
 
-A step declares its requirements in workflow YAML with three placement fields —
-`target:` (worker name or `instanceUuid`), `labels:` (selector map), and
-`platform:`. These fields can be set at the **workflow**, **job**, or **step**
-level with inheritance: workflow-level placement applies to all steps as a
-default, job-level overrides workflow, and step-level overrides job. An explicit
-empty value (e.g., `labels: {}`) at any level clears the inherited value,
-causing the step to run locally. Omitting a field inherits from the parent.
+A step declares its requirements in workflow YAML with four placement fields
+(`PlacementFieldsSchema` in `src/domain/workflows/placement.ts`) — `target:`
+(worker name or `instanceUuid`), `labels:` (selector map), `platform:`, and
+`queueTimeout:` (seconds to wait for a matching worker). These fields can be
+set at the **workflow**, **job**, or **step** level with inheritance:
+workflow-level placement applies to all steps as a default, job-level
+overrides workflow, and step-level overrides job. An explicit `labels: {}`
+clears the inherited labels, and causes the step to run locally only when no
+`target` or `platform` remains in effect (`src/serve/dispatch_service.ts`).
+Omitting a field inherits from the parent.
 **`forEach` is the fan-out construct**: it already expands one step template
 into N parallel instances (`ForEachExpansionService`), so `forEach` over a list
 plus a label selector *is* "fan out across the fleet," with the existing
@@ -933,8 +986,9 @@ step-level `concurrency` field now capping in-flight dispatches rather than
 in-process method runs.
 
 v1 dispatch slots into the execution loop that exists: jobs and steps already
-run concurrently within each topological level (`mergeWithConcurrency` in
-`execution_service.ts`), so a dispatching step executor that awaits a worker
+run concurrently within each topological level (`mergeWithConcurrency` from
+`src/infrastructure/stream/merge.ts`, used by
+`src/domain/workflows/execution_service.ts`), so a dispatching step executor that awaits a worker
 instead of running in-process fans out naturally — N ready steps in a level
 become N concurrent dispatches, queuing (not failing) when no matching worker is
 free. The known consequence: fan-out breadth at any moment is bounded by the
@@ -977,8 +1031,10 @@ Liveness is the **control socket**; a data-plane HTTP/2 request that fails is
 per-request — a failed read is simply retried (reads are idempotent), and a failed
 write is the ambiguity case below. When the control socket drops with a step in
 flight, the orchestrator holds the step lease through a **reconnection grace
-window** (bounded by the token lifetime) before giving up — so reconnection and
-re-dispatch never race into double execution:
+window** (`DEFAULT_GRACE_WINDOW_MS` = 60 s, `src/serve/worker_gateway.ts`;
+token expiry is enforced by a separate timer that disconnects the worker when
+its token lifetime elapses) before giving up — so reconnection and re-dispatch
+never race into double execution:
 
 - **Worker reconnects within the window** (same `{token, machineId}`): it
   stays in the pool — same member, fresh session credential. As built, an
@@ -1001,9 +1057,10 @@ Write-bearing status is determined by **two complementary mechanisms**:
 
 - **Runtime inference (default):** The `DispatchService` tracks whether a
   dispatch performed any durable data-plane write via `recordFirstWrite`. This
-  is automatic and requires no workflow author action — any `writeResource` or
-  `createFileWriter` call through the orchestrator marks the dispatch as
-  write-bearing.
+  is automatic and requires no workflow author action — the data plane marks
+  the dispatch on `POST /data/resource` and on a file writer's `line`,
+  `content`, and `finalize` requests (`src/serve/data_plane.ts`). Merely
+  opening a writer (`POST /data/writers`) does not mark it.
 
 - **Declared at the step level (`writes: true`):** A step, job, or workflow may
   declare `writes: true` in the workflow YAML. When set, the dispatch is
@@ -1026,15 +1083,18 @@ When the control socket closes before enrollment completes (e.g. HTTP 401/403
 from token auth, or a network-level rejection), the worker treats it as a
 connection error and applies two guards:
 
-- **Permanent failure detection.** If the error message matches a known
-  permanent pattern (token revoked/expired/not-found, protocol mismatch,
-  enrollment allowance exhausted), the worker stops immediately with a clear
-  error. These conditions cannot be fixed by retrying.
+- **Permanent failure detection.** If the error message matches one of the
+  seven permanent patterns in `isPermanentEnrollmentFailure`
+  (`src/worker/connect.ts`: `revoked`, `expired`, `does not match`,
+  `already bound`, `protocol version`, `does not exist`,
+  `allowance exhausted`), the worker stops immediately with a clear error.
+  These conditions cannot be fixed by retrying.
 
 - **Consecutive failure cap.** If the error does not match a known pattern, the
-  worker retries up to 3 times. After 3 consecutive pre-enrollment failures, it
-  stops. The counter resets when enrollment succeeds, so transient blips during
-  an established session do not accumulate.
+  worker counts the failure and throws on the third consecutive one
+  (`MAX_PRE_ENROLL_FAILURES`). The counter resets whenever a `connectOnce`
+  attempt returns normally (i.e. after an enrolled session ends), so transient
+  blips during an established session do not accumulate.
 
 Post-enrollment socket drops (the worker was enrolled and executing dispatches)
 continue to use exponential backoff and reconnect normally — a brief network
@@ -1073,6 +1133,10 @@ provisioning credentials and extensions onto workers:
      `SecretRedactor` on the `ActiveDispatch` registration. When the data plane
      persists a worker's `writeResource` call, it passes this redactor to
      `createResourceWriter`, catching any value the worker-side redactor missed.
+     **Known limit:** the file-writer path (`POST /data/writers` and its
+     `line`/`content` requests) does not receive the redactor
+     (`#openWriter` in `src/serve/data_plane.ts`); file outputs rely on the
+     worker-side layer alone.
 
   Both layers use the same `SecretRedactor` class and the same
   `extractSensitiveFieldValues` utility that local execution has always used;
@@ -1085,9 +1149,11 @@ provisioning credentials and extensions onto workers:
   contains *accidental* token reuse (pasting one token onto a second box),
   not an attacker who holds the plaintext. That is acceptable because the pair
   rides the authenticated, encrypted `wss://` channel and the only ways to
-  capture it are to MITM the TLS (mitigated by pinning the orchestrator
-  certificate) or to compromise the worker host (which already grants code
-  execution there, so no additional ground is lost). The **session credential**
+  capture it are to MITM the TLS or to compromise the worker host (which
+  already grants code execution there, so no additional ground is lost). The
+  TLS side is standard trust-anchor verification: `--ca-cert` /
+  `SWAMP_CA_CERT` adds a PEM CA to trust (`src/cli/commands/worker_connect.ts`);
+  certificate **pinning is not implemented**. The **session credential**
   for the data plane is short-lived and lease-scoped. Lifetimes should be
   short — a token leaked *before* enrollment is the real exposure, since an
   attacker could enroll first. Expiry is enforced actively: the orchestrator
@@ -1096,8 +1162,9 @@ provisioning credentials and extensions onto workers:
 
 - Conversely, a worker tricked into connecting to the wrong URL hands code
   execution on its host to whoever owns that URL — the same trust model as a
-  self-hosted CI runner. The worker should pin the orchestrator's certificate;
-  both channels are authenticated and encrypted.
+  self-hosted CI runner. Both channels are authenticated and encrypted under
+  `wss://`; operators who need a stronger binding than CA trust should front
+  the orchestrator with a private CA supplied via `--ca-cert`.
 
 ## What is reused vs. new
 
@@ -1105,23 +1172,23 @@ provisioning credentials and extensions onto workers:
 | -------------------------------- | --------------------------------------------------------------------------------------- |
 | Control protocol + multiplexing  | **Reuse** `src/serve/protocol.ts`, `connection.ts`, `serializer.ts`                     |
 | Serializable execution envelope  | **Reuse** `ExecutionRequest` / `ExecutionResult` (serialize `followUpActions`; the envelope never carried driver fields) |
-| Extension bundle + fingerprint   | **Reuse** `bundleSourceFactory` + inline `sha256Hex` fingerprint; fetched over h2 on miss; report bundles + co-located assets ship the same way |
-| Checks and reports pipeline      | **Reuse** — run on the executor unchanged, over the proxied context                      |
+| Extension bundle + fingerprint   | **Reuse** `bundleSourceFactory` + inline `sha256Hex` fingerprint; fetched over h2 on miss; co-located assets ship the same way (report bundles do not ship — `reportBundleFingerprints` is always `[]`, `src/serve/dispatch_service.ts`) |
+| Checks and reports pipeline      | **Reuse** at the orchestrator — checks are skipped for remote steps; reports run after the execution seam |
 | Pure injectable operations       | **Reuse** libswamp `*Deps` + `MethodContext` injection seam                             |
 | Worker/token/lease persistence   | **Reuse** the datastore + catalog — built-in models, not a private registry             |
 | Out-of-process secret resolution | **Reuse** the resolve-before-dispatch pattern                                           |
-| Run-event serialization          | **Reuse** `serializeEvent()`                                                            |
+| Run-event serialization          | **Reuse** `serializeEvent()`; worker → orchestrator events ride `rpc.stream` frames      |
 | Driver abstraction               | **Remove** `ExecutionDriver`, raw/docker/custom drivers, registry, `driver:` fields      |
 | Role split (server ≠ executor)   | **New** — move request-dispatch handling to the dial-out side; two handler registries   |
 | Enrollment handshake             | **New** — token redemption, machine binding, label exchange, session-credential issue    |
 | Built-in worker-management models| **New** — `worker`, `enrollment-token`, `step-lease`; `swamp worker token` + mint model   |
 | Remote `MethodContext` adapters  | **New** — proxy implementations of the repository/vault/data-writer ports               |
-| Capability protocol verbs        | **New** — the 14-verb reverse channel split across ws (metadata) and h2 (bytes)         |
+| Capability protocol verbs        | **New** — nine `capability.*` verbs over ws (metadata) plus the h2 data-plane routes (bytes) |
 | Environment shipping             | **New** — per-dispatch orchestrator env snapshot, worker-memory only                     |
-| Spool + append write modes       | **New** — worker-local spool for `getFilePath`; `appendData` verb for `writeLine`       |
+| Spool + append write modes       | **New** — worker-local spool for `getFilePath`; `POST /data/writers/{id}/line` for `writeLine` |
 | HTTP/2 data plane + auth          | **New** — worker-initiated bulk transfer; bearer-token auth, existing spec-write enforcement |
 | Label scheduler + direct target  | **New** — data-backed pool registry, label/platform matching, target-by-name/uuid; step-level `target:`/`labels:`/`platform:` YAML fields |
-| Lease + reconnection + failure   | **New** — grace window, in-flight read resume, write-then-fail                           |
+| Lease + reconnection + failure   | **New** — grace window, full re-dispatch of no-write steps after a drop, write-then-fail |
 | `swamp worker connect` command   | **New** — the dial-home CLI entry                                                        |
 
 ## v1 scope and non-goals
@@ -1137,25 +1204,26 @@ In scope:
 - Each dispatch runs in a child process (dispatch runner) for crash isolation
   and clean environment handling; extension code fetched over the data plane on
   a cache miss and loaded in the runner process.
-- Remote `MethodContext` with the full 14-verb capability protocol proxied home,
-  including the spool-on-finalize `getFilePath` and per-request-durable
-  `appendData` write modes; checks and reports run on the executor.
+- Remote `MethodContext` with the nine-verb capability protocol plus data-plane
+  routes proxied home, including the spool-on-finalize `getFilePath` and
+  per-request-durable line-append write modes; checks skipped for remote
+  steps and reports run at the orchestrator.
 - Per-dispatch environment shipping: the orchestrator's full env snapshot,
   worker-memory only, applied to the method and its subprocesses.
 - A WebSocket control plane plus a worker-initiated HTTP/2 data plane for bulk
   transfer — native multiplexing/flow control, no hand-rolled framing.
 - Worker/token/lease state persisted as swamp data by built-in models and
-  queryable, with declared retention (`garbageCollection`/`lifetime`) and
-  periodic orchestrator-run GC; token/lease transitions serialized in the
-  orchestrator process.
+  queryable, with declared retention (`garbageCollection`/`lifetime`);
+  token/lease transitions serialized in the orchestrator process.
 - Versioned-handle read caching on the worker.
 - Label + platform scheduling, plus direct targeting by worker name/uuid, over an
   orchestrator-owned, data-backed pool; step-level `target:`/`labels:`/
   `platform:` fields, with `forEach` as the fan-out construct and dispatch
   slotted into the existing level-parallel execution loop.
 - Reconnection grace window; fail-the-run-on-write-then-drop failure semantics.
-- Host launching as swamp workflows (mint model → vault → launch model → dial
-  home), bootstrapped on the loopback executor.
+- The mint model and dial-home contract that let host launching be authored
+  as a swamp workflow (mint model → vault → launch model → dial home),
+  bootstrapped on the loopback executor.
 
 Explicit non-goals for v1:
 
@@ -1189,6 +1257,19 @@ Explicit non-goals for v1:
 - **Whole-environment dispatch.** Every dispatched step receives the full
   orchestrator environment snapshot; per-token or per-label env scoping is a
   later refinement.
+- **No periodic bookkeeping GC.** Worker, token, lease, and pending-dispatch
+  records accumulate until an operator runs `swamp data gc`; only the boot
+  sweep is automatic.
+- **No in-flight resume.** A dispatch that loses its control socket is
+  re-dispatched from scratch when no write had landed
+  (`src/serve/dispatch_service.ts`); partial progress on the worker is
+  discarded.
+- **No certificate pinning.** Worker TLS trust is CA-based (`--ca-cert`).
+- **Report bundles do not ship.** Reports run at the orchestrator only.
+- **`continueCondition` is dropped for remote steps** (see
+  [The capability protocol](#the-capability-protocol)).
+- **HTTP/2 is whatever Deno negotiates.** The listener passes no
+  `alpnProtocols`; h2 on the data plane rests on Deno's TLS defaults.
 
 ## Hot-Reload for Pulled Extension Bundles
 
@@ -1211,36 +1292,47 @@ nginx pattern.
 
 Both the SIGHUP signal handler and the `serve.reload` WebSocket handler call the
 same shared `performServeReload()` function in `src/serve/extension_reload.ts`.
-A module-level reloading guard prevents concurrent reloads from either trigger.
+A module-level reloading guard (`isReloading()`) rejects a concurrent reload
+from either trigger; `serve.reload` on a server started without
+`--hot-reload` is refused with `hot_reload_disabled`
+(`src/serve/handlers/admin_handlers.ts`). Besides extension types, a reload
+also re-reads the `.swamp/serve.yaml` trigger overrides and refreshes the
+extension trust list.
 
-`reloadPulledExtensions()` performs a READ-ONLY scan:
+`reloadPulledExtensions()`:
 
-1. Opens a fresh `ExtensionCatalogStore` (reads `_extension_catalog.db`)
-2. Reads the lockfile via `LockfileRepository` for extension names/versions
-3. Queries `catalog.findBySourcePathPrefix(sourcePrefix)` for type rows
-4. For each type across all four kinds (model, vault, datastore, report):
+1. Increments the module-level `reloadGeneration` counter
+2. Opens a fresh `ExtensionCatalogStore` (reads `_extension_catalog.db`)
+3. Reads the lockfile via `LockfileRepository` for extension names/versions
+4. Queries `catalog.findBySourcePathPrefix(sourcePrefix)` for type rows
+5. Re-bundles any source whose fingerprint changed, writing the new bundle
+   file and recording the fingerprint with `catalog.updateSourceFingerprint()`
+6. For each type across all four kinds (model, vault, datastore, report):
    - `invalidateType()` — removes from the registry's loaded and lazy maps
    - `registerLazy()` — re-adds with updated `source_fingerprint`
    - `ensureTypeLoaded()` — triggers `loadSingleType()` →
-     `importBundleByPath()` with `import(url?fp=newFingerprint)` for V8 module
-     cache busting
+     `importBundleByPath()`, which imports
+     `bundle?fp=<fingerprint>&gen=<reloadGeneration>` so V8's module cache
+     is bypassed even when the fingerprint is unchanged
+     (`src/domain/extensions/extension_loader.ts`)
 
 ### Catalog Safety Constraint
 
 The reload path never calls `ExtensionCatalogStore.invalidate()`,
-`ExtensionLoader.buildIndex()`, `resetLoadedFlag()`, or `ensureLoaded()`. Only
-the per-type path (`loadSingleType` and its sub-calls) is permitted. The one
-catalog write is `catalog.updateSourceFingerprint()`, called after a successful
-re-bundle to record the new fingerprint so subsequent reloads skip unchanged
-sources.
+`ExtensionLoader.buildIndex()`, or `ensureLoaded()`. Only the per-type path
+(`loadSingleType` and its sub-calls) is permitted. Its writes are the
+re-bundled bundle file and `catalog.updateSourceFingerprint()`, so subsequent
+reloads skip unchanged sources.
 
 ### Concurrency
 
 During the reload window, a type is momentarily in `lazyTypes` (not yet
-imported). All serve execution paths resolve types through
-`resolveModelType()`/`resolveVaultType()`/`resolveDatastoreType()`, which call
-`ensureTypeLoaded()` before `get()`. Concurrent callers share the same load
-promise via `typeLoadPromises` and wait rather than failing.
+imported). Serve execution paths resolve types through
+`resolveModelType()`/`resolveVaultType()`/`resolveDatastoreType()` or call
+`ensureTypeLoaded()` directly (e.g. `src/cli/repo_context.ts`,
+`src/cli/resolve_datastore.ts`, the datastore health check in
+`src/cli/commands/serve.ts`) before `get()`. Concurrent callers share the same
+load promise via `typeLoadPromises` and wait rather than failing.
 
 ### Known Limitations
 
@@ -1248,7 +1340,7 @@ promise via `typeLoadPromises` and wait rather than failing.
   extensions are reloaded. Cost is proportional to pulled extension count.
 - **Windows**: SIGHUP is not available. `--hot-reload` fails with a clear
   message on Windows.
-- **V8 module cache**: Cache busting uses `?fp=` query parameters with
-  `source_fingerprint`. If extension content changes at the same file path
-  without a fingerprint change (rare), stale modules may be served.
+- **V8 module cache**: Cache busting uses `?fp=<source_fingerprint>&gen=<reloadGeneration>`
+  query parameters; the generation counter guarantees a fresh import on every
+  reload even when the fingerprint is unchanged.
 

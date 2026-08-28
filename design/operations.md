@@ -1,6 +1,6 @@
 ---
 audience: maintainer
-last-verified: 2026-08-28 @ 4bde205b
+last-verified: 2026-08-28 @ 3d5955a9
 ---
 
 # Operations
@@ -22,7 +22,8 @@ it an `enables:` header.
   autoupdate (launchd / systemd / cron). `src/domain/update/`,
   `src/infrastructure/update/`.
 - **Issues** — `swamp issue` files redacted bug reports to the swamp-club Lab
-  and to GitHub via `gh`. `src/domain/issues/`, `src/libswamp/issues/`.
+  and to GitHub via `gh`. `src/domain/issues/`, `src/libswamp/issues/`,
+  `src/infrastructure/github/` (the `gh` call).
 - **Quest / Genesis Pass** — a read model of the user's swamp-club progression
   ladder shown by `swamp quest`. `src/domain/quest/genesis_pass.ts`.
 - **Summarise** — cross-context activity summary for `swamp summarise`.

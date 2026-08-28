@@ -1,31 +1,29 @@
+---
+audience: maintainer
+last-verified: 2026-08-28 @ 3d5955a9
+---
+
 # libswamp: Decoupling Presentation from Domain Logic
 
-## Problem
+## Why
 
-Swamp's domain logic is currently invoked directly by CLI command handlers.
-While the existing separation between domain, infrastructure, and presentation
-layers is clean, the CLI is the only entry point — there is no reusable library
-layer that other interfaces (web UI, networked API, embedded usage) can call
-into.
+`src/libswamp/` is the orchestration layer that sits between the delivery
+mechanisms (`src/cli/`, `src/serve/`) and the domain. It exists so that domain
+orchestration (models, workflows, data, auth, vaults) is written once and
+consumed by any presentation layer without duplicating command-handler logic
+or reaching into CLI internals. It does this by:
 
-Adding a new presentation layer today requires either duplicating the
-orchestration logic in each command handler, or importing and calling CLI
-internals in ways they weren't designed for.
-
-## Goal
-
-Extract a **libswamp** library that:
-
-1. Encapsulates all domain orchestration (models, workflows, data, auth, vaults)
-2. Communicates progress and results through a uniform `AsyncIterable` event
+1. Communicating progress and results through a uniform `AsyncIterable` event
    stream
-3. Enforces exhaustive event handling at compile time
-4. Enables new presentation layers (CLI, web UI, networked API) without
-   modifying libswamp itself
-5. Provides a `Context` object for cancellation, timeouts, and future
+2. Enforcing exhaustive event handling at compile time
+3. Providing a `LibSwampContext` for cancellation, timeouts, and future
    cross-cutting concerns
-6. Handles concurrent operations (parallel jobs, parallel steps) by merging
-   event streams into a single flat output
+4. Merging concurrent operations (parallel jobs, parallel steps) into a single
+   flat event stream
+
+**Status:** implemented. The CLI and `swamp serve` both consume libswamp; the
+remaining layer-boundary debt is pinned by `integration/ddd_layer_rules_test.ts`
+(see [Dependency direction](#dependency-direction)).
 
 ## Design: AsyncIterable Event Streams
 
@@ -59,8 +57,8 @@ caller pulls events at its own pace and renders them however it chooses.
   and TypeScript. No external event emitter libraries needed.
 - **Composable.** Streams can be mapped, filtered, merged, and piped using
   standard async iteration utilities.
-- **Incrementally adoptable.** Each command can be migrated independently — old
-  and new patterns can coexist during the transition.
+- **Incrementally adoptable.** Each operation is an independent generator, so
+  new operations are added without touching existing ones.
 
 ### Why uniform AsyncIterable (not Promise for simple operations)
 
@@ -81,44 +79,21 @@ future cross-cutting concerns (tracing, tenant scoping) are handled uniformly
 without changing operation signatures.
 
 ```typescript
-// libswamp/context.ts
+// src/libswamp/context.ts
 interface LibSwampContext {
-  /** Cancellation signal. Abort to cancel the operation and all its children. */
-  readonly signal: AbortSignal;
-
-  /** Scoped logger for this operation. */
-  readonly logger: Logger;
-
-  /** Create a child context that cancels after the given duration. */
-  withTimeout(ms: number): LibSwampContext;
-
-  /** Create a child context that cancels when either this context or the given signal aborts. */
-  withSignal(signal: AbortSignal): LibSwampContext;
+  readonly signal: AbortSignal; // abort to cancel the operation and its children
+  readonly logger: Logger; // scoped logger for this operation
+  withTimeout(ms: number): LibSwampContext; // child that cancels after ms
+  withSignal(signal: AbortSignal): LibSwampContext; // child that cancels on either
 }
 
 function createLibSwampContext(
   options?: { signal?: AbortSignal; logger?: Logger },
-): LibSwampContext {
-  const signal = options?.signal ?? new AbortController().signal;
-  const logger = options?.logger ?? getSwampLogger(["libswamp"]);
-  return {
-    signal,
-    logger,
-    withTimeout(ms: number): LibSwampContext {
-      return createLibSwampContext({
-        signal: AbortSignal.any([signal, AbortSignal.timeout(ms)]),
-        logger,
-      });
-    },
-    withSignal(other: AbortSignal): LibSwampContext {
-      return createLibSwampContext({
-        signal: AbortSignal.any([signal, other]),
-        logger,
-      });
-    },
-  };
-}
+): LibSwampContext;
 ```
+
+Child contexts combine signals with `AbortSignal.any`; see the file for the
+implementation.
 
 #### Why Context, not a bare AbortSignal parameter
 
@@ -153,135 +128,33 @@ When a context's signal is aborted:
 Every operation defines its own event union with a `kind` discriminant:
 
 ```typescript
-// libswamp/auth/whoami.ts
+// src/libswamp/auth/whoami.ts
 type AuthWhoamiEvent =
   | { kind: "loading_credentials" }
   | { kind: "contacting_server"; serverUrl: string }
   | { kind: "completed"; identity: WhoamiIdentity }
   | { kind: "error"; error: SwampError };
-
-interface WhoamiIdentity {
-  serverUrl: string;
-  id: string;
-  username: string;
-  email: string;
-  name: string;
-  collectives?: string[];
-}
 ```
 
-```typescript
-// libswamp/workflows/run.ts — 24 variants
-type WorkflowRunEvent =
-  | { kind: "validating_inputs" }
-  | { kind: "evaluating_workflow" }
-  | {
-    kind: "started";
-    runId: string;
-    workflowName: string;
-    jobs: WorkflowRunJobInfo[];
-  }
-  | { kind: "job_started"; jobId: string }
-  | { kind: "job_completed"; jobId: string; status: string }
-  | { kind: "job_skipped"; jobId: string }
-  | { kind: "step_started"; jobId: string; stepId: string }
-  | { kind: "step_completed"; jobId: string; stepId: string; executor?: string }
-  | { kind: "step_skipped"; jobId: string; stepId: string }
-  | {
-    kind: "approval_requested";
-    runId: string;
-    jobId: string;
-    stepId: string;
-    prompt: string;
-    timeout?: number;
-  }
-  | {
-    kind: "step_failed";
-    jobId: string;
-    stepId: string;
-    error: string;
-    allowedFailure?: boolean;
-    modelName?: string;
-    methodName?: string;
-  }
-  | {
-    kind: "model_resolved";
-    jobId: string;
-    stepId: string;
-    modelName: string;
-    modelType: string;
-    modelId: string;
-    methodName: string;
-  }
-  | {
-    kind: "env_var_warning";
-    jobId: string;
-    stepId: string;
-    modelName: string;
-    envVars: EnvVarUsageDetail[];
-    message: string;
-  }
-  | {
-    kind: "method_executing";
-    jobId: string;
-    stepId: string;
-    modelName: string;
-    methodName: string;
-  }
-  | {
-    kind: "method_output";
-    jobId: string;
-    stepId: string;
-    modelName: string;
-    methodName: string;
-    stream: "stdout" | "stderr";
-    line: string;
-  }
-  | { kind: "step_queued"; jobId: string; stepId: string; requirement: string }
-  | {
-    kind: "method_event";
-    jobId: string;
-    stepId: string;
-    modelName: string;
-    methodName: string;
-    event: MethodExecutionEvent;
-  }
-  | {
-    kind: "report_started";
-    reportName: string;
-    scope: string;
-    jobId?: string;
-    stepId?: string;
-  }
-  | {
-    kind: "report_completed";
-    reportName: string;
-    scope: string;
-    markdown: string;
-    json: Record<string, unknown>;
-    jobId?: string;
-    stepId?: string;
-  }
-  | {
-    kind: "report_failed";
-    reportName: string;
-    scope: string;
-    error: string;
-    jobId?: string;
-    stepId?: string;
-  }
-  | { kind: "completed"; run: WorkflowRunView }
-  | { kind: "cancelled"; run: WorkflowRunView; reason?: string }
-  | {
-    kind: "suspended";
-    run: WorkflowRunView;
-    jobId: string;
-    stepId: string;
-    prompt: string;
-    timeout?: number;
-  }
-  | { kind: "error"; error: SwampError };
-```
+`WhoamiIdentity` (same file) carries `serverUrl`, `id`, `username`, `email`,
+`name`, and a set of optional server-supplied fields (`collectives`, `plan`,
+`collectiveEntitlements`, token scope info). Every field beyond the core five
+is optional so one CLI can talk to several server versions.
+
+`WorkflowRunEvent` (`src/libswamp/workflows/run.ts`) is the largest union —
+27 kinds at the time of writing:
+
+`validating_inputs`, `evaluating_workflow`, `started`, `superseded_runs`,
+`job_started`, `job_completed`, `job_skipped`, `step_started`,
+`step_completed`, `step_skipped`, `step_queued`, `step_failed`,
+`step_target_disconnected`, `approval_requested`, `model_resolved`,
+`env_var_warning`, `method_executing`, `method_output`, `method_event`,
+`assert_result`, `report_started`, `report_completed`, `report_failed`,
+`completed`, `cancelled`, `suspended`, `error`.
+
+Read the file for each variant's payload; this document deliberately does not
+copy the union because it changes often and every adapter is
+exhaustiveness-checked against the real type anyway.
 
 Events from parallel jobs interleave on the single stream. Each event carries
 `jobId` (and `stepId` where applicable) so consumers can demultiplex. See
@@ -453,85 +326,25 @@ workflow generator ── merge() ◄─────┤                 │─�
 arrival order:
 
 ```typescript
-// infrastructure/stream/merge.ts (re-exported from libswamp/stream/merge.ts)
+// src/infrastructure/stream/merge.ts (re-exported from src/libswamp/stream/merge.ts)
 async function* merge<T>(
   streams: AsyncIterable<T>[],
   signal?: AbortSignal,
-): AsyncGenerator<T> {
-  if (streams.length === 0) return;
-  if (streams.length === 1) {
-    yield* streams[0];
-    return;
-  }
+): AsyncGenerator<T>;
 
-  const queue = new AsyncQueue<T>();
-  let remaining = streams.length;
-
-  // ... each stream pushes to queue, last one closes it
-  // signal support allows early abort
-
-  for await (const event of queue) {
-    yield event;
-  }
-}
+// Same file — bounded fan-out for callers that must cap parallelism.
+async function* mergeWithConcurrency<T>(...): AsyncGenerator<T>;
 ```
 
-`AsyncQueue` is an internal async-iterable queue in
-`infrastructure/stream/async_queue.ts` that supports `push()`, `close()`,
-`abort()`, and `for await` consumption. It bridges the gap between multiple
-concurrent push-based producers and a single pull-based consumer. It uses
-`IteratorResult<T>` signaling internally to distinguish values from
+Each input stream pushes into a shared `AsyncQueue`; the last stream to finish
+closes it, and `signal` allows early abort.
+
+`AsyncQueue` (`src/infrastructure/stream/async_queue.ts`, re-exported from
+`src/libswamp/stream/async_queue.ts`) is an async-iterable queue with
+`push()`, `close()`, `abort()`, and `for await` consumption. It bridges
+multiple concurrent push-based producers and a single pull-based consumer,
+using `IteratorResult<T>` signalling internally to distinguish values from
 end-of-stream.
-
-```typescript
-// infrastructure/stream/async_queue.ts
-class AsyncQueue<T> implements AsyncIterable<T> {
-  private buffer: T[] = [];
-  private closed = false;
-  private waiting: ((value: IteratorResult<T>) => void) | null = null;
-
-  push(item: T): void {
-    if (this.closed) throw new Error("Cannot push to a closed AsyncQueue");
-    if (this.waiting) {
-      const resolve = this.waiting;
-      this.waiting = null;
-      resolve({ value: item, done: false });
-    } else {
-      this.buffer.push(item);
-    }
-  }
-
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    if (this.waiting) {
-      const resolve = this.waiting;
-      this.waiting = null;
-      resolve({ value: undefined as unknown as T, done: true });
-    }
-  }
-
-  abort(_reason?: unknown): void {
-    this.close();
-  }
-
-  async *[Symbol.asyncIterator](): AsyncIterator<T> {
-    while (true) {
-      if (this.buffer.length > 0) {
-        yield this.buffer.shift()!;
-      } else if (this.closed) {
-        return;
-      } else {
-        const result = await new Promise<IteratorResult<T>>((resolve) => {
-          this.waiting = resolve;
-        });
-        if (result.done) return;
-        yield result.value;
-      }
-    }
-  }
-}
-```
 
 ### merge is a general-purpose composable
 
@@ -570,25 +383,22 @@ Consumers use the same `consumeStream` / `EventHandlers` pattern. The `jobId`
 field routes events to the right place:
 
 ```typescript
-// CLI adapter — prefix each line with the job name
+// Sketch — a real adapter must handle every kind in WorkflowRunEvent.
 await consumeStream(workflowRun(ctx, deps, input), {
-  validating_inputs: () => {},
-  evaluating_workflow: () => {},
   started: (e) => console.log(`Workflow ${e.workflowName} started`),
   job_started: (e) => console.log(`  [${e.jobId}] started`),
-  job_completed: (e) => console.log(`  [${e.jobId}] ${e.status}`),
-  job_skipped: (e) => console.log(`  [${e.jobId}] skipped`),
-  step_started: (e) => console.log(`  [${e.jobId}] ${e.stepId} started`),
   step_completed: (e) => console.log(`  [${e.jobId}] ${e.stepId} completed`),
-  step_skipped: (e) => console.log(`  [${e.jobId}] ${e.stepId} skipped`),
-  step_failed: (e) =>
-    console.log(`  [${e.jobId}] ${e.stepId} FAILED: ${e.error}`),
   completed: (e) => console.log(`Done: ${e.run.status}`),
   error: (e) => {
     throw new UserError(e.error.message);
   },
+  // ...remaining kinds
 });
 ```
+
+The production CLI adapter is `ConsoleWorkflowRunRenderer` in
+`src/presentation/renderers/workflow_run.ts`; see
+[rendering.md](./rendering.md).
 
 ### Cancellation with parallel streams
 
@@ -668,245 +478,77 @@ async function* workflowRun(
 Everything external consumers need is exported from `libswamp/mod.ts`:
 
 ```typescript
-// Core types
+// src/libswamp/mod.ts (excerpt — the file is ~1600 lines of re-exports)
 export { createLibSwampContext, type LibSwampContext } from "./context.ts";
-export { type SwampError, cancelled, invalidApiKey, notAuthenticated } from "./errors.ts";
 export { consumeStream, type EventHandlers, type HasTerminals, result, type StreamEvent, withDefaults } from "./stream.ts";
 export { AsyncQueue } from "./stream/async_queue.ts";
 export { merge } from "./stream/merge.ts";
 export { assertCompletes, assertErrors, collect } from "./testing.ts";
-
-// Auth operations
-export { createAuthDeps, type AuthDeps, type AuthWhoamiEvent, whoami, type WhoamiCollectiveEntitlement, type WhoamiIdentity } from "./auth/whoami.ts";
-export type { WhoamiTrial } from "../infrastructure/http/swamp_club_client.ts";
-
-// Workflow operations
-export { workflowRun, type WorkflowRunDeps, type WorkflowRunEvent, type WorkflowRunInput, ... } from "./workflows/run.ts";
-export { type WorkflowRunView, type JobRunView, type StepRunView, ... } from "./workflows/workflow_run_view.ts";
+// ...plus, per domain area: the operation generator, its Deps/Input/Event
+// types, and the createXxxDeps() factory (e.g. whoami / createAuthDeps,
+// workflowRun / WorkflowRunEvent / WorkflowRunView).
 ```
 
 External consumers (CLI commands, presentation renderers) import exclusively
-from `libswamp/mod.ts` — never from internal module paths.
+from `libswamp/mod.ts` — never from internal module paths. This is enforced
+by the "libswamp encapsulation" rule in `integration/ddd_layer_rules_test.ts`.
 
 ## Example: `swamp auth whoami` with libswamp
 
 ### libswamp defines the operation and its events
 
 ```typescript
-// libswamp/auth/whoami.ts
-type AuthWhoamiEvent =
-  | { kind: "loading_credentials" }
-  | { kind: "contacting_server"; serverUrl: string }
-  | { kind: "completed"; identity: WhoamiIdentity }
-  | { kind: "error"; error: SwampError };
-
-interface AuthDeps {
+// src/libswamp/auth/whoami.ts
+export interface AuthDeps {
   loadCredentials: () => Promise<AuthCredentials | null>;
   saveCredentials: (credentials: AuthCredentials) => Promise<void>;
-  fetchWhoami: (
-    serverUrl: string,
-    apiKey: string,
-    signal: AbortSignal,
-  ) => Promise<WhoamiResponse>;
+  fetchWhoami: (serverUrl: string, apiKey: string, signal: AbortSignal) => Promise<WhoamiResponse>;
   serverUrlOverride?: string;
 }
 
-interface CreateAuthDepsOptions {
-  serverUrlOverride?: string;
-  repo?: AuthRepositoryOptions;
-  identity?: ClientIdentity;
-}
+export function createAuthDeps(options: CreateAuthDepsOptions = {}): AuthDeps;
 
-function createAuthDeps(options: CreateAuthDepsOptions = {}): AuthDeps {
-  const repo = new AuthRepository(options.repo);
-  return {
-    loadCredentials: () => repo.load(),
-    saveCredentials: (credentials) => repo.save(credentials),
-    fetchWhoami: (serverUrl, apiKey, signal) => {
-      const client = new SwampClubClient(serverUrl);
-      return client.whoami(apiKey, signal);
-    },
-    serverUrlOverride: options?.serverUrlOverride,
-  };
-}
-
-async function* whoami(
+export async function* whoami(
   ctx: LibSwampContext,
   deps: AuthDeps,
-): AsyncIterable<AuthWhoamiEvent> {
-  yield { kind: "loading_credentials" };
-
-  const credentials = await deps.loadCredentials();
-  if (!credentials) {
-    yield { kind: "error", error: notAuthenticated() };
-    return;
-  }
-
-  const serverUrl = deps.serverUrlOverride ?? credentials.serverUrl;
-  yield { kind: "contacting_server", serverUrl };
-
-  try {
-    const response = await deps.fetchWhoami(
-      serverUrl,
-      credentials.apiKey,
-      ctx.signal,
-    );
-
-    if (!response.authenticated) {
-      yield { kind: "error", error: invalidApiKey() };
-      return;
-    }
-
-    const collectives = getCollectives(response);
-    yield {
-      kind: "completed",
-      identity: {
-        serverUrl,
-        id: response.id!,
-        username: response.username!,
-        email: response.email!,
-        name: response.name!,
-        ...(collectives ? { collectives } : {}),
-      },
-    };
-  } catch (error: unknown) {
-    if (error instanceof DOMException && error.name === "AbortError") {
-      yield { kind: "error", error: cancelled(error) };
-      return;
-    }
-    throw error;
-  }
-}
+): AsyncIterable<AuthWhoamiEvent>;
 ```
 
-### CLI adapter consumes events with exhaustive handlers
+The generator yields `loading_credentials`, then either `error`
+(`notAuthenticated()`) or `contacting_server`; it passes `ctx.signal` to
+`fetchWhoami`, maps an `AbortError` to `error` (`cancelled()`), an
+unauthenticated response to `error` (`invalidApiKey()`), and otherwise yields
+`completed` with the identity. Read the file for the full body.
+
+### CLI adapter consumes events through a renderer
+
+`src/cli/commands/auth_whoami.ts` contains zero domain logic. It creates a
+`LibSwampContext` with the CLI's logger, wires deps with `createAuthDeps`, and
+hands the stream to a mode-specific renderer:
 
 ```typescript
-// src/cli/commands/auth_whoami.ts
-import {
-  type AuthWhoamiEvent,
-  consumeStream,
-  createAuthDeps,
-  createLibSwampContext,
-  whoami,
-} from "../../libswamp/mod.ts";
-
-export const authWhoamiCommand = new Command()
-  .name("whoami")
-  .description("Show current authenticated identity")
-  .action(async function (options: AnyOptions) {
-    const cliCtx = createContext(options as GlobalOptions, ["auth", "whoami"]);
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createAuthDeps({
-      serverUrlOverride: Deno.env.get("SWAMP_CLUB_URL"),
-    });
-
-    await consumeStream<AuthWhoamiEvent>(whoami(ctx, deps), {
-      loading_credentials: () => {
-        cliCtx.logger.debug("Loading stored credentials");
-      },
-      contacting_server: (e) => {
-        cliCtx.logger.debug(`Contacting ${e.serverUrl}`);
-      },
-      completed: (e) => {
-        if (cliCtx.outputMode === "json") {
-          console.log(JSON.stringify(
-            {
-              authenticated: true,
-              serverUrl: e.identity.serverUrl,
-              id: e.identity.id,
-              username: e.identity.username,
-              email: e.identity.email,
-              name: e.identity.name,
-              ...(e.identity.collectives
-                ? { collectives: e.identity.collectives }
-                : {}),
-            },
-            null,
-            2,
-          ));
-        } else {
-          console.log(
-            `${e.identity.username} (${e.identity.email}) on ${e.identity.serverUrl}`,
-          );
-          if (e.identity.collectives && e.identity.collectives.length > 0) {
-            console.log(`Collectives: ${e.identity.collectives.join(", ")}`);
-          }
-        }
-      },
-      error: (e) => {
-        throw new UserError(e.error.message);
-      },
-    });
-  });
+const ctx = createLibSwampContext({ logger: cliCtx.logger });
+const deps = createAuthDeps({ serverUrlOverride: ..., identity });
+const renderer = createAuthWhoamiRenderer(cliCtx.outputMode);
+await consumeStream(whoami(ctx, deps), renderer.handlers());
 ```
 
-The command handler contains zero domain logic. It creates a `LibSwampContext`
-with the CLI's logger, then translates events into presentation.
+`createAuthWhoamiRenderer` (`src/presentation/renderers/auth_whoami.ts`)
+returns `LogAuthWhoamiRenderer` or `JsonAuthWhoamiRenderer`; each implements
+`Renderer<AuthWhoamiEvent>` and so is exhaustiveness-checked against the
+union. See [rendering.md](./rendering.md).
 
 ### Tests assert on events directly
 
+`src/libswamp/auth/whoami_test.ts` drives the generator with fake deps and
+asserts on the collected events, e.g.
+`"whoami yields loading_credentials -> contacting_server -> completed on success"`,
+`"whoami yields not_authenticated error when no credentials"`, and the
+already-aborted-signal case that expects `error.code === "cancelled"`:
+
 ```typescript
-// libswamp/auth/whoami_test.ts
-Deno.test("whoami yields identity on success", async () => {
-  const ctx = createLibSwampContext();
-  const deps = makeDeps({
-    credentials: testCredentials,
-    whoamiResponse: testWhoamiResponse,
-  });
-
-  const events = await collect<AuthWhoamiEvent>(whoami(ctx, deps));
-
-  assertEquals(events, [
-    { kind: "loading_credentials" },
-    { kind: "contacting_server", serverUrl: "https://swamp-club.com" },
-    {
-      kind: "completed",
-      identity: {
-        serverUrl: "https://swamp-club.com",
-        id: "user-1",
-        username: "adam",
-        email: "adam@example.com",
-        name: "Adam",
-        collectives: ["si"],
-      },
-    },
-  ]);
-});
-
-Deno.test("whoami yields not_authenticated error when no credentials", async () => {
-  const ctx = createLibSwampContext();
-  const deps = makeDeps({ credentials: null });
-  const events = await collect<AuthWhoamiEvent>(whoami(ctx, deps));
-
-  assertEquals(events.length, 2);
-  assertEquals(events[0], { kind: "loading_credentials" });
-  const last = events[1] as Extract<AuthWhoamiEvent, { kind: "error" }>;
-  assertEquals(last.kind, "error");
-  assertEquals(last.error.code, "not_authenticated");
-});
-
-Deno.test("whoami yields cancelled error when signal is already aborted", async () => {
-  const controller = new AbortController();
-  controller.abort();
-  const ctx = createLibSwampContext({ signal: controller.signal });
-  const deps: AuthDeps = {
-    loadCredentials: () => Promise.resolve(testCredentials),
-    fetchWhoami: (_serverUrl, _apiKey, signal) => {
-      signal.throwIfAborted();
-      return Promise.resolve(testWhoamiResponse);
-    },
-    serverUrlOverride: undefined,
-  };
-
-  const events = await collect<AuthWhoamiEvent>(whoami(ctx, deps));
-  const last = events[events.length - 1] as Extract<
-    AuthWhoamiEvent,
-    { kind: "error" }
-  >;
-  assertEquals(last.kind, "error");
-  assertEquals(last.error.code, "cancelled");
-});
+const events = await collect<AuthWhoamiEvent>(whoami(ctx, deps));
+assertEquals(events[0], { kind: "loading_credentials" });
 ```
 
 No mocking of console.log. No output mode switching. The test verifies domain
@@ -957,6 +599,7 @@ Codes used across libswamp generators and the CLI error boundary:
 | `method_execution_failed`   | `models/run`       | Execution driver returned an error              |
 | `missing_deps`              | `models/run`       | Required extension dependencies not installed   |
 | `workflow_not_found`        | `workflows/run`    | No workflow matches the given name              |
+| `workflow_load_failed`      | `workflows/run`    | Workflow file exists but could not be loaded    |
 | `workflow_execution_failed` | `workflows/run`    | Workflow step execution failed                  |
 | `input_validation_failed`   | `workflows/run`    | Workflow input validation failed                |
 
@@ -1001,18 +644,12 @@ assertEquals(events[events.length - 1], {
 libswamp provides test helpers that make assertions on event streams ergonomic:
 
 ```typescript
-// libswamp/testing.ts
+// src/libswamp/testing.ts
 
 /** Accumulates all events from a stream into an array. */
 async function collect<E extends StreamEvent>(
   stream: AsyncIterable<E>,
-): Promise<E[]> {
-  const events: E[] = [];
-  for await (const event of stream) {
-    events.push(event);
-  }
-  return events;
-}
+): Promise<E[]>;
 
 /** Asserts that a stream ends with a `completed` event matching the expected value. */
 async function assertCompletes<E extends StreamEvent>(
@@ -1027,35 +664,30 @@ async function assertErrors<E extends StreamEvent>(
 ): Promise<SwampError>;
 ```
 
-## Migration Strategy
+## Adding a New Operation
 
-The migration from the current architecture to libswamp can be done
-incrementally, one command at a time:
-
-1. **Define `LibSwampContext` and stream helpers** (`createLibSwampContext`,
-   `consumeStream`, `result`, `withDefaults`, `collect`, `merge`).
-2. **Define the event types** for a single operation (e.g., `auth.whoami`).
-3. **Implement the generator** in `libswamp/`, extracting domain logic from the
-   existing command handler. The generator takes `ctx: LibSwampContext` as its
-   first parameter.
-4. **Rewrite the CLI command handler** to create a `LibSwampContext`, call
-   libswamp, and consume events.
-5. **Delete the old domain calls** from the command handler.
-6. Repeat for the next command.
-
-Old-style and new-style commands coexist during the migration. No big-bang
-rewrite required.
+1. **Define the event union** in a new `src/libswamp/<area>/<op>.ts`, with
+   `completed` and `error` variants.
+2. **Define `XxxDeps` / `XxxInput`** and a `createXxxDeps()` factory that wires
+   real infrastructure.
+3. **Implement the generator** taking `(ctx: LibSwampContext, deps, input)`;
+   pass `ctx.signal` to every outbound call.
+4. **Export** the generator, types, and factory from `src/libswamp/mod.ts`.
+5. **Write the renderer** in `src/presentation/renderers/` and the CLI command
+   that wires them together (see [rendering.md](./rendering.md)).
+6. **Test the generator** with fake deps and `collect` / `assertCompletes` /
+   `assertErrors`.
 
 ### Dependency direction
 
 ```
-src/cli/commands/     →  libswamp/         →  src/domain/
-  (adapters)               (orchestration)      (entities, value objects)
-                                            →  src/infrastructure/
-                                                 (repositories, HTTP clients)
+src/cli/commands/, src/serve/  →  src/libswamp/     →  src/domain/
+  (delivery mechanisms)             (orchestration)      (entities, value objects)
+                                                     →  src/infrastructure/
+                                                          (repositories, HTTP clients)
 ```
 
-The CLI layer depends on libswamp. libswamp depends on domain and
+The CLI and serve layers depend on libswamp. libswamp depends on domain and
 infrastructure. Domain should depend on nothing — that is the standard
 hexagonal dependency rule, and the target state.
 
@@ -1074,9 +706,12 @@ individually in `integration/ddd_layer_rules_test.ts`:
 - Logging (`src/infrastructure/logging/`) and tracing
   (`src/infrastructure/tracing/`) are exempt as cross-cutting concerns.
 
-The same file pins the `src/serve/ → src/cli/` and
-`src/presentation/ → src/cli/` edges on the same terms, and
-`integration/architecture_boundary_test.ts` pins the mutual dependencies
-between bounded contexts. New code is expected to follow the dependency rule;
-the pinned lists exist so the existing violations shrink over time and never
-grow.
+The same file pins the `src/serve/ → src/cli/` edges on the same terms
+(`PINNED_SERVE_CLI_EDGES` — serve borrows a handful of CLI wiring helpers
+that should be hoisted into a shared layer), asserts that
+`src/presentation/` imports no infrastructure other than logging/tracing,
+and enforces that `src/cli/` and `src/presentation/` import libswamp only via
+`mod.ts`. `integration/architecture_boundary_test.ts` pins the mutual
+dependencies between bounded contexts. New code is expected to follow the
+dependency rule; the pinned lists exist so the existing violations shrink
+over time and never grow.

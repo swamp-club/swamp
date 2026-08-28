@@ -1,7 +1,7 @@
 ---
 audience: maintainer
 enables: [vaults]
-last-verified: 2026-08-28 @ 4bde205b
+last-verified: 2026-08-28 @ 3d5955a9
 ---
 
 # Doctor Vaults — sensitive-output vault availability scan
@@ -22,10 +22,12 @@ cannot be recorded.
 
 swamp-club#562 added two runtime guards:
 
-1. **Pre-flight check** in `MethodExecutionService.executeWorkflow()` — before
-   method execution begins, if the model's resource output specs contain
-   sensitive fields and no vault is configured, the method fails immediately
-   with a `UserError`. No API calls are made, no cloud resources are created.
+1. **Pre-flight check** in `DefaultMethodExecutionService.executeWorkflow()`
+   (`src/domain/models/method_execution_service.ts`) — before a _mutating_
+   method (`isMutatingKind`) begins, if the model's resource output specs
+   contain sensitive fields and no vault is configured, the method fails
+   immediately with a `UserError`. No API calls are made, no cloud resources
+   are created. Read and list methods skip this guard.
 
 2. **Defense-in-depth** in `createResourceWriter()` — if a resource write is
    attempted for a spec with sensitive fields and no `vaultService` is
@@ -55,8 +57,10 @@ definition is reported as a finding.
 ## Vault availability
 
 Vault availability is checked by instantiating a `VaultService` from the
-repository and verifying at least one vault provider is registered. This is the
-same check the runtime pre-flight uses.
+repository (`VaultService.fromRepository(repoDir)`) and verifying
+`getVaultNames().length > 0` — at least one vault is configured
+(`src/libswamp/models/doctor_vaults.ts`). This is the same check the runtime
+pre-flight uses.
 
 ## Best-effort residual
 

@@ -1,6 +1,6 @@
 ---
 audience: operator, maintainer
-last-verified: 2026-08-28 @ ce0ca66b
+last-verified: 2026-08-28 @ 3d5955a9
 ---
 
 # Serve
@@ -22,9 +22,9 @@ datastore's control-plane store (`src/domain/datastore/control_plane_store.ts`).
 The subsystems serve depends on have their own docs:
 [remote-execution](../enablers/remote-execution.md) (workers, leases, runners,
 the data plane), [run-tracker](../enablers/run-tracker.md) (the SQLite run
-ledger and `run doctor`), and — not yet written — `enablers/serve-protocol.md`
-(the WebSocket request/response catalogue) and `enablers/access-control.md`
-(principals, grants, tokens).
+ledger and `run doctor`). The authoritative WebSocket request catalogue is the
+`ServerRequest` union in `src/serve/protocol.ts`; principals, grants and
+tokens are covered under [Identity and access](#identity-and-access) below.
 
 ## Why
 
@@ -57,32 +57,38 @@ the precedence **explicit flag > environment variable > `.swamp/serve.yaml` >
 built-in default**. Only options listed in `SERVE_ENV_MAP` have an environment
 variable; `port` and `host`, for example, do not. An explicit flag is detected
 from `Deno.args`, so a flag set to its default still wins over the file
-(`parseExplicitFlags`). Unknown keys in the YAML are rejected
-(`KNOWN_TOP_LEVEL_KEYS`, `KNOWN_AUTH_KEYS`, `KNOWN_TLS_KEYS`). `--config` names
-an alternative file; without it the default path is optional.
+(`parseExplicitFlags`). Unknown keys in the YAML are warned about and ignored
+(`warnUnknownKeys` against `KNOWN_TOP_LEVEL_KEYS`, `KNOWN_AUTH_KEYS`,
+`KNOWN_TLS_KEYS`). `--config` names an alternative file; without it the default
+path is optional.
 
 | Option (flag / yaml key)                      | Env var                          | Default                     | Notes                                                                    |
 | --------------------------------------------- | -------------------------------- | --------------------------- | ------------------------------------------------------------------------ |
+| `--config`                                    | —                                | `.swamp/serve.yaml`         | Alternative config file path                                             |
 | `--port` / `port`                             | —                                | `9090`                      |                                                                          |
 | `--host` / `host`                             | —                                | `127.0.0.1`                 | Off-loopback requires TLS and an auth mode (`assertOffLoopbackSecurity`) |
 | `--cert-file`, `--key-file` / `tls.*`         | `SWAMP_SERVE_CERT_FILE`, `_KEY_FILE` | unset                   | Both present ⇒ TLS; `ws://` becomes `wss://`                              |
 | `--auth-mode` / `auth.mode`                   | —                                | `none`                      | `none` \| `token` \| `oauth`; `none` logs a deprecation warning          |
 | `--admins`, `--allowed-collectives`, `--allowed-users` / `auth.*` | —            | unset                       | See [Identity and access](#identity-and-access)                          |
 | `--oauth-provider` / `auth.oauth-provider`    | —                                | `https://swamp-club.com`    | Must be HTTPS unless localhost (`src/domain/access/serve_auth_config.ts`) |
-| `--group-refresh-interval`                    | `SWAMP_GROUP_REFRESH_INTERVAL`   | 4 h                         | OAuth only; `0` disables                                                 |
+| `--oauth-client-id`, `--oauth-client-name` / `auth.oauth-client-{id,name}` | `SWAMP_OAUTH_CLIENT_NAME` (name only) | unset, `swamp-serve-{repo}-{host}` | Client id is auto-registered on first start if omitted                    |
+| `--groups-field` / `auth.groups-field`        | —                                | `collectives`               | Userinfo field holding group/collective memberships                      |
+| `--restricted-model-types`, `--restricted-commands` / `auth.restricted-*` | — | unset                       | Comma lists that require admin authority; need mode `token` or `oauth`   |
+| `--group-refresh-interval` / `auth.group-refresh-interval` | `SWAMP_GROUP_REFRESH_INTERVAL` | 4 h              | OAuth only; `0` disables                                                 |
 | `--grants-file`, `--grants-dir`, `--grant-reload` | `SWAMP_GRANTS_FILE`, `_DIR`  | unset, unset, `manual`      | `auto` starts a `GrantsDirectoryPoller` (30 s)                           |
 | `--no-schedule` / `schedule`                  | —                                | `true`                      | Disables cron triggers                                                   |
-| `--webhook <route:workflow:secret[:scheme]>` / `webhooks[]` | —                  | none                        | Flags replace the file list entirely                                     |
+| `--webhook <route:workflow:secret[:scheme[:header[:prefix]]]>` / `webhooks[]` | — | none                      | Flags replace the file list entirely                                     |
 | `triggers.<workflow>.{schedule,inputs}`       | —                                | none                        | yaml only; overrides a workflow's own trigger                            |
 | `--trust-proxy`, `--trusted-hosts`            | `SWAMP_TRUSTED_HOSTS`            | `false`, unset              | `X-Forwarded-For` and WebSocket `Origin` handling                        |
-| `--ws-idle-timeout`, `--queue-timeout`        | `SWAMP_WS_IDLE_TIMEOUT`, `SWAMP_QUEUE_TIMEOUT` | unset          | Worker-facing; see remote-execution                                      |
+| `--ws-idle-timeout`, `--queue-timeout`        | `SWAMP_WS_IDLE_TIMEOUT`, `SWAMP_QUEUE_TIMEOUT` | unset          | Worker-facing; see remote-execution. Related built-in defaults: 60 s reconnection grace (`DEFAULT_GRACE_WINDOW_MS`, `src/serve/worker_gateway.ts`) and 600 s queue ceiling (`DEFAULT_QUEUE_TIMEOUT_MS`, `src/serve/dispatch_service.ts`) |
+| `--verify-on-enroll`                          | `SWAMP_VERIFY_ON_ENROLL`         | `false`                     | Fleet probe on each enrolling worker; failures are marked unverified     |
 | `--heartbeat-interval`, `--stale-ttl`, `--reconciliation-interval` | `SWAMP_HEARTBEAT_INTERVAL`, `SWAMP_STALE_TTL`, `SWAMP_RECONCILIATION_INTERVAL` | 30 s, 90 s, 60 s | `stale-ttl` must be ≥ 2× heartbeat; no effect without a remote control plane |
 | `--hydration-timeout`                         | `SWAMP_HYDRATION_TIMEOUT`        | 60 s                        | Startup pull of the remote datastore                                     |
-| `--max-concurrent-runs`, `--max-runs-per-principal`, `--max-run-duration` | `SWAMP_MAX_*` | `100`, unset, unset | Enforced by `ActiveRunRegistry` (`src/serve/active_run_registry.ts`)    |
-| `--hot-reload`                                | —                                | `false`                     | Writes `.swamp/serve.pid`; not supported on Windows                      |
-| `--enable-internal-api`                       | `SWAMP_ENABLE_INTERNAL_API`      | `false`                     | Exposes `/internal/runs`                                                 |
+| `--max-concurrent-runs`, `--max-runs-per-principal`, `--max-run-duration` | `SWAMP_MAX_*` | `100`, unset, unset | Enforced by `ActiveRunRegistry` (`src/serve/active_run_registry.ts`; the `100` is the registry's own fallback). `--max-run-duration` is capped at 2 147 483 647 ms |
+| `--hot-reload`                                | —                                | `false`                     | Writes `.swamp/serve.pid`; not supported on Windows. Without it SIGHUP is a shutdown signal (`src/infrastructure/process/shutdown_handlers.ts`) |
+| `--enable-internal-api`                       | `SWAMP_ENABLE_INTERNAL_API`      | `false`                     | Exposes `/internal/runs` (`limit` default 100, clamped 1–10 000)         |
 | `--remote-only`                               | `SWAMP_REMOTE_ONLY`              | `false`                     | Steps run only on workers (`src/domain/remote/remote_dispatch.ts`)       |
-| `--dashboard`                                 | `SWAMP_DASHBOARD`                | `false`                     | Serves `/dashboard/*`                                                    |
+| `--dashboard`                                 | `SWAMP_DASHBOARD`                | `false`                     | Serves `/dashboard/*` when the build embeds the SPA                       |
 | `--detach-runs`                               | —                                | `false`                     | Deprecated, no effect: runs are always detached                          |
 
 ### Deployment mode
@@ -103,8 +109,9 @@ OAuth registration.
 
 "Remote control plane" below means the datastore extension advertises
 `capabilities().controlPlane` and exposes `controlPlaneStore()`; otherwise serve
-falls back to `FileSystemControlPlaneStore` under `.swamp/_control/`
-(`src/infrastructure/persistence/fs_control_plane_store.ts`), which keeps the
+falls back to `FileSystemControlPlaneStore` under `<datastore path>/_control/`
+— `.swamp/_control/` for the default datastore
+(`src/infrastructure/persistence/fs_control_plane_store.ts`) — which keeps the
 same key layout and `putIfAbsent` (via `createNew`) but is visible to one
 machine only.
 
@@ -118,20 +125,23 @@ table (`src/cli/commands/serve.ts`, request handler).
 | WebSocket   | any path with `Upgrade: websocket`                                               | token (bearer header, `bearer.<token>` subprotocol, or `?token=`) unless mode `none` | The serve protocol: 107 request types in `ServerRequest` (`src/serve/protocol.ts`), handled in `src/serve/connection.ts` and `src/serve/handlers/*` |
 | HTTP        | `/data/*`, `/bundle/*`                                                           | worker session bearer                             | Remote-execution data plane (`src/serve/data_plane.ts`); see [remote-execution §Data plane](../enablers/remote-execution.md#data-plane-two-transports) |
 | HTTP POST   | configured webhook routes                                                        | HMAC per scheme                                   | `src/serve/webhook.ts`                                                                                 |
-| HTTP POST   | `/api/v1/cancel/{workflow-run\|method-run}/{id}`, `/api/v1/cancel` (bulk)         | token + `run` grant                               | `cancelExecution` (see below)                                                                          |
+| HTTP POST   | `/api/v1/cancel/{workflow-run\|method-run}/{id}`, `/api/v1/cancel` (bulk)         | token + admin (IP burst and per-token rate limits) | `cancelExecution` (see below)                                                                          |
 | HTTP GET    | `/api/v1/health`, `/api/v1/cluster/instances`, `/api/v1/serve/config`             | admin (`src/serve/admin_auth.ts`)                 | Health snapshot (`src/serve/health_collector.ts`), heartbeat roster, redacted merged options           |
 | SSE         | `/api/v1/health/stream?interval=`                                                 | admin                                             | Health snapshot every 1–60 s (default 5 s), resumable via `Last-Event-ID`                              |
 | HTTP GET    | `/internal/runs?limit=&offset=`                                                   | admin; 404 unless `--enable-internal-api`         | Full run-tracker history                                                                               |
 | HTTP POST   | `/auth/device`, `/auth/device/token`                                             | none (IP burst limit)                             | OAuth device grant, mode `oauth` only (`src/serve/device_auth_handler.ts`)                             |
 | HTTP GET    | `/auth/info`                                                                      | none                                              | `{ mode, verificationBaseUri? }` so clients pick a login flow                                          |
 | HTTP GET    | `/ready`, `/` and `/health`                                                       | none                                              | `/ready` is 503 until startup completes; `/health` lists schedules and webhook endpoints               |
-| HTTP GET    | `/dashboard`, `/dashboard/*`                                                     | none for assets (the SPA logs in itself)          | Static files from `packages/dashboard/dist`, SPA fallback to `index.html`                              |
+| HTTP GET    | `/dashboard`, `/dashboard/*`                                                     | none for assets (the SPA logs in itself)          | Static files from `packages/dashboard/dist`, SPA fallback to `index.html`; 404 "Dashboard assets not available in this build" when the binary was compiled without the dist |
 
-Before any authenticated WebSocket upgrade the origin is validated against the
-bind host and `--trusted-hosts` (`validateWebSocketOrigin`), and two rate
-limiters apply: 50 upgrades per IP per minute and 5 failed auth attempts per
-minute keyed by token name (falling back to IP when the token is malformed);
-the key is cleared on success (`src/serve/rate_limiter.ts`).
+Before every WebSocket upgrade — including in auth mode `none` — the origin is
+validated against the bind host and `--trusted-hosts`
+(`validateWebSocketOrigin`), and two rate limiters apply: 50 upgrades per IP
+per minute and 5 failed auth attempts per minute keyed by token name (falling
+back to IP when the token is malformed); the key is cleared on success
+(`src/serve/rate_limiter.ts`). Each connection also holds at most
+`MAX_ACTIVE_REQUESTS` in-flight requests and rejects a request whose id is
+already active with `duplicate_id` (`src/serve/connection.ts`).
 
 ## Identity and access
 
@@ -157,8 +167,12 @@ method — authentication is itself a method run (`src/serve/token_auth.ts`).
 Secrets live in the encrypted control-plane vault (`ControlPlaneVaultProvider`,
 `src/domain/vaults/control_plane_vault_provider.ts`) rather than the user's
 vault, so they replicate with the control-plane store and can be deleted
-immediately. Revoked tokens are garbage-collected hourly after a one-hour grace
-(`src/serve/server_token_gc_service.ts`).
+immediately. At boot `checkTokenHealth` reports secrets that no longer decrypt
+and `sweepTokenConsistency` removes token records whose secret is missing
+(`src/cli/commands/serve.ts`, just after the control-plane vault is registered).
+There is no periodic token garbage collector: `ServerTokenGcService`
+(`src/serve/server_token_gc_service.ts`) exists but is not instantiated by
+serve.
 
 **Grants.** Authorization is evaluated per request against an in-memory
 `PolicySnapshot` built from grant and group data
@@ -188,8 +202,9 @@ run in the `ActiveRunRegistry` with its own `AbortController` and a
 The requesting socket is just a subscriber; the run continues if it drops.
 A client resumes with `run.attach { runId, afterSeq }` and the buffer replays
 every event with `seq > afterSeq` before streaming live ones
-(`src/serve/run_event_buffer.ts`); the CLI retries this up to 5 times with
-linear backoff after a drop. If the run is not local, serve consults
+(`src/serve/run_event_buffer.ts`); `run.attach` requires a `run` grant on the
+run's resource (`handleRunAttach`, `src/serve/connection.ts`), and the CLI
+retries it up to 5 times with linear backoff after a drop. If the run is not local, serve consults
 `active-runs/*` in the control-plane store: a live owner yields
 `run.elsewhere { instanceId }` (the CLI retries up to 10 times, 1.5 s apart —
 it does not redirect, so a load balancer must route it to the right instance
@@ -198,29 +213,39 @@ or the run must finish), a stale owner yields
 `src/serve/connection.ts`). The registry also enforces `--max-concurrent-runs`
 (default 100), `--max-runs-per-principal` and `--max-run-duration`.
 
-**Cancel.** `cancelExecution` aborts the run's controller, then waits up to
-`CANCEL_GRACE_MS = 5_000` for completion; the response is `cancelled` if the
-run left the registry in time, otherwise `cancellation_requested`
-(`src/cli/commands/serve.ts`). The WebSocket `cancel` request and the HTTP
-cancel routes share this path.
+**Cancel.** Two paths. The HTTP cancel routes call `cancelExecution`, which
+aborts the run's controller, then waits up to `CANCEL_GRACE_MS = 5_000` for
+completion; the response is `cancelled` if the run left the registry in time,
+otherwise `cancellation_requested` (`src/cli/commands/serve.ts`); the caller
+must be an admin. The WebSocket `cancel` request is keyed by request id: if
+that id is an in-flight request its controller is aborted, otherwise
+`handleCancelRun` authorizes a `run` grant on the run's resource and calls
+`activeRunRegistry.cancel(requestId)` with no grace wait and no
+`cancellation_requested` result (`src/serve/connection.ts`). Do not confuse
+serve's `CANCEL_GRACE_MS` with the 30 s constant of the same name in
+`src/domain/remote/rpc_channel.ts`, which bounds RPC cancel confirmation.
 
 **Cron.** With scheduling enabled, `ScheduledExecutionService`
 (`src/libswamp/workflows/scheduled_execution.ts`) registers every workflow with
 a `schedule`, applies `triggers.*` overrides from `serve.yaml`, and on each fire
-calls `executeWorkflowWithLocks` with `triggerSource: "schedule"`. When the
+calls its injected `executeWorkflow`, which serve wires to
+`executeWorkflowWithLocks` with `triggerSource: "schedule"`
+(`src/cli/commands/serve.ts`). A fire is skipped with a `schedule_skipped`
+event while that workflow's previous run is still in progress. When the
 control-plane store supports `putIfAbsent`, each fire first races to create
 `fire-records/<workflowId>/<fireTime>` (second-truncated ISO time,
 `normalizeFireTime`); the loser records a `dedupSkip` and does nothing. Fire
 records older than 4 h are reaped every 10 min. Each fire is also enqueued as a
 pending run (see [High availability](#high-availability)).
 
-**Webhooks.** A `--webhook` or `webhooks[]` entry binds a POST route to a
-workflow. Signatures are verified by a closed set of schemes — `github`,
+**Webhooks.** A `--webhook <route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]`
+or `webhooks[]` entry binds a POST route to a workflow. Signatures are verified by a closed set of schemes — `github`,
 `jira`, `linear`, `stripe`, `slack`, `generic` (header + prefix) — with a
 300 s replay window for the timestamped ones (`src/serve/webhook_verifiers.ts`).
 A verified request becomes a pending run before it is executed, so a crash
 between receipt and completion is replayed at next boot (`src/serve/webhook.ts`).
-Secrets may be `@file=` or `@vault=` references resolved at startup.
+Secrets may be `@env=VAR`, `@file=/path` or `@vault=<vault>:<key>` references
+resolved at startup.
 
 **Workers.** Steps whose model type is not loadable locally — or every step,
 under `--remote-only` — are dispatched to enrolled workers by the worker
@@ -247,9 +272,10 @@ offers a remote control plane. Instances are identified by a fresh
 its local cache (`hydrateLocalCache`, bounded by `--hydration-timeout`),
 migrates root-level control records into the configured namespace once, sweeps
 stale worker leases and dispatches, reaps runs whose owning PID or heartbeat is
-gone (`RunTrackerStore.reapStaleRuns` / `reapDeadProcessRuns`), and replays
-pending runs whose trigger is still configured (`src/serve/boot_reconciliation.ts`).
-Only then does `/ready` return 200.
+gone (`RunTrackerStore.reapStaleRuns` / `reapDeadProcessRuns`), runs one pass
+of `reconcileRemoteInterruptedRuns` when a remote control plane exists, and
+replays pending runs whose trigger is still configured
+(`src/serve/boot_reconciliation.ts`). Only then does `/ready` return 200.
 
 **Steady state.** Every 60 s (+ up to 500 ms jitter) `reconcileRemoteInterruptedRuns`
 lists heartbeats, claims each stale peer, marks that peer's `running` tracker
@@ -273,8 +299,8 @@ does not reload them (`extensionCatalogInvalidate` is a documented no-op in
 active runs for 30 s, aborts what remains and waits 5 s more, marks those
 workflow runs `interrupted("server_shutdown")` in the run repository, deletes
 its heartbeat and exits. A peer sees no stale heartbeat, so nothing is reaped;
-clients attached to the interrupted runs get the terminal frame and resume via
-`swamp run history`. A crash instead of a clean stop is handled by the
+clients attached to the interrupted runs get the terminal frame; nothing is
+resumed, but `swamp run history` shows the final status. A crash instead of a clean stop is handled by the
 reconciliation loop after `--stale-ttl`.
 
 ## Lifecycle and operations
@@ -287,9 +313,13 @@ reconciliation loop after `--stale-ttl`.
   `.swamp/serve.pid` and installs a SIGHUP handler; `swamp serve reload` sends
   the signal locally or, with `--server`, issues the `serve.reload` request.
   `performServeReload` re-bundles pulled extensions whose source fingerprint
-  changed, bumps the reload generation so in-flight runs keep their old
-  bundles, and re-reads `triggers.*` overrides from `serve.yaml`
-  (`src/serve/extension_reload.ts`). Concurrent SIGHUPs are ignored while a
+  changed, bumps the reload generation (`incrementReloadGeneration`,
+  `src/serve/extension_reload.ts`; the loader appends `?fp=…&gen=<n>` to
+  bundle imports, `src/domain/extensions/extension_loader.ts`) so in-flight
+  runs keep their old bundles, and re-reads `triggers.*` overrides from
+  `serve.yaml`. Pulled extensions live under `.swamp/pulled-extensions/`, or
+  `.swamp/config/pulled-extensions/` when the datastore manages config
+  (`src/infrastructure/persistence/paths.ts`). Concurrent SIGHUPs are ignored while a
   reload is in progress. The mechanism and its catalog constraint are detailed
   in [remote-execution §Hot-Reload](../enablers/remote-execution.md#hot-reload-for-pulled-extension-bundles).
 - **Graceful shutdown.** SIGINT/SIGTERM run the sequence above, then stop the
@@ -315,12 +345,15 @@ reconciliation loop after `--stale-ttl`.
   pointer to file a feature request. Worker daemons have parallel schedulers.
 - **Dashboard.** `--dashboard` serves the Vite SPA in `packages/dashboard`
   (views for overview, models, workflows, executions, approvals, data, vaults,
-  extensions, schedules, webhooks and system) from `packages/dashboard/dist`;
+  extensions, schedules, webhooks and system) from `packages/dashboard/dist`,
+  which `scripts/compile.ts` embeds only when it was pre-built before compile;
   the SPA talks to the same WebSocket protocol and logs in through
   `/auth/info` + device auth.
-- **Club heartbeat.** In OAuth mode serve registers itself with swamp-club at
-  startup and sends a heartbeat hourly (`src/serve/club_heartbeat_service.ts`,
-  `src/serve/oauth_client.ts`).
+- **Club heartbeat.** In OAuth mode — only when an OAuth client id is
+  resolved, `--allowed-collectives` is non-empty and `SWAMP_API_KEY` is set;
+  otherwise registration is silently skipped — serve registers itself with
+  swamp-club at startup and sends a heartbeat hourly
+  (`src/serve/club_heartbeat_service.ts`, `src/serve/oauth_client.ts`).
 
 ## Known limits
 
@@ -338,5 +371,5 @@ reconciliation loop after `--stale-ttl`.
   (`src/cli/commands/serve.ts`, `ConfigPoller` wiring).
 - Webhook verification schemes are a closed set; a provider that changes its
   signing convention needs a swamp release (`src/serve/webhook_verifiers.ts`,
-  tracked in #723).
+  tracked in #716).
 - Auth mode `none` is deprecated and only permitted on loopback.

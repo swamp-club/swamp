@@ -37,7 +37,7 @@ Every doc starts with a header:
 
 ```yaml
 ---
-audience: operator | extension-author | maintainer
+audience: operator | extension-author | maintainer | everyone # comma list allowed
 enables: [workflows, serve] # enablers only — no primitive, no doc
 last-verified: 2026-08-28 @ 4bde205b # date and commit someone checked it
 ---

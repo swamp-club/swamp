@@ -1,6 +1,6 @@
 ---
 audience: maintainer
-last-verified: 2026-08-28 @ 4bde205b
+last-verified: 2026-08-28 @ 3d5955a9
 ---
 
 # Audit subdomain
@@ -14,10 +14,12 @@ agent actions with swamp workflow runs.
 ## Components
 
 - **Per-tool normalizers** (`src/domain/audit/hook_input.ts`) — take the
-  raw `postToolUse` JSON each tool emits (four different shapes; see the
-  header comments in that file for the upstream contract references) and
-  produce a common `NormalizedHookInput`. Each AI tool has its own
-  normalizer; new tools plug in here.
+  raw `postToolUse` JSON each tool emits (five different shapes) and
+  produce a common `NormalizedHookInput`. `normalizeHookInput()` dispatches
+  on `HookTool` to `normalizeClaude`, `normalizeCursor`, `normalizeKiro`,
+  `normalizeOpenCode`, and `normalizeCopilot`; each carries a per-function
+  comment describing its payload shape (only the Copilot one links an
+  upstream contract URL). New tools plug in here.
 
 - **JSONL repository** (`src/infrastructure/persistence/jsonl_audit_repository.ts`)
   — writes one row per hook event to date-partitioned files under
@@ -46,15 +48,16 @@ agent actions with swamp workflow runs.
 ## Repo layout of audit config
 
 The five supported tools wire their audit hook into tool-specific config
-files that `swamp init --tool <tool>` generates. Locations summarized:
+files that `swamp repo init --tool <tool>` (alias `swamp init`) generates.
+Locations summarized:
 
-| Tool     | Hook config                              | Default-agent config    |
-| -------- | ---------------------------------------- | ----------------------- |
-| Claude   | `.claude/settings.local.json`            | n/a                     |
-| Cursor   | `.cursor/hooks.json`                     | n/a                     |
-| Kiro     | `.kiro/hooks/swamp-audit.kiro.hook` + `.kiro/agents/swamp.json` | `.kiro/settings/cli.json` |
-| OpenCode | `.opencode/plugins/swamp-audit.ts`       | n/a                     |
-| Copilot  | `.github/hooks/`                         | n/a                     |
+| Tool     | Hook config                              | Other config                                                                           |
+| -------- | ---------------------------------------- | -------------------------------------------------------------------------------------- |
+| Claude   | `.claude/settings.local.json`            | n/a                                                                                    |
+| Cursor   | `.cursor/hooks.json`                     | n/a                                                                                    |
+| Kiro     | `.kiro/hooks/swamp-audit.kiro.hook` + `.kiro/agents/swamp.json` | `.kiro/settings/cli.json` (default agent); `.vscode/settings.local.json` (`kiroAgent.trustedCommands: ["swamp *"]`) |
+| OpenCode | `.opencode/plugins/swamp-audit.ts`       | n/a                                                                                    |
+| Copilot  | `.github/hooks/swamp-audit.json`         | n/a                                                                                    |
 
 See `src/domain/repo/repo_service.ts` for the exact generators
 (`updateClaudeSettings`, `updateCursorHooks`, `updateKiroHooks`,
@@ -64,8 +67,15 @@ See `src/domain/repo/repo_service.ts` for the exact generators
 
 ## Reserved session / command prefixes
 
-`swamp-doctor-*` session IDs and the command prefix
-`echo swamp-doctor-smoke-test` are reserved for the `doctor audit`
-smoke-test. The timeline service filters rows matching the prefix from
-the default `swamp audit` view; pass `--include-diagnostic` to reveal
-them. User shell invocations must not start with that prefix.
+The command prefix `echo swamp-doctor-smoke-test`
+(`DIAGNOSTIC_COMMAND_PREFIX` in `src/domain/audit/audit_service.ts`) is
+reserved for the `doctor audit` smoke-test. The timeline service filters
+rows whose command starts with that prefix from the default `swamp audit`
+view; pass `--include-diagnostic` to reveal them. User shell invocations
+must not start with that prefix.
+
+The smoke-test fixtures also use a `swamp-doctor-smoke-test` session ID
+(`DOCTOR_SMOKE_TEST_SESSION_ID` in `doctor/synthetic_payloads.ts`) for the
+tools whose normalizer keeps `session_id`. That is a fixture convention
+only — the timeline service does not filter on session ID, because the
+Kiro and Cursor normalizers discard it.

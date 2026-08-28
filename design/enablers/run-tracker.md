@@ -1,7 +1,7 @@
 ---
 audience: maintainer
 enables: [workflows, models]
-last-verified: 2026-08-28 @ 4bde205b
+last-verified: 2026-08-28 @ 3d5955a9
 ---
 
 # Run Tracker
@@ -22,6 +22,13 @@ A SQLite database at `.swamp/run_tracker.db` that owns the in-flight lifecycle.
 Output YAMLs are only written once in terminal state (write-once invariant),
 preserving the `findAllGlobalSince()` mtime pre-filter optimization.
 
+**Known limit:** the write-once invariant holds for top-level
+`modelMethodRun()` (`src/libswamp/models/run.ts`). Nested `context.runModel()`
+invocations go through `DefaultMethodExecutionService.execute`
+(`src/domain/models/method_execution_service.ts`), which still saves a
+`status: "running"` output YAML before execution so the child's id is available
+as `parentOutputId`; a crash mid-child leaves that YAML in `running`.
+
 ### Schema
 
 ```sql
@@ -36,12 +43,31 @@ CREATE TABLE active_runs (
   started_at    TEXT NOT NULL,
   heartbeat_at  TEXT NOT NULL,
   status        TEXT NOT NULL DEFAULT 'running',
-  completed_at  TEXT
+  completed_at  TEXT,
+  cancel_reason TEXT,
+  initiated_by  TEXT,
+  instance_id   TEXT                  -- owning serve instance (HA)
+);
+CREATE INDEX idx_active_runs_status    ON active_runs(status);
+CREATE INDEX idx_active_runs_heartbeat ON active_runs(heartbeat_at);
+
+CREATE TABLE pending_runs (             -- queued webhook/cron fires
+  id                   TEXT PRIMARY KEY,
+  source               TEXT NOT NULL,
+  workflow_id_or_name  TEXT NOT NULL,
+  payload              TEXT,
+  route                TEXT,
+  traceparent          TEXT,
+  tracestate           TEXT,
+  created_at           TEXT NOT NULL
 );
 ```
 
-Schema versioning via `run_tracker_meta` table. Terminal rows older than 7 days
-are purged on startup.
+(`src/infrastructure/persistence/run_tracker_store.ts`.) Schema versioning via
+`run_tracker_meta` table. Terminal rows older than 7 days are purged on
+startup; `swamp run gc` (`src/cli/commands/run_gc.ts`, protocol `run.gc`)
+collects older run records on demand with a 30-day default, `--older-than`,
+`--dry-run`, and `--server`.
 
 ### Lifecycle
 
@@ -50,8 +76,12 @@ are purged on startup.
 2. **Heartbeat** — every 30s, `UPDATE heartbeat_at = now WHERE id = ?`
 3. **Complete** — on success/failure/cancel/suspend, UPDATE status (guarded by
    `AND status IN ('running', 'suspended')` to prevent TOCTOU races)
-4. **Reap** — on next CLI/serve invocation, find stale rows (heartbeat >90s):
-   same-machine checks `isProcessDead(pid)` first, cross-machine uses TTL alone
+4. **Reap** — find stale rows (heartbeat >90s): same-machine checks
+   `isProcessDead(pid)` first, cross-machine uses TTL alone. Reaping runs at
+   `swamp serve` boot, `swamp model method run`, `swamp model cancel`, and
+   `swamp run doctor --fix` (locally or via the `run.doctor` handler) — not on
+   every CLI invocation (`reapStaleRuns` callers in `src/cli/commands/` and
+   `src/serve/handlers/admin_handlers.ts`)
 5. **Suspend** — workflow approval gates set status to `suspended`, which
    excludes the row from stale detection
 6. **Reactivate** — on workflow resume, transitions `suspended` → `running` and
@@ -110,15 +140,29 @@ failed, cancelled) and computes:
 Default window is 5 minutes. Records are pruned on snapshot or when the buffer
 exceeds 10,000 entries. Event sources: scheduled execution
 (schedule_completed/schedule_failed), webhook execution
-(webhook_completed/webhook_failed).
+(webhook_completed/webhook_failed). Runs started over the WebSocket API
+(`workflow.run`, `model.method.run`) are **not** recorded
+(`runMetricsTracker.record` is called only from the schedule and webhook event
+handlers in `src/cli/commands/serve.ts`), so health throughput excludes them.
 
 The metrics are surfaced on `GET /api/v1/health` and
 `GET /api/v1/health/stream`.
 
-### Local-only
+### Local SQLite, replicated presence
 
-The tracker DB is NOT synced to remote datastores. PIDs and heartbeats are
-inherently local — a PID from machine A is meaningless on machine B.
+The SQLite file itself is never synced — PIDs and heartbeats are inherently
+local, and a PID from machine A is meaningless on machine B. In an HA
+deployment (see [serve](../primitives/serve.md)) run *presence* is replicated
+through the `ControlPlaneStore` instead: each instance writes
+`active-runs/<instanceId>/<runId>` (`src/serve/active_run_tracker.ts`), cron
+and webhook pending runs are dual-written to `pending-runs/<id>`
+(`src/cli/commands/serve.ts`), and boot reconciliation
+(`src/serve/boot_reconciliation.ts`) marks runs owned by a dead peer as
+`failed` with reason `remote_instance_dead`.
+
+The `/internal/runs` endpoint that exposes full run history is off by default;
+it is enabled with `--enable-internal-api` / `SWAMP_ENABLE_INTERNAL_API` and
+requires admin authorization (`src/cli/commands/serve.ts`).
 
 ### Related
 

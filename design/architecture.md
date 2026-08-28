@@ -1,6 +1,6 @@
 ---
 audience: everyone
-last-verified: 2026-08-28 @ ce0ca66b
+last-verified: 2026-08-28 @ 3d5955a9
 ---
 
 # Architecture
@@ -55,7 +55,8 @@ Fields a type marks `sensitive` are diverted into a vault on write. →
 **Types travel as extensions.** An extension packages model types — and vault,
 datastore and report providers — under a `@collective/name` with CalVer
 versions, published to the swamp-club registry and pulled per repo into
-`.swamp/pulled-extensions/`. Only the first-party `swamp` collective is trusted
+`.swamp/pulled-extensions/` (`.swamp/config/pulled-extensions/` when the
+datastore manages config, `src/infrastructure/persistence/paths.ts`). Only the first-party `swamp` collective is trusted
 by default. → [primitives/extensions.md](./primitives/extensions.md).
 
 **Serve lets a team share all of it.** `swamp serve` is the same binary opening
@@ -82,19 +83,21 @@ runtime data:
   its catalog, method outputs, workflow runs, `run_tracker.db`, the local
   vault, the extension catalog, pulled extensions, the audit log.
 - **Per user** — `~/.config/swamp/` for swamp-club and serve credentials, the
-  anonymous identity and the telemetry spool; `~/.swamp/` for the binary and
-  the embedded Deno runtime.
+  anonymous identity and the telemetry spool; `~/.swamp/` (or `SWAMP_HOME`)
+  for installed binaries and downloaded source
+  (`src/infrastructure/persistence/paths.ts`, `getSwampDataDir`).
 
 The primary way in is an AI agent: `swamp repo init --tool <agent>` installs
-swamp's skills into the agent's skill directory and registers hooks so the
-agent's commands are audited →
+swamp's skills into the agent's global skill directory and registers hooks per
+repo so the agent's commands are audited (`src/domain/repo/repo_service.ts`) →
 [surfaces/agent-interface.md](./surfaces/agent-interface.md).
 
 ## One binary, four runtime roles
 
 `swamp` compiles to a single Deno binary (`scripts/compile.ts` also embeds a
 second Deno runtime for bundling extensions, the bundled skills, and the
-dashboard build). The subcommand decides the role:
+dashboard build — the latter only when `packages/dashboard/dist` exists at
+compile time). The subcommand decides the role:
 
 | Role                     | Runs as                                              | Owns                                                                                             |
 | ------------------------ | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
@@ -106,9 +109,12 @@ dashboard build). The subcommand decides the role:
 The CLI and serve are two adapters over the same application layer:
 `src/libswamp` holds one async-generator use case per verb, and both
 `src/cli/commands` and `src/serve/handlers` consume those streams — which is
-why 106 commands work identically with `--server`. The dependency rule
-(`cli → libswamp → domain ← infrastructure`, never the reverse) is enforced by
-`integration/ddd_layer_rules_test.ts` →
+why nearly every read and run command works identically with `--server`
+(`withRemoteOptions(` in `src/cli/commands`). The dependency rule
+(`cli → libswamp → domain ← infrastructure`, never the reverse) is enforced
+for new code by `integration/ddd_layer_rules_test.ts`, which also pins a
+ratchet list of existing `domain → infrastructure` and `serve → cli` imports so
+no new ones can appear →
 [contributing/libswamp.md](../contributing/libswamp.md).
 
 Two facts a new engineer otherwise learns the hard way: serve instances never

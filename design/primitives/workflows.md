@@ -1,6 +1,6 @@
 ---
 audience: maintainer, operator
-last-verified: 2026-08-28 @ 4bde205b
+last-verified: 2026-08-28 @ 3d5955a9
 ---
 
 # Workflows
@@ -134,8 +134,12 @@ steps:
 **Fields:**
 
 - `prompt` (required, string) — message displayed to the operator.
-- `timeout` (optional, number) — seconds. Checked at approve time against the
-  suspension timestamp. When expired, approve is rejected.
+- `timeout` (optional, number) — seconds. Checked at approve **and** reject
+  time against the step's suspension timestamp (`evaluateApprovalTimeout` in
+  `src/libswamp/workflows/approve.ts` and `reject.ts`). When expired, both
+  approve and reject are refused, the run is omitted from
+  `swamp workflow approvals` (`src/libswamp/workflows/approvals.ts`), and the
+  run stays `suspended` — cancel it to clear it.
 
 **Lifecycle: suspend → approve → resume**
 
@@ -144,8 +148,8 @@ steps:
    Parallel sibling steps that are already in-flight continue executing until
    they reach a terminal state (succeeded, failed, or skipped) — the executor
    drains all generators at the current level before persisting. The saved run
-   record is a consistent checkpoint: every step is either completed or has not
-   started. Before starting execution, `workflow run` **supersedes** any prior
+   record is a consistent checkpoint: every step is either completed, parked in
+   `waiting_approval`, or has not started. Before starting execution, `workflow run` **supersedes** any prior
    suspended runs of the same workflow whose resolved inputs match the new run's
    inputs (deep equality). Matching suspended runs are cancelled with reason
    "Superseded by new run with matching inputs". Runs with different inputs are
@@ -153,34 +157,45 @@ steps:
    are also skipped (cancel those via the serve API). Use `--no-supersede` to
    opt out. The CLI then exits once the new run suspends.
 2. `swamp workflow approve <workflow> <step> --run <id>` marks the step as
-   succeeded in the persisted run record. Lightweight — no execution, any
-   authorized user. The `--run` flag disambiguates when multiple runs are
-   suspended; it is optional when only one run is suspended.
+   succeeded in the persisted run record. Lightweight — no execution. The
+   local command performs no authorization of its own: `decidedBy` is recorded
+   from `$USER`/`$USERNAME`, falling back to `"unknown"`
+   (`src/libswamp/workflows/approve.ts`); authorization applies only on the
+   `--server` path via the `workflow.approve` handler. The `--run` flag
+   disambiguates when multiple runs are suspended; it is optional when only
+   one run is suspended.
 3. `swamp workflow resume <workflow> --run <id>` re-enters the executor, skips
    completed steps, and runs remaining pending steps.
 
 `swamp workflow reject <workflow> <step> --run <id>` marks the step as failed and
 the run as failed. No resume needed.
 
-`swamp workflow approvals` lists all suspended runs awaiting approval, showing
-each run's id, suspended-at timestamp, inputs digest, and ready-to-run
-`--run <id>` approve/reject/resume commands. Supports `--server` /
+`swamp workflow approvals` lists suspended runs awaiting approval — one row per
+run, naming the first waiting gate (`findWaitingApprovalStep` in
+`src/domain/workflows/workflow_run.ts`), with runs whose gate has timed out
+omitted — showing each run's id, suspended-at timestamp, inputs digest, and
+ready-to-run `--run <id>` approve/reject/resume commands. Supports `--server` /
 `SWAMP_SERVE_URL` / `SWAMP_SERVER_URL` via the `workflow.approvals`
 wire-protocol endpoint (read-only, `read` authorization verb).
 
-**Programmatic gate control:** Gates can also be approved or rejected from within
-a model method via `context.approveWorkflowGate()` and
-`context.rejectWorkflowGate()`. This enables webhook-driven and
-scheduler-driven approvals without shelling out to a child `swamp` process. See
-[models.md](./models.md) for the API reference.
+**Programmatic gate control (not wired):** `MethodContext` declares
+`context.approveWorkflowGate()` / `context.rejectWorkflowGate()`, but no
+production path constructs the `WorkflowGateService` behind them
+(`createWorkflowGateService` in `src/libswamp/models/workflow_gate.ts` has no
+callers outside tests; `src/libswamp/workflows/run.ts` leaves the service
+deliberately unwired because model code bypasses authorization), and on a
+remote worker both return `{ ok: false }`
+(`src/worker/remote_method_context.ts`). Approve and reject via the CLI or the
+`workflow.approve` / `workflow.reject` WebSocket requests instead.
 
 **Resume inputs (`--input`):** `swamp workflow resume` accepts `--input`,
 `--input-file`, and `--stdin` (same parsing as `swamp workflow run`). These let
 an operator supply values that were not available at the original run time —
 elevated credentials, environment-specific overrides, or a freshly minted auth
-key issued during the gate. Resume inputs **merge** over the inputs captured
-when the run suspended: existing keys are preserved and a resume `--input` wins
-on a key collision. The merged set is placed on the expression context before
+key issued during the gate. Resume inputs are **deep-merged** (`deepMerge` in
+`src/domain/workflows/execution_service.ts`) over the inputs captured when the
+run suspended: existing keys are preserved, nested records merge key by key,
+and a resume `--input` wins on a key collision. The merged set is placed on the expression context before
 evaluation, so post-gate `inputs.*` expressions resolve to the updated values.
 Workflow evaluation remains **strict**: a workflow must declare (at run time)
 every input it references, so the pattern is _declare the input at run, supply
@@ -189,10 +204,12 @@ placeholder and pass the real key at resume. For audit, the run record captures
 the **key names** of resume-time inputs (never their values, so secrets are not
 written to the persisted run).
 
-**Input persistence:** A run's effective inputs are persisted to the run record
-when it **suspends** (not at run start), so steps after the gate can resolve
-`inputs.*` on resume. Runs that never suspend do not write their input values to
-disk.
+**Input persistence:** A run's effective inputs are captured on the run record
+at run **start** (`run.captureInputs` in
+`src/domain/workflows/execution_service.ts`, persisted by the first `saveRun`)
+and re-captured when the run suspends, so every run's `inputs` block is on
+disk and steps after a gate can resolve `inputs.*` on resume. Only the *key
+names* of resume-time inputs are recorded, never their values.
 
 **Persistence:** The run record survives process restarts. The approval and
 resume can happen from any machine with access to the repo (or synced
@@ -200,7 +217,9 @@ datastore).
 
 **forEach compatibility:** A `forEach` expansion of a `manual_approval` step
 creates N parallel approval gates, each independently approvable via its expanded
-step name.
+step name. `resume()` refuses to start while *any* step is still
+`waiting_approval` (`src/domain/workflows/execution_service.ts`), so all N
+gates must be decided before the run resumes.
 
 ### Resume from Failed Step (`--from`)
 
@@ -290,7 +309,9 @@ Non-assert steps are omitted from the JUnit output.
 `model.method(modelName, methodName)` or
 `model.method(modelName, methodName, inputs)`, with the same semantics as
 [guard expressions](#modelmethod-in-guards). The method executes through the step
-executor, and the return value is the parsed data output content. This enables
+executor. When the method produced a `resource` data handle, the return value
+is that resource's parsed content; otherwise the raw execution result is
+returned as-is (`src/domain/workflows/execution_service.ts`). This enables
 assertions that check external state:
 
 ```yaml
@@ -311,6 +332,18 @@ uses non-greedy matching. A CEL expression containing a literal `}}` (e.g.
 map/struct literals) will be split prematurely. The error is silently caught and
 the expression left as-is, so it degrades gracefully. Keep `message`
 interpolation to simple value lookups; use the `expr` field for complex CEL.
+
+**Known limits:**
+
+- `expr` must be a raw CEL expression. Wrapping it in `${{ }}` is a
+  validation failure (`validateAssertExprNotInterpolated` in
+  `src/domain/workflows/validation_service.ts`).
+- An assert failure below the `--fail-on` threshold is recorded as an
+  **allowed failure** (`markAllowedFailure`), so downstream `succeeded`
+  conditions see the step as failed while the run can still succeed.
+- `--fail-on` is rejected together with `--server`
+  (`src/cli/commands/workflow_run.ts`); `--junit` cannot be combined with
+  `--json` or with NDJSON `--stdin` batches, and `--out` requires `--junit`.
 
 ## Concurrency Limits
 
@@ -338,11 +371,16 @@ jobs:
 - A positive integer is a hard cap on simultaneously executing units at that
   level.
 - `0` or absent means unbounded (current default behavior).
-- Resolution order: step > job > workflow > unbounded. The most-local non-zero
-  value wins.
+- Resolution order: step > job > workflow > unbounded. Step-level values are
+  collected across the topological level and the **minimum** is applied to
+  every step stream in that level (`src/domain/workflows/execution_service.ts`).
+  Fall-through only happens for *absent* values: an explicit `0` at the job
+  level does not fall through to the workflow value — it resolves to
+  unbounded (or the global ceiling).
 - A global `SWAMP_MAX_CONCURRENT_STEPS` environment variable provides a
   host-level ceiling. The effective limit is `min(local, global)` when both are
-  set.
+  set. On `workflow resume` the ceiling is applied at the step level only — the
+  job-level limit is taken from the workflow as written.
 
 Concurrency limiting is implemented via a semaphore-gated
 `mergeWithConcurrency()` that wraps the existing `merge()` stream combinator.
@@ -360,10 +398,12 @@ supported). Workflow run output is stored in the datastore at
 
 `swamp workflow validate` checks structure (schema, unique names, dependency
 references, cycles) and validates each step's inputs against the resolved
-method's required arguments. To resolve a step's model type, the command first
-hot-loads pulled and local extensions (`modelRegistry.ensureLoaded()`), matching
-the resolution available to `swamp model type describe` and
-`swamp model validate`.
+method's required arguments. To resolve a step's model type, the local path
+first hot-loads pulled and local extensions (`modelRegistry.ensureLoaded()` in
+`src/cli/commands/workflow_validate.ts`), matching the resolution available to
+`swamp model type describe` and `swamp model validate`. With `--server` the
+command delegates to the serve instance, which resolves types from its own
+loaded registry.
 
 Validation results have three severity levels:
 
@@ -398,7 +438,11 @@ model's own input namespace, populated by the step at runtime.
 
 Steps with dynamic inputs (a single `${{ ... }}` expression as the entire
 `inputs` value) are skipped, as are steps with dynamic model references, since
-neither can be statically analysed.
+neither can be statically analysed. A nested-workflow step whose target
+workflow cannot be found reports its input check as "skipped" rather than
+failing (`src/domain/workflows/validation_service.ts`). Other checks the
+validator runs: placement fields (`queueTimeout`, `affinity`, `writes` without
+a placement) and the assert-`expr` interpolation rule described above.
 
 ### Unknown Keys Are Rejected
 
@@ -490,14 +534,21 @@ jobs:
 
 **Schedule behavior:**
 
-- Uses standard 5-field cron syntax (minute, hour, day-of-month, month,
-  day-of-week), plus optional seconds field
-- Validated at parse time using [croner](https://github.com/Hexagon/croner)
+- Uses [croner](https://github.com/Hexagon/croner) grammar: standard 5-field
+  cron (minute, hour, day-of-month, month, day-of-week); a 6-field expression
+  puts **seconds first**; `@daily`-style nicknames and the `L` / `#` modifiers
+  are accepted
+- Validated at parse time by constructing a croner `Cron`
+  (`src/domain/workflows/workflow.ts`)
 - On `swamp serve` startup, all workflows with schedules are registered
 - A filesystem watcher monitors the `workflows/` directory for live reload —
   adding, changing, or removing a schedule takes effect without restart
-- Each scheduled trigger calls `workflowRun` via libswamp (same code path as
-  CLI and WebSocket)
+- Each scheduled fire calls the `executeWorkflow` callback injected into
+  `ScheduledExecutionService` (`src/libswamp/workflows/scheduled_execution.ts`),
+  which serve wires to `executeWorkflowWithLocks` (`src/serve/deps.ts`) — the
+  same path as WebSocket `workflow.run` and webhooks, not the local CLI path
+- In an HA deployment each fire is claimed once across instances via the
+  `cronFireDedup` hook, and a workflow fires single-flight per instance
 - **Overlap prevention:** If a workflow is still running from a previous
   scheduled trigger, the next trigger is skipped with a warning
 - **No catch-up:** If serve was down during a scheduled time, it does not fire
@@ -517,7 +568,7 @@ Overrides can be managed via the CLI or by editing `serve.yaml` directly:
 
 ```bash
 # Set a trigger override (replace semantics — writes the full entry)
-swamp workflow trigger set @swamp/cve/researcher/scan --schedule "0 3 * * *" --input channel=#security
+swamp workflow trigger set @swamp/cve/researcher/scan --schedule "0 3 * * *" --input 'channel=#security'
 swamp workflow trigger set daily-report --schedule "0 8 * * 1-5"
 
 # Show the effective trigger (built-in merged with override)
@@ -540,30 +591,37 @@ triggers:
     schedule: "0 8 * * 1-5"
 ```
 
-Each key is a workflow name (including scoped `@collective/name` patterns). The
-override is shallow-merged onto the workflow's built-in `trigger` block:
-override fields replace their counterparts; unspecified fields fall through from
-the original. A workflow with no built-in trigger block gains one from the
-override.
+Each key is a workflow name (including scoped `@collective/name` patterns). An
+override `schedule` **replaces** the workflow's built-in schedule
+(`resolveSchedule` in `src/libswamp/workflows/scheduled_execution.ts`); an
+override `inputs` map is deep-merged over the built-in `trigger.inputs` at fire
+time. A workflow with no built-in trigger block gains one from the override.
+`swamp workflow trigger set` requires `--schedule`
+(`src/cli/commands/workflow_trigger_set.ts`); unknown keys in an override
+entry are warned about and ignored (`src/serve/serve_config.ts`).
 
 **Override behavior:**
 
-- Applied at `ScheduledExecutionService` startup in a two-phase scan: first all
-  workflows with built-in schedules are registered, then the override map adds
-  schedules for any remaining unscheduled workflows
+- Applied at `ScheduledExecutionService` startup in a two-phase scan: every
+  workflow with a schedule (built-in or override, resolved through
+  `resolveSchedule`) is registered first, then the override map is walked for
+  any remaining names. An inputs-only override on a workflow that has no
+  schedule from either source is a logged no-op
 - The `handleScheduleChange` callback also consults the override map, so
   live-reloaded workflows respect overrides
 - Overrides for unknown workflow names are logged as warnings and skipped
 - Overrides are read at startup and re-read on `swamp serve reload` (SIGHUP or
-  WebSocket `serve.reload`) — changes to `serve.yaml` take effect without a
-  full restart
+  WebSocket `serve.reload`). Both reload triggers require the server to have
+  been started with `--hot-reload` — without it the SIGHUP handler is not
+  installed (`src/cli/commands/serve.ts`) and `serve.reload` is refused with
+  `hot_reload_disabled` (`src/serve/handlers/admin_handlers.ts`)
 - Works with both extension and local workflows — but the primary use case is
   extension workflows that cannot be edited directly
 
 **Precedence for schedule:** `serve.yaml override > workflow YAML trigger`
 
-**Precedence for trigger inputs:** override inputs are merged on top of the
-workflow's built-in `trigger.inputs` — override keys win, but built-in keys
+**Precedence for trigger inputs:** override inputs are deep-merged on top of
+the workflow's built-in `trigger.inputs` — override keys win, but built-in keys
 not present in the override fall through. The existing
 `caller inputs > trigger.inputs > schema defaults` layering remains unchanged;
 override inputs occupy the caller inputs slot, layered above built-in
@@ -596,9 +654,12 @@ the baseline. The merged inputs flow through the same coercion,
 default-application, and validation pipeline as every other run, so a `required`
 input satisfied only by `trigger.inputs` validates successfully.
 
-Trigger inputs apply only to trigger-fired runs (scheduled, webhook). A manual
-`swamp workflow run` invokes the workflow directly and is unaffected by
-`trigger.inputs` — the operator supplies inputs explicitly.
+Trigger inputs are layered in by `executeWorkflowWithLocks`
+(`workflow.baselineInputs` in `src/serve/deps.ts`), so they apply to every
+serve-executed run — scheduled, webhook, **and** ad-hoc `workflow.run` requests
+from `swamp workflow run --server`. Only a local `swamp workflow run` (which
+calls `workflowRun` directly, `src/cli/commands/workflow_run.ts`) is unaffected
+by `trigger.inputs` — there the operator supplies inputs explicitly.
 
 #### Webhook Payload Extraction
 
@@ -626,11 +687,13 @@ The `webhook` namespace exposes:
   JSON, otherwise the raw string.
 - `webhook.headers` — request headers as a map of lowercased names to values.
   The active scheme's signature header and sensitive credential headers are
-  excluded. Redacted headers include authentication (`authorization`,
-  `proxy-authorization`, `cookie`), proxy credentials
-  (`x-amzn-oidc-accesstoken`, `x-goog-iap-jwt-assertion`,
-  `cf-access-jwt-assertion`, `x-forwarded-client-cert`), and any header
-  ending in `-token` or `-secret`.
+  excluded. Redacted headers (`REDACTED_HEADERS` in `src/serve/webhook.ts`)
+  include authentication (`authorization`, `proxy-authorization`, `cookie`,
+  `set-cookie`, `x-api-key`, `x-auth-token`), provider signatures
+  (`x-hub-signature`, `x-shopify-hmac-sha256`), proxy credentials
+  (`x-amzn-oidc-accesstoken`, `x-amzn-oidc-data`,
+  `x-goog-iap-jwt-assertion`, `cf-access-jwt-assertion`,
+  `x-forwarded-client-cert`), and any header ending in `-token` or `-secret`.
 - `webhook.route` — the matched webhook route (e.g. `/hooks/linear`).
 
 The signature scheme is selected per endpoint on the `--webhook` flag:
@@ -668,13 +731,23 @@ ending in `-token` or `-secret`) are redacted before the payload is persisted or
 exposed to workflow expressions. Provider event headers (e.g. `x-github-event`,
 `content-type`) are preserved.
 
+**Limits** (`src/serve/webhook.ts`): request bodies are capped at 10 MB, the
+in-memory run queue at 100 entries, and every verification failure returns a
+uniform `401` so the response cannot be used as an oracle. Webhook endpoints
+can also be declared under a `webhooks:` array in `.swamp/serve.yaml`
+(`src/serve/serve_config.ts`), with secrets given as `@env=`, `@file=`, or
+`@vault=` references; CLI `--webhook` flags replace the config-file entries
+entirely.
+
 ## Jobs
 
 Each job has a name, a description, a series of steps, and an array of objects
 that specify other jobs it depends on that also includes the trigger for this
-job to execute. For example, you can specify that job C depends on job A and B,
-and it triggers only if job A or job B fail. You should be able to express
-complex boolean trigger logic.
+job to execute. Each `dependsOn` entry is `{ job, condition }`; the condition
+is one of `always`, `succeeded`, `failed`, `completed`, `skipped`, or a
+boolean combination via `and` / `or` / `not`
+(`src/domain/workflows/trigger_condition.ts`, `src/domain/workflows/job.ts`).
+For example, job C can depend on jobs A and B and run only if either failed.
 
 ## Steps
 
@@ -937,7 +1010,8 @@ datastore at `workflow-runs/{workflow-uuid}/workflow-run-{run-uuid}.yaml`
 - `suspended` — paused at a manual approval gate
 - `succeeded` — all jobs completed successfully
 - `failed` — at least one job failed or an error occurred
-- `cancelled` — explicitly cancelled by user or daemon restart
+- `cancelled` — explicitly cancelled by a user (runs orphaned by a serve
+  restart are marked `failed`, see below)
 
 ### Cancellation
 
@@ -948,10 +1022,17 @@ AbortController for live cancellation. When serve is not running, the command
 writes the cancelled status directly to the run YAML (offline cancel).
 
 `swamp workflow cancel --all` cancels all active runs across all workflows.
+With `--server`, `--run <id>` is required, `--all` is rejected, and `--reason`
+is ignored (the cancel endpoint accepts no reason;
+`src/cli/commands/workflow_cancel.ts`).
 
 On daemon restart, `swamp serve` automatically reaps orphaned runs left in
-`running` state by the previous process, marking them `cancelled` with reason
-`daemon restarted`.
+`running` state by the previous process (`reapOrphanedWorkflowRuns` in
+`src/cli/commands/serve.ts`): each is interrupted via
+`run.interrupt("server_crash")` (`src/domain/workflows/workflow_run.ts`), which
+marks in-flight steps and the run **`failed`** and tags the run with
+`interrupt_reason: server_crash`. "daemon restarted" appears only in the log
+line explaining why the run was reaped.
 
 A `RunCancelRegistry` in the serve layer centralises AbortController tracking
 across all execution paths (scheduled, WebSocket ad-hoc, webhook). The cancel

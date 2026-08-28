@@ -1,6 +1,6 @@
 ---
 audience: maintainer, extension-author
-last-verified: 2026-08-28 @ 4bde205b
+last-verified: 2026-08-28 @ 3d5955a9
 ---
 
 # Models
@@ -59,8 +59,11 @@ model's current `version`, the upgrade chain runs all applicable upgrades in
 order, transforming global arguments at each step.
 
 Upgrades are **lazy** — they run at method execution time in
-`executeWorkflow()`, not at load time. The upgraded definition is persisted so
-the upgrade only runs once.
+`DefaultMethodExecutionService.executeWorkflow()`
+(`src/domain/models/method_execution_service.ts`) via
+`DefinitionUpgradeService` (`src/domain/models/definition_upgrade_service.ts`),
+not at load time. The upgraded definition is persisted so the upgrade only runs
+once.
 
 ### Upgrade Rules
 
@@ -130,7 +133,8 @@ the model is now at `"2026.02.09.1"`, running a method will:
 ### Backwards Compatibility
 
 Existing definitions on disk with numeric `typeVersion` (e.g., `typeVersion: 1`)
-are automatically coerced to `undefined` by the `DefinitionSchema`, meaning
+are automatically coerced to `undefined` by the `DefinitionSchema`
+(`z.preprocess` in `src/domain/definitions/definition.ts`), meaning
 "pre-CalVer, needs upgrade from earliest version". They will be upgraded on
 first method execution and persisted with the new CalVer `typeVersion`.
 
@@ -147,9 +151,11 @@ expressions in global arguments, definitions shared across multiple workflow
 steps.
 
 These definitions live in the top-level `models/` directory of a repository,
-underneath the normalized type as a directory. The file name is `${id}.yaml`.
-For example,
-`models/aws/ec2/vpc/fc7fd41e-ae16-4b31-b57a-86de716e3ece.yaml`.
+underneath the normalized type as a directory. The file name is `<name>.yaml`
+when the definition name is filename-safe — for example
+`models/aws/ec2/vpc/my-vpc.yaml`. Names that are not filename-safe fall back
+to the legacy `${id}.yaml` form (`resolveWritePath` in
+`src/infrastructure/persistence/yaml_definition_repository.ts`).
 
 ### Direct Type Execution (recommended starting point)
 
@@ -372,11 +378,14 @@ override this value — it is enforced for audit integrity.
 ## Pre-flight Checks
 
 Pre-flight checks are optional guards that run automatically before any
-_mutating_ method invocation. Mutating methods are those that change real
-resource state: `create`, `update`, `delete`, and `action`. Read-only methods
-(`get`, `read`, `describe`, `show`, `list`, `search`, `find`) do not trigger
-checks. Method names not in the recognized list (e.g. `sync`) default to
-mutating — set `kind: "read"` explicitly to suppress checks for those.
+_mutating_ method invocation. A method's kind is its explicit `kind` field or,
+when omitted, inferred from its name by `inferMethodKind()`
+(`src/domain/models/model.ts`): `create`; `get`/`read`/`describe`/`show` →
+`read`; `update`/`patch` → `update`; `delete`/`destroy`/`remove` → `delete`;
+`list`/`search`/`find` → `list`. The `read` and `list` kinds do not trigger
+checks; every other kind does. Method names not in the recognized list (e.g.
+`sync`) infer no kind and therefore default to mutating — set `kind: "read"`
+or `kind: "list"` explicitly to suppress checks for those.
 
 Checks give models a way to enforce invariants — policy constraints, dependency
 readiness, quota availability — before execution begins, avoiding
@@ -429,9 +438,11 @@ checks: {
 
 ### isMutatingKind
 
-The `isMutatingKind(methodName)` helper determines whether a method name is
-considered mutating. It returns `true` for `create`, `update`, `delete`, and
-`action`. This is used internally to decide whether to run checks.
+The `isMutatingKind(kind: MethodKind | undefined)` helper
+(`src/domain/models/model.ts:733`) takes the method's kind — not its name —
+and returns `true` for everything except `"read"` and `"list"`, including
+`undefined` (unrecognized names). This is used internally to decide whether to
+run checks.
 
 ### Labels and appliesTo
 

@@ -1,6 +1,6 @@
 ---
 audience: maintainer, operator
-last-verified: 2026-08-28 @ ce0ca66b
+last-verified: 2026-08-28 @ 3d5955a9
 ---
 
 # Data
@@ -48,16 +48,16 @@ persisted form is `metadata.yaml`, validated by `DataMetadataSchema`
 | Field                    | Meaning                                                                                                                                                                                   | Source                                                   |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
 | `type` / `modelId`       | Owning model type (directory-normalised) and definition UUID; part of the path, not of `metadata.yaml`                                                                                    | `unified_data_repository.ts` `getDataNameDir`            |
-| `name`                   | Instance name. No `..`, `/`, `\`, NUL; `latest` is reserved                                                                                                                               | `data_metadata.ts`; `data.ts` `RESERVED_DATA_NAMES`      |
+| `name`                   | Instance name. No `..`, `/`, `\`, NUL; `latest` is reserved (case-insensitively)                                                                                                          | `data_metadata.ts`; `data.ts` `isReservedDataName`       |
 | `id`                     | UUID shared by every version of one name                                                                                                                                                  | `data_id.ts`                                             |
 | `version`                | Positive integer, starts at 1, allocated by `mkdir` claim                                                                                                                                 | `unified_data_repository.ts` `atomicAllocateVersionDir`  |
-| `namespace`              | Which repo wrote it in a shared datastore; `""` in solo mode. Catalog column `ns` in CEL                                                                                                  | `namespace.ts`; `data_access_service.ts`                 |
+| `namespace`              | Which repo wrote it in a shared datastore; `""` in solo mode. Catalog column `namespace`, exposed to CEL as `ns`                                                                          | `namespace.ts`; `catalog_store.ts`                       |
 | `contentType`            | MIME type; resources are always `application/json`                                                                                                                                        | `data_writer.ts` `createResourceWriter`                  |
 | `lifetime`               | `Nm/h/d/w/mo/y`, `ephemeral`, `infinite`, `job`, `workflow`; zero durations normalise to `workflow`                                                                                       | `data_metadata.ts` `LifetimeSchema`, `normalizeLifetime` |
 | `garbageCollection`      | Keep N versions (integer) or versions younger than a duration                                                                                                                             | `data_metadata.ts` `GarbageCollectionSchema`             |
 | `streaming`              | Line-oriented file written incrementally                                                                                                                                                  | `data_writer.ts` `writeLine`                             |
 | `tags`                   | String map; must contain `type`. Writers add `specName` and `modelName`                                                                                                                   | `data_metadata.ts`; `data_writer.ts`                     |
-| `ownerDefinition`        | `ownerType` (`model-method`, `workflow-step`, `manual`) + `ownerRef` (the model id); workflow provenance (`workflowId`, `workflowRunId`, `workflowName`, `jobName`, `stepName`, `source`) | `data_metadata.ts` `OwnerDefinitionSchema`               |
+| `ownerDefinition`        | `ownerType` (`model-method`, `workflow-step`, `manual`) + `ownerRef` (the model id); workflow provenance (`workflowId`, `workflowRunId`, `workflowName`, `jobName`, `stepName`, `source`); optional legacy `definitionHash`, kept only for data already on disk | `data_metadata.ts` `OwnerDefinitionSchema`               |
 | `size`, `checksum`       | Byte length and SHA-256 of `raw`                                                                                                                                                          | `unified_data_repository.ts` `computeChecksum`           |
 | `lifecycle`, `renamedTo` | `deleted` marks a tombstone; `renamedTo` makes it a forwarding tombstone                                                                                                                  | `data.ts` `withDeletionMarker`, `withRenameMarker`       |
 
@@ -80,9 +80,12 @@ there is no separate dimension column.
 **`latest`.** Each name directory holds a plain-text `latest` file containing
 the current version number. Reads without a version go through it
 (`getLatestVersion`, with a symlink fallback for pre-text-marker layouts and a
-directory scan as last resort). The catalog mirrors it as `is_latest`, kept to
-exactly one row per `(namespace, type, modelId, name)` by `upsertNewVersion`
-(`catalog_store.ts`).
+directory scan as last resort). The catalog mirrors it as `is_latest`, and
+`upsertNewVersion` (`catalog_store.ts`) keeps it step-aware: a model-method
+write (`step_name = ""`) demotes every prior latest row for the name, while a
+workflow-step write demotes only rows with the same `step_name` or an empty
+one — so one `is_latest=1` row per `(namespace, type, modelId, name, step_name)`
+([data-query.md §Step-aware versioning](../enablers/data-query.md#provenance-based-filtering)).
 
 **`ModelOutput` — the run-level record.** Every method invocation also writes a
 `ModelOutput` (`src/domain/models/model_output.ts`): status
@@ -140,9 +143,13 @@ vault name — `data_output_override.ts`).
 
 **Sensitive fields.** If a resource spec has `{ sensitive: true }` fields or
 `sensitiveOutput: true`, `processSensitiveResourceData` stores each value in a
-vault under a key derived from type/model/method/spec/instance and replaces it
-in the payload with `${{ vault.get('<vault>', '<key>') }}`. With no vault
-configured the write fails rather than persisting the secret. The whole
+vault under `field.vaultKey` or the derived key
+`type/modelId/method/spec/instance/field.path`, choosing the vault as
+`field.vaultName ?? spec.vaultName ?? default vault ?? first user vault`, and
+replaces it in the payload with `${{ vault.get('<vault>', '<key>') }}`.
+`modelRequiresVault()` (`data_writer.ts`) lets callers check up front whether a
+model has any such spec; with no vault configured the write fails rather than
+persisting the secret. The whole
 serialised payload then passes through the run's `SecretRedactor`, which also
 scrubs log output (`src/domain/secrets/secret_redactor.ts`). On read,
 `resolveVaultRefsInData` expands the references and registers the resolved
@@ -159,23 +166,34 @@ resource's final state, which keeps workflow re-runs idempotent.
 
 - **CEL** — `data.latest("model", "name")`, `data.version(...)`,
   `data.query('<predicate>')` and friends all return `DataRecord`; `attributes`
-  is the parsed JSON for resources, `content` the text for text types. Model
-  names may be namespace-qualified as `ns:model`, or `*:model` to search every
-  namespace ([data-query.md](../enablers/data-query.md)).
-- **In a method** — `context.readModelData(modelName, specName?)` and
-  `context.queryData(predicate, select?)` (`model.ts`), backed by
-  `DataAccessService` (`src/domain/data/data_access_service.ts`). With a catalog
-  it issues a predicate scoped to the caller's own namespace unless the name
-  carries one; without a catalog it walks the filesystem and, if the
-  definition's UUID changed, recovers data written under the old UUID by
-  `modelName` tag ("orphan recovery" — a read-time convenience, never a delete).
+  is the parsed JSON for resources, `content` is the parsed object for
+  `application/json` and the raw text for other text types (`text/*`,
+  `application/yaml`, `application/x-yaml` — `content_type.ts`,
+  `data_record_mapper.ts` `parseContent`). Model names may be
+  namespace-qualified as `ns:model`, or `*:model` to search every namespace
+  (`data.findByTag` excepted — it always reads the caller's own namespace;
+  [data-query.md](../enablers/data-query.md)).
+- **In a method** — `context.readModelData(modelName, specName?)`,
+  `context.readResource(instanceName, version?)` (the model's own resource,
+  vault references resolved) and `context.queryData(predicate, select?)`
+  (`model.ts`), backed by `DataAccessService`
+  (`src/domain/data/data_access_service.ts`). With a catalog it issues a
+  predicate scoped to the caller's own namespace unless the name carries one;
+  without a catalog it walks the filesystem and, if the definition's UUID
+  changed, recovers data written under the old UUID — first by `modelName` tag,
+  then, only when the type has a single definition, by that definition ("orphan
+  recovery" — a read-time convenience, never a delete).
 - **CLI** — `swamp data get <model> <name> [--version N] [--no-content]`, or
   `--workflow <name> [--run <id>]` to read what a run produced
   (`src/domain/data/workflow_data_service.ts`); `swamp data list` (grouped by
-  type), `swamp data versions`, `swamp data search` (free text and tag filters)
+  type), `swamp data versions`, `swamp data search` (free text plus `--type`,
+  `--lifetime`, `--owner-type`, `--workflow`, `--model`, `--content-type`,
+  `--since`, `--output`, `--run`, `--tag KEY=VALUE`, `--streaming`, `--limit`)
   and `swamp data query '<predicate>' [--select] [--limit]`
-  (`src/cli/commands/data_*.ts`). All read the same catalog; `get` also accepts
-  `--server` to read from a serve instance.
+  (`src/cli/commands/data_*.ts`). Only `search` and `query` read the catalog;
+  `get`, `list` and `versions` go through the filesystem repository
+  (`src/libswamp/data/{get,list,versions}.ts`). Every `swamp data` subcommand
+  accepts `--server` to run against a serve instance.
 
 ## Versioning and lifecycle
 
@@ -187,16 +205,19 @@ directories). What can remove versions:
 | Mechanism                       | Removes                                                                                                 | Source                                                                         |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
 | Write-time cap (`autoGc: true`) | On each save, versions beyond an **integer** `garbageCollection` cap                                    | `unified_data_repository.ts` `pruneExcessVersions`; `.swamp.yaml` `autoGc`     |
+| Post-run GC (`autoGc: true`)    | After each `model method run`: the model's `collectGarbage` (count **and** duration caps) plus lifetime expiry of its names; failures warn and never fail the run | `src/libswamp/models/run.ts`; `src/libswamp/data/gc.ts` `autoGc`               |
 | `swamp data gc`                 | Phase 1: whole names whose `lifetime` expired. Phase 2: per-name version GC by count or duration        | `src/domain/data/data_lifecycle_service.ts` `deleteExpiredData`                |
-| `swamp data delete`             | One version, one name, `--prefix` many names, or `--all` for a model; confirms unless `--force`/`--yes` | `src/domain/data/data_delete_service.ts`; `src/libswamp/data/delete.ts`        |
+| `swamp data delete`             | One version, one name, `--prefix` many names, or `--all` for a model; confirms unless `--force`/`--yes`; `--dry-run` previews `--prefix`/`--all` | `src/domain/data/data_delete_service.ts`; `src/libswamp/data/delete.ts`        |
 | `swamp data prune`              | Every name under a `(type, modelId)` whose definition no longer resolves                                | `data_lifecycle_service.ts` `deleteOrphanedData`; `src/libswamp/data/prune.ts` |
-| `swamp run gc`                  | Old `outputs/` and `workflow-runs/` records — never `data/`                                             | `src/domain/data/run_lifecycle_service.ts`                                     |
+| `swamp run gc`                  | Old `outputs/` and `workflow-runs/` records (default retention 30 days each) — never `data/`            | `src/domain/data/run_lifecycle_service.ts`                                     |
 
 Expiry rules (`calculateExpiration`, `isExpired`): duration lifetimes expire at
 `createdAt + duration`; `infinite` never; `workflow` and `job` expire when the
 owning workflow run record no longer exists; `ephemeral` never reaches the
-persistent store. Tombstones (`lifecycle: deleted`) are skipped by lifetime GC,
-so a deleted resource's final state survives until explicitly removed.
+persistent store. Tombstones (`lifecycle: deleted`) are skipped by lifetime
+expiry (phase 1, `data_lifecycle_service.ts`), so a deleted resource's final
+state survives until explicitly removed; phase 2 `collectGarbage` still prunes
+older versions under a tombstoned name.
 
 What each removal preserves:
 
@@ -216,13 +237,20 @@ What each removal preserves:
   (`src/domain/data/data_rename_service.ts`, `unified_data_repository.ts`).
 
 `gc`, `prune` and `delete` take the global datastore lock and, on a remote
-datastore, push their deletions in the same sync
+datastore, push their deletions in the same sync; `gc --dry-run` and
+`prune --dry-run` use the read-only path with no lock
+(`src/cli/commands/data_gc.ts`, `data_prune.ts`)
 ([datastores.md](../enablers/datastores.md#orphaned-data-reclamation-swamp-data-prune)).
 
 ## Where it lives
 
 Datastore-tier layout, default root `.swamp/`
-(`src/infrastructure/persistence/paths.ts` `SWAMP_SUBDIRS`;
+(`src/infrastructure/persistence/paths.ts` `SWAMP_SUBDIRS`, which also names
+`definitions`, `definitions-evaluated`, `workflows`, `workflows-evaluated`,
+`vault`, `secrets`, `telemetry`, `logs`, `files`, `bundles`, `vault-bundles`,
+`driver-bundles`, `datastore-bundles`, `report-bundles`, `auto-definitions`,
+`audit`, `pulled-extensions/*` and the legacy `inputs`, `inputs-evaluated`,
+`resources`;
 [repo.md §Directory Structure](../surfaces/repo.md#directory-structure)):
 
 ```
@@ -242,16 +270,21 @@ workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
   datastore never carries it. `CATALOG_SCHEMA_VERSION` is checked on open; a
   mismatch drops the table and clears the `populated` flag, and the next query
   backfills from disk (`catalog_store.ts` `migrateIfNeeded`). One `is_latest=1`
-  row per name is the invariant every write path maintains through
-  `upsertNewVersion`.
+  row per `(name, step_name)` is the invariant every write path maintains
+  through `upsertNewVersion` (see [`latest`](#the-record) above).
 - **Datastores and sync.** The repository writes wherever the
   `DatastorePathResolver` points; a remote backend (S3 extension) gets a
-  `markDirty` hook on every mutation and syncs the cache in two phases
-  ([datastores.md](../enablers/datastores.md)). Definitions are never in the
-  datastore.
+  `markDirty` hook on its mutations, is pulled when a write command starts and
+  pushed when it flushes. Splitting the push into `preparePush` / `commitPush`
+  is opt-in via the extension's `twoPhaseSync` capability
+  (`src/cli/repo_context.ts` `flushTwoPhasePush`;
+  [datastores.md](../enablers/datastores.md#two-phase-sync)). Definitions are
+  never in the datastore.
 - **Namespaces.** In a shared datastore each repo is assigned a slug
-  (`swamp datastore namespace set <slug>`, `[a-z0-9][a-z0-9-]*`, max 64 chars —
-  `src/domain/data/namespace.ts`). The resolver prefixes the datastore tier as
+  (`swamp datastore namespace set <slug>`;
+  `/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/`, max 64 chars, no trailing `-` —
+  `src/domain/data/namespace.ts`; `swamp datastore namespace list` shows the
+  registered slugs). The resolver prefixes the datastore tier as
   `{base}/{namespace}/data/...`, and every catalog row the repository writes is
   stamped with the same namespace (`namespaceFromResolver` keeps the two in
   lockstep). Foreign namespaces become queryable by pulling their catalog
@@ -263,8 +296,9 @@ workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
   (`src/infrastructure/persistence/in_memory_data_repository.ts`,
   `src/domain/data/composite_data_repository.ts`). The store is created per
   workflow run or standalone method run and disposed in `finally`; it is capped
-  at `DEFAULT_EPHEMERAL_MAX_BYTES` (512 MB) and throws
-  `EphemeralBudgetExceededError` beyond that
+  at `DEFAULT_EPHEMERAL_MAX_BYTES` (512 MB; override with the
+  `SWAMP_EPHEMERAL_BUDGET` env var, `src/infrastructure/persistence/ephemeral_store.ts`)
+  and throws `EphemeralBudgetExceededError` beyond that
   ([data-query.md §Ephemeral Data](../enablers/data-query.md#ephemeral-data)).
 - **Remote data plane.** Workers hold no datastore configuration. Byte-heavy
   traffic goes over HTTP to the orchestrator (`src/serve/data_plane.ts`):
@@ -289,9 +323,9 @@ workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
 - Version numbers are allocated by `mkdir`, so two concurrent writers to the
   same name get distinct versions rather than clobbering each other.
 - Exactly one `latest` per name on disk and exactly one `is_latest=1` row per
-  `(namespace, type, modelId, name)` in the catalog; every mutating path
-  (`save`, `append`, `rename`, `delete`, `collectGarbage`, deferred advance)
-  re-establishes both before returning.
+  `(namespace, type, modelId, name, step_name)` in the catalog; every mutating
+  path (`save`, `append`, `rename`, `delete`, `collectGarbage`, deferred
+  advance) re-establishes both before returning.
 - Only the owner — same `ownerType` and `ownerRef` — may add a version to an
   existing name (`Data.isOwnedBy`, enforced in `save` and `allocateVersion`).
 - `tags.type` is always present; writers set it to `resource` or `file` and
@@ -301,16 +335,24 @@ workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
   directory (`assertSafePath`, `assertPathContained`).
 - Sensitive values are replaced by vault references before bytes are written; a
   spec with sensitive fields and no configured vault cannot be persisted.
-- Catalog rows are derived state. Deleting `_catalog.db` loses nothing; the next
-  query rebuilds it from `metadata.yaml`.
-- Every mutation under the datastore tier calls `markDirty` first, so a remote
-  datastore can never miss a changed path.
+- Catalog rows are derived state. Deleting `_catalog.db` loses no local data;
+  the next query rebuilds it from `metadata.yaml`. It does drop foreign rows
+  fetched by `swamp datastore catalog pull` (`catalog_store.ts`
+  `bulkUpsertForeign`) — re-pull to restore them.
+- Every public mutation that starts from a clean state (`save`, `append`,
+  `delete`, `rename`, `allocateVersion`, `finalizeVersion`, `removeLatestMarker`)
+  calls `markDirty` before touching disk; `collectGarbage` and
+  `pruneExcessVersions` notify per removed path inside their loops, and the
+  deferred `advanceLatestMarkers` / `rollbackVersions` do not notify at all —
+  they rely on the earlier `saveDeferred` / `finalizeVersionDeferred` signal
+  (`unified_data_repository.ts`).
 
 ## Known limits
 
-- Write-time GC (`autoGc`) enforces only integer version caps; duration-based
-  `garbageCollection` is applied by `swamp data gc` alone
-  (`unified_data_repository.ts` `save`).
+- Write-time GC inside `save` enforces only integer version caps
+  (`unified_data_repository.ts` `pruneExcessVersions`); duration-based
+  `garbageCollection` is applied by the post-run `autoGc` pass and by
+  `swamp data gc`.
 - `job` and `workflow` lifetimes have no dependency tracking of their own; they
   expire when the run record is gone, and data with these lifetimes but no
   `workflowRunId` is never expired (`data_lifecycle_service.ts` `isExpired`).

@@ -1,3 +1,8 @@
+---
+audience: maintainer
+last-verified: 2026-08-28 @ 3d5955a9
+---
+
 # Rendering: Connecting libswamp Events to Presentation Modes
 
 ## Overview
@@ -79,20 +84,23 @@ export interface WorkflowRunRenderer extends Renderer<WorkflowRunEvent> {
 Each operation has a factory that selects the right renderer based on mode:
 
 ```typescript
-// presentation/renderers/workflow_run.ts
+// src/presentation/renderers/workflow_run.ts
+export interface WorkflowRunRenderOpts {
+  workflowName: string;
+  isAuthenticated?: boolean;
+  quiet?: boolean;
+  failOnSeverity?: AssertSeverity;
+}
+
 export function createWorkflowRunRenderer(
   mode: OutputMode,
-  opts: WorkflowRunRenderOpts, // includes isAuthenticated?: boolean
+  opts: WorkflowRunRenderOpts,
 ): WorkflowRunRenderer {
   switch (mode) {
     case "json":
       return new JsonWorkflowRunRenderer();
     case "log":
-      // When stdout is a TTY, use the Ink-based TUI renderer
-      if (!opts.forceLog && isStdoutTty()) {
-        return new InkWorkflowRunRenderer(opts);
-      }
-      return new LogWorkflowRunRenderer(opts);
+      return new ConsoleWorkflowRunRenderer(opts);
   }
 }
 ```
@@ -124,19 +132,27 @@ JSON consumers (`jq`, AI agents, CI scripts):
    `Deno.stdin.isTerminal()` to detect non-interactive contexts in addition to
    `outputMode`.
 
-Renderer implementations for new commands MUST preserve these guarantees. The
-regression test suite at `integration/json_isolation_test.ts` exercises the
-contract across representative commands and is the authoritative gate.
+Renderer implementations for new commands MUST preserve these guarantees.
+`integration/json_mode_conformance_test.ts` is the static gate: it walks the
+Cliffy command tree and asserts that `--json` is a global option, that every
+leaf command inherits it and routes output through the `OutputMode` plumbing,
+and that the exemption list has no stale entries. It does not execute
+commands; behavioural checks of stdout isolation belong in the `swamp-uat`
+repo.
 
-This contract is enforced at the logging layer by
-`initializeLogging({ jsonMode: true })` in
-`src/infrastructure/logging/logger.ts`, which configures the
-`["model","method","run"]`, `["workflow","run"]`, and `["logtape","meta"]`
-category loggers with `parentSinks: "override"` so they cannot inherit the root
-logger's sinks. The single emitter for fatal output in JSON mode is
-`renderError` in `src/presentation/output/error_output.ts` — it writes to stderr
-(`console.error`) and skips `logger.fatal`, so log-mode sinks cannot produce a
-duplicate entry.
+At the logging layer, `initializeLogging()` in
+`src/infrastructure/logging/logger.ts` configures the
+`["model","method","run"]` and `["workflow","run"]` category loggers with
+`parentSinks: forceLog && !quiet ? "inherit" : "override"` — i.e. run-scoped
+records reach the root console sink only when a caller explicitly forces log
+output; otherwise they go to the run file (and OTel) sinks only, regardless
+of `jsonMode`. The `["logtape","meta"]` logger is the one keyed on
+`jsonMode`: in JSON mode it gets no sinks and `parentSinks: "override"`, so
+LogTape's own warnings never reach stdout. The single emitter for fatal
+output in JSON mode is `renderError` in
+`src/presentation/output/error_output.ts` — it writes to stderr
+(`console.error`) and skips `logger.fatal`, so log-mode sinks cannot produce
+a duplicate entry.
 
 ## Logging Boundaries
 
@@ -199,32 +215,11 @@ events directly — it has no knowledge of job/step topology. Instead, these
 layers emit topology-agnostic `MethodExecutionEvent` values via an `onEvent`
 callback on `MethodContext`.
 
-```typescript
-// domain/models/method_events.ts — 6 variants
-type MethodExecutionEvent =
-  | { type: "output"; line: string; stream: "stdout" | "stderr" }
-  | {
-    type: "vault_secret_stored";
-    fieldPath: string;
-    vaultName: string;
-    vaultKey: string;
-  }
-  | {
-    type: "schema_validation_warning";
-    specName: string;
-    instanceName: string;
-    error: string;
-  }
-  | { type: "vault_single_quote_warning"; message: string }
-  | { type: "step_queued"; requirement: string }
-  | {
-    type: "nested_model_invocation";
-    targetModelType: string;
-    targetMethod: string;
-    callerModelType: string;
-    callerMethod: string;
-  };
-```
+`MethodExecutionEvent` (`src/domain/models/method_events.ts`) has seven
+variants, discriminated on `type`: `output`, `vault_secret_stored`,
+`schema_validation_warning`, `vault_single_quote_warning`, `step_queued`,
+`nested_model_invocation`, and `step_target_disconnected`. See the file for
+payloads.
 
 The workflow execution layer wraps these into `method_event` workflow events by
 adding the topology context (jobId, stepId, modelName, methodName). The callback
@@ -234,10 +229,10 @@ chain is:
 StepExecutionContext.emitEvent → MethodContext.onEvent → DataWriter/VaultStorage
 ```
 
-The `LogWorkflowRunRenderer` uses `getRunLogger(modelName, methodName)` to
-present these events — preserving the existing
-`model·method·run·<name>·<method>` log category. The `JsonWorkflowRunRenderer`
-ignores them (no-ops), keeping stdout clean for machine consumption.
+The `ConsoleWorkflowRunRenderer` presents these events through the
+`console_writer` helpers (`writeOutput` and a per-job pipe layout) rather
+than through LogTape category loggers. The `JsonWorkflowRunRenderer` ignores
+them (no-ops), keeping stdout clean for machine consumption.
 
 Internal phase transitions (expression evaluation, definition caching, data
 persistence) are logged at `debug` level for log file capture only — they are
@@ -263,7 +258,9 @@ type AuthWhoamiEvent =
   | { kind: "error"; error: SwampError };
 ```
 
-### Log-mode renderer
+### Renderers
+
+Both renderers live in `src/presentation/renderers/auth_whoami.ts`:
 
 ```typescript
 class LogAuthWhoamiRenderer implements Renderer<AuthWhoamiEvent> {
@@ -272,99 +269,38 @@ class LogAuthWhoamiRenderer implements Renderer<AuthWhoamiEvent> {
       loading_credentials: () => {},
       contacting_server: () => {},
       completed: (e) => {
-        writeOutput(
-          `${e.identity.username} (${e.identity.email}) on ${e.identity.serverUrl}`,
-        );
-
-        // Richer output when the server sent entitlement...
+        // identity line (user, or collective token + scopes) via writeOutput,
+        // then either the entitlement block the server sent...
         const entitlements = e.identity.collectiveEntitlements;
-        if (entitlements && entitlements.length > 0) {
-          writeOutput(`${bold(cyan("Plan:"))} ${bold(planName)}`);
-          writeOutput(cyan("Collectives:"));
-          writeOutput(collectiveLines(entitlements).join("\n"));
-          return;
-        }
-
-        // ...and the original single line when it didn't. An older or
-        // self-hosted swamp-club sends no entitlement fields, and upgrading
-        // the CLI alone must not change what those users see.
-        if (e.identity.collectives && e.identity.collectives.length > 0) {
-          writeOutput(`Collectives: ${e.identity.collectives.join(", ")}`);
-        }
+        if (entitlements && entitlements.length > 0) { /* Plan / Collectives */ return; }
+        // ...or the original single "Collectives:" line when it didn't.
       },
-      error: (e) => {
-        throw new UserError(e.error.message);
-      },
+      error: (e) => { throw new UserError(e.error.message); },
     };
   }
 }
+
+class JsonAuthWhoamiRenderer implements Renderer<AuthWhoamiEvent> { /* ... */ }
+
+export function createAuthWhoamiRenderer(mode: OutputMode): Renderer<AuthWhoamiEvent>;
 ```
 
-Note the shape of that fallback: the renderer branches on whether the *server*
-supplied a field, not on a CLI-side flag. Optional-everything is what lets one
-CLI talk to several server versions, and the pre-existing output is the
-behaviour to preserve, not a legacy path to tolerate.
-
-### JSON-mode renderer
-
-```typescript
-class JsonAuthWhoamiRenderer implements Renderer<AuthWhoamiEvent> {
-  handlers(): EventHandlers<AuthWhoamiEvent> {
-    return {
-      loading_credentials: () => {},
-      contacting_server: () => {},
-      completed: (e) => {
-        console.log(JSON.stringify(
-          {
-            authenticated: true,
-            serverUrl: e.identity.serverUrl,
-            id: e.identity.id,
-            username: e.identity.username,
-            email: e.identity.email,
-            name: e.identity.name,
-            ...(e.identity.collectives
-              ? { collectives: e.identity.collectives }
-              : {}),
-            // Entitlement passes through verbatim. Log mode makes display
-            // decisions (it hides a paid collective's trial); JSON mode makes
-            // none — it is what gets pasted into a support report.
-            ...(e.identity.plan ? { plan: e.identity.plan } : {}),
-            ...(e.identity.collectiveEntitlements
-              ? { collectiveEntitlements: e.identity.collectiveEntitlements }
-              : {}),
-          },
-          null,
-          2,
-        ));
-      },
-      error: (e) => {
-        throw new UserError(e.error.message);
-      },
-    };
-  }
-}
-```
+Note the shape of the log-mode fallback: the renderer branches on whether the
+*server* supplied a field, not on a CLI-side flag. Optional-everything is what
+lets one CLI talk to several server versions, and the pre-existing output is
+the behaviour to preserve, not a legacy path to tolerate. The JSON renderer
+passes entitlement fields through verbatim — log mode makes display decisions
+(it hides a paid collective's trial); JSON mode makes none, because it is what
+gets pasted into a support report.
 
 ### Command handler
 
+`src/cli/commands/auth_whoami.ts` creates the CLI context, a
+`LibSwampContext`, and `createAuthDeps(...)`, then:
+
 ```typescript
-export const authWhoamiCommand = new Command()
-  .name("whoami")
-  .description("Show current authenticated identity")
-  .action(async function (options: AnyOptions) {
-    const cliCtx = createContext(options as GlobalOptions, ["auth", "whoami"]);
-    cliCtx.logger.debug("Executing auth whoami command");
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createAuthDeps({
-      serverUrlOverride: Deno.env.get("SWAMP_CLUB_URL"),
-    });
-
-    const renderer = createAuthWhoamiRenderer(cliCtx.outputMode);
-    await consumeStream(whoami(ctx, deps), renderer.handlers());
-
-    cliCtx.logger.debug("Auth whoami command completed");
-  });
+const renderer = createAuthWhoamiRenderer(cliCtx.outputMode);
+await consumeStream(whoami(ctx, deps), renderer.handlers());
 ```
 
 ## Example: `workflow run`
@@ -373,347 +309,35 @@ A long-running operation with streaming progress from parallel jobs and steps.
 
 ### libswamp event type (existing)
 
-```typescript
-// 24 variants — see libswamp.md for full details
-type WorkflowRunEvent =
-  | { kind: "validating_inputs" }
-  | { kind: "evaluating_workflow" }
-  | {
-    kind: "started";
-    runId: string;
-    workflowName: string;
-    jobs: WorkflowRunJobInfo[];
-  }
-  | { kind: "job_started"; jobId: string }
-  | { kind: "job_completed"; jobId: string; status: string }
-  | { kind: "job_skipped"; jobId: string }
-  | { kind: "step_started"; jobId: string; stepId: string }
-  | { kind: "step_completed"; jobId: string; stepId: string; executor?: string }
-  | { kind: "step_skipped"; jobId: string; stepId: string }
-  | {
-    kind: "approval_requested";
-    runId: string;
-    jobId: string;
-    stepId: string;
-    prompt: string;
-    timeout?: number;
-  }
-  | {
-    kind: "step_failed";
-    jobId: string;
-    stepId: string;
-    error: string;
-    allowedFailure?: boolean;
-    modelName?: string;
-    methodName?: string;
-  }
-  | {
-    kind: "model_resolved";
-    jobId: string;
-    stepId: string;
-    modelName: string;
-    modelType: string;
-    modelId: string;
-    methodName: string;
-  }
-  | {
-    kind: "env_var_warning";
-    jobId: string;
-    stepId: string;
-    modelName: string;
-    envVars: EnvVarUsageDetail[];
-    message: string;
-  }
-  | {
-    kind: "method_executing";
-    jobId: string;
-    stepId: string;
-    modelName: string;
-    methodName: string;
-  }
-  | {
-    kind: "method_output";
-    jobId: string;
-    stepId: string;
-    modelName: string;
-    methodName: string;
-    stream: "stdout" | "stderr";
-    line: string;
-  }
-  | { kind: "step_queued"; jobId: string; stepId: string; requirement: string }
-  | {
-    kind: "method_event";
-    jobId: string;
-    stepId: string;
-    modelName: string;
-    methodName: string;
-    event: MethodExecutionEvent;
-  }
-  | {
-    kind: "report_started";
-    reportName: string;
-    scope: string;
-    jobId?: string;
-    stepId?: string;
-  }
-  | {
-    kind: "report_completed";
-    reportName: string;
-    scope: string;
-    markdown: string;
-    json: Record<string, unknown>;
-    jobId?: string;
-    stepId?: string;
-  }
-  | {
-    kind: "report_failed";
-    reportName: string;
-    scope: string;
-    error: string;
-    jobId?: string;
-    stepId?: string;
-  }
-  | { kind: "completed"; run: WorkflowRunView }
-  | { kind: "cancelled"; run: WorkflowRunView; reason?: string }
-  | {
-    kind: "suspended";
-    run: WorkflowRunView;
-    jobId: string;
-    stepId: string;
-    prompt: string;
-    timeout?: number;
-  }
-  | { kind: "error"; error: SwampError };
-```
+`WorkflowRunEvent` (`src/libswamp/workflows/run.ts`) has 27 kinds; see
+[libswamp.md](./libswamp.md#event-streams) for the list. Both renderers below
+must handle every one of them — the compiler enforces it.
 
 ### Log-mode renderer
 
-The log-mode renderer streams progress to the terminal as events arrive, using
-scoped loggers per job and step:
-
-```typescript
-class LogWorkflowRunRenderer implements WorkflowRunRenderer {
-  private workflowName: string;
-  private _failed = false;
-
-  constructor(opts: WorkflowRunRenderOpts) {
-    this.workflowName = opts.workflowName;
-  }
-
-  handlers(): EventHandlers<WorkflowRunEvent> {
-    return {
-      validating_inputs: () => {},
-      evaluating_workflow: () => {},
-      started: (e) => {
-        this.workflowName = e.workflowName;
-        getWorkflowRunLogger(e.workflowName).info("Starting workflow");
-      },
-      job_started: (e) => {
-        getWorkflowRunLogger(this.workflowName, e.jobId).info("Job started");
-      },
-      job_completed: (e) => {
-        getWorkflowRunLogger(this.workflowName, e.jobId).info("Job completed");
-      },
-      job_skipped: (e) => {
-        getWorkflowRunLogger(this.workflowName, e.jobId).info("Job skipped");
-      },
-      step_started: (e) => {
-        getWorkflowRunLogger(this.workflowName, e.jobId, e.stepId).info(
-          "Step started",
-        );
-      },
-      step_completed: (e) => {
-        getWorkflowRunLogger(this.workflowName, e.jobId, e.stepId).info(
-          "Step completed",
-        );
-      },
-      step_skipped: (e) => {
-        getWorkflowRunLogger(this.workflowName, e.jobId, e.stepId).info(
-          "Step skipped",
-        );
-      },
-      step_failed: (e) => {
-        getWorkflowRunLogger(this.workflowName, e.jobId, e.stepId).error(
-          "Step failed: {error}",
-          { error: e.error },
-        );
-      },
-      model_resolved: (e) => {
-        getRunLogger(e.modelName, e.methodName).info(
-          "Found model {name} ({type})",
-          { name: e.modelName, type: e.modelType },
-        );
-      },
-      method_executing: (e) => {
-        getRunLogger(e.modelName, e.methodName).info(
-          "Executing method {method}",
-          { method: e.methodName },
-        );
-      },
-      method_output: (e) => {
-        const logger = getRunLogger(e.modelName, e.methodName);
-        if (e.stream === "stderr") {
-          logger.warn(e.line);
-        } else {
-          logger.info(e.line);
-        }
-      },
-      method_event: (e) => {
-        const logger = getRunLogger(e.modelName, e.methodName);
-        switch (e.event.type) {
-          case "vault_secret_stored":
-            logger.info(
-              "Stored sensitive field '{fieldPath}' in vault '{vaultName}'",
-              { fieldPath: e.event.fieldPath, vaultName: e.event.vaultName },
-            );
-            break;
-          case "schema_validation_warning":
-            logger.warn(
-              "Resource '{specName}' data does not match schema: {error}",
-              { specName: e.event.specName, error: e.event.error },
-            );
-            break;
-        }
-      },
-      completed: (e) => {
-        const wfLogger = getWorkflowRunLogger(this.workflowName);
-        if (e.run.status === "failed") {
-          this._failed = true;
-          wfLogger.error("Workflow {status}", { status: e.run.status });
-        } else {
-          wfLogger.with({ summary: true }).info("Workflow {status}", {
-            status: e.run.status,
-          });
-          this.renderDataArtifactHints(e.run, wfLogger);
-        }
-      },
-      error: (e) => {
-        throw new UserError(e.error.message);
-      },
-    };
-  }
-
-  workflowFailed(): boolean {
-    return this._failed;
-  }
-
-  private renderDataArtifactHints(
-    run: WorkflowRunView,
-    logger: ReturnType<typeof getWorkflowRunLogger>,
-  ): void {
-    const artifactNames = new Set<string>();
-    for (const job of run.jobs) {
-      for (const step of job.steps) {
-        if (step.dataArtifacts) {
-          for (const artifact of step.dataArtifacts) {
-            artifactNames.add(artifact.name);
-          }
-        }
-      }
-    }
-
-    if (artifactNames.size > 0) {
-      logger.info("");
-      logger.info("View produced data:");
-      logger.info(
-        "  swamp data list --workflow {workflowName}",
-        { workflowName: run.workflowName },
-      );
-      for (const name of artifactNames) {
-        logger.info(
-          "  swamp data get --workflow {workflowName} {artifactName}",
-          { workflowName: run.workflowName, artifactName: name },
-        );
-      }
-    }
-  }
-}
-```
+`ConsoleWorkflowRunRenderer` (`src/presentation/renderers/workflow_run.ts`)
+streams progress to the terminal as events arrive. It writes through the
+`console_writer` helpers (`writeOutput`, status colours, a per-job pipe
+layout that prefixes each line with the job's display name) rather than
+through LogTape category loggers, tracks `workflowFailed()` from the
+`completed` / `assert_result` events and `failOnSeverity`, and after a
+successful run prints `swamp data list/get --workflow ...` hints for any
+user-facing data artifacts the run produced.
 
 ### JSON-mode renderer
 
-The JSON renderer ignores all intermediate events and serializes the final
-`completed` payload:
-
-```typescript
-class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
-  private _failed = false;
-
-  handlers(): EventHandlers<WorkflowRunEvent> {
-    return {
-      validating_inputs: () => {},
-      evaluating_workflow: () => {},
-      started: () => {},
-      job_started: () => {},
-      job_completed: () => {},
-      job_skipped: () => {},
-      step_started: () => {},
-      step_completed: () => {},
-      step_skipped: () => {},
-      step_failed: () => {},
-      model_resolved: () => {},
-      method_executing: () => {},
-      method_output: () => {},
-      method_event: () => {},
-      completed: (e) => {
-        if (e.run.status === "failed") this._failed = true;
-        console.log(JSON.stringify(e.run, null, 2));
-      },
-      error: (e) => {
-        throw new UserError(e.error.message);
-      },
-    };
-  }
-
-  workflowFailed(): boolean {
-    return this._failed;
-  }
-}
-```
+`JsonWorkflowRunRenderer` (same file) no-ops every intermediate event and
+serializes the final `completed` payload (`e.run`) as a single JSON document,
+recording `workflowFailed()` from `run.status`.
 
 ### Command handler
 
-```typescript
-try {
-  const deps: WorkflowRunDeps = {
-    workflowRepo,
-    runRepo,
-    repoDir,
-    lookupWorkflow: async (repo, idOrName) => {
-      return await repo.findByName(idOrName) ??
-        await repo.findById(createWorkflowId(idOrName));
-    },
-    createExecutionService: (wfRepo, rnRepo, dir) =>
-      new WorkflowExecutionService(wfRepo, rnRepo, dir),
-  };
-
-  const libCtx = createLibSwampContext();
-  const renderer = createWorkflowRunRenderer(ctx.outputMode, {
-    workflowName: workflowIdOrName,
-  });
-
-  await consumeStream(
-    workflowRun(libCtx, deps, {
-      workflowIdOrName,
-      lastEvaluated,
-      inputs,
-      runtimeTags,
-      verbose: ctx.verbosity === "verbose",
-    }),
-    renderer.handlers(),
-  );
-
-  if (renderer.workflowFailed()) {
-    Deno.exit(1);
-  }
-} catch (error) {
-  if (error instanceof UserError) {
-    throw error;
-  }
-  const message = error instanceof Error ? error.message : String(error);
-  throw new UserError(`Workflow execution failed: ${message}`);
-}
-```
+`src/cli/commands/workflow_run.ts` builds `WorkflowRunDeps`
+(`lookupWorkflow`, `createExecutionService`, repositories), picks a renderer
+with `createWorkflowRunRenderer(ctx.outputMode, { workflowName, ... })`,
+consumes the stream, and sets `Deno.exitCode = 1` when
+`renderer.workflowFailed()` is true. Errors that are not already a
+`UserError` are wrapped as one.
 
 ## File Layout
 
@@ -722,7 +346,7 @@ src/presentation/
   renderer.ts                          # Renderer<E> interface
   renderers/
     auth_whoami.ts                     # factory + Log/Json renderers
-    workflow_run.ts                    # factory + Log/Json/Ink renderers
+    workflow_run.ts                    # factory + Console/Json renderers
     data_get.ts
     data_list.ts
     extension_push.ts
@@ -736,10 +360,12 @@ classes, and any shared rendering helpers for that operation.
 
 ## Migration Status
 
-The renderer pattern has been widely adopted across the codebase. The
-`src/presentation/renderers/` directory now contains 180+ files covering the
-majority of CLI commands. Some remaining commands still use the existing
-`presentation/output/` files. To migrate a command:
+The renderer pattern is the default across the codebase: the
+`src/presentation/renderers/` directory contains 180+ files covering the
+majority of CLI commands. `presentation/output/` still holds shared
+primitives (console writer, error output, terminal size, Ink hooks) plus a
+few command-specific files that have not been converted. To migrate one of
+those:
 
 1. Create a new file in `presentation/renderers/` with Log and Json renderer
    classes implementing `Renderer<E>`.

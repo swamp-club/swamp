@@ -1,6 +1,6 @@
 ---
 audience: maintainer, operator
-last-verified: 2026-08-28 @ 4bde205b
+last-verified: 2026-08-28 @ 3d5955a9
 ---
 
 # swamp repo
@@ -43,9 +43,12 @@ the user can clean up by hand. This avoids destructive surprises.
 The **primary tool** is `marker.tools[0]` (or `"claude"` as a fallback for
 unenrolled repos), resolved via `resolvePrimaryTool(marker)` in
 `src/domain/repo/primary_tool.ts`. Commands that still operate on a single
-tool — audit recording, extension skills directory resolution, doctor checks
-— consume it. The first-in-array rule means appending a tool keeps the
-existing primary stable.
+tool — audit recording (`src/cli/commands/audit.ts`), extension skills
+directory resolution (`extension_list.ts`, `extension_rm.ts`) — consume it.
+`swamp doctor audit` reads `marker.tools[0]` directly and throws
+`NoToolConfiguredError` when no tool is enrolled and `--tool` is absent
+(`src/cli/commands/doctor_audit.ts`) — it has no `"claude"` fallback. The
+first-in-array rule means appending a tool keeps the existing primary stable.
 
 The `.swamp.yaml` marker uses lazy migration for backwards compat: the read
 normalizer in `RepoMarkerRepository.read()` promotes the legacy `tool:
@@ -86,8 +89,11 @@ Source-of-truth files live in top-level directories tracked in git:
 - **`grants/`** — Declarative access grant files: `grants/{name}.yaml` or
   `grants/{name}.yml`. Each file contains a `grants:` array of grant entries
   (subject, effect, actions, resource, optional condition). Reconciled against
-  stored `source: file:<filename>` grants on `swamp serve` startup and
-  `swamp access reload`.
+  stored `source: file:<filename>` grants on `swamp serve` startup, on
+  `swamp access reload`, and continuously while the server runs by
+  `GrantsDirectoryPoller` (`src/domain/access/grants_directory_poller.ts`,
+  wired in `src/cli/commands/serve.ts`), which re-reconciles when files in
+  the directory change.
 
 Runtime data (versioned model data, workflow runs, method outputs, secrets) is
 stored through a datastore abstraction. The default datastore uses the `.swamp/`
@@ -101,9 +107,14 @@ attributes to control the behaviour of the swamp operations.
 
 ### Supported Configuration Options
 
-- `vaults`: The swamp vault key specifies stores where sensitive data can be
-  sent to and retrieved from when evaluating and running workflow steps.
-  Multitple vaults can be specified for a each swamp repository.
+Vault definitions are not `.swamp.yaml` keys — each vault lives in its own
+`vaults/{vault-type}/{id}.yaml` file (see Repository Layout). The marker's
+full key set is `RepoMarkerData` in
+`src/infrastructure/persistence/repo_marker_repository.ts`; the user-facing
+options are:
+
+- `defaultVault`: name of the vault used when a method run or `swamp serve`
+  does not name one explicitly.
 - `trustedCollectives`: List of collectives whose extensions auto-resolve on
   first use. Default: `["swamp"]`. Set to `[]` to disable. Manageable via
   `swamp extension trust list/add/rm`.
@@ -117,7 +128,9 @@ attributes to control the behaviour of the swamp operations.
   executed after reports complete and the method result is shown. Reuses each
   data item's declared `garbageCollection` policy (version-count caps and
   duration-based retention). Errors are logged but never fail the method run.
-  The sync push includes GC deletions so the current push benefits immediately.
+  GC runs inside the `modelMethodRun` stream (`src/libswamp/models/run.ts`)
+  before the CLI releases model locks and flushes the datastore sync, so on a
+  synced datastore the deletions ride along with the same post-run push.
   `swamp data gc` remains available for repo-wide manual GC.
 
 ### Run Garbage Collection

@@ -1,6 +1,6 @@
 ---
 audience: maintainer
-last-verified: 2026-08-28 @ 4bde205b
+last-verified: 2026-08-28 @ 3d5955a9
 ---
 
 # Audit Doctor — preflight diagnostic
@@ -31,7 +31,7 @@ Run in fixed order so output is stable:
 
 1. **`binary-on-path`** — the AI tool's own binary (`claude`, `cursor`,
    `kiro-cli`, `opencode`, `copilot`) is resolvable on PATH.
-2. **`swamp-binary-on-path`** — swamp is on PATH (all four tools invoke
+2. **`swamp-binary-on-path`** — swamp is on PATH (all five tools invoke
    `swamp audit record --from-hook` from their hook configs). For Kiro
    only, also verifies the absolute swamp path baked into
    `.kiro/hooks/swamp-audit.kiro.hook` at init time still resolves —
@@ -42,7 +42,7 @@ Run in fixed order so output is stable:
    (e.g. Kiro's `.kiro/agents/swamp.json` must not contain `tools: ["*"]`
    — kiro-cli 2.0 silently rejects it).
 4. **`default-agent-set`** — Kiro only. `.kiro/settings/cli.json` has
-   `chat.defaultAgent: "swamp"`. Skips for the other three tools.
+   `chat.defaultAgent: "swamp"`. Skips for the other four tools.
 5. **`recording-smoke-test`** — the load-bearing end-to-end check. Pipes
    a tool-matched synthetic `postToolUse` payload through
    `swamp audit record --from-hook`, then reads today's JSONL and
@@ -57,7 +57,7 @@ src/domain/audit/doctor/
 ├── doctor_service.ts              — auditDoctor() streaming service; defaultCheckOrder()
 ├── synthetic_payloads.ts          — per-tool fixture payloads; imports DIAGNOSTIC_COMMAND_PREFIX
 └── checks/
-    ├── resolve_binary.ts          — ResolveBinary port + POSIX `which` implementation
+    ├── resolve_binary.ts          — ResolveBinary port + binaryNameFor(); CLI wires defaultCommandResolver()
     ├── binary_on_path.ts
     ├── swamp_binary_on_path.ts    — includes Kiro baked-path sub-check
     ├── agent_config_loadable.ts   — tool-dispatched parser
@@ -80,8 +80,8 @@ normalizers) in an incompatible way, CI breaks.
 
 ## Sentinel session filtering
 
-`recording_smoke_test.ts` writes a real audit row, but with a reserved
-command prefix (`echo swamp-doctor-smoke-test <nonce>`). The constant
+The `recording-smoke-test` check (`checks/recording_smoke.ts`) writes a
+real audit row via `ctx.spawnSwamp`, but with a reserved command prefix (`echo swamp-doctor-smoke-test <nonce>`). The constant
 lives in `audit_service.ts` as `DIAGNOSTIC_COMMAND_PREFIX` and is
 re-exported by `synthetic_payloads.ts` so writer and reader are pinned
 to the same string. The timeline service filters rows matching the
@@ -91,30 +91,32 @@ reveals them.
 The alternative (filter on `sessionId`) doesn't work cross-tool: the
 Kiro and Cursor normalizers discard the session ID from their upstream
 payloads, so the persisted row has no session to filter on. The command
-prefix is the only identifier available for all four tools.
+prefix is the only identifier available for all five tools.
 
 ## Tool resolution
 
 - `--tool <name>` overrides; validated against the `AiTool` union via
   `parseAiToolOrThrow` in `src/cli/ai_tool_parser.ts`. Invalid names
   produce a usage error listing valid values.
-- Without `--tool`, reads `.swamp.yaml`'s `tool` field.
+- Without `--tool`, reads `.swamp.yaml`'s `tools[0]` (the primary enrolled
+  tool; the legacy single `tool` field is promoted into `tools` on read).
 - If both are absent, throws `NoToolConfiguredError` — a usage error,
   not a check fail, exits non-zero from the CLI.
-- `amp`, `codex`, and `none` short-circuit to a single skip result (those
-  tools don't emit audit hooks).
+- `amp`, `codex`, `none`, and any custom (non-built-in) tool short-circuit
+  to a single skip result (`doctor_service.ts`) — those tools don't emit
+  audit hooks.
 
 ## Platform
 
-POSIX-only in v1 — swamp officially supports macOS and Linux. The
-`which` shelled call works on both. Windows support can be added later
-behind the same `ResolveBinary` port.
+`ResolveBinary` is a port declared in the domain; the CLI wires in
+`defaultCommandResolver()` from `src/infrastructure/process/`, which shells
+out to `which` on POSIX and `where` on Windows. Tests inject a fake
+resolver directly.
 
-## Extending to future `doctor <thing>` diagnostics
+## Other `doctor <thing>` diagnostics
 
-`doctor` is a namespace. Future diagnostics (e.g. `doctor datastore`,
-`doctor vault`) register as sibling subcommands on `doctorCommand` in
-`src/cli/commands/doctor.ts`. The `PreflightCheck` type is deliberately
-scoped to audit for now — when a second `doctor <thing>` with a real
-second use case arrives, refactor out a shared primitive then. Three
-similar lines are better than a premature abstraction.
+`doctor` is a namespace. `src/cli/commands/doctor.ts` registers `audit`,
+`datastores`, `extensions`, `install`, `secrets`, `vaults`, and
+`workflows` as sibling subcommands on `doctorCommand`. The `PreflightCheck`
+type in `check.ts` is audit-specific — the other diagnostics have their own
+check shapes rather than sharing a primitive.
