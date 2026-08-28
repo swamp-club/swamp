@@ -27,11 +27,11 @@ command they type.
 <!-- diagram: context -->
 ```mermaid
 graph LR
-  Builder@{ icon: "fa:user", shape: rounded, label: "Builder" }
-  Author@{ icon: "fa:user", shape: rounded, label: "Extension author" }
-  Operator@{ icon: "fa:user", shape: rounded, label: "Platform operator" }
-  Member@{ icon: "fa:user", shape: rounded, label: "Team member" }
-  Integrator@{ icon: "fa:user", shape: rounded, label: "Integrator system" }
+  Builder@{ shape: rectangle, label: "Builder" }
+  Author@{ shape: rectangle, label: "Extension author" }
+  Operator@{ shape: rectangle, label: "Platform operator" }
+  Member@{ shape: rectangle, label: "Team member" }
+  Integrator@{ shape: rectangle, label: "Integrator system" }
   Osd@{ shape: rectangle, label: "OS service manager" }
   Swamp@{ shape: rectangle, label: "swamp" }
   Club@{ shape: rectangle, label: "swamp-club" }
@@ -67,11 +67,11 @@ the dashboard build). Which role a process plays is decided by its subcommand.
 <!-- diagram: containers -->
 ```mermaid
 graph TB
-  Builder@{ icon: "fa:user", shape: rounded, label: "Builder" }
-  Author@{ icon: "fa:user", shape: rounded, label: "Extension author" }
-  Operator@{ icon: "fa:user", shape: rounded, label: "Platform operator" }
-  Member@{ icon: "fa:user", shape: rounded, label: "Team member" }
-  Integrator@{ icon: "fa:user", shape: rounded, label: "Integrator system" }
+  Builder@{ shape: rectangle, label: "Builder" }
+  Author@{ shape: rectangle, label: "Extension author" }
+  Operator@{ shape: rectangle, label: "Platform operator" }
+  Member@{ shape: rectangle, label: "Team member" }
+  Integrator@{ shape: rectangle, label: "Integrator system" }
   Osd@{ shape: rectangle, label: "OS service manager" }
   subgraph Swamp["`swamp`"]
     Swamp.Cli@{ shape: rectangle, label: "swamp CLI" }
@@ -200,7 +200,7 @@ test that exercises it against the real binary.
 <!-- diagram: journeyLocalRun -->
 ```mermaid
 graph LR
-  Builder@{ icon: "fa:user", shape: rounded, label: "Builder" }
+  Builder@{ shape: rectangle, label: "Builder" }
   SwampCli@{ shape: rectangle, label: "swamp CLI" }
   SwampRepo@{ shape: disk, label: ".swamp/ repo datastore" }
   Wrapped@{ shape: rectangle, label: "Systems wrapped by models" }
@@ -227,7 +227,7 @@ Claude Code for real.
 <!-- diagram: journeyApproval -->
 ```mermaid
 graph LR
-  Builder@{ icon: "fa:user", shape: rounded, label: "Builder" }
+  Builder@{ shape: rectangle, label: "Builder" }
   SwampCli@{ shape: rectangle, label: "swamp CLI" }
   SwampRepo@{ shape: disk, label: ".swamp/ repo datastore" }
   Builder -. "`swamp workflow run`" .-> SwampCli
@@ -251,7 +251,7 @@ already reached a terminal state. Proven by
 <!-- diagram: journeyRemoteRun -->
 ```mermaid
 graph LR
-  Member@{ icon: "fa:user", shape: rounded, label: "Team member" }
+  Member@{ shape: rectangle, label: "Team member" }
   SwampCli@{ shape: rectangle, label: "swamp CLI" }
   SwampServe@{ shape: rectangle, label: "swamp serve" }
   SwampRepo@{ shape: disk, label: ".swamp/ repo datastore" }
@@ -281,7 +281,7 @@ Proven by `tests/cli/serve/none/operations_test.ts` and
 <!-- diagram: journeyPlacedStep -->
 ```mermaid
 graph LR
-  Operator@{ icon: "fa:user", shape: rounded, label: "Platform operator" }
+  Operator@{ shape: rectangle, label: "Platform operator" }
   SwampWorker@{ shape: rectangle, label: "swamp worker connect" }
   SwampServe@{ shape: rectangle, label: "swamp serve" }
   SwampRunner@{ shape: rectangle, label: "dispatch runner" }
@@ -316,7 +316,7 @@ fleet state is ordinary swamp data. Proven by
 <!-- diagram: journeyPublish -->
 ```mermaid
 graph LR
-  Author@{ icon: "fa:user", shape: rounded, label: "Extension author" }
+  Author@{ shape: rectangle, label: "Extension author" }
   SwampCli@{ shape: rectangle, label: "swamp CLI" }
   SwampUserconfig@{ shape: disk, label: "~/.config/swamp" }
   Club@{ shape: rectangle, label: "swamp-club" }

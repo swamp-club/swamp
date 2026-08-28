@@ -7,9 +7,9 @@
 // that proves the journey.
 
 specification {
-  element person {
-    style { shape person }
-  }
+  // Plain shape on purpose: `shape person` makes the Mermaid codegen emit a
+  // Font Awesome icon that GitHub renders as "?".
+  element person
   element system
   element container
   element component
