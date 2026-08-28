@@ -36,6 +36,7 @@ interface SwampContextValue {
   connected: boolean;
   token: string | null;
   authMode: AuthInfo["mode"] | null;
+  verificationBaseUri: string | null;
   login: (token: string) => void;
   logout: () => void;
   request: <T = Record<string, unknown>>(
@@ -59,6 +60,9 @@ export function SwampProvider({ children }: { children: ReactNode }) {
     () => sessionStorage.getItem(TOKEN_KEY),
   );
   const [authMode, setAuthMode] = useState<AuthInfo["mode"] | null>(null);
+  const [verificationBaseUri, setVerificationBaseUri] = useState<string | null>(
+    null,
+  );
   const socketRef = useRef<WebSocket | null>(null);
   const pendingRef = useRef<
     Map<
@@ -73,7 +77,10 @@ export function SwampProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     fetch("/auth/info")
       .then((r) => r.json())
-      .then((info: AuthInfo) => setAuthMode(info.mode))
+      .then((info: AuthInfo) => {
+        setAuthMode(info.mode);
+        setVerificationBaseUri(info.verificationBaseUri ?? null);
+      })
       .catch(() => setAuthMode("none"));
   }, []);
 
@@ -184,7 +191,15 @@ export function SwampProvider({ children }: { children: ReactNode }) {
 
   return (
     <SwampContext.Provider
-      value={{ connected, token, authMode, login, logout, request }}
+      value={{
+        connected,
+        token,
+        authMode,
+        verificationBaseUri,
+        login,
+        logout,
+        request,
+      }}
     >
       {children}
     </SwampContext.Provider>
