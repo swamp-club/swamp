@@ -2965,3 +2965,44 @@ Deno.test("RepoService.upgrade: custom tool with relative skillsDir gets skills 
     assertEquals(stat.isFile, true);
   });
 });
+
+Deno.test("RepoService.init with tool amp creates .amp/settings.json", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    const result = await service.init(repoPath, { tools: ["amp"] });
+
+    assertEquals(result.tools, ["amp"]);
+    assertEquals(result.settingsCreated, true);
+
+    const content = await Deno.readTextFile(
+      join(tempDir, ".amp", "settings.json"),
+    );
+    const settings = JSON.parse(content);
+    assertEquals(settings["amp.commands"].allowlist, ["swamp *"]);
+    assertEquals(settings["amp.commands"].strict, true);
+  });
+});
+
+Deno.test("RepoService.upgrade with tool amp preserves existing .amp/settings.json entries", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath, { tools: ["amp"] });
+
+    const settingsPath = join(tempDir, ".amp", "settings.json");
+    const existing = JSON.parse(await Deno.readTextFile(settingsPath));
+    existing["amp.commands"].allowlist.push("git *");
+    existing["amp.ui"] = { theme: "dark" };
+    await Deno.writeTextFile(settingsPath, JSON.stringify(existing, null, 2));
+
+    const upgradeService = new RepoService("0.2.0");
+    await upgradeService.upgrade(repoPath);
+
+    const updated = JSON.parse(await Deno.readTextFile(settingsPath));
+    assertEquals(updated["amp.commands"].allowlist.includes("swamp *"), true);
+    assertEquals(updated["amp.commands"].allowlist.includes("git *"), true);
+    assertEquals(updated["amp.commands"].strict, true);
+    assertEquals(updated["amp.ui"].theme, "dark");
+  });
+});

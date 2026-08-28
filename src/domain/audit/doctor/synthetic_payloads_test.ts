@@ -79,6 +79,7 @@ Deno.test("syntheticPayloadFor: sets USER_PROMPT env var for kiro only", () => {
 });
 
 Deno.test("syntheticPayloadFor: returns null for tools without audit hooks", () => {
+  assertEquals(syntheticPayloadFor("amp", "nonce"), null);
   assertEquals(syntheticPayloadFor("codex", "nonce"), null);
   assertEquals(syntheticPayloadFor("none", "nonce"), null);
 });

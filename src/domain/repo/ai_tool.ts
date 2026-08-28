@@ -28,6 +28,7 @@
  * compatibility but is never written.
  */
 export type AiTool =
+  | "amp"
   | "claude"
   | "cursor"
   | "opencode"

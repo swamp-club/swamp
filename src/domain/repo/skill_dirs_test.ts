@@ -35,7 +35,8 @@ Deno.test("GLOBAL_SKILL_DIRS: kiro uses vendor-specific path", () => {
   assertEquals(GLOBAL_SKILL_DIRS["kiro"], ".kiro/skills");
 });
 
-Deno.test("GLOBAL_SKILL_DIRS: codex/cursor/opencode/copilot share .agents/skills", () => {
+Deno.test("GLOBAL_SKILL_DIRS: amp/codex/cursor/opencode/copilot share .agents/skills", () => {
+  assertEquals(GLOBAL_SKILL_DIRS["amp"], ".agents/skills");
   assertEquals(GLOBAL_SKILL_DIRS["codex"], ".agents/skills");
   assertEquals(GLOBAL_SKILL_DIRS["cursor"], ".agents/skills");
   assertEquals(GLOBAL_SKILL_DIRS["opencode"], ".agents/skills");

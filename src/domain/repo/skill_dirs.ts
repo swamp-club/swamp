@@ -29,6 +29,7 @@ import {
  * Used for project-local skill directories and extension skill resolution.
  */
 export const SKILL_DIRS: Record<string, string> = {
+  amp: ".agents/skills",
   claude: ".claude/skills",
   cursor: ".cursor/skills",
   opencode: ".agents/skills",
@@ -44,6 +45,7 @@ export const SKILL_DIRS: Record<string, string> = {
  * require their own vendor-specific paths.
  */
 export const GLOBAL_SKILL_DIRS: Record<string, string> = {
+  amp: ".agents/skills",
   claude: ".claude/skills",
   cursor: ".agents/skills",
   opencode: ".agents/skills",

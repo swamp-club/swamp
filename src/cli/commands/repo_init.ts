@@ -46,7 +46,16 @@ type AnyOptions = any;
 
 class ToolNameType extends StringType {
   override complete(): string[] {
-    return ["claude", "cursor", "opencode", "codex", "copilot", "kiro", "none"];
+    return [
+      "amp",
+      "claude",
+      "cursor",
+      "opencode",
+      "codex",
+      "copilot",
+      "kiro",
+      "none",
+    ];
   }
 
   override parse(type: ArgumentValue): string {
@@ -120,7 +129,7 @@ const TOOL_FLAG_DESCRIPTION =
   "AI coding tool to configure for. Repeat to enroll multiple tools " +
   "(e.g. `--tool claude --tool kiro`). Duplicates are collapsed. " +
   "Use `--tool none` (alone) to skip tool scaffolding. Defaults to " +
-  "`claude` when omitted. Built-in: claude, cursor, opencode, codex, " +
+  "`claude` when omitted. Built-in: amp, claude, cursor, opencode, codex, " +
   "copilot, kiro, none. Custom tools defined via `swamp agent setup` " +
   "are also accepted.";
 
