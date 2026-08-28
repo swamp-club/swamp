@@ -19,7 +19,7 @@
 
 /**
  * List worker pool state and enrollment tokens (see
- * design/remote-execution.md, "Worker state is swamp data").
+ * design/enablers/remote-execution.md, "Worker state is swamp data").
  *
  * Both operations read the latest versions of the built-in models' resource
  * data through the same datastore query primitive workflows use — there is

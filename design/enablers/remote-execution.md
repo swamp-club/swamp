@@ -1,3 +1,9 @@
+---
+audience: maintainer, operator
+enables: [serve]
+last-verified: 2026-08-28 @ 4bde205b
+---
+
 # Remote Execution
 
 Remote execution lets a single **orchestrator** fan a workflow or method run out
@@ -9,7 +15,7 @@ dispatch, and every side-effecting capability the running method touches —
 reading data, writing data, resolving a secret, loading a definition — is
 proxied back to the orchestrator, which owns the durable world.
 
-Remote execution **replaces** [execution drivers](./execution-drivers.md)
+Remote execution **replaces** execution drivers (removed; see [No execution drivers](#no-execution-drivers))
 entirely. There is no `raw` / `docker` driver selection and no driver
 abstraction: every method runs in-process inside whichever executor holds it.
 Isolation and environment become a *deployment property of the worker* — if you
@@ -695,7 +701,7 @@ bundle by fingerprint; on a cache miss the worker fetches it from the
 orchestrator's HTTP/2 data plane (`GET /bundle/{fingerprint}`) and loads it
 **in-process** in its own swamp runtime. The bundle is the same
 `bundleSourceFactory` swamp already builds (see
-[execution-drivers.md](./execution-drivers.md#self-contained-bundling)); the
+the removed execution-drivers design); the
 worker needs nothing pre-installed.
 
 The fingerprint is computed inline as `sha256Hex(js)` over the bundled source at
@@ -1051,7 +1057,7 @@ provisioning credentials and extensions onto workers:
   is the orchestrator refusing a `resolveSecret` outside the dispatched step's
   allowed set. Vault secrets are resolved orchestrator-side and travel only for
   the step that needs them (consistent with the out-of-process resolution pattern
-  in [execution-drivers.md](./execution-drivers.md#vault-secret-resolution)).
+  of the removed execution-drivers design).
 
   **Secret redaction.** Vault-derived values must be scrubbed from all persisted
   output — log resources, result resources, and workflow-run records — before

@@ -127,8 +127,8 @@ trigger:
 excluded), and `webhook.route` is the matched route. Expressions resolve against
 the verified payload before input validation, so a payload field can satisfy a
 `required` input. swamp's CEL has no `??` — guard optional fields with
-`has(x) ? x : y`. See `design/workflow.md` for full semantics and the security
-caveat on headers.
+`has(x) ? x : y`. See `design/primitives/workflows.md` for full semantics and
+the security caveat on headers.
 
 ### Trigger overrides
 

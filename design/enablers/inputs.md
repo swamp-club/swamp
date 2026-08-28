@@ -1,3 +1,9 @@
+---
+audience: maintainer, operator
+enables: [models, workflows]
+last-verified: 2026-08-28 @ 4bde205b
+---
+
 # Inputs
 
 Both workflows and models support _inputs_. These are defined using json-schema, expressed as yaml in a definition file or a workflow file. These are specified as a top level field of both model definitions and workflow definitions.

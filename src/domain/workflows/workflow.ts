@@ -113,7 +113,7 @@ const WorkflowObjectSchema = z.object({
 /**
  * Zod schema for Workflow aggregate root. Rejects the removed
  * `driver`/`driverConfig` fields with an actionable error (see
- * design/remote-execution.md), and rejects unknown keys — Zod's silent
+ * design/enablers/remote-execution.md), and rejects unknown keys — Zod's silent
  * stripping would otherwise discard misplaced or typo'd top-level keys
  * (swamp-club#1240).
  */

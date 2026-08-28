@@ -1,3 +1,9 @@
+---
+audience: maintainer, operator
+enables: [models, workflows]
+last-verified: 2026-08-28 @ 4bde205b
+---
+
 # Expressions
 
 Model definitions and Workflows are stored as YAML files, and they can contain
@@ -207,7 +213,7 @@ missing field surfaces an error and the run does not start. Sensitive headers
 (authentication, proxy credentials, and headers ending in `-token` or `-secret`)
 are redacted before the payload is exposed to workflow expressions — redacted
 headers are omitted entirely, so a workflow referencing one will fail on the
-missing field. See `design/workflow.md` for the full walkthrough.
+missing field. See `design/primitives/workflows.md` for the full walkthrough.
 
 **Run-scoped resource keys** — use `run.id` to prevent collisions when the
 same workflow runs concurrently:
@@ -295,7 +301,7 @@ attributes:
 
 ### Vary Dimensions
 
-When data is stored with `vary` dimensions (see [Workflows](./workflow.md)),
+When data is stored with `vary` dimensions (see [Workflows](../primitives/workflows.md)),
 each dimension value produces a composite data name. Use the 3-argument form
 of `data.latest()`, `data.version()`, and `data.listVersions()` to access
 varied data by passing a list of dimension values:

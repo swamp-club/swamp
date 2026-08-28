@@ -239,7 +239,7 @@ const DefinitionStrictObjectSchema = z.object({
 
 /**
  * Zod schema for Definition. Rejects the removed `driver`/`driverConfig`
- * fields with an actionable error (see design/remote-execution.md).
+ * fields with an actionable error (see design/enablers/remote-execution.md).
  * Uses permissive name validation for loading existing definitions.
  */
 export const DefinitionSchema = z.preprocess(

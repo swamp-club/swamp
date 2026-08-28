@@ -317,7 +317,7 @@ export interface RepositoryFactoryConfig {
    * invalidate the sync service's fast-path watermark. Supplied by the CLI
    * when a remote datastore with a sync service is active; absent for
    * filesystem datastores. When absent, writes do not notify — which is
-   * correct for datastores without a fast-path. See `design/datastores.md`.
+   * correct for datastores without a fast-path. See `design/enablers/datastores.md`.
    */
   markDirty?: MarkDirtyHook;
   hydrateFile?: HydrateFileHook;

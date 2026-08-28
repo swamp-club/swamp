@@ -41,7 +41,7 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // an already-built context during method execution. Not a new construction
   // site — inherits every field the factory populated.
   "src/domain/models/method_execution_service.ts",
-  // Worker-side remote MethodContext (see design/remote-execution.md):
+  // Worker-side remote MethodContext (see design/enablers/remote-execution.md):
   // deliberately constructs a scratch-repo context whose repositories and
   // writers proxy the orchestrator's data plane — the local factory's
   // startup-scoped deps do not exist on a worker.

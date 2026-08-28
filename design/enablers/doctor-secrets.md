@@ -1,3 +1,9 @@
+---
+audience: maintainer
+enables: [models]
+last-verified: 2026-08-28 @ 4bde205b
+---
+
 # Doctor Secrets — cleartext sensitive-argument scan
 
 `swamp doctor secrets` is a read-only diagnostic that reports model

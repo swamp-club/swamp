@@ -1,3 +1,8 @@
+---
+audience: maintainer, operator
+last-verified: 2026-08-28 @ 4bde205b
+---
+
 # swamp repo
 
 A swamp repo contains all of the models and code for automating tasks with
@@ -87,7 +92,7 @@ Source-of-truth files live in top-level directories tracked in git:
 Runtime data (versioned model data, workflow runs, method outputs, secrets) is
 stored through a datastore abstraction. The default datastore uses the `.swamp/`
 directory, but it can be configured to use an external filesystem path or S3.
-See [datastores.md](./datastores.md) for details.
+See [datastores.md](../enablers/datastores.md) for details.
 
 ## Configuration
 
@@ -218,4 +223,4 @@ These are real files (not symlinks) tracked in git.
 The `workflow-runs/` and `outputs/` directories are covered by `swamp run gc`
 (see [Run Garbage Collection](#run-garbage-collection) above).
 
-See [datastores.md](./datastores.md) for how the datastore path is resolved.
+See [datastores.md](../enablers/datastores.md) for how the datastore path is resolved.

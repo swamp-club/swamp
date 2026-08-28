@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Worker scheduling (see design/remote-execution.md, "Scheduling, fan-out,
+ * Worker scheduling (see design/enablers/remote-execution.md, "Scheduling, fan-out,
  * and provisioning").
  *
  * A pure domain service: given a step's placement requirements and a pool

@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Remote execution integration tests (design/remote-execution.md).
+ * Remote execution integration tests (design/enablers/remote-execution.md).
  *
  * Runs a real orchestrator assembly (worker gateway + capability service +
  * dispatch service + HTTP data plane on one localhost listener) and a real

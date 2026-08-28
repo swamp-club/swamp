@@ -19,7 +19,7 @@
 
 /**
  * `swamp worker connect` — the dial-home entry (see
- * design/remote-execution.md). Deliberately repo-less: a worker carries no
+ * design/enablers/remote-execution.md). Deliberately repo-less: a worker carries no
  * repository, datastore, vault, or extension state; it is a binary, a
  * token, and a URL. No RepositoryContext is constructed here.
  */

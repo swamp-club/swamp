@@ -1,3 +1,9 @@
+---
+audience: maintainer, operator
+enables: [data]
+last-verified: 2026-08-28 @ 4bde205b
+---
+
 # Data Query
 
 Data query is the general interface for finding data artifacts across models

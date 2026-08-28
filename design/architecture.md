@@ -1,3 +1,8 @@
+---
+audience: everyone
+last-verified: 2026-08-28 @ 4bde205b
+---
+
 # Swamp
 
 ## Purpose
@@ -46,9 +51,9 @@ These directories are the primary way to explore and understand the repository.
 Runtime data (versioned model data, workflow runs, method outputs, secrets,
 telemetry) is managed through a datastore abstraction. The default datastore
 uses the `.swamp/` directory, but it can be configured to use an external
-filesystem path or S3. See [./datastores.md] for details.
+filesystem path or S3. See [datastores](./enablers/datastores.md) for details.
 
-See [./repo.md] for detailed architecture documentation.
+See [repo](./surfaces/repo.md) for detailed architecture documentation.
 
 ### Telemetry Flushing
 
@@ -79,4 +84,4 @@ the daemon delivers nothing while appearing to work.
 
 ## Models
 
-See [./models.md].
+See [models](./primitives/models.md).

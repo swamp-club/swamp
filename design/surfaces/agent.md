@@ -1,3 +1,8 @@
+---
+audience: maintainer
+last-verified: 2026-08-28 @ 4bde205b
+---
+
 # AI Agent
 
 The primary method for working with swamp is through an AI agent. Each
@@ -23,7 +28,7 @@ structure.
 
 Runtime data (versioned model data, workflow runs, method outputs) is stored in
 the datastore. The default datastore uses `.swamp/`, but it can be configured to
-use an external path or S3. See [./datastores.md] for details.
+use an external path or S3. See [datastores](../enablers/datastores.md) for details.
 
 ### CLI Abstraction
 

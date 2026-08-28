@@ -193,7 +193,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       ) as Record<string, unknown>
       : definition.globalArguments;
 
-    // Merge global args as fallback under per-method args (per design/models.md:
+    // Merge global args as fallback under per-method args (per design/primitives/models.md:
     // "at execution time receives the merged set of global arguments and
     // per-method arguments"). Per-method arguments take precedence.
     // Exclude global args with unresolved ${{ ... }} expressions (recursively,
@@ -852,7 +852,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           // Remote placement: the method body runs on a matching worker; the
           // surrounding pipeline (output records and follow-up actions below)
           // stays at the orchestrator. Pre-flight checks are skipped (they
-          // cannot access worker-local state). See design/remote-execution.md.
+          // cannot access worker-local state). See design/enablers/remote-execution.md.
           const remoteResult = await this.#executeRemotely(
             context,
             executionRequest,
@@ -885,7 +885,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           );
         } else {
           // Execute in-process — the single-host path (see
-          // design/remote-execution.md "No execution drivers").
+          // design/enablers/remote-execution.md "No execution drivers").
           const inProcessExecutor = new InProcessExecutor(
             this,
             currentDefinition,

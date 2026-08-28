@@ -1,3 +1,9 @@
+---
+audience: maintainer
+enables: [vaults]
+last-verified: 2026-08-28 @ 4bde205b
+---
+
 # Doctor Vaults — sensitive-output vault availability scan
 
 `swamp doctor vaults` is a read-only diagnostic that reports model definitions

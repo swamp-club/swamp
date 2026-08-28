@@ -56,7 +56,7 @@ export interface CatalogShortfall {
  *
  * The catalog is a local index of data on disk. When the walk can see records
  * the index does not have, queries silently under-report.
- * See design/data-query.md.
+ * See design/enablers/data-query.md.
  */
 export interface CatalogCompletenessSummary {
   diskRecords: number;

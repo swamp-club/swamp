@@ -1,3 +1,9 @@
+---
+audience: maintainer, operator, extension-author
+enables: [data]
+last-verified: 2026-08-28 @ 4bde205b
+---
+
 # Datastores
 
 A datastore in swamp determines where runtime data is stored. Runtime data

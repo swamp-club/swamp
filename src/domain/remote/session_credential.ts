@@ -23,7 +23,7 @@
  * At enrollment the orchestrator issues a short-lived bearer credential; the
  * worker presents it on every data-plane HTTP request and refreshes it over
  * the control socket before expiry, so the window slides forward (see
- * design/remote-execution.md, "Authenticating the data plane").
+ * design/enablers/remote-execution.md, "Authenticating the data plane").
  *
  * Per-dispatch credentials are auto-refreshed internally by the service for
  * the lifetime of the dispatch — the credential string stays the same but

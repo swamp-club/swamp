@@ -608,7 +608,7 @@ Deno.test("DefinitionSchema rejects removed driver field with actionable error",
     error.message,
     "The 'driver' field has been removed",
   );
-  assertStringIncludes(error.message, "design/remote-execution.md");
+  assertStringIncludes(error.message, "design/enablers/remote-execution.md");
 });
 
 Deno.test("DefinitionSchema rejects removed driverConfig field with actionable error", () => {

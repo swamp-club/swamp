@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The worker's dispatch handler (see design/remote-execution.md).
+ * The worker's dispatch handler (see design/enablers/remote-execution.md).
  *
  * Each dispatch spawns a child process (dispatch runner) via
  * `swamp worker exec-dispatch`. The environment snapshot is applied as the

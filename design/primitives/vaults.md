@@ -1,3 +1,8 @@
+---
+audience: maintainer, operator
+last-verified: 2026-08-28 @ 4bde205b
+---
+
 # swamp vaults
 
 A swamp vault is a secure storage system that allows workflows and models to
@@ -37,7 +42,7 @@ vaults/
 
 The secrets path is computed at runtime through the datastore path resolver. The
 vault configuration stores the `base_dir` (repository root), and the full path
-is derived through the datastore abstraction. See [./datastores.md] for details.
+is derived through the datastore abstraction. See [datastores](../enablers/datastores.md) for details.
 
 ## Vault Provider Interface
 

@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Built-in enrollment-token model (see design/remote-execution.md,
+ * Built-in enrollment-token model (see design/enablers/remote-execution.md,
  * "Enrollment tokens").
  *
  * One model instance per token, named by the token name. The token's

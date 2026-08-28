@@ -1,3 +1,9 @@
+---
+audience: maintainer, extension-author
+enables: [models, workflows]
+last-verified: 2026-08-28 @ 4bde205b
+---
+
 # Reports
 
 Reports are post-execution analysis functions that produce markdown and JSON

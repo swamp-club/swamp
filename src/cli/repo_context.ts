@@ -660,7 +660,7 @@ export function requireInitializedRepo(
         }
       }
 
-      // Symmetric drain — see design/datastores.md "Lock Lifecycle".
+      // Symmetric drain — see design/enablers/datastores.md "Lock Lifecycle".
       //
       // First drain: wait for any per-model locks visible at command start
       // to be released. A writer that has *already* acquired a per-model
@@ -692,7 +692,7 @@ export function requireInitializedRepo(
       // the data write must finish before we touch the filesystem. This
       // closes the symmetric TOCTOU window — do not remove without
       // updating the lock-lifecycle contract documented in
-      // design/datastores.md.
+      // design/enablers/datastores.md.
       await waitForPerModelLocks(
         datastoreConfig.path,
         datastoreConfig.namespace,
@@ -813,7 +813,7 @@ export async function requireInitializedRepoUnlocked(
      * for filesystem datastores or custom datastores without a cache. Passed
      * into `acquireModelLocks` so cache writes and the fast-path watermark
      * read go through the same instance — implementations that cache the
-     * sidecar flag in memory stay coherent. See `design/datastores.md`.
+     * sidecar flag in memory stay coherent. See `design/enablers/datastores.md`.
      */
     syncService?: DatastoreSyncService;
   }
@@ -967,7 +967,7 @@ export async function createModelLock(
  * Called twice during structural command setup (`requireInitializedRepo`):
  * once before acquiring the global lock to drain in-flight writers, and
  * once after to catch writers that slipped past the first drain. See
- * design/datastores.md "Lock Lifecycle" for the full contract.
+ * design/enablers/datastores.md "Lock Lifecycle" for the full contract.
  *
  * Only works for filesystem datastores — S3 datastores use distributed
  * locks that cannot be scanned locally.

@@ -144,7 +144,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
    * Called at the start of every mutation that writes into (or removes from)
    * the cache directory. The hook is no-op when no sync service is wired —
    * e.g. filesystem datastores, or when constructing the repository outside
-   * a CLI sync lifecycle. See `design/datastores.md` for the contract.
+   * a CLI sync lifecycle. See `design/enablers/datastores.md` for the contract.
    *
    * `relPath` is the absolute path of the file or directory about to be
    * written or removed (when core can attribute the dirty signal to a single

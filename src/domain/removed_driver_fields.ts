@@ -22,7 +22,7 @@
  *
  * Execution drivers (`driver`/`driverConfig` on workflows, jobs, steps, and
  * definitions, plus `defaultDriver`/`defaultDriverConfig` in `.swamp.yaml`)
- * were replaced by remote execution (see design/remote-execution.md). Old
+ * were replaced by remote execution (see design/enablers/remote-execution.md). Old
  * YAML carrying those fields must fail loudly with an actionable message
  * instead of being silently ignored.
  */
@@ -32,7 +32,7 @@
  */
 export function removedDriverFieldMessage(field: string): string {
   return `The '${field}' field has been removed — execution drivers are ` +
-    `replaced by remote execution (see design/remote-execution.md). ` +
+    `replaced by remote execution (see design/enablers/remote-execution.md). ` +
     `Remove the field; for isolation, run a containerized worker and use ` +
     `step 'labels' placement.`;
 }

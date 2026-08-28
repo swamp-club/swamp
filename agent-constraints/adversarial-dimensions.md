@@ -5,7 +5,7 @@ Challenge each plan across these dimensions:
 ## Architecture
 
 Does this follow DDD principles? Are domain boundaries correct? Is this the
-right abstraction level? Are there better patterns? Reference `design/*.md` for
+right abstraction level? Are there better patterns? Reference `design/` for
 established architectural decisions.
 
 ## Scope
@@ -131,7 +131,7 @@ match established patterns in the codebase?
 ## Documentation
 
 Does this change introduce or modify domain concepts, CLI commands, extension
-patterns, or architectural decisions that should be reflected in `design/*.md`
+patterns, or architectural decisions that should be reflected in `design/`
 or `.claude/skills/`? If a design doc describes behavior this plan changes, the
 plan must include a step to update it. If a skill references CLI commands or
 examples affected by this change, the plan must include a step to update the

@@ -6,7 +6,7 @@ token, and execute dispatched method bodies with every capability proxied back
 to the orchestrator. It replaces the removed execution-driver abstraction
 (`driver:`/`driverConfig:` fields no longer exist); for isolation, run a
 containerized worker and select it with labels. Full design:
-`design/remote-execution.md`.
+`design/enablers/remote-execution.md`.
 
 ## Provisioning a worker
 

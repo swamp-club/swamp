@@ -14,27 +14,27 @@ guides instead.
 What does the user need?
 │
 ├── Automate a single external action (API call, CLI command, resource sync)
-│   └── Model — see design/models.md
+│   └── Model — see design/primitives/models.md
 │       ├── Existing type covers it? → swamp model type search / extension search
 │       └── No type? → Extension model or command/shell (ad-hoc only)
 │
 ├── Orchestrate multiple actions in sequence or parallel
-│   └── Workflow — see design/workflow.md
+│   └── Workflow — see design/primitives/workflows.md
 │       ├── Steps are all model methods? → workflow with model_method steps
 │       ├── Mix of models and scripts? → workflow with mixed step types
 │       └── Need to nest workflows? → see references/workflow/references/nested-workflows.md
 │
 ├── Analyze or summarize execution results
-│   └── Report — see design/reports.md
+│   └── Report — see design/enablers/reports.md
 │       └── Runs automatically after method executions and workflow steps
 │
 ├── Add new capabilities (model types, vault backends, datastores, drivers)
-│   └── Extension — see design/extension.md
+│   └── Extension — see design/primitives/extensions.md
 │       └── Determine which of the 5 extension types fits:
 │           model | vault | driver | datastore | report
 │
 ├── Store and retrieve secrets (API keys, tokens, credentials)
-│   └── Vault — see design/vaults.md
+│   └── Vault — see design/primitives/vaults.md
 │       └── Referenced in model definitions via vault.get() expressions
 │
 └── Query, compare, or inspect runtime state
@@ -67,16 +67,18 @@ human, cite the source you relied on:
 These live in `design/` at the repository root and document internal
 architecture decisions:
 
-- `design/high-level.md` — top-level architecture overview (purpose, storage,
+- `design/architecture.md` — top-level architecture overview (purpose, storage,
   models, workflows)
-- `design/models.md` — model type system, IDs, versions, methods, data
-- `design/workflow.md` — workflow definitions, jobs, steps, task variants
-- `design/reports.md` — post-execution report analysis
-- `design/extension.md` — extension packaging and distribution
-- `design/vaults.md` — vault secret storage
-- `design/datastores.md` — datastore abstraction layer
-- `design/repo.md` — repository structure and architecture
-- `design/expressions.md` — CEL expression language
+- `design/primitives/models.md` — model type system, IDs, versions, methods,
+  data
+- `design/primitives/workflows.md` — workflow definitions, jobs, steps, task
+  variants
+- `design/enablers/reports.md` — post-execution report analysis
+- `design/primitives/extensions.md` — extension packaging and distribution
+- `design/primitives/vaults.md` — vault secret storage
+- `design/enablers/datastores.md` — datastore abstraction layer
+- `design/surfaces/repo.md` — repository structure and architecture
+- `design/enablers/expressions.md` — CEL expression language
 
 ### User-facing (swamp manual)
 
@@ -99,5 +101,5 @@ guess" posture — architectural reasoning should be anchored to a canonical
 source, not inferred from priors.
 
 Example: "A workflow is the right choice here because you need to orchestrate
-three model methods with dependencies between them (see `design/workflow.md` for
-how DAG-based step ordering works)."
+three model methods with dependencies between them (see
+`design/primitives/workflows.md` for how DAG-based step ordering works)."

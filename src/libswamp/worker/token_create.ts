@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Mint a worker enrollment token (see design/remote-execution.md,
+ * Mint a worker enrollment token (see design/enablers/remote-execution.md,
  * "Enrollment tokens").
  *
  * Runs the `mint` method on the built-in `swamp/enrollment-token` model via

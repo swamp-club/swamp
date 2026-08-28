@@ -1,3 +1,8 @@
+---
+audience: maintainer
+last-verified: 2026-08-28 @ 4bde205b
+---
+
 # Global Skills
 
 This document describes the design for moving swamp skills from per-repo local

@@ -1,3 +1,8 @@
+---
+audience: maintainer
+last-verified: 2026-08-28 @ 4bde205b
+---
+
 # Audit subdomain
 
 Records and reports the bash/tool-use commands the user's AI coding agent
@@ -35,7 +40,7 @@ agent actions with swamp workflow runs.
 - **`swamp audit`** — renders the merged timeline.
 
 - **`swamp doctor audit`** — preflight diagnostic verifying the audit
-  integration is healthy. See [`audit-doctor.md`](audit-doctor.md) for
+  integration is healthy. See [`audit-doctor.md`](./audit-doctor.md) for
   details.
 
 ## Repo layout of audit config

@@ -8,7 +8,7 @@ and services affected by the change. Use the `ddd` skill for guidance.
 ## Documentation Impact
 
 Before presenting the plan, evaluate whether the change affects anything
-described in `design/*.md` or `.claude/skills/`. If so, include explicit plan
+described in `design/` or `.claude/skills/`. If so, include explicit plan
 steps to update those files. Common triggers: new domain concepts, changed CLI
 commands or flags, new extension patterns, modified architectural decisions,
 renamed types or methods referenced in skill examples.

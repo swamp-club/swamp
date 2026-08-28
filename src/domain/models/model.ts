@@ -283,7 +283,7 @@ export interface MethodContext {
 
   /**
    * Remote-execution placement for this run (see
-   * design/remote-execution.md). When present, the method body dispatches
+   * design/enablers/remote-execution.md). When present, the method body dispatches
    * to a matching worker instead of executing in-process; checks, reports,
    * and output records still run at the orchestrator around it.
    */
@@ -862,7 +862,7 @@ export interface ModelDefinition<
   /**
    * Lazily builds the self-contained bundle for out-of-process execution.
    * Called when a step dispatches to a remote worker (see
-   * design/remote-execution.md). Memoizes its result so multiple executions
+   * design/enablers/remote-execution.md). Memoizes its result so multiple executions
    * of the same model in one process only bundle once.
    */
   bundleSourceFactory?: () => Promise<string>;

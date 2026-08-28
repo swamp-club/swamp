@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Worker-side bundle cache (see design/remote-execution.md, "Shipping
+ * Worker-side bundle cache (see design/enablers/remote-execution.md, "Shipping
  * extension code").
  *
  * A dispatch references its model by bundle fingerprint. `builtin:<type>`

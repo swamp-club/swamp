@@ -197,7 +197,7 @@ export class InstallExtensionService {
       // Half-state from a non-DuplicateTypeError fault during phase 8.
       // Files + lockfile entry are on disk (the install service does
       // NOT auto-roll-back FS for generic faults — see crash-state
-      // recovery posture in design/extension.md). Surface a UserError
+      // recovery posture in design/primitives/extensions.md). Surface a UserError
       // with the pinned recovery message so log-mode shows a clean
       // single-line guidance instead of a stack trace.
       throw new UserError(

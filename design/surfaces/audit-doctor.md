@@ -1,3 +1,8 @@
+---
+audience: maintainer
+last-verified: 2026-08-28 @ 4bde205b
+---
+
 # Audit Doctor — preflight diagnostic
 
 `swamp doctor audit` verifies that the AI-tool audit integration

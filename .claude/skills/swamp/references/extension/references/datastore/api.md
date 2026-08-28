@@ -240,7 +240,7 @@ The full eight-rule contract — pre-write timing, absence-on-disk = delete,
 `undefined` = bulk, restart-loses-set, cache-relative + forward-slash (consumers
 convert to native separators on Windows), backward compatibility, field scope,
 bulk-overrides-per-path-within-one-operation — is documented in
-`design/datastores.md` "markDirty() contract." Read that section before
+`design/enablers/datastores.md` "markDirty() contract." Read that section before
 implementing per-path tracking.
 
 Implementations that unconditionally walk the cache on every `pushChanged` have

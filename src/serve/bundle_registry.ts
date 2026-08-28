@@ -25,7 +25,7 @@
  * plane serves `GET /bundle/{fingerprint}` and
  * `GET /bundle/{fingerprint}/file/{relPath}` from here. Fingerprints are
  * content hashes, so entries never change once registered — a worker caches
- * them forever (see design/remote-execution.md, "Shipping extension code").
+ * them forever (see design/enablers/remote-execution.md, "Shipping extension code").
  */
 
 export interface RegisteredBundle {

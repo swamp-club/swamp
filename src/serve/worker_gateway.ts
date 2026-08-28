@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The orchestrator's worker gateway (see design/remote-execution.md,
+ * The orchestrator's worker gateway (see design/enablers/remote-execution.md,
  * "Enrollment" and "Failure, reconnection, and retry").
  *
  * Owns the live worker pool: enrollment over the control socket, session

@@ -1,3 +1,8 @@
+---
+audience: maintainer, extension-author
+last-verified: 2026-08-28 @ 4bde205b
+---
+
 # Models
 
 A model in swamp is defined by a _type_. They are instantiated by creating a
@@ -582,7 +587,7 @@ The latest version is tracked by a plain text marker file at
 `data/{normalized-type}/{model-id}/{data-name}/latest` containing the version
 number (e.g. `2`).
 
-See [datastores.md](./datastores.md) for how the datastore path is resolved.
+See [datastores.md](../enablers/datastores.md) for how the datastore path is resolved.
 
 ## Data Output API
 
@@ -708,5 +713,5 @@ The ModelRepository emits domain events when model data changes:
 - `ModelDeleted` - Emitted when a model is deleted
 
 A `NoopRepoIndexService` is instantiated but not wired to the event bus —
-no handler currently receives these events. See [repo.md](./repo.md) for
+no handler currently receives these events. See [repo.md](../surfaces/repo.md) for
 details on domain events.

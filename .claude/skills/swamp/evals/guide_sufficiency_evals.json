@@ -165,13 +165,13 @@
     "query": "Which design doc should I cite when explaining DAG step ordering?",
     "guide": "architecture",
     "answerable_from_guide": true,
-    "note": "Conceptual References section names design/workflow.md"
+    "note": "Conceptual References section names design/primitives/workflows.md"
   },
   {
     "query": "How does CEL expression evaluation actually resolve step references internally?",
     "guide": "architecture",
     "answerable_from_guide": false,
-    "note": "The guide only points at design/expressions.md; the mechanics live there"
+    "note": "The guide only points at design/enablers/expressions.md; the mechanics live there"
   },
   {
     "query": "Check whether my repo's datastore is already external",

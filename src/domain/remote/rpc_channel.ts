@@ -19,7 +19,7 @@
 
 /**
  * Symmetric RPC channel over a message transport (see
- * design/remote-execution.md, "A symmetric control protocol, two handler
+ * design/enablers/remote-execution.md, "A symmetric control protocol, two handler
  * registries").
  *
  * Both the orchestrator and the worker hold one RpcChannel per control

@@ -4,7 +4,7 @@
 
 When triaging an issue, read:
 
-- `CLAUDE.md` and `design/*.md` for project conventions and architecture
+- `CLAUDE.md` and `design/` for project conventions and architecture
 - Relevant skills (especially `ddd/SKILL.md`) for domain context
 - Source files related to the issue
 - **Check for regression signals**: If the issue describes a bug, use `git log`

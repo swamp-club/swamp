@@ -1,3 +1,8 @@
+---
+audience: extension-author, maintainer
+last-verified: 2026-08-28 @ 4bde205b
+---
+
 # Extensions
 
 An extension in swamp is a distributable package of models, workflows, vaults,
@@ -26,7 +31,7 @@ Examples: `@keeb/ssh`, `@acme/deploy`, `@myorg/aws-helpers`, `@swamp/aws/ec2`,
 
 Extensions use **CalVer** format `YYYY.MM.DD.MICRO` (e.g., `2026.02.26.1`). The
 micro counter allows multiple versions per day and resets for each new date.
-This is the same versioning scheme used by models (see [./models.md]).
+This is the same versioning scheme used by models (see [models](./models.md)).
 
 The registry enforces unique name+version tuples. If a version conflict occurs
 during push, the CLI offers to bump the version automatically.
@@ -1079,10 +1084,10 @@ const stty = new Deno.Command("stty", {
 await stty.output();
 ```
 
-The Docker execution driver (`design/execution-drivers.md`) runs extension
-bundles with `--allow-all`, so `Deno.open()` on device nodes works when using
-Docker placement. Only the local (in-process) and compiled-binary execution
-paths are affected by this limitation.
+Execution drivers were removed (see
+[remote-execution.md](../enablers/remote-execution.md#no-execution-drivers));
+remote workers run extension bundles in-process with the same compiled
+permissions as the CLI, so this limitation applies to every execution path.
 
 ## Dependency Trust Audit
 

@@ -34,7 +34,7 @@
 import "./command/shell/shell_model.ts";
 
 // Remote-execution control-plane models (worker pool, enrollment tokens,
-// step leases) — see design/remote-execution.md.
+// step leases) — see design/enablers/remote-execution.md.
 import "./worker/worker_model.ts";
 import "./worker/enrollment_token_model.ts";
 import "./worker/step_lease_model.ts";

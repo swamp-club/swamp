@@ -1,3 +1,8 @@
+---
+audience: maintainer, operator
+last-verified: 2026-08-28 @ 4bde205b
+---
+
 # Workflows
 
 The workflow is the overall definition of what to execution, represented by a
@@ -461,7 +466,7 @@ jobs:
 - Distinguish as "workflow inputs" (different from "model inputs")
 - Provide dynamic configuration for workflow execution
 
-See [./expressions.md] for CEL expression syntax and [./models.md] for detailed
+See [expressions](../enablers/expressions.md) for CEL expression syntax and [models](./models.md) for detailed
 input specification patterns.
 
 ### Workflow Triggers
@@ -897,7 +902,7 @@ inputs:
   scanResult: ${{ data.latest('scanner', 'result', [inputs.environment]).attributes.count }}
 ```
 
-See [Expressions](./expressions.md) for the full vary dimensions syntax.
+See [Expressions](../enablers/expressions.md) for the full vary dimensions syntax.
 
 ## Pre-flight Check Control
 
@@ -999,7 +1004,7 @@ The WorkflowRepository and WorkflowRunRepository emit domain events:
 - `WorkflowRunFailed` - Emitted when a workflow run fails
 
 The RepoIndexService subscribes to these events (currently a noop
-implementation). See [./repo.md] for details on domain events.
+implementation). See [repo](../surfaces/repo.md) for details on domain events.
 
 ## Per-Method Telemetry
 

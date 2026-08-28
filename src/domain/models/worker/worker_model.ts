@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Built-in worker model (see design/remote-execution.md, "Worker state is
+ * Built-in worker model (see design/enablers/remote-execution.md, "Worker state is
  * swamp data").
  *
  * One model instance per enrolled worker, named by its enrollment-token name.

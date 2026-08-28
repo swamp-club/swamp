@@ -158,7 +158,7 @@ async function main() {
     // auto-granting future Deno permission categories.  Trade-off: Deno.open()
     // on device nodes (e.g. /dev/ttyUSB0) requires --allow-all in compiled
     // binaries, so extensions must use Deno.Command for hardware I/O.
-    // See design/extension.md "Runtime Permissions".
+    // See design/primitives/extensions.md "Runtime Permissions".
     const dashboardDistExists = await Deno.stat("packages/dashboard/dist")
       .then(() => true).catch(() => false);
     const baseCommand = [

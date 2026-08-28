@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Built-in step-lease model (see design/remote-execution.md).
+ * Built-in step-lease model (see design/enablers/remote-execution.md).
  *
  * A lease records that a given step is in flight on a given worker, and
  * whether it has performed any durable write — the fact that decides the

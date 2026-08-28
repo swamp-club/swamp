@@ -579,7 +579,7 @@ Deno.test("Workflow.fromData rejects malformed scoped names", () => {
   );
 });
 
-// Removed driver field tests (see design/remote-execution.md)
+// Removed driver field tests (see design/enablers/remote-execution.md)
 
 Deno.test("Workflow YAML containing 'driver: docker' fails to parse with actionable message", () => {
   const yaml = `
@@ -606,7 +606,7 @@ jobs:
   assertStringIncludes(
     error.message,
     "The 'driver' field has been removed — execution drivers are replaced " +
-      "by remote execution (see design/remote-execution.md). Remove the " +
+      "by remote execution (see design/enablers/remote-execution.md). Remove the " +
       "field; for isolation, run a containerized worker and use step " +
       "'labels' placement.",
   );

@@ -104,7 +104,7 @@ export interface InvalidationGuardResult {
  * {@link ExtensionLoader} accesses the catalog via
  * {@link getCatalogStore} for row-level operations.
  *
- * See `design/extension-rearchitecture.md` (workstream W1) for the full
+ * See `design/primitives/extensions.md` (workstream W1) for the full
  * architectural blueprint this class lives inside.
  */
 export class ExtensionRepository {
