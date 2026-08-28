@@ -1190,8 +1190,12 @@ export async function acquireModelLocks(
       // Hard timeout to prevent indefinite hangs
       const globalElapsed = Date.now() - globalWaitStart;
       if (globalElapsed >= globalMaxWaitMs) {
+        const lockOpts = datastoreGlobalLockOptions(config);
+        const displayKey = lockOpts?.namespace
+          ? `${lockOpts.namespace}/.datastore.lock`
+          : ".datastore.lock";
         throw new LockTimeoutError(
-          datastoreGlobalLockOptions(config)?.lockKey ?? ".datastore.lock",
+          displayKey,
           info,
           globalElapsed,
         );
@@ -1280,8 +1284,12 @@ export async function acquireModelLocks(
         }
         const retryElapsed = Date.now() - retryWaitStart;
         if (retryElapsed >= retryMaxWaitMs) {
+          const retryLockOpts = datastoreGlobalLockOptions(config);
+          const retryDisplayKey = retryLockOpts?.namespace
+            ? `${retryLockOpts.namespace}/.datastore.lock`
+            : ".datastore.lock";
           throw new LockTimeoutError(
-            datastoreGlobalLockOptions(config)?.lockKey ?? ".datastore.lock",
+            retryDisplayKey,
             info,
             retryElapsed,
           );
@@ -1663,7 +1671,7 @@ export function datastoreGlobalLockOptions(
 ): LockOptions | undefined {
   const namespace = config.namespace ?? "";
   if (namespace.length === 0) return undefined;
-  return { lockKey: `.locks/${namespace}.lock` };
+  return { lockKey: ".datastore.lock", namespace };
 }
 
 /**

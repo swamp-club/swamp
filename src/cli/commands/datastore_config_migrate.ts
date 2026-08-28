@@ -130,8 +130,11 @@ export const datastoreConfigMigrateCommand = new Command()
 
     let pushed = false;
     if (syncService && (copied.length > 0 || managedConfigSet)) {
+      const namespace = isCustomDatastoreConfig(datastoreConfig)
+        ? datastoreConfig.namespace
+        : undefined;
       await syncService.markDirty();
-      await syncService.pushChanged();
+      await syncService.pushChanged({ namespace });
       pushed = true;
     }
 

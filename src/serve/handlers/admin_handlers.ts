@@ -632,8 +632,11 @@ export async function handleExtensionInstall(
     }
 
     if (ctx.syncService) {
+      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+        ? ctx.datastoreConfig.namespace
+        : undefined;
       await ctx.syncService.markDirty();
-      await ctx.syncService.pushChanged();
+      await ctx.syncService.pushChanged({ namespace });
     }
 
     send(socket, {
@@ -749,8 +752,11 @@ export async function handleExtensionPull(
     }
 
     if (ctx.syncService) {
+      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+        ? ctx.datastoreConfig.namespace
+        : undefined;
       await ctx.syncService.markDirty();
-      await ctx.syncService.pushChanged();
+      await ctx.syncService.pushChanged({ namespace });
     }
 
     send(socket, {
@@ -824,8 +830,11 @@ export async function handleExtensionRm(
     }
 
     if (ctx.syncService) {
+      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+        ? ctx.datastoreConfig.namespace
+        : undefined;
       await ctx.syncService.markDirty();
-      await ctx.syncService.pushChanged();
+      await ctx.syncService.pushChanged({ namespace });
     }
 
     send(socket, {
@@ -1015,8 +1024,11 @@ export async function handleExtensionUpdate(
     }
 
     if (ctx.syncService) {
+      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+        ? ctx.datastoreConfig.namespace
+        : undefined;
       await ctx.syncService.markDirty();
-      await ctx.syncService.pushChanged();
+      await ctx.syncService.pushChanged({ namespace });
     }
 
     send(socket, {
@@ -1184,8 +1196,11 @@ export async function handleVaultMigrate(
     }
 
     if (ctx.syncService) {
+      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+        ? ctx.datastoreConfig.namespace
+        : undefined;
       await ctx.syncService.markDirty();
-      await ctx.syncService.pushChanged();
+      await ctx.syncService.pushChanged({ namespace });
     }
 
     send(socket, {

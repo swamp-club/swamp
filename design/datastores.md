@@ -1081,12 +1081,14 @@ mode. A background heartbeat rewrites the lockfile content with a fresh
 timestamp. Stale locks (where `acquiredAt + ttlMs < now`) are removed and
 retried.
 
-When a `namespace` is configured, the **global** lock key moves to
-`{datastorePath}/.locks/{namespace}.lock` (`datastoreGlobalLockOptions`), so two
-repos writing to different namespaces of a shared datastore never contend on
-structural commands. `FileLock` lazily creates the `.locks/` directory on first
-acquire. This is a lock-**path** change only — the lifecycle protocol below is
-unchanged. Per-model lock keys are namespaced:
+When a `namespace` is configured, `datastoreGlobalLockOptions` returns
+`{ lockKey: ".datastore.lock", namespace }`. Both `FileLock` and remote lock
+providers (S3, GCS) prefix the lock key under `{namespace}/`, placing it at
+`{datastorePath}/{namespace}/.datastore.lock`. Two repos writing to different
+namespaces of a shared datastore never contend on structural commands, and the
+lock key stays within the namespace prefix so IAM credentials scoped to the
+prefix can access it. This is a lock-**path** change only — the lifecycle
+protocol below is unchanged. Per-model lock keys are namespaced:
 `{namespace}/data/{type}/{modelId}/.lock` when a namespace is set,
 `data/{type}/{modelId}/.lock` otherwise. The `modelLockKey()` helper in
 `lock.ts` constructs the key; `createModelLock` and `acquireModelLocks` read

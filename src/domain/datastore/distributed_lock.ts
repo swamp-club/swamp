@@ -47,6 +47,12 @@ export interface LockInfo {
 export interface LockOptions {
   /** Backend-specific key/path for the lock (default varies by backend). */
   lockKey?: string;
+  /**
+   * Namespace prefix for scoping the lock key. When set, the lock provider
+   * places the key under `{namespace}/` so IAM credentials scoped to the
+   * namespace prefix can access it.
+   */
+  namespace?: string;
   /** TTL in ms (default: 30_000). */
   ttlMs?: number;
   /** Retry interval in ms (default: 1_000). */
@@ -94,12 +100,16 @@ export interface DistributedLock {
  * Returns true when the lock key identifies the global (non-namespaced)
  * datastore lock. Covers both the bare key (`".datastore.lock"` from
  * S3/GCS locks) and the full filesystem path (`"/…/.datastore.lock"`
- * from FileLock). Namespaced keys live under `.locks/` and won't match.
+ * from FileLock). Namespaced keys have the form `"{ns}/.datastore.lock"`
+ * (short) or `"{base}/{ns}/.datastore.lock"` (full path, where the
+ * namespace segment is a non-hidden directory name).
  */
 function isGlobalDatastoreLock(lockKey: string): boolean {
-  return (lockKey === ".datastore.lock" ||
-    lockKey.endsWith("/.datastore.lock")) &&
-    !lockKey.includes("/.locks/");
+  if (lockKey === ".datastore.lock") return true;
+  if (!lockKey.endsWith("/.datastore.lock")) return false;
+  const parts = lockKey.split("/");
+  const parentSegment = parts[parts.length - 2];
+  return parentSegment?.startsWith(".") ?? false;
 }
 
 /**

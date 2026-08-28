@@ -35,6 +35,7 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import {
   type DirectTypeResolver,
@@ -577,8 +578,11 @@ export const workflowRunCommand = new Command()
       throw new UserError(`Workflow execution failed: ${message}`);
     } finally {
       if (unlocked.syncService) {
+        const namespace = isCustomDatastoreConfig(unlocked.datastoreConfig)
+          ? unlocked.datastoreConfig.namespace
+          : undefined;
         try {
-          await unlocked.syncService.pushChanged();
+          await unlocked.syncService.pushChanged({ namespace });
         } catch (pushErr) {
           ctx.logger
             .warn`Post-run push failed; terminal status may be delayed: ${

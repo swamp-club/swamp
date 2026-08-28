@@ -73,7 +73,10 @@ import { SecretRedactor } from "../domain/secrets/mod.ts";
 import { modelRegistry } from "../domain/models/model.ts";
 import { vaultTypeRegistry } from "../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../domain/reports/report_registry.ts";
-import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
+import {
+  type DatastoreConfig,
+  isCustomDatastoreConfig,
+} from "../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
 import { acquireModelLocks } from "../cli/repo_context.ts";
@@ -472,8 +475,11 @@ export async function executeWorkflowWithLocks(
     await finishRunTelemetry(runTelemetry, failure);
   } finally {
     if (syncService) {
+      const namespace = isCustomDatastoreConfig(datastoreConfig)
+        ? datastoreConfig.namespace
+        : undefined;
       try {
-        await syncService.pushChanged();
+        await syncService.pushChanged({ namespace });
       } catch (pushErr) {
         logger.warn(
           "Post-run push failed; terminal status may be delayed: {error}",

@@ -33,6 +33,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -122,6 +123,7 @@ export const modelCreateCommand = withRemoteOptions(
     const resolvedRepoDir = resolveRepoDir(options.repoDir);
     const {
       repoDir,
+      datastoreConfig,
       datastoreResolver: resolver,
       syncService,
     } = await requireInitializedRepoUnlocked({
@@ -145,8 +147,11 @@ export const modelCreateCommand = withRemoteOptions(
     );
 
     if (syncService && managedConfig) {
+      const namespace = isCustomDatastoreConfig(datastoreConfig)
+        ? datastoreConfig.namespace
+        : undefined;
       await syncService.markDirty();
-      await syncService.pushChanged();
+      await syncService.pushChanged({ namespace });
     }
 
     cliCtx.logger.debug("Model create command completed");

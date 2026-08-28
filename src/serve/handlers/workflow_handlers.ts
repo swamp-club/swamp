@@ -82,6 +82,7 @@ import type {
   WorkflowValidatePayload,
 } from "../protocol.ts";
 import { acquireModelLocks } from "../../cli/repo_context.ts";
+import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import {
   resolveResumableRun,
   resolveSuspendedRun,
@@ -1162,8 +1163,11 @@ export async function handleWorkflowResume(
       }
     } finally {
       if (ctx.syncService) {
+        const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+          ? ctx.datastoreConfig.namespace
+          : undefined;
         try {
-          await ctx.syncService.pushChanged();
+          await ctx.syncService.pushChanged({ namespace });
         } catch (pushErr) {
           logger.warn(
             "Post-resume push failed; terminal status may be delayed: {error}",
@@ -1338,8 +1342,11 @@ export async function handleWorkflowResume(
       }
     } finally {
       if (ctx.syncService) {
+        const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+          ? ctx.datastoreConfig.namespace
+          : undefined;
         try {
-          await ctx.syncService.pushChanged();
+          await ctx.syncService.pushChanged({ namespace });
         } catch (pushErr) {
           logger.warn(
             "Post-resume push failed; terminal status may be delayed: {error}",

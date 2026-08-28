@@ -31,6 +31,7 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import {
   resolveResumableRun,
   resolveSuspendedRun,
@@ -465,8 +466,11 @@ export const workflowResumeCommand = withRemoteOptions(
       await consumeStream(resumeGenerator(), renderer.handlers());
     } finally {
       if (unlocked.syncService) {
+        const namespace = isCustomDatastoreConfig(unlocked.datastoreConfig)
+          ? unlocked.datastoreConfig.namespace
+          : undefined;
         try {
-          await unlocked.syncService.pushChanged();
+          await unlocked.syncService.pushChanged({ namespace });
         } catch (pushErr) {
           cliCtx.logger
             .warn`Post-resume push failed; terminal status may be delayed: ${

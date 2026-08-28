@@ -28,6 +28,7 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import {
   consumeStream,
@@ -237,9 +238,12 @@ export const accessTokenMintCommand = new Command()
       }
 
       if (syncService) {
+        const namespace = isCustomDatastoreConfig(datastoreConfig)
+          ? datastoreConfig.namespace
+          : undefined;
         try {
           await syncService.markDirty();
-          await syncService.pushChanged();
+          await syncService.pushChanged({ namespace });
 
           repoContext.catalogStore.invalidate();
           const verifyResult = await findDefinitionByIdOrName(
