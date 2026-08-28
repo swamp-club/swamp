@@ -25,7 +25,7 @@ that matters stays as a short _Why_ section inside the doc it explains.
 ```
 design/
   README.md          this file
-  architecture.md    overview: who uses swamp, containers, key journeys
+  architecture.md    the story across the six primitives, top down
   operations.md      one line each for subsystems that get no design doc
   primitives/        the six primitives — the whole product in six files
   enablers/          subsystems that exist because a primitive needs them
@@ -87,42 +87,10 @@ the date on its doc.
 ## Reading order for a new engineer
 
 1. [architecture.md](./architecture.md)
-2. `primitives/` in order: models → workflows → vaults → extensions (data and
-   serve once written)
+2. `primitives/` in the order architecture.md tells the story: models → data →
+   workflows → vaults → extensions → serve
 3. [contributing/libswamp.md](../contributing/libswamp.md) — the one pattern
    every command follows; then `src/cli/commands/data_get.ts` as the example
 4. [enablers/remote-execution.md](./enablers/remote-execution.md)
 5. `enablers/` as needed, following the `enables:` links from the primitive
    you are working on
-
-## Diagrams
-
-The C4 model lives in `design/architecture/` as [LikeC4](https://likec4.dev)
-source — `model.c4` (people, external systems, containers, components) and
-`views.c4` (context, containers, components, and one dynamic view per user
-journey). Mermaid is generated into `design/architecture/generated/` and
-spliced into [architecture.md](./architecture.md) between
-`<!-- diagram: <view> -->` markers so GitHub renders it inline.
-
-**Viewing.** Nothing to install: open
-[architecture.md](./architecture.md) on GitHub, or in any editor with a
-Mermaid-capable markdown preview (Zed, VS Code). For the interactive version
-— pan, zoom, click through from a container to its components — run
-`npx likec4 start design/architecture` and open the URL it prints, or install
-the [LikeC4 VS Code extension](https://marketplace.visualstudio.com/items?itemName=likec4.likec4-vscode)
-and open a `.c4` file.
-
-**Editing.** Change `model.c4` / `views.c4`, then:
-
-- `deno task diagrams:render` — regenerate the Mermaid and re-splice it into
-  architecture.md. Needs `npx` (Node); the pinned `likec4` version is
-  fetched on first use.
-- `deno task diagrams:check` — what CI runs; fails if the generated files or
-  the spliced blocks are stale.
-
-Rules for the model: people are the swamp-uat personas; element ids under
-`swamp` mirror `src/` directories and carry a `link` to the path; every
-dynamic view is a journey a person actually runs and links to the swamp-uat
-test that proves it. When a UAT journey is added or renamed, the view follows.
-Context and container views are hand-curated; there are no code-level
-diagrams.
