@@ -1190,8 +1190,12 @@ export async function acquireModelLocks(
       // Hard timeout to prevent indefinite hangs
       const globalElapsed = Date.now() - globalWaitStart;
       if (globalElapsed >= globalMaxWaitMs) {
+        const lockOpts = datastoreGlobalLockOptions(config);
+        const displayKey = lockOpts?.namespace
+          ? `${lockOpts.namespace}/.datastore.lock`
+          : ".datastore.lock";
         throw new LockTimeoutError(
-          datastoreGlobalLockOptions(config)?.lockKey ?? ".datastore.lock",
+          displayKey,
           info,
           globalElapsed,
         );
@@ -1280,8 +1284,12 @@ export async function acquireModelLocks(
         }
         const retryElapsed = Date.now() - retryWaitStart;
         if (retryElapsed >= retryMaxWaitMs) {
+          const retryLockOpts = datastoreGlobalLockOptions(config);
+          const retryDisplayKey = retryLockOpts?.namespace
+            ? `${retryLockOpts.namespace}/.datastore.lock`
+            : ".datastore.lock";
           throw new LockTimeoutError(
-            datastoreGlobalLockOptions(config)?.lockKey ?? ".datastore.lock",
+            retryDisplayKey,
             info,
             retryElapsed,
           );
@@ -1645,11 +1653,10 @@ export function acquireVaultSync(
  *
  * Solo mode (no namespace) returns `undefined`, so the lock falls back to the
  * single shared `.datastore.lock` — byte-identical to before. When a namespace
- * is configured, the global lock moves to `.locks/{namespace}.lock` so repos
- * sharing a datastore never contend on structural commands. This is a PATH
- * change only: the lock lifecycle (symmetric drain, TOCTOU rechecks) is
- * unchanged. `FileLock` lazily creates the `.locks/` directory on first
- * acquire via `ensureDir(dirname(lockPath))`.
+ * is configured, returns `{ lockKey: ".datastore.lock", namespace }` so the
+ * lock provider places the key at `{namespace}/.datastore.lock`, keeping it
+ * within the namespace prefix for IAM-scoped credentials. Repos sharing a
+ * datastore with different namespaces never contend on structural commands.
  *
  * Every construction of the GLOBAL datastore lock — the structural-command
  * acquire, the `acquireModelLocks` drain-coordination inspect, the per-model
@@ -1663,7 +1670,7 @@ export function datastoreGlobalLockOptions(
 ): LockOptions | undefined {
   const namespace = config.namespace ?? "";
   if (namespace.length === 0) return undefined;
-  return { lockKey: `.locks/${namespace}.lock` };
+  return { lockKey: ".datastore.lock", namespace };
 }
 
 /**

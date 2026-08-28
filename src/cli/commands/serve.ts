@@ -1623,8 +1623,11 @@ export const serveCommand = new Command()
         modelsDir,
       );
       if (syncService) {
+        const namespace = isCustomDatastoreConfig(datastoreConfig)
+          ? datastoreConfig.namespace
+          : undefined;
         await syncService.markDirty();
-        await syncService.pushChanged();
+        await syncService.pushChanged({ namespace });
       }
     }
 

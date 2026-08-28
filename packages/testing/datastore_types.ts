@@ -38,6 +38,7 @@ export interface LockInfo {
 /** Configuration for lock behavior. */
 export interface LockOptions {
   lockKey?: string;
+  namespace?: string;
   ttlMs?: number;
   retryIntervalMs?: number;
   maxWaitMs?: number;

@@ -284,23 +284,24 @@ Deno.test("FileLock - custom lock key", async () => {
   });
 });
 
-Deno.test("FileLock - namespaced lock key lazily creates the .locks directory", async () => {
+Deno.test("FileLock - namespace option scopes lock under namespace directory", async () => {
   await withTempDir(async (dir) => {
-    // Giga-swamp per-namespace global lock key: `.locks/{namespace}.lock`.
     const lock = new FileLock(dir, {
-      lockKey: ".locks/infra.lock",
+      namespace: "infra",
       ttlMs: 5000,
     });
 
-    // The `.locks` directory must NOT exist before acquisition.
-    await assertRejects(() => Deno.stat(join(dir, ".locks")));
+    // The namespace directory must NOT exist before acquisition.
+    await assertRejects(() => Deno.stat(join(dir, "infra")));
 
     await lock.acquire();
 
-    // Acquiring lazily creates `.locks/` and the namespaced lock file.
-    const dirStat = await Deno.stat(join(dir, ".locks"));
+    // Acquiring lazily creates the namespace directory and the lock file.
+    const dirStat = await Deno.stat(join(dir, "infra"));
     assertEquals(dirStat.isDirectory, true);
-    const fileStat = await Deno.stat(join(dir, ".locks", "infra.lock"));
+    const fileStat = await Deno.stat(
+      join(dir, "infra", ".datastore.lock"),
+    );
     assertEquals(fileStat.isFile, true);
 
     await lock.release();
@@ -312,11 +313,11 @@ Deno.test("FileLock - different namespaces acquire their locks concurrently", as
     // Two repos sharing a datastore but in different namespaces must not
     // contend on the global lock.
     const infra = new FileLock(dir, {
-      lockKey: ".locks/infra.lock",
+      namespace: "infra",
       ttlMs: 5000,
     });
     const security = new FileLock(dir, {
-      lockKey: ".locks/security.lock",
+      namespace: "security",
       ttlMs: 5000,
     });
 
@@ -329,6 +330,24 @@ Deno.test("FileLock - different namespaces acquire their locks concurrently", as
 
     await infra.release();
     await security.release();
+  });
+});
+
+Deno.test("FileLock - namespace with custom lockKey", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, {
+      lockKey: ".datastore.lock",
+      namespace: "prod",
+      ttlMs: 5000,
+    });
+    await lock.acquire();
+
+    const fileStat = await Deno.stat(
+      join(dir, "prod", ".datastore.lock"),
+    );
+    assertEquals(fileStat.isFile, true);
+
+    await lock.release();
   });
 });
 

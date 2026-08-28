@@ -1704,14 +1704,15 @@ Deno.test("datastoreGlobalLockOptions: solo mode falls back to the single .datas
   assertEquals(datastoreGlobalLockOptions(explicitEmpty), undefined);
 });
 
-Deno.test("datastoreGlobalLockOptions: namespaced repo uses .locks/{namespace}.lock", () => {
+Deno.test("datastoreGlobalLockOptions: namespaced repo passes namespace in LockOptions", () => {
   const config: DatastoreConfig = {
     type: "filesystem",
     path: "/ds",
     namespace: "infra",
   };
   assertEquals(datastoreGlobalLockOptions(config), {
-    lockKey: ".locks/infra.lock",
+    lockKey: ".datastore.lock",
+    namespace: "infra",
   });
 });
 
@@ -1723,7 +1724,8 @@ Deno.test("datastoreGlobalLockOptions: applies to custom datastores too", () => 
     namespace: "security",
   };
   assertEquals(datastoreGlobalLockOptions(config), {
-    lockKey: ".locks/security.lock",
+    lockKey: ".datastore.lock",
+    namespace: "security",
   });
 });
 

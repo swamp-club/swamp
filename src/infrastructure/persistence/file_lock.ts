@@ -78,7 +78,10 @@ export class FileLock implements DistributedLock {
 
   constructor(basePath: string, options?: LockOptions) {
     const lockFile = options?.lockKey ?? DEFAULT_LOCK_PATH;
-    this.lockPath = `${basePath}/${lockFile}`;
+    const ns = options?.namespace;
+    this.lockPath = ns
+      ? `${basePath}/${ns}/${lockFile}`
+      : `${basePath}/${lockFile}`;
     this.ttlMs = options?.ttlMs ?? DEFAULT_TTL_MS;
     this.retryIntervalMs = options?.retryIntervalMs ??
       DEFAULT_RETRY_INTERVAL_MS;

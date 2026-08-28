@@ -112,7 +112,10 @@ export function createDatastoreTestContext(
     _datastorePath: string,
     lockOptions?: LockOptions,
   ): DistributedLock {
-    const lockKey = lockOptions?.lockKey ?? "default";
+    const baseLockKey = lockOptions?.lockKey ?? "default";
+    const lockKey = lockOptions?.namespace
+      ? `${lockOptions.namespace}/${baseLockKey}`
+      : baseLockKey;
     const nonce = crypto.randomUUID();
 
     const lock: DistributedLock = {

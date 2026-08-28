@@ -792,8 +792,11 @@ export async function handleModelCreate(
     }
 
     if (ctx.syncService) {
+      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+        ? ctx.datastoreConfig.namespace
+        : undefined;
       await ctx.syncService.markDirty();
-      await ctx.syncService.pushChanged();
+      await ctx.syncService.pushChanged({ namespace });
     }
 
     send(socket, {
@@ -882,8 +885,11 @@ export async function handleModelDelete(
     }
 
     if (ctx.syncService) {
+      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+        ? ctx.datastoreConfig.namespace
+        : undefined;
       await ctx.syncService.markDirty();
-      await ctx.syncService.pushChanged();
+      await ctx.syncService.pushChanged({ namespace });
     }
 
     send(socket, {
