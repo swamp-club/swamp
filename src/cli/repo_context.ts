@@ -1653,11 +1653,10 @@ export function acquireVaultSync(
  *
  * Solo mode (no namespace) returns `undefined`, so the lock falls back to the
  * single shared `.datastore.lock` — byte-identical to before. When a namespace
- * is configured, the global lock moves to `.locks/{namespace}.lock` so repos
- * sharing a datastore never contend on structural commands. This is a PATH
- * change only: the lock lifecycle (symmetric drain, TOCTOU rechecks) is
- * unchanged. `FileLock` lazily creates the `.locks/` directory on first
- * acquire via `ensureDir(dirname(lockPath))`.
+ * is configured, returns `{ lockKey: ".datastore.lock", namespace }` so the
+ * lock provider places the key at `{namespace}/.datastore.lock`, keeping it
+ * within the namespace prefix for IAM-scoped credentials. Repos sharing a
+ * datastore with different namespaces never contend on structural commands.
  *
  * Every construction of the GLOBAL datastore lock — the structural-command
  * acquire, the `acquireModelLocks` drain-coordination inspect, the per-model

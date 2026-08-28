@@ -69,23 +69,23 @@ Deno.test("LockTimeoutError: global lock key includes namespace hint", () => {
   assertStringIncludes(error.message, "swamp datastore namespace migrate");
 });
 
-Deno.test("LockTimeoutError: filesystem global lock path includes namespace hint", () => {
+Deno.test("LockTimeoutError: filesystem full path omits namespace hint (display keys only)", () => {
   const error = new LockTimeoutError(
     "/home/user/.swamp/.datastore.lock",
     null,
     5000,
   );
-  assertStringIncludes(error.message, "swamp datastore namespace set");
-});
-
-Deno.test("LockTimeoutError: namespaced lock key omits namespace hint", () => {
-  const error = new LockTimeoutError(".locks/infra.lock", null, 5000);
   assertEquals(error.message.includes("namespace set"), false);
 });
 
-Deno.test("LockTimeoutError: filesystem namespaced lock path omits namespace hint", () => {
+Deno.test("LockTimeoutError: namespaced display key omits namespace hint", () => {
+  const error = new LockTimeoutError("infra/.datastore.lock", null, 5000);
+  assertEquals(error.message.includes("namespace set"), false);
+});
+
+Deno.test("LockTimeoutError: namespaced filesystem path omits namespace hint", () => {
   const error = new LockTimeoutError(
-    "/home/user/.swamp/.locks/infra.lock",
+    "/home/user/.swamp/infra/.datastore.lock",
     null,
     5000,
   );

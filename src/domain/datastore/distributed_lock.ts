@@ -97,19 +97,15 @@ export interface DistributedLock {
 }
 
 /**
- * Returns true when the lock key identifies the global (non-namespaced)
- * datastore lock. Covers both the bare key (`".datastore.lock"` from
- * S3/GCS locks) and the full filesystem path (`"/…/.datastore.lock"`
- * from FileLock). Namespaced keys have the form `"{ns}/.datastore.lock"`
- * (short) or `"{base}/{ns}/.datastore.lock"` (full path, where the
- * namespace segment is a non-hidden directory name).
+ * Returns true when the lock key identifies the solo-mode (non-namespaced)
+ * global datastore lock. Matches the short display key `.datastore.lock`
+ * used by `acquireModelLocks` error paths. Full filesystem paths from
+ * `FileLock.acquire()` do not match — the hint is only shown for the
+ * display-key paths where it can reliably distinguish solo from namespaced
+ * (e.g. `infra/.datastore.lock`).
  */
 function isGlobalDatastoreLock(lockKey: string): boolean {
-  if (lockKey === ".datastore.lock") return true;
-  if (!lockKey.endsWith("/.datastore.lock")) return false;
-  const parts = lockKey.split("/");
-  const parentSegment = parts[parts.length - 2];
-  return parentSegment?.startsWith(".") ?? false;
+  return lockKey === ".datastore.lock";
 }
 
 /**
