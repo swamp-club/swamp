@@ -1688,35 +1688,50 @@ export const serveCommand = new Command()
     const MIGRATION_SENTINEL = "migration/root-import-complete";
     if (hasRemoteControlPlane && syncService) {
       // Migration: if a namespace is configured, read root control-plane
-      // records before binding so the pre-namespace path is addressable.
-      // After binding, the extension's get/put/delete resolve to the
-      // namespaced path — root keys are no longer addressable — so we
-      // use a sentinel to skip re-migration on subsequent boots.
+      // records before the main sync service is namespace-bound. The
+      // extension's controlPlaneStore() methods call ensureBound(), which
+      // irrevocably binds the sync service's namespace on first use. Using
+      // the main sync service here would bind it to undefined (root),
+      // causing all subsequent namespace-aware pullChanged/pushChanged
+      // calls to fail with a namespace mismatch. A separate short-lived
+      // sync service isolates the root reads from the main service.
       const rootRecords = new Map<string, Uint8Array>();
       const rootReadErrors: Array<{ prefix: string; error: Error }> = [];
-      if (serveNamespace) {
-        const rootStore = syncService.controlPlaneStore!();
-        for (
-          const prefix of [
-            "token-secrets/",
-            "pending-runs/",
-            "heartbeats/",
-            "active-runs/",
-            "fire-records/",
-            "claims/",
-          ]
-        ) {
-          try {
-            const keys = await rootStore.list(prefix);
-            for (const key of keys) {
-              const data = await rootStore.get(key);
-              if (data) rootRecords.set(key, new Uint8Array(data));
+      if (serveNamespace && isCustomDatastoreConfig(datastoreConfig)) {
+        const typeInfo = datastoreTypeRegistry.get(datastoreConfig.type);
+        const rootProvider = typeInfo?.createProvider
+          ? typeInfo.createProvider(datastoreConfig.config)
+          : undefined;
+        const rootSyncService = rootProvider && datastoreConfig.cachePath
+          ? rootProvider.createSyncService?.(
+            resolvedRepoDir,
+            datastoreConfig.cachePath,
+          )
+          : undefined;
+        if (rootSyncService?.controlPlaneStore) {
+          const rootStore = rootSyncService.controlPlaneStore();
+          for (
+            const prefix of [
+              "token-secrets/",
+              "pending-runs/",
+              "heartbeats/",
+              "active-runs/",
+              "fire-records/",
+              "claims/",
+            ]
+          ) {
+            try {
+              const keys = await rootStore.list(prefix);
+              for (const key of keys) {
+                const data = await rootStore.get(key);
+                if (data) rootRecords.set(key, new Uint8Array(data));
+              }
+            } catch (err) {
+              rootReadErrors.push({
+                prefix,
+                error: err instanceof Error ? err : new Error(String(err)),
+              });
             }
-          } catch (err) {
-            rootReadErrors.push({
-              prefix,
-              error: err instanceof Error ? err : new Error(String(err)),
-            });
           }
         }
       }
@@ -1788,8 +1803,10 @@ export const serveCommand = new Command()
       }
     }
 
-    // Create the control-plane store AFTER namespace binding so the S3/GCS
-    // extension's list() prefix is correctly scoped.
+    // Create the control-plane store AFTER namespace binding (which happens
+    // in hydrateLocalCache's pullChanged call). The extension's ensureBound()
+    // evaluates controlPrefixPath() lazily — after binding, it resolves to
+    // {namespace}/_control/ instead of the root _control/.
     let controlPlaneStore: ControlPlaneStore;
     if (hasRemoteControlPlane && syncService?.controlPlaneStore) {
       controlPlaneStore = syncService.controlPlaneStore();
