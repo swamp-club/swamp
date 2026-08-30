@@ -577,6 +577,20 @@ export interface DeferredWarning {
   error: string;
 }
 
+const MISSING_PULLED_EXTENSIONS_MARKER =
+  "pulled extension(s) have missing source files";
+
+/** @internal Exported for testing */
+export function shouldSuppressMissingExtensionsWarning(
+  commandInfo: CommandInvocationData,
+  warning: DeferredWarning,
+): boolean {
+  return commandInfo.command === "extension" &&
+    commandInfo.subcommand === "install" &&
+    warning.kind === "extensions" &&
+    warning.error.includes(MISSING_PULLED_EXTENSIONS_MARKER);
+}
+
 /**
  * Detects the "neither HOME nor USERPROFILE is set" failure raised by the
  * home-directory path helpers. Used to suppress the misleading per-kind
@@ -1371,6 +1385,15 @@ export async function runCli(args: string[]): Promise<void> {
       managedLockfilePath,
     );
     loaderSpan.end();
+
+    // Suppress missing-pulled-extensions warning during extension install (swamp-club#1762)
+    for (let i = deferredWarnings.length - 1; i >= 0; i--) {
+      if (
+        shouldSuppressMissingExtensionsWarning(commandInfo, deferredWarnings[i])
+      ) {
+        deferredWarnings.splice(i, 1);
+      }
+    }
   }
 
   // Resolve identity and scopes for SWAMP_API_KEY users. Calls whoami only

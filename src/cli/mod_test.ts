@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import {
   commandNeedsLoaderSetup,
+  type DeferredWarning,
   isHookCommand,
   isLocalhostUrl,
   isTelemetryDisabledByConfig,
@@ -29,6 +30,7 @@ import {
   resolveModelsDir,
   resolveTelemetryEndpoint,
   resolveWorkflowsDir,
+  shouldSuppressMissingExtensionsWarning,
 } from "./mod.ts";
 import { extractCommandInfo } from "./telemetry_integration.ts";
 
@@ -691,6 +693,87 @@ Deno.test("isHookCommand: returns false for model command", () => {
 Deno.test("isHookCommand: returns false for empty args", () => {
   assertEquals(
     isHookCommand(extractCommandInfo([])),
+    false,
+  );
+});
+
+// shouldSuppressMissingExtensionsWarning tests
+
+const missingPulledWarning: DeferredWarning = {
+  kind: "extensions",
+  file: "models/upstream_extensions.json",
+  error:
+    "3 pulled extension(s) have missing source files: @foo/bar, @baz/qux, @a/b (e.g. .swamp/pulled-extensions/models/@foo/bar/mod.ts). Run 'swamp extension install' to restore them.",
+};
+
+const missingHomeWarning: DeferredWarning = {
+  kind: "extensions",
+  file: "",
+  error: "Extension loading is unavailable: no swamp data directory found",
+};
+
+const modelWarning: DeferredWarning = {
+  kind: "model",
+  file: "models/foo.ts",
+  error: "Failed to load user model",
+};
+
+Deno.test("shouldSuppressMissingExtensionsWarning: suppresses for extension install", () => {
+  assertEquals(
+    shouldSuppressMissingExtensionsWarning(
+      extractCommandInfo(["extension", "install"]),
+      missingPulledWarning,
+    ),
+    true,
+  );
+});
+
+Deno.test("shouldSuppressMissingExtensionsWarning: suppresses for extension install with flags", () => {
+  assertEquals(
+    shouldSuppressMissingExtensionsWarning(
+      extractCommandInfo(["--json", "extension", "install", "--quiet"]),
+      missingPulledWarning,
+    ),
+    true,
+  );
+});
+
+Deno.test("shouldSuppressMissingExtensionsWarning: does not suppress for extension pull", () => {
+  assertEquals(
+    shouldSuppressMissingExtensionsWarning(
+      extractCommandInfo(["extension", "pull"]),
+      missingPulledWarning,
+    ),
+    false,
+  );
+});
+
+Deno.test("shouldSuppressMissingExtensionsWarning: does not suppress for model run", () => {
+  assertEquals(
+    shouldSuppressMissingExtensionsWarning(
+      extractCommandInfo(["model", "method", "run"]),
+      missingPulledWarning,
+    ),
+    false,
+  );
+});
+
+Deno.test("shouldSuppressMissingExtensionsWarning: does not suppress missing-home warning during extension install", () => {
+  assertEquals(
+    shouldSuppressMissingExtensionsWarning(
+      extractCommandInfo(["extension", "install"]),
+      missingHomeWarning,
+    ),
+    false,
+  );
+});
+
+Deno.test("shouldSuppressMissingExtensionsWarning: does not suppress non-extensions warnings", () => {
+  assertEquals(
+    shouldSuppressMissingExtensionsWarning(
+      extractCommandInfo(["extension", "install"]),
+      modelWarning,
+    ),
     false,
   );
 });
