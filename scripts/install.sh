@@ -78,12 +78,28 @@ main() {
   tmpdir="$(mktemp_directory)"
   cleanup_directory "$tmpdir"
 
-  local asset
+  local asset checksum resolved_asset_url release_version release_asset
+  local release_checksums
   asset="$(basename "$asset_url")"
+  checksum="$asset.sha256"
   download "$asset_url" "$tmpdir/$asset"
+  resolved_asset_url="$DOWNLOADED_URL"
+  download "$asset_url.sha256" "$tmpdir/$checksum"
+
+  verify_sha256 "$tmpdir/$asset" "$tmpdir/$checksum"
+  validate_archive "$tmpdir/$asset" "$bin"
+
+  release_version="$(release_version_from_url "$resolved_asset_url")"
+  release_asset="$bin-$os_type-$cpu_type"
+  release_checksums="checksums-$release_version.txt"
+  download \
+    "https://github.com/swamp-club/swamp/releases/download/v$release_version/checksums.txt" \
+    "$tmpdir/$release_checksums"
 
   section "Extracting '$asset'"
   extract_archive "$tmpdir/$asset" "$tmpdir" "$bin"
+  verify_release_binary \
+    "$tmpdir/$bin" "$tmpdir/$release_checksums" "$release_asset"
 
   INSTALL_DEST="$dest"
   INSTALL_BIN="$bin"
@@ -153,6 +169,7 @@ parse_cli_args() {
   need_cmd id
   need_cmd uname
   need_cmd tr
+  need_cmd curl
 
   local os_type cpu_type plat dest
   os_type="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -268,6 +285,46 @@ asset_url() {
   echo "$asset_url"
 }
 
+validate_artifact_url() {
+  local url
+  url="$1"
+
+  case "$url" in
+    https://artifacts.swamp-club.com/swamp/*) ;;
+    *) die "Untrusted artifact URL: $url" ;;
+  esac
+}
+
+release_version_from_url() {
+  local url path version
+  url="$1"
+
+  validate_artifact_url "$url"
+  path="${url#https://artifacts.swamp-club.com/swamp/}"
+  version="${path%%/*}"
+
+  if [ -z "$version" ] || [ "$version" = "stable" ]; then
+    die "Could not determine the release version for checksum verification"
+  fi
+  case "$version" in
+    *[!0-9A-Za-z._-]*) die "Invalid release version: $version" ;;
+  esac
+
+  echo "$version"
+}
+
+validate_archive() {
+  local archive bin entries
+  archive="$1"
+  bin="$2"
+
+  need_cmd tar
+  entries="$(tar -tzf "$archive")" || die "Failed to inspect downloaded archive"
+  if [ "$entries" != "$bin" ]; then
+    die "Downloaded archive contains unexpected entries"
+  fi
+}
+
 extract_archive() {
   local archive dest bin
   archive="$1"
@@ -286,18 +343,90 @@ extract_archive() {
   fi
 }
 
-remove_macos_quarantine() {
-  local file
+checksum_for_asset() {
+  local checksum_file target checksum filename found
+  checksum_file="$1"
+  target="$2"
+  found=""
+
+  while IFS=' ' read -r checksum filename; do
+    if [ "$filename" = "$target" ]; then
+      if [ -n "$found" ]; then
+        die "Duplicate checksum for '$target'"
+      fi
+      found="$checksum"
+    fi
+  done <"$checksum_file"
+
+  if [ -z "$found" ]; then
+    die "No checksum found for '$target'"
+  fi
+  validate_sha256 "$found" "$target"
+  echo "$found"
+}
+
+validate_sha256() {
+  local checksum label
+  checksum="$1"
+  label="$2"
+
+  if [ "${#checksum}" -ne 64 ]; then
+    die "Invalid SHA-256 checksum for '$label'"
+  fi
+  case "$checksum" in
+    *[!0-9a-f]*) die "Invalid SHA-256 checksum for '$label'" ;;
+  esac
+}
+
+compute_sha256() {
+  local file actual
   file="$1"
 
-  if check_cmd xattr; then
-    info "Removing macOS quarantine attribute from '$file'"
-    # Remove the quarantine attribute - ignore errors if it doesn't exist
-    xattr -d com.apple.quarantine "$file" 2>/dev/null || true
+  if check_cmd sha256sum; then
+    actual="$(sha256sum "$file")"
+  elif check_cmd shasum; then
+    actual="$(shasum -a 256 "$file")"
   else
-    warn "xattr command not found, skipping quarantine attribute removal"
-    warn "You may need to run: xattr -d com.apple.quarantine $file"
+    die "SHA-256 verification requires 'sha256sum' or 'shasum'"
   fi
+
+  echo "${actual%% *}"
+}
+
+verify_sha256() {
+  local archive checksum expected checksum_filename actual
+  archive="$1"
+  checksum="$2"
+
+  expected=""
+  IFS=' ' read -r expected checksum_filename <"$checksum" || true
+  validate_sha256 "$expected" "$(basename "$archive")"
+  if [ "$checksum_filename" != "$(basename "$archive")" ]; then
+    die "SHA-256 checksum filename does not match '$(basename "$archive")'"
+  fi
+
+  actual="$(compute_sha256 "$archive")"
+
+  if [ "$expected" != "$actual" ]; then
+    die "SHA-256 checksum verification failed for '$(basename "$archive")'"
+  fi
+
+  info "Verified SHA-256 checksum for '$(basename "$archive")'"
+}
+
+verify_release_binary() {
+  local binary checksums release_asset expected actual
+  binary="$1"
+  checksums="$2"
+  release_asset="$3"
+
+  expected="$(checksum_for_asset "$checksums" "$release_asset")"
+  actual="$(compute_sha256 "$binary")"
+  if [ "$expected" != "$actual" ]; then
+    die "GitHub release checksum verification failed for '$release_asset'"
+  fi
+
+  info "Verified GitHub release checksum for '$release_asset'"
 }
 
 install_bin() {
@@ -314,11 +443,6 @@ install_bin() {
   mkdir -p "$(dirname "$dest")"
   install -p -m 755 "$src" "$dest"
   info_end
-
-  # Remove macOS quarantine attribute if on macOS
-  if [ "$(uname -s)" = "Darwin" ]; then
-    remove_macos_quarantine "$dest"
-  fi
 
   if [ "$(dirname "$dest")" = "$HOME/.$bin/bin" ]; then
     symlink_to_system_path "$dest" "$bin"
@@ -601,27 +725,43 @@ die() {
   exit 1
 }
 download() {
-  local _url _dst _code _orig_flags _redirect_url
+  local _url _dst _code _orig_flags _redirect_url _download_url
+  local _effective_url _artifact_download
   _url="$1"
   _dst="$2"
+  DOWNLOADED_URL="$_url"
+  _download_url="$_url"
+  _artifact_download=false
+  case "$_url" in
+    https://artifacts.swamp-club.com/swamp/*) _artifact_download=true ;;
+  esac
   need_cmd sed
   if check_cmd curl; then
     info "Downloading $_url to $_dst (curl)"
     _orig_flags="$-"
     set +e
 
-    # Check for S3 redirect metadata first
-    _redirect_url="$(curl -sSI "$_url" | grep -i "x-amz-meta-x-amz-website-redirect-location" | cut -d' ' -f2- | tr -d '\r\n')"
-    if [ -n "$_redirect_url" ]; then
-      info "Following S3 redirect to $_redirect_url"
-      curl -sSfL "$_redirect_url" -o "$_dst"
-    else
-      curl -sSfL "$_url" -o "$_dst"
+    if [ "$_artifact_download" = true ]; then
+      # Stable artifacts use S3 website redirect metadata instead of a 3xx.
+      _redirect_url="$(curl -sSI --proto '=https' "$_url" | grep -i "x-amz-meta-x-amz-website-redirect-location" | cut -d' ' -f2- | tr -d '\r\n')"
+      if [ -n "$_redirect_url" ]; then
+        validate_artifact_url "$_redirect_url"
+        info "Following S3 redirect to $_redirect_url"
+        _download_url="$_redirect_url"
+      fi
     fi
+
+    _effective_url="$(curl -sSfL --proto '=https' --proto-redir '=https' \
+      "$_download_url" -o "$_dst" -w '%{url_effective}')"
     _code="$?"
+    if [ $_code -eq 0 ] && [ "$_artifact_download" = true ]; then
+      validate_artifact_url "$_effective_url"
+    fi
+    DOWNLOADED_URL="$_effective_url"
     set "-$(echo "$_orig_flags" | sed s/s//g)"
     if [ $_code -eq 0 ]; then
-      unset _url _dst _code _orig_flags _redirect_url
+      unset _url _dst _code _orig_flags _redirect_url _download_url
+      unset _effective_url _artifact_download
       return 0
     else
       local _e
@@ -667,7 +807,8 @@ download() {
       unset _e
     fi
   fi
-  unset _url _dst _code _orig_flags
+  unset _url _dst _code _orig_flags _redirect_url _download_url
+  unset _effective_url _artifact_download
   warn "Downloading requires SSL-enabled 'curl', 'wget', or 'ftp' on PATH"
   return 1
 }
