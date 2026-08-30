@@ -168,16 +168,35 @@ function OAuthLogin(
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ deviceCode: grant.deviceCode }),
         });
-        const data = await resp.json();
 
-        if (data.token) {
+        if (resp.status === 202) return;
+
+        let data: Record<string, string>;
+        try {
+          data = await resp.json();
+        } catch {
+          setError("Unexpected response from server. Please try again.");
+          setState("error");
+          return;
+        }
+
+        if (resp.ok && data.token) {
           onToken(data.token);
-        } else if (data.error === "expired_token") {
+        } else if (resp.status === 410) {
           setError("Login expired. Please try again.");
+          setState("error");
+        } else if (resp.status === 403) {
+          const message = data.reason
+            ? `${data.error}: ${data.reason}`
+            : data.error || "Access denied";
+          setError(message);
+          setState("error");
+        } else {
+          setError(data.error || "Login failed. Please try again.");
           setState("error");
         }
       } catch {
-        // keep polling
+        // network error — keep polling
       }
     }, (grant.interval || 5) * 1000);
 
