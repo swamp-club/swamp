@@ -60,7 +60,8 @@ const logger = getLogger(["swamp", "domain", "data", "query"]);
 export function computeLatestFlags(rows: CatalogRow[]): void {
   const groups = new Map<string, CatalogRow[]>();
   for (const row of rows) {
-    const key = `${row.model_id}\0${row.data_name}`;
+    const key =
+      `${row.namespace}\0${row.type_normalized}\0${row.model_id}\0${row.data_name}`;
     let group = groups.get(key);
     if (!group) {
       group = [];

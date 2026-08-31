@@ -1380,3 +1380,31 @@ Deno.test("enforceUniqueLatest: no-op when catalog is clean", () => {
 
   store.close();
 });
+
+Deno.test("enforceUniqueLatest: does not demote foreign namespace rows with same model_id and data_name", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsert(makeRow({ namespace: "local", version: 1, is_latest: 1 }));
+  store.bulkUpsertForeign("foreign", [
+    makeRow({ namespace: "foreign", version: 3, is_latest: 1 }),
+  ]);
+
+  const demoted = store.enforceUniqueLatest(computeLatestFlags);
+  assertEquals(demoted, 0);
+
+  const localLatest = store.findLatestRow(
+    "test-model-name",
+    "my-data",
+    "local",
+  );
+  assertEquals(localLatest?.version, 1);
+  const foreignLatest = store.findLatestRow(
+    "test-model-name",
+    "my-data",
+    "foreign",
+  );
+  assertEquals(foreignLatest?.version, 3);
+
+  store.close();
+});
