@@ -24,6 +24,7 @@ import {
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
+import { DatabaseSync } from "node:sqlite";
 import { canonicalizePath } from "./canonicalize_path.ts";
 import { assertPathEquals } from "./path_test_helpers.ts";
 import { ensureDirSync } from "@std/fs";
@@ -1206,6 +1207,87 @@ Deno.test(
       assertEquals(conflicts[0].localSourcePath, localPath);
     }, {
       lockedVersions: fixedLockedVersions({ "@ns/ext": "2026.03.01.1" }),
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// deleteBySourcePaths — cross-OS canonical-mismatch fix (swamp-club#1903)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "deleteBySourcePaths: deletes same-OS canonical rows",
+  () => {
+    withRepository((repo, catalog, repoRoot) => {
+      const sourcePath = canonicalizePath(
+        join(repoRoot, "extensions", "models", "echo.ts"),
+      );
+      catalog.upsertWithIdentity({
+        source_path: sourcePath,
+        type_normalized: "@ns/echo",
+        kind: "model",
+        bundle_path: join(repoRoot, ".swamp", "bundles", "echo.js"),
+        version: "1.0.0",
+        description: "",
+        extends_type: "",
+        source_mtime: "",
+        source_fingerprint: "",
+        state: "Tombstoned",
+        extension_name: "@local/test",
+        extension_version: "1.0.0",
+      });
+      assertEquals(catalog.count(), 1);
+
+      const deleted = repo.deleteBySourcePaths([sourcePath]);
+      assertEquals(deleted, 1);
+      assertEquals(catalog.count(), 0);
+    });
+  },
+);
+
+Deno.test({
+  name: "deleteBySourcePaths: deletes cross-OS rows with non-canonical PKs",
+  ignore: Deno.build.os !== "windows",
+  fn() {
+    withRepository((_repo, catalog, repoRoot) => {
+      // Insert a row with a mixed-case PK directly via SQL, simulating
+      // a WSL-written catalog row (POSIX canonicalizePath is identity,
+      // so mixed case is stored as-is). On Windows, canonicalizePath
+      // lowercases, creating a mismatch between the stored PK and the
+      // canonical lookup form. This test verifies the fix.
+      const db = new DatabaseSync(
+        join(repoRoot, ".swamp", "_extension_catalog.db"),
+      );
+      const wslPath =
+        "/mnt/c/Project/Repos/my-repo/extensions/models/MyModel.ts";
+      db.prepare(
+        `INSERT INTO bundle_types
+           (source_path, type_normalized, kind, bundle_path,
+            extension_name, extension_version, state)
+         VALUES (?, '@ns/my-model', 'model', '/fake/bundle.js',
+            '@local/my-repo', '1.0.0', 'Indexed')`,
+      ).run(wslPath);
+      db.close();
+
+      assertEquals(catalog.count(), 1);
+
+      // The caller passes the canonicalized (lowercased) form — this is
+      // what source.id.canonicalPath produces on Windows.
+      const canonicalForm = canonicalizePath(wslPath);
+      const deleted = _repo.deleteBySourcePaths([canonicalForm]);
+      assertEquals(deleted, 1, "should delete cross-OS non-canonical row");
+      assertEquals(catalog.count(), 0);
+    });
+  },
+});
+
+Deno.test(
+  "deleteBySourcePaths: returns 0 when no paths match",
+  () => {
+    withRepository((repo, catalog) => {
+      const deleted = repo.deleteBySourcePaths(["/nonexistent/path.ts"]);
+      assertEquals(deleted, 0);
+      assertEquals(catalog.count(), 0);
     });
   },
 );

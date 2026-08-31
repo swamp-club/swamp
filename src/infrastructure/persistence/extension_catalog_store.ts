@@ -857,6 +857,20 @@ export class ExtensionCatalogStore {
   }
 
   /**
+   * Removes a bundle type entry by exact raw source_path — the value
+   * stored as the PK in the database, without re-canonicalizing. Use
+   * this when the caller already holds the raw row value from
+   * {@link findAll} and the stored PK may have been canonicalized by a
+   * different OS (e.g. WSL wrote mixed-case paths that Windows's
+   * {@link canonicalizePath} lowercases, breaking PK lookups).
+   */
+  removeByRawSourcePath(rawSourcePath: string): void {
+    this.db.prepare(
+      "DELETE FROM bundle_types WHERE source_path = ?",
+    ).run(rawSourcePath);
+  }
+
+  /**
    * Returns rows whose source_path starts with the given prefix.
    * Used by the hot-reload path to find catalog rows belonging to a
    * pulled extension regardless of whether extension_name is populated.
