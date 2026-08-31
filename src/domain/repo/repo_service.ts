@@ -116,7 +116,7 @@ export async function removeLocalBundledSkills(
       const dir = join(copy.skillsDir, name);
       try {
         await Deno.remove(dir, { recursive: true });
-        logger.info`Removed local skill copy ${dir}`;
+        logger.debug`Removed local skill copy ${dir}`;
       } catch (e) {
         if (!(e instanceof Deno.errors.NotFound)) throw e;
       }
@@ -594,7 +594,7 @@ export class RepoService {
     for (const dir of globalDirs) {
       await this.skillAssets.copySkillsTo(dir);
       await removeSupersededSkills(dir);
-      logger.info`Installed global skills to ${dir}`;
+      logger.debug`Installed global skills to ${dir}`;
     }
     return this.skillAssets.getSkillNames();
   }
@@ -645,7 +645,7 @@ export class RepoService {
       try {
         await this.skillAssets.copySkillsTo(globalDir);
         await removeSupersededSkills(globalDir);
-        logger.info`Synced global skills to ${globalDir}`;
+        logger.debug`Synced global skills to ${globalDir}`;
         await customToolDirsRepo.addDir(globalDir);
       } catch (err) {
         logger

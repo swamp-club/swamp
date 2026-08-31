@@ -94,41 +94,47 @@ function captureInitOutput(
 }
 
 Deno.test(
-  "LogRepoInitRenderer: shows claude-specific next step for claude tool",
+  "LogRepoInitRenderer: shows claude-specific guidance for claude tool",
   () => {
     const output = captureInitOutput([
       { kind: "initializing" },
       { kind: "completed", data: makeInitData(["claude"]) },
     ], "log");
 
-    assertStringIncludes(output, "What's next:");
+    assertStringIncludes(output, "Your Swamp repo is ready.");
     assertStringIncludes(output, "/swamp-getting-started");
+    assertStringIncludes(output, "first automation");
+    assertStringIncludes(output, "swamp-club.com/manual");
   },
 );
 
 Deno.test(
-  "LogRepoInitRenderer: shows cursor-specific next step for cursor tool",
+  "LogRepoInitRenderer: shows cursor-specific guidance for cursor tool",
   () => {
     const output = captureInitOutput([
       { kind: "initializing" },
       { kind: "completed", data: makeInitData(["cursor"]) },
     ], "log");
 
-    assertStringIncludes(output, "What's next:");
+    assertStringIncludes(output, "Your Swamp repo is ready.");
     assertStringIncludes(output, "Cursor");
+    assertStringIncludes(output, "/swamp-getting-started");
+    assertStringIncludes(output, "first automation");
+    assertStringIncludes(output, "swamp-club.com/manual");
   },
 );
 
 Deno.test(
-  "LogRepoInitRenderer: shows multiple next steps for multi-tool init",
+  "LogRepoInitRenderer: shows per-tool guidance for multi-tool init",
   () => {
     const output = captureInitOutput([
       { kind: "initializing" },
       { kind: "completed", data: makeInitData(["claude", "cursor"]) },
     ], "log");
 
-    assertStringIncludes(output, "/swamp-getting-started");
-    assertStringIncludes(output, "Cursor");
+    assertStringIncludes(output, "Your Swamp repo is ready.");
+    assertStringIncludes(output, "Start Claude Code");
+    assertStringIncludes(output, "Open this project in Cursor");
   },
 );
 
@@ -140,33 +146,18 @@ Deno.test(
       { kind: "completed", data: makeInitData([]) },
     ], "log");
 
+    assertStringIncludes(output, "What's next:");
     assertStringIncludes(output, "swamp --help");
   },
 );
 
 Deno.test(
-  "LogRepoInitRenderer: shows community login next step",
+  "LogRepoInitRenderer: does not show community login nudge",
   () => {
     const output = captureInitOutput([
       { kind: "initializing" },
-      { kind: "completed", data: makeInitData(["claude"]) },
+      { kind: "completed", data: makeInitData(["cursor"]) },
     ], "log");
-
-    assertStringIncludes(output, "swamp auth login");
-  },
-);
-
-Deno.test(
-  "LogRepoInitRenderer: suppresses community login when authenticated",
-  () => {
-    const output = captureInitOutput(
-      [
-        { kind: "initializing" },
-        { kind: "completed", data: makeInitData(["claude"]) },
-      ],
-      "log",
-      { isAuthenticated: true },
-    );
 
     assertEquals(output.includes("swamp auth login"), false);
   },

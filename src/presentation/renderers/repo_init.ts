@@ -26,10 +26,11 @@ import type {
 } from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
-import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createExtensionInstallRenderer } from "./extension_install.ts";
 import { join } from "@std/path";
+import { bold, dim, yellow } from "@std/fmt/colors";
 
 /**
  * Renders a `tools` array for the human-readable status line. Empty list
@@ -39,17 +40,61 @@ function formatToolsList(tools: readonly string[]): string {
   return tools.length === 0 ? "none" : tools.join(", ");
 }
 
-const TOOL_NEXT_STEPS: Record<string, string> = {
-  amp: 'Run `amp` in this directory and say "I am new to swamp"',
-  claude: "Start Claude Code and run /swamp-getting-started",
-  cursor: "Open this project in Cursor and run /swamp-getting-started",
-  codex: "Run `codex` and invoke $swamp-getting-started",
-  copilot:
-    'Open this project in VS Code with Copilot and say "I am new to swamp"',
-  opencode: 'Run `opencode` in this directory and say "I am new to swamp"',
-  kiro:
-    "Open this project in Kiro and select swamp-getting-started from the / menu",
+interface ToolGuidance {
+  launch: string;
+  command: string;
+  nextStepSummary: string;
+}
+
+const TOOL_GUIDANCE: Record<string, ToolGuidance> = {
+  claude: {
+    launch: "Start Claude Code in this repository, then run:",
+    command: "/swamp-getting-started",
+    nextStepSummary: "Start Claude Code and run /swamp-getting-started",
+  },
+  cursor: {
+    launch: "Open this project in Cursor, then run:",
+    command: "/swamp-getting-started",
+    nextStepSummary:
+      "Open this project in Cursor and run /swamp-getting-started",
+  },
+  kiro: {
+    launch: "Open this project in Kiro, then select from the / menu:",
+    command: "swamp-getting-started",
+    nextStepSummary:
+      "Open this project in Kiro and select swamp-getting-started from the / menu",
+  },
+  codex: {
+    launch: "Run codex in this directory, then invoke:",
+    command: "$swamp-getting-started",
+    nextStepSummary: "Run `codex` and invoke $swamp-getting-started",
+  },
+  amp: {
+    launch: "Run amp in this directory and say:",
+    command: '"I am new to swamp"',
+    nextStepSummary: 'Run `amp` in this directory and say "I am new to swamp"',
+  },
+  copilot: {
+    launch: "Open this project in VS Code with Copilot and say:",
+    command: '"I am new to swamp"',
+    nextStepSummary:
+      'Open this project in VS Code with Copilot and say "I am new to swamp"',
+  },
+  opencode: {
+    launch: "Run opencode in this directory and say:",
+    command: '"I am new to swamp"',
+    nextStepSummary:
+      'Run `opencode` in this directory and say "I am new to swamp"',
+  },
 };
+
+function renderToolGuidance(tool: string): void {
+  const guidance = TOOL_GUIDANCE[tool];
+  if (!guidance) return;
+  writeOutput(guidance.launch);
+  writeOutput("");
+  writeOutput(`  ${bold(guidance.command)}`);
+}
 
 /**
  * On-disk paths that swamp's scaffolding writes for each tool. Used to tell
@@ -91,84 +136,90 @@ function orphanedPathsFor(
 }
 
 class LogRepoInitRenderer implements Renderer<RepoInitEvent> {
-  private isAuthenticated: boolean;
-
-  constructor(isAuthenticated: boolean) {
-    this.isAuthenticated = isAuthenticated;
-  }
-
   handlers(): EventHandlers<RepoInitEvent> {
-    const logger = getSwampLogger(["repo", "init"]);
     return {
       initializing: () => {},
       completed: (e) => {
         const data = e.data;
-        console.log("");
-        console.log(
+        writeOutput("");
+        writeOutput(
           "    ███████╗██╗    ██╗ █████╗ ███╗   ███╗██████╗",
         );
-        console.log(
+        writeOutput(
           "    ██╔════╝██║    ██║██╔══██╗████╗ ████║██╔══██╗",
         );
-        console.log(
+        writeOutput(
           "    ███████╗██║ █╗ ██║███████║██╔████╔██║██████╔╝",
         );
-        console.log(
+        writeOutput(
           "    ╚════██║██║███╗██║██╔══██║██║╚██╔╝██║██╔═══╝",
         );
-        console.log(
+        writeOutput(
           "    ███████║╚███╔███╔╝██║  ██║██║ ╚═╝ ██║██║",
         );
-        console.log(
+        writeOutput(
           "    ╚══════╝ ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝     ╚═╝╚═╝",
         );
-        console.log("");
-        console.log(
+        writeOutput("");
+        writeOutput(
           "    ╔═══════════════════════════════════════════╗",
         );
-        console.log(
+        writeOutput(
           "    ║  WELCOME TO THE CLUB                      ║",
         );
-        console.log(
+        writeOutput(
           "    ║  for hackers, by hackers                  ║",
         );
-        console.log(
+        writeOutput(
           "    ╚═══════════════════════════════════════════╝",
         );
-        console.log("");
-        logger.info`Initialized swamp repository at ${data.path} (tools: ${
-          formatToolsList(data.tools)
-        })`;
-        // Force-reinit may have dropped tools — surface so the user knows
-        // their old scaffolding files remain on disk and can be removed.
-        // Suppress when every path is shared with a still-enrolled tool.
+        writeOutput("");
+        writeOutput(
+          `Initialized swamp repository at ${bold(data.path)} ${
+            dim(`(tools: ${formatToolsList(data.tools)})`)
+          }`,
+        );
+
         for (const removed of data.removedTools) {
           const paths = orphanedPathsFor(removed, data.tools);
           if (paths.length === 0) continue;
-          logger.info(
-            `Note: ${removed} was dropped from the enrolled tool list. ` +
+          writeOutput(
+            `${
+              yellow("⚠")
+            } ${removed} was dropped from the enrolled tool list. ` +
               `Files in ${paths.join(", ")} were not deleted — ` +
               `remove them by hand if desired.`,
           );
         }
 
-        const steps = data.tools
-          .map((t) => TOOL_NEXT_STEPS[t])
-          .filter((s): s is string => s !== undefined);
-        if (steps.length === 0) {
-          steps.push("Run `swamp --help` to see available commands");
-        }
-        console.log("");
-        logger.info("What's next:");
-        for (const step of steps) {
-          logger.info(`  → ${step}`);
-        }
-        logger.info("  → Read the manual at https://swamp-club.com/manual");
-        if (!this.isAuthenticated) {
-          logger.info(
-            "  → Join & participate in the community: swamp auth login",
+        const knownTools = data.tools.filter((t) => t in TOOL_GUIDANCE);
+
+        writeOutput("");
+        if (knownTools.length > 0) {
+          writeOutput(bold("Your Swamp repo is ready."));
+          writeOutput("");
+          for (let i = 0; i < knownTools.length; i++) {
+            if (i > 0) writeOutput("");
+            renderToolGuidance(knownTools[i]);
+          }
+          writeOutput("");
+          writeOutput(
+            "Start with a task you already repeat. Your agent will help you",
+          );
+          writeOutput(
+            "create, run, and inspect your first automation.",
+          );
+        } else {
+          writeOutput(bold("What's next:"));
+          writeOutput(
+            "  → Run `swamp --help` to see available commands",
           );
         }
+
+        writeOutput("");
+        writeOutput(
+          `Learn more: ${dim("https://swamp-club.com/manual")}`,
+        );
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -189,7 +240,7 @@ class JsonRepoInitRenderer implements Renderer<RepoInitEvent> {
       initializing: () => {},
       completed: (e) => {
         const steps = e.data.tools
-          .map((t) => TOOL_NEXT_STEPS[t])
+          .map((t) => TOOL_GUIDANCE[t]?.nextStepSummary)
           .filter((s): s is string => s !== undefined);
         if (steps.length === 0) {
           steps.push("Run `swamp --help` to see available commands");
@@ -216,11 +267,6 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
   }
 
   handlers(): EventHandlers<RepoUpgradeEvent> {
-    const logger = getSwampLogger(["repo", "upgrade"]);
-    // Delegate per-extension install/migration progress to the extension
-    // install renderer so output stays consistent with what users see
-    // when they run `swamp extension install` directly. The upgrade
-    // renderer is a thin layer around it.
     const installRenderer = createExtensionInstallRenderer("log");
     const installHandlers = installRenderer.handlers();
     return {
@@ -228,30 +274,30 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
       extensions: (e) => dispatchInstallEvent(installHandlers, e.event),
       completed: (e) => {
         const data = e.data;
-        logger
-          .info`Upgraded swamp repository: ${data.previousVersion} → ${data.newVersion} (tools: ${
-          formatToolsList(data.tools)
-        })`;
+        writeOutput(
+          `Upgraded swamp repository: ${bold(data.previousVersion)} → ${
+            bold(data.newVersion)
+          } ${dim(`(tools: ${formatToolsList(data.tools)})`)}`,
+        );
 
-        // Surface a tools-changed diff line whenever the enrolled list
-        // shifted. Suppressed for plain `swamp repo upgrade` (no tool
-        // flag) so the common case doesn't get noisier.
         if (data.addedTools.length > 0 || data.removedTools.length > 0) {
           const before = formatToolsList(data.previousTools);
           const after = formatToolsList(data.tools);
-          logger.info(`  Tools: [${before}] → [${after}]`);
+          writeOutput(`  Tools: [${before}] → [${after}]`);
           for (const removed of data.removedTools) {
             const paths = orphanedPathsFor(removed, data.tools);
             if (paths.length === 0) continue;
-            logger.info(
-              `  Note: ${removed} was dropped from the enrolled tool list. ` +
+            writeOutput(
+              `  ${
+                yellow("⚠")
+              } ${removed} was dropped from the enrolled tool list. ` +
                 `Files in ${paths.join(", ")} were not deleted — ` +
                 `remove them by hand if desired.`,
             );
           }
           for (const entry of data.extensionsToReinstall) {
             const list = entry.names.join(", ");
-            logger.info(
+            writeOutput(
               `  ${entry.names.length} extension(s) installed for the ` +
                 `previous tool were NOT copied to ${entry.tool}. ` +
                 `Run \`swamp extension pull <name> --force\` to install ` +
@@ -262,54 +308,59 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
 
         if (data.localSkillCopies.length > 0) {
           const allNames = data.localSkillCopies.flatMap((c) => c.names);
-          logger.warn(
-            `Local copies of ${allNames.join(", ")} are shadowing the ` +
+          writeOutput(
+            `${yellow("⚠")} Local copies of ${
+              allNames.join(", ")
+            } are shadowing the ` +
               "globally installed skills. Delete them manually:",
           );
           for (const copy of data.localSkillCopies) {
             for (const name of copy.names) {
-              logger.warn(`  ${join(copy.skillsDir, name)}`);
+              writeOutput(`  ${join(copy.skillsDir, name)}`);
             }
           }
         }
 
         if (data.untrustedCollectives.length > 0) {
-          logger.warn(
-            `Extensions from untrusted collectives: ${
+          writeOutput(
+            `${yellow("⚠")} Extensions from untrusted collectives: ${
               data.untrustedCollectives.join(", ")
             }`,
           );
-          logger.warn(
+          writeOutput(
             "  These extensions will not auto-resolve until their collectives are trusted.",
           );
           for (const collective of data.untrustedCollectives) {
-            logger.warn(
+            writeOutput(
               `  To trust: swamp extension trust add ${collective}`,
             );
           }
-          logger.warn(
+          writeOutput(
             "  Or trust all membership collectives: swamp extension trust auto-trust on",
           );
         }
 
-        logger.info("  Skills updated: " + data.skillsUpdated.join(", "));
-        logger.info(
+        writeOutput(
+          "  Skills updated: " + data.skillsUpdated.join(", "),
+        );
+        writeOutput(
           "  Instructions: " +
             (data.instructionsUpdated ? "updated" : "unchanged"),
         );
-        logger.info(
-          "  Settings: " + (data.settingsUpdated ? "updated" : "unchanged"),
+        writeOutput(
+          "  Settings: " +
+            (data.settingsUpdated ? "updated" : "unchanged"),
         );
-        logger.info("  .gitignore: " + data.gitignoreAction);
+        writeOutput("  .gitignore: " + data.gitignoreAction);
 
         if (data.changedFiles.length > 0) {
-          logger.info("  Changed files:");
+          writeOutput("  Changed files:");
           for (const file of data.changedFiles) {
-            logger.info(`    ${file}`);
+            writeOutput(`    ${file}`);
           }
         }
         if (!this.isAuthenticated) {
-          logger.info(
+          writeOutput(
             "  → Join & participate in the community: swamp auth login",
           );
         }
@@ -388,7 +439,7 @@ export function createRepoInitRenderer(
     case "json":
       return new JsonRepoInitRenderer(authed);
     case "log":
-      return new LogRepoInitRenderer(authed);
+      return new LogRepoInitRenderer();
   }
 }
 
