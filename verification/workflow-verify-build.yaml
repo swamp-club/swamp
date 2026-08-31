@@ -21,6 +21,10 @@ inputs:
     - commit
     - branch
 
+reports:
+  require:
+    - "@swamp/verification-attestation"
+
 concurrency: 4
 
 jobs:

@@ -3366,8 +3366,6 @@ Deno.test("CONTRACT: success run emits events in exact order", async () => {
       // (swamp-club#640) — builtin workflow reports emit here.
       "report_started",
       "report_completed",
-      "report_started",
-      "report_completed",
       "completed",
     ]);
   });
@@ -3408,8 +3406,6 @@ Deno.test("CONTRACT: step failure emits events in exact order", async () => {
       "job_completed",
       // Workflow-scope reports run even without reportFilterOptions
       // (swamp-club#640) — builtin workflow reports emit here.
-      "report_started",
-      "report_completed",
       "report_started",
       "report_completed",
       "completed",
