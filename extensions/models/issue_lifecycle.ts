@@ -78,7 +78,7 @@ async function readState(
 
 export const model = {
   type: "@swamp/issue-lifecycle",
-  version: "2026.08.25.1",
+  version: "2026.08.31.1",
   globalArguments: GlobalArgsSchema,
 
   upgrades: [
@@ -200,6 +200,16 @@ export const model = {
         "Add post_attestation method — posts verification attestation to " +
         "swamp-club before opening a PR. New TRANSITIONS entry for " +
         "post_attestation from verifying phase. No globalArguments changes.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.08.31.1",
+      description:
+        "Add fast_forward method for ad-hoc work that has no linked issue. " +
+        "Atomically writes classification, plan, adversarial review, and " +
+        "code conformance review, then transitions to implementing. " +
+        "Allows retroactive lifecycle creation for work already done. " +
+        "No globalArguments changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
@@ -1700,6 +1710,144 @@ export const model = {
         });
 
         return { dataHandles: [stateHandle] };
+      },
+    },
+
+    fast_forward: {
+      description:
+        "Fast-forward lifecycle for ad-hoc work. Atomically writes " +
+        "classification, plan, adversarial review, and code conformance " +
+        "review, then transitions to implementing. Used when a tracking " +
+        "issue was created retroactively for work already done.",
+      arguments: z.object({
+        summary: z.string().describe(
+          "Brief description of the work done",
+        ),
+        steps: z.array(PlanStepSchema).describe(
+          "Retroactive plan steps describing the work already completed",
+        ),
+        testingStrategy: z.string().describe(
+          "How the changes were or will be tested",
+        ),
+      }),
+      execute: async (
+        args: {
+          summary: string;
+          steps: Array<{
+            order: number;
+            description: string;
+            files: string[];
+            risks?: string;
+          }>;
+          testingStrategy: string;
+        },
+        context: {
+          globalArgs: GlobalArgs;
+          logger: {
+            info: (msg: string, props: Record<string, unknown>) => void;
+            warning: (msg: string, props: Record<string, unknown>) => void;
+          };
+          writeResource: (
+            specName: string,
+            instanceName: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
+        const { issueNumber } = context.globalArgs;
+        const now = new Date().toISOString();
+        const handles = [];
+
+        handles.push(
+          await context.writeResource(
+            "classification",
+            "classification-main",
+            {
+              type: "platform",
+              confidence: "high",
+              reasoning: "Ad-hoc work — retroactive tracking issue created",
+              classifiedAt: now,
+            },
+          ),
+        );
+
+        handles.push(
+          await context.writeResource("plan", "plan-main", {
+            version: 1,
+            summary: args.summary,
+            dddAnalysis: "Retroactive — work already completed",
+            steps: args.steps,
+            testingStrategy: args.testingStrategy,
+            potentialChallenges: [],
+            feedbackIncorporated: [],
+            generatedAt: now,
+          }),
+        );
+
+        handles.push(
+          await context.writeResource(
+            "adversarialReview",
+            "adversarialReview-main",
+            {
+              planVersion: 1,
+              findings: [],
+              reviewedAt: now,
+            },
+          ),
+        );
+
+        handles.push(
+          await context.writeResource(
+            "codeConformanceReview",
+            "codeConformanceReview-main",
+            {
+              planVersion: 1,
+              steps: args.steps.map((s) => ({
+                order: s.order,
+                status: "implemented",
+                description: s.description,
+              })),
+              reviewedAt: now,
+            },
+          ),
+        );
+
+        handles.push(
+          await context.writeResource("state", "state-main", {
+            phase: "implementing",
+            issueNumber,
+            updatedAt: now,
+          }),
+        );
+
+        context.logger.info(
+          "Fast-forwarded lifecycle to implementing: {summary}",
+          { summary: args.summary },
+        );
+
+        const sc = await createSwampClubClient(
+          context.globalArgs,
+          context.logger,
+        );
+        if (sc) {
+          await sc.updateType("platform");
+          await sc.postLifecycleEntry({
+            step: "fast_forwarded",
+            targetStatus: "in_progress",
+            summary:
+              `Lifecycle fast-forwarded for ad-hoc work — ${args.summary}`,
+            emoji: "\u{23E9}",
+            payload: {
+              summary: args.summary,
+              stepsCount: args.steps.length,
+              testingStrategy: args.testingStrategy,
+            },
+            isVerbose: true,
+          });
+          await sc.transitionStatus("in_progress");
+        }
+
+        return { dataHandles: handles };
       },
     },
 

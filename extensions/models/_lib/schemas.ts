@@ -75,6 +75,7 @@ export const TRANSITIONS: Record<string, Phase[]> = {
     "notify",
   ],
   triage: ["triaging"],
+  fast_forward: ["triaging"],
   plan: ["classified"],
   iterate: ["plan_generated"],
   approve: ["plan_generated"],
