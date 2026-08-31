@@ -26,6 +26,8 @@ import {
   doctorDatastores,
   type DoctorDatastoresData,
   type DoctorDatastoresDeps,
+  repairCatalogDuplicateLatest,
+  type RepairCatalogDuplicateLatestDeps,
   repairCatalogIndex,
   type RepairCatalogIndexDeps,
   repairDatastoreContamination,
@@ -34,6 +36,7 @@ import {
   type RepairUnmigratedDataDeps,
 } from "../../libswamp/mod.ts";
 import {
+  createCatalogDuplicateLatestRepairRenderer,
   createCatalogIndexRepairRenderer,
   createDoctorDatastoresRenderer,
   createRepairDatastoresRenderer,
@@ -74,6 +77,7 @@ import {
 } from "../../infrastructure/persistence/repository_factory.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
+import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
 import type { UnifiedDataRepository } from "../../domain/data/repositories.ts";
 import type { Namespace } from "../../domain/data/namespace.ts";
 import {
@@ -279,6 +283,16 @@ function createCatalogRepairDeps(repoDir: string): RepairCatalogIndexDeps {
   return {
     checkCompleteness: () => checkCatalogCompleteness(repoDir),
     invalidateCatalog: () => removeCatalogDb(repoDir),
+  };
+}
+
+function createDuplicateLatestRepairDeps(
+  repoDir: string,
+): RepairCatalogDuplicateLatestDeps {
+  const store = createCatalogStore(repoDir);
+  return {
+    countDuplicateLatest: () => store.countDuplicateLatest(),
+    enforceUniqueLatest: () => store.enforceUniqueLatest(computeLatestFlags),
   };
 }
 
@@ -549,6 +563,21 @@ export const doctorDatastoresCommand = withRemoteOptions(
       catalogRenderer.handlers(),
     );
     if (catalogRenderer.overallStatus === "fail") {
+      exitCode = 1;
+    }
+
+    const dupLatestRenderer = createCatalogDuplicateLatestRepairRenderer(
+      cliCtx.outputMode,
+    );
+    await consumeStream(
+      repairCatalogDuplicateLatest(
+        libCtx,
+        createDuplicateLatestRepairDeps(repoDir),
+        { confirm: Boolean(options.yes) },
+      ),
+      dupLatestRenderer.handlers(),
+    );
+    if (dupLatestRenderer.overallStatus === "fail") {
       exitCode = 1;
     }
 

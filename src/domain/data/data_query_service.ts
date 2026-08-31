@@ -301,7 +301,7 @@ export class DataQueryService {
 
     for (const { data: latest, modelType, modelId } of items) {
       if (latest.isRenamed || latest.isDeleted) continue;
-      this.catalogStore.upsert(
+      this.catalogStore.upsertNewVersion(
         this.toCatalogRow(latest, modelType, modelId, true),
       );
     }
@@ -668,6 +668,7 @@ export class DataQueryService {
     computeLatestFlags(rows);
 
     this.catalogStore.bulkUpsert(rows);
+    this.catalogStore.enforceUniqueLatest(computeLatestFlags);
     this.catalogStore.markPopulated();
   }
 
@@ -729,6 +730,7 @@ export class DataQueryService {
     }
     computeLatestFlags(rows);
     this.catalogStore.bulkUpsert(rows);
+    this.catalogStore.enforceUniqueLatest(computeLatestFlags);
     this.catalogStore.markPopulated();
   }
 

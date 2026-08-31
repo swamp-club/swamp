@@ -963,6 +963,72 @@ export class CatalogStore {
   }
 
   /**
+   * Returns the number of (namespace, type, model, name) groups that have
+   * more than one `is_latest=1` row. Zero means the catalog is consistent.
+   */
+  countDuplicateLatest(): number {
+    const stmt = this.db.prepare(
+      `SELECT COUNT(*) as cnt FROM (
+         SELECT namespace, type_normalized, model_id, data_name
+         FROM catalog
+         WHERE is_latest = 1
+         GROUP BY namespace, type_normalized, model_id, data_name, step_name
+         HAVING COUNT(*) > 1
+       )`,
+    );
+    const row = stmt.get() as { cnt: number };
+    return row.cnt;
+  }
+
+  /**
+   * Scans all `is_latest=1` rows, recomputes the flag via
+   * {@link computeLatestFlags}, and updates any rows whose flag changed.
+   * Returns the number of rows demoted.
+   *
+   * Called after {@link bulkUpsert} in the backfill path to close the
+   * race between the async disk walk and concurrent writes: a `save()`
+   * that interleaves during the walk may demote a row that `bulkUpsert`
+   * then re-promotes from stale in-memory state.
+   */
+  enforceUniqueLatest(
+    computeFlags: (rows: CatalogRow[]) => void,
+  ): number {
+    const latestRows: CatalogRow[] = [
+      ...this.iterateFiltered("is_latest = ?", [1]),
+    ];
+    if (latestRows.length === 0) return 0;
+
+    computeFlags(latestRows);
+
+    const demoted = latestRows.filter((r) => r.is_latest === 0);
+    if (demoted.length === 0) return 0;
+
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const stmt = this.db.prepare(
+        `UPDATE catalog SET is_latest = 0
+         WHERE namespace = ? AND type_normalized = ? AND model_id = ?
+           AND data_name = ? AND version = ?`,
+      );
+      for (const row of demoted) {
+        stmt.run(
+          row.namespace,
+          row.type_normalized,
+          row.model_id,
+          row.data_name,
+          row.version,
+        );
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+
+    return demoted.length;
+  }
+
+  /**
    * Closes the database connection. Idempotent — a second call is a no-op, so
    * a `finally { close() }` cannot mask an earlier reopen failure (node:sqlite
    * throws "database is not open" on double-close).

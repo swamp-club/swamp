@@ -26,6 +26,8 @@ import {
   doctorDatastores,
   type DoctorDatastoresDeps,
   type DoctorDatastoresEvent,
+  repairCatalogDuplicateLatest,
+  type RepairCatalogDuplicateLatestEvent,
   repairCatalogIndex,
   type RepairCatalogIndexEvent,
   repairDatastoreContamination,
@@ -1019,5 +1021,70 @@ Deno.test("repairCatalogIndex: reports a failed deletion without claiming succes
   assertEquals(errorEvent?.kind, "error");
   if (errorEvent?.kind === "error") {
     assertStringIncludes(errorEvent.error.message, "No changes were made");
+  }
+});
+
+// --- repairCatalogDuplicateLatest tests ---
+
+Deno.test("repairCatalogDuplicateLatest: not_needed when no duplicates", async () => {
+  const events = await collect<RepairCatalogDuplicateLatestEvent>(
+    repairCatalogDuplicateLatest(
+      createLibSwampContext(),
+      {
+        countDuplicateLatest: () => 0,
+        enforceUniqueLatest: () => 0,
+      },
+      { confirm: true },
+    ),
+  );
+
+  assertEquals(events.some((e) => e.kind === "not_needed"), true);
+  assertEquals(events.some((e) => e.kind === "completed"), false);
+});
+
+Deno.test("repairCatalogDuplicateLatest: preview without confirm", async () => {
+  const events = await collect<RepairCatalogDuplicateLatestEvent>(
+    repairCatalogDuplicateLatest(
+      createLibSwampContext(),
+      {
+        countDuplicateLatest: () => 3,
+        enforceUniqueLatest: () => 3,
+      },
+      { confirm: false },
+    ),
+  );
+
+  const preview = events.find((e) => e.kind === "preview");
+  assertEquals(preview?.kind, "preview");
+  if (preview?.kind === "preview") {
+    assertEquals(preview.duplicateCount, 3);
+  }
+  assertEquals(events.some((e) => e.kind === "completed"), false);
+});
+
+Deno.test("repairCatalogDuplicateLatest: repairs with confirm", async () => {
+  const callLog: string[] = [];
+  const events = await collect<RepairCatalogDuplicateLatestEvent>(
+    repairCatalogDuplicateLatest(
+      createLibSwampContext(),
+      {
+        countDuplicateLatest: () => {
+          callLog.push("count");
+          return 2;
+        },
+        enforceUniqueLatest: () => {
+          callLog.push("enforce");
+          return 5;
+        },
+      },
+      { confirm: true },
+    ),
+  );
+
+  assertEquals(callLog, ["count", "enforce"]);
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    assertEquals(completed.result.demotedRows, 5);
   }
 });
