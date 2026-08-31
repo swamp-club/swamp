@@ -109,20 +109,23 @@ Deno.test(
 );
 
 Deno.test(
-  "LogRepoInitRenderer: shows cursor-specific next step for cursor tool",
+  "LogRepoInitRenderer: shows cursor-specific guidance for cursor tool",
   () => {
     const output = captureInitOutput([
       { kind: "initializing" },
       { kind: "completed", data: makeInitData(["cursor"]) },
     ], "log");
 
+    assertStringIncludes(output, "Your Swamp repo is ready.");
     assertStringIncludes(output, "Cursor");
+    assertStringIncludes(output, "/swamp-getting-started");
+    assertStringIncludes(output, "first automation");
     assertStringIncludes(output, "swamp-club.com/manual");
   },
 );
 
 Deno.test(
-  "LogRepoInitRenderer: shows claude guidance and other tool steps for multi-tool init",
+  "LogRepoInitRenderer: shows per-tool guidance for multi-tool init",
   () => {
     const output = captureInitOutput([
       { kind: "initializing" },
@@ -130,8 +133,8 @@ Deno.test(
     ], "log");
 
     assertStringIncludes(output, "Your Swamp repo is ready.");
-    assertStringIncludes(output, "/swamp-getting-started");
-    assertStringIncludes(output, "Cursor");
+    assertStringIncludes(output, "Start Claude Code");
+    assertStringIncludes(output, "Open this project in Cursor");
   },
 );
 
@@ -149,40 +152,12 @@ Deno.test(
 );
 
 Deno.test(
-  "LogRepoInitRenderer: suppresses community login for claude tool",
-  () => {
-    const output = captureInitOutput([
-      { kind: "initializing" },
-      { kind: "completed", data: makeInitData(["claude"]) },
-    ], "log");
-
-    assertEquals(output.includes("swamp auth login"), false);
-  },
-);
-
-Deno.test(
-  "LogRepoInitRenderer: shows community login for non-claude tool",
+  "LogRepoInitRenderer: does not show community login nudge",
   () => {
     const output = captureInitOutput([
       { kind: "initializing" },
       { kind: "completed", data: makeInitData(["cursor"]) },
     ], "log");
-
-    assertStringIncludes(output, "swamp auth login");
-  },
-);
-
-Deno.test(
-  "LogRepoInitRenderer: suppresses community login when authenticated",
-  () => {
-    const output = captureInitOutput(
-      [
-        { kind: "initializing" },
-        { kind: "completed", data: makeInitData(["cursor"]) },
-      ],
-      "log",
-      { isAuthenticated: true },
-    );
 
     assertEquals(output.includes("swamp auth login"), false);
   },

@@ -40,17 +40,61 @@ function formatToolsList(tools: readonly string[]): string {
   return tools.length === 0 ? "none" : tools.join(", ");
 }
 
-const TOOL_NEXT_STEPS: Record<string, string> = {
-  amp: 'Run `amp` in this directory and say "I am new to swamp"',
-  claude: "Start Claude Code and run /swamp-getting-started",
-  cursor: "Open this project in Cursor and run /swamp-getting-started",
-  codex: "Run `codex` and invoke $swamp-getting-started",
-  copilot:
-    'Open this project in VS Code with Copilot and say "I am new to swamp"',
-  opencode: 'Run `opencode` in this directory and say "I am new to swamp"',
-  kiro:
-    "Open this project in Kiro and select swamp-getting-started from the / menu",
+interface ToolGuidance {
+  launch: string;
+  command: string;
+  nextStepSummary: string;
+}
+
+const TOOL_GUIDANCE: Record<string, ToolGuidance> = {
+  claude: {
+    launch: "Start Claude Code in this repository, then run:",
+    command: "/swamp-getting-started",
+    nextStepSummary: "Start Claude Code and run /swamp-getting-started",
+  },
+  cursor: {
+    launch: "Open this project in Cursor, then run:",
+    command: "/swamp-getting-started",
+    nextStepSummary:
+      "Open this project in Cursor and run /swamp-getting-started",
+  },
+  kiro: {
+    launch: "Open this project in Kiro, then select from the / menu:",
+    command: "swamp-getting-started",
+    nextStepSummary:
+      "Open this project in Kiro and select swamp-getting-started from the / menu",
+  },
+  codex: {
+    launch: "Run codex in this directory, then invoke:",
+    command: "$swamp-getting-started",
+    nextStepSummary: "Run `codex` and invoke $swamp-getting-started",
+  },
+  amp: {
+    launch: "Run amp in this directory and say:",
+    command: '"I am new to swamp"',
+    nextStepSummary: 'Run `amp` in this directory and say "I am new to swamp"',
+  },
+  copilot: {
+    launch: "Open this project in VS Code with Copilot and say:",
+    command: '"I am new to swamp"',
+    nextStepSummary:
+      'Open this project in VS Code with Copilot and say "I am new to swamp"',
+  },
+  opencode: {
+    launch: "Run opencode in this directory and say:",
+    command: '"I am new to swamp"',
+    nextStepSummary:
+      'Run `opencode` in this directory and say "I am new to swamp"',
+  },
 };
+
+function renderToolGuidance(tool: string): void {
+  const guidance = TOOL_GUIDANCE[tool];
+  if (!guidance) return;
+  writeOutput(guidance.launch);
+  writeOutput("");
+  writeOutput(`  ${bold(guidance.command)}`);
+}
 
 /**
  * On-disk paths that swamp's scaffolding writes for each tool. Used to tell
@@ -92,12 +136,6 @@ function orphanedPathsFor(
 }
 
 class LogRepoInitRenderer implements Renderer<RepoInitEvent> {
-  private isAuthenticated: boolean;
-
-  constructor(isAuthenticated: boolean) {
-    this.isAuthenticated = isAuthenticated;
-  }
-
   handlers(): EventHandlers<RepoInitEvent> {
     return {
       initializing: () => {},
@@ -154,34 +192,24 @@ class LogRepoInitRenderer implements Renderer<RepoInitEvent> {
           );
         }
 
-        const hasClaude = data.tools.includes("claude");
-        const otherSteps = data.tools
-          .filter((t) => t !== "claude")
-          .map((t) => TOOL_NEXT_STEPS[t])
-          .filter((s): s is string => s !== undefined);
+        const knownTools = data.tools.filter((t) => t in TOOL_GUIDANCE);
 
         writeOutput("");
-        if (hasClaude) {
+        if (knownTools.length > 0) {
           writeOutput(bold("Your Swamp repo is ready."));
           writeOutput("");
-          writeOutput("Start Claude Code in this repository, then run:");
-          writeOutput("");
-          writeOutput(`  ${bold("/swamp-getting-started")}`);
+          for (let i = 0; i < knownTools.length; i++) {
+            if (i > 0) writeOutput("");
+            renderToolGuidance(knownTools[i]);
+          }
           writeOutput("");
           writeOutput(
-            "Start with a task you already repeat. Claude will help you create, run,",
+            "Start with a task you already repeat. Your agent will help you",
           );
-          writeOutput("and inspect your first automation.");
-        }
-
-        if (otherSteps.length > 0) {
-          if (hasClaude) writeOutput("");
-          for (const step of otherSteps) {
-            writeOutput(`  → ${step}`);
-          }
-        }
-
-        if (!hasClaude && otherSteps.length === 0) {
+          writeOutput(
+            "create, run, and inspect your first automation.",
+          );
+        } else {
           writeOutput(bold("What's next:"));
           writeOutput(
             "  → Run `swamp --help` to see available commands",
@@ -192,11 +220,6 @@ class LogRepoInitRenderer implements Renderer<RepoInitEvent> {
         writeOutput(
           `Learn more: ${dim("https://swamp-club.com/manual")}`,
         );
-        if (!hasClaude && !this.isAuthenticated) {
-          writeOutput(
-            "  → Join & participate in the community: swamp auth login",
-          );
-        }
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -217,7 +240,7 @@ class JsonRepoInitRenderer implements Renderer<RepoInitEvent> {
       initializing: () => {},
       completed: (e) => {
         const steps = e.data.tools
-          .map((t) => TOOL_NEXT_STEPS[t])
+          .map((t) => TOOL_GUIDANCE[t]?.nextStepSummary)
           .filter((s): s is string => s !== undefined);
         if (steps.length === 0) {
           steps.push("Run `swamp --help` to see available commands");
@@ -416,7 +439,7 @@ export function createRepoInitRenderer(
     case "json":
       return new JsonRepoInitRenderer(authed);
     case "log":
-      return new LogRepoInitRenderer(authed);
+      return new LogRepoInitRenderer();
   }
 }
 
