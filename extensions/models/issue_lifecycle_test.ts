@@ -330,8 +330,8 @@ Deno.test("model: exposes the new post_attestation method definition", () => {
   );
 });
 
-Deno.test("model: version is 2026.08.25.1", () => {
-  assertEquals(model.version, "2026.08.25.1");
+Deno.test("model: version is 2026.08.31.1", () => {
+  assertEquals(model.version, "2026.08.31.1");
 });
 
 // ---------------------------------------------------------------------------
@@ -1575,4 +1575,82 @@ Deno.test("model: exposes summary resource definition", () => {
 
 Deno.test("model: exposes summarize method definition", () => {
   assertEquals("summarize" in model.methods, true);
+});
+
+// ---------------------------------------------------------------------------
+// fast_forward
+// ---------------------------------------------------------------------------
+
+Deno.test("fast_forward: writes classification, plan, adversarialReview, codeConformanceReview, and state", async () => {
+  const { context, writes, restore } = await buildTestContext(99);
+  try {
+    await model.methods.fast_forward.execute(
+      {
+        summary: "Add retry logic to HTTP client",
+        steps: [
+          {
+            order: 1,
+            description: "Add retry wrapper",
+            files: ["src/http/client.ts"],
+          },
+          {
+            order: 2,
+            description: "Add retry tests",
+            files: ["src/http/client_test.ts"],
+          },
+        ],
+        testingStrategy: "Unit tests for retry logic",
+      },
+      context,
+    );
+
+    const classificationWrite = writes.find((w) =>
+      w.specName === "classification"
+    );
+    assertEquals(classificationWrite !== undefined, true);
+    assertEquals(classificationWrite!.data.type, "platform");
+    assertEquals(classificationWrite!.data.confidence, "high");
+
+    const planWrite = writes.find((w) => w.specName === "plan");
+    assertEquals(planWrite !== undefined, true);
+    assertEquals(planWrite!.data.version, 1);
+    assertEquals(planWrite!.data.summary, "Add retry logic to HTTP client");
+    assertEquals(
+      (planWrite!.data.steps as Array<unknown>).length,
+      2,
+    );
+
+    const advReviewWrite = writes.find((w) =>
+      w.specName === "adversarialReview"
+    );
+    assertEquals(advReviewWrite !== undefined, true);
+    assertEquals(advReviewWrite!.data.planVersion, 1);
+    assertEquals(
+      (advReviewWrite!.data.findings as Array<unknown>).length,
+      0,
+    );
+
+    const conformanceWrite = writes.find((w) =>
+      w.specName === "codeConformanceReview"
+    );
+    assertEquals(conformanceWrite !== undefined, true);
+    assertEquals(conformanceWrite!.data.planVersion, 1);
+    const conformanceSteps = conformanceWrite!.data.steps as Array<
+      Record<string, unknown>
+    >;
+    assertEquals(conformanceSteps.length, 2);
+    assertEquals(conformanceSteps[0].status, "implemented");
+    assertEquals(conformanceSteps[1].status, "implemented");
+
+    const stateWrite = writes.find((w) => w.specName === "state");
+    assertEquals(stateWrite !== undefined, true);
+    assertEquals(stateWrite!.data.phase, "implementing");
+    assertEquals(stateWrite!.data.issueNumber, 99);
+  } finally {
+    await restore();
+  }
+});
+
+Deno.test("model: exposes fast_forward method definition", () => {
+  assertEquals("fast_forward" in model.methods, true);
 });

@@ -91,6 +91,10 @@ Deno.test("TRANSITIONS: link_pr is rejected from earlier lifecycle phases", () =
   }
 });
 
+Deno.test("TRANSITIONS: fast_forward accepts only triaging", () => {
+  assertEquals(TRANSITIONS.fast_forward, ["triaging"]);
+});
+
 Deno.test("PullRequestSchema: accepts any non-empty URL string", () => {
   // URLs are opaque to the model — GitHub, GitLab, Gitea, Forgejo, etc.
   const samples = [

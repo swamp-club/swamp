@@ -4,8 +4,10 @@ description: >
   Drive the @swamp/issue-lifecycle model for interactive issue triage and
   plan iteration against swamp-club lab issues. Use when the user wants to
   triage a swamp-club issue, generate an implementation plan, or iterate on
-  a plan with feedback. Triggers on "triage issue", "triage #", "issue plan",
-  "review plan", "iterate plan", "approve plan", "issue lifecycle".
+  a plan with feedback. Also handles retroactive lifecycle creation for
+  ad-hoc work via "prepare to ship". Triggers on "triage issue", "triage #",
+  "issue plan", "review plan", "iterate plan", "approve plan",
+  "issue lifecycle", "prepare to ship", "ready to ship".
 ---
 
 # Issue Lifecycle Skill
@@ -36,6 +38,69 @@ before continuing." Do not fall back to `deno run dev`.
 
 **Never auto-approve.** Always stop and show the plan to the human. Always ask
 for feedback. Only call `approve` when the human explicitly says to proceed.
+
+## Prepare to Ship (Ad-Hoc Work)
+
+When the user says **"prepare to ship"** (or "ready to ship", "prepare to ship
+this work"), they have completed ad-hoc work that is not linked to an existing
+issue. The lifecycle still needs a tracking issue for verification and
+attestation to flow through.
+
+**This flow is fully automatic — do not ask for confirmation at each step.**
+
+### Steps
+
+1. **Summarize the work.** Inspect the current branch: `git log main..HEAD`,
+   `git diff --stat main..HEAD`. Build a title and summary from the commits and
+   changed files.
+
+2. **Create a tracking issue in swamp-club:**
+
+   ```
+   swamp issue create --title "<title>" --body "<summary of work done>" --type platform
+   ```
+
+   Capture the issue number from the output.
+
+3. **Start the lifecycle:**
+
+   ```
+   swamp model @swamp/issue-lifecycle method run start issue-<N> --input issueNumber=<N>
+   ```
+
+4. **Fast-forward to implementing:**
+
+   ```
+   swamp model @swamp/issue-lifecycle method run fast_forward issue-<N> \
+     --input summary="<summary>" \
+     --input steps='<JSON array of plan steps>' \
+     --input testingStrategy="<testing approach>"
+   ```
+
+   Build the plan steps retroactively from the actual work — each step should
+   describe a logical unit of change with its files. The testing strategy should
+   reflect how the changes were validated.
+
+5. **Proceed with normal verification.** Read
+   [references/verification.md](references/verification.md) and continue the
+   standard verify → post_attestation → link_pr flow.
+
+### Example
+
+```
+User: prepare to ship this work
+
+Agent:
+1. git log main..HEAD → "Add retry logic to HTTP client"
+2. swamp issue create --title "Add retry logic to HTTP client" --body "..." --type platform
+   → issue #247
+3. swamp model @swamp/issue-lifecycle method run start issue-247 --input issueNumber=247
+4. swamp model @swamp/issue-lifecycle method run fast_forward issue-247 \
+     --input summary="Add exponential backoff retry to HTTP client" \
+     --input steps='[{"order":1,"description":"Add retry wrapper","files":["src/http/client.ts"]}]' \
+     --input testingStrategy="Unit tests for retry logic added in client_test.ts"
+5. Proceed to verification...
+```
 
 ## Repository Configuration
 
