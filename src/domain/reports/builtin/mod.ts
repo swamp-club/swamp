@@ -28,7 +28,6 @@ export const BUILTIN_METHOD_REPORTS = ["@swamp/method-summary"];
 /** Built-in workflow-scope report names injected as candidates at call sites. */
 export const BUILTIN_WORKFLOW_REPORTS = [
   "@swamp/workflow-summary",
-  "@swamp/verification-attestation",
 ];
 
 // Register built-in reports (guarded to be idempotent across re-imports)
