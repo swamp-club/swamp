@@ -48,6 +48,7 @@ import {
   requestServerResponse,
   resolveServerToken,
   resolveServeUrl,
+  warnServerReloadNeeded,
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { ExtensionUpdateResponse } from "../../serve/protocol.ts";
@@ -109,6 +110,9 @@ export const extensionUpdateCommand = withRemoteOptions(
       })(),
       renderer.handlers(),
     );
+    if (!options.check) {
+      warnServerReloadNeeded(server);
+    }
     return;
   }
 

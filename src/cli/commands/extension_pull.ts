@@ -60,6 +60,7 @@ import {
   requestServerResponse,
   resolveServerToken,
   resolveServeUrl,
+  warnServerReloadNeeded,
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { ExtensionPullResponse } from "../../serve/protocol.ts";
@@ -257,6 +258,7 @@ export const extensionPullCommand = withRemoteOptions(
       })(),
       renderer.handlers(),
     );
+    warnServerReloadNeeded(server);
     return;
   }
 

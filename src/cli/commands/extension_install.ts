@@ -37,6 +37,7 @@ import {
   requestServerResponse,
   resolveServerToken,
   resolveServeUrl,
+  warnServerReloadNeeded,
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { ExtensionInstallResponse } from "../../serve/protocol.ts";
@@ -93,6 +94,7 @@ export const extensionInstallCommand = withRemoteOptions(
       })(),
       renderer.handlers(),
     );
+    warnServerReloadNeeded(server);
     return;
   }
 

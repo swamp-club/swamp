@@ -44,6 +44,7 @@ import { deserializeEvent } from "../serve/serializer.ts";
 import type { ServerCredentialRepository } from "../domain/auth/server_credential.ts";
 import { FileServerCredentialRepository } from "../infrastructure/persistence/server_credential_repository.ts";
 import { resolveExtraHeaders } from "../domain/auth/extra_headers.ts";
+import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 /**
  * Resolves the server URL from the `--server` flag with env var fallbacks.
@@ -346,6 +347,19 @@ export function withRemoteOptions<T extends AnyCommand>(command: T): T {
       "--ca-cert <path:string>",
       "Path to PEM-encoded CA certificate to trust for TLS connections to the server (env: SWAMP_CA_CERT)",
     ) as T;
+}
+
+/**
+ * Logs a warning after a state-modifying extension operation completes on a
+ * serve instance, reminding the user to reload so the running registries
+ * pick up the change.
+ */
+export function warnServerReloadNeeded(server: string): void {
+  const logger = getSwampLogger(["cli", "remote"]);
+  logger
+    .warn`Extension state changed on the serve instance — run ${
+    "swamp serve reload --server " + server
+  } to pick up the changes`;
 }
 
 /** Timeout for the health probe on connection failure (ms). */

@@ -368,7 +368,10 @@ reconciliation loop after `--stale-ttl`.
   `src/serve/boot_reconciliation.ts`).
 - The config poller does not reload extension type registries; new or changed
   extension types need `swamp serve reload` or a restart
-  (`src/cli/commands/serve.ts`, `ConfigPoller` wiring).
+  (`src/cli/commands/serve.ts`, `ConfigPoller` wiring). State-modifying
+  extension commands (`pull`, `install`, `rm`, `update`) warn the user after
+  a successful `--server` operation that `swamp serve reload` is needed to
+  pick up the changes (`src/cli/remote_run.ts`, `warnServerReloadNeeded`).
 - Webhook verification schemes are a closed set; a provider that changes its
   signing convention needs a swamp release (`src/serve/webhook_verifiers.ts`,
   tracked in #716).
