@@ -47,6 +47,7 @@ import {
   requestServerResponse,
   resolveServerToken,
   resolveServeUrl,
+  warnServerReloadNeeded,
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { ExtensionRmResponse } from "../../serve/protocol.ts";
@@ -101,6 +102,7 @@ export const extensionRemoveCommand = withRemoteOptions(
       })(),
       renderer.handlers(),
     );
+    warnServerReloadNeeded(server);
     return;
   }
 

@@ -33,6 +33,7 @@ import {
   resolveServeUrl,
   runModelMethodOverServer,
   runWorkflowOverServer,
+  warnServerReloadNeeded,
 } from "./remote_run.ts";
 import type { ServerCredential } from "../domain/auth/server_credential.ts";
 import type { ServerCredentialRepository } from "../domain/auth/server_credential.ts";
@@ -1304,4 +1305,10 @@ Deno.test("diagnoseTlsMessage: returns message for expired cert", () => {
 Deno.test("diagnoseTlsMessage: returns undefined for non-TLS errors", () => {
   assertEquals(diagnoseTlsMessage("connection refused"), undefined);
   assertEquals(diagnoseTlsMessage("DNS lookup failed"), undefined);
+});
+
+// ── warnServerReloadNeeded tests ──────────────────────────────────────
+
+Deno.test("warnServerReloadNeeded: does not throw", () => {
+  warnServerReloadNeeded("ws://127.0.0.1:9090");
 });
