@@ -234,3 +234,15 @@ Deno.test("RpcChannel: cancelled handlers always emit a terminal frame", async (
   assertEquals(frames[0].type, "rpc.error");
   assertEquals(frames[0].error.code, "cancelled");
 });
+
+Deno.test("RpcChannel: handler context exposes the caller's request id", async () => {
+  const { a, b } = channelPair();
+  let capturedRequestId: string | undefined;
+  b.register("probe", (_params, ctx) => {
+    capturedRequestId = ctx.requestId;
+    return Promise.resolve({ ok: true });
+  });
+  await a.call("probe", {});
+  assertEquals(typeof capturedRequestId, "string");
+  assertEquals(capturedRequestId!.length > 0, true);
+});

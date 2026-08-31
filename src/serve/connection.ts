@@ -1297,6 +1297,18 @@ export function handleConnection(
     send: (data) => {
       if (socket.readyState === WebSocket.OPEN) {
         socket.send(data);
+      } else {
+        let frameType = "unknown";
+        let frameId = "unknown";
+        try {
+          const parsed = JSON.parse(data) as Record<string, unknown>;
+          if (typeof parsed.type === "string") frameType = parsed.type;
+          if (typeof parsed.id === "string") frameId = parsed.id;
+        } catch { /* best-effort */ }
+        logger.warn(
+          "Dropped RPC frame {frameType} (id {frameId}): socket readyState is {readyState}",
+          { frameType, frameId, readyState: socket.readyState },
+        );
       }
     },
   }, () => socket.close());

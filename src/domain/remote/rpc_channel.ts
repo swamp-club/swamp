@@ -46,6 +46,8 @@ export interface RpcTransport {
 
 /** Context handed to a registered handler. */
 export interface RpcHandlerContext {
+  /** The caller-assigned request id for this inbound request. */
+  requestId: string;
   /** Aborted when the peer cancels the request or the channel closes. */
   signal: AbortSignal;
   /** Emit a stream event for this request before the final response. */
@@ -337,6 +339,7 @@ export class RpcChannel {
     const controller = new AbortController();
     this.#inflight.set(id, controller);
     const ctx: RpcHandlerContext = {
+      requestId: id,
       signal: controller.signal,
       stream: (event) => {
         this.#sendFrame({ type: "rpc.stream", id, event });
