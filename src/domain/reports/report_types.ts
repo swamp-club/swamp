@@ -27,6 +27,7 @@ import { reportRegistry } from "./report_registry.ts";
 const BUILTIN_NAMES = new Set([
   ...BUILTIN_METHOD_REPORTS,
   ...BUILTIN_WORKFLOW_REPORTS,
+  "@swamp/verification-attestation",
 ]);
 
 export interface ReportTypeInfo {
