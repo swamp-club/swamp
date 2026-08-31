@@ -25,6 +25,7 @@ import {
   CatalogStore,
   ITERATE_PAGE_SIZE,
 } from "./catalog_store.ts";
+import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
 
 function makeTempDbPath(): string {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-catalog-test-" });
@@ -1308,3 +1309,74 @@ Deno.test(
     store.close();
   },
 );
+
+// --- countDuplicateLatest / enforceUniqueLatest tests ---
+
+Deno.test("countDuplicateLatest: zero when no duplicates", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsertNewVersion(makeRow({ version: 1 }));
+  store.upsertNewVersion(makeRow({ version: 2 }));
+
+  assertEquals(store.countDuplicateLatest(), 0);
+  store.close();
+});
+
+Deno.test("countDuplicateLatest: detects duplicates created by plain upsert", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsert(makeRow({ version: 1, is_latest: 1 }));
+  store.upsert(makeRow({ version: 2, is_latest: 1 }));
+
+  assertEquals(store.countDuplicateLatest(), 1);
+  store.close();
+});
+
+Deno.test("enforceUniqueLatest: demotes stale is_latest rows", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsert(makeRow({ version: 1, is_latest: 1 }));
+  store.upsert(makeRow({ version: 2, is_latest: 1 }));
+
+  assertEquals(store.countDuplicateLatest(), 1);
+
+  const demoted = store.enforceUniqueLatest(computeLatestFlags);
+  assertEquals(demoted, 1);
+  assertEquals(store.countDuplicateLatest(), 0);
+
+  const latest = store.findLatestRow("test-model-name", "my-data");
+  assertEquals(latest?.version, 2);
+
+  store.close();
+});
+
+Deno.test("enforceUniqueLatest: respects step_name scoping", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsert(makeRow({ version: 3, is_latest: 1, step_name: "step-a" }));
+  store.upsert(makeRow({ version: 4, is_latest: 1, step_name: "step-b" }));
+
+  assertEquals(store.countDuplicateLatest(), 0);
+
+  const demoted = store.enforceUniqueLatest(computeLatestFlags);
+  assertEquals(demoted, 0);
+
+  store.close();
+});
+
+Deno.test("enforceUniqueLatest: no-op when catalog is clean", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsertNewVersion(makeRow({ version: 1 }));
+  store.upsertNewVersion(makeRow({ version: 2 }));
+
+  const demoted = store.enforceUniqueLatest(computeLatestFlags);
+  assertEquals(demoted, 0);
+
+  store.close();
+});

@@ -21,6 +21,7 @@ import { bold, dim, green, red, yellow } from "@std/fmt/colors";
 import type {
   DoctorDatastoresEvent,
   EventHandlers,
+  RepairCatalogDuplicateLatestEvent,
   RepairCatalogIndexEvent,
   RepairDatastoresEvent,
   RepairUnmigratedDataEvent,
@@ -583,5 +584,122 @@ export function createCatalogIndexRepairRenderer(
       return new JsonCatalogIndexRepairRenderer();
     case "log":
       return new LogCatalogIndexRepairRenderer();
+  }
+}
+
+// ============================================================================
+// Catalog duplicate is_latest repair
+// ============================================================================
+
+export type CatalogDuplicateLatestRepairStatus = "pass" | "fail" | "preview";
+
+export interface CatalogDuplicateLatestRepairRenderer {
+  handlers(): EventHandlers<RepairCatalogDuplicateLatestEvent>;
+  readonly overallStatus: CatalogDuplicateLatestRepairStatus;
+}
+
+class LogCatalogDuplicateLatestRepairRenderer
+  implements CatalogDuplicateLatestRepairRenderer {
+  overallStatus: CatalogDuplicateLatestRepairStatus = "pass";
+
+  handlers(): EventHandlers<RepairCatalogDuplicateLatestEvent> {
+    return {
+      scanning: () => {
+        writeOutput(
+          dim("Checking catalog for duplicate is_latest flags…"),
+        );
+      },
+      preview: (e) => {
+        this.overallStatus = "preview";
+        writeOutput(`\n${bold("Duplicate is_latest flags:")}`);
+        writeOutput(
+          `  ${e.duplicateCount} record group(s) have more than one version flagged as latest`,
+        );
+        writeOutput(dim("\n  Run with -y to repair."));
+      },
+      step: (e) => {
+        writeOutput(`  ${e.description}`);
+      },
+      completed: (e) => {
+        this.overallStatus = "pass";
+        writeOutput(
+          `\n${green("✓")} ${bold("Duplicate is_latest flags repaired:")}`,
+        );
+        writeOutput(
+          `  Demoted ${e.result.demotedRows} stale is_latest flag(s)`,
+        );
+      },
+      not_needed: () => {
+        this.overallStatus = "pass";
+        writeOutput(dim("No duplicate is_latest flags found."));
+      },
+      error: (e) => {
+        this.overallStatus = "fail";
+        throw new UserError(e.error.message);
+      },
+    };
+  }
+}
+
+class JsonCatalogDuplicateLatestRepairRenderer
+  implements CatalogDuplicateLatestRepairRenderer {
+  overallStatus: CatalogDuplicateLatestRepairStatus = "pass";
+
+  handlers(): EventHandlers<RepairCatalogDuplicateLatestEvent> {
+    return {
+      scanning: () => {},
+      preview: (e) => {
+        this.overallStatus = "preview";
+        console.log(
+          JSON.stringify(
+            {
+              status: "duplicate_latest_preview",
+              duplicateCount: e.duplicateCount,
+            },
+            null,
+            2,
+          ),
+        );
+      },
+      step: () => {},
+      completed: (e) => {
+        this.overallStatus = "pass";
+        console.log(
+          JSON.stringify(
+            {
+              status: "duplicate_latest_completed",
+              result: e.result,
+            },
+            null,
+            2,
+          ),
+        );
+      },
+      not_needed: () => {
+        this.overallStatus = "pass";
+        console.log(
+          JSON.stringify(
+            { status: "duplicate_latest_not_needed" },
+            null,
+            2,
+          ),
+        );
+      },
+      error: (e) => {
+        this.overallStatus = "fail";
+        throw new UserError(e.error.message);
+      },
+    };
+  }
+}
+
+export function createCatalogDuplicateLatestRepairRenderer(
+  mode: OutputMode,
+): CatalogDuplicateLatestRepairRenderer {
+  switch (mode) {
+    case "json":
+      return new JsonCatalogDuplicateLatestRepairRenderer();
+    case "log":
+      return new LogCatalogDuplicateLatestRepairRenderer();
   }
 }

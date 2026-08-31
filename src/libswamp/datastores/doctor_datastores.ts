@@ -637,3 +637,74 @@ export async function* repairCatalogIndex(
     })(),
   );
 }
+
+// ============================================================================
+// Repair: duplicate is_latest rows
+// ============================================================================
+
+export interface CatalogDuplicateLatestResult {
+  demotedRows: number;
+}
+
+export type RepairCatalogDuplicateLatestEvent =
+  | { kind: "scanning" }
+  | { kind: "preview"; duplicateCount: number }
+  | { kind: "step"; description: string }
+  | { kind: "completed"; result: CatalogDuplicateLatestResult }
+  | { kind: "not_needed" }
+  | { kind: "error"; error: SwampError };
+
+export interface RepairCatalogDuplicateLatestDeps {
+  countDuplicateLatest: () => number;
+  enforceUniqueLatest: () => number;
+}
+
+export async function* repairCatalogDuplicateLatest(
+  _ctx: LibSwampContext,
+  deps: RepairCatalogDuplicateLatestDeps,
+  options: { confirm: boolean },
+): AsyncGenerator<RepairCatalogDuplicateLatestEvent> {
+  yield* withGeneratorSpan(
+    "swamp.doctor.datastores.repair.duplicate_latest",
+    {},
+    (async function* () {
+      yield { kind: "scanning" };
+
+      const duplicateCount = deps.countDuplicateLatest();
+      if (duplicateCount === 0) {
+        yield { kind: "not_needed" };
+        return;
+      }
+
+      if (!options.confirm) {
+        yield { kind: "preview", duplicateCount };
+        return;
+      }
+
+      try {
+        yield {
+          kind: "step",
+          description:
+            "Demoting stale is_latest flags so each record has exactly one latest version",
+        };
+        const demotedRows = deps.enforceUniqueLatest();
+
+        yield {
+          kind: "completed",
+          result: { demotedRows },
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        yield {
+          kind: "error",
+          error: {
+            code: "duplicate_latest_repair_failed",
+            message:
+              `Could not repair duplicate is_latest flags: ${message}. No changes were made.`,
+            cause: err instanceof Error ? err : undefined,
+          },
+        };
+      }
+    })(),
+  );
+}
