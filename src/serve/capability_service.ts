@@ -58,7 +58,11 @@ import {
   type ResolveSecretParams,
   ResolveSecretParamsSchema,
 } from "../domain/remote/protocol.ts";
-import type { RpcChannel } from "../domain/remote/rpc_channel.ts";
+import type {
+  RpcChannel,
+  RpcHandlerContext,
+} from "../domain/remote/rpc_channel.ts";
+import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { jsonSafeClone } from "./serializer.ts";
 import type { ActiveDispatch, DispatchRegistry } from "./dispatch_registry.ts";
 import { GRANT_MODEL_TYPE } from "../domain/models/access/grant_model.ts";
@@ -74,6 +78,10 @@ import {
 import { WORKER_MODEL_TYPE } from "../domain/models/worker/worker_model.ts";
 import { STEP_LEASE_MODEL_TYPE } from "../domain/models/worker/step_lease_model.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
+
+const capLogger = getSwampLogger(["serve", "capability"]);
+
+const SLOW_HANDLER_WARN_MS = 5_000;
 
 const DENIED_VAULT_NAMES: ReadonlySet<string> = new Set([
   TOKEN_SECRETS_VAULT_NAME,
@@ -526,12 +534,42 @@ export class CapabilityService {
    */
   registerHandlers(channel: RpcChannel, workerName: string): void {
     const safe = <T>(
+      verb: string,
       fn: (params: unknown) => Promise<T>,
-    ): (params: unknown) => Promise<T> =>
-    async (params) => {
+    ): (params: unknown, ctx: RpcHandlerContext) => Promise<T> =>
+    async (params, ctx) => {
+      const start = performance.now();
+      capLogger.debug(
+        "Handler start: {verb} for worker {worker} (request {requestId})",
+        { verb, worker: workerName, requestId: ctx.requestId },
+      );
       try {
-        return await fn(params);
+        const result = await fn(params);
+        const elapsedMs = Math.round(performance.now() - start);
+        if (elapsedMs >= SLOW_HANDLER_WARN_MS) {
+          capLogger.warn(
+            "Handler slow: {verb} for worker {worker} took {elapsedMs}ms (request {requestId})",
+            { verb, worker: workerName, elapsedMs, requestId: ctx.requestId },
+          );
+        } else {
+          capLogger.debug(
+            "Handler done: {verb} for worker {worker} in {elapsedMs}ms (request {requestId})",
+            { verb, worker: workerName, elapsedMs, requestId: ctx.requestId },
+          );
+        }
+        return result;
       } catch (error) {
+        const elapsedMs = Math.round(performance.now() - start);
+        capLogger.warn(
+          "Handler error: {verb} for worker {worker} after {elapsedMs}ms (request {requestId}): {error}",
+          {
+            verb,
+            worker: workerName,
+            elapsedMs,
+            requestId: ctx.requestId,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
         throw new Error(sanitizeRpcError(error));
       }
     };
@@ -543,72 +581,78 @@ export class CapabilityService {
 
     channel.register(
       RemoteMethod.getData,
-      safe((params) =>
+      safe(RemoteMethod.getData, (params) =>
         this.getData(workerName, {
           ...GetDataParamsSchema.parse(params),
           dispatchId: extractDispatchId(params),
-        })
-      ),
+        })),
     );
     channel.register(
       RemoteMethod.queryData,
-      safe((params) =>
+      safe(RemoteMethod.queryData, (params) =>
         this.queryData(workerName, {
           ...QueryDataParamsSchema.parse(params),
           dispatchId: extractDispatchId(params),
-        })
-      ),
+        })),
     );
     channel.register(
       RemoteMethod.listVersions,
-      safe((params) =>
-        this.listVersions(workerName, {
-          ...ListVersionsParamsSchema.parse(params),
-          dispatchId: extractDispatchId(params),
-        })
+      safe(
+        RemoteMethod.listVersions,
+        (params) =>
+          this.listVersions(workerName, {
+            ...ListVersionsParamsSchema.parse(params),
+            dispatchId: extractDispatchId(params),
+          }),
       ),
     );
     channel.register(
       RemoteMethod.deleteData,
-      safe((params) =>
+      safe(RemoteMethod.deleteData, (params) =>
         this.deleteData(workerName, {
           ...DeleteDataParamsSchema.parse(params),
           dispatchId: extractDispatchId(params),
-        })
-      ),
+        })),
     );
     channel.register(
       RemoteMethod.resolveSecret,
-      safe((params) =>
-        this.resolveSecret(workerName, {
-          ...ResolveSecretParamsSchema.parse(params),
-          dispatchId: extractDispatchId(params),
-        })
+      safe(
+        RemoteMethod.resolveSecret,
+        (params) =>
+          this.resolveSecret(workerName, {
+            ...ResolveSecretParamsSchema.parse(params),
+            dispatchId: extractDispatchId(params),
+          }),
       ),
     );
     channel.register(
       RemoteMethod.putSecret,
-      safe((params) =>
+      safe(RemoteMethod.putSecret, (params) =>
         this.putSecret(workerName, {
           ...PutSecretParamsSchema.parse(params),
           dispatchId: extractDispatchId(params),
-        })
-      ),
+        })),
     );
     channel.register(
       RemoteMethod.readDefinition,
-      safe((params) =>
-        this.readDefinition(ReadDefinitionParamsSchema.parse(params))
+      safe(
+        RemoteMethod.readDefinition,
+        (params) =>
+          this.readDefinition(ReadDefinitionParamsSchema.parse(params)),
       ),
     );
     channel.register(
       RemoteMethod.readOutput,
-      safe((params) => this.readOutput(ReadOutputParamsSchema.parse(params))),
+      safe(
+        RemoteMethod.readOutput,
+        (params) => this.readOutput(ReadOutputParamsSchema.parse(params)),
+      ),
     );
     channel.register(
       RemoteMethod.resolveModel,
-      safe((params) =>
-        this.resolveModel(ResolveModelParamsSchema.parse(params))
+      safe(
+        RemoteMethod.resolveModel,
+        (params) => this.resolveModel(ResolveModelParamsSchema.parse(params)),
       ),
     );
   }

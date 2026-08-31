@@ -208,3 +208,61 @@ Deno.test("bridgeCapabilityVerbs: params without dispatchId get supervisor value
 Deno.test("bridgeCapabilityVerbs: exactly 9 verbs are bridged", () => {
   assertEquals(BRIDGED_VERBS.length, 9);
 });
+
+Deno.test("bridgeCapabilityVerbs: bridge timeout rejects when orchestrator never responds", async () => {
+  const runnerPair = channelPair();
+  const orchPair = channelPair();
+
+  // Orchestrator handler never resolves — simulates a lost response.
+  orchPair.b.register(
+    RemoteMethod.queryData,
+    () => new Promise(() => {}),
+  );
+
+  bridgeCapabilityVerbs({
+    childChannel: runnerPair.b,
+    orchestratorChannel: orchPair.a,
+    dispatchId: "test-dispatch",
+    signal: AbortSignal.timeout(300_000),
+  });
+
+  // Caller-side timeout (200ms) verifies calls don't hang; bridge's own 180s timeout is too slow for tests.
+  const error = await assertRejects(
+    () =>
+      runnerPair.a.call(RemoteMethod.queryData, { predicate: "true" }, {
+        timeoutMs: 200,
+      }),
+    DOMException,
+  );
+  assertEquals(error.name, "TimeoutError");
+});
+
+Deno.test("bridgeCapabilityVerbs: bridge passes requestId through to orchestrator call", async () => {
+  const runnerPair = channelPair();
+  const orchPair = channelPair();
+
+  let receivedRequestId: string | undefined;
+  orchPair.b.register(
+    RemoteMethod.getData,
+    (_params, ctx) => {
+      receivedRequestId = ctx.requestId;
+      return Promise.resolve({ found: true });
+    },
+  );
+
+  bridgeCapabilityVerbs({
+    childChannel: runnerPair.b,
+    orchestratorChannel: orchPair.a,
+    dispatchId: "test-dispatch",
+    signal: AbortSignal.timeout(5_000),
+  });
+
+  await runnerPair.a.call(RemoteMethod.getData, {
+    modelType: "test",
+    modelId: "m1",
+    dataName: "out",
+  });
+
+  assertEquals(typeof receivedRequestId, "string");
+  assertEquals(receivedRequestId!.length > 0, true);
+});

@@ -58,6 +58,14 @@ export interface RunnerBridgeOptions {
 }
 
 /**
+ * Safety timeout for bridged capability calls. Strictly larger than
+ * DEFAULT_CALL_TIMEOUT_MS (30 s) so the child always observes a stall
+ * first. Catches leaked pending calls when a child exits without
+ * sending rpc.cancel.
+ */
+export const BRIDGE_CAPABILITY_TIMEOUT_MS = 180_000;
+
+/**
  * Wire the capability RPC bridge: register handlers on the child channel
  * that forward each capability verb to the orchestrator channel and return
  * the response. Call IDs are mapped automatically by RpcChannel — each
@@ -72,18 +80,61 @@ export function bridgeCapabilityVerbs(
     childChannel.register(
       verb,
       async (params: unknown, ctx: RpcHandlerContext) => {
-        logger.debug("Bridging {verb} from runner to orchestrator", { verb });
+        const start = performance.now();
+        logger.debug(
+          "Bridging {verb} to orchestrator [{dispatchId}] (request {requestId})",
+          { verb, dispatchId, requestId: ctx.requestId },
+        );
         const combinedSignal = AbortSignal.any([signal, ctx.signal]);
         const { dispatchId: _childDispatchId, ...childParams } =
           params as Record<string, unknown>;
         const wrapped = { ...childParams, dispatchId };
-        return await orchestratorChannel.call(verb, wrapped, {
-          signal: combinedSignal,
-          timeoutMs: null,
-          onStream: options.onChildStream
-            ? (event) => options.onChildStream!(event)
-            : undefined,
-        });
+        try {
+          const result = await orchestratorChannel.call(verb, wrapped, {
+            signal: combinedSignal,
+            timeoutMs: BRIDGE_CAPABILITY_TIMEOUT_MS,
+            onStream: options.onChildStream
+              ? (event) => options.onChildStream!(event)
+              : undefined,
+          });
+          const elapsedMs = Math.round(performance.now() - start);
+          logger.debug(
+            "Bridge {verb} completed in {elapsedMs}ms [{dispatchId}] (request {requestId})",
+            { verb, elapsedMs, dispatchId, requestId: ctx.requestId },
+          );
+          return result;
+        } catch (error) {
+          const elapsedMs = Math.round(performance.now() - start);
+          const message = error instanceof Error
+            ? error.message
+            : String(error);
+          if (
+            error instanceof DOMException && error.name === "TimeoutError"
+          ) {
+            logger.error(
+              "Bridge {verb} timed out after {elapsedMs}ms [{dispatchId}] (request {requestId}): {error}",
+              {
+                verb,
+                elapsedMs,
+                dispatchId,
+                requestId: ctx.requestId,
+                error: message,
+              },
+            );
+          } else {
+            logger.warn(
+              "Bridge {verb} failed after {elapsedMs}ms [{dispatchId}] (request {requestId}): {error}",
+              {
+                verb,
+                elapsedMs,
+                dispatchId,
+                requestId: ctx.requestId,
+                error: message,
+              },
+            );
+          }
+          throw error;
+        }
       },
     );
   }
