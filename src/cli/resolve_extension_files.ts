@@ -251,6 +251,11 @@ export async function resolveExtensionFiles(
     }
   }
 
+  const monorepoHint = useManifestBase
+    ? ""
+    : "\nIf your extension is in a monorepo subdirectory, use --extensions-dir " +
+      "to set the resolution base, or add paths.base: manifest to the manifest.";
+
   // 3. Collect model files from manifest
   const modelEntryPoints: string[] = [];
   for (const modelRef of manifest.models) {
@@ -259,7 +264,8 @@ export async function resolveExtensionFiles(
       await Deno.stat(modelPath);
     } catch {
       throw new UserError(
-        `Model file not found: ${modelRef} (expected at ${modelPath})`,
+        `Model file not found: ${modelRef} (expected at ${modelPath})` +
+          monorepoHint,
       );
     }
     modelEntryPoints.push(modelPath);
@@ -300,7 +306,7 @@ export async function resolveExtensionFiles(
         throw new UserError(
           `Workflow file not found: ${wfRef} (looked in ${
             wfCandidateDirs.join(", ")
-          })`,
+          })` + monorepoHint,
         );
       }
       // Derive a unique archive name from the manifest reference directory
@@ -369,7 +375,8 @@ export async function resolveExtensionFiles(
       await Deno.stat(vaultPath);
     } catch {
       throw new UserError(
-        `Vault file not found: ${vaultRef} (expected at ${vaultPath})`,
+        `Vault file not found: ${vaultRef} (expected at ${vaultPath})` +
+          monorepoHint,
       );
     }
     vaultEntryPoints.push(vaultPath);
@@ -393,7 +400,8 @@ export async function resolveExtensionFiles(
       await Deno.stat(driverPath);
     } catch {
       throw new UserError(
-        `Driver file not found: ${driverRef} (expected at ${driverPath})`,
+        `Driver file not found: ${driverRef} (expected at ${driverPath})` +
+          monorepoHint,
       );
     }
     driverEntryPoints.push(driverPath);
@@ -417,7 +425,8 @@ export async function resolveExtensionFiles(
       await Deno.stat(datastorePath);
     } catch {
       throw new UserError(
-        `Datastore file not found: ${datastoreRef} (expected at ${datastorePath})`,
+        `Datastore file not found: ${datastoreRef} (expected at ${datastorePath})` +
+          monorepoHint,
       );
     }
     datastoreEntryPoints.push(datastorePath);
@@ -441,7 +450,8 @@ export async function resolveExtensionFiles(
       await Deno.stat(reportPath);
     } catch {
       throw new UserError(
-        `Report file not found: ${reportRef} (expected at ${reportPath})`,
+        `Report file not found: ${reportRef} (expected at ${reportPath})` +
+          monorepoHint,
       );
     }
     reportEntryPoints.push(reportPath);
