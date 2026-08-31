@@ -1916,3 +1916,25 @@ Deno.test("computeLatestFlags: model-method as latest version demotes everything
   assertEquals(latestRows[0].version, 3);
   assertEquals(latestRows[0].step_name, "");
 });
+
+Deno.test("computeLatestFlags: different namespaces keep independent is_latest", () => {
+  const rows: CatalogRow[] = [
+    makeRow({ namespace: "local", version: 1 }),
+    makeRow({ namespace: "foreign", version: 3 }),
+  ];
+  computeLatestFlags(rows);
+
+  assertEquals(rows[0].is_latest, 1);
+  assertEquals(rows[1].is_latest, 1);
+});
+
+Deno.test("computeLatestFlags: different type_normalized keep independent is_latest", () => {
+  const rows: CatalogRow[] = [
+    makeRow({ type_normalized: "model-a", version: 1 }),
+    makeRow({ type_normalized: "model-b", version: 3 }),
+  ];
+  computeLatestFlags(rows);
+
+  assertEquals(rows[0].is_latest, 1);
+  assertEquals(rows[1].is_latest, 1);
+});
