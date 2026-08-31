@@ -3751,7 +3751,10 @@ export const serveCommand = new Command()
         // Device authorization endpoints (OAuth mode only)
         if (authConfig.mode === "oauth" && authConfig.oauthClientId) {
           const url = new URL(req.url);
-          if (url.pathname === "/auth/device") {
+          if (
+            url.pathname === "/auth/device" ||
+            url.pathname === "/auth/device/token"
+          ) {
             const deviceRemoteAddr = trustProxy
               ? (req.headers.get("x-forwarded-for")
                 ?.split(",")[0]?.trim() ??

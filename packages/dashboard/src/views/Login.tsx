@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSwamp } from "../client/SwampProvider";
 import { Logo } from "../components/Logo";
 
@@ -158,15 +158,22 @@ function OAuthLogin(
       });
   }, []);
 
+  const inFlight = useRef(false);
+
   useEffect(() => {
     if (!grant || state !== "waiting") return;
 
+    const ac = new AbortController();
+
     const interval = setInterval(async () => {
+      if (inFlight.current) return;
+      inFlight.current = true;
       try {
         const resp = await fetch("/auth/device/token", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ deviceCode: grant.deviceCode }),
+          signal: ac.signal,
         });
 
         if (resp.status === 202) return;
@@ -195,12 +202,17 @@ function OAuthLogin(
           setError(data.error || "Login failed. Please try again.");
           setState("error");
         }
-      } catch {
-        // network error — keep polling
+      } catch (err: unknown) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+      } finally {
+        inFlight.current = false;
       }
     }, (grant.interval || 5) * 1000);
 
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      ac.abort();
+    };
   }, [grant, state, onToken]);
 
   return (
