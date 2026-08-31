@@ -2493,3 +2493,41 @@ Deno.test("removeBySourcePath: deletes by canonicalized path", () => {
   assertEquals(store.count(), 0);
   store.close();
 });
+
+Deno.test("removeByRawSourcePath: deletes by exact stored PK without canonicalizing", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  // Insert a row with a non-canonical path directly via SQL, simulating
+  // a WSL-written row (POSIX canonicalizePath is identity → mixed case
+  // stored as-is). upsert() would canonicalize it, hiding the bug.
+  const db = new DatabaseSync(dbPath);
+  const mixedCasePath =
+    "/mnt/c/Project/Repos/my-repo/extensions/models/MyModel.ts";
+  db.prepare(
+    `INSERT INTO bundle_types (source_path, type_normalized, kind, bundle_path,
+       extension_name, extension_version)
+     VALUES (?, '@ns/my-model', 'model', '/fake/bundle.js',
+       '@local/my-repo', '1.0.0')`,
+  ).run(mixedCasePath);
+  db.close();
+
+  assertEquals(store.count(), 1);
+
+  // removeBySourcePath canonicalizes → lowercases → misses the row
+  store.removeBySourcePath(mixedCasePath.toLowerCase());
+  assertEquals(
+    store.count(),
+    1,
+    "removeBySourcePath should miss non-canonical PK",
+  );
+
+  // removeByRawSourcePath uses the exact stored PK → succeeds
+  store.removeByRawSourcePath(mixedCasePath);
+  assertEquals(
+    store.count(),
+    0,
+    "removeByRawSourcePath should delete by exact PK",
+  );
+  store.close();
+});

@@ -360,17 +360,27 @@ export class ExtensionRepository {
   }
 
   /**
-   * Deletes catalog rows by source path. Used by the W6 repair service
-   * to prune Tombstoned rows. Runs inside a single transaction for
-   * atomicity. Returns the count of rows that actually existed and
-   * were deleted (not the input count).
+   * Deletes catalog rows by canonical source path. Used by the W6
+   * repair service to prune Tombstoned and unreachable rows.
+   *
+   * Matches by canonical form rather than PK lookup so cross-OS
+   * catalog rows are found: a row written on WSL/Linux (where
+   * canonicalizePath is identity, preserving case) stores a mixed-case
+   * PK that Windows's canonicalizePath (lowercase) won't match via
+   * `findBySourcePath`. Iterating `findAll()` and comparing canonical
+   * forms closes the gap; deletion uses the raw PK value so the
+   * DELETE hits the actual stored row.
+   *
+   * Runs inside a single transaction for atomicity. Returns the count
+   * of rows actually deleted.
    */
   deleteBySourcePaths(paths: readonly string[]): number {
+    const targetSet = new Set(paths.map(canonicalizePath));
     let deleted = 0;
     this.catalog.runInTransaction(() => {
-      for (const p of paths) {
-        if (this.catalog.findBySourcePath(p)) {
-          this.catalog.removeBySourcePath(p);
+      for (const row of this.catalog.findAll()) {
+        if (targetSet.has(canonicalizePath(row.source_path))) {
+          this.catalog.removeByRawSourcePath(row.source_path);
           deleted++;
         }
       }
