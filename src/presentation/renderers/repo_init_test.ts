@@ -94,15 +94,17 @@ function captureInitOutput(
 }
 
 Deno.test(
-  "LogRepoInitRenderer: shows claude-specific next step for claude tool",
+  "LogRepoInitRenderer: shows claude-specific guidance for claude tool",
   () => {
     const output = captureInitOutput([
       { kind: "initializing" },
       { kind: "completed", data: makeInitData(["claude"]) },
     ], "log");
 
-    assertStringIncludes(output, "What's next:");
+    assertStringIncludes(output, "Your Swamp repo is ready.");
     assertStringIncludes(output, "/swamp-getting-started");
+    assertStringIncludes(output, "first automation");
+    assertStringIncludes(output, "swamp-club.com/manual");
   },
 );
 
@@ -114,19 +116,20 @@ Deno.test(
       { kind: "completed", data: makeInitData(["cursor"]) },
     ], "log");
 
-    assertStringIncludes(output, "What's next:");
     assertStringIncludes(output, "Cursor");
+    assertStringIncludes(output, "swamp-club.com/manual");
   },
 );
 
 Deno.test(
-  "LogRepoInitRenderer: shows multiple next steps for multi-tool init",
+  "LogRepoInitRenderer: shows claude guidance and other tool steps for multi-tool init",
   () => {
     const output = captureInitOutput([
       { kind: "initializing" },
       { kind: "completed", data: makeInitData(["claude", "cursor"]) },
     ], "log");
 
+    assertStringIncludes(output, "Your Swamp repo is ready.");
     assertStringIncludes(output, "/swamp-getting-started");
     assertStringIncludes(output, "Cursor");
   },
@@ -140,16 +143,29 @@ Deno.test(
       { kind: "completed", data: makeInitData([]) },
     ], "log");
 
+    assertStringIncludes(output, "What's next:");
     assertStringIncludes(output, "swamp --help");
   },
 );
 
 Deno.test(
-  "LogRepoInitRenderer: shows community login next step",
+  "LogRepoInitRenderer: suppresses community login for claude tool",
   () => {
     const output = captureInitOutput([
       { kind: "initializing" },
       { kind: "completed", data: makeInitData(["claude"]) },
+    ], "log");
+
+    assertEquals(output.includes("swamp auth login"), false);
+  },
+);
+
+Deno.test(
+  "LogRepoInitRenderer: shows community login for non-claude tool",
+  () => {
+    const output = captureInitOutput([
+      { kind: "initializing" },
+      { kind: "completed", data: makeInitData(["cursor"]) },
     ], "log");
 
     assertStringIncludes(output, "swamp auth login");
@@ -162,7 +178,7 @@ Deno.test(
     const output = captureInitOutput(
       [
         { kind: "initializing" },
-        { kind: "completed", data: makeInitData(["claude"]) },
+        { kind: "completed", data: makeInitData(["cursor"]) },
       ],
       "log",
       { isAuthenticated: true },

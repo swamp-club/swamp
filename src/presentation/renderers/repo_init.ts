@@ -154,21 +154,45 @@ class LogRepoInitRenderer implements Renderer<RepoInitEvent> {
           );
         }
 
-        const steps = data.tools
+        const hasClaude = data.tools.includes("claude");
+        const otherSteps = data.tools
+          .filter((t) => t !== "claude")
           .map((t) => TOOL_NEXT_STEPS[t])
           .filter((s): s is string => s !== undefined);
-        if (steps.length === 0) {
-          steps.push("Run `swamp --help` to see available commands");
-        }
+
         writeOutput("");
-        writeOutput(bold("What's next:"));
-        for (const step of steps) {
-          writeOutput(`  → ${step}`);
+        if (hasClaude) {
+          writeOutput(bold("Your Swamp repo is ready."));
+          writeOutput("");
+          writeOutput("Start Claude Code in this repository, then run:");
+          writeOutput("");
+          writeOutput(`  ${bold("/swamp-getting-started")}`);
+          writeOutput("");
+          writeOutput(
+            "Start with a task you already repeat. Claude will help you create, run,",
+          );
+          writeOutput("and inspect your first automation.");
         }
+
+        if (otherSteps.length > 0) {
+          if (hasClaude) writeOutput("");
+          for (const step of otherSteps) {
+            writeOutput(`  → ${step}`);
+          }
+        }
+
+        if (!hasClaude && otherSteps.length === 0) {
+          writeOutput(bold("What's next:"));
+          writeOutput(
+            "  → Run `swamp --help` to see available commands",
+          );
+        }
+
+        writeOutput("");
         writeOutput(
-          "  → Read the manual at https://swamp-club.com/manual",
+          `Learn more: ${dim("https://swamp-club.com/manual")}`,
         );
-        if (!this.isAuthenticated) {
+        if (!hasClaude && !this.isAuthenticated) {
           writeOutput(
             "  → Join & participate in the community: swamp auth login",
           );
