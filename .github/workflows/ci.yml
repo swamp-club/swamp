@@ -1071,6 +1071,9 @@ jobs:
           check_hash "ci-security-review prompt" '.configIntegrity.prompts."ci-security-review"' "verification/review-prompts/ci-security-review.md"
           check_hash "verify-build workflow" '.configIntegrity.workflows."verify-build"' "verification/workflow-verify-build.yaml"
           check_hash "verify-reviews workflow" '.configIntegrity.workflows."verify-reviews"' "verification/workflow-verify-reviews.yaml"
+          check_hash "verify-skills workflow" '.configIntegrity.workflows."verify-skills"' "verification/workflow-verify-skills.yaml"
+          check_hash "review-skills script" '.configIntegrity.scripts."review-skills"' "scripts/review_skills.ts"
+          check_hash "eval-skill-triggers config" '.configIntegrity.scripts."eval-skill-triggers"' "evals/promptfoo/package.json"
 
           # -- 6. Steps summary table --
           {

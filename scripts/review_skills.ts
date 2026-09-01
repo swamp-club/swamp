@@ -155,6 +155,14 @@ function buildSummaryTable(scores: SkillScore[], allPassed: boolean): string {
 }
 
 async function main(): Promise<void> {
+  if (!Deno.env.get("TESSL_TOKEN")) {
+    console.error(
+      "TESSL_TOKEN environment variable is not set. " +
+        "Add it to ~/.config/swamp/verify.env to run skill reviews.",
+    );
+    Deno.exit(1);
+  }
+
   const assets = new SkillAssets();
   const skillNames = assets.getSkillNames();
 

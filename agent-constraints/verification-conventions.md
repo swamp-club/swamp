@@ -70,17 +70,50 @@ The claude CLI authenticates via one of two methods:
 2. **claude.ai login** — if no env file exists, the CLI uses your existing
    claude.ai login. No additional setup needed.
 
+The skill verification workflow also needs:
+
+- **`TESSL_TOKEN`** — for `deno task review-skills` (calls `npx tessl`). Add it
+  to `verify.env`. If missing, skill review **fails** (exit 1) — an incomplete
+  verification is not a valid attestation.
+- **`ANTHROPIC_API_KEY`** — for `deno task eval-skill-triggers` (calls the
+  Anthropic API). Already available from `verify.env` or claude.ai login. If
+  missing, trigger evals are skipped gracefully (exit 0).
+
 To create the env file (optional):
 
 ```
-echo "ANTHROPIC_API_KEY=sk-ant-..." > ~/.config/swamp/verify.env
+cat > ~/.config/swamp/verify.env << 'EOF'
+ANTHROPIC_API_KEY=sk-ant-...
+TESSL_TOKEN=tsk-...
+EOF
 chmod 600 ~/.config/swamp/verify.env
 ```
 
-## Running Both in Parallel
+## Skill Verification (Host Workflow)
 
-The agent launches the build and review workflows simultaneously. Both must
-pass for verification to succeed.
+Skill checks run as a swamp workflow on the host, following the same worktree
+pattern as the build and review workflows. Isolation comes from a fresh
+`git worktree` at the verified commit in `/tmp/swamp-verify-skills-<run-id>`.
+
+```
+SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-skills \
+  --input commit=<SHA> \
+  --input branch=<branch>
+```
+
+The workflow detects changed files and guards both steps behind a skill-path
+filter (`.claude/skills/**`, `CLAUDE.md`, `scripts/review_skills.ts`,
+`evals/promptfoo/**`). When no skill files changed, both steps are skipped.
+
+| Step | Command | Env Var | Missing Behavior |
+| --- | --- | --- | --- |
+| skill-review | `deno task review-skills` | `TESSL_TOKEN` | **Fails** (exit 1) — must be configured |
+| skill-trigger-eval | `deno task eval-skill-triggers` | `ANTHROPIC_API_KEY` | Skipped (exit 0) if missing |
+
+## Running All Three in Parallel
+
+The agent launches the build, review, and skill workflows simultaneously. All
+three must pass for verification to succeed.
 
 After each workflow completes, present the commands to the user so they can
 inspect the attestations. Use `--input commit=<SHA>` to find the correct run
@@ -92,10 +125,13 @@ SWAMP_WORKFLOWS_DIR=verification swamp workflow history search \
   --workflow verify-build --input commit=<SHA> --json
 SWAMP_WORKFLOWS_DIR=verification swamp workflow history search \
   --workflow verify-reviews --input commit=<SHA> --json
+SWAMP_WORKFLOWS_DIR=verification swamp workflow history search \
+  --workflow verify-skills --input commit=<SHA> --json
 
 # 2. Get detailed step data (duration, status, data artifacts)
 SWAMP_WORKFLOWS_DIR=verification swamp workflow history get <build-run-id> --json
 SWAMP_WORKFLOWS_DIR=verification swamp workflow history get <reviews-run-id> --json
+SWAMP_WORKFLOWS_DIR=verification swamp workflow history get <skills-run-id> --json
 
 # 3. Read step output (e.g. review findings or build errors)
 SWAMP_WORKFLOWS_DIR=verification swamp data get \
@@ -104,9 +140,9 @@ SWAMP_WORKFLOWS_DIR=verification swamp data get \
 
 ## Verification Checklist
 
-After both workflows complete, the agent constructs a **combined verification
-checklist** from the two workflow run outputs and presents it to the user. This
-is the single view of everything that ran.
+After all three workflows complete, the agent constructs a **combined
+verification checklist** from the workflow run outputs and presents it to the
+user. This is the single view of everything that ran.
 
 ```
 Verification Checklist (commit <short-sha>)
@@ -138,8 +174,12 @@ Verification Checklist (commit <short-sha>)
 ○ CI Security Review
   ○ review           review-ci-security  —     skipped (no workflow changes)
 
-Gate: 8/8 passed, 3 skipped (guard)
-Total: 1m 45s
+✓ Skill Review
+  ✓ skill-review     skills-review      5.2s
+  ✓ skill-trigger-eval skills-trigger-eval 42.0s
+
+Gate: 10/10 passed, 3 skipped (guard)
+Total: 2m 15s
 ```
 
 To construct this checklist:
@@ -150,6 +190,8 @@ To construct this checklist:
      --workflow verify-build --input commit=<SHA> --json
    SWAMP_WORKFLOWS_DIR=verification swamp workflow history search \
      --workflow verify-reviews --input commit=<SHA> --json
+   SWAMP_WORKFLOWS_DIR=verification swamp workflow history search \
+     --workflow verify-skills --input commit=<SHA> --json
    ```
    The `--input commit=<SHA>` filter ensures you get the correct run when
    multiple verifications run in parallel across worktrees.
@@ -158,6 +200,7 @@ To construct this checklist:
    ```
    SWAMP_WORKFLOWS_DIR=verification swamp workflow history get <build-run-id> --json
    SWAMP_WORKFLOWS_DIR=verification swamp workflow history get <reviews-run-id> --json
+   SWAMP_WORKFLOWS_DIR=verification swamp workflow history get <skills-run-id> --json
    ```
    The `history get` output includes per-step `duration` (in ms) and status.
 
@@ -206,7 +249,12 @@ To construct this checklist:
        },
        "workflows": {
          "verify-build": "<sha256 of verification/workflow-verify-build.yaml>",
-         "verify-reviews": "<sha256 of verification/workflow-verify-reviews.yaml>"
+         "verify-reviews": "<sha256 of verification/workflow-verify-reviews.yaml>",
+         "verify-skills": "<sha256 of verification/workflow-verify-skills.yaml>"
+       },
+       "scripts": {
+         "review-skills": "<sha256 of scripts/review_skills.ts>",
+         "eval-skill-triggers": "<sha256 of evals/promptfoo/package.json>"
        }
      },
      "reviewConfig": {
@@ -238,33 +286,49 @@ To construct this checklist:
          "model": "review-ux",
          "status": "skipped",
          "reason": "guard: no UX changes"
+       },
+       {
+         "job": "skills",
+         "step": "skill-review",
+         "model": "skills-review",
+         "status": "succeeded",
+         "durationMs": 5200
+       },
+       {
+         "job": "skills",
+         "step": "skill-trigger-eval",
+         "model": "skills-trigger-eval",
+         "status": "succeeded",
+         "durationMs": 42000
        }
      ],
      "gate": {
        "allPassed": true,
-       "stepsCompleted": 8,
-       "stepsTotal": 11,
+       "stepsCompleted": 10,
+       "stepsTotal": 13,
        "stepsSkipped": 3
      },
      "timing": {
        "startedAt": "<ISO 8601>",
        "completedAt": "<ISO 8601>",
-       "totalDurationMs": 105000
+       "totalDurationMs": 135000
      },
      "runs": {
        "build": "<workflow-run-id>",
-       "reviews": "<workflow-run-id>"
+       "reviews": "<workflow-run-id>",
+       "skills": "<workflow-run-id>"
      }
    }
    ```
 
-   The `configIntegrity` section proves the review prompts, workflows, and
-   CLAUDE.md used match the versions at the verified commit. Anyone can
-   checkout that commit, hash the files, and verify they match. Compute
-   hashes with:
+   The `configIntegrity` section proves the review prompts, workflows, skill
+   scripts, and CLAUDE.md used match the versions at the verified commit.
+   Anyone can checkout that commit, hash the files, and verify they match.
+   Compute hashes with:
 
    ```bash
-   sha256sum CLAUDE.md verification/review-prompts/*.md verification/workflow-verify-*.yaml
+   sha256sum CLAUDE.md verification/review-prompts/*.md verification/workflow-verify-*.yaml \
+     scripts/review_skills.ts evals/promptfoo/package.json
    ```
 
 6. Present the checklist AND the workflow run file paths to the user so they
@@ -273,6 +337,7 @@ To construct this checklist:
    ```
    Build run:  .swamp/workflow-runs/<id>/workflow-run-<build-run-id>.yaml
    Review run: .swamp/workflow-runs/<id>/workflow-run-<review-run-id>.yaml
+   Skills run: .swamp/workflow-runs/<id>/workflow-run-<skills-run-id>.yaml
    ```
 
 7. Determine the overall result. **Only call `verification_passed` when
@@ -327,6 +392,10 @@ user what went wrong and what you're going to do:
   I'll address each finding and re-run verification."
 - **Compile errors**: "Compilation failed. I'll fix the build error and
   re-run."
+- **Skill review failures**: "Skill review scored below 90% threshold. I'll
+  update the skill and re-run verification."
+- **Skill trigger eval failures**: "Trigger eval pass rate below threshold.
+  I'll fix the trigger config and re-run verification."
 
 ### 2. Read the failure details
 
@@ -352,6 +421,12 @@ SWAMP_WORKFLOWS_DIR=verification swamp data get \
   --workflow verify-reviews --run <run-id> log --json
 ```
 
+For skill check output, query the skills workflow:
+```bash
+SWAMP_WORKFLOWS_DIR=verification swamp data get \
+  --workflow verify-skills --run <run-id> log --json
+```
+
 ### 3. Fix the issues
 
 - **Lint errors**: run `deno lint` locally, fix the flagged issues
@@ -362,6 +437,10 @@ SWAMP_WORKFLOWS_DIR=verification swamp data get \
 - **Compile errors**: fix the build issue, run `deno task compile` locally
 - **Review blocking findings**: read each finding, fix the code issue,
   explain to the user what was changed and why
+- **Skill review failures**: update the skill content to improve the review
+  score, run `deno run review-skills` locally to verify
+- **Skill trigger eval failures**: check trigger config in
+  `evals/promptfoo/`, run `deno run eval-skill-triggers` locally to verify
 
 ### 4. Re-run verification
 
@@ -375,13 +454,17 @@ SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-build \
 SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-reviews \
   --input commit=$(git rev-parse HEAD) \
   --input branch=$(git branch --show-current)
+
+SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-skills \
+  --input commit=$(git rev-parse HEAD) \
+  --input branch=$(git branch --show-current)
 ```
 
 ### 5. Repeat until green
 
-Repeat steps 1–4 until all build steps pass and all reviews return
-`VERDICT: pass`. Present the full verification checklist to the user after
-each run.
+Repeat steps 1–4 until all build steps pass, all reviews return
+`VERDICT: pass`, and all skill checks pass or are skipped. Present the full
+verification checklist to the user after each run.
 
 Do NOT open a PR until the user has seen a fully green checklist,
 confirmed they want to proceed, and the attestation has been posted to
