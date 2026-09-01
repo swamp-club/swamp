@@ -2259,7 +2259,7 @@ export const SwampAudit: Plugin = async ({ directory }) => {
 // Records bash tool invocations for the swamp audit timeline.
 // This is a managed file — it will be overwritten on swamp upgrade.
 
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 
 const pendingCommands = new Map();
 
@@ -2285,9 +2285,11 @@ export default function swampAudit(pi) {
         cwd: ctx.cwd || ".",
         session_id: ctx.sessionId,
       });
-      execFile("swamp", ["audit", "record", "--from-hook", "--tool", "pi"], {
-        input: payload,
+      const proc = spawn("swamp", ["audit", "record", "--from-hook", "--tool", "pi"], {
+        stdio: ["pipe", "ignore", "ignore"],
       });
+      proc.on("error", () => {});
+      proc.stdin.end(payload);
     } catch {
       // Must never throw — this is a hook
     }
