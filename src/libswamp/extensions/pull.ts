@@ -137,7 +137,7 @@ export interface InstallResult {
  * Context for the headless install function (internal, used by
  * extension_update, extensionInstall, and extensionPull).
  *
- * Per-type destination dirs (models/workflows/vaults/drivers/
+ * Per-type destination dirs (models/workflows/vaults/
  * datastores/reports) are deliberately NOT fields on this context —
  * `installExtension` derives them itself as
  * `.swamp/pulled-extensions/<ref.name>/<type>/` so filesystem state is
@@ -474,8 +474,6 @@ export async function detectConflicts(
   repoDir: string,
   vaultsDir?: string,
   vaultBundlesDir?: string,
-  driversDir?: string,
-  driverBundlesDir?: string,
   datastoresDir?: string,
   datastoreBundlesDir?: string,
   reportsDir?: string,
@@ -526,28 +524,6 @@ export async function detectConflicts(
     for (const file of await listFiles(vaultBundlesSrc)) {
       const relPath = relative(vaultBundlesSrc, file);
       const destPath = join(vaultBundlesDir, relPath);
-      if (await fileExists(destPath)) {
-        conflicts.push(relative(repoDir, destPath));
-      }
-    }
-  }
-
-  if (driversDir) {
-    const driversSrc = join(extractDir, "drivers");
-    for (const file of await listFiles(driversSrc)) {
-      const relPath = relative(driversSrc, file);
-      const destPath = join(driversDir, relPath);
-      if (await fileExists(destPath)) {
-        conflicts.push(relative(repoDir, destPath));
-      }
-    }
-  }
-
-  if (driverBundlesDir) {
-    const driverBundlesSrc = join(extractDir, "driver-bundles");
-    for (const file of await listFiles(driverBundlesSrc)) {
-      const relPath = relative(driverBundlesSrc, file);
-      const destPath = join(driverBundlesDir, relPath);
       if (await fileExists(destPath)) {
         conflicts.push(relative(repoDir, destPath));
       }
@@ -860,8 +836,6 @@ export async function installExtension(
     const vaultTsFiles = (await listFiles(join(extractDir, "vaults"))).filter(
       (f) => f.endsWith(".ts"),
     );
-    const driverTsFiles = (await listFiles(join(extractDir, "drivers")))
-      .filter((f) => f.endsWith(".ts"));
     const datastoreTsFiles = (
       await listFiles(join(extractDir, "datastores"))
     ).filter((f) => f.endsWith(".ts"));
@@ -871,7 +845,6 @@ export async function installExtension(
     const tsFiles = [
       ...modelTsFiles,
       ...vaultTsFiles,
-      ...driverTsFiles,
       ...datastoreTsFiles,
       ...reportTsFiles,
     ];
@@ -903,7 +876,6 @@ export async function installExtension(
     const absoluteModelsDir = join(absoluteExtRoot, "models");
     const absoluteWorkflowsDir = join(absoluteExtRoot, "workflows");
     const absoluteVaultsDir = join(absoluteExtRoot, "vaults");
-    const absoluteDriversDir = join(absoluteExtRoot, "drivers");
     const absoluteDatastoresDir = join(absoluteExtRoot, "datastores");
     const absoluteReportsDir = join(absoluteExtRoot, "reports");
     const absoluteFilesDir = join(absoluteExtRoot, "files");
@@ -917,10 +889,6 @@ export async function installExtension(
     const vaultBundlesDir = join(
       swampPath(repoDir, "vault-bundles"),
       bundleNamespace(absoluteVaultsDir, repoDir),
-    );
-    const driverBundlesDir = join(
-      swampPath(repoDir, "driver-bundles"),
-      bundleNamespace(absoluteDriversDir, repoDir),
     );
     const datastoreBundlesDir = join(
       swampPath(repoDir, "datastore-bundles"),
@@ -939,8 +907,6 @@ export async function installExtension(
       repoDir,
       absoluteVaultsDir,
       vaultBundlesDir,
-      absoluteDriversDir,
-      driverBundlesDir,
       absoluteDatastoresDir,
       datastoreBundlesDir,
       absoluteReportsDir,
@@ -993,22 +959,6 @@ export async function installExtension(
       repoDir,
     );
     extractedFiles.push(...vaultBundlesExtracted);
-
-    await Deno.mkdir(absoluteDriversDir, { recursive: true });
-    const driversExtracted = await copyDir(
-      join(extractDir, "drivers"),
-      absoluteDriversDir,
-      repoDir,
-    );
-    extractedFiles.push(...driversExtracted);
-
-    await Deno.mkdir(driverBundlesDir, { recursive: true });
-    const driverBundlesExtracted = await copyDir(
-      join(extractDir, "driver-bundles"),
-      driverBundlesDir,
-      repoDir,
-    );
-    extractedFiles.push(...driverBundlesExtracted);
 
     await Deno.mkdir(absoluteDatastoresDir, { recursive: true });
     const datastoresExtracted = await copyDir(
@@ -1120,7 +1070,6 @@ export async function installExtension(
     const missingSourceFiles = await validateSourceCompleteness(
       absoluteModelsDir,
       absoluteVaultsDir,
-      absoluteDriversDir,
       absoluteDatastoresDir,
       absoluteReportsDir,
     );

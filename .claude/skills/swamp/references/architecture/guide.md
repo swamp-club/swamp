@@ -28,10 +28,10 @@ What does the user need?
 │   └── Report — see design/enablers/reports.md
 │       └── Runs automatically after method executions and workflow steps
 │
-├── Add new capabilities (model types, vault backends, datastores, drivers)
+├── Add new capabilities (model types, vault backends, datastores)
 │   └── Extension — see design/primitives/extensions.md
-│       └── Determine which of the 5 extension types fits:
-│           model | vault | driver | datastore | report
+│       └── Determine which of the 4 extension types fits:
+│           model | vault | datastore | report
 │
 ├── Store and retrieve secrets (API keys, tokens, credentials)
 │   └── Vault — see design/primitives/vaults.md
@@ -53,7 +53,7 @@ examples, see
 | **Model**     | You need a 1:1 representation of an external resource with typed methods (create, sync, destroy)           | You need to chain multiple actions — use a workflow instead                |
 | **Workflow**  | You need to orchestrate multiple model methods in a DAG with dependencies, conditions, and parallelism     | It's a single action on a single resource — a model method is enough       |
 | **Report**    | You need repeatable analysis of method or workflow output (summaries, drift detection, compliance reports) | You need to take action — reports analyze, they don't mutate               |
-| **Extension** | No existing type covers the service/API you want to automate, or you need a custom vault/datastore/driver  | An existing extension or `command/shell` already covers it                 |
+| **Extension** | No existing type covers the service/API you want to automate, or you need a custom vault/datastore         | An existing extension or `command/shell` already covers it                 |
 | **Vault**     | You need to store and retrieve secrets that model definitions reference at runtime                         | The values aren't sensitive — use model global arguments or inputs instead |
 | **Data**      | You need to query, compare versions, or inspect runtime state produced by method runs                      | You need to define or configure — data is output, not input                |
 

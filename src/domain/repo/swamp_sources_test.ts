@@ -116,7 +116,7 @@ Deno.test("isGlobPattern: detects glob characters", () => {
 });
 
 Deno.test("EXTENSION_EXPORT_NAMES: covers every non-workflow kind", () => {
-  const expected = ["models", "vaults", "drivers", "datastores", "reports"];
+  const expected = ["models", "vaults", "datastores", "reports"];
   assertEquals(Object.keys(EXTENSION_EXPORT_NAMES).sort(), expected.sort());
 });
 
@@ -138,13 +138,6 @@ Deno.test("detectKindFromSource: detects vault export", () => {
   assertEquals(
     detectKindFromSource(`export const vault = { type: "a/b" };`),
     "vaults",
-  );
-});
-
-Deno.test("detectKindFromSource: detects driver export", () => {
-  assertEquals(
-    detectKindFromSource(`export const driver = { type: "a/b" };`),
-    "drivers",
   );
 });
 

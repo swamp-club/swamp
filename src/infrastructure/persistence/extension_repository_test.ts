@@ -536,7 +536,7 @@ Deno.test("ExtensionRepository: lockfile fallback orphan-DELETEs a pulled row wh
 // ===== Test #10: cold-start guard parity over all 5 kinds =====
 Deno.test("ExtensionRepository: invalidationGuards parity over all 5 kinds × 4 triggers", () => {
   withRepository((repo, cat) => {
-    const kinds = ["model", "vault", "driver", "datastore", "report"] as const;
+    const kinds = ["model", "vault", "datastore", "report"] as const;
     const layoutVersion = "per-extension-aggregate-v3";
     const dsBase = "/some/base/path";
     const fingerprint = "fp-A";

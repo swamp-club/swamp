@@ -23,7 +23,6 @@ import type {
   ExtensionContentMetadata,
   ExtractedArgument,
   ExtractedDatastore,
-  ExtractedDriver,
   ExtractedExtension,
   ExtractedFile,
   ExtractedMethod,
@@ -51,8 +50,6 @@ export async function extractContentMetadata(
   workflowFiles: Array<{ sourcePath: string; archiveName: string }>,
   vaultFiles: string[] = [],
   vaultsDir = "",
-  driverFiles: string[] = [],
-  driversDir = "",
   datastoreFiles: string[] = [],
   datastoresDir = "",
   reportFiles: string[] = [],
@@ -62,7 +59,6 @@ export async function extractContentMetadata(
   const extensions: ExtractedExtension[] = [];
   const workflows: ExtractedWorkflow[] = [];
   const vaults: ExtractedVault[] = [];
-  const drivers: ExtractedDriver[] = [];
   const datastores: ExtractedDatastore[] = [];
   const reports: ExtractedReport[] = [];
 
@@ -107,18 +103,6 @@ export async function extractContentMetadata(
     }
   }
 
-  for (const filePath of driverFiles) {
-    try {
-      const content = await Deno.readTextFile(filePath);
-      const driver = extractDriverFromSource(content, filePath, driversDir);
-      if (driver) {
-        drivers.push(driver);
-      }
-    } catch {
-      // Non-fatal: skip files that can't be read or parsed
-    }
-  }
-
   for (const filePath of datastoreFiles) {
     try {
       const content = await Deno.readTextFile(filePath);
@@ -152,7 +136,6 @@ export async function extractContentMetadata(
     extensions,
     workflows,
     vaults,
-    drivers,
     datastores,
     reports,
     skills: [],
@@ -871,76 +854,6 @@ function extractWorkflowFromYaml(
   }
 
   return { fileName, id, name, description, jobs };
-}
-
-/**
- * Extracts driver metadata from a TypeScript source file.
- * Returns null if the file doesn't contain a recognizable driver definition.
- * Uses `createDriver` as the discriminator.
- */
-function extractDriverFromSource(
-  content: string,
-  filePath: string,
-  driversDir: string,
-): ExtractedDriver | null {
-  if (!/createDriver/.test(content)) return null;
-
-  const driverMatch = content.match(/export\s+const\s+driver\s*=\s*\{/);
-  if (!driverMatch || driverMatch.index === undefined) return null;
-
-  const driverStart = driverMatch.index + driverMatch[0].length;
-  const driverBody = extractBalancedBraces(content, driverStart);
-  if (!driverBody) return null;
-
-  const typeMatch = driverBody.match(/type:\s*["']([^"']+)["']/);
-  if (!typeMatch) return null;
-
-  const nameMatch = driverBody.match(/(?<![.\w])name:\s*["']([^"']+)["']/);
-  const descMatch = driverBody.match(
-    /(?<![.\w])description:\s*(?:"([^"]*?)"|'([^']*?)')/,
-  );
-  const hasConfigSchema = /configSchema\s*[:,}]/.test(driverBody);
-
-  let configFields: ExtractedArgument[] = [];
-  const configInline = driverBody.match(/configSchema:\s*z\.object\(\s*\{/);
-  if (configInline && configInline.index !== undefined) {
-    const start = configInline.index + configInline[0].length;
-    const schemaBody = extractBalancedBraces(driverBody, start);
-    if (schemaBody) {
-      configFields = parseZodObjectFields(schemaBody);
-    }
-  } else if (hasConfigSchema) {
-    // Check for named schema reference: configSchema: SomeName
-    const configRef = driverBody.match(/configSchema:\s*(\w+)/);
-    // Also check shorthand property: configSchema,
-    const shorthandRef = !configRef
-      ? driverBody.match(/configSchema\s*[,\n}]/)
-      : null;
-    const schemaName = configRef?.[1] ??
-      (shorthandRef ? "configSchema" : null);
-    if (schemaName && schemaName !== "z") {
-      const namedPattern = new RegExp(
-        `(?:const|let)\\s+${schemaName}\\s*=\\s*z\\.object\\(\\s*\\{`,
-      );
-      const namedMatch = content.match(namedPattern);
-      if (namedMatch && namedMatch.index !== undefined) {
-        const start = namedMatch.index + namedMatch[0].length;
-        const schemaBody = extractBalancedBraces(content, start);
-        if (schemaBody) {
-          configFields = parseZodObjectFields(schemaBody);
-        }
-      }
-    }
-  }
-
-  return {
-    fileName: relative(driversDir, filePath),
-    type: typeMatch[1],
-    name: nameMatch ? nameMatch[1] : "",
-    description: descMatch ? (descMatch[1] ?? descMatch[2] ?? "") : "",
-    hasConfigSchema,
-    configFields,
-  };
 }
 
 /**

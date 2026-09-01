@@ -39,7 +39,7 @@ Route to the right guide based on what the user needs.
 | Vaults — create, store/read secrets, expressions             | [references/vault/guide.md](references/vault/guide.md)                         |
 | Reports — run, configure, view, filter                       | [references/report/guide.md](references/report/guide.md)                       |
 | Repository — init, upgrade, datastores, sources              | [references/repo/guide.md](references/repo/guide.md)                           |
-| Extensions — create models/vaults/drivers/datastores/reports | [references/extension/guide.md](references/extension/guide.md)                 |
+| Extensions — create models/vaults/datastores/reports         | [references/extension/guide.md](references/extension/guide.md)                 |
 | Publishing — push extensions to registry, deprecate          | [references/extension-publish/guide.md](references/extension-publish/guide.md) |
 | Issues — file bugs, features, security reports               | [references/issue/guide.md](references/issue/guide.md)                         |
 | Run tracking — active runs, stale detection, diagnostics     | [references/model/guide.md](references/model/guide.md)                         |

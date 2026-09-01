@@ -123,7 +123,7 @@ export const extensionUpdateCommand = withRemoteOptions(
   );
   const { lockfilePath } = resolveManagedConfigPaths(repoDir, marker);
 
-  // Per-extension models/workflows/vaults/drivers/datastores/reports
+  // Per-extension models/workflows/vaults/datastores/reports
   // destinations are derived inside installExtension from the
   // extension's scoped name. Only skillsDir is tool-dependent.
   const tools = marker?.tools?.length ? marker.tools : ["claude"];

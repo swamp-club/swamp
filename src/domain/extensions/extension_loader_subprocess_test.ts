@@ -29,7 +29,6 @@ import {
 const EXTENSION_KINDS: Array<{ kind: string; exportKey: string }> = [
   { kind: "model", exportKey: "model" },
   { kind: "vault", exportKey: "vault" },
-  { kind: "driver", exportKey: "driver" },
   { kind: "datastore", exportKey: "datastore" },
   { kind: "report", exportKey: "report" },
 ];

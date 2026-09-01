@@ -159,9 +159,6 @@ async function readSourceMarker(
         ? obj.workflowsDir
         : undefined,
       vaultsDir: typeof obj.vaultsDir === "string" ? obj.vaultsDir : undefined,
-      driversDir: typeof obj.driversDir === "string"
-        ? obj.driversDir
-        : undefined,
       datastoresDir: typeof obj.datastoresDir === "string"
         ? obj.datastoresDir
         : undefined,
@@ -480,8 +477,6 @@ function resolveKindDir(
       return marker?.modelsDir ?? "extensions/models";
     case "vaults":
       return marker?.vaultsDir ?? "extensions/vaults";
-    case "drivers":
-      return marker?.driversDir ?? "extensions/drivers";
     case "datastores":
       return marker?.datastoresDir ?? "extensions/datastores";
     case "reports":
@@ -502,9 +497,6 @@ function setKindDir(
       break;
     case "vaults":
       resolved.vaultsDir = dir;
-      break;
-    case "drivers":
-      resolved.driversDir = dir;
       break;
     case "datastores":
       resolved.datastoresDir = dir;
@@ -527,8 +519,6 @@ function getKindDir(
       return resolved.modelsDir;
     case "vaults":
       return resolved.vaultsDir;
-    case "drivers":
-      return resolved.driversDir;
     case "datastores":
       return resolved.datastoresDir;
     case "reports":

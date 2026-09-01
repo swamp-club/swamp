@@ -300,7 +300,6 @@ export class ExtensionApiClient {
         extensions: detail.extensions ?? [],
         workflows: detail.workflows ?? [],
         vaults: detail.vaults ?? [],
-        drivers: detail.drivers ?? [],
         datastores: detail.datastores ?? [],
         reports: detail.reports ?? [],
         skills: detail.skills ?? [],

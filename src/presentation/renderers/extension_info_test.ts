@@ -118,7 +118,6 @@ const sampleContentMetadata: ExtensionContentMetadata = {
   extensions: [],
   workflows: [],
   vaults: [],
-  drivers: [],
   datastores: [],
   reports: [],
   skills: [],

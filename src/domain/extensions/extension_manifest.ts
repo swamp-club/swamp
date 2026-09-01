@@ -19,8 +19,11 @@
 
 import { z } from "zod";
 import { parse as parseYaml } from "@std/yaml";
+import { getLogger } from "@logtape/logtape";
 import { CalVer } from "../models/calver.ts";
 import { UserError } from "../errors.ts";
+
+const logger = getLogger(["swamp", "extensions", "manifest"]);
 
 /** Scoped name pattern: @collective/name or @collective/name/subname/... */
 const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
@@ -45,7 +48,7 @@ const safePathString = z.string().refine(isSafeRelativePath, {
 
 /**
  * Path resolution base. Selects the directory typed-key entries
- * (`models`, `vaults`, `drivers`, `datastores`, `reports`, `include`)
+ * (`models`, `vaults`, `datastores`, `reports`, `include`)
  * and `additionalFiles` resolve against during push, and the directory
  * the archive layout mirrors via `relative(base, file)`.
  *
@@ -123,13 +126,12 @@ const ExtensionManifestSchemaV1 = z.object({
     (data.models && data.models.length > 0) ||
     (data.workflows && data.workflows.length > 0) ||
     (data.vaults && data.vaults.length > 0) ||
-    (data.drivers && data.drivers.length > 0) ||
     (data.datastores && data.datastores.length > 0) ||
     (data.reports && data.reports.length > 0) ||
     (data.skills && data.skills.length > 0),
   {
     message:
-      "Extension must include at least one model, workflow, vault, driver, datastore, report, or skill",
+      "Extension must include at least one model, workflow, vault, datastore, report, or skill",
   },
 );
 
@@ -144,7 +146,6 @@ export interface ExtensionManifest {
   workflows: string[];
   models: string[];
   vaults: string[];
-  drivers: string[];
   datastores: string[];
   reports: string[];
   skills: string[];
@@ -196,6 +197,11 @@ export function parseExtensionManifest(content: string): ExtensionManifest {
     );
   }
 
+  if (result.data.drivers && result.data.drivers.length > 0) {
+    logger
+      .warn`The 'drivers' field in extension manifests is deprecated and will be removed in a future version. Driver entries are ignored.`;
+  }
+
   return {
     manifestVersion: result.data.manifestVersion,
     name: result.data.name,
@@ -206,7 +212,6 @@ export function parseExtensionManifest(content: string): ExtensionManifest {
     workflows: result.data.workflows ?? [],
     models: result.data.models ?? [],
     vaults: result.data.vaults ?? [],
-    drivers: result.data.drivers ?? [],
     datastores: result.data.datastores ?? [],
     reports: result.data.reports ?? [],
     skills: result.data.skills ?? [],

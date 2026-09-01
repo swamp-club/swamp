@@ -445,7 +445,6 @@ Deno.test("auto_resolver_adapters: inspectInstallation ignores absent bundle art
     const bundleRels = [
       ".swamp/bundles/abc123/x.js",
       ".swamp/vault-bundles/abc123/v.js",
-      ".swamp/driver-bundles/abc123/d.js",
       ".swamp/datastore-bundles/abc123/ds.js",
       ".swamp/report-bundles/abc123/r.js",
     ];

@@ -168,7 +168,7 @@ export async function* sourceAdd(
             `No extensions found under glob '${path}'. ` +
               `All ${cachedExpansions.length} matched path(s) lack either ` +
               `'extensions/<kind>/' subdirectories or files declaring ` +
-              `extension exports (model, vault, driver, datastore, ` +
+              `extension exports (model, vault, datastore, ` +
               `report, or workflow). Check the target paths or remove ` +
               `the source.`,
           ),
@@ -184,7 +184,7 @@ export async function* sourceAdd(
           `No extensions found at '${path}'. ` +
             `Expected either 'extensions/<kind>/' subdirectories (where ` +
             `<kind> is one of ${probed.join(", ")}) OR files declaring ` +
-            `extension exports (model, vault, driver, datastore, report) ` +
+            `extension exports (model, vault, datastore, report) ` +
             `or workflow YAML directly in the path.`,
         ),
       };

@@ -248,7 +248,7 @@ Datastore-tier layout, default root `.swamp/`
 (`src/infrastructure/persistence/paths.ts` `SWAMP_SUBDIRS`, which also names
 `definitions`, `definitions-evaluated`, `workflows`, `workflows-evaluated`,
 `vault`, `secrets`, `telemetry`, `logs`, `files`, `bundles`, `vault-bundles`,
-`driver-bundles`, `datastore-bundles`, `report-bundles`, `auto-definitions`,
+`datastore-bundles`, `report-bundles`, `auto-definitions`,
 `audit`, `pulled-extensions/*` and the legacy `inputs`, `inputs-evaluated`,
 `resources`;
 [repo.md §Directory Structure](../surfaces/repo.md#directory-structure)):

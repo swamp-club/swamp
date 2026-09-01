@@ -520,8 +520,8 @@ Deno.test(
 // swamp-club#383: empty per-extension scaffold dirs left behind
 // =============================================================
 //
-// `pull` unconditionally `Deno.mkdir`s seven per-extension scaffold
-// dirs (`models`, `workflows`, `vaults`, `drivers`, `datastores`,
+// `pull` unconditionally `Deno.mkdir`s per-extension scaffold
+// dirs (`models`, `workflows`, `vaults`, `datastores`,
 // `reports`, `files`) regardless of whether the extension ships
 // content for that kind. These dirs are never recorded in the
 // lockfile's tracked-file list. Pre-fix, `pruneEmptyDirs`'s upward
@@ -529,12 +529,12 @@ Deno.test(
 // because the un-tracked scaffolds made it appear non-empty —
 // leaving the entire per-extension subtree on disk after rm.
 //
-// The fix has RemoveExtensionService push the seven scaffold paths
+// The fix has RemoveExtensionService push the scaffold paths
 // into parentDirs so pruneEmptyDirs sweeps them too. These tests
 // pin (a) the canonical case, (b) sibling-extension safety, and
 // (c) flat (non-scoped) name handling.
 //
-// Tests intentionally hardcode the seven scaffold names rather than
+// Tests intentionally hardcode the scaffold names rather than
 // importing PER_EXTENSION_SCAFFOLD_DIRS from production — a silent
 // shrinkage of that constant must show up as a regression here.
 
@@ -544,7 +544,6 @@ async function stageScaffoldDirs(extRoot: string): Promise<void> {
       "models",
       "workflows",
       "vaults",
-      "drivers",
       "datastores",
       "reports",
       "files",
@@ -779,8 +778,8 @@ Deno.test(
 // swamp-club#392: empty <kind>-bundles/<hash>/ dirs left behind
 // =============================================================
 //
-// `pull` unconditionally `Deno.mkdir`s five bundle namespace dirs
-// (`bundles/<hash>/`, `vault-bundles/<hash>/`, `driver-bundles/<hash>/`,
+// `pull` unconditionally `Deno.mkdir`s bundle namespace dirs
+// (`bundles/<hash>/`, `vault-bundles/<hash>/`,
 // `datastore-bundles/<hash>/`, `report-bundles/<hash>/`) regardless of
 // whether the extension ships content for that bundle kind. When the
 // source archive has no bundles for a kind, `copyDir` returns an empty
@@ -788,14 +787,13 @@ Deno.test(
 // these bundle namespace paths into `parentDirs` so `pruneEmptyDirs`
 // sweeps them.
 //
-// Tests intentionally hardcode the five (sourceKind, bundleKind) pairs
+// Tests intentionally hardcode the (sourceKind, bundleKind) pairs
 // rather than importing from production — a silent change to the
 // mapping must show up as a regression here.
 
 const BUNDLE_MAPPINGS: ReadonlyArray<[string, string]> = [
   ["models", "bundles"],
   ["vaults", "vault-bundles"],
-  ["drivers", "driver-bundles"],
   ["datastores", "datastore-bundles"],
   ["reports", "report-bundles"],
 ];
@@ -992,7 +990,7 @@ Deno.test(
           "Post-rm: bundles/<hash>/ must be pruned after tracked file deleted",
         );
 
-        // The four empty bundle namespace dirs (vault-, driver-,
+        // The empty bundle namespace dirs (vault-,
         // datastore-, report-) must also be pruned.
         for (
           const [sourceKind, bundleKind] of BUNDLE_MAPPINGS.filter(

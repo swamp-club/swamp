@@ -261,13 +261,12 @@ stdin item.
 
 **Options:**
 
-| Flag                | Description                                                        |
-| ------------------- | ------------------------------------------------------------------ |
-| `--input <value>`   | Input values (key=value repeatable, or JSON)                       |
-| `--input-file <f>`  | Input values from YAML file (cannot combine with `--stdin`)        |
-| `--stdin`           | Read inputs from stdin (piped data)                                |
-| `--last-evaluated`  | Use previously evaluated workflow (skip eval and input validation) |
-| `--driver <driver>` | Override execution driver for all steps (e.g. `raw`, `docker`)     |
+| Flag               | Description                                                        |
+| ------------------ | ------------------------------------------------------------------ |
+| `--input <value>`  | Input values (key=value repeatable, or JSON)                       |
+| `--input-file <f>` | Input values from YAML file (cannot combine with `--stdin`)        |
+| `--stdin`          | Read inputs from stdin (piped data)                                |
+| `--last-evaluated` | Use previously evaluated workflow (skip eval and input validation) |
 
 **Output shape:**
 

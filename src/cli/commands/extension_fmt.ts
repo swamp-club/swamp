@@ -86,7 +86,6 @@ export const extensionFmtCommand = new Command()
     const {
       allModelFiles,
       allVaultFiles,
-      allDriverFiles,
       allDatastoreFiles,
       allReportFiles,
       additionalFilePaths,
@@ -102,7 +101,6 @@ export const extensionFmtCommand = new Command()
     const allFiles = [
       ...allModelFiles,
       ...allVaultFiles,
-      ...allDriverFiles,
       ...allDatastoreFiles,
       ...allReportFiles,
       ...additionalFilePaths,

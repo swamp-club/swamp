@@ -74,8 +74,6 @@ export const SWAMP_SUBDIRS = {
   bundles: "bundles",
   /** Cached vault extension bundles */
   vaultBundles: "vault-bundles",
-  /** Cached driver extension bundles */
-  driverBundles: "driver-bundles",
   /** Cached datastore extension bundles */
   datastoreBundles: "datastore-bundles",
   /** Cached report extension bundles */
@@ -92,8 +90,6 @@ export const SWAMP_SUBDIRS = {
   pulledVaults: "pulled-extensions/vaults",
   /** Pulled extension source: workflows */
   pulledWorkflows: "pulled-extensions/workflows",
-  /** Pulled extension source: drivers */
-  pulledDrivers: "pulled-extensions/drivers",
   /** Pulled extension source: datastores */
   pulledDatastores: "pulled-extensions/datastores",
   /** Pulled extension source: reports */

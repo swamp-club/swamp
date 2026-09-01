@@ -83,7 +83,6 @@ export type ExtensionKind =
   | "model"
   | "extension"
   | "vault"
-  | "driver"
   | "datastore"
   | "report";
 
@@ -115,7 +114,7 @@ export interface ExtensionTypeRow {
    * sha-256 fingerprint over the entry point + transitive local imports.
    * Models loader uses this for freshness (issue #125 — mtime-only was
    * fragile under atomic-rename saves and mtime-preserving sync tools).
-   * Optional while the sibling loaders (reports, drivers, datastores,
+   * Optional while the sibling loaders (reports, datastores,
    * vaults) still use mtime; they can omit it on upsert and the store
    * coerces to "". Old catalog rows default to "" via the migration.
    */

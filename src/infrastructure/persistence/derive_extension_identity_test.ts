@@ -50,7 +50,6 @@ Deno.test("deriveExtensionIdentity: pulled extension with non-models kind", () =
   for (
     const kind of [
       "vaults",
-      "drivers",
       "datastores",
       "reports",
       "workflows",
@@ -186,7 +185,7 @@ Deno.test("deriveExtensionIdentity: path under `extensions-archive/` does NOT ma
 });
 
 Deno.test("deriveExtensionIdentity: `/extensions/<unknown-kind>/` does NOT match (kind must be a known kind)", () => {
-  // Only the 7 known kind names ('models', 'vaults', 'drivers',
+  // Only the 6 known kind names ('models', 'vaults',
   // 'datastores', 'reports', 'workflows', 'skills') count. A
   // hypothetical `extensions/widgets/` would not match.
   assertEquals(

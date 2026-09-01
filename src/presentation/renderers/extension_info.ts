@@ -88,14 +88,6 @@ function renderContentMetadata(
     }
   }
 
-  if (meta.drivers.length > 0) {
-    logger.info``;
-    logger.info`Drivers (${meta.drivers.length}):`;
-    for (const drv of meta.drivers) {
-      logger.info`  ${drv.type} — ${drv.description || drv.name}`;
-    }
-  }
-
   if (meta.reports.length > 0) {
     logger.info``;
     logger.info`Reports (${meta.reports.length}):`;

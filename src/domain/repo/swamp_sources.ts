@@ -27,7 +27,6 @@ import { UserError } from "../errors.ts";
 export type ExtensionKind =
   | "models"
   | "vaults"
-  | "drivers"
   | "datastores"
   | "reports"
   | "workflows";
@@ -35,7 +34,6 @@ export type ExtensionKind =
 export const EXTENSION_KINDS: readonly ExtensionKind[] = [
   "models",
   "vaults",
-  "drivers",
   "datastores",
   "reports",
   "workflows",
@@ -70,7 +68,6 @@ export interface ResolvedSourceDirs {
   sourcePath: string;
   modelsDir?: string;
   vaultsDir?: string;
-  driversDir?: string;
   datastoresDir?: string;
   reportsDir?: string;
   workflowsDir?: string;
@@ -79,7 +76,6 @@ export interface ResolvedSourceDirs {
 const ExtensionKindSchema = z.enum([
   "models",
   "vaults",
-  "drivers",
   "datastores",
   "reports",
   "workflows",
@@ -158,7 +154,6 @@ export const EXTENSION_EXPORT_NAMES: Record<
 > = {
   models: ["model", "extension"],
   vaults: ["vault"],
-  drivers: ["driver"],
   datastores: ["datastore"],
   reports: ["report"],
 } as const;

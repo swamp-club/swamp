@@ -69,7 +69,6 @@ const logger = getLogger(["swamp", "extensions", "auto-resolver"]);
 const BUNDLE_ARTIFACT_PREFIXES: readonly string[] = [
   SWAMP_SUBDIRS.bundles,
   SWAMP_SUBDIRS.vaultBundles,
-  SWAMP_SUBDIRS.driverBundles,
   SWAMP_SUBDIRS.datastoreBundles,
   SWAMP_SUBDIRS.reportBundles,
 ].map((subdir) => `.swamp/${subdir}/`);
@@ -146,7 +145,7 @@ export function createAutoResolveInstallerAdapter(
       //   "never overwrite" guard applies.
       //
       // Bundle artifacts under .swamp/{bundles,vault-bundles,
-      // driver-bundles,datastore-bundles,report-bundles}/ are excluded
+      // datastore-bundles,report-bundles}/ are excluded
       // from the truncation check because they are regenerable build
       // output, not source. Clearing the bundle cache (a normal hygiene
       // operation) must not flip the inspection to truncated and steal

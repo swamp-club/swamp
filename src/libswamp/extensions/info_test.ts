@@ -90,7 +90,6 @@ function makeVersionDetail(
       extensions: [],
       workflows: [],
       vaults: [],
-      drivers: [],
       datastores: [],
       reports: [],
       skills: [],

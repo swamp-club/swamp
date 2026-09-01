@@ -79,7 +79,7 @@ export const extensionSearchCommand = withRemoteOptions(
     .option("--label <label:string>", "Filter by label", { collect: true })
     .option(
       "--content-type <contentType:string>",
-      "Filter by content type (models, workflows, vaults, datastores, drivers, reports)",
+      "Filter by content type (models, workflows, vaults, datastores, reports)",
       { collect: true },
     )
     .option(
@@ -130,7 +130,6 @@ export const extensionSearchCommand = withRemoteOptions(
     "workflows",
     "vaults",
     "datastores",
-    "drivers",
     "reports",
   ];
   for (const ct of options.contentType ?? []) {

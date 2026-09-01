@@ -50,7 +50,6 @@ Deno.test("extension search: invalid content type throws UserError", () => {
     "workflows",
     "vaults",
     "datastores",
-    "drivers",
   ];
   const contentType = ["invalid"];
   const error = assertThrows(
@@ -77,7 +76,6 @@ Deno.test("extension search: valid content type values are accepted", () => {
     "workflows",
     "vaults",
     "datastores",
-    "drivers",
   ];
   const contentType = ["models", "workflows"];
   // Should not throw

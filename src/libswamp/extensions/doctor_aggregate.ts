@@ -79,7 +79,6 @@ export interface DoctorAggregateReport {
 const BUNDLE_DIR_NAMES: readonly string[] = [
   SWAMP_SUBDIRS.bundles,
   SWAMP_SUBDIRS.vaultBundles,
-  SWAMP_SUBDIRS.driverBundles,
   SWAMP_SUBDIRS.datastoreBundles,
   SWAMP_SUBDIRS.reportBundles,
 ];

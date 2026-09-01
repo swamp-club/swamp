@@ -29,7 +29,6 @@ export type DuplicateTypeKind =
   | "model"
   | "extension"
   | "vault"
-  | "driver"
   | "datastore"
   | "report";
 

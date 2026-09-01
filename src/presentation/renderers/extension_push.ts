@@ -114,20 +114,6 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
         }
       }
     }
-    if (data.drivers.length > 0) {
-      this.logger.info`Drivers (${data.drivers.length}):`;
-      for (const d of data.drivers) {
-        const nameLabel = d.name ? ` - ${d.name}` : "";
-        this.logger.info`  ${d.type}${nameLabel} (${d.fileName})`;
-        if (d.configFields && d.configFields.length > 0) {
-          this.logger.info`    Config Fields:`;
-          for (const field of d.configFields) {
-            const opt = field.required ? "" : " (optional)";
-            this.logger.info`      ${field.name}: ${field.type}${opt}`;
-          }
-        }
-      }
-    }
     if (data.datastores.length > 0) {
       this.logger.info`Datastores (${data.datastores.length}):`;
       for (const d of data.datastores) {
@@ -302,9 +288,6 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
           `Workflows: ${e.data.workflowCount}`,
           `Vaults: ${e.data.vaultCount}`,
         ];
-        if (e.data.driverCount > 0) {
-          parts.push(`Drivers: ${e.data.driverCount}`);
-        }
         if (e.data.datastoreCount > 0) {
           parts.push(`Datastores: ${e.data.datastoreCount}`);
         }

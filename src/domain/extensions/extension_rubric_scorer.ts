@@ -87,7 +87,6 @@ const VERIFIED_REPO_HOSTS: ReadonlySet<string> = new Set([
 /** Entrypoint-bearing manifest fields the analyzer runs `deno doc` against. */
 const ENTRYPOINT_FIELDS = [
   "models",
-  "drivers",
   "vaults",
   "datastores",
   "reports",

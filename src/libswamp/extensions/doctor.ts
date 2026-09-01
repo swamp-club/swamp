@@ -29,11 +29,10 @@ import { extractTopLevelRootMulti } from "./layout.ts";
 
 /**
  * Public registry name for the doctor report. The infrastructure-layer
- * `ExtensionKind` enum carries extra values (`extension`, plus the
- * legacy `driver` rows) but only four user-facing registries exist —
- * `extension` is a sub-kind of the model loader (it indicates a user
- * extension extending an existing model type) and folds into the
- * `model` row in this report.
+ * `ExtensionKind` enum carries extra values (`extension`) but only
+ * four user-facing registries exist — `extension` is a sub-kind of
+ * the model loader (it indicates a user extension extending an
+ * existing model type) and folds into the `model` row in this report.
  */
 export type DoctorRegistryName =
   | "model"
