@@ -196,16 +196,73 @@ function formatUserModelError(error: z.ZodError): string {
   }
 
   const methodArgsIssue = issues.find(
-    (i) => i.path[0] === "methods" && String(i.path[2]) === "arguments",
+    (i) =>
+      i.path[0] === "methods" && i.path.length >= 3 &&
+      String(i.path[i.path.length - 1]) === "arguments",
   );
   if (methodArgsIssue) {
+    const methodName = String(
+      methodArgsIssue.path[methodArgsIssue.path.length - 2],
+    );
     return (
-      "Missing or invalid 'arguments' on method definition. " +
+      `Missing or invalid 'arguments' on method '${methodName}'. ` +
       "Add a Zod schema to validate method arguments.\n\n" +
       "Example:\n" +
       "  arguments: z.object({\n" +
       '    name: z.string().describe("Resource name"),\n' +
       "  }),"
+    );
+  }
+
+  const methodExecuteIssue = issues.find(
+    (i) =>
+      i.path[0] === "methods" && i.path.length >= 3 &&
+      String(i.path[i.path.length - 1]) === "execute",
+  );
+  if (methodExecuteIssue) {
+    const methodName = String(
+      methodExecuteIssue.path[methodExecuteIssue.path.length - 2],
+    );
+    return (
+      `Missing or invalid 'execute' on method '${methodName}'. ` +
+      "'execute' must be an async function.\n\n" +
+      "Example:\n" +
+      "  execute: async (args, context) => {\n" +
+      "    // Your logic here\n" +
+      "    return { dataHandles: [] };\n" +
+      "  },"
+    );
+  }
+
+  const methodKindIssue = issues.find(
+    (i) =>
+      i.path[0] === "methods" && i.path.length >= 3 &&
+      String(i.path[i.path.length - 1]) === "kind",
+  );
+  if (methodKindIssue) {
+    const methodName = String(
+      methodKindIssue.path[methodKindIssue.path.length - 2],
+    );
+    return (
+      `Invalid 'kind' value on method '${methodName}'. ` +
+      "Allowed values: create, read, update, delete, list, action."
+    );
+  }
+
+  const methodDescriptionIssue = issues.find(
+    (i) =>
+      i.path[0] === "methods" && i.path.length >= 3 &&
+      String(i.path[i.path.length - 1]) === "description",
+  );
+  if (methodDescriptionIssue) {
+    const methodName = String(
+      methodDescriptionIssue.path[methodDescriptionIssue.path.length - 2],
+    );
+    return (
+      `Missing 'description' on method '${methodName}'. ` +
+      "Every method must have a description string.\n\n" +
+      "Example:\n" +
+      '  description: "Execute the model",'
     );
   }
 
@@ -229,8 +286,10 @@ function formatUserModelError(error: z.ZodError): string {
     );
   }
 
-  const methodsIssue = issues.find((i) => i.path[0] === "methods");
-  if (methodsIssue) {
+  const methodsMissingIssue = issues.find(
+    (i) => i.path[0] === "methods" && i.path.length === 1,
+  );
+  if (methodsMissingIssue) {
     return (
       "Missing required 'methods' field. " +
       "Add at least one method to your model.\n\n" +
@@ -246,6 +305,15 @@ function formatUserModelError(error: z.ZodError): string {
       "    },\n" +
       "  },"
     );
+  }
+
+  const methodSubFieldIssue = issues.find(
+    (i) => i.path[0] === "methods" && i.path.length > 1,
+  );
+  if (methodSubFieldIssue) {
+    return `${
+      methodSubFieldIssue.path.join(".")
+    }: ${methodSubFieldIssue.message}`;
   }
 
   return issues
