@@ -73,6 +73,7 @@ the date on its doc.
 | [run-tracker](./enablers/run-tracker.md)               | workflows, models | To fold into a workflow-execution doc                              |
 | [doctor-secrets](./enablers/doctor-secrets.md)         | models            | To fold into models.md operations section                          |
 | [doctor-vaults](./enablers/doctor-vaults.md)           | vaults            | To fold into vaults.md operations section                          |
+| [access-control](./enablers/access-control.md)        | serve             | Principals, grants, subjects, evaluation model, can-i              |
 
 ### Surfaces
 
