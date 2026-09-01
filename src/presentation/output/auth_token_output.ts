@@ -17,9 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { bold, cyan, yellow } from "@std/fmt/colors";
+import { bold, cyan, dim, green, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
-import type { AuthTokenCreateData } from "../../libswamp/mod.ts";
+import type {
+  AuthTokenCreateData,
+  AuthTokenListData,
+  AuthTokenRevokeData,
+} from "../../libswamp/mod.ts";
 import type { OutputMode } from "./output.ts";
 
 export function renderAuthTokenCreate(
@@ -43,4 +47,74 @@ export function renderAuthTokenCreate(
     ),
   ];
   writeOutput(lines.join("\n"));
+}
+
+export function renderAuthTokenList(
+  data: AuthTokenListData,
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(JSON.stringify(data.tokens, null, 2));
+    return;
+  }
+
+  if (data.tokens.length === 0) {
+    writeOutput(
+      [
+        `No API tokens found for collective ${bold(data.collective)}.`,
+        dim(
+          "Create one with: swamp auth token create --collective " +
+            data.collective + " --scopes <scopes>",
+        ),
+      ].join("\n"),
+    );
+    return;
+  }
+
+  const headers = ["NAME", "ID", "PREFIX", "SCOPES", "CREATED", "LAST USED"];
+  const rows = data.tokens.map((token) => [
+    token.name,
+    token.id,
+    token.keyPrefix,
+    token.scopes.join(", "),
+    token.createdAt,
+    token.lastUsedAt ?? dim("-"),
+  ]);
+
+  const widths = headers.map((header, i) =>
+    Math.max(header.length, ...rows.map((row) => row[i].length))
+  );
+
+  const headerLine = dim(
+    headers.map((h, i) => h.padEnd(widths[i])).join("  "),
+  );
+  const dataLines = rows.map((row) =>
+    row
+      .map((cell, i) => {
+        const padded = cell.padEnd(widths[i]);
+        return i === 0 ? bold(padded) : padded;
+      })
+      .join("  ")
+      .trimEnd()
+  );
+
+  writeOutput([headerLine, ...dataLines].join("\n"));
+}
+
+const checkmark = "✓";
+
+export function renderAuthTokenRevoke(
+  data: AuthTokenRevokeData,
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(JSON.stringify(data, null, 2));
+    return;
+  }
+
+  writeOutput(
+    `${green(checkmark)} Token ${bold(data.name)} revoked from collective ${
+      bold(data.collective)
+    }.`,
+  );
 }

@@ -25,13 +25,17 @@ import { authLogoutCommand } from "./auth_logout.ts";
 import { authWhoamiCommand } from "./auth_whoami.ts";
 import { authServerLoginCommand } from "./auth_server_login.ts";
 import { authTokenCreateCommand } from "./auth_token_create.ts";
+import { authTokenListCommand } from "./auth_token_list.ts";
+import { authTokenRevokeCommand } from "./auth_token_revoke.ts";
 
 export const authTokenCommand = new Command()
   .name("token")
   .description("Manage collective API tokens")
   .error(unknownCommandErrorHandler)
   .action(groupCommandAction)
-  .command("create", authTokenCreateCommand);
+  .command("create", authTokenCreateCommand)
+  .command("list", authTokenListCommand)
+  .command("revoke", authTokenRevokeCommand);
 
 export const authCommand = new Command()
   .name("auth")

@@ -27,19 +27,32 @@ import type { GenesisPass } from "../../domain/quest/genesis_pass.ts";
 
 export type { ClientIdentity };
 
+/** Metadata fields shared by all collective token responses (never includes the secret key). */
+export interface CollectiveTokenMetadata {
+  id: string;
+  name: string;
+  keyPrefix: string;
+  enabled: boolean;
+  expiresAt: string | null;
+  createdAt: string;
+  lastUsedAt: string | null;
+  scopes: string[];
+}
+
 /** Response from creating a collective API token. */
 export interface CreateCollectiveTokenResponse {
-  token: {
-    id: string;
-    name: string;
-    keyPrefix: string;
-    enabled: boolean;
-    expiresAt: string | null;
-    createdAt: string;
-    lastUsedAt: string | null;
-    scopes: string[];
-  };
+  token: CollectiveTokenMetadata;
   key: string;
+}
+
+/** Response from listing collective API tokens — metadata only, no secrets. */
+export interface ListCollectiveTokensResponse {
+  tokens: CollectiveTokenMetadata[];
+}
+
+/** Response from revoking a collective API token — metadata only, no secrets. */
+export interface RevokeCollectiveTokenResponse {
+  token: CollectiveTokenMetadata;
 }
 
 /** Response from BetterAuth sign-in endpoint. */
@@ -725,6 +738,91 @@ export class SwampClubClient {
       }
       throw new UserError(
         `Failed to create collective token (HTTP ${res.status}): ${text}`,
+      );
+    }
+
+    return await res.json();
+  }
+
+  async listCollectiveTokens(
+    apiKey: string,
+    collectiveSlug: string,
+    signal?: AbortSignal,
+  ): Promise<ListCollectiveTokensResponse> {
+    const res = await this.fetch(
+      `/api/v1/collectives/${encodeURIComponent(collectiveSlug)}/api-tokens`,
+      {
+        method: "GET",
+        headers: {
+          "x-api-key": apiKey,
+        },
+      },
+      signal,
+    );
+
+    if (!res.ok) {
+      const text = await res.text();
+      if (res.status === 401) {
+        throw new UserError(
+          "Not authenticated. Sign in with `swamp auth login`.",
+        );
+      }
+      if (res.status === 403) {
+        throw new UserError(
+          `You do not have permission to list tokens for collective "${collectiveSlug}". Only owners and admins can manage collective API tokens.`,
+        );
+      }
+      if (res.status === 404) {
+        throw new UserError(
+          `Collective "${collectiveSlug}" not found.`,
+        );
+      }
+      throw new UserError(
+        `Failed to list collective tokens (HTTP ${res.status}): ${text}`,
+      );
+    }
+
+    return await res.json();
+  }
+
+  async revokeCollectiveToken(
+    apiKey: string,
+    collectiveSlug: string,
+    tokenId: string,
+    signal?: AbortSignal,
+  ): Promise<RevokeCollectiveTokenResponse> {
+    const res = await this.fetch(
+      `/api/v1/collectives/${encodeURIComponent(collectiveSlug)}/api-tokens/${
+        encodeURIComponent(tokenId)
+      }`,
+      {
+        method: "DELETE",
+        headers: {
+          "x-api-key": apiKey,
+        },
+      },
+      signal,
+    );
+
+    if (!res.ok) {
+      const text = await res.text();
+      if (res.status === 401) {
+        throw new UserError(
+          "Not authenticated. Sign in with `swamp auth login`.",
+        );
+      }
+      if (res.status === 403) {
+        throw new UserError(
+          `You do not have permission to revoke tokens for collective "${collectiveSlug}". Only owners and admins can manage collective API tokens.`,
+        );
+      }
+      if (res.status === 404) {
+        throw new UserError(
+          `Token "${tokenId}" not found in collective "${collectiveSlug}".`,
+        );
+      }
+      throw new UserError(
+        `Failed to revoke collective token (HTTP ${res.status}): ${text}`,
       );
     }
 

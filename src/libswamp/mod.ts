@@ -1299,6 +1299,29 @@ export {
   type CreateAuthTokenCreateDepsOptions,
 } from "./auth/token_create.ts";
 
+// Auth token list operations
+export {
+  authTokenList,
+  type AuthTokenListData,
+  type AuthTokenListDeps,
+  type AuthTokenListEvent,
+  type AuthTokenListInput,
+  type AuthTokenListItem,
+  createAuthTokenListDeps,
+  type CreateAuthTokenListDepsOptions,
+} from "./auth/token_list.ts";
+
+// Auth token revoke operations
+export {
+  authTokenRevoke,
+  type AuthTokenRevokeData,
+  type AuthTokenRevokeDeps,
+  type AuthTokenRevokeEvent,
+  type AuthTokenRevokeInput,
+  createAuthTokenRevokeDeps,
+  type CreateAuthTokenRevokeDepsOptions,
+} from "./auth/token_revoke.ts";
+
 // Auth logout operations
 export {
   authLogout,
