@@ -32,6 +32,7 @@ import { createExtensionQualityRenderer } from "../../presentation/renderers/ext
 import {
   createContext,
   type GlobalOptions,
+  resolveExtensionsDir,
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
@@ -44,6 +45,7 @@ import { loadIdentity } from "../load_identity.ts";
 
 interface ExtensionQualityOptions extends GlobalOptions {
   repoDir?: string;
+  extensionsDir?: string;
 }
 
 /**
@@ -92,12 +94,17 @@ export const extensionQualityCommand = new Command()
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
+  .option(
+    "--extensions-dir <dir:string>",
+    "Extensions source directory (env: SWAMP_EXTENSIONS_DIR)",
+  )
   .action(
     async function (options: ExtensionQualityOptions, manifestPath: string) {
       const cliCtx = createContext(options, ["extension", "quality"]);
       cliCtx.logger.debug`Starting extension quality`;
 
       const repoDir = resolveRepoDir(options.repoDir);
+      const extensionsDir = resolveExtensionsDir(options.extensionsDir);
       if (isPulledExtensionManifest(repoDir, manifestPath)) {
         throw new UserError(
           "Cannot run quality on a pulled extension. Pulled extensions are read-only " +
@@ -116,6 +123,7 @@ export const extensionQualityCommand = new Command()
         manifestPath,
         repoContext,
         logger: cliCtx.logger,
+        extensionsDir,
       });
 
       const absoluteManifestPath = resolve(repoDir, manifestPath);

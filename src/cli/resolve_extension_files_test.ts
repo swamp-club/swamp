@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { getLogger } from "@logtape/logtape";
@@ -1445,5 +1445,81 @@ Deno.test("resolveExtensionFiles paths.base=typedDir allows models/ prefix in en
     assertEquals(result.modelEntryPoints, [
       join(modelsDir, "models", "project.ts"),
     ]);
+  });
+});
+
+// ── extensionsDir override (monorepo support) ────────────────────────────
+
+Deno.test("resolveExtensionFiles extensionsDir overrides repo root for typed-key resolution", async () => {
+  await withTempRepo(async (dir) => {
+    // Simulate monorepo: extension lives in a subdirectory with its own
+    // extensions/<type>/ tree, separate from the repo root's tree.
+    const extSubdir = join(dir, "my-datastore-ext");
+    const datastoresDir = join(extSubdir, "extensions", "datastores");
+    await Deno.mkdir(datastoresDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(datastoresDir, "my_store.ts"),
+      'export const type = "my_store";',
+    );
+
+    const manifestPath = join(extSubdir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/monorepo-ds",
+        version: "2026.08.31.1",
+        datastores: ["my_store.ts"],
+      }),
+    );
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubRepoContext,
+      logger,
+      extensionsDir: extSubdir,
+    });
+
+    assertEquals(result.datastoresDir, datastoresDir);
+    assertEquals(result.datastoreEntryPoints, [
+      join(datastoresDir, "my_store.ts"),
+    ]);
+  });
+});
+
+Deno.test("resolveExtensionFiles without extensionsDir fails for monorepo datastore", async () => {
+  await withTempRepo(async (dir) => {
+    const extSubdir = join(dir, "my-datastore-ext");
+    const datastoresDir = join(extSubdir, "extensions", "datastores");
+    await Deno.mkdir(datastoresDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(datastoresDir, "my_store.ts"),
+      'export const type = "my_store";',
+    );
+
+    const manifestPath = join(extSubdir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/monorepo-ds-fail",
+        version: "2026.08.31.1",
+        datastores: ["my_store.ts"],
+      }),
+    );
+
+    const err = await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath,
+          repoContext: stubRepoContext,
+          logger,
+        }),
+      UserError,
+    );
+    assertStringIncludes(err.message, "Datastore file not found");
+    assertStringIncludes(err.message, "--extensions-dir");
   });
 });
