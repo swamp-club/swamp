@@ -175,7 +175,7 @@ Two optional fields control which data goes to the datastore:
   `workflow-runs`, `audit`, `telemetry`, `logs`, `files`, plus the bundle
   directories. Anything not listed stays in local `.swamp/`. Note:
   `ALWAYS_LOCAL_SUBDIRS` (`secrets`, `bundles`, `vault-bundles`,
-  `driver-bundles`, `report-bundles`) stay local regardless of this setting.
+  `report-bundles`) stay local regardless of this setting.
   `swamp datastore setup filesystem --directories` sets the list at setup time.
 - **`exclude`** — gitignore-style glob patterns. Files matching these patterns
   stay local even if their parent directory is in the datastore.

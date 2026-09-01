@@ -11,13 +11,7 @@ Extensions allow the community to share reusable automation components that
 others can pull into their repositories.
 
 Four kinds have a runtime type registry and loader: models, vaults, datastores,
-and reports (`src/cli/mod.ts` wires exactly these four). `drivers` still
-appears as a manifest key (`src/domain/extensions/extension_manifest.ts`) and
-as `drivers/` / `driver-bundles/` directories in the archive and pulled-tree
-layouts, but it is vestigial: no driver adapter, loader, or registry exists —
-execution drivers were removed (see
-[remote-execution](../enablers/remote-execution.md#no-execution-drivers)).
-Later mentions of `drivers` in this document refer only to that leftover key.
+and reports (`src/cli/mod.ts` wires exactly these four).
 
 ## Name
 
@@ -116,7 +110,7 @@ beta) when they exist. No flag needed — info always shows all channels.
 
 The info command also displays content metadata for the latest version: model
 types with their methods, extensions (foreign-type grafts with their methods),
-workflows, vaults, datastores, drivers, reports, and skills. By default, models
+workflows, vaults, datastores, reports, and skills. By default, models
 show the type name and method names; extensions show the target type and grafted
 method names. With `--verbose`, each method's arguments and descriptions are
 also displayed. JSON output (`--json`) includes the full `contentMetadata`
@@ -297,8 +291,8 @@ the extension contains and how it should be packaged.
 - `manifestVersion`: Must be `1` (the only supported version).
 - `name`: Scoped name (`@collective/name`).
 - `version`: CalVer version string.
-- At least one of `models`, `workflows`, `vaults`, `drivers`, `datastores`,
-  `reports`, or `skills` must be present.
+- At least one of `models`, `workflows`, `vaults`, `datastores`, `reports`, or
+  `skills` must be present.
 
 ### Path Safety
 
@@ -327,8 +321,6 @@ containing `..` or starting with `/`.
   manifest's own directory first, falling back to the repo-root `workflows/` and
   `extensions/workflows/` directories.
 - `vaults`: Array of relative paths to TypeScript vault files. Resolved via
-  `paths.base`.
-- `drivers`: Array of relative paths to TypeScript driver files. Resolved via
   `paths.base`.
 - `datastores`: Array of relative paths to TypeScript datastore files. Resolved
   via `paths.base`.
@@ -388,7 +380,7 @@ labels:
 ### Path Resolution
 
 The `paths.base` field selects the directory typed-key entries (`models`,
-`vaults`, `drivers`, `datastores`, `reports`, `include`) plus `additionalFiles`
+`vaults`, `datastores`, `reports`, `include`) plus `additionalFiles`
 resolve against during push. Two modes:
 
 - **`typedDir` (default)** — typed entries resolve relative to their configured
@@ -464,8 +456,6 @@ extension.tar.gz
     │   └── ssh-check.yaml
     ├── vaults/               # Source TypeScript vault files
     ├── vault-bundles/        # Compiled vault JavaScript bundles
-    ├── drivers/              # Source TypeScript driver files
-    ├── driver-bundles/       # Compiled driver JavaScript bundles
     ├── datastores/           # Source TypeScript datastore files
     ├── datastore-bundles/    # Compiled datastore JavaScript bundles
     ├── reports/              # Source TypeScript report files
@@ -473,9 +463,6 @@ extension.tar.gz
     ├── skills/               # Skill directories (SKILL.md + references)
     └── files/                # Additional files
 ```
-
-The `drivers/` and `driver-bundles/` directories are still scaffolded by push
-(`src/libswamp/extensions/push.ts`) but nothing populates or loads them.
 
 ### Models
 
@@ -603,14 +590,14 @@ the local path since it loads datastore extensions that configure the resolver
 itself. When no resolver is available (e.g. during `repo init` or in tests),
 loaders fall back to the local `.swamp/` path.
 
-### Vaults, Drivers, Datastores, and Reports
+### Vaults, Datastores, and Reports
 
 Vault, datastore, and report entry points are bundled with the same strategy as
 models — deno bundle with zod externalized. Each entry point gets a compiled
 `.js` file in its corresponding `-bundles/` directory (`vault-bundles/`,
 `datastore-bundles/`, `report-bundles/`). Local imports are resolved recursively
 within the directory boundary. The install-time `KIND_DIRS` array covers
-`["models", "vaults", "datastores", "reports"]` — drivers are excluded.
+`["models", "vaults", "datastores", "reports"]`.
 
 The export from each bundle is validated against a Zod schema:
 
@@ -623,8 +610,8 @@ The export from each bundle is validated against a Zod schema:
 
 ### Collective Validation
 
-All content types — model types, vault types, workflow names, driver types,
-datastore types, report names — must use the same collective as the extension
+All content types — model types, vault types, workflow names, datastore types,
+report names — must use the same collective as the extension
 name. This is enforced during push to prevent an extension from registering
 types under a different collective.
 
@@ -684,7 +671,7 @@ path and a pointer at the manifest entry.
 ## Import Resolution
 
 When packaging an extension, the CLI resolves all local TypeScript imports
-starting from each entry point (model, vault, driver, datastore, or report). The
+starting from each entry point (model, vault, datastore, or report). The
 resolver follows relative `import`/`export` statements (e.g., `./helpers.ts`,
 `../shared.ts`) and includes all transitively imported files. Only files within
 the respective directory boundary are included. Non-local imports (`npm:`,
@@ -710,10 +697,10 @@ published extensions:
 extensions/models/
   foo/
     manifest.yaml    # name: @ns/foo, version: 2026.06.01.1
-    driver.ts        → claimed by @ns/foo@2026.06.01.1
+    instance.ts      → claimed by @ns/foo@2026.06.01.1
   bar/
     manifest.yaml    # name: @ns/bar, version: 2026.06.01.1
-    driver.ts        → claimed by @ns/bar@2026.06.01.1
+    instance.ts      → claimed by @ns/bar@2026.06.01.1
   shared.ts          → claimed by @local/<repo>@0.0.0
 ```
 
@@ -975,8 +962,8 @@ does not verify file contents, only that the paths the lockfile says should
 exist actually do.
 
 Paths under `.swamp/bundles/`, `.swamp/vault-bundles/`,
-`.swamp/driver-bundles/`, `.swamp/datastore-bundles/`, and
-`.swamp/report-bundles/` are excluded from this check. Those are regenerable
+`.swamp/datastore-bundles/`, and `.swamp/report-bundles/` are excluded from this
+check. Those are regenerable
 build artifacts: clearing the bundle cache is a normal hygiene operation and
 must not flip an extension with intact source into the truncated branch (which
 would steal the user-WIP path from issue #121). Only source-tree files — the
@@ -1114,9 +1101,7 @@ const stty = new Deno.Command("stty", {
 await stty.output();
 ```
 
-Execution drivers were removed (see
-[remote-execution.md](../enablers/remote-execution.md#no-execution-drivers));
-remote workers run extension bundles in-process with the same compiled
+Remote workers run extension bundles in-process with the same compiled
 permissions as the CLI, so this limitation applies to every execution path.
 
 ## Dependency Trust Audit
@@ -1260,13 +1245,11 @@ mirror the archive structure:
 | `models/`            | `.swamp/pulled-extensions/<ext-name>/models/`                  |
 | `workflows/`         | `.swamp/pulled-extensions/<ext-name>/workflows/`               |
 | `vaults/`            | `.swamp/pulled-extensions/<ext-name>/vaults/`                  |
-| `drivers/`           | `.swamp/pulled-extensions/<ext-name>/drivers/`                 |
 | `datastores/`        | `.swamp/pulled-extensions/<ext-name>/datastores/`              |
 | `reports/`           | `.swamp/pulled-extensions/<ext-name>/reports/`                 |
 | `files/`             | `.swamp/pulled-extensions/<ext-name>/files/`                   |
 | `bundles/`           | `.swamp/bundles/<bundleNamespace(per-extension models dir)>/`  |
 | `vault-bundles/`     | `.swamp/vault-bundles/<bundleNamespace(…vaults dir)>/`         |
-| `driver-bundles/`    | `.swamp/driver-bundles/<bundleNamespace(…drivers dir)>/`       |
 | `datastore-bundles/` | `.swamp/datastore-bundles/<bundleNamespace(…datastores dir)>/` |
 | `report-bundles/`    | `.swamp/report-bundles/<bundleNamespace(…reports dir)>/`       |
 | `skills/`            | Every enrolled tool's skills dir (deduplicated)                |
@@ -1715,8 +1698,7 @@ completely independent of the data catalog (`_catalog.db`) used for data
 queries.
 
 The schema includes a `kind` column (`model`, `extension`, `vault`,
-`datastore`, `report`; the `driver` value remains in the type union but nothing
-writes it) so a single catalog supports all registry types. The model, vault,
+`datastore`, `report`) so a single catalog supports all registry types. The model, vault,
 datastore, and report registries all register lazy entries from the catalog
 (`registerLazy` in each registry). The per-kind `populated:<kind>` marker in
 `bundle_meta` records whether a kind has been fully indexed.

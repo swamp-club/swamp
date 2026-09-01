@@ -18,15 +18,15 @@ piece in the output.
 
 Reach for a doctor command when the symptom maps to a known integration:
 
-| Symptom                                                        | Run                       |
-| -------------------------------------------------------------- | ------------------------- |
-| Audit log empty after init/upgrade or after AI-tool change     | `swamp doctor audit`      |
-| Hooks aren't firing for the configured AI tool                 | `swamp doctor audit`      |
-| Extension model/vault/driver/datastore/report missing from CLI | `swamp doctor extensions` |
-| `swamp-warning:` line on stderr mentioning a load failure      | `swamp doctor extensions` |
-| Workflow YAML fails to parse or construct                      | `swamp doctor workflows`  |
-| `swamp workflow get` errors on a file that search finds        | `swamp doctor workflows`  |
-| CI preflight needs to gate on integration health               | any, with `--json`        |
+| Symptom                                                    | Run                       |
+| ---------------------------------------------------------- | ------------------------- |
+| Audit log empty after init/upgrade or after AI-tool change | `swamp doctor audit`      |
+| Hooks aren't firing for the configured AI tool             | `swamp doctor audit`      |
+| Extension model/vault/datastore/report missing from CLI    | `swamp doctor extensions` |
+| `swamp-warning:` line on stderr mentioning a load failure  | `swamp doctor extensions` |
+| Workflow YAML fails to parse or construct                  | `swamp doctor workflows`  |
+| `swamp workflow get` errors on a file that search finds    | `swamp doctor workflows`  |
+| CI preflight needs to gate on integration health           | any, with `--json`        |
 
 If the symptom is generic ("command errored", "method failed"), skip Tier 1 and
 go to Tier 2 (error inspection).
@@ -144,13 +144,12 @@ swamp doctor extensions --repair
 
 ### Registries checked
 
-Five user-facing registries, in fixed order:
+Four user-facing registries, in fixed order:
 
 | Registry    | Covers                                               |
 | ----------- | ---------------------------------------------------- |
 | `model`     | `extensions/models/` and registered model extensions |
 | `vault`     | `extensions/vaults/`                                 |
-| `driver`    | `extensions/drivers/`                                |
 | `datastore` | `extensions/datastores/`                             |
 | `report`    | `extensions/reports/`                                |
 
@@ -162,17 +161,16 @@ that augment an existing model type fold into the model registry's row.
 ```
 ✓ model
 ✓ vault
-✗ driver (1 failure(s))
-    • extensions/drivers/my-driver.ts: Missing version field — must be CalVer (YYYY.MM.DD.MICRO)
-✓ datastore
+✗ datastore (1 failure(s))
+    • extensions/datastores/my-datastore.ts: Missing version field — must be CalVer (YYYY.MM.DD.MICRO)
 ✓ report
 
-4 passed, 1 failed — OVERALL: FAIL
+3 passed, 1 failed — OVERALL: FAIL
 ```
 
 ### Output — JSON mode
 
-All five registry keys are always present, in fixed order, even on a clean run:
+All four registry keys are always present, in fixed order, even on a clean run:
 
 ```json
 {
@@ -180,17 +178,16 @@ All five registry keys are always present, in fixed order, even on a clean run:
   "registries": {
     "model": { "registry": "model", "status": "pass", "failures": [] },
     "vault": { "registry": "vault", "status": "pass", "failures": [] },
-    "driver": {
-      "registry": "driver",
+    "datastore": {
+      "registry": "datastore",
       "status": "fail",
       "failures": [
         {
-          "file": "extensions/drivers/my-driver.ts",
+          "file": "extensions/datastores/my-datastore.ts",
           "error": "Missing version field …"
         }
       ]
     },
-    "datastore": { "registry": "datastore", "status": "pass", "failures": [] },
     "report": { "registry": "report", "status": "pass", "failures": [] }
   }
 }

@@ -332,7 +332,6 @@ Deno.test("recordSourceFailure: emits transition for new source (fromState null)
 Deno.test("kindDirToExtensionKind: maps all kindDir values correctly", () => {
   assertEquals(kindDirToExtensionKind("models"), "model");
   assertEquals(kindDirToExtensionKind("vaults"), "vault");
-  assertEquals(kindDirToExtensionKind("drivers"), "driver");
   assertEquals(kindDirToExtensionKind("datastores"), "datastore");
   assertEquals(kindDirToExtensionKind("reports"), "report");
 });
@@ -343,7 +342,6 @@ Deno.test("extensionKindToKindDir: maps all extensionKind values correctly", () 
   assertEquals(extensionKindToKindDir("model"), "models");
   assertEquals(extensionKindToKindDir("extension"), "models");
   assertEquals(extensionKindToKindDir("vault"), "vaults");
-  assertEquals(extensionKindToKindDir("driver"), "drivers");
   assertEquals(extensionKindToKindDir("datastore"), "datastores");
   assertEquals(extensionKindToKindDir("report"), "reports");
 });

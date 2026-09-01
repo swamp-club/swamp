@@ -50,7 +50,6 @@ function makeManifest(
     workflows: [],
     models: [],
     vaults: [],
-    drivers: [],
     datastores: [],
     reports: [],
     skills: [],

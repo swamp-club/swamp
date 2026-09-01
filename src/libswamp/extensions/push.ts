@@ -72,15 +72,6 @@ export interface ResolvedVaultEntry {
   configFields?: ExtractedArgument[];
 }
 
-/** A driver entry enriched with extracted metadata for the resolved display. */
-export interface ResolvedDriverEntry {
-  type: string;
-  fileName: string;
-  name?: string;
-  hasConfigSchema?: boolean;
-  configFields?: ExtractedArgument[];
-}
-
 /** A datastore entry enriched with extracted metadata for the resolved display. */
 export interface ResolvedDatastoreEntry {
   type: string;
@@ -109,7 +100,6 @@ export interface ExtensionPushResolvedData {
   models: ResolvedModelEntry[];
   workflowFiles: string[];
   vaults: ResolvedVaultEntry[];
-  drivers: ResolvedDriverEntry[];
   datastores: ResolvedDatastoreEntry[];
   reports: ResolvedReportEntry[];
   skills: Array<{ name: string; fileCount: number }>;
@@ -129,7 +119,6 @@ export interface ExtensionPushSuccessData {
   workflowCount: number;
   bundleCount: number;
   vaultCount: number;
-  driverCount: number;
   datastoreCount: number;
   reportCount: number;
   skillCount: number;
@@ -155,9 +144,6 @@ export interface ExtensionPushPrepareInput {
   vaultsDir: string;
   allVaultFiles: string[];
   vaultEntryPoints: string[];
-  driversDir: string;
-  allDriverFiles: string[];
-  driverEntryPoints: string[];
   datastoresDir: string;
   allDatastoreFiles: string[];
   datastoreEntryPoints: string[];
@@ -210,7 +196,6 @@ export interface ExtensionPushCounts {
   workflows: number;
   bundles: number;
   vaults: number;
-  drivers: number;
   datastores: number;
   reports: number;
   skills: number;
@@ -250,8 +235,6 @@ export interface ExtensionPushPrepareDeps {
     workflowFiles: Array<{ sourcePath: string; archiveName: string }>,
     vaultFiles: string[],
     vaultsDir: string,
-    driverFiles: string[],
-    driversDir: string,
     datastoreFiles: string[],
     datastoresDir: string,
     reportFiles: string[],
@@ -471,11 +454,6 @@ function buildReviewFileRefs(
     { kind: "model", all: input.allModelFiles, entry: input.modelEntryPoints },
     { kind: "vault", all: input.allVaultFiles, entry: input.vaultEntryPoints },
     {
-      kind: "driver",
-      all: input.allDriverFiles,
-      entry: input.driverEntryPoints,
-    },
-    {
       kind: "datastore",
       all: input.allDatastoreFiles,
       entry: input.datastoreEntryPoints,
@@ -502,7 +480,6 @@ function contentKindsPresent(
   const kinds: ExtensionContentKind[] = [];
   if (input.allModelFiles.length > 0) kinds.push("model");
   if (input.allVaultFiles.length > 0) kinds.push("vault");
-  if (input.allDriverFiles.length > 0) kinds.push("driver");
   if (input.allDatastoreFiles.length > 0) kinds.push("datastore");
   if (input.allReportFiles.length > 0) kinds.push("report");
   return kinds;
@@ -580,15 +557,13 @@ export async function extensionPushPrepare(
       input.workflowFiles,
       input.allVaultFiles,
       input.vaultsDir,
-      input.allDriverFiles,
-      input.driversDir,
       input.allDatastoreFiles,
       input.datastoresDir,
       input.allReportFiles,
       input.reportsDir,
     );
     ctx.logger
-      .debug`Extracted content metadata: ${contentMetadata.models.length} models, ${contentMetadata.workflows.length} workflows, ${contentMetadata.vaults.length} vaults, ${contentMetadata.drivers.length} drivers, ${contentMetadata.datastores.length} datastores, ${contentMetadata.reports.length} reports`;
+      .debug`Extracted content metadata: ${contentMetadata.models.length} models, ${contentMetadata.workflows.length} workflows, ${contentMetadata.vaults.length} vaults, ${contentMetadata.datastores.length} datastores, ${contentMetadata.reports.length} reports`;
   } catch {
     ctx.logger.debug`Content metadata extraction failed, skipping`;
   }
@@ -607,7 +582,7 @@ export async function extensionPushPrepare(
       );
       throw validationFailed(
         "Extension content uses collectives that don't match the extension package. " +
-          "All model types, vault types, workflow names, driver types, datastore types, and report names must use the same collective as the extension.",
+          "All model types, vault types, workflow names, datastore types, and report names must use the same collective as the extension.",
         {
           expectedCollective,
           mismatches: collectiveResult.mismatches,
@@ -641,7 +616,6 @@ export async function extensionPushPrepare(
   const qualityFiles = [
     ...input.allModelFiles,
     ...input.allVaultFiles,
-    ...input.allDriverFiles,
     ...input.allDatastoreFiles,
     ...input.allReportFiles,
     ...input.workflowFiles.map((wf) => wf.sourcePath),
@@ -670,7 +644,6 @@ export async function extensionPushPrepare(
   const sourceFiles = [
     ...input.allModelFiles,
     ...input.allVaultFiles,
-    ...input.allDriverFiles,
     ...input.allDatastoreFiles,
     ...input.allReportFiles,
   ];
@@ -824,7 +797,7 @@ export async function extensionPushPrepare(
   let archiveBytes: Uint8Array;
   if (usingCachedArchive) {
     totalBundles = input.modelEntryPoints.length +
-      input.vaultEntryPoints.length + input.driverEntryPoints.length +
+      input.vaultEntryPoints.length +
       input.datastoreEntryPoints.length + input.reportEntryPoints.length;
     archiveBytes = input.cachedArchive!;
   } else {
@@ -861,7 +834,6 @@ export async function extensionPushPrepare(
       workflows: input.workflowFiles.length,
       bundles: totalBundles,
       vaults: input.vaultEntryPoints.length,
-      drivers: input.driverEntryPoints.length,
       datastores: input.datastoreEntryPoints.length,
       reports: input.reportEntryPoints.length,
       skills: input.skillDirs.length,
@@ -998,7 +970,6 @@ export async function* extensionPush(
           workflowCount: input.counts.workflows,
           bundleCount: input.counts.bundles,
           vaultCount: input.counts.vaults,
-          driverCount: input.counts.drivers,
           datastoreCount: input.counts.datastores,
           reportCount: input.counts.reports,
           skillCount: input.counts.skills,
@@ -1021,9 +992,6 @@ function buildResolvedData(
   );
   const extractedVaultsByFile = new Map(
     (contentMetadata?.vaults ?? []).map((v) => [v.fileName, v]),
-  );
-  const extractedDriversByFile = new Map(
-    (contentMetadata?.drivers ?? []).map((d) => [d.fileName, d]),
   );
   const extractedDatastoresByFile = new Map(
     (contentMetadata?.datastores ?? []).map((d) => [d.fileName, d]),
@@ -1048,20 +1016,6 @@ function buildResolvedData(
     const relPath = relative(input.repoDir, f);
     const extracted = extractedVaultsByFile.get(
       relative(input.vaultsDir, f),
-    );
-    return {
-      type: extracted?.type ?? relPath,
-      fileName: relPath,
-      name: extracted?.name,
-      hasConfigSchema: extracted?.hasConfigSchema,
-      configFields: extracted?.configFields,
-    };
-  });
-
-  const resolvedDrivers = input.driverEntryPoints.map((f) => {
-    const relPath = relative(input.repoDir, f);
-    const extracted = extractedDriversByFile.get(
-      relative(input.driversDir, f),
     );
     return {
       type: extracted?.type ?? relPath,
@@ -1114,7 +1068,6 @@ function buildResolvedData(
       relative(input.repoDir, wf.sourcePath)
     ),
     vaults: resolvedVaults,
-    drivers: resolvedDrivers,
     datastores: resolvedDatastores,
     reports: resolvedReports,
     skills: input.skillDirs.map((s) => ({
@@ -1171,19 +1124,6 @@ async function bundleAndArchive(
     "vault",
   );
 
-  const driverBundles = new Map<string, string>();
-  await bundleEntryPoints(
-    input.driverEntryPoints,
-    input.driversDir,
-    driverBundles,
-    compilationErrors,
-    deps,
-    denoPath,
-    bundleOptions,
-    ctx,
-    "driver",
-  );
-
   const datastoreBundles = new Map<string, string>();
   await bundleEntryPoints(
     input.datastoreEntryPoints,
@@ -1218,13 +1158,12 @@ async function bundleAndArchive(
   }
 
   const totalBundles = bundles.size + vaultBundles.size +
-    driverBundles.size + datastoreBundles.size + reportBundles.size;
+    datastoreBundles.size + reportBundles.size;
 
   const archiveBytes = await createArchive(
     input,
     bundles,
     vaultBundles,
-    driverBundles,
     datastoreBundles,
     reportBundles,
     ctx,
@@ -1267,7 +1206,6 @@ async function createArchive(
   input: ExtensionPushPrepareInput,
   bundles: Map<string, string>,
   vaultBundles: Map<string, string>,
-  driverBundles: Map<string, string>,
   datastoreBundles: Map<string, string>,
   reportBundles: Map<string, string>,
   ctx: LibSwampContext,
@@ -1282,8 +1220,6 @@ async function createArchive(
       "workflows",
       "vaults",
       "vault-bundles",
-      "drivers",
-      "driver-bundles",
       "datastores",
       "datastore-bundles",
       "reports",
@@ -1315,7 +1251,6 @@ async function createArchive(
         models: input.manifest.models,
         workflows: input.manifest.workflows,
         vaults: input.manifest.vaults,
-        drivers: input.manifest.drivers,
         datastores: input.manifest.datastores,
         reports: input.manifest.reports,
         ...(input.manifest.skills.length > 0
@@ -1378,21 +1313,6 @@ async function createArchive(
     // Write compiled vault bundles
     for (const [entryName, js] of vaultBundles) {
       const destPath = join(extDir, "vault-bundles", `${entryName}.js`);
-      await Deno.mkdir(dirname(destPath), { recursive: true });
-      await Deno.writeTextFile(destPath, js);
-    }
-
-    // Copy driver source files
-    for (const driverFile of input.allDriverFiles) {
-      const relPath = relative(input.driversDir, driverFile);
-      const destPath = join(extDir, "drivers", relPath);
-      await Deno.mkdir(dirname(destPath), { recursive: true });
-      await Deno.copyFile(driverFile, destPath);
-    }
-
-    // Write compiled driver bundles
-    for (const [entryName, js] of driverBundles) {
-      const destPath = join(extDir, "driver-bundles", `${entryName}.js`);
       await Deno.mkdir(dirname(destPath), { recursive: true });
       await Deno.writeTextFile(destPath, js);
     }

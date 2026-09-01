@@ -144,8 +144,6 @@ Deno.test("ExtensionCatalogStore: findByKind returns only matching kind", () => 
   assertEquals(vaults.length, 1);
   assertEquals(vaults[0].type_normalized, "@org/my-vault");
 
-  const drivers = store.findByKind("driver");
-  assertEquals(drivers.length, 0);
   store.close();
 });
 
@@ -208,7 +206,6 @@ Deno.test("ExtensionCatalogStore: count filters by kind", () => {
   assertEquals(store.count(), 3);
   assertEquals(store.count("model"), 2);
   assertEquals(store.count("vault"), 1);
-  assertEquals(store.count("driver"), 0);
   store.close();
 });
 
@@ -502,7 +499,7 @@ Deno.test("ExtensionCatalogStore: source_fingerprint defaults to empty string wh
   const store = new ExtensionCatalogStore(dbPath);
 
   // Row built without source_fingerprint — sibling loaders (reports,
-  // drivers, datastores, vaults) still omit it today.
+  // datastores, vaults) still omit it today.
   store.upsert(makeRow());
   const found = store.findByType("@myorg/echo", "model");
   assertEquals(found?.source_fingerprint, "");
@@ -578,7 +575,7 @@ Deno.test("ExtensionCatalogStore: migrates pre-#125 schema by adding source_fing
 
 // --- per-kind migration tests (#128) ---
 //
-// The sibling loaders (report/driver/datastore/vault) ported to the
+// The sibling loaders (report/datastore/vault) ported to the
 // shared freshness helper in #128. Legacy catalog rows written by the
 // pre-port binary have `source_fingerprint = ""`; they must survive the
 // migration so the next findStaleFiles pass sees fingerprint mismatch
@@ -587,7 +584,7 @@ Deno.test("ExtensionCatalogStore: migrates pre-#125 schema by adding source_fing
 // upgrade rather than silently backfill.
 
 for (
-  const kind of ["report", "driver", "datastore", "vault"] as const
+  const kind of ["report", "datastore", "vault"] as const
 ) {
   Deno.test(
     `ExtensionCatalogStore: migrates pre-#128 ${kind} row by adding empty source_fingerprint (#128)`,
@@ -1378,7 +1375,7 @@ Deno.test("ExtensionCatalogStore: W1a migration backfills mixed pulled + local +
     "secret.ts",
   );
   const localPath = join(repoRoot, "extensions", "models", "echo.ts");
-  const sourceMountedPath = "/external/srcdir/extensions/drivers/raw.ts";
+  const sourceMountedPath = "/external/srcdir/extensions/models/raw.ts";
   const unmatchedPath = "/some/legacy/path/orphan.ts";
 
   const seed = new DatabaseSync(dbPath);
@@ -1413,7 +1410,7 @@ Deno.test("ExtensionCatalogStore: W1a migration backfills mixed pulled + local +
     0,
   );
   insert.run(localPath, "@org/echo", "model", "/b/echo.js", 0);
-  insert.run(sourceMountedPath, "@org/raw", "driver", "/b/raw.js", 0);
+  insert.run(sourceMountedPath, "@org/raw", "model", "/b/raw.js", 0);
   insert.run(unmatchedPath, "@legacy/orphan", "model", "/b/orphan.js", 0);
   seed.close();
 

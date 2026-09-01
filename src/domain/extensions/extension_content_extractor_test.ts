@@ -30,7 +30,6 @@ Deno.test("extractContentMetadata returns empty for no inputs", async () => {
     extensions: [],
     workflows: [],
     vaults: [],
-    drivers: [],
     datastores: [],
     reports: [],
     skills: [],
@@ -1014,206 +1013,6 @@ Deno.test("extractContentMetadata skips vault without type", async () => {
   }
 });
 
-Deno.test("extractContentMetadata extracts driver type, name, and description", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  try {
-    const driversDir = join(tmpDir, "drivers");
-    await Deno.mkdir(driversDir, { recursive: true });
-
-    const driverFile = join(driversDir, "s3.ts");
-    await Deno.writeTextFile(
-      driverFile,
-      [
-        'import { z } from "npm:zod";',
-        "export const driver = {",
-        '  type: "@aws/s3",',
-        '  name: "AWS S3",',
-        '  description: "S3 object storage driver.",',
-        "  createDriver(name: string, config: Record<string, unknown>) {",
-        "    return { read: async () => new Uint8Array(), write: async () => {}, getName: () => name };",
-        "  },",
-        "};",
-      ].join("\n"),
-    );
-
-    const result = await extractContentMetadata(
-      [],
-      tmpDir,
-      [],
-      [],
-      "",
-      [driverFile],
-      driversDir,
-    );
-    assertEquals(result.drivers.length, 1);
-    assertEquals(result.drivers[0].type, "@aws/s3");
-    assertEquals(result.drivers[0].name, "AWS S3");
-    assertEquals(result.drivers[0].description, "S3 object storage driver.");
-    assertEquals(result.drivers[0].hasConfigSchema, false);
-    assertEquals(result.drivers[0].configFields, []);
-    assertEquals(result.drivers[0].fileName, "s3.ts");
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true });
-  }
-});
-
-Deno.test("extractContentMetadata extracts driver configSchema fields", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  try {
-    const driversDir = join(tmpDir, "drivers");
-    await Deno.mkdir(driversDir, { recursive: true });
-
-    const driverFile = join(driversDir, "custom.ts");
-    await Deno.writeTextFile(
-      driverFile,
-      [
-        'import { z } from "npm:zod";',
-        "export const driver = {",
-        '  type: "@myorg/custom-driver",',
-        '  name: "Custom Driver",',
-        '  description: "A custom storage driver.",',
-        "  configSchema: z.object({",
-        '    bucket: z.string().describe("Bucket name"),',
-        '    region: z.string().optional().describe("AWS region"),',
-        "  }),",
-        "  createDriver(name: string, config: Record<string, unknown>) {",
-        "    return { read: async () => new Uint8Array(), write: async () => {}, getName: () => name };",
-        "  },",
-        "};",
-      ].join("\n"),
-    );
-
-    const result = await extractContentMetadata(
-      [],
-      tmpDir,
-      [],
-      [],
-      "",
-      [driverFile],
-      driversDir,
-    );
-    assertEquals(result.drivers[0].hasConfigSchema, true);
-    assertEquals(result.drivers[0].configFields.length, 2);
-    assertEquals(result.drivers[0].configFields[0].name, "bucket");
-    assertEquals(result.drivers[0].configFields[0].type, "string");
-    assertEquals(result.drivers[0].configFields[0].required, true);
-    assertEquals(result.drivers[0].configFields[1].name, "region");
-    assertEquals(result.drivers[0].configFields[1].required, false);
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true });
-  }
-});
-
-Deno.test("extractContentMetadata extracts driver configSchema from shorthand syntax", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  try {
-    const driversDir = join(tmpDir, "drivers");
-    await Deno.mkdir(driversDir, { recursive: true });
-
-    const driverFile = join(driversDir, "shorthand.ts");
-    await Deno.writeTextFile(
-      driverFile,
-      [
-        'import { z } from "npm:zod";',
-        "const configSchema = z.object({",
-        '  endpoint: z.string().describe("API endpoint"),',
-        '  timeout: z.number().optional().describe("Timeout in ms"),',
-        "});",
-        "export const driver = {",
-        '  type: "@myorg/shorthand-driver",',
-        '  name: "Shorthand Driver",',
-        '  description: "Uses shorthand configSchema.",',
-        "  configSchema,",
-        "  createDriver(name: string, config: Record<string, unknown>) {",
-        "    return { read: async () => new Uint8Array(), write: async () => {}, getName: () => name };",
-        "  },",
-        "};",
-      ].join("\n"),
-    );
-
-    const result = await extractContentMetadata(
-      [],
-      tmpDir,
-      [],
-      [],
-      "",
-      [driverFile],
-      driversDir,
-    );
-    assertEquals(result.drivers[0].hasConfigSchema, true);
-    assertEquals(result.drivers[0].configFields.length, 2);
-    assertEquals(result.drivers[0].configFields[0].name, "endpoint");
-    assertEquals(result.drivers[0].configFields[0].type, "string");
-    assertEquals(result.drivers[0].configFields[0].required, true);
-    assertEquals(result.drivers[0].configFields[1].name, "timeout");
-    assertEquals(result.drivers[0].configFields[1].required, false);
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true });
-  }
-});
-
-Deno.test("extractContentMetadata skips driver file without driver export", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  try {
-    const driversDir = join(tmpDir, "drivers");
-    await Deno.mkdir(driversDir, { recursive: true });
-
-    const driverFile = join(driversDir, "helper.ts");
-    await Deno.writeTextFile(
-      driverFile,
-      "export const helper = () => 42;\n",
-    );
-
-    const result = await extractContentMetadata(
-      [],
-      tmpDir,
-      [],
-      [],
-      "",
-      [driverFile],
-      driversDir,
-    );
-    assertEquals(result.drivers.length, 0);
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true });
-  }
-});
-
-Deno.test("extractContentMetadata skips driver without type", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  try {
-    const driversDir = join(tmpDir, "drivers");
-    await Deno.mkdir(driversDir, { recursive: true });
-
-    const driverFile = join(driversDir, "bad.ts");
-    await Deno.writeTextFile(
-      driverFile,
-      [
-        "export const driver = {",
-        '  name: "Bad Driver",',
-        '  description: "Missing type field.",',
-        "  createDriver(name: string) {",
-        "    return { read: async () => new Uint8Array(), write: async () => {}, getName: () => name };",
-        "  },",
-        "};",
-      ].join("\n"),
-    );
-
-    const result = await extractContentMetadata(
-      [],
-      tmpDir,
-      [],
-      [],
-      "",
-      [driverFile],
-      driversDir,
-    );
-    assertEquals(result.drivers.length, 0);
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true });
-  }
-});
-
 Deno.test("extractContentMetadata extracts datastore type, name, and description", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
@@ -1240,8 +1039,6 @@ Deno.test("extractContentMetadata extracts datastore type, name, and description
       [],
       tmpDir,
       [],
-      [],
-      "",
       [],
       "",
       [datastoreFile],
@@ -1294,8 +1091,6 @@ Deno.test("extractContentMetadata extracts datastore configSchema fields", async
       [],
       [],
       "",
-      [],
-      "",
       [datastoreFile],
       datastoresDir,
     );
@@ -1344,8 +1139,6 @@ Deno.test("extractContentMetadata extracts datastore configSchema from shorthand
       [],
       [],
       "",
-      [],
-      "",
       [datastoreFile],
       datastoresDir,
     );
@@ -1377,8 +1170,6 @@ Deno.test("extractContentMetadata skips datastore file without datastore export"
       [],
       tmpDir,
       [],
-      [],
-      "",
       [],
       "",
       [datastoreFile],
@@ -1414,8 +1205,6 @@ Deno.test("extractContentMetadata skips datastore without type", async () => {
       [],
       tmpDir,
       [],
-      [],
-      "",
       [],
       "",
       [datastoreFile],

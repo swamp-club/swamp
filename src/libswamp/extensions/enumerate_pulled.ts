@@ -26,7 +26,6 @@ export type PulledExtensionType =
   | "models"
   | "workflows"
   | "vaults"
-  | "drivers"
   | "datastores"
   | "reports"
   | "files";

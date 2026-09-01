@@ -145,7 +145,6 @@ export async function* extensionQuality(
         const sourceFiles = [
           ...input.prepareInput.allModelFiles,
           ...input.prepareInput.allVaultFiles,
-          ...input.prepareInput.allDriverFiles,
           ...input.prepareInput.allDatastoreFiles,
           ...input.prepareInput.allReportFiles,
         ];
@@ -188,7 +187,6 @@ export async function* extensionQuality(
       const allSourceFiles = [
         ...input.prepareInput.allModelFiles,
         ...input.prepareInput.allVaultFiles,
-        ...input.prepareInput.allDriverFiles,
         ...input.prepareInput.allDatastoreFiles,
         ...input.prepareInput.allReportFiles,
       ];

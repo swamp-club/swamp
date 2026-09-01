@@ -123,7 +123,7 @@ Deno.test("classifyExtensionFile: arbitrary non-extensions/ paths are current", 
 
 Deno.test("classifyExtensionFile: extensions/<known-type>/ paths still gen-1", () => {
   for (
-    const type of ["models", "workflows", "vaults", "drivers", "datastores"]
+    const type of ["models", "workflows", "vaults", "datastores"]
   ) {
     assertEquals(
       classifyExtensionFile(`extensions/${type}/foo.ts`),
@@ -587,7 +587,6 @@ Deno.test("extractTopLevelRoot: each bundle kind", () => {
     const kind of [
       "bundles",
       "vault-bundles",
-      "driver-bundles",
       "datastore-bundles",
       "report-bundles",
     ]

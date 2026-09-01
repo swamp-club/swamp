@@ -103,7 +103,6 @@ export const INFRASTRUCTURE_FILES = new Set([
 const MERGEABLE_ON_REVERSE = new Set([
   "bundles",
   "vault-bundles",
-  "driver-bundles",
   "report-bundles",
 ]);
 

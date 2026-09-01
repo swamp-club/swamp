@@ -21,7 +21,7 @@ import type { ExtensionContentMetadata } from "./extension_content.ts";
 
 /** A single content item whose collective doesn't match the extension's collective. */
 export interface CollectiveMismatch {
-  kind: "model" | "vault" | "workflow" | "driver" | "datastore" | "report";
+  kind: "model" | "vault" | "workflow" | "datastore" | "report";
   identifier: string;
   fileName: string;
 }
@@ -33,11 +33,11 @@ export interface CollectiveValidationResult {
 }
 
 /**
- * Validates that all content items (models, vaults, workflows, drivers, datastores, reports) in an extension
+ * Validates that all content items (models, vaults, workflows, datastores, reports) in an extension
  * use the same collective as the extension package itself.
  *
  * For example, if the extension is `@stack72/my-extension`, all model types,
- * vault types, workflow names, driver types, datastore types, and report names must start with `@stack72/`.
+ * vault types, workflow names, datastore types, and report names must start with `@stack72/`.
  */
 export function validateContentCollectives(
   extensionName: string,
@@ -77,16 +77,6 @@ export function validateContentCollectives(
         kind: "workflow",
         identifier: workflow.name,
         fileName: workflow.fileName,
-      });
-    }
-  }
-
-  for (const driver of contentMetadata.drivers) {
-    if (!driver.type.startsWith(collectivePrefix)) {
-      mismatches.push({
-        kind: "driver",
-        identifier: driver.type,
-        fileName: driver.fileName,
       });
     }
   }

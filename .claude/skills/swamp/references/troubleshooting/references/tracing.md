@@ -111,12 +111,12 @@ swamp.cli "workflow run"
             ├─ swamp.workflow.evaluate
             ├─ swamp.workflow.job "build"
             │    ├─ swamp.workflow.step "compile" (20ms)
-            │    │    └─ swamp.model.method → swamp.driver.execute
+            │    │    └─ swamp.model.method
             │    └─ swamp.workflow.step "test" (parallel, 45ms)
-            │         └─ swamp.model.method → swamp.driver.execute
+            │         └─ swamp.model.method
             └─ swamp.workflow.job "deploy" (starts after build)
                  └─ swamp.workflow.step "apply"
-                      └─ swamp.model.method → swamp.driver.execute
+                      └─ swamp.model.method
 ```
 
 ### All CLI Operations
@@ -138,8 +138,8 @@ Every libswamp generator is traced. Key span names:
 1. Enable tracing and run the workflow
 2. In Jaeger, find the trace and look at the waterfall view
 3. Identify which `swamp.workflow.step` spans are longest
-4. Drill into `swamp.model.method` → `swamp.driver.execute` to see if the method
-   itself is slow or if it's lock/sync overhead
+4. Drill into `swamp.model.method` to see if the method itself is slow or if
+   it's lock/sync overhead
 
 ### Slow Data GC
 
@@ -159,13 +159,6 @@ span status and error message indicate which phase failed.
 
 If `swamp.lock.acquire` spans are long, another process is holding the lock.
 Check with `swamp datastore lock status` to see the current holder.
-
-### Docker Driver Trace Propagation
-
-When using `driver: docker`, swamp automatically sets `TRACEPARENT` as a
-container environment variable. Extensions running in Docker that initialize
-their own OTel SDK can read this env var to connect their spans to the parent
-trace, creating a unified trace across process boundaries.
 
 ## Reference
 

@@ -25,7 +25,6 @@ const logger = getLogger(["swamp", "repo", "skills"]);
 export const SUPERSEDED_SKILLS: readonly string[] = [
   "swamp-extension-model",
   "swamp-extension-vault",
-  "swamp-extension-driver",
   "swamp-extension-datastore",
   "swamp-extension-quality",
   "swamp-data-query",

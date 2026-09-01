@@ -407,7 +407,7 @@ Deno.test(
   "buildErrorJson: DuplicateTypeUserError log+JSON share the same structured fields (output parity)",
   () => {
     const err = new DuplicateTypeUserError({
-      kind: "driver",
+      kind: "vault",
       typeNormalized: "@scope/parity",
       existing: {
         extensionName: "@scopeA/aa",
@@ -427,12 +427,12 @@ Deno.test(
     assertStringIncludes(err.message, "@scopeA/aa@1.0.0");
     assertStringIncludes(err.message, "@scopeB/bb@2.0.0");
     assertStringIncludes(err.message, "@scope/parity");
-    assertStringIncludes(err.message, "(kind=driver)");
+    assertStringIncludes(err.message, "(kind=vault)");
 
     // JSON mode: same fields available structurally.
     const result = buildErrorJson(err);
     const dup = result.duplicateType as Record<string, unknown>;
-    assertEquals(dup.kind, "driver");
+    assertEquals(dup.kind, "vault");
     assertEquals(dup.type, "@scope/parity");
     assertEquals(
       (dup.existing as Record<string, string>).extensionName,

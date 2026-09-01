@@ -185,7 +185,6 @@ export class RemoveExtensionService {
     const BUNDLE_MAPPINGS: ReadonlyArray<[string, string]> = [
       ["models", "bundles"],
       ["vaults", "vault-bundles"],
-      ["drivers", "driver-bundles"],
       ["datastores", "datastore-bundles"],
       ["reports", "report-bundles"],
     ];

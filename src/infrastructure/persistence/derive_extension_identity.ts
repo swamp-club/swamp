@@ -64,7 +64,7 @@ export interface ExtensionIdentity {
  *     Note <name> may contain forward slashes (scoped extension names
  *     like `@swamp/aws/ec2` are common). The function consumes
  *     everything between the `pulled-extensions/` prefix and the next
- *     known kind segment (`models`, `vaults`, `drivers`, `datastores`,
+ *     known kind segment (`models`, `vaults`, `datastores`,
  *     `reports`, `workflows`, `skills`) as the name.
  *   - Local or source-mounted: any path containing an
  *     `/extensions/<kind>/` segment where `<kind>` is one of the known
@@ -149,7 +149,6 @@ function containsKnownExtensionsKindSegment(path: string): boolean {
 const KIND_SEGMENTS = new Set([
   "models",
   "vaults",
-  "drivers",
   "datastores",
   "reports",
   "workflows",

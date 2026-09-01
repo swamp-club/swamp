@@ -34,7 +34,6 @@ import { ValidationError } from "./validation_error.ts";
 export type KindDir =
   | "models"
   | "vaults"
-  | "drivers"
   | "datastores"
   | "reports";
 
@@ -152,8 +151,6 @@ export function kindDirToExtensionKind(
       return "model";
     case "vaults":
       return "vault";
-    case "drivers":
-      return "driver";
     case "datastores":
       return "datastore";
     case "reports":
@@ -170,8 +167,6 @@ export function extensionKindToKindDir(
       return "models";
     case "vault":
       return "vaults";
-    case "driver":
-      return "drivers";
     case "datastore":
       return "datastores";
     case "report":

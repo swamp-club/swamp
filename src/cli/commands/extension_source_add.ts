@@ -75,7 +75,7 @@ export const extensionSourceAddCommand = new Command()
   )
   .option(
     "--only <types:string>",
-    "Only load these extension types (comma-separated: models,vaults,drivers,datastores,reports,workflows)",
+    "Only load these extension types (comma-separated: models,vaults,datastores,reports,workflows)",
   )
   .action(async function (options: AnyOptions, path: string) {
     const cliCtx = createContext(options as GlobalOptions, [

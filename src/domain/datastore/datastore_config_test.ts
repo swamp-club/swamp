@@ -173,7 +173,6 @@ Deno.test("getDatastoreDirectories: excludes bundle directories from default lis
     const bundleDir of [
       "bundles",
       "vault-bundles",
-      "driver-bundles",
       "report-bundles",
     ]
   ) {
@@ -248,7 +247,6 @@ Deno.test("ALWAYS_LOCAL_SUBDIRS: contains bundle directories", () => {
     const bundleDir of [
       "bundles",
       "vault-bundles",
-      "driver-bundles",
       "report-bundles",
     ]
   ) {
@@ -265,7 +263,6 @@ Deno.test("isAlwaysLocal: returns true for bundle directories", () => {
     const bundleDir of [
       "bundles",
       "vault-bundles",
-      "driver-bundles",
       "report-bundles",
     ]
   ) {

@@ -687,7 +687,6 @@ export class ReconcileFromDiskService {
           | "model"
           | "extension"
           | "vault"
-          | "driver"
           | "datastore"
           | "report";
         typeNormalized: string;

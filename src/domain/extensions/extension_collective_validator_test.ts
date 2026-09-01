@@ -29,7 +29,6 @@ function makeMetadata(
     extensions: [],
     workflows: [],
     vaults: [],
-    drivers: [],
     datastores: [],
     reports: [],
     skills: [],

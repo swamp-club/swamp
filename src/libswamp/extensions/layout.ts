@@ -49,7 +49,6 @@ export const PULLED_TYPE_DIRS: ReadonlySet<string> = new Set([
   "models",
   "workflows",
   "vaults",
-  "drivers",
   "datastores",
   "reports",
   "skills",
@@ -67,7 +66,7 @@ export const PULLED_TYPE_DIRS: ReadonlySet<string> = new Set([
  * up from tracked-file parents and would otherwise stop at the
  * extension root when it sees the untracked scaffolds as entries.
  *
- * Stays in sync with the seven `Deno.mkdir` calls in `installExtension`
+ * Stays in sync with the `Deno.mkdir` calls in `installExtension`
  * in `pull.ts`. If `pull` adds a new per-extension kind dir, add it
  * here too.
  */
@@ -75,7 +74,6 @@ export const PER_EXTENSION_SCAFFOLD_DIRS: readonly string[] = [
   "models",
   "workflows",
   "vaults",
-  "drivers",
   "datastores",
   "reports",
   "files",
@@ -199,7 +197,7 @@ export function isSkillDirEntryMulti(
  * - `.swamp/pulled-extensions/<flat-name>/...` →
  *   `.swamp/pulled-extensions/<flat-name>`
  * - bundle namespaces (`bundles/<hash>/...`,
- *   `vault-bundles/<hash>/...`, `driver-bundles/<hash>/...`,
+ *   `vault-bundles/<hash>/...`,
  *   `datastore-bundles/<hash>/...`, `report-bundles/<hash>/...`) →
  *   `<kind>/<hash>`
  *
@@ -246,7 +244,6 @@ export function extractTopLevelRoot(
   const BUNDLE_KINDS = [
     "bundles",
     "vault-bundles",
-    "driver-bundles",
     "datastore-bundles",
     "report-bundles",
   ];
@@ -297,7 +294,6 @@ export function extractTopLevelRootMulti(
   const BUNDLE_KINDS = [
     "bundles",
     "vault-bundles",
-    "driver-bundles",
     "datastore-bundles",
     "report-bundles",
   ];

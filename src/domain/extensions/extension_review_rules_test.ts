@@ -337,24 +337,6 @@ Deno.test("testing-completeness: no warning for non-entry-point files", () => {
   );
 });
 
-Deno.test("driver-log-forwarding: warns when a driver never forwards logs", () => {
-  const result = evaluateReviewRules([
-    source({ kind: "driver", content: "export const driver = {};" }),
-  ]);
-  const ids = result.warnings.map((w) => w.ruleId);
-  assert(ids.includes("driver-log-forwarding"));
-});
-
-Deno.test("driver-log-forwarding: no warning when onLog is used", () => {
-  const result = evaluateReviewRules([
-    source({ kind: "driver", content: "callbacks?.onLog?.(line);" }),
-  ]);
-  assertEquals(
-    result.warnings.filter((w) => w.ruleId === "driver-log-forwarding").length,
-    0,
-  );
-});
-
 Deno.test("checkReviewRules: reads content, computes sibling test, skips test files", async () => {
   const fileContents: Record<string, string> = {
     "/ext/models/thing.ts": "schema: z.object({}).passthrough(),",

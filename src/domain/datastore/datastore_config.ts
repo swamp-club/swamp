@@ -38,7 +38,6 @@ export const ALWAYS_LOCAL_SUBDIRS = [
   "secrets",
   "bundles",
   "vault-bundles",
-  "driver-bundles",
   "report-bundles",
 ] as const;
 
@@ -57,7 +56,6 @@ export const DEFAULT_DATASTORE_SUBDIRS = [
   "secrets",
   "bundles",
   "vault-bundles",
-  "driver-bundles",
   "report-bundles",
   "audit",
   "telemetry",

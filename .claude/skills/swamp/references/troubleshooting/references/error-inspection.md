@@ -80,8 +80,7 @@ swamp-warning: model: extensions/models/my-model.ts: Missing version field — m
 ```
 
 Format: `swamp-warning: <kind>: <file>: <error>`. Kinds match the doctor
-extension registries
-(`model | extension | vault | driver | datastore | report`).
+extension registries (`model | extension | vault | datastore | report`).
 
 The emitter is at `src/infrastructure/logging/extension_load_warnings.ts`.
 `swamp doctor extensions` consumes the same emitter and folds warnings into a

@@ -288,7 +288,6 @@ export class InstallExtensionService {
           | "model"
           | "extension"
           | "vault"
-          | "driver"
           | "datastore"
           | "report";
         typeNormalized: string;

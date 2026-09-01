@@ -204,7 +204,6 @@ Deno.test("DefaultDatastorePathResolver - bundle subdirs are always-local", () =
   // All bundle dirs are always-local — derived artifacts, not synced (swamp-club#869)
   assertEquals(resolver.isDatastoreSubdir("bundles"), false);
   assertEquals(resolver.isDatastoreSubdir("vault-bundles"), false);
-  assertEquals(resolver.isDatastoreSubdir("driver-bundles"), false);
   assertEquals(resolver.isDatastoreSubdir("datastore-bundles"), false);
   assertEquals(resolver.isDatastoreSubdir("report-bundles"), false);
 });
@@ -226,10 +225,6 @@ Deno.test("DefaultDatastorePathResolver - resolvePath routes bundles to local .s
   assertPathEquals(
     resolver.resolvePath("vault-bundles", "ff00aa11", "sm.js"),
     "/repo/.swamp/vault-bundles/ff00aa11/sm.js",
-  );
-  assertPathEquals(
-    resolver.resolvePath("driver-bundles", "bb22cc33", "driver.js"),
-    "/repo/.swamp/driver-bundles/bb22cc33/driver.js",
   );
   assertPathEquals(
     resolver.resolvePath("datastore-bundles", "dd44ee55", "ds.js"),

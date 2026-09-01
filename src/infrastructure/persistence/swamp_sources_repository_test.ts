@@ -329,8 +329,8 @@ Deno.test("collectDirsForKind: extracts dirs for specific kind", () => {
   const vaults = collectDirsForKind(sources, "vaults");
   assertEquals(vaults, ["/a/extensions/vaults"]);
 
-  const drivers = collectDirsForKind(sources, "drivers");
-  assertEquals(drivers, []);
+  const datastores = collectDirsForKind(sources, "datastores");
+  assertEquals(datastores, []);
 });
 
 // -----------------------------------------------------------------
@@ -368,7 +368,7 @@ function snapshotResolved(
   });
 }
 
-Deno.test("resolveSourceExtensionDirs snapshot: all six kinds present", async () => {
+Deno.test("resolveSourceExtensionDirs snapshot: all five kinds present", async () => {
   const tmp = await Deno.makeTempDir({ prefix: "swamp_snap_" });
   try {
     const src = join(tmp, "all");
@@ -376,7 +376,6 @@ Deno.test("resolveSourceExtensionDirs snapshot: all six kinds present", async ()
       const kind of [
         "models",
         "vaults",
-        "drivers",
         "datastores",
         "reports",
         "workflows",
@@ -392,7 +391,6 @@ Deno.test("resolveSourceExtensionDirs snapshot: all six kinds present", async ()
         sourcePath: "/all",
         modelsDir: "/all/extensions/models",
         vaultsDir: "/all/extensions/vaults",
-        driversDir: "/all/extensions/drivers",
         datastoresDir: "/all/extensions/datastores",
         reportsDir: "/all/extensions/reports",
         workflowsDir: "/all/extensions/workflows",
@@ -472,7 +470,6 @@ Deno.test("resolveSourceExtensionDirs snapshot: non-existent path yields empty",
   assertPathEquals(result[0].sourcePath, "/definitely/does/not/exist/v139");
   assertEquals(result[0].modelsDir, undefined);
   assertEquals(result[0].vaultsDir, undefined);
-  assertEquals(result[0].driversDir, undefined);
   assertEquals(result[0].datastoresDir, undefined);
   assertEquals(result[0].reportsDir, undefined);
   assertEquals(result[0].workflowsDir, undefined);
@@ -597,7 +594,6 @@ const KIND_FIELDS: Array<
 > = [
   ["models", "modelsDir"],
   ["vaults", "vaultsDir"],
-  ["drivers", "driversDir"],
   ["datastores", "datastoresDir"],
   ["reports", "reportsDir"],
   ["workflows", "workflowsDir"],
@@ -621,7 +617,6 @@ Deno.test("parity: resolveExtensionKindsForSource matches resolveSourceExtension
       const kind of [
         "models",
         "vaults",
-        "drivers",
         "datastores",
         "reports",
         "workflows",
@@ -735,7 +730,6 @@ Deno.test("parity: resolveExtensionKindsForSource returns kinds in EXTENSION_KIN
         "workflows",
         "reports",
         "datastores",
-        "drivers",
         "vaults",
         "models",
       ]
@@ -746,7 +740,6 @@ Deno.test("parity: resolveExtensionKindsForSource returns kinds in EXTENSION_KIN
     assertEquals(kinds, [
       "models",
       "vaults",
-      "drivers",
       "datastores",
       "reports",
       "workflows",

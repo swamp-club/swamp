@@ -50,7 +50,6 @@ export type ReviewSeverity = "critical" | "high" | "medium" | "low";
 export type ExtensionContentKind =
   | "model"
   | "vault"
-  | "driver"
   | "datastore"
   | "report";
 
@@ -190,7 +189,7 @@ export const DEFAULT_REVIEW_RULES: ReviewRule[] = [
     id: "testing-completeness",
     dimension: "Testing Completeness",
     severity: "medium",
-    appliesTo: ["model", "vault", "driver", "datastore", "report"],
+    appliesTo: ["model", "vault", "datastore", "report"],
     detect: (source) => {
       if (!source.isEntryPoint) return [];
       if (source.path.endsWith("_test.ts")) return [];
@@ -238,20 +237,6 @@ export const DEFAULT_REVIEW_RULES: ReviewRule[] = [
         );
       }
       return messages;
-    },
-  },
-  {
-    id: "driver-log-forwarding",
-    dimension: "Logging Quality",
-    severity: "low",
-    appliesTo: ["driver"],
-    detect: (source) => {
-      if (!source.isEntryPoint) return [];
-      if (source.content.includes("onLog")) return [];
-      return [
-        "Driver does not forward logs to the host via `callbacks.onLog()` — " +
-        "host-side observability of driver execution will be limited.",
-      ];
     },
   },
 ];
@@ -351,24 +336,6 @@ export const REVIEW_DIMENSIONS: ReviewDimension[] = [
   { id: "instance-names", label: "Instance names", appliesTo: ["model"] },
   { id: "data-access", label: "Data access", appliesTo: ["model"] },
   { id: "version-upgrades", label: "Version upgrades", appliesTo: ["model"] },
-  // Drivers
-  {
-    id: "driver-output-kind",
-    label: "Driver output kind",
-    appliesTo: ["driver"],
-  },
-  { id: "driver-duration", label: "Driver durationMs", appliesTo: ["driver"] },
-  {
-    id: "driver-log-forwarding",
-    label: "Driver log forwarding",
-    appliesTo: ["driver"],
-  },
-  { id: "driver-lifecycle", label: "Driver lifecycle", appliesTo: ["driver"] },
-  {
-    id: "driver-error-status",
-    label: "Driver error status",
-    appliesTo: ["driver"],
-  },
   // Vaults
   { id: "vault-get-throws", label: "Vault get throws", appliesTo: ["vault"] },
   {

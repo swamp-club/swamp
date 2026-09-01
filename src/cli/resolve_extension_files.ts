@@ -42,7 +42,6 @@ import { resolveWorkflowDependencies } from "../domain/extensions/extension_depe
 import { resolveModelsDir } from "./resolve_models_dir.ts";
 import { resolveVaultsDir } from "./resolve_vaults_dir.ts";
 import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
-import { resolveDriversDir } from "./resolve_drivers_dir.ts";
 import { resolveDatastoresDir } from "./resolve_datastores_dir.ts";
 import { resolveReportsDir } from "./resolve_reports_dir.ts";
 import { SKILL_DIRS } from "../domain/repo/skill_dirs.ts";
@@ -72,10 +71,6 @@ export interface ResolvedExtensionFiles {
   vaultsDir: string;
   vaultEntryPoints: string[];
   allVaultFiles: string[];
-  /** Effective base for `drivers` — see {@link modelsDir}. */
-  driversDir: string;
-  driverEntryPoints: string[];
-  allDriverFiles: string[];
   /** Effective base for `datastores` — see {@link modelsDir}. */
   datastoresDir: string;
   datastoreEntryPoints: string[];
@@ -169,7 +164,6 @@ export async function resolveExtensionFiles(
     ...manifest.models.map((p) => ({ field: "models", path: p })),
     ...manifest.workflows.map((p) => ({ field: "workflows", path: p })),
     ...manifest.vaults.map((p) => ({ field: "vaults", path: p })),
-    ...manifest.drivers.map((p) => ({ field: "drivers", path: p })),
     ...manifest.datastores.map((p) => ({ field: "datastores", path: p })),
     ...manifest.reports.map((p) => ({ field: "reports", path: p })),
     ...manifest.skills.map((p) => ({ field: "skills", path: p })),
@@ -208,9 +202,6 @@ export async function resolveExtensionFiles(
   const vaultsDir = useManifestBase
     ? manifestDir
     : resolve(extensionsDir, resolveVaultsDir(marker));
-  const driversDir = useManifestBase
-    ? manifestDir
-    : resolve(extensionsDir, resolveDriversDir(marker));
   const datastoresDir = useManifestBase
     ? manifestDir
     : resolve(extensionsDir, resolveDatastoresDir(marker));
@@ -226,7 +217,6 @@ export async function resolveExtensionFiles(
     const typedFieldPrefixes: Array<{ field: string; prefix: string }> = [
       { field: "models", prefix: "models/" },
       { field: "vaults", prefix: "vaults/" },
-      { field: "drivers", prefix: "drivers/" },
       { field: "datastores", prefix: "datastores/" },
       { field: "reports", prefix: "reports/" },
       { field: "include", prefix: "models/" },
@@ -392,32 +382,7 @@ export async function resolveExtensionFiles(
     allVaultFiles.push(...vaultImportResult.resolvedFiles);
   }
 
-  // 8. Collect driver files from manifest
-  const driverEntryPoints: string[] = [];
-  for (const driverRef of manifest.drivers) {
-    const driverPath = resolve(driversDir, driverRef);
-    try {
-      await Deno.stat(driverPath);
-    } catch {
-      throw new UserError(
-        `Driver file not found: ${driverRef} (expected at ${driverPath})` +
-          monorepoHint,
-      );
-    }
-    driverEntryPoints.push(driverPath);
-  }
-
-  // 9. Resolve local imports for driver entry points
-  const allDriverFiles: string[] = [];
-  if (driverEntryPoints.length > 0) {
-    const driverImportResult = await resolveLocalImports(
-      driverEntryPoints,
-      driversDir,
-    );
-    allDriverFiles.push(...driverImportResult.resolvedFiles);
-  }
-
-  // 10. Collect datastore files from manifest
+  // 8. Collect datastore files from manifest
   const datastoreEntryPoints: string[] = [];
   for (const datastoreRef of manifest.datastores) {
     const datastorePath = resolve(datastoresDir, datastoreRef);
@@ -648,9 +613,6 @@ export async function resolveExtensionFiles(
     vaultsDir,
     vaultEntryPoints,
     allVaultFiles,
-    driversDir,
-    driverEntryPoints,
-    allDriverFiles,
     datastoresDir,
     datastoreEntryPoints,
     allDatastoreFiles,
