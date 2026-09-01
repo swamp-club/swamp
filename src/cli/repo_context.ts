@@ -1402,10 +1402,15 @@ export async function acquireModelLocks(
 }
 
 /**
- * Single-phase push: everything under the global lock (existing behavior).
+ * Single-phase push: catalog export outside the lock, pushChanged under it.
  *
- * Acquires the global lock, writes catalog export, calls `pushChanged`,
- * then releases. Used when the extension does not advertise `twoPhaseSync`.
+ * Writes the catalog export before acquiring the global lock, then acquires
+ * the lock and calls `pushChanged`. The export is a full snapshot of the
+ * local catalog — safe to write outside the lock because a later concurrent
+ * writer simply overwrites with a more complete snapshot (same reasoning as
+ * the two-phase path).
+ *
+ * Used when the extension does not advertise `twoPhaseSync`.
  */
 export async function flushSinglePhasePush(
   provider: DatastoreProvider,
@@ -1419,6 +1424,19 @@ export async function flushSinglePhasePush(
   progressWriter?: LockProgressWriter,
 ): Promise<void> {
   const write = progressWriter ?? defaultLockWriter;
+
+  // Write catalog export before acquiring the global lock so the
+  // synchronous SQLite read + JSON serialization doesn't hold the lock
+  // and block concurrent writers. Safe for the same reason as two-phase:
+  // the export is a full snapshot that a later writer simply overwrites.
+  await writeCatalogExportIfNeeded(
+    syncService,
+    config,
+    namespace,
+    catalogStore,
+    progressWriter,
+  );
+
   const pushLock = provider.createLock(
     config.datastorePath,
     {
@@ -1441,14 +1459,6 @@ export async function flushSinglePhasePush(
       );
     }
     write(dim("Pushing changes to datastore..."));
-
-    await writeCatalogExportIfNeeded(
-      syncService,
-      config,
-      namespace,
-      catalogStore,
-      progressWriter,
-    );
 
     let pushed: number | void;
     if (caps?.scopedSync) {

@@ -50,7 +50,11 @@ import {
   type DatastoreConfig,
   isCustomDatastoreConfig,
 } from "../domain/datastore/datastore_config.ts";
-import type { PushManifest } from "../domain/datastore/datastore_sync_service.ts";
+import type {
+  DatastoreSyncService,
+  PushManifest,
+} from "../domain/datastore/datastore_sync_service.ts";
+import { CatalogStore } from "../infrastructure/persistence/catalog_store.ts";
 import { LockTimeoutError } from "../domain/datastore/distributed_lock.ts";
 import { RepoPath } from "../domain/repo/repo_path.ts";
 import { RepoService } from "../domain/repo/repo_service.ts";
@@ -2369,4 +2373,89 @@ Deno.test("resolveManagedConfigPaths: custom modelsDir is used when managedConfi
     lockfilePath,
     join(repo, "custom", "models", "upstream_extensions.json"),
   );
+});
+
+// ── flushSinglePhasePush: catalog export ordering ──────────────────────────
+
+Deno.test("flushSinglePhasePush: writes catalog export before acquiring global lock", async () => {
+  const events: string[] = [];
+  const provider = createMockProvider(events);
+
+  const dir = await Deno.makeTempDir({ prefix: "swamp-export-order-test-" });
+  try {
+    const dbPath = join(dir, "_catalog.db");
+    const cachePath = join(dir, "cache");
+    await ensureDir(join(cachePath, "test-ns"));
+    const catalogStore = new CatalogStore(dbPath);
+    try {
+      catalogStore.upsert({
+        namespace: "test-ns",
+        type_normalized: "test-model",
+        model_id: "model-001",
+        data_name: "my-data",
+        id: "data-uuid-001",
+        version: 1,
+        is_latest: 1,
+        model_name: "test-model-name",
+        spec_name: "result",
+        data_type: "resource",
+        content_type: "application/json",
+        lifetime: "infinite",
+        owner_type: "model-method",
+        owner_ref: "",
+        workflow_run_id: "",
+        workflow_name: "",
+        job_name: "",
+        step_name: "",
+        source: "",
+        streaming: 0,
+        size: 256,
+        created_at: "2026-01-01T00:00:00.000Z",
+        tags: "{}",
+      });
+
+      const syncService: DatastoreSyncService = {
+        pullChanged: () => Promise.resolve(0),
+        pushChanged: () => {
+          events.push("pushChanged");
+          return Promise.resolve(0);
+        },
+        markDirty: () => {
+          events.push("markDirty");
+          return Promise.resolve();
+        },
+        capabilities: () => ({ scopedSync: true }),
+      };
+
+      await flushSinglePhasePush(
+        provider,
+        syncService,
+        { ...createMockConfig("test-ns"), cachePath },
+        { scopedSync: true },
+        [{ modelType: "test", modelId: "m1" }],
+        "test-ns",
+        catalogStore,
+        createMockLogger(),
+      );
+
+      const markDirtyIdx = events.indexOf("markDirty");
+      const lockAcquireIdx = events.indexOf("global-lock-acquire");
+      assertEquals(
+        markDirtyIdx < lockAcquireIdx,
+        true,
+        `catalog export (markDirty at ${markDirtyIdx}) should run before lock acquire (at ${lockAcquireIdx}): ${
+          JSON.stringify(events)
+        }`,
+      );
+
+      const exportPath = join(cachePath, "test-ns", ".catalog-export.json");
+      const content = await Deno.readTextFile(exportPath);
+      const parsed = JSON.parse(content);
+      assertEquals(parsed.length, 1);
+    } finally {
+      catalogStore.close();
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
 });

@@ -74,7 +74,7 @@ import type {
   MarkDirtyHook,
 } from "../../domain/datastore/datastore_sync_service.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
-import { CatalogStore } from "./catalog_store.ts";
+import { CatalogStore, ITERATE_PAGE_SIZE } from "./catalog_store.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import { join } from "@std/path";
 
@@ -151,19 +151,44 @@ export function createCatalogStore(
  * namespace. The file contains all catalog rows for that namespace as a
  * flat JSON array. Extensions upload this file to the remote datastore
  * via {@link DatastoreSyncService.exportCatalog}.
+ *
+ * Uses cooperative yielding: iterates the catalog page by page, writing
+ * each row's JSON incrementally, and yields the event loop between pages
+ * so concurrent async work (HTTP handlers, WebSocket messages, workflow
+ * steps) is not starved by the synchronous SQLite reads.
  */
 export async function writeCatalogExport(
   catalogStore: CatalogStore,
   cachePath: string,
   namespace: string,
 ): Promise<number> {
-  const rows = [...catalogStore.iterateNamespace(namespace)];
   const exportPath = join(cachePath, namespace, ".catalog-export.json");
-  await Deno.writeTextFile(
-    exportPath,
-    JSON.stringify(rows, null, 2) + "\n",
-  );
-  return rows.length;
+  const encoder = new TextEncoder();
+  const file = await Deno.open(exportPath, {
+    write: true,
+    create: true,
+    truncate: true,
+  });
+  try {
+    let rowCount = 0;
+    let first = true;
+    await file.write(encoder.encode("[\n"));
+    for (const row of catalogStore.iterateNamespace(namespace)) {
+      if (!first) {
+        await file.write(encoder.encode(",\n"));
+      }
+      first = false;
+      await file.write(encoder.encode(JSON.stringify(row, null, 2)));
+      rowCount++;
+      if (rowCount % ITERATE_PAGE_SIZE === 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
+    }
+    await file.write(encoder.encode("\n]\n"));
+    return rowCount;
+  } finally {
+    file.close();
+  }
 }
 
 // =============================================================================
