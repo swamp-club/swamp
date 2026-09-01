@@ -200,7 +200,10 @@ on all remote commands falls back to the `SWAMP_SERVE_URL` env var (or
 `SWAMP_SERVER_URL` as a secondary fallback) when not provided, so
 `export SWAMP_SERVE_URL=wss://demo.swamp-club.ai` avoids repeating the URL
 on every invocation. Precedence: `--server` flag > `SWAMP_SERVE_URL` >
-`SWAMP_SERVER_URL`.
+`SWAMP_SERVER_URL`. When a command dispatches to a remote server, a
+`Remote   <url>` indicator line is written to stderr before the first
+network I/O, so the user always knows the command is targeting a server
+rather than the local repository.
 
 When `--auth-mode token` is active, the server validates the token presented at
 WebSocket upgrade time via the `swamp/server-token` model's `redeem` method
