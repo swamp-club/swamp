@@ -2893,7 +2893,7 @@ Deno.test("RepoService.upgrade: returns empty when no lockfile exists", async ()
 Deno.test("RepoService.init: custom tool with relative skillsDir gets skills copied locally", async () => {
   await withTempDir(async (tempDir) => {
     await writeCustomTools(tempDir, [{
-      name: "pi",
+      name: "windsurf",
       skillsDir: ".agents/skills",
       instructionsFile: "AGENTS.md",
       instructionsMode: "shared",
@@ -2902,9 +2902,9 @@ Deno.test("RepoService.init: custom tool with relative skillsDir gets skills cop
 
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
-    const result = await service.init(repoPath, { tools: ["pi"] });
+    const result = await service.init(repoPath, { tools: ["windsurf"] });
 
-    assertEquals(result.tools[0], "pi");
+    assertEquals(result.tools[0], "windsurf");
     assertEquals(result.skillsCopied.includes("swamp"), true);
 
     const skillPath = join(tempDir, ".agents", "skills", "swamp", "SKILL.md");
@@ -2944,7 +2944,7 @@ Deno.test("RepoService.init: custom tool with nested relative skillsDir gets ski
 Deno.test("RepoService.upgrade: custom tool with relative skillsDir gets skills updated", async () => {
   await withTempDir(async (tempDir) => {
     await writeCustomTools(tempDir, [{
-      name: "pi",
+      name: "windsurf",
       skillsDir: ".agents/skills",
       instructionsFile: "AGENTS.md",
       instructionsMode: "shared",
@@ -2953,7 +2953,7 @@ Deno.test("RepoService.upgrade: custom tool with relative skillsDir gets skills 
 
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
-    await service.init(repoPath, { tools: ["pi"] });
+    await service.init(repoPath, { tools: ["windsurf"] });
 
     const newService = new RepoService("0.2.0");
     const result = await newService.upgrade(repoPath);
