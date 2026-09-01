@@ -33,6 +33,7 @@ const CONFIG_FILES: Record<string, string[]> = {
   opencode: [".opencode/plugins/swamp-audit.ts"],
   copilot: [".github/hooks/swamp-audit.json"],
   pi: [".pi/extensions/swamp-audit.ts"],
+  antigravity: [".agents/hooks.json"],
 };
 
 async function readJsonFile(path: string): Promise<unknown> {
@@ -324,6 +325,40 @@ async function checkPi(ctx: CheckContext): Promise<CheckResult> {
   };
 }
 
+async function checkAntiGravity(ctx: CheckContext): Promise<CheckResult> {
+  const hooksPath = join(ctx.repoPath, ".agents/hooks.json");
+  let content: string;
+  try {
+    content = await Deno.readTextFile(hooksPath);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      return {
+        name: "agent-config-loadable",
+        status: "fail",
+        message: `${hooksPath} is missing`,
+        hint: "Run `swamp init --tool antigravity --force` to install hooks.",
+      };
+    }
+    throw error;
+  }
+  if (
+    !(content.includes("swamp") && content.includes("audit") &&
+      content.includes("record"))
+  ) {
+    return {
+      name: "agent-config-loadable",
+      status: "fail",
+      message: "AntiGravity hooks.json does not reference `swamp audit record`",
+      hint: "Run `swamp init --tool antigravity --force` to rewrite the hooks.",
+    };
+  }
+  return {
+    name: "agent-config-loadable",
+    status: "pass",
+    message: `${hooksPath} is present and references \`swamp audit record\``,
+  };
+}
+
 function appliesTo(tool: string): boolean {
   return tool in CONFIG_FILES;
 }
@@ -346,6 +381,8 @@ export const agentConfigLoadableCheck: PreflightCheck = {
         return await checkCopilot(ctx);
       case "pi":
         return await checkPi(ctx);
+      case "antigravity":
+        return await checkAntiGravity(ctx);
       default:
         return {
           name: "agent-config-loadable",

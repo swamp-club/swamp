@@ -30,6 +30,7 @@ export const VALID_AI_TOOLS: readonly AiTool[] = [
   "codex",
   "copilot",
   "pi",
+  "antigravity",
   "none",
 ] as const;
 

@@ -36,11 +36,12 @@ Each AI tool has a native global skills path that it reads at runtime:
 | copilot  | reads from `~/.agents/skills/` directly  | Yes                        |
 | kiro     | `~/.kiro/skills/`                        | No                         |
 | pi       | `~/.pi/agent/skills/`                    | Yes                        |
+| antigravity | reads from `~/.agents/skills/` directly | Yes                     |
 
 Tools that read from `~/.agents/skills/` natively (Amp, Cursor, OpenCode, Codex,
-Copilot, Pi) share a single copy. Claude Code and Kiro require their own copies
-at their vendor-specific global paths. Pi also reads from its own
-`~/.pi/agent/skills/` directory.
+Copilot, Pi, AntiGravity) share a single copy. Claude Code and Kiro require
+their own copies at their vendor-specific global paths. Pi also reads from its
+own `~/.pi/agent/skills/` directory.
 
 The `GLOBAL_SKILL_DIRS` mapping in `src/domain/repo/skill_dirs.ts` defines
 the home-relative path per built-in tool:
@@ -55,6 +56,7 @@ export const GLOBAL_SKILL_DIRS: Record<string, string> = {
   copilot: ".agents/skills",
   kiro: ".kiro/skills",
   pi: ".pi/agent/skills",
+  antigravity: ".agents/skills",
 };
 ```
 

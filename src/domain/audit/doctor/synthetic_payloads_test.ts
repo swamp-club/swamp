@@ -38,6 +38,7 @@ const SUPPORTED_TOOLS: HookTool[] = [
   "opencode",
   "copilot",
   "pi",
+  "antigravity",
 ];
 
 for (const tool of SUPPORTED_TOOLS) {

@@ -39,6 +39,10 @@ export function binaryNameFor(tool: string): string {
       return "opencode";
     case "copilot":
       return "copilot";
+    case "pi":
+      return "pi";
+    case "antigravity":
+      return "agy";
     default:
       return tool;
   }

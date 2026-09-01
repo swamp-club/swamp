@@ -51,6 +51,7 @@ export const BUILT_IN_TOOL_NAMES: readonly string[] = [
   "copilot",
   "kiro",
   "pi",
+  "antigravity",
   "none",
 ];
 
@@ -170,6 +171,15 @@ export function builtInToolConfig(tool: AiTool): ToolConfig {
         name: "pi",
         isBuiltIn: true,
         skillsDir: ".pi/skills",
+        instructionsFile: "AGENTS.md",
+        instructionsMode: "shared",
+        skillReferenceStyle: "name",
+      };
+    case "antigravity":
+      return {
+        name: "antigravity",
+        isBuiltIn: true,
+        skillsDir: ".agents/skills",
         instructionsFile: "AGENTS.md",
         instructionsMode: "shared",
         skillReferenceStyle: "name",

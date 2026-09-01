@@ -40,6 +40,7 @@ Deno.test("isBuiltInTool: recognizes built-in tools", () => {
   assertEquals(isBuiltInTool("copilot"), true);
   assertEquals(isBuiltInTool("kiro"), true);
   assertEquals(isBuiltInTool("pi"), true);
+  assertEquals(isBuiltInTool("antigravity"), true);
   assertEquals(isBuiltInTool("none"), true);
 });
 
@@ -88,6 +89,16 @@ Deno.test("validateCustomToolName: rejects built-in names case-insensitively", (
   );
   assertThrows(
     () => validateCustomToolName("Pi"),
+    UserError,
+    "conflicts with a built-in",
+  );
+  assertThrows(
+    () => validateCustomToolName("antigravity"),
+    UserError,
+    "conflicts with a built-in",
+  );
+  assertThrows(
+    () => validateCustomToolName("Antigravity"),
     UserError,
     "conflicts with a built-in",
   );
@@ -162,8 +173,26 @@ Deno.test("builtInToolConfig: pi config", () => {
   assertEquals(config.skillReferenceStyle, "name");
 });
 
-Deno.test("builtInToolConfig: amp/opencode/codex/copilot share AGENTS.md", () => {
-  for (const tool of ["amp", "opencode", "codex", "copilot"] as const) {
+Deno.test("builtInToolConfig: antigravity config", () => {
+  const config = builtInToolConfig("antigravity");
+  assertEquals(config.name, "antigravity");
+  assertEquals(config.isBuiltIn, true);
+  assertEquals(config.skillsDir, ".agents/skills");
+  assertEquals(config.instructionsFile, "AGENTS.md");
+  assertEquals(config.instructionsMode, "shared");
+  assertEquals(config.skillReferenceStyle, "name");
+});
+
+Deno.test("builtInToolConfig: amp/opencode/codex/copilot/antigravity share AGENTS.md", () => {
+  for (
+    const tool of [
+      "amp",
+      "opencode",
+      "codex",
+      "copilot",
+      "antigravity",
+    ] as const
+  ) {
     const config = builtInToolConfig(tool);
     assertEquals(config.instructionsFile, "AGENTS.md");
     assertEquals(config.instructionsMode, "shared");

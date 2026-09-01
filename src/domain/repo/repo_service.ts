@@ -814,6 +814,14 @@ export class RepoService {
           if (changed) changedFiles.push(".pi/extensions/swamp-audit.ts");
           break;
         }
+        case "antigravity": {
+          const changed = alreadyExists
+            ? await this.updateAntiGravityHooks(repoPath)
+            : await this.createAntiGravityHooksIfNotExists(repoPath);
+          settingsChanged = changed;
+          if (changed) changedFiles.push(".agents/hooks.json");
+          break;
+        }
         case "codex":
         case "none":
           break;
@@ -2324,6 +2332,72 @@ export default function swampAudit(pi) {
       extensionPath,
       this.generatePiExtensionContent(),
     );
+  }
+
+  private generateAntiGravityHooksContent(): string {
+    const hooks = {
+      "swamp-audit": {
+        enabled: true,
+        PostToolUse: [
+          {
+            matcher: "run_command",
+            hooks: [
+              {
+                type: "command",
+                command: "swamp audit record --from-hook --tool antigravity",
+                timeout: 10,
+              },
+            ],
+          },
+        ],
+      },
+    };
+    return JSON.stringify(hooks, null, 2) + "\n";
+  }
+
+  private createAntiGravityHooksIfNotExists(
+    repoPath: RepoPath,
+  ): Promise<boolean> {
+    const hooksPath = join(
+      repoPath.value,
+      ".agents",
+      "hooks.json",
+    );
+    return this.createFileIfNotExists(
+      hooksPath,
+      this.generateAntiGravityHooksContent(),
+    );
+  }
+
+  private async updateAntiGravityHooks(
+    repoPath: RepoPath,
+  ): Promise<boolean> {
+    const hooksPath = join(repoPath.value, ".agents", "hooks.json");
+
+    let existing: Record<string, unknown> = {};
+    let hooksExisted = false;
+
+    try {
+      const content = await Deno.readTextFile(hooksPath);
+      existing = JSON.parse(content);
+      hooksExisted = true;
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+
+    const generated = JSON.parse(this.generateAntiGravityHooksContent());
+    const merged = { ...existing, ...generated };
+    const mergedStr = JSON.stringify(merged, null, 2) + "\n";
+
+    if (hooksExisted && JSON.stringify(existing) === JSON.stringify(merged)) {
+      return false;
+    }
+
+    await ensureDir(join(repoPath.value, ".agents"));
+    await atomicWriteTextFile(hooksPath, mergedStr);
+    return true;
   }
 
   /**

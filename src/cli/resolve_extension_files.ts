@@ -468,7 +468,7 @@ export async function resolveExtensionFiles(
 
     if (candidateBases.length === 0) {
       throw new UserError(
-        `Cannot package skills: no enrolled tools have skill directories. Set a tool with: swamp repo upgrade --tool <claude|cursor|kiro|opencode|codex|pi>`,
+        `Cannot package skills: no enrolled tools have skill directories. Set a tool with: swamp repo upgrade --tool <claude|cursor|kiro|opencode|codex|pi|antigravity>`,
       );
     }
 

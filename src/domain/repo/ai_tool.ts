@@ -36,6 +36,7 @@ export type AiTool =
   | "copilot"
   | "kiro"
   | "pi"
+  | "antigravity"
   | "none";
 
 export { isBuiltInTool } from "./custom_tool.ts";

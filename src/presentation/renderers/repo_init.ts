@@ -92,6 +92,12 @@ const TOOL_GUIDANCE: Record<string, ToolGuidance> = {
     nextStepSummary:
       "Run `pi` in this directory and invoke /skill:swamp-getting-started",
   },
+  antigravity: {
+    launch: "Run agy in this directory, then invoke:",
+    command: "/skill:swamp-getting-started",
+    nextStepSummary:
+      "Run `agy` in this directory and invoke /skill:swamp-getting-started",
+  },
 };
 
 function renderToolGuidance(tool: string): void {
@@ -120,6 +126,7 @@ const TOOL_CLEANUP_PATHS: Partial<Record<string, readonly string[]>> = {
   codex: [".agents/skills/"],
   copilot: [".agents/skills/", ".github/hooks/"],
   pi: [".pi/"],
+  antigravity: [".agents/hooks.json", ".agents/skills/"],
 };
 
 /**

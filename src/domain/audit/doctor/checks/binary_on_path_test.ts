@@ -69,7 +69,7 @@ Deno.test("binaryOnPath: uses tool-specific binary name", async () => {
   assertEquals(seen, ["kiro-cli", "claude", "cursor", "opencode", "copilot"]);
 });
 
-Deno.test("binaryOnPath: appliesTo returns true for all five audit tools, false otherwise", () => {
+Deno.test("binaryOnPath: appliesTo returns true for all audit tools, false otherwise", () => {
   const check = makeBinaryOnPathCheck({
     resolveBinary: () => Promise.resolve(null),
   });
@@ -78,6 +78,8 @@ Deno.test("binaryOnPath: appliesTo returns true for all five audit tools, false 
   assertEquals(check.appliesTo("kiro"), true);
   assertEquals(check.appliesTo("opencode"), true);
   assertEquals(check.appliesTo("copilot"), true);
+  assertEquals(check.appliesTo("pi"), true);
+  assertEquals(check.appliesTo("antigravity"), true);
   assertEquals(check.appliesTo("amp"), false);
   assertEquals(check.appliesTo("codex"), false);
   assertEquals(check.appliesTo("none"), false);
