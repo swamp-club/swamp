@@ -135,6 +135,15 @@ export function syntheticPayloadFor(
       };
       return { stdin: JSON.stringify(raw), env: {}, expectedCommand };
     }
+    case "pi": {
+      const raw = {
+        tool_name: "bash",
+        tool_input: { command: expectedCommand },
+        session_id: DOCTOR_SMOKE_TEST_SESSION_ID,
+        cwd,
+      };
+      return { stdin: JSON.stringify(raw), env: {}, expectedCommand };
+    }
     case "amp":
     case "codex":
     case "none":

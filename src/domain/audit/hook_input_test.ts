@@ -320,6 +320,48 @@ Deno.test("normalizeHookInput opencode: skips non-bash tools", () => {
   assertEquals(result, null);
 });
 
+// ---- Pi normalization ----
+
+Deno.test("normalizeHookInput pi: normalizes successful bash", () => {
+  const result = normalizeHookInput("pi", {
+    session_id: "pi-session-1",
+    cwd: "/code",
+    tool_name: "bash",
+    tool_input: { command: "ls -la" },
+  });
+
+  assertEquals(result, {
+    command: "ls -la",
+    cwd: "/code",
+    sessionId: "pi-session-1",
+    isFailure: false,
+  });
+});
+
+Deno.test("normalizeHookInput pi: normalizes failed bash", () => {
+  const result = normalizeHookInput("pi", {
+    session_id: "pi-session-1",
+    cwd: "/code",
+    tool_name: "bash",
+    tool_input: { command: "make build" },
+    error: "build failed",
+  });
+
+  assertEquals(result?.isFailure, true);
+  assertEquals(result?.errorMessage, "build failed");
+});
+
+Deno.test("normalizeHookInput pi: skips non-bash tools", () => {
+  const result = normalizeHookInput("pi", {
+    session_id: "pi-session-1",
+    cwd: "/code",
+    tool_name: "read",
+    tool_input: { path: "/foo" },
+  });
+
+  assertEquals(result, null);
+});
+
 // ---- Copilot normalization (camelCase format) ----
 
 Deno.test("normalizeHookInput copilot: normalizes successful bash (camelCase)", () => {

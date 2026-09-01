@@ -86,6 +86,12 @@ const TOOL_GUIDANCE: Record<string, ToolGuidance> = {
     nextStepSummary:
       'Run `opencode` in this directory and say "I am new to swamp"',
   },
+  pi: {
+    launch: "Run pi in this directory, then invoke:",
+    command: "/skill:swamp-getting-started",
+    nextStepSummary:
+      "Run `pi` in this directory and invoke /skill:swamp-getting-started",
+  },
 };
 
 function renderToolGuidance(tool: string): void {
@@ -113,6 +119,7 @@ const TOOL_CLEANUP_PATHS: Partial<Record<string, readonly string[]>> = {
   opencode: [".opencode/", ".agents/skills/"],
   codex: [".agents/skills/"],
   copilot: [".agents/skills/", ".github/hooks/"],
+  pi: [".pi/"],
 };
 
 /**

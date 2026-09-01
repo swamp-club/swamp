@@ -35,6 +35,7 @@ export type AiTool =
   | "codex"
   | "copilot"
   | "kiro"
+  | "pi"
   | "none";
 
 export { isBuiltInTool } from "./custom_tool.ts";

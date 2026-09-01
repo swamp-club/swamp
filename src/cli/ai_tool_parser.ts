@@ -29,6 +29,7 @@ export const VALID_AI_TOOLS: readonly AiTool[] = [
   "opencode",
   "codex",
   "copilot",
+  "pi",
   "none",
 ] as const;
 

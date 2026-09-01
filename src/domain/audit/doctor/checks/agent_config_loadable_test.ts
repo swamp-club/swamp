@@ -268,3 +268,35 @@ Deno.test("agentConfigLoadable: copilot fails when hooks do not reference swamp 
     assertStringIncludes(result.message, "swamp audit record");
   });
 });
+
+Deno.test("agentConfigLoadable: pi passes when extension file references swamp", async () => {
+  await withTempRepo(async (repo) => {
+    const path = join(repo, ".pi/extensions/swamp-audit.ts");
+    await ensureDir(join(path, ".."));
+    await Deno.writeTextFile(
+      path,
+      `spawn("swamp", ["audit", "record", "--from-hook", "--tool", "pi"], ...)`,
+    );
+    const result = await agentConfigLoadableCheck.run(makeCtx(repo, "pi"));
+    assertEquals(result.status, "pass");
+  });
+});
+
+Deno.test("agentConfigLoadable: pi fails when extension file is missing", async () => {
+  await withTempRepo(async (repo) => {
+    const result = await agentConfigLoadableCheck.run(makeCtx(repo, "pi"));
+    assertEquals(result.status, "fail");
+    assertStringIncludes(result.message, "missing");
+  });
+});
+
+Deno.test("agentConfigLoadable: pi fails when extension does not reference swamp", async () => {
+  await withTempRepo(async (repo) => {
+    const path = join(repo, ".pi/extensions/swamp-audit.ts");
+    await ensureDir(join(path, ".."));
+    await Deno.writeTextFile(path, "// nothing");
+    const result = await agentConfigLoadableCheck.run(makeCtx(repo, "pi"));
+    assertEquals(result.status, "fail");
+    assertStringIncludes(result.message, "swamp audit record");
+  });
+});

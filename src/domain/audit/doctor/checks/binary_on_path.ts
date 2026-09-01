@@ -28,11 +28,12 @@ const INSTALL_HINTS: Record<string, string> = {
   opencode: "Install OpenCode: https://opencode.ai",
   copilot:
     "Install GitHub Copilot CLI: https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli",
+  pi: "Install Pi: https://pi.dev/docs/latest",
 };
 
 function appliesTo(tool: string): boolean {
   return tool === "claude" || tool === "cursor" || tool === "kiro" ||
-    tool === "opencode" || tool === "copilot";
+    tool === "opencode" || tool === "copilot" || tool === "pi";
 }
 
 /**
