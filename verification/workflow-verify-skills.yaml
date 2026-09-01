@@ -1,0 +1,116 @@
+id: a1c3e5f7-8b2d-4f6a-9c0e-1d3f5a7b9c2e
+name: verify-skills
+description: |
+  Skill verification: review bundled skills for quality and run trigger/routing
+  evals. Gated by skill-path changes — skips when no skill files changed. Runs
+  on the host in a fresh git worktree checked out at the verified commit.
+version: 1
+
+tags:
+  purpose: pre-pr-verification
+
+inputs:
+  properties:
+    commit:
+      type: string
+      description: Commit SHA being verified.
+    branch:
+      type: string
+      description: Branch name being verified.
+  required:
+    - commit
+    - branch
+
+concurrency: 2
+
+jobs:
+  # ── Fresh Checkout ──────────────────────────────────────────
+  - name: setup
+    description: Create a clean worktree at the verified commit.
+    steps:
+      - name: checkout
+        task:
+          type: model_method
+          modelType: "command/shell"
+          modelName: skills-setup-${{ run.id }}
+          methodName: execute
+          inputs:
+            run: |
+              set -e
+              git fetch origin main
+              CHECKOUT_DIR="/tmp/swamp-verify-skills-${{ run.id }}"
+              rm -rf "$CHECKOUT_DIR"
+              git worktree prune
+              git worktree add --detach "$CHECKOUT_DIR" "${{ inputs.commit }}"
+
+  # ── Detect Changed Files ──────────────────────────────────────
+  - name: detect-changes
+    description: Compute changed file list for guard expressions.
+    dependsOn:
+      - job: setup
+        condition:
+          type: succeeded
+    steps:
+      - name: changed-files
+        task:
+          type: model_method
+          modelType: "@swamp/git"
+          modelName: repo
+          methodName: diff
+          inputs:
+            base: "origin/main"
+            nameOnly: true
+
+  # ── Skill Checks ─────────────────────────────────────────────
+  - name: skills
+    description: Run skill review and trigger evals, guarded by skill-path changes.
+    dependsOn:
+      - job: detect-changes
+        condition:
+          type: succeeded
+    steps:
+      - name: skill-review
+        guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('.claude/skills/') || f == 'CLAUDE.md' || f == 'scripts/review_skills.ts' || f.startsWith('evals/promptfoo/')).size() == 0 }}"
+        task:
+          type: model_method
+          modelType: "command/shell"
+          modelName: skills-review-${{ run.id }}
+          methodName: execute
+          inputs:
+            run: "deno task review-skills"
+            workingDir: "/tmp/swamp-verify-skills-${{ run.id }}"
+
+      - name: skill-trigger-eval
+        guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('.claude/skills/') || f == 'CLAUDE.md' || f == 'scripts/review_skills.ts' || f.startsWith('evals/promptfoo/')).size() == 0 }}"
+        task:
+          type: model_method
+          modelType: "command/shell"
+          modelName: skills-trigger-eval-${{ run.id }}
+          methodName: execute
+          inputs:
+            run: "deno task eval-skill-triggers"
+            workingDir: "/tmp/swamp-verify-skills-${{ run.id }}"
+
+  # ── Cleanup ──────────────────────────────────────────────────
+  - name: cleanup
+    description: Remove the temporary worktree.
+    dependsOn:
+      - job: skills
+        condition:
+          type: always
+    steps:
+      - name: remove-worktree
+        task:
+          type: model_method
+          modelType: "command/shell"
+          modelName: skills-cleanup-${{ run.id }}
+          methodName: execute
+          inputs:
+            run: |
+              CHECKOUT_DIR="/tmp/swamp-verify-skills-${{ run.id }}"
+              git worktree remove --force "$CHECKOUT_DIR" 2>/dev/null || true
+              git worktree prune
+              # Remove ephemeral auto-definitions created for this run
+              REPO_ROOT="$(git rev-parse --git-common-dir)/.."
+              find "$REPO_ROOT/.swamp/auto-definitions" -name "*-${{ run.id }}.yaml" -delete 2>/dev/null || true
+            ignoreExitCode: true
