@@ -84,9 +84,14 @@ main() {
   checksum="$asset.sha256"
   download "$asset_url" "$tmpdir/$asset"
   resolved_asset_url="$DOWNLOADED_URL"
-  download "$asset_url.sha256" "$tmpdir/$checksum"
 
-  verify_sha256 "$tmpdir/$asset" "$tmpdir/$checksum"
+  # Download the checksum from the resolved (version-pinned) URL, not the
+  # alias URL. The alias tarball and alias .sha256 are separate S3 objects
+  # updated non-atomically, so fetching both from the alias can race during
+  # releases. The version-pinned checksum is immutable.
+  download "$resolved_asset_url.sha256" "$tmpdir/$checksum"
+
+  verify_sha256_resolved "$tmpdir/$asset" "$tmpdir/$checksum"
   validate_archive "$tmpdir/$asset" "$bin"
 
   release_version="$(release_version_from_url "$resolved_asset_url")"
@@ -391,6 +396,24 @@ compute_sha256() {
   fi
 
   echo "${actual%% *}"
+}
+
+verify_sha256_resolved() {
+  local archive checksum expected actual
+  archive="$1"
+  checksum="$2"
+
+  expected=""
+  IFS=' ' read -r expected _ <"$checksum" || true
+  validate_sha256 "$expected" "$(basename "$archive")"
+
+  actual="$(compute_sha256 "$archive")"
+
+  if [ "$expected" != "$actual" ]; then
+    die "SHA-256 checksum verification failed for '$(basename "$archive")'"
+  fi
+
+  info "Verified SHA-256 checksum for '$(basename "$archive")'"
 }
 
 verify_sha256() {
