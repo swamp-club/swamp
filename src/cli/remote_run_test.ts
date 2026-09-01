@@ -34,6 +34,7 @@ import {
   runModelMethodOverServer,
   runWorkflowOverServer,
   warnServerReloadNeeded,
+  writeRemoteIndicator,
 } from "./remote_run.ts";
 import type { ServerCredential } from "../domain/auth/server_credential.ts";
 import type { ServerCredentialRepository } from "../domain/auth/server_credential.ts";
@@ -1311,4 +1312,37 @@ Deno.test("diagnoseTlsMessage: returns undefined for non-TLS errors", () => {
 
 Deno.test("warnServerReloadNeeded: does not throw", () => {
   warnServerReloadNeeded("ws://127.0.0.1:9090");
+});
+
+// ── writeRemoteIndicator tests ───────────────────────────────────────
+
+Deno.test("writeRemoteIndicator: writes server URL to stderr", () => {
+  const calls: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => {
+    calls.push(args.map(String).join(" "));
+  };
+  try {
+    writeRemoteIndicator("https://serve.example.com");
+    assertEquals(calls.length, 1);
+    assertStringIncludes(calls[0], "Remote");
+    assertStringIncludes(calls[0], "https://serve.example.com");
+  } finally {
+    console.error = originalError;
+  }
+});
+
+Deno.test("writeRemoteIndicator: includes ws URL verbatim", () => {
+  const calls: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => {
+    calls.push(args.map(String).join(" "));
+  };
+  try {
+    writeRemoteIndicator("wss://internal.corp:4000");
+    assertEquals(calls.length, 1);
+    assertStringIncludes(calls[0], "wss://internal.corp:4000");
+  } finally {
+    console.error = originalError;
+  }
 });

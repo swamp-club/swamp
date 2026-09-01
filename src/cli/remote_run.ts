@@ -45,6 +45,10 @@ import type { ServerCredentialRepository } from "../domain/auth/server_credentia
 import { FileServerCredentialRepository } from "../infrastructure/persistence/server_credential_repository.ts";
 import { resolveExtraHeaders } from "../domain/auth/extra_headers.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import {
+  gutterLine,
+  STATUS_COLORS,
+} from "../presentation/output/console_writer.ts";
 
 /**
  * Resolves the server URL from the `--server` flag with env var fallbacks.
@@ -55,6 +59,10 @@ export function resolveServeUrl(
 ): string | undefined {
   return flagValue ?? Deno.env.get("SWAMP_SERVE_URL") ??
     Deno.env.get("SWAMP_SERVER_URL");
+}
+
+export function writeRemoteIndicator(serverUrl: string): void {
+  console.error(gutterLine("Remote", STATUS_COLORS.warn, serverUrl));
 }
 
 /** How long to keep draining after sending `cancel` before giving up. */
@@ -186,6 +194,7 @@ export function requestServerResponse<T>(
   options: RequestResponseOptions,
   request: { type: string; id?: string; payload?: unknown },
 ): Promise<T> {
+  writeRemoteIndicator(options.server);
   const baseUrl = normalizeServerUrl(options.server);
   const extraHeaders = options.headers ?? resolveExtraHeaders();
   const headers: Record<string, string> = { ...extraHeaders };
@@ -770,6 +779,7 @@ async function* streamServerRun(
   options: ServerRunOptions,
   request: OutboundRequest,
 ): AsyncIterable<{ kind: string; [key: string]: unknown }> {
+  writeRemoteIndicator(options.server);
   const state = { runId: undefined as string | undefined, lastSeq: 0 };
   let reconnectRetries = 0;
   let elsewhereRetries = 0;
