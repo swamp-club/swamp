@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import {
   clearAttachedExtensions,
@@ -403,4 +403,98 @@ Deno.test("processSecondaryExport: no collision — all methods merged normally"
     modelRegistry.invalidateType(type);
     resetExtensionLoadWarnings();
   }
+});
+
+// --- formatValidationError tests ---
+
+Deno.test("formatValidationError: missing execute reports method name", () => {
+  const error = new z.ZodError([
+    {
+      code: "custom",
+      path: ["methods", "create", "execute"],
+      message: "Invalid input",
+    },
+  ]);
+  const result = modelKindAdapter.formatValidationError(error);
+  assertStringIncludes(result, "'execute'");
+  assertStringIncludes(result, "'create'");
+  assertStringIncludes(result, "async function");
+});
+
+Deno.test("formatValidationError: invalid kind reports method name and allowed values", () => {
+  const error = new z.ZodError([
+    {
+      code: "custom",
+      path: ["methods", "connect", "kind"],
+      message: "Invalid enum value",
+    },
+  ]);
+  const result = modelKindAdapter.formatValidationError(error);
+  assertStringIncludes(result, "'kind'");
+  assertStringIncludes(result, "'connect'");
+  assertStringIncludes(result, "create, read, update, delete, list, action");
+});
+
+Deno.test("formatValidationError: missing description reports method name", () => {
+  const error = new z.ZodError([
+    {
+      code: "custom",
+      path: ["methods", "run", "description"],
+      message: "Required",
+    },
+  ]);
+  const result = modelKindAdapter.formatValidationError(error);
+  assertStringIncludes(result, "'description'");
+  assertStringIncludes(result, "'run'");
+});
+
+Deno.test("formatValidationError: truly missing methods still reports missing field", () => {
+  const error = new z.ZodError([
+    {
+      code: "custom",
+      path: ["methods"],
+      message: "Required",
+    },
+  ]);
+  const result = modelKindAdapter.formatValidationError(error);
+  assertStringIncludes(result, "Missing required 'methods' field");
+});
+
+Deno.test("formatValidationError: extension schema execute path reports method name", () => {
+  const error = new z.ZodError([
+    {
+      code: "custom",
+      path: ["methods", 0, "create", "execute"],
+      message: "Invalid input",
+    },
+  ]);
+  const result = modelKindAdapter.formatValidationError(error);
+  assertStringIncludes(result, "'execute'");
+  assertStringIncludes(result, "'create'");
+});
+
+Deno.test("formatValidationError: unknown method sub-field includes path", () => {
+  const error = new z.ZodError([
+    {
+      code: "custom",
+      path: ["methods", "run", "unknownField"],
+      message: "Unexpected field",
+    },
+  ]);
+  const result = modelKindAdapter.formatValidationError(error);
+  assertStringIncludes(result, "methods.run.unknownField");
+  assertStringIncludes(result, "Unexpected field");
+});
+
+Deno.test("formatValidationError: arguments on method includes method name", () => {
+  const error = new z.ZodError([
+    {
+      code: "custom",
+      path: ["methods", "deploy", "arguments"],
+      message: "Invalid input",
+    },
+  ]);
+  const result = modelKindAdapter.formatValidationError(error);
+  assertStringIncludes(result, "'arguments'");
+  assertStringIncludes(result, "'deploy'");
 });
