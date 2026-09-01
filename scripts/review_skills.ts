@@ -156,18 +156,11 @@ function buildSummaryTable(scores: SkillScore[], allPassed: boolean): string {
 
 async function main(): Promise<void> {
   if (!Deno.env.get("TESSL_TOKEN")) {
-    const message = "Skipping skill review: TESSL_TOKEN environment variable is not set.";
-    console.warn(message);
-
-    const summaryFile = Deno.env.get("GITHUB_STEP_SUMMARY");
-    if (summaryFile) {
-      await Deno.writeTextFile(
-        summaryFile,
-        "## Skill Review Results\n\n**Skipped** — `TESSL_TOKEN` not configured.\n",
-      );
-    }
-
-    return;
+    console.error(
+      "TESSL_TOKEN environment variable is not set. " +
+        "Add it to ~/.config/swamp/verify.env to run skill reviews.",
+    );
+    Deno.exit(1);
   }
 
   const assets = new SkillAssets();

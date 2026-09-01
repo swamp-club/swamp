@@ -73,7 +73,8 @@ The claude CLI authenticates via one of two methods:
 The skill verification workflow also needs:
 
 - **`TESSL_TOKEN`** — for `deno task review-skills` (calls `npx tessl`). Add it
-  to `verify.env`. If missing, skill review is skipped gracefully (exit 0).
+  to `verify.env`. If missing, skill review **fails** (exit 1) — an incomplete
+  verification is not a valid attestation.
 - **`ANTHROPIC_API_KEY`** — for `deno task eval-skill-triggers` (calls the
   Anthropic API). Already available from `verify.env` or claude.ai login. If
   missing, trigger evals are skipped gracefully (exit 0).
@@ -104,9 +105,9 @@ The workflow detects changed files and guards both steps behind a skill-path
 filter (`.claude/skills/**`, `CLAUDE.md`, `scripts/review_skills.ts`,
 `evals/promptfoo/**`). When no skill files changed, both steps are skipped.
 
-| Step | Command | Env Var | Skip Behavior |
+| Step | Command | Env Var | Missing Behavior |
 | --- | --- | --- | --- |
-| skill-review | `deno task review-skills` | `TESSL_TOKEN` | Skipped (exit 0) if missing |
+| skill-review | `deno task review-skills` | `TESSL_TOKEN` | **Fails** (exit 1) — must be configured |
 | skill-trigger-eval | `deno task eval-skill-triggers` | `ANTHROPIC_API_KEY` | Skipped (exit 0) if missing |
 
 ## Running All Three in Parallel
