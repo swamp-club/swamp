@@ -31,8 +31,11 @@ Deno.test("isValidCadence: accepts weekly", () => {
   assertEquals(isValidCadence("weekly"), true);
 });
 
+Deno.test("isValidCadence: accepts hourly", () => {
+  assertEquals(isValidCadence("hourly"), true);
+});
+
 Deno.test("isValidCadence: rejects invalid values", () => {
-  assertEquals(isValidCadence("hourly"), false);
   assertEquals(isValidCadence(""), false);
   assertEquals(isValidCadence("monthly"), false);
 });

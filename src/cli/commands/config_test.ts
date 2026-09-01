@@ -61,7 +61,7 @@ Deno.test("config set: rejects invalid cadence", async () => {
       "config",
       "set",
       "update.cadence",
-      "hourly",
+      "monthly",
     ],
     stdout: "piped",
     stderr: "piped",

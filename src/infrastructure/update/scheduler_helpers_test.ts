@@ -64,9 +64,18 @@ Deno.test("buildPlist: contains weekly interval", () => {
   assertStringIncludes(plist, "<integer>604800</integer>");
 });
 
+Deno.test("buildPlist: contains hourly interval", () => {
+  const plist = buildPlist("/usr/local/bin/swamp", "hourly");
+  assertStringIncludes(plist, "<integer>3600</integer>");
+});
+
 Deno.test("buildPlist: escapes special chars in path", () => {
   const plist = buildPlist('/opt/my "app/swamp', "daily");
   assertStringIncludes(plist, "&quot;");
+});
+
+Deno.test("cadenceFromInterval: hourly for 3600", () => {
+  assertEquals(cadenceFromInterval(3600), "hourly");
 });
 
 Deno.test("cadenceFromInterval: daily for 86400", () => {
@@ -108,6 +117,12 @@ Deno.test("buildService: escapes quotes in path", () => {
   assertStringIncludes(service, 'ExecStart="/opt/my \\"app/swamp"');
 });
 
+Deno.test("buildTimer: hourly calendar", () => {
+  const timer = buildTimer("hourly");
+  assertStringIncludes(timer, "OnCalendar=hourly");
+  assertStringIncludes(timer, "RandomizedDelaySec=300");
+});
+
 Deno.test("buildTimer: daily calendar", () => {
   const timer = buildTimer("daily");
   assertStringIncludes(timer, "OnCalendar=daily");
@@ -118,12 +133,20 @@ Deno.test("buildTimer: weekly calendar", () => {
   assertStringIncludes(timer, "OnCalendar=weekly");
 });
 
+Deno.test("cronSchedule: hourly schedule", () => {
+  assertEquals(cronSchedule("hourly"), "0 * * * *");
+});
+
 Deno.test("cronSchedule: daily schedule", () => {
   assertEquals(cronSchedule("daily"), "0 9 * * *");
 });
 
 Deno.test("cronSchedule: weekly schedule", () => {
   assertEquals(cronSchedule("weekly"), "0 9 * * 1");
+});
+
+Deno.test("cadenceFromSchedule: detects hourly", () => {
+  assertEquals(cadenceFromSchedule("0 * * * *"), "hourly");
 });
 
 Deno.test("cadenceFromSchedule: detects daily", () => {

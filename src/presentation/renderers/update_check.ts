@@ -20,7 +20,10 @@
 import type { EventHandlers, UpdateCheckEvent } from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
-import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import {
+  getSwampLogger,
+  writeOutput,
+} from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 
 export interface UpdateCheckRenderer extends Renderer<UpdateCheckEvent> {
@@ -38,20 +41,23 @@ class LogUpdateCheckRenderer implements UpdateCheckRenderer {
         const data = e.data;
         switch (data.status) {
           case "up_to_date":
-            logger.info`swamp is up to date (${data.currentVersion})`;
+            writeOutput(`swamp is up to date (${data.currentVersion})`);
             break;
           case "update_available":
-            logger
-              .info`Update available: ${data.currentVersion} \u2192 ${data.latestVersion}`;
-            logger.info("Run `swamp update` to install");
+            writeOutput(
+              `Update available: ${data.currentVersion} \u2192 ${data.latestVersion}`,
+            );
+            writeOutput("Run `swamp update` to install");
             break;
           case "updated":
             this.updated = true;
-            logger.info("swamp updated successfully!");
-            logger.info`${data.previousVersion} \u2192 ${data.newVersion}`;
-            logger.info("SHA-256 integrity check passed");
-            logger.info("The swamp binary has been updated globally.");
-            logger.info(
+            writeOutput("swamp updated successfully!");
+            writeOutput(
+              `${data.previousVersion} \u2192 ${data.newVersion}`,
+            );
+            writeOutput("SHA-256 integrity check passed");
+            writeOutput("The swamp binary has been updated globally.");
+            writeOutput(
               "Run `swamp repo upgrade` in your repositories to update settings and instructions.",
             );
             break;

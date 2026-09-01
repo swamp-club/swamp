@@ -92,14 +92,19 @@ ExecStart="${escaped}" update --background
 }
 
 export function buildTimer(cadence: UpdateCadence): string {
-  const onCalendar = cadence === "daily" ? "daily" : "weekly";
+  const onCalendar = cadence === "hourly"
+    ? "hourly"
+    : cadence === "daily"
+    ? "daily"
+    : "weekly";
+  const jitter = cadence === "hourly" ? 300 : 3600;
   return `[Unit]
 Description=Swamp autoupdate timer
 
 [Timer]
 OnCalendar=${onCalendar}
 Persistent=true
-RandomizedDelaySec=3600
+RandomizedDelaySec=${jitter}
 
 [Install]
 WantedBy=timers.target
@@ -172,7 +177,10 @@ export class SystemdScheduler implements AutoupdateScheduler {
     try {
       const content = await Deno.readTextFile(timerPath(this.mode));
       const calendarMatch = content.match(/OnCalendar=(\w+)/);
-      const cadence: UpdateCadence = calendarMatch?.[1] === "weekly"
+      const cal = calendarMatch?.[1];
+      const cadence: UpdateCadence = cal === "hourly"
+        ? "hourly"
+        : cal === "weekly"
         ? "weekly"
         : "daily";
 

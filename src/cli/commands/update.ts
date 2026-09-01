@@ -49,7 +49,10 @@ import {
   AUTOUPDATE_LOG_RETENTION_DAYS,
   type AutoupdateLogEntry,
 } from "../../domain/update/autoupdate_log.ts";
-import type { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import {
+  type getSwampLogger,
+  writeOutput,
+} from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { SkillAssets } from "../../infrastructure/assets/skill_assets.ts";
 import {
@@ -78,6 +81,7 @@ async function dirExists(path: string): Promise<boolean> {
 
 async function syncGlobalSkills(
   logger: ReturnType<typeof getSwampLogger>,
+  outputMode: "log" | "json" = "log",
 ): Promise<void> {
   if (isRunningAsRoot()) {
     logger
@@ -119,7 +123,9 @@ async function syncGlobalSkills(
     }
     await skillAssets.copySkillsTo(resolved);
     await removeSupersededSkills(resolved);
-    logger.info`Synced global skills to ${resolved}`;
+    if (outputMode === "log") {
+      writeOutput(`Synced global skills to ${resolved}`);
+    }
   }
 
   if (customDirs.length === 0) return;
@@ -139,7 +145,9 @@ async function syncGlobalSkills(
     }
     await skillAssets.copySkillsTo(resolved);
     await removeSupersededSkills(resolved);
-    logger.info`Synced global skills to ${resolved}`;
+    if (outputMode === "log") {
+      writeOutput(`Synced global skills to ${resolved}`);
+    }
     survivingCustomDirs.push(dir);
   }
 
@@ -323,18 +331,20 @@ async function runBackgroundUpdate(
 function promptCadence(defaultCadence: UpdateCadence): UpdateCadence {
   while (true) {
     const input = prompt(
-      "How often should swamp check for updates? (daily/weekly)",
+      "How often should swamp check for updates? (hourly/daily/weekly)",
       defaultCadence,
     );
     if (input === null) {
       throw new UserError(
-        "No input received. Use `swamp config set update.cadence <daily|weekly>` instead.",
+        "No input received. Use `swamp config set update.cadence <hourly|daily|weekly>` instead.",
       );
     }
     if (isValidCadence(input)) {
       return input;
     }
-    console.error(`Invalid cadence: ${input}. Must be "daily" or "weekly".`);
+    console.error(
+      `Invalid cadence: ${input}. Must be "hourly", "daily", or "weekly".`,
+    );
   }
 }
 
@@ -394,7 +404,6 @@ async function runSetupAuto(
 
   const prefsRepo = new UpdatePreferencesFileRepository();
   const prefs = await prefsRepo.read();
-  const logger = ctx.logger;
 
   const cadence = promptCadence(prefs.cadence);
 
@@ -412,16 +421,16 @@ async function runSetupAuto(
       }),
     );
   } else {
-    logger.info`Autoupdate enabled with ${cadence} checks`;
+    writeOutput(`Autoupdate enabled with ${cadence} checks`);
 
     if (launchdMode === "daemon") {
       const desc = privilegedSchedulerDescription();
-      logger.info`Installed as ${desc} (root-owned binary)`;
+      writeOutput(`Installed as ${desc} (root-owned binary)`);
     }
 
     const status = await scheduler.status();
     if (status.installed) {
-      logger.info("Background scheduler installed successfully");
+      writeOutput("Background scheduler installed successfully");
     }
   }
 }
@@ -452,7 +461,7 @@ async function runDisableAuto(
       JSON.stringify({ key: "update.auto", value: "disabled" }),
     );
   } else {
-    ctx.logger.info("Autoupdate disabled and scheduler removed");
+    writeOutput("Autoupdate disabled and scheduler removed");
   }
 }
 
@@ -487,38 +496,35 @@ async function runSetupAutoStatus(
     return;
   }
 
-  const logger = ctx.logger;
-
   if (!prefs.enabled) {
-    logger.info(
+    writeOutput(
       "Autoupdate is disabled. Run `swamp update --setup-auto` to enable.",
     );
     return;
   }
 
-  logger.info`Autoupdate: enabled`;
-  logger.info`Cadence: ${prefs.cadence}`;
+  writeOutput("Autoupdate: enabled");
+  writeOutput(`Cadence: ${prefs.cadence}`);
 
   const typeLabel = schedulerTypeDisplayLabel(launchdMode);
   if (typeLabel) {
-    logger.info`Scheduler type: ${typeLabel}`;
+    writeOutput(`Scheduler type: ${typeLabel}`);
   }
 
   const scheduler = await createScheduler({ launchdMode });
   const scheduleStatus = await scheduler.status();
-  logger.info`Scheduler installed: ${scheduleStatus.installed}`;
+  writeOutput(`Scheduler installed: ${scheduleStatus.installed}`);
 
   const logRepo = new AutoupdateLogFileRepository(logPath);
   const entries = await logRepo.readAll();
   if (entries.length > 0) {
     const last = entries[entries.length - 1];
-    logger.info`Last check: ${last.timestamp} (${last.outcome})`;
+    writeOutput(`Last check: ${last.timestamp} (${last.outcome})`);
     if (last.versionAfter) {
-      logger
-        .info`Last update: ${last.versionBefore} → ${last.versionAfter}`;
+      writeOutput(`Last update: ${last.versionBefore} → ${last.versionAfter}`);
     }
   } else {
-    logger.info("No autoupdate history yet");
+    writeOutput("No autoupdate history yet");
   }
 }
 
@@ -587,7 +593,7 @@ export const updateCommand = new Command()
       if (renderer.updated) {
         spinner?.update("Syncing global skills...");
         try {
-          await syncGlobalSkills(ctx.logger);
+          await syncGlobalSkills(ctx.logger, ctx.outputMode);
         } catch (err) {
           ctx.logger
             .warn`Failed to sync global skills: ${
