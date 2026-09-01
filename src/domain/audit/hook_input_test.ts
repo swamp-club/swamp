@@ -362,6 +362,51 @@ Deno.test("normalizeHookInput pi: skips non-bash tools", () => {
   assertEquals(result, null);
 });
 
+// ---- AntiGravity normalization ----
+
+Deno.test("normalizeHookInput antigravity: normalizes successful run_command", () => {
+  const result = normalizeHookInput("antigravity", {
+    conversationId: "agy-session-1",
+    toolCall: {
+      name: "run_command",
+      args: { CommandLine: "ls -la", Cwd: "/code" },
+    },
+  });
+
+  assertEquals(result, {
+    command: "ls -la",
+    cwd: "/code",
+    sessionId: "agy-session-1",
+    isFailure: false,
+  });
+});
+
+Deno.test("normalizeHookInput antigravity: normalizes failed run_command", () => {
+  const result = normalizeHookInput("antigravity", {
+    conversationId: "agy-session-1",
+    toolCall: {
+      name: "run_command",
+      args: { CommandLine: "make build", Cwd: "/code" },
+    },
+    error: "build failed",
+  });
+
+  assertEquals(result?.isFailure, true);
+  assertEquals(result?.errorMessage, "build failed");
+});
+
+Deno.test("normalizeHookInput antigravity: skips non-run_command tools", () => {
+  const result = normalizeHookInput("antigravity", {
+    conversationId: "agy-session-1",
+    toolCall: {
+      name: "view_file",
+      args: { Path: "/foo" },
+    },
+  });
+
+  assertEquals(result, null);
+});
+
 // ---- Copilot normalization (camelCase format) ----
 
 Deno.test("normalizeHookInput copilot: normalizes successful bash (camelCase)", () => {

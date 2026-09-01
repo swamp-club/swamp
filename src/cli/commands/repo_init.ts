@@ -54,6 +54,8 @@ class ToolNameType extends StringType {
       "codex",
       "copilot",
       "kiro",
+      "pi",
+      "antigravity",
       "none",
     ];
   }

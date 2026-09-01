@@ -90,6 +90,8 @@ const VALID_HOOK_TOOLS: HookTool[] = [
   "kiro",
   "opencode",
   "copilot",
+  "pi",
+  "antigravity",
 ];
 
 /**

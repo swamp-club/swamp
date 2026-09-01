@@ -144,6 +144,16 @@ export function syntheticPayloadFor(
       };
       return { stdin: JSON.stringify(raw), env: {}, expectedCommand };
     }
+    case "antigravity": {
+      const raw = {
+        toolCall: {
+          name: "run_command",
+          args: { CommandLine: expectedCommand, Cwd: cwd },
+        },
+        conversationId: DOCTOR_SMOKE_TEST_SESSION_ID,
+      };
+      return { stdin: JSON.stringify(raw), env: {}, expectedCommand };
+    }
     case "amp":
     case "codex":
     case "none":

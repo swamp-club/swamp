@@ -300,3 +300,52 @@ Deno.test("agentConfigLoadable: pi fails when extension does not reference swamp
     assertStringIncludes(result.message, "swamp audit record");
   });
 });
+
+Deno.test("agentConfigLoadable: antigravity passes when hooks.json references swamp audit record", async () => {
+  await withTempRepo(async (repo) => {
+    const path = join(repo, ".agents/hooks.json");
+    await ensureDir(join(path, ".."));
+    await Deno.writeTextFile(
+      path,
+      JSON.stringify({
+        "swamp-audit": {
+          enabled: true,
+          PostToolUse: [{
+            matcher: "run_command",
+            hooks: [{
+              type: "command",
+              command: "swamp audit record --from-hook --tool antigravity",
+            }],
+          }],
+        },
+      }),
+    );
+    const result = await agentConfigLoadableCheck.run(
+      makeCtx(repo, "antigravity"),
+    );
+    assertEquals(result.status, "pass");
+  });
+});
+
+Deno.test("agentConfigLoadable: antigravity fails when hooks.json is missing", async () => {
+  await withTempRepo(async (repo) => {
+    const result = await agentConfigLoadableCheck.run(
+      makeCtx(repo, "antigravity"),
+    );
+    assertEquals(result.status, "fail");
+    assertStringIncludes(result.message, "missing");
+  });
+});
+
+Deno.test("agentConfigLoadable: antigravity fails when hooks.json does not reference swamp", async () => {
+  await withTempRepo(async (repo) => {
+    const path = join(repo, ".agents/hooks.json");
+    await ensureDir(join(path, ".."));
+    await Deno.writeTextFile(path, JSON.stringify({ other: {} }));
+    const result = await agentConfigLoadableCheck.run(
+      makeCtx(repo, "antigravity"),
+    );
+    assertEquals(result.status, "fail");
+    assertStringIncludes(result.message, "swamp audit record");
+  });
+});

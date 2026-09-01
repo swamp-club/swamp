@@ -26,7 +26,8 @@ export type HookTool =
   | "kiro"
   | "opencode"
   | "copilot"
-  | "pi";
+  | "pi"
+  | "antigravity";
 
 /**
  * Normalized hook input from any supported tool.
@@ -88,6 +89,8 @@ export function normalizeHookInput(
       return normalizeOpenCode(raw);
     case "pi":
       return normalizePi(raw);
+    case "antigravity":
+      return normalizeAntiGravity(raw);
     case "copilot":
       return normalizeCopilot(raw);
   }
@@ -254,6 +257,34 @@ function normalizePi(
     command,
     cwd: (raw.cwd as string) || ".",
     sessionId: raw.session_id as string | undefined,
+    isFailure,
+    ...(isFailure && errorStr ? { errorMessage: errorStr } : {}),
+  };
+}
+
+/**
+ * AntiGravity: PostToolUse hooks via .agents/hooks.json.
+ * toolCall.name === "run_command", command from toolCall.args.CommandLine,
+ * cwd from toolCall.args.Cwd, session from conversationId.
+ */
+function normalizeAntiGravity(
+  raw: Record<string, unknown>,
+): NormalizedHookInput | null {
+  const toolCall = raw.toolCall as
+    | { name?: string; args?: { CommandLine?: string; Cwd?: string } }
+    | undefined;
+  if (toolCall?.name !== "run_command") return null;
+
+  const command = toolCall.args?.CommandLine;
+  if (!command) return null;
+
+  const errorStr = raw.error as string | undefined;
+  const isFailure = !!errorStr;
+
+  return {
+    command,
+    cwd: toolCall.args?.Cwd || (raw.cwd as string) || ".",
+    sessionId: raw.conversationId as string | undefined,
     isFailure,
     ...(isFailure && errorStr ? { errorMessage: errorStr } : {}),
   };

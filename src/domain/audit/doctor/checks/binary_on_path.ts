@@ -29,11 +29,14 @@ const INSTALL_HINTS: Record<string, string> = {
   copilot:
     "Install GitHub Copilot CLI: https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli",
   pi: "Install Pi: https://pi.dev/docs/latest",
+  antigravity:
+    "Install AntiGravity CLI: https://antigravity.google/docs/cli/install/",
 };
 
 function appliesTo(tool: string): boolean {
   return tool === "claude" || tool === "cursor" || tool === "kiro" ||
-    tool === "opencode" || tool === "copilot" || tool === "pi";
+    tool === "opencode" || tool === "copilot" || tool === "pi" ||
+    tool === "antigravity";
 }
 
 /**
