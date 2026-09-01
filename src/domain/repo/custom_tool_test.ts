@@ -39,6 +39,7 @@ Deno.test("isBuiltInTool: recognizes built-in tools", () => {
   assertEquals(isBuiltInTool("codex"), true);
   assertEquals(isBuiltInTool("copilot"), true);
   assertEquals(isBuiltInTool("kiro"), true);
+  assertEquals(isBuiltInTool("pi"), true);
   assertEquals(isBuiltInTool("none"), true);
 });
 
@@ -53,7 +54,6 @@ Deno.test("validateCustomToolName: accepts valid names", () => {
   validateCustomToolName("tabnine");
   validateCustomToolName("my-tool");
   validateCustomToolName("tool123");
-  validateCustomToolName("Pi");
   validateCustomToolName("MyTool");
 });
 
@@ -78,6 +78,16 @@ Deno.test("validateCustomToolName: rejects built-in names case-insensitively", (
   );
   assertThrows(
     () => validateCustomToolName("KIRO"),
+    UserError,
+    "conflicts with a built-in",
+  );
+  assertThrows(
+    () => validateCustomToolName("pi"),
+    UserError,
+    "conflicts with a built-in",
+  );
+  assertThrows(
+    () => validateCustomToolName("Pi"),
     UserError,
     "conflicts with a built-in",
   );
@@ -137,6 +147,16 @@ Deno.test("builtInToolConfig: amp config", () => {
   assertEquals(config.name, "amp");
   assertEquals(config.isBuiltIn, true);
   assertEquals(config.skillsDir, ".agents/skills");
+  assertEquals(config.instructionsFile, "AGENTS.md");
+  assertEquals(config.instructionsMode, "shared");
+  assertEquals(config.skillReferenceStyle, "name");
+});
+
+Deno.test("builtInToolConfig: pi config", () => {
+  const config = builtInToolConfig("pi");
+  assertEquals(config.name, "pi");
+  assertEquals(config.isBuiltIn, true);
+  assertEquals(config.skillsDir, ".pi/skills");
   assertEquals(config.instructionsFile, "AGENTS.md");
   assertEquals(config.instructionsMode, "shared");
   assertEquals(config.skillReferenceStyle, "name");

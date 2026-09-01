@@ -116,6 +116,23 @@ Deno.test(
   },
 );
 
+Deno.test("detectAgentHarness: pi via PI_CODING_AGENT=true", () => {
+  const result = detectAgentHarness({ PI_CODING_AGENT: "true" });
+  assertEquals(result.detectedAiTool, "pi");
+  assertEquals(result.agentSessionDetected, true);
+});
+
+Deno.test("detectAgentHarness: pi via AI_AGENT=pi", () => {
+  const result = detectAgentHarness({ AI_AGENT: "pi" });
+  assertEquals(result.detectedAiTool, "pi");
+  assertEquals(result.agentSessionDetected, true);
+});
+
+Deno.test("detectAgentHarness: PI_CODING_AGENT=false does not match pi", () => {
+  const result = detectAgentHarness({ PI_CODING_AGENT: "false" });
+  assertEquals(result.detectedAiTool, undefined);
+});
+
 Deno.test("detectAgentHarness: generic AGENT fallback fires without specific match", () => {
   const result = detectAgentHarness({ AGENT: "1" });
   assertEquals(result.detectedAiTool, undefined);
@@ -173,6 +190,7 @@ Deno.test("RELEVANT_ENV_VARS contains every key any signal references", () => {
     "OPENCODE",
     "CODEX_SANDBOX_NETWORK_DISABLED",
     "CODEX_SANDBOX",
+    "PI_CODING_AGENT",
     "AGENT",
     "AI_AGENT",
     "IS_AGENT",

@@ -37,6 +37,7 @@ const SUPPORTED_TOOLS: HookTool[] = [
   "kiro",
   "opencode",
   "copilot",
+  "pi",
 ];
 
 for (const tool of SUPPORTED_TOOLS) {

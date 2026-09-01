@@ -35,6 +35,10 @@ Deno.test("GLOBAL_SKILL_DIRS: kiro uses vendor-specific path", () => {
   assertEquals(GLOBAL_SKILL_DIRS["kiro"], ".kiro/skills");
 });
 
+Deno.test("GLOBAL_SKILL_DIRS: pi uses vendor-specific path", () => {
+  assertEquals(GLOBAL_SKILL_DIRS["pi"], ".pi/agent/skills");
+});
+
 Deno.test("GLOBAL_SKILL_DIRS: amp/codex/cursor/opencode/copilot share .agents/skills", () => {
   assertEquals(GLOBAL_SKILL_DIRS["amp"], ".agents/skills");
   assertEquals(GLOBAL_SKILL_DIRS["codex"], ".agents/skills");
@@ -47,6 +51,12 @@ Deno.test("resolveGlobalSkillsDir: returns absolute path under home", () => {
   const dir = resolveGlobalSkillsDir("claude");
   assertEquals(dir !== null, true);
   assertPathStringIncludes(dir!, `.claude${SEPARATOR}skills`);
+});
+
+Deno.test("resolveGlobalSkillsDir: returns absolute path under home for pi", () => {
+  const dir = resolveGlobalSkillsDir("pi");
+  assertEquals(dir !== null, true);
+  assertPathStringIncludes(dir!, `.pi${SEPARATOR}agent${SEPARATOR}skills`);
 });
 
 Deno.test("resolveGlobalSkillsDir: returns null for none", () => {
@@ -108,6 +118,12 @@ Deno.test("resolveUniqueLocalSkillsDirs: single tool returns one dir", () => {
   const dirs = resolveUniqueLocalSkillsDirs("/repo", ["claude"]);
   assertEquals(dirs.length, 1);
   assertPathStringIncludes(dirs[0], `.claude${SEPARATOR}skills`);
+});
+
+Deno.test("resolveUniqueLocalSkillsDirs: pi uses .pi/skills", () => {
+  const dirs = resolveUniqueLocalSkillsDirs("/repo", ["pi"]);
+  assertEquals(dirs.length, 1);
+  assertPathStringIncludes(dirs[0], `.pi${SEPARATOR}skills`);
 });
 
 Deno.test("resolveUniqueLocalSkillsDirs: unknown tool uses fallback path", () => {

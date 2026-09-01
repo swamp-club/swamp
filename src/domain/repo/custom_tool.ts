@@ -50,6 +50,7 @@ export const BUILT_IN_TOOL_NAMES: readonly string[] = [
   "codex",
   "copilot",
   "kiro",
+  "pi",
   "none",
 ];
 
@@ -162,6 +163,15 @@ export function builtInToolConfig(tool: AiTool): ToolConfig {
         instructionsFile: ".kiro/steering/swamp-rules.md",
         instructionsMode: "shared",
         frontmatter: "---\ninclusion: always\n---\n",
+        skillReferenceStyle: "name",
+      };
+    case "pi":
+      return {
+        name: "pi",
+        isBuiltIn: true,
+        skillsDir: ".pi/skills",
+        instructionsFile: "AGENTS.md",
+        instructionsMode: "shared",
         skillReferenceStyle: "name",
       };
     case "none":

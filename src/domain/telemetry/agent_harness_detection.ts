@@ -98,6 +98,15 @@ const SPECIFIC_HARNESS_SIGNALS: readonly SpecificSignal[] = [
       env.CODEX_SANDBOX_NETWORK_DISABLED === "1" ||
       env.CODEX_SANDBOX !== undefined,
   },
+  // Pi sets `PI_CODING_AGENT=true` on all child processes and
+  // `AI_AGENT=pi` as a generic marker. `PI_CODING_AGENT` is the
+  // vendor-specific signal; `AI_AGENT=pi` is checked as a fallback
+  // since `AI_AGENT` is also in GENERIC_AGENT_SIGNALS (but only as
+  // a truthiness check, not a value match).
+  {
+    tool: "pi",
+    predicate: (env) => env.PI_CODING_AGENT === "true" || env.AI_AGENT === "pi",
+  },
 ];
 
 const GENERIC_AGENT_SIGNALS = ["AGENT", "AI_AGENT", "IS_AGENT"] as const;
@@ -117,6 +126,7 @@ export const RELEVANT_ENV_VARS: readonly string[] = [
   "OPENCODE",
   "CODEX_SANDBOX_NETWORK_DISABLED",
   "CODEX_SANDBOX",
+  "PI_CODING_AGENT",
   ...GENERIC_AGENT_SIGNALS,
 ];
 

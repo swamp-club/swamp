@@ -806,6 +806,14 @@ export class RepoService {
           if (changed) changedFiles.push(".amp/settings.json");
           break;
         }
+        case "pi": {
+          const changed = alreadyExists
+            ? await this.updatePiExtension(repoPath)
+            : await this.createPiExtensionIfNotExists(repoPath);
+          settingsChanged = changed;
+          if (changed) changedFiles.push(".pi/extensions/swamp-audit.ts");
+          break;
+        }
         case "codex":
         case "none":
           break;
@@ -2243,6 +2251,76 @@ export const SwampAudit: Plugin = async ({ directory }) => {
     return this.overwriteIfChanged(
       pluginPath,
       this.generateOpenCodePluginContent(),
+    );
+  }
+
+  private generatePiExtensionContent(): string {
+    return `// Swamp audit extension for Pi
+// Records bash tool invocations for the swamp audit timeline.
+// This is a managed file — it will be overwritten on swamp upgrade.
+
+import { execFile } from "node:child_process";
+
+const pendingCommands = new Map();
+
+export default function swampAudit(pi) {
+  pi.on("tool_call", async (event, ctx) => {
+    if (event.tool !== "bash") return;
+    const command = event.input?.command;
+    if (command && ctx.sessionId) {
+      pendingCommands.set(ctx.sessionId, command);
+    }
+  });
+
+  pi.on("tool_result", async (event, ctx) => {
+    if (event.tool !== "bash") return;
+    const command = pendingCommands.get(ctx.sessionId);
+    pendingCommands.delete(ctx.sessionId);
+    if (!command) return;
+
+    try {
+      const payload = JSON.stringify({
+        tool_name: "bash",
+        tool_input: { command },
+        cwd: ctx.cwd || ".",
+        session_id: ctx.sessionId,
+      });
+      execFile("swamp", ["audit", "record", "--from-hook", "--tool", "pi"], {
+        input: payload,
+      });
+    } catch {
+      // Must never throw — this is a hook
+    }
+  });
+}
+`;
+  }
+
+  private createPiExtensionIfNotExists(
+    repoPath: RepoPath,
+  ): Promise<boolean> {
+    const extensionPath = join(
+      repoPath.value,
+      ".pi",
+      "extensions",
+      "swamp-audit.ts",
+    );
+    return this.createFileIfNotExists(
+      extensionPath,
+      this.generatePiExtensionContent(),
+    );
+  }
+
+  private updatePiExtension(repoPath: RepoPath): Promise<boolean> {
+    const extensionPath = join(
+      repoPath.value,
+      ".pi",
+      "extensions",
+      "swamp-audit.ts",
+    );
+    return this.overwriteIfChanged(
+      extensionPath,
+      this.generatePiExtensionContent(),
     );
   }
 
