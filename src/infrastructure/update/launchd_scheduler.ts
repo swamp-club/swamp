@@ -91,7 +91,11 @@ export function buildPlist(
   cadence: UpdateCadence,
   mode: LaunchdMode = "agent",
 ): string {
-  const interval = cadence === "daily" ? 86400 : 604800;
+  const interval = cadence === "hourly"
+    ? 3600
+    : cadence === "daily"
+    ? 86400
+    : 604800;
   const escapedPath = escapeXml(binaryPath);
   const logDir = autoupdateLogDir(mode);
   const stdoutLog = escapeXml(join(logDir, "autoupdate.stdout.log"));
@@ -127,7 +131,7 @@ export function buildPlist(
 }
 
 export function cadenceFromInterval(interval: number): UpdateCadence {
-  return interval <= 86400 ? "daily" : "weekly";
+  return interval <= 3600 ? "hourly" : interval <= 86400 ? "daily" : "weekly";
 }
 
 async function getUid(): Promise<string> {

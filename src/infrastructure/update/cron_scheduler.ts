@@ -29,11 +29,21 @@ import { getSwampDataDir } from "../persistence/paths.ts";
 const CRON_MARKER = "# swamp-autoupdate";
 
 export function cronSchedule(cadence: UpdateCadence): string {
-  return cadence === "daily" ? "0 9 * * *" : "0 9 * * 1";
+  switch (cadence) {
+    case "hourly":
+      return "0 * * * *";
+    case "daily":
+      return "0 9 * * *";
+    case "weekly":
+      return "0 9 * * 1";
+  }
 }
 
 export function cadenceFromSchedule(schedule: string): UpdateCadence {
-  return schedule.trim().endsWith("* * 1") ? "weekly" : "daily";
+  const trimmed = schedule.trim();
+  if (trimmed === "0 * * * *") return "hourly";
+  if (trimmed.endsWith("* * 1")) return "weekly";
+  return "daily";
 }
 
 export function escapeShellPath(s: string): string {

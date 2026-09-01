@@ -86,7 +86,7 @@ Deno.test("UpdatePreferencesFileRepository: fills missing fields with defaults",
 Deno.test("UpdatePreferencesFileRepository: rejects invalid cadence", async () => {
   await withTempDir(async (dir) => {
     const filePath = join(dir, "update.yaml");
-    await Deno.writeTextFile(filePath, "enabled: true\ncadence: hourly\n");
+    await Deno.writeTextFile(filePath, "enabled: true\ncadence: monthly\n");
 
     const repo = new UpdatePreferencesFileRepository(filePath);
     const prefs = await repo.read();

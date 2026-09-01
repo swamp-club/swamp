@@ -17,9 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-export type UpdateCadence = "daily" | "weekly";
+export type UpdateCadence = "hourly" | "daily" | "weekly";
 
 export const VALID_CADENCES: readonly UpdateCadence[] = [
+  "hourly",
   "daily",
   "weekly",
 ] as const;

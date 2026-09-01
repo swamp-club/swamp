@@ -40,7 +40,7 @@ const CONFIG_KEYS: Record<string, { description: string; values?: string[] }> =
     },
     "update.cadence": {
       description: "How often to check for updates",
-      values: ["daily", "weekly"],
+      values: ["hourly", "daily", "weekly"],
     },
   };
 
