@@ -182,8 +182,8 @@ reloads the snapshot when anything changed (`src/serve/access_data_poller.ts`).
 In OAuth mode a `CollectiveRefreshService` re-fetches each logged-in user's
 collectives from the provider every `--group-refresh-interval` and closes
 connections whose admission lapsed (`src/serve/collective_refresh_service.ts`).
-Principals, grants, subjects and the `can-i` request will be covered in
-`enablers/access-control.md`.
+Principals, grants, subjects and the `can-i` request are covered in
+[enablers/access-control.md](../enablers/access-control.md).
 
 ## Running primitives through serve
 
