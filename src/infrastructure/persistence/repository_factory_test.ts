@@ -17,15 +17,20 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import { join } from "@std/path";
 import {
   catalogDbPath,
   createRepositoryContext,
   createUnifiedDataRepository,
   namespaceFromResolver,
+  writeCatalogExport,
 } from "./repository_factory.ts";
-import { CatalogStore } from "./catalog_store.ts";
+import {
+  type CatalogRow,
+  CatalogStore,
+  ITERATE_PAGE_SIZE,
+} from "./catalog_store.ts";
 import {
   createNamespace,
   SOLO_NAMESPACE,
@@ -163,4 +168,167 @@ Deno.test("namespaceFromResolver: SOLO_NAMESPACE for no resolver or empty namesp
     path: "/ds",
   });
   assertEquals(namespaceFromResolver(solo), SOLO_NAMESPACE);
+});
+
+// ── writeCatalogExport ────────────────────────────────────────────────────────
+
+function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
+  return {
+    namespace: "test-ns",
+    type_normalized: "test-model",
+    model_id: "model-001",
+    data_name: "my-data",
+    id: "data-uuid-001",
+    version: 1,
+    is_latest: 1,
+    model_name: "test-model-name",
+    spec_name: "result",
+    data_type: "resource",
+    content_type: "application/json",
+    lifetime: "infinite",
+    owner_type: "model-method",
+    owner_ref: "",
+    workflow_run_id: "",
+    workflow_name: "",
+    job_name: "",
+    step_name: "",
+    source: "",
+    streaming: 0,
+    size: 256,
+    created_at: "2026-01-01T00:00:00.000Z",
+    tags: '{"type":"resource","specName":"result"}',
+    ...overrides,
+  };
+}
+
+function setupCatalogExportFixture(): {
+  store: CatalogStore;
+  cachePath: string;
+  cleanup: () => void;
+} {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-export-test-" });
+  const dbPath = join(dir, "_catalog.db");
+  const cachePath = join(dir, "cache");
+  Deno.mkdirSync(join(cachePath, "test-ns"), { recursive: true });
+  const store = new CatalogStore(dbPath);
+  return {
+    store,
+    cachePath,
+    cleanup: () => {
+      store.close();
+      try {
+        Deno.removeSync(dir, { recursive: true });
+      } catch { /* Windows EBUSY */ }
+    },
+  };
+}
+
+Deno.test("writeCatalogExport: empty namespace produces valid empty JSON array", async () => {
+  const { store, cachePath, cleanup } = setupCatalogExportFixture();
+  try {
+    const count = await writeCatalogExport(store, cachePath, "test-ns");
+    assertEquals(count, 0);
+    const content = await Deno.readTextFile(
+      join(cachePath, "test-ns", ".catalog-export.json"),
+    );
+    const parsed = JSON.parse(content);
+    assertEquals(parsed, []);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("writeCatalogExport: single row produces valid JSON array", async () => {
+  const { store, cachePath, cleanup } = setupCatalogExportFixture();
+  try {
+    const row = makeRow();
+    store.upsert(row);
+    const count = await writeCatalogExport(store, cachePath, "test-ns");
+    assertEquals(count, 1);
+    const content = await Deno.readTextFile(
+      join(cachePath, "test-ns", ".catalog-export.json"),
+    );
+    const parsed = JSON.parse(content) as CatalogRow[];
+    assertEquals(parsed.length, 1);
+    assertEquals(parsed[0].namespace, "test-ns");
+    assertEquals(parsed[0].model_id, "model-001");
+    assertEquals(parsed[0].data_name, "my-data");
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("writeCatalogExport: multi-page namespace produces valid JSON", async () => {
+  const { store, cachePath, cleanup } = setupCatalogExportFixture();
+  try {
+    const totalRows = ITERATE_PAGE_SIZE + 50;
+    for (let i = 0; i < totalRows; i++) {
+      store.upsert(makeRow({
+        data_name: `data-${i}`,
+        version: 1,
+        id: `uuid-${i}`,
+      }));
+    }
+    const count = await writeCatalogExport(store, cachePath, "test-ns");
+    assertEquals(count, totalRows);
+    const content = await Deno.readTextFile(
+      join(cachePath, "test-ns", ".catalog-export.json"),
+    );
+    const parsed = JSON.parse(content) as CatalogRow[];
+    assertEquals(parsed.length, totalRows);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("writeCatalogExport: round-trip equivalence with direct iteration", async () => {
+  const { store, cachePath, cleanup } = setupCatalogExportFixture();
+  try {
+    for (let i = 0; i < 5; i++) {
+      store.upsert(makeRow({
+        data_name: `item-${i}`,
+        version: 1,
+        id: `uuid-${i}`,
+        size: i * 100,
+      }));
+    }
+    await writeCatalogExport(store, cachePath, "test-ns");
+    const content = await Deno.readTextFile(
+      join(cachePath, "test-ns", ".catalog-export.json"),
+    );
+    const exported = JSON.parse(content) as CatalogRow[];
+    const direct = [...store.iterateNamespace("test-ns")];
+    assertEquals(exported.length, direct.length);
+    for (let i = 0; i < exported.length; i++) {
+      assertEquals(exported[i], direct[i]);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("writeCatalogExport: yields event loop between pages", async () => {
+  const { store, cachePath, cleanup } = setupCatalogExportFixture();
+  try {
+    const totalRows = ITERATE_PAGE_SIZE * 2 + 1;
+    for (let i = 0; i < totalRows; i++) {
+      store.upsert(makeRow({
+        data_name: `data-${i}`,
+        version: 1,
+        id: `uuid-${i}`,
+      }));
+    }
+    let callbackRanDuringExport = false;
+    const exportPromise = writeCatalogExport(store, cachePath, "test-ns");
+    setTimeout(() => {
+      callbackRanDuringExport = true;
+    }, 0);
+    await exportPromise;
+    assert(
+      callbackRanDuringExport,
+      "setTimeout(0) callback should run during multi-page export",
+    );
+  } finally {
+    cleanup();
+  }
 });
