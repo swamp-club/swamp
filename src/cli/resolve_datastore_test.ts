@@ -464,3 +464,84 @@ Deno.test("isCustomDatastoreConfig: returns true for custom type", () => {
     true,
   );
 });
+
+// ============================================================================
+// Expression resolution integration tests
+// ============================================================================
+
+Deno.test("resolveDatastoreConfig: resolves env expression in custom type YAML config", async () => {
+  ensureTestType("@test/ds-expr", {
+    configSchema: z.object({ token: z.string() }),
+  });
+  const original = Deno.env.get("SWAMP_TEST_DS_INTEG_TOKEN");
+  try {
+    Deno.env.set("SWAMP_TEST_DS_INTEG_TOKEN", "my-secret-token");
+    const marker: RepoMarkerData = {
+      swampVersion: "0.1.0",
+      initializedAt: "2024-01-01",
+      repoId: "test-id",
+      datastore: {
+        type: "@test/ds-expr",
+        config: { token: "${{ env.SWAMP_TEST_DS_INTEG_TOKEN }}" },
+      },
+    };
+    const config = await resolveDatastoreConfig(marker, undefined, "/tmp/test");
+    assertEquals(isCustomDatastoreConfig(config), true);
+    assertEquals(
+      (config as CustomDatastoreConfig).config.token,
+      "my-secret-token",
+    );
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_TEST_DS_INTEG_TOKEN", original);
+    } else Deno.env.delete("SWAMP_TEST_DS_INTEG_TOKEN");
+  }
+});
+
+Deno.test("resolveDatastoreConfig: resolves env expression in SWAMP_DATASTORE env var", async () => {
+  ensureTestType("@test/ds-expr-env", {
+    configSchema: z.object({ token: z.string() }),
+  });
+  const origDs = Deno.env.get("SWAMP_DATASTORE");
+  const origToken = Deno.env.get("SWAMP_TEST_DS_INTEG_TOKEN2");
+  try {
+    Deno.env.set("SWAMP_TEST_DS_INTEG_TOKEN2", "env-secret");
+    Deno.env.set(
+      "SWAMP_DATASTORE",
+      '@test/ds-expr-env:{"token":"${{ env.SWAMP_TEST_DS_INTEG_TOKEN2 }}"}',
+    );
+    const config = await resolveDatastoreConfig(null, undefined, "/tmp/test");
+    assertEquals(isCustomDatastoreConfig(config), true);
+    assertEquals(
+      (config as CustomDatastoreConfig).config.token,
+      "env-secret",
+    );
+  } finally {
+    if (origDs !== undefined) Deno.env.set("SWAMP_DATASTORE", origDs);
+    else Deno.env.delete("SWAMP_DATASTORE");
+    if (origToken !== undefined) {
+      Deno.env.set("SWAMP_TEST_DS_INTEG_TOKEN2", origToken);
+    } else Deno.env.delete("SWAMP_TEST_DS_INTEG_TOKEN2");
+  }
+});
+
+Deno.test("resolveDatastoreConfig: missing env expression in config throws UserError", async () => {
+  ensureTestType("@test/ds-expr-miss", {
+    configSchema: z.object({ token: z.string() }),
+  });
+  Deno.env.delete("SWAMP_TEST_DS_INTEG_NONEXISTENT");
+  const marker: RepoMarkerData = {
+    swampVersion: "0.1.0",
+    initializedAt: "2024-01-01",
+    repoId: "test-id",
+    datastore: {
+      type: "@test/ds-expr-miss",
+      config: { token: "${{ env.SWAMP_TEST_DS_INTEG_NONEXISTENT }}" },
+    },
+  };
+  await assertRejects(
+    () => resolveDatastoreConfig(marker, undefined, "/tmp/test"),
+    Error,
+    "SWAMP_TEST_DS_INTEG_NONEXISTENT",
+  );
+});

@@ -143,6 +143,57 @@ defined by the extension.
 | `src/domain/extensions/extension_loader.ts` | Generic extension loader (used with kind adapters) |
 | `src/domain/extensions/datastore_kind_adapter.ts` | Datastore-specific kind adapter for ExtensionLoader |
 | `src/domain/datastore/datastore_sync_service.ts` | `DatastoreSyncService` interface |
+| `src/cli/datastore_expression_resolver.ts` | Resolves `${{ env.* }}` and `${{ vault.get() }}` expressions in datastore config values |
+
+### Config Value Interpolation
+
+String values in the datastore `config` object support expression interpolation
+using the same `${{ }}` delimiter syntax as model and workflow definitions.
+Expressions are resolved during config resolution, before the config is passed
+to the extension's schema validation and `createProvider()` factory.
+
+Two expression namespaces are supported:
+
+**Environment variables** — `${{ env.VAR_NAME }}`
+
+Resolves to the value of the named environment variable. Throws a startup error
+if the variable is not set or empty. This is the simplest approach for keeping
+secrets out of `.swamp.yaml` — the token comes from the operator's environment
+(direnv, shell profile, 1Password CLI, etc.).
+
+```yaml
+datastore:
+  type: "@myorg/gitlab-datastore"
+  config:
+    token: "${{ env.GITLAB_TOKEN }}"
+    endpoint: "https://${{ env.GITLAB_HOST }}/api/v4"
+```
+
+**Vault secrets** — `${{ vault.get(vaultName, secretKey) }}`
+
+Resolves to the decrypted value of the named secret from the named vault. All
+installed vault types are supported (native `local_encryption` and extension
+providers like `@swamp/aws-sm`). The vault service is initialized lazily — only
+when a `vault.get()` expression is encountered.
+
+```yaml
+datastore:
+  type: "@myorg/postgres-datastore"
+  config:
+    connectionString: "${{ vault.get(infra, pg-connection-string) }}"
+```
+
+**Limitations:**
+
+- Only `env.*` and `vault.get()` are supported. The full CEL evaluation context
+  (model references, data lookups) is not available at this bootstrap phase.
+- All installed vault types work (native and extension). Extension vault
+  bundles are loaded directly from the `.swamp/vault-bundles/` cache during
+  early boot, bypassing the extension loader. If an extension vault is not
+  installed, install it before referencing it in datastore config.
+- Vault expressions are not supported when `managedConfig: true` — managed
+  config stores vault configurations in the datastore tier, creating a circular
+  dependency. Use environment variable expressions instead.
 
 ## Configuration
 

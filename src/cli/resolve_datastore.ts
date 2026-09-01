@@ -46,6 +46,7 @@ import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_regist
 import { UserError } from "../domain/errors.ts";
 import { resolveDatastoreType } from "../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../domain/extensions/auto_resolver_context.ts";
+import { resolveDatastoreExpressions } from "./datastore_expression_resolver.ts";
 
 const logger = getLogger(["swamp", "datastore", "resolve"]);
 
@@ -114,8 +115,11 @@ export async function parseDatastoreEnvVar(
       await datastoreTypeRegistry.ensureTypeLoaded(renamedTo);
       const typeInfo = datastoreTypeRegistry.get(renamedTo);
       if (typeInfo?.createProvider) {
-        const config: Record<string, unknown> = { bucket };
+        let config: Record<string, unknown> = { bucket };
         if (prefix) config.prefix = prefix;
+
+        const envCtx = { repoDir: repoDir ?? Deno.cwd() };
+        config = await resolveDatastoreExpressions(config, envCtx);
 
         if (typeInfo.configSchema) {
           const result = typeInfo.configSchema.safeParse(config);
@@ -188,6 +192,9 @@ export async function parseDatastoreEnvVar(
       );
     }
   }
+
+  const envCtx = { repoDir: repoDir ?? Deno.cwd() };
+  config = await resolveDatastoreExpressions(config, envCtx);
 
   if (typeInfo.configSchema) {
     const result = typeInfo.configSchema.safeParse(config);
@@ -269,7 +276,7 @@ export async function resolveDatastoreConfig(
       const typeInfo = datastoreTypeRegistry.get(renamedTo);
       if (typeInfo?.createProvider) {
         // Build config from the S3-specific YAML fields
-        const config: Record<string, unknown> = {};
+        let config: Record<string, unknown> = {};
         if (ds.bucket) config.bucket = ds.bucket;
         if (ds.prefix) config.prefix = ds.prefix;
         if (ds.region) config.region = ds.region;
@@ -277,6 +284,12 @@ export async function resolveDatastoreConfig(
         if (ds.forcePathStyle != null) {
           config.forcePathStyle = ds.forcePathStyle;
         }
+
+        const exprCtx = {
+          repoDir: repoDir ?? Deno.cwd(),
+          managedConfig: ds.managedConfig,
+        };
+        config = await resolveDatastoreExpressions(config, exprCtx);
 
         if (typeInfo.configSchema) {
           const result = typeInfo.configSchema.safeParse(config);
@@ -358,7 +371,13 @@ export async function resolveDatastoreConfig(
       );
     }
 
-    const customConfig = ds.config ?? {};
+    let customConfig = ds.config ?? {};
+
+    const exprCtx = {
+      repoDir: repoDir ?? Deno.cwd(),
+      managedConfig: ds.managedConfig,
+    };
+    customConfig = await resolveDatastoreExpressions(customConfig, exprCtx);
 
     if (typeInfo.configSchema) {
       const result = typeInfo.configSchema.safeParse(customConfig);
