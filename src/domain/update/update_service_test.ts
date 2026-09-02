@@ -280,30 +280,36 @@ Deno.test("update fetches checksum and passes it to downloadAndInstall", async (
 
 // --- Pre-flight permission check tests ---
 
-Deno.test("update rejects with UserError when binary path is not writable", async () => {
-  const tempDir = await Deno.makeTempDir();
-  const readOnlyFile = `${tempDir}/swamp`;
-  await Deno.writeTextFile(readOnlyFile, "binary");
-  await Deno.chmod(readOnlyFile, 0o444);
+Deno.test({
+  name: "update rejects with UserError when binary path is not writable",
+  // chmod mode bits are POSIX-only; on Windows the write-permission check
+  // probes directory writability instead (tested via Windows CI).
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const tempDir = await Deno.makeTempDir();
+    const readOnlyFile = `${tempDir}/swamp`;
+    await Deno.writeTextFile(readOnlyFile, "binary");
+    await Deno.chmod(readOnlyFile, 0o444);
 
-  const redirectUrl =
-    "https://artifacts.swamp-club.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
-  const service = new UpdateService(
-    createMockChecker(redirectUrl),
-    "20260207.123456.0-sha.abc12345",
-    readOnlyFile,
-  );
+    const redirectUrl =
+      "https://artifacts.swamp-club.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
+    const service = new UpdateService(
+      createMockChecker(redirectUrl),
+      "20260207.123456.0-sha.abc12345",
+      readOnlyFile,
+    );
 
-  const error = await assertRejects(
-    () => service.update(platform),
-    UserError,
-  );
-  assertStringIncludes(error.message, "permission denied");
-  assertStringIncludes(error.message, "sudo swamp update");
+    const error = await assertRejects(
+      () => service.update(platform),
+      UserError,
+    );
+    assertStringIncludes(error.message, "permission denied");
+    assertStringIncludes(error.message, "sudo swamp update");
 
-  // Cleanup
-  await Deno.chmod(readOnlyFile, 0o644);
-  await Deno.remove(tempDir, { recursive: true });
+    // Cleanup
+    await Deno.chmod(readOnlyFile, 0o644);
+    await Deno.remove(tempDir, { recursive: true });
+  },
 });
 
 Deno.test("update proceeds when binary path is writable", async () => {

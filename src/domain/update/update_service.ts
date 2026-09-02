@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { dirname, join } from "@std/path";
 import type { Platform } from "./platform.ts";
 import { validateRedirectUrl } from "./integrity.ts";
 import { UserError } from "../errors.ts";
@@ -150,17 +151,42 @@ export class UpdateService {
   /**
    * Check whether the process can write to the binary path.
    * Throws a UserError with remediation advice if not.
+   *
+   * On Windows the running binary is locked and cannot be opened for writing,
+   * so we probe directory writability instead — the rename-then-replace
+   * strategy only needs write access to the containing directory.
    */
   async checkWritePermission(): Promise<void> {
+    const permissionHint = Deno.build.os === "windows"
+      ? "Try running the terminal as Administrator."
+      : "Re-run with: sudo swamp update";
+
+    if (Deno.build.os === "windows") {
+      const probeFile = join(
+        dirname(this.binaryPath),
+        `.swamp.tmp.${crypto.randomUUID()}`,
+      );
+      try {
+        await Deno.writeTextFile(probeFile, "");
+        await Deno.remove(probeFile);
+      } catch (error) {
+        if (error instanceof Deno.errors.PermissionDenied) {
+          throw new UserError(
+            `Cannot update ${this.binaryPath}: permission denied. ${permissionHint}`,
+          );
+        }
+        // Other errors (e.g. disk full) are not permission issues
+      }
+      return;
+    }
+
     try {
-      // Try opening the file for writing without truncating — this tests
-      // actual write permission without modifying the file.
       const file = await Deno.open(this.binaryPath, { write: true });
       file.close();
     } catch (error) {
       if (error instanceof Deno.errors.PermissionDenied) {
         throw new UserError(
-          `Cannot update ${this.binaryPath}: permission denied. Re-run with: sudo swamp update`,
+          `Cannot update ${this.binaryPath}: permission denied. ${permissionHint}`,
         );
       }
       // Other errors (e.g. NotFound) are fine — the file may not exist yet
