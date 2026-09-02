@@ -877,6 +877,14 @@ export interface ModelDefinition<
   extensionFilesRoot?: string;
 
   /**
+   * Declared `additionalFiles` entries from the extension manifest.
+   * Only these files are shipped to remote workers via the data plane.
+   * Undefined for built-in model types and source-loaded directories
+   * without a `manifest.yaml`.
+   */
+  extensionAdditionalFiles?: string[];
+
+  /**
    * Scoped name of the extension that provides this model type (e.g.
    * `@keeb/network`). Populated by the extension loader at registration
    * time. Undefined for built-in types and user-authored models in

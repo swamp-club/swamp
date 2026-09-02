@@ -474,6 +474,7 @@ Deno.test("DataPlane: co-located assets serve from the bundle root only", async 
     h.bundles.register("fp-with-files", {
       js: "export {};",
       filesRoot: assetsRoot,
+      additionalFiles: ["templates/report.html"],
     });
 
     const asset = await h.plane.handle(
@@ -537,63 +538,89 @@ Deno.test("DataPlane: DELETE /data/resource requires active dispatch", async () 
   });
 });
 
-// ── listAssetFiles hardening tests ──────────────────────────────────────
+// ── declared-asset-files security tests (issue #1910) ─────────────────
 
-Deno.test("DataPlane: /bundle/{fp}/files skips symlinks", async () => {
+Deno.test("DataPlane: /bundle/{fp}/files lists only declared additionalFiles", async () => {
   await withHarness(async ({ plane, bundles }) => {
-    const tempDir = await Deno.makeTempDir({ prefix: "bundle-files-test" });
+    const tempDir = await Deno.makeTempDir({ prefix: "bundle-declared-test" });
     try {
-      await Deno.writeTextFile(join(tempDir, "real.txt"), "content");
-      await Deno.symlink(
-        join(tempDir, "real.txt"),
-        join(tempDir, "link.txt"),
-        { type: "file" },
-      );
-      bundles.register("fp-1", { js: "export {};", filesRoot: tempDir });
-      const resp = await plane.handle(request("/bundle/fp-1/files"));
+      await Deno.writeTextFile(join(tempDir, "declared.txt"), "ok");
+      await Deno.writeTextFile(join(tempDir, "undeclared.txt"), "secret");
+      await Deno.writeTextFile(join(tempDir, ".env"), "KEY=val");
+      await Deno.mkdir(join(tempDir, ".git"), { recursive: true });
+      await Deno.writeTextFile(join(tempDir, ".git", "config"), "repo");
+      bundles.register("fp-decl", {
+        js: "export {};",
+        filesRoot: tempDir,
+        additionalFiles: ["declared.txt"],
+      });
+      const resp = await plane.handle(request("/bundle/fp-decl/files"));
       const body = await resp!.json();
-      assertEquals(body.files, ["real.txt"]);
+      assertEquals(body.files, ["declared.txt"]);
     } finally {
       await Deno.remove(tempDir, { recursive: true }).catch(() => {});
     }
   });
 });
 
-Deno.test("DataPlane: /bundle/{fp}/files respects max depth", async () => {
+Deno.test("DataPlane: /bundle/{fp}/files returns empty when no additionalFiles declared", async () => {
   await withHarness(async ({ plane, bundles }) => {
-    const tempDir = await Deno.makeTempDir({ prefix: "bundle-depth-test" });
+    const tempDir = await Deno.makeTempDir({ prefix: "bundle-empty-test" });
     try {
-      let dir = tempDir;
-      for (let i = 0; i < 25; i++) {
-        dir = join(dir, `d${i}`);
-        await Deno.mkdir(dir);
-        await Deno.writeTextFile(join(dir, "f.txt"), "content");
-      }
-      bundles.register("fp-2", { js: "export {};", filesRoot: tempDir });
-      const resp = await plane.handle(request("/bundle/fp-2/files"));
+      await Deno.writeTextFile(join(tempDir, "file.txt"), "content");
+      bundles.register("fp-empty", {
+        js: "export {};",
+        filesRoot: tempDir,
+      });
+      const resp = await plane.handle(request("/bundle/fp-empty/files"));
       const body = await resp!.json();
-      const maxDepth = Math.max(
-        ...body.files.map((f: string) => f.split("/").length),
-      );
-      // MAX_WALK_DEPTH is 20, so files at depth 21+ should be excluded
-      assertEquals(maxDepth <= 21, true);
+      assertEquals(body.files, []);
     } finally {
       await Deno.remove(tempDir, { recursive: true }).catch(() => {});
     }
   });
 });
 
-Deno.test("DataPlane: /bundle/{fp}/files caps total file count", async () => {
+Deno.test("DataPlane: /bundle/{fp}/files skips declared files missing on disk", async () => {
   await withHarness(async ({ plane, bundles }) => {
-    const tempDir = await Deno.makeTempDir({ prefix: "bundle-cap-test" });
+    const tempDir = await Deno.makeTempDir({ prefix: "bundle-missing-test" });
     try {
-      for (let i = 0; i < 50; i++) {
-        await Deno.writeTextFile(join(tempDir, `f${i}.txt`), "x");
-      }
-      bundles.register("fp-3", { js: "export {};", filesRoot: tempDir });
-      const resp = await plane.handle(request("/bundle/fp-3/files"));
+      await Deno.writeTextFile(join(tempDir, "exists.txt"), "ok");
+      bundles.register("fp-miss", {
+        js: "export {};",
+        filesRoot: tempDir,
+        additionalFiles: ["exists.txt", "gone.txt"],
+      });
+      const resp = await plane.handle(request("/bundle/fp-miss/files"));
       const body = await resp!.json();
-      assertEquals(body.files.length, 50);
+      assertEquals(body.files, ["exists.txt"]);
+    } finally {
+      await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+    }
+  });
+});
+
+Deno.test("DataPlane: /bundle/{fp}/file rejects undeclared file access", async () => {
+  await withHarness(async ({ plane, bundles }) => {
+    const tempDir = await Deno.makeTempDir({ prefix: "bundle-reject-test" });
+    try {
+      await Deno.writeTextFile(join(tempDir, "declared.txt"), "ok");
+      await Deno.writeTextFile(join(tempDir, ".env"), "SECRET=val");
+      bundles.register("fp-reject", {
+        js: "export {};",
+        filesRoot: tempDir,
+        additionalFiles: ["declared.txt"],
+      });
+      const allowed = await plane.handle(
+        request("/bundle/fp-reject/file/declared.txt"),
+      );
+      assertEquals(allowed?.status, 200);
+      assertEquals(await allowed?.text(), "ok");
+
+      const denied = await plane.handle(
+        request("/bundle/fp-reject/file/.env"),
+      );
+      assertEquals(denied?.status, 404);
     } finally {
       await Deno.remove(tempDir, { recursive: true }).catch(() => {});
     }

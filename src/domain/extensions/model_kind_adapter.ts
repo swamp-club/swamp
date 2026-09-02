@@ -55,6 +55,7 @@ import type {
   ValidationResult,
 } from "./kind_adapter.ts";
 import { emitExtensionLoadWarning } from "../../infrastructure/logging/extension_load_warnings.ts";
+import { parseExtensionManifest } from "./extension_manifest.ts";
 
 const logger = getLogger(["swamp", "models", "loader"]);
 
@@ -398,16 +399,21 @@ function validateUserCollective(rawType: string): string | undefined {
   return undefined;
 }
 
-const extensionFilesRootCache = new Map<string, string | undefined>();
+interface ExtensionAssets {
+  filesRoot: string;
+  additionalFiles: string[];
+}
 
-function resolveExtensionFilesRoot(
+const extensionAssetsCache = new Map<string, ExtensionAssets | undefined>();
+
+function resolveExtensionAssets(
   sourcePath: string,
   repoDir: string | null,
-): string | undefined {
+): ExtensionAssets | undefined {
   let currentDir = dirname(sourcePath);
   const root = resolve("/");
   while (true) {
-    const cached = extensionFilesRootCache.get(currentDir);
+    const cached = extensionAssetsCache.get(currentDir);
     if (cached !== undefined) return cached;
 
     const manifestPath = join(currentDir, "manifest.yaml");
@@ -419,8 +425,20 @@ function resolveExtensionFilesRoot(
       ) || normalized.includes(
         `/${SWAMP_DATA_DIR}/config/pulled-extensions/`,
       );
-      const result = isPulled ? join(currentDir, "files") : currentDir;
-      extensionFilesRootCache.set(currentDir, result);
+      const filesRoot = isPulled ? join(currentDir, "files") : currentDir;
+
+      let additionalFiles: string[] = [];
+      try {
+        const content = Deno.readTextFileSync(manifestPath);
+        const manifest = parseExtensionManifest(content);
+        additionalFiles = manifest.additionalFiles;
+      } catch {
+        logger
+          .warn`Failed to parse manifest at ${manifestPath} for additionalFiles; defaulting to empty`;
+      }
+
+      const result: ExtensionAssets = { filesRoot, additionalFiles };
+      extensionAssetsCache.set(currentDir, result);
       return result;
     } catch {
       // Not here; walk up.
@@ -525,10 +543,12 @@ export const modelKindAdapter: KindAdapter = {
   ): void {
     const userModel = validated as z.infer<typeof UserModelSchema>;
     const modelDef = convertToModelDefinition(userModel);
-    modelDef.extensionFilesRoot = resolveExtensionFilesRoot(
+    const assets = resolveExtensionAssets(
       context.absolutePath,
       context.repoDir,
     );
+    modelDef.extensionFilesRoot = assets?.filesRoot;
+    modelDef.extensionAdditionalFiles = assets?.additionalFiles;
     modelDef.extensionName = context.extensionName;
     modelDef.sourceFingerprint = context.sourceFingerprint;
 
@@ -578,10 +598,12 @@ export const modelKindAdapter: KindAdapter = {
   ): void {
     const userModel = validated as z.infer<typeof UserModelSchema>;
     const modelDef = convertToModelDefinition(userModel);
-    modelDef.extensionFilesRoot = resolveExtensionFilesRoot(
+    const assets = resolveExtensionAssets(
       context.absolutePath,
       context.repoDir,
     );
+    modelDef.extensionFilesRoot = assets?.filesRoot;
+    modelDef.extensionAdditionalFiles = assets?.additionalFiles;
     modelDef.extensionName = context.extensionName;
     modelDef.sourceFingerprint = context.sourceFingerprint;
 

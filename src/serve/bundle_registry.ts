@@ -36,6 +36,12 @@ export interface RegisteredBundle {
    * Undefined for built-in models, which carry no assets.
    */
   filesRoot?: string;
+  /**
+   * Declared `additionalFiles` from the extension manifest. Only these
+   * files are served to workers; an empty or undefined list means no
+   * co-located assets are shipped.
+   */
+  additionalFiles?: string[];
 }
 
 export class BundleRegistry {

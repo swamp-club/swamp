@@ -30,6 +30,7 @@
  * fails the run.
  */
 
+import { join } from "@std/path";
 import {
   createLibSwampContext,
   createWorkerModelRunDeps,
@@ -716,12 +717,41 @@ export class DispatchService {
       return `${BUILTIN_BUNDLE_PREFIX}${modelDef.type.normalized}`;
     }
     const js = await modelDef.bundleSourceFactory();
-    const fingerprint = await sha256Hex(js);
+    const fingerprint = await this.#bundleFingerprint(
+      js,
+      modelDef.extensionFilesRoot,
+      modelDef.extensionAdditionalFiles,
+    );
     this.#options.bundles.register(fingerprint, {
       js,
       filesRoot: modelDef.extensionFilesRoot,
+      additionalFiles: modelDef.extensionAdditionalFiles,
     });
     return fingerprint;
+  }
+
+  async #bundleFingerprint(
+    js: string,
+    filesRoot: string | undefined,
+    additionalFiles: string[] | undefined,
+  ): Promise<string> {
+    if (!filesRoot || !additionalFiles || additionalFiles.length === 0) {
+      return sha256Hex(js);
+    }
+    const parts: string[] = [js];
+    for (const relPath of [...additionalFiles].sort()) {
+      const absPath = join(filesRoot, relPath);
+      try {
+        const content = await Deno.readFile(absPath);
+        const hash = await sha256Hex(
+          new TextDecoder().decode(content),
+        );
+        parts.push(`${relPath}:${hash}`);
+      } catch {
+        parts.push(`${relPath}:missing`);
+      }
+    }
+    return sha256Hex(parts.join("\0"));
   }
 
   #pendingTransition(
