@@ -1260,6 +1260,14 @@ export async function runCli(args: string[]): Promise<void> {
   const { rewriteDirectTypeArgs } = await import("./arg_rewriter.ts");
   args = rewriteDirectTypeArgs(args);
 
+  // Windows: clean up stale .old binary from a previous self-update
+  if (Deno.build.os === "windows") {
+    const { cleanupStaleBinary } = await import(
+      "../infrastructure/update/http_update_checker.ts"
+    );
+    await cleanupStaleBinary(Deno.execPath());
+  }
+
   // Capture start time for telemetry
   const startTime = new Date();
 

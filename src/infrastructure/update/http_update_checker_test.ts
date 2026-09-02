@@ -25,7 +25,10 @@ import {
 import { join } from "@std/path";
 import { TarStream } from "@std/tar/tar-stream";
 import { Platform } from "../../domain/update/platform.ts";
-import { HttpUpdateChecker } from "./http_update_checker.ts";
+import {
+  cleanupStaleBinary,
+  HttpUpdateChecker,
+} from "./http_update_checker.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
 
 Deno.test("stable URL is constructed correctly for darwin aarch64", () => {
@@ -347,4 +350,40 @@ Deno.test({
       await Deno.remove(tempDir, { recursive: true });
     }
   },
+});
+
+// --- cleanupStaleBinary tests ---
+
+Deno.test("cleanupStaleBinary: removes .old file when it exists", async () => {
+  const tempDir = await Deno.makeTempDir({ prefix: "swamp-cleanup-test-" });
+  try {
+    const binaryPath = join(tempDir, "swamp");
+    const oldPath = binaryPath + ".old";
+    await Deno.writeTextFile(oldPath, "stale binary");
+
+    await cleanupStaleBinary(binaryPath);
+
+    let exists = true;
+    try {
+      await Deno.stat(oldPath);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        exists = false;
+      }
+    }
+    assertEquals(exists, false, ".old file should be removed");
+  } finally {
+    await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("cleanupStaleBinary: succeeds silently when no .old file exists", async () => {
+  const tempDir = await Deno.makeTempDir({ prefix: "swamp-cleanup-test-" });
+  try {
+    const binaryPath = join(tempDir, "swamp");
+    // No .old file created — should not throw
+    await cleanupStaleBinary(binaryPath);
+  } finally {
+    await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+  }
 });

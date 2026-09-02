@@ -73,18 +73,40 @@ async function removeQuarantine(path: string): Promise<void> {
   }
 }
 
+function permissionDeniedMessage(targetPath: string): string {
+  if (Deno.build.os === "windows") {
+    return `Cannot update ${targetPath}: permission denied. Try running the terminal as Administrator.`;
+  }
+  return `Cannot update ${targetPath}: permission denied. Re-run with: sudo swamp update`;
+}
+
+/**
+ * Best-effort cleanup of a stale `.old` binary left by a previous update.
+ * Exported so the CLI startup path can call it on Windows.
+ */
+export async function cleanupStaleBinary(binaryPath: string): Promise<void> {
+  const oldPath = binaryPath + ".old";
+  try {
+    await Deno.remove(oldPath);
+  } catch {
+    // File doesn't exist or is still locked — either is fine
+  }
+}
+
 /**
  * Replace a binary at `targetPath` with the file at `sourcePath`.
  *
- * Uses atomic rename to create a new inode at the target path. Running
- * processes keep their vnode reference to the old inode — no SIGKILL on
- * macOS (code-signed binaries stay valid), no ETXTBSY on Linux (rename
- * operates on directory entries, not file data).
+ * On POSIX (macOS, Linux): atomic rename creates a new inode at the target
+ * path. Running processes keep their vnode reference to the old inode —
+ * no SIGKILL on macOS, no ETXTBSY on Linux.
  *
- * Strategy:
- * 1. Try `Deno.rename()` — atomic, replaces the target in one syscall.
- * 2. If rename fails with EXDEV (cross-filesystem), copy to a temp file
- *    in the target directory (guaranteeing same-filesystem), then rename.
+ * On Windows: running executables are locked and cannot be overwritten,
+ * but CAN be renamed. Strategy: rename the running binary to `.old`,
+ * then rename the new binary into place. If placement fails, rollback
+ * by renaming `.old` back. The `.old` file is cleaned up on next launch.
+ *
+ * POSIX fallback: if rename fails with EXDEV (cross-filesystem), copy to
+ * a temp file in the target directory (same filesystem), then rename.
  */
 async function replaceBinary(
   sourcePath: string,
@@ -106,13 +128,16 @@ async function replaceBinary(
     // readDir may fail on permission errors — not fatal
   }
 
+  if (Deno.build.os === "windows") {
+    await replaceBinaryWindows(sourcePath, targetPath);
+    return;
+  }
+
   try {
     await Deno.rename(sourcePath, targetPath);
   } catch (error) {
     if (error instanceof Deno.errors.PermissionDenied) {
-      throw new UserError(
-        `Cannot update ${targetPath}: permission denied. Re-run with: sudo swamp update`,
-      );
+      throw new UserError(permissionDeniedMessage(targetPath));
     }
     // EXDEV: source and target on different filesystems — rename won't work.
     // Copy to a temp file in the target directory, then atomic rename.
@@ -131,14 +156,79 @@ async function replaceBinary(
           // Best-effort cleanup
         }
         if (innerError instanceof Deno.errors.PermissionDenied) {
-          throw new UserError(
-            `Cannot update ${targetPath}: permission denied. Re-run with: sudo swamp update`,
-          );
+          throw new UserError(permissionDeniedMessage(targetPath));
         }
         throw innerError;
       }
     } else {
       throw error;
+    }
+  }
+}
+
+async function replaceBinaryWindows(
+  sourcePath: string,
+  targetPath: string,
+): Promise<void> {
+  const oldPath = targetPath + ".old";
+
+  // Clean up stale .old from a previous update
+  await cleanupStaleBinary(targetPath);
+
+  // Rename the running binary out of the way — Windows allows renaming
+  // a locked file, just not overwriting or deleting it.
+  let targetExisted = false;
+  try {
+    await Deno.rename(targetPath, oldPath);
+    targetExisted = true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      // Target doesn't exist yet (fresh install) — proceed directly
+    } else if (error instanceof Deno.errors.PermissionDenied) {
+      throw new UserError(permissionDeniedMessage(targetPath));
+    } else {
+      throw error;
+    }
+  }
+
+  // Place the new binary at the target path.
+  // Try rename first; fall back to copy if EXDEV (cross-volume, e.g.
+  // %TEMP% on D: and swamp installed on C:).
+  try {
+    await Deno.rename(sourcePath, targetPath);
+  } catch (renameError) {
+    const code = renameError instanceof Error
+      ? (renameError as Error & { code?: string }).code
+      : undefined;
+    if (code === "EXDEV") {
+      try {
+        await Deno.copyFile(sourcePath, targetPath);
+      } catch (copyError) {
+        if (targetExisted) {
+          try {
+            await Deno.rename(oldPath, targetPath);
+          } catch {
+            // Rollback failed — .old file still exists for manual recovery
+          }
+        }
+        if (copyError instanceof Deno.errors.PermissionDenied) {
+          throw new UserError(permissionDeniedMessage(targetPath));
+        }
+        throw copyError;
+      }
+    } else {
+      // Rollback: restore the old binary so the user isn't left without one
+      if (targetExisted) {
+        try {
+          await Deno.rename(oldPath, targetPath);
+        } catch {
+          // Rollback failed — .old file still exists for manual recovery
+        }
+      }
+      if (renameError instanceof Deno.errors.PermissionDenied) {
+        throw new UserError(permissionDeniedMessage(targetPath));
+      }
+      throw renameError;
     }
   }
 }
