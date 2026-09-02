@@ -104,6 +104,54 @@ Deno.test("resolveOtlpEndpoint: returns undefined when no endpoint is set", () =
   }
 });
 
+Deno.test("resolveOtlpEndpoint: preserves query parameters when appending signal path", () => {
+  for (const signal of SIGNALS) {
+    withEnv(
+      {
+        OTEL_EXPORTER_OTLP_ENDPOINT:
+          "https://collector.example/otlp?token=secret",
+      },
+      () =>
+        assertEquals(
+          resolveOtlpEndpoint(signal),
+          `https://collector.example/otlp/v1/${signal}?token=secret`,
+        ),
+    );
+  }
+});
+
+Deno.test("resolveOtlpEndpoint: preserves fragment when appending signal path", () => {
+  for (const signal of SIGNALS) {
+    withEnv(
+      {
+        OTEL_EXPORTER_OTLP_ENDPOINT:
+          "https://collector.example/otlp#section",
+      },
+      () =>
+        assertEquals(
+          resolveOtlpEndpoint(signal),
+          `https://collector.example/otlp/v1/${signal}#section`,
+        ),
+    );
+  }
+});
+
+Deno.test("resolveOtlpEndpoint: preserves both query and fragment when appending signal path", () => {
+  for (const signal of SIGNALS) {
+    withEnv(
+      {
+        OTEL_EXPORTER_OTLP_ENDPOINT:
+          "https://collector.example/otlp?token=secret#section",
+      },
+      () =>
+        assertEquals(
+          resolveOtlpEndpoint(signal),
+          `https://collector.example/otlp/v1/${signal}?token=secret#section`,
+        ),
+    );
+  }
+});
+
 Deno.test("resolveOtlpEndpoint: explicit config bypasses process environment", () => {
   withEnv(
     { OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://environment.example" },
