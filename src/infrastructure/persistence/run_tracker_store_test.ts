@@ -502,6 +502,224 @@ Deno.test("RunTrackerStore: reapDeadProcessRuns skips completed runs", () => {
   }
 });
 
+// ── instanceId-aware reaping tests ────────────────────────────────
+
+Deno.test("RunTrackerStore: reapStaleRuns with instanceId skips rows from different instance on same hostname", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    const run = ActiveRun.fromData({
+      id: "foreign-instance-1",
+      runKind: "workflow",
+      modelType: null,
+      methodName: null,
+      workflowName: "test-workflow",
+      pid: 7,
+      hostname: hostname(),
+      startedAt: new Date(Date.now() - 120_000).toISOString(),
+      heartbeatAt: new Date(Date.now() - 120_000).toISOString(),
+      status: "running",
+      instanceId: "instance-A",
+    });
+    store.register(run);
+
+    const reaped = store.reapStaleRuns(90_000, "instance-B");
+
+    assertEquals(reaped.length, 1);
+    assertEquals(reaped[0].id, "foreign-instance-1");
+    assertEquals(store.findById("foreign-instance-1")?.status, "failed");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: reapStaleRuns with instanceId checks PID for same-instance rows", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    const run = ActiveRun.fromData({
+      id: "local-instance-1",
+      runKind: "workflow",
+      modelType: null,
+      methodName: null,
+      workflowName: "test-workflow",
+      pid: Deno.pid,
+      hostname: hostname(),
+      startedAt: new Date(Date.now() - 120_000).toISOString(),
+      heartbeatAt: new Date(Date.now() - 120_000).toISOString(),
+      status: "running",
+      instanceId: "instance-A",
+    });
+    store.register(run);
+
+    const reaped = store.reapStaleRuns(90_000, "instance-A");
+
+    assertEquals(reaped.length, 0);
+    assertEquals(store.findById("local-instance-1")?.status, "running");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: reapStaleRuns falls back to hostname when row has no instanceId", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    const run = ActiveRun.fromData({
+      id: "legacy-1",
+      runKind: "model_method",
+      modelType: "@test/model",
+      methodName: "start",
+      workflowName: null,
+      pid: 2147483647,
+      hostname: hostname(),
+      startedAt: new Date(Date.now() - 120_000).toISOString(),
+      heartbeatAt: new Date(Date.now() - 120_000).toISOString(),
+      status: "running",
+    });
+    store.register(run);
+
+    const reaped = store.reapStaleRuns(90_000, "instance-A");
+
+    assertEquals(reaped.length, 1);
+    assertEquals(reaped[0].id, "legacy-1");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: reapStaleRuns falls back to hostname when no instanceId passed", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    const run = ActiveRun.fromData({
+      id: "no-param-1",
+      runKind: "model_method",
+      modelType: "@test/model",
+      methodName: "start",
+      workflowName: null,
+      pid: 2147483647,
+      hostname: "other-host",
+      startedAt: new Date(Date.now() - 120_000).toISOString(),
+      heartbeatAt: new Date(Date.now() - 120_000).toISOString(),
+      status: "running",
+      instanceId: "instance-A",
+    });
+    store.register(run);
+
+    const reaped = store.reapStaleRuns(90_000);
+
+    assertEquals(reaped.length, 1);
+    assertEquals(reaped[0].id, "no-param-1");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: reapDeadProcessRuns with instanceId skips rows from different instance on same hostname", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    const run = ActiveRun.fromData({
+      id: "container-1",
+      runKind: "workflow",
+      modelType: null,
+      methodName: null,
+      workflowName: "test-workflow",
+      pid: 2147483647,
+      hostname: hostname(),
+      startedAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+      status: "running",
+      instanceId: "instance-A",
+    });
+    store.register(run);
+
+    const reaped = store.reapDeadProcessRuns("instance-B");
+
+    assertEquals(reaped.length, 0);
+    assertEquals(store.findById("container-1")?.status, "running");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: reapDeadProcessRuns with instanceId reaps dead PIDs from same instance", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    const run = ActiveRun.fromData({
+      id: "same-instance-dead-1",
+      runKind: "workflow",
+      modelType: null,
+      methodName: null,
+      workflowName: "test-workflow",
+      pid: 2147483647,
+      hostname: hostname(),
+      startedAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+      status: "running",
+      instanceId: "instance-A",
+    });
+    store.register(run);
+
+    const reaped = store.reapDeadProcessRuns("instance-A");
+
+    assertEquals(reaped.length, 1);
+    assertEquals(reaped[0].id, "same-instance-dead-1");
+    assertEquals(store.findById("same-instance-dead-1")?.status, "failed");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: reapDeadProcessRuns falls back to hostname when row has no instanceId", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    const run = ActiveRun.fromData({
+      id: "legacy-dead-1",
+      runKind: "model_method",
+      modelType: "@test/model",
+      methodName: "start",
+      workflowName: null,
+      pid: 2147483647,
+      hostname: hostname(),
+      startedAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+      status: "running",
+    });
+    store.register(run);
+
+    const reaped = store.reapDeadProcessRuns("instance-A");
+
+    assertEquals(reaped.length, 1);
+    assertEquals(reaped[0].id, "legacy-dead-1");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: reapDeadProcessRuns falls back to hostname when no instanceId passed", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    const run = ActiveRun.fromData({
+      id: "no-param-dead-1",
+      runKind: "model_method",
+      modelType: "@test/model",
+      methodName: "start",
+      workflowName: null,
+      pid: 2147483647,
+      hostname: hostname(),
+      startedAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+      status: "running",
+      instanceId: "instance-A",
+    });
+    store.register(run);
+
+    const reaped = store.reapDeadProcessRuns();
+
+    assertEquals(reaped.length, 1);
+    assertEquals(reaped[0].id, "no-param-dead-1");
+  } finally {
+    store.close();
+  }
+});
+
 Deno.test("RunTrackerStore: schema v3 migration adds initiated_by column", () => {
   const dbPath = makeTempDbPath();
   const store1 = new RunTrackerStore(dbPath);

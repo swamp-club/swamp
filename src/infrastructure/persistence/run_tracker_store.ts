@@ -354,15 +354,17 @@ export class RunTrackerStore implements RunTrackerRepository {
     return rows.map((r) => ActiveRun.fromData(this.rowToData(r)));
   }
 
-  reapStaleRuns(ttlMs: number): ActiveRun[] {
+  reapStaleRuns(ttlMs: number, instanceId?: string): ActiveRun[] {
     const currentHostname = hostname();
     const stale = this.findStaleRuns(ttlMs);
     const reaped: ActiveRun[] = [];
 
     for (const run of stale) {
-      const shouldReap = run.hostname === currentHostname
-        ? isProcessDead(run.pid)
-        : true; // Cross-machine: rely on TTL alone
+      const isLocal = instanceId && run.instanceId
+        ? run.instanceId === instanceId
+        : run.hostname === currentHostname;
+
+      const shouldReap = isLocal ? isProcessDead(run.pid) : true;
 
       if (shouldReap) {
         this.complete(run.id, "failed");
@@ -373,13 +375,17 @@ export class RunTrackerStore implements RunTrackerRepository {
     return reaped;
   }
 
-  reapDeadProcessRuns(): ActiveRun[] {
+  reapDeadProcessRuns(instanceId?: string): ActiveRun[] {
     const currentHostname = hostname();
     const running = this.findAllRunning();
     const reaped: ActiveRun[] = [];
 
     for (const run of running) {
-      if (run.hostname !== currentHostname) continue;
+      const isLocal = instanceId && run.instanceId
+        ? run.instanceId === instanceId
+        : run.hostname === currentHostname;
+
+      if (!isLocal) continue;
       if (run.pid === Deno.pid) continue;
       if (!isProcessDead(run.pid)) continue;
 

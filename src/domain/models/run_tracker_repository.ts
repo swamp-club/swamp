@@ -38,7 +38,7 @@ export interface RunTrackerRepository {
 
   findRecent(hours?: number): ActiveRun[];
 
-  reapStaleRuns(ttlMs: number): ActiveRun[];
+  reapStaleRuns(ttlMs: number, instanceId?: string): ActiveRun[];
 
   close(): void;
 }
