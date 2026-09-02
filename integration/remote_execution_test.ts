@@ -198,7 +198,7 @@ async function startOrchestrator(
   });
   dispatchService.setOnDispatchEnd((id) => dataPlane.releaseDispatch(id));
 
-  await sweepStaleRecords({ repoDir, repoContext });
+  await sweepStaleRecords({ repoContext });
 
   const server = Deno.serve(
     { port: 0, hostname: "127.0.0.1", onListen: () => {} },
