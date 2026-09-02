@@ -35,16 +35,17 @@ Deno.test("GLOBAL_SKILL_DIRS: kiro uses vendor-specific path", () => {
   assertEquals(GLOBAL_SKILL_DIRS["kiro"], ".kiro/skills");
 });
 
-Deno.test("GLOBAL_SKILL_DIRS: pi uses vendor-specific path", () => {
-  assertEquals(GLOBAL_SKILL_DIRS["pi"], ".pi/agent/skills");
+Deno.test("GLOBAL_SKILL_DIRS: pi shares .agents/skills", () => {
+  assertEquals(GLOBAL_SKILL_DIRS["pi"], ".agents/skills");
 });
 
-Deno.test("GLOBAL_SKILL_DIRS: amp/codex/cursor/opencode/copilot/antigravity share .agents/skills", () => {
+Deno.test("GLOBAL_SKILL_DIRS: amp/codex/cursor/opencode/copilot/pi/antigravity share .agents/skills", () => {
   assertEquals(GLOBAL_SKILL_DIRS["amp"], ".agents/skills");
   assertEquals(GLOBAL_SKILL_DIRS["codex"], ".agents/skills");
   assertEquals(GLOBAL_SKILL_DIRS["cursor"], ".agents/skills");
   assertEquals(GLOBAL_SKILL_DIRS["opencode"], ".agents/skills");
   assertEquals(GLOBAL_SKILL_DIRS["copilot"], ".agents/skills");
+  assertEquals(GLOBAL_SKILL_DIRS["pi"], ".agents/skills");
   assertEquals(GLOBAL_SKILL_DIRS["antigravity"], ".agents/skills");
 });
 
@@ -57,7 +58,7 @@ Deno.test("resolveGlobalSkillsDir: returns absolute path under home", () => {
 Deno.test("resolveGlobalSkillsDir: returns absolute path under home for pi", () => {
   const dir = resolveGlobalSkillsDir("pi");
   assertEquals(dir !== null, true);
-  assertPathStringIncludes(dir!, `.pi${SEPARATOR}agent${SEPARATOR}skills`);
+  assertPathStringIncludes(dir!, `.agents${SEPARATOR}skills`);
 });
 
 Deno.test("resolveGlobalSkillsDir: returns null for none", () => {
@@ -121,10 +122,10 @@ Deno.test("resolveUniqueLocalSkillsDirs: single tool returns one dir", () => {
   assertPathStringIncludes(dirs[0], `.claude${SEPARATOR}skills`);
 });
 
-Deno.test("resolveUniqueLocalSkillsDirs: pi uses .pi/skills", () => {
+Deno.test("resolveUniqueLocalSkillsDirs: pi uses .agents/skills", () => {
   const dirs = resolveUniqueLocalSkillsDirs("/repo", ["pi"]);
   assertEquals(dirs.length, 1);
-  assertPathStringIncludes(dirs[0], `.pi${SEPARATOR}skills`);
+  assertPathStringIncludes(dirs[0], `.agents${SEPARATOR}skills`);
 });
 
 Deno.test("resolveUniqueLocalSkillsDirs: antigravity uses .agents/skills", () => {

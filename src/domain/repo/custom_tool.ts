@@ -170,7 +170,7 @@ export function builtInToolConfig(tool: AiTool): ToolConfig {
       return {
         name: "pi",
         isBuiltIn: true,
-        skillsDir: ".pi/skills",
+        skillsDir: ".agents/skills",
         instructionsFile: "AGENTS.md",
         instructionsMode: "shared",
         skillReferenceStyle: "name",

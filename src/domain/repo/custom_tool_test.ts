@@ -167,7 +167,7 @@ Deno.test("builtInToolConfig: pi config", () => {
   const config = builtInToolConfig("pi");
   assertEquals(config.name, "pi");
   assertEquals(config.isBuiltIn, true);
-  assertEquals(config.skillsDir, ".pi/skills");
+  assertEquals(config.skillsDir, ".agents/skills");
   assertEquals(config.instructionsFile, "AGENTS.md");
   assertEquals(config.instructionsMode, "shared");
   assertEquals(config.skillReferenceStyle, "name");
