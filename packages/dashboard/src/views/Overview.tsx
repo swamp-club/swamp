@@ -42,12 +42,10 @@ interface WorkflowRunSearchItem {
 interface ApprovalInfo {
   workflowName: string;
   runId: string;
-  steps: Array<{
-    name: string;
-    prompt?: string;
-    timeout?: number;
-    suspendedAt?: string;
-  }>;
+  stepName: string;
+  suspendedAt?: string;
+  prompt?: string;
+  inputs?: Readonly<Record<string, unknown>>;
 }
 
 interface OverviewProps {
@@ -203,7 +201,7 @@ export function Overview({ health, onOpenRun }: OverviewProps) {
                     color: "#000",
                   }}
                 >
-                  {approvals.reduce((n, a) => n + a.steps.length, 0)}
+                  {approvals.length}
                 </span>
               )}
             </div>
@@ -212,55 +210,53 @@ export function Overview({ health, onOpenRun }: OverviewProps) {
             {approvals.length === 0 && (
               <div className="loading">No pending approvals</div>
             )}
-            {approvals.flatMap((a) =>
-              a.steps.map((step) => (
-                <div className="approval-row" key={`${a.runId}-${step.name}`}>
-                  <div>
+            {approvals.map((a) => (
+              <div className="approval-row" key={`${a.runId}-${a.stepName}`}>
+                <div>
+                  <div
+                    style={{
+                      fontWeight: 500,
+                      fontSize: "0.85rem",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                    }}
+                  >
+                    {a.workflowName}
+                    <StatusPill status="suspended" />
+                  </div>
+                  {a.prompt && (
                     <div
                       style={{
-                        fontWeight: 500,
-                        fontSize: "0.85rem",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 6,
+                        fontSize: "0.75rem",
+                        color: "var(--text-3)",
+                        marginTop: 2,
                       }}
                     >
-                      {a.workflowName}
-                      <StatusPill status="suspended" />
+                      {a.prompt}
                     </div>
-                    {step.prompt && (
-                      <div
-                        style={{
-                          fontSize: "0.75rem",
-                          color: "var(--text-3)",
-                          marginTop: 2,
-                        }}
-                      >
-                        {step.prompt}
-                      </div>
-                    )}
-                  </div>
-                  <div className="approval-actions">
-                    <button
-                      type="button"
-                      className="btn-sm btn-approve"
-                      onClick={() =>
-                        handleApprove(a.workflowName, step.name)}
-                    >
-                      Approve
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-sm btn-reject"
-                      onClick={() =>
-                        handleReject(a.workflowName, step.name)}
-                    >
-                      Reject
-                    </button>
-                  </div>
+                  )}
                 </div>
-              ))
-            )}
+                <div className="approval-actions">
+                  <button
+                    type="button"
+                    className="btn-sm btn-approve"
+                    onClick={() =>
+                      handleApprove(a.workflowName, a.stepName)}
+                  >
+                    Approve
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-sm btn-reject"
+                    onClick={() =>
+                      handleReject(a.workflowName, a.stepName)}
+                  >
+                    Reject
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </div>

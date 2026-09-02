@@ -26,12 +26,10 @@ import { StatusPill } from "../components/StatusPill";
 interface ApprovalInfo {
   workflowName: string;
   runId: string;
-  steps: Array<{
-    name: string;
-    prompt?: string;
-    timeout?: number;
-    suspendedAt?: string;
-  }>;
+  stepName: string;
+  suspendedAt?: string;
+  prompt?: string;
+  inputs?: Readonly<Record<string, unknown>>;
 }
 
 export function Approvals() {
@@ -61,10 +59,7 @@ export function Approvals() {
     [request, refetch],
   );
 
-  const totalGates = approvals.reduce(
-    (n, a) => n + (Array.isArray(a.steps) ? a.steps.length : 0),
-    0,
-  );
+  const totalGates = approvals.length;
 
   return (
     <>
@@ -89,65 +84,63 @@ export function Approvals() {
         {approvals.length === 0
           ? <div className="loading">No pending approvals</div>
           : (
-            approvals.flatMap((a) =>
-              (a.steps ?? []).map((step) => (
-                <div
-                  className="approval-row"
-                  key={`${a.runId}-${step.name}`}
-                >
-                  <div>
+            approvals.map((a) => (
+              <div
+                className="approval-row"
+                key={`${a.runId}-${a.stepName}`}
+              >
+                <div>
+                  <div
+                    style={{
+                      fontWeight: 500,
+                      fontSize: "0.85rem",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                    }}
+                  >
+                    {a.workflowName}
+                    <StatusPill status="suspended" />
+                  </div>
+                  <div
+                    style={{
+                      fontSize: "0.82rem",
+                      color: "var(--text-2)",
+                      marginTop: 2,
+                    }}
+                  >
+                    Step: <strong>{a.stepName}</strong>
+                  </div>
+                  {a.prompt && (
                     <div
                       style={{
-                        fontWeight: 500,
-                        fontSize: "0.85rem",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 6,
-                      }}
-                    >
-                      {a.workflowName}
-                      <StatusPill status="suspended" />
-                    </div>
-                    <div
-                      style={{
-                        fontSize: "0.82rem",
-                        color: "var(--text-2)",
+                        fontSize: "0.78rem",
+                        color: "var(--text-3)",
                         marginTop: 2,
                       }}
                     >
-                      Step: <strong>{step.name}</strong>
+                      {a.prompt}
                     </div>
-                    {step.prompt && (
-                      <div
-                        style={{
-                          fontSize: "0.78rem",
-                          color: "var(--text-3)",
-                          marginTop: 2,
-                        }}
-                      >
-                        {step.prompt}
-                      </div>
-                    )}
-                  </div>
-                  <div className="approval-actions">
-                    <button
-                      type="button"
-                      className="btn-sm btn-approve"
-                      onClick={() => handleApprove(a.workflowName, step.name)}
-                    >
-                      Approve
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-sm btn-reject"
-                      onClick={() => handleReject(a.workflowName, step.name)}
-                    >
-                      Reject
-                    </button>
-                  </div>
+                  )}
                 </div>
-              ))
-            )
+                <div className="approval-actions">
+                  <button
+                    type="button"
+                    className="btn-sm btn-approve"
+                    onClick={() => handleApprove(a.workflowName, a.stepName)}
+                  >
+                    Approve
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-sm btn-reject"
+                    onClick={() => handleReject(a.workflowName, a.stepName)}
+                  >
+                    Reject
+                  </button>
+                </div>
+              </div>
+            ))
           )}
       </div>
     </>
