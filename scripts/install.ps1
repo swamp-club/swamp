@@ -506,7 +506,17 @@ function Main {
         } else {
             Write-Host ""
             $installedBinary = Join-Path $Destination $BinExe
-            & $installedBinary auth login
+            try {
+                & $installedBinary auth login
+                if ($LASTEXITCODE -ne 0) { throw "auth login exited with code $LASTEXITCODE" }
+            } catch {
+                Write-Warn ""
+                Write-Warn "Account setup didn't finish - no worries!"
+                Write-Warn "Run this when you're ready to pick up where you left off:"
+                Write-Warn ""
+                Write-Warn "    swamp auth login"
+                Write-Warn ""
+            }
         }
         Write-Host ""
     }

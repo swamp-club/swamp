@@ -412,7 +412,10 @@ Deno.test("authLogin: device flow times out when expiresIn elapses", async () =>
       }),
     pollDeviceToken: () => Promise.reject(new DeviceAuthPendingError()),
   });
-  const input = makeInput({ useBrowserFlow: true });
+  const input = makeInput({
+    useBrowserFlow: true,
+    minDeviceAuthExpiryMs: 1,
+  });
 
   const events = await collect<AuthLoginEvent>(
     authLogin(createLibSwampContext(), deps, input),
@@ -423,6 +426,39 @@ Deno.test("authLogin: device flow times out when expiresIn elapses", async () =>
   if (last.kind === "error") {
     assertEquals(last.error.message, "Device authorization timed out");
   }
+});
+
+Deno.test("authLogin: device flow applies minimum expiry floor over short server value", async () => {
+  let pollCount = 0;
+  const deps = makeDeps({
+    startDeviceAuth: () =>
+      Promise.resolve({
+        deviceCode: "device-abc-123",
+        userCode: "ABCD-1234",
+        verificationUri: "https://swamp-club.com/device",
+        expiresIn: 0.001,
+        interval: 0.001,
+      }),
+    pollDeviceToken: () => {
+      pollCount++;
+      if (pollCount >= 3) {
+        return Promise.resolve({ accessToken: "session-token-abc" });
+      }
+      return Promise.reject(new DeviceAuthPendingError());
+    },
+  });
+  const input = makeInput({
+    useBrowserFlow: true,
+    minDeviceAuthExpiryMs: 500,
+  });
+
+  const events = await collect<AuthLoginEvent>(
+    authLogin(createLibSwampContext(), deps, input),
+  );
+
+  const kinds = events.map((e) => e.kind);
+  assertEquals(kinds.includes("completed"), true);
+  assertEquals(pollCount >= 3, true);
 });
 
 Deno.test("authLogin: slow_down increases polling interval", async () => {

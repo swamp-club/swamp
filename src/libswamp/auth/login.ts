@@ -34,6 +34,8 @@ import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
 export const CLI_CLIENT_ID = "swamp-cli";
 
+const DEFAULT_MIN_DEVICE_AUTH_EXPIRY_MS = 300_000;
+
 /** Data returned on successful authentication. */
 export interface AuthLoginData {
   username: string;
@@ -64,6 +66,7 @@ export interface AuthLoginInput {
   useBrowserFlow: boolean;
   username?: string;
   password?: string;
+  minDeviceAuthExpiryMs?: number;
 }
 
 /** Device authorization response from swamp-club. */
@@ -359,8 +362,10 @@ export async function* authLogin(
           AbortSignal.timeout(10_000),
         );
 
-        const expiryMs = deviceAuth.expiresIn * 1000;
-        const signal = AbortSignal.timeout(Math.max(expiryMs, 60_000));
+        const minExpiryMs = input.minDeviceAuthExpiryMs ??
+          DEFAULT_MIN_DEVICE_AUTH_EXPIRY_MS;
+        const expiryMs = Math.max(deviceAuth.expiresIn * 1000, minExpiryMs);
+        const signal = AbortSignal.timeout(expiryMs);
 
         yield {
           kind: "device_verification",

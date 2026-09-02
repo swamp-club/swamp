@@ -143,7 +143,14 @@ main() {
         ;;
       *)
         echo
-        "$dest/$bin" auth login </dev/tty
+        if ! "$dest/$bin" auth login </dev/tty; then
+          warn ""
+          warn "Account setup didn't finish — no worries!"
+          warn "Run this when you're ready to pick up where you left off:"
+          warn ""
+          warn "    swamp auth login"
+          warn ""
+        fi
         ;;
     esac
     echo
