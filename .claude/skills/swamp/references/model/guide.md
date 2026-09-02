@@ -81,6 +81,9 @@ create per-input ephemeral instances for concurrent dispatch. See
 | Active runs         | `swamp run history --active`                                         |
 | Recent runs         | `swamp run history`                                                  |
 | Diagnose stale runs | `swamp run doctor`                                                   |
+| Preview run GC      | `swamp run gc --dry-run`                                             |
+| Run GC (outputs)    | `swamp run gc --force`                                               |
+| Run GC (custom age) | `swamp run gc --older-than 7d`                                       |
 
 ## Discover Before Shelling Out
 

@@ -349,6 +349,23 @@ swamp model output search "my-model" --json
 swamp model output get <output-id> --json
 ```
 
+### Large `.swamp/outputs/` Directory
+
+```bash
+# Preview what run gc would collect (default: older than 30 days)
+swamp run gc --dry-run
+
+# Delete old workflow runs and method outputs
+swamp run gc --force
+
+# Custom retention period
+swamp run gc --older-than 7d
+```
+
+`swamp run gc` cleans `.swamp/outputs/` (workflow-run history and model-method
+outputs). `swamp data gc` cleans `.swamp/data/` (the data catalog) — they cover
+different storage areas.
+
 ### Data Versions Not Visible
 
 ```bash
