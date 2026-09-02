@@ -2632,13 +2632,16 @@ export const serveCommand = new Command()
         { count: scrubbedHeaders },
       );
     }
-    const reapedRuns = runTracker.reapStaleRuns(DEFAULT_STALE_TTL_MS);
+    const reapedRuns = runTracker.reapStaleRuns(
+      DEFAULT_STALE_TTL_MS,
+      instanceId,
+    );
     for (const run of reapedRuns) {
       logger.warn`Reaped stale ${run.runKind} run ${run.id} (${
         run.methodName ?? run.workflowName ?? "unknown"
       })`;
     }
-    const deadPidRuns = runTracker.reapDeadProcessRuns();
+    const deadPidRuns = runTracker.reapDeadProcessRuns(instanceId);
     for (const run of deadPidRuns) {
       logger.warn`Reaped dead-process ${run.runKind} run ${run.id} (${
         run.methodName ?? run.workflowName ?? "unknown"
@@ -4121,7 +4124,7 @@ export const serveCommand = new Command()
           .info`Reaped ${remoteReaped} run(s) from dead remote instance(s)`;
       }
 
-      const deadPidRunsRemote = runTracker.reapDeadProcessRuns();
+      const deadPidRunsRemote = runTracker.reapDeadProcessRuns(instanceId);
       for (const run of deadPidRunsRemote) {
         logger.warn`Reaped dead-process ${run.runKind} run ${run.id} (${
           run.methodName ?? run.workflowName ?? "unknown"

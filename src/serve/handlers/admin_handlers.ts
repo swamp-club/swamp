@@ -1683,7 +1683,10 @@ export function handleRunDoctor(
 
   let reaped = 0;
   if (payload?.fix && stale.length > 0) {
-    const reapedRuns = ctx.runTracker.reapStaleRuns(STALE_TTL_MS);
+    const reapedRuns = ctx.runTracker.reapStaleRuns(
+      STALE_TTL_MS,
+      ctx.instanceId,
+    );
     reaped = reapedRuns.length;
   }
 
