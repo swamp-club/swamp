@@ -290,6 +290,46 @@ export SWAMP_DATASTORE='@myorg/my-store:{"key":"val"}'
 
 For custom datastore or driver implementations, see the `swamp-extension` skill.
 
+### Config Value Interpolation
+
+String values in the datastore `config` object support `${{ }}` expression
+interpolation, using the same delimiter syntax as model and workflow
+definitions. Expressions are resolved during config resolution, before schema
+validation and provider creation.
+
+**Environment variables** — `${{ env.VAR_NAME }}`:
+
+```yaml
+datastore:
+  type: "@myorg/gitlab-datastore"
+  config:
+    token: "${{ env.GITLAB_TOKEN }}"
+    endpoint: "https://${{ env.GITLAB_HOST }}/api/v4"
+```
+
+Resolves to the value of the named environment variable. Throws a startup error
+if the variable is not set or empty.
+
+**Vault secrets** — `${{ vault.get(vaultName, secretKey) }}`:
+
+```yaml
+datastore:
+  type: "@myorg/postgres-datastore"
+  config:
+    connectionString: "${{ vault.get(infra, pg-connection-string) }}"
+```
+
+Resolves to the decrypted value of the named secret. All installed vault types
+work (native `local_encryption` and extension providers like `@swamp/aws-sm`).
+
+**Limitations:**
+
+- Only `env.*` and `vault.get()` are supported — the full CEL evaluation context
+  (model references, data lookups) is not available at this bootstrap phase.
+- Vault expressions are not supported when `managedConfig: true` — managed
+  config stores vault configurations in the datastore tier, creating a circular
+  dependency. Use environment variable expressions instead.
+
 ### Namespaces (Multi-Repo Datastores)
 
 When multiple repos share a remote datastore, each must own a **namespace** to
