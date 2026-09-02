@@ -76,6 +76,14 @@ jobs:
             --target aarch64-apple-darwin \
             --output dist/swamp-darwin-aarch64
 
+          # Windows x86_64 (cross-compiled, packaged as .zip)
+          deno run -A scripts/compile.ts \
+            --version "$VERSION" \
+            --target x86_64-pc-windows-msvc \
+            --output /tmp/swamp.exe
+          (cd /tmp && zip -j "$GITHUB_WORKSPACE/dist/swamp-windows-x86_64.zip" swamp.exe)
+          rm /tmp/swamp.exe
+
       - name: Create checksums
         working-directory: dist
         run: |
@@ -140,6 +148,12 @@ jobs:
             echo "curl -L https://github.com/${REPO}/releases/download/v${VERSION}/swamp-linux-aarch64 -o swamp"
             echo 'chmod +x swamp && sudo mv swamp /usr/local/bin/'
             echo '```'
+            echo ""
+            echo "**Windows (x86_64):**"
+            echo '```powershell'
+            echo "Invoke-WebRequest -Uri https://github.com/${REPO}/releases/download/v${VERSION}/swamp-windows-x86_64.zip -OutFile swamp.zip"
+            echo "Expand-Archive swamp.zip -DestinationPath .; Move-Item swamp.exe 'C:\\Program Files\\swamp\\'"
+            echo '```'
           } >> /tmp/release_body.md
 
       - name: Create GitHub Release
@@ -153,6 +167,7 @@ jobs:
             dist/swamp-linux-aarch64
             dist/swamp-darwin-x86_64
             dist/swamp-darwin-aarch64
+            dist/swamp-windows-x86_64.zip
             dist/checksums.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -164,6 +179,34 @@ jobs:
           repository: swamp-club/swamp-uat
           event-type: run-uat
           client-payload: '{"version": "${{ steps.version.outputs.version }}"}'
+
+  windows-smoke:
+    name: Windows Smoke Test
+    runs-on: windows-latest
+    needs: release
+    permissions:
+      contents: read
+
+    steps:
+      - name: Download Windows binary from release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ needs.release.outputs.version }}
+        shell: bash
+        run: |
+          RELEASE_TAG="v${RELEASE_VERSION}"
+          gh release download "${RELEASE_TAG}" \
+            --repo "${{ github.repository }}" \
+            --pattern "swamp-windows-x86_64.zip" \
+            --dir .
+
+      - name: Extract and smoke test
+        shell: pwsh
+        run: |
+          Expand-Archive -Path swamp-windows-x86_64.zip -DestinationPath .
+          .\swamp.exe --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\swamp.exe --help | Out-Null
 
   docker:
     name: Build and Push Docker Image
