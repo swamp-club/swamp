@@ -55,17 +55,43 @@ Deno.test("Platform.from throws UserError for unsupported arch", () => {
   );
 });
 
-Deno.test("tarballName returns correct value for darwin aarch64", () => {
+Deno.test("archiveName returns tar.gz for darwin aarch64", () => {
   const platform = Platform.from("darwin", "aarch64");
   assertEquals(
-    platform.tarballName,
+    platform.archiveName,
     "swamp-stable-binary-darwin-aarch64.tar.gz",
   );
 });
 
-Deno.test("tarballName returns correct value for linux x86_64", () => {
+Deno.test("archiveName returns tar.gz for linux x86_64", () => {
   const platform = Platform.from("linux", "x86_64");
-  assertEquals(platform.tarballName, "swamp-stable-binary-linux-x86_64.tar.gz");
+  assertEquals(
+    platform.archiveName,
+    "swamp-stable-binary-linux-x86_64.tar.gz",
+  );
+});
+
+Deno.test("archiveName returns zip for windows x86_64", () => {
+  const platform = Platform.from("windows", "x86_64");
+  assertEquals(
+    platform.archiveName,
+    "swamp-stable-binary-windows-x86_64.zip",
+  );
+});
+
+Deno.test("binaryName returns swamp for darwin", () => {
+  const platform = Platform.from("darwin", "aarch64");
+  assertEquals(platform.binaryName, "swamp");
+});
+
+Deno.test("binaryName returns swamp for linux", () => {
+  const platform = Platform.from("linux", "x86_64");
+  assertEquals(platform.binaryName, "swamp");
+});
+
+Deno.test("binaryName returns swamp.exe for windows", () => {
+  const platform = Platform.from("windows", "x86_64");
+  assertEquals(platform.binaryName, "swamp.exe");
 });
 
 Deno.test("stableUrl returns correct artifact URL for darwin aarch64", () => {
@@ -97,6 +123,14 @@ Deno.test("stableUrl returns correct artifact URL for linux aarch64", () => {
   assertEquals(
     platform.stableUrl(),
     "https://artifacts.swamp-club.com/swamp/stable/binary/linux/aarch64/swamp-stable-binary-linux-aarch64.tar.gz",
+  );
+});
+
+Deno.test("stableUrl returns correct artifact URL for windows x86_64", () => {
+  const platform = Platform.from("windows", "x86_64");
+  assertEquals(
+    platform.stableUrl(),
+    "https://artifacts.swamp-club.com/swamp/stable/binary/windows/x86_64/swamp-stable-binary-windows-x86_64.zip",
   );
 });
 

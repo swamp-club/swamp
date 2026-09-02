@@ -53,6 +53,13 @@ Deno.test("stable URL contains expected components", () => {
   assertStringIncludes(url, "swamp-stable-binary-darwin-x86_64.tar.gz");
 });
 
+Deno.test("stable URL uses .zip extension for windows", () => {
+  const platform = Platform.from("windows", "x86_64");
+  const url = platform.stableUrl();
+  assertStringIncludes(url, "windows/x86_64");
+  assertStringIncludes(url, "swamp-stable-binary-windows-x86_64.zip");
+});
+
 Deno.test("version extraction from redirect URL works with parseVersionFromRedirectUrl", async () => {
   const { parseVersionFromRedirectUrl } = await import(
     "../../domain/update/update_service.ts"
