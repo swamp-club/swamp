@@ -77,11 +77,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const health = useHealthStream();
 
   const { data: approvalsData } = useRequest("workflow.approvals");
-  const approvals = extractArray<{ steps?: unknown[] }>(approvalsData);
-  const approvalCount = approvals.reduce(
-    (n, a) => n + (Array.isArray(a.steps) ? a.steps.length : 0),
-    0,
-  );
+  const approvalCount = extractArray(approvalsData).length;
 
   const openRun = (workflowName: string, runId?: string) => {
     setDetail({ kind: "run", workflowName, runId });
