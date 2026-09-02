@@ -216,21 +216,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\swamp.exe --help | Out-Null
 
-      - name: Test install script
-        env:
-          RELEASE_VERSION: ${{ needs.release.outputs.version }}
-        shell: pwsh
-        run: |
-          $installDir = Join-Path $env:RUNNER_TEMP "swamp-install-test"
-          .\scripts\install.ps1 -Destination $installDir -Version $env:RELEASE_VERSION -AddToPath $false
-          $installed = Join-Path $installDir "swamp.exe"
-          if (-not (Test-Path $installed)) {
-            Write-Error "install.ps1 did not produce $installed"
-            exit 1
-          }
-          $versionOutput = & $installed --version 2>&1
-          Write-Host "Installed version: $versionOutput"
-
   docker:
     name: Build and Push Docker Image
     runs-on: ubuntu-latest

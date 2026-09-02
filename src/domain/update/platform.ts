@@ -67,20 +67,17 @@ export class Platform {
     return new Platform(os, arch);
   }
 
-  /**
-   * Returns the tarball filename for the stable binary.
-   * e.g. "swamp-stable-binary-darwin-aarch64.tar.gz"
-   */
-  get tarballName(): string {
-    return `swamp-stable-binary-${this.os}-${this.arch}.tar.gz`;
+  get archiveName(): string {
+    const ext = this.os === "windows" ? "zip" : "tar.gz";
+    return `swamp-stable-binary-${this.os}-${this.arch}.${ext}`;
   }
 
-  /**
-   * Returns the full URL for the stable binary tarball.
-   * e.g. "https://artifacts.swamp-club.com/swamp/stable/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz"
-   */
+  get binaryName(): string {
+    return this.os === "windows" ? "swamp.exe" : "swamp";
+  }
+
   stableUrl(): string {
-    return `${ARTIFACT_BASE_URL}/${this.os}/${this.arch}/${this.tarballName}`;
+    return `${ARTIFACT_BASE_URL}/${this.os}/${this.arch}/${this.archiveName}`;
   }
 
   equals(other: Platform): boolean {

@@ -29,6 +29,27 @@ import {
 import { computeChecksum } from "../../domain/models/checksum.ts";
 import { extractTarGz } from "../archive/tar_archive.ts";
 
+async function extractZip(
+  archivePath: string,
+  destDir: string,
+): Promise<void> {
+  const cmd = new Deno.Command("powershell.exe", {
+    args: [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `Expand-Archive -Path '${archivePath}' -DestinationPath '${destDir}' -Force`,
+    ],
+    stdout: "null",
+    stderr: "piped",
+  });
+  const result = await cmd.output();
+  if (!result.success) {
+    const stderr = new TextDecoder().decode(result.stderr);
+    throw new Error(`Expand-Archive failed: ${stderr}`);
+  }
+}
+
 /**
  * Remove macOS quarantine extended attribute (best-effort).
  * Files downloaded via fetch() get tagged with com.apple.quarantine,
@@ -190,19 +211,21 @@ export class HttpUpdateChecker implements UpdateChecker {
   }
 
   /**
-   * Download the tarball, verify its checksum, and install the binary.
+   * Download the archive, verify its checksum, and install the binary.
    */
   async downloadAndInstall(
     url: string,
     binaryPath: string,
     expectedChecksum: string,
   ): Promise<void> {
+    const isZip = url.endsWith(".zip");
     const tempDir = await Deno.makeTempDir({ prefix: "swamp-update-" });
 
     try {
-      const tarballPath = `${tempDir}/swamp.tar.gz`;
+      const archiveExt = isZip ? "zip" : "tar.gz";
+      const archivePath = `${tempDir}/swamp.${archiveExt}`;
 
-      // Download the tarball
+      // Download the archive
       let response: Response;
       try {
         response = await fetch(url);
@@ -219,7 +242,7 @@ export class HttpUpdateChecker implements UpdateChecker {
         throw new UserError("Failed to download update: empty response body");
       }
 
-      const file = await Deno.open(tarballPath, {
+      const file = await Deno.open(archivePath, {
         write: true,
         create: true,
       });
@@ -228,7 +251,7 @@ export class HttpUpdateChecker implements UpdateChecker {
       } catch (error: unknown) {
         // Clean up partial download
         try {
-          await Deno.remove(tarballPath);
+          await Deno.remove(archivePath);
         } catch {
           // Best-effort cleanup
         }
@@ -236,27 +259,41 @@ export class HttpUpdateChecker implements UpdateChecker {
         throw new UserError(`Download failed: ${message}`);
       }
 
-      // Verify tarball integrity before extraction
-      const tarballBytes = await Deno.readFile(tarballPath);
-      const actualChecksum = await computeChecksum(tarballBytes);
+      // Verify archive integrity before extraction
+      const archiveBytes = await Deno.readFile(archivePath);
+      const actualChecksum = await computeChecksum(archiveBytes);
       verifyChecksum(expectedChecksum, actualChecksum);
 
-      // Extract the tarball
-      try {
-        const tarFile = await Deno.open(tarballPath, { read: true });
-        await extractTarGz(tarFile.readable, tempDir);
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new UserError(`Failed to extract update: ${message}`);
+      // Extract the archive
+      if (isZip) {
+        try {
+          await extractZip(archivePath, tempDir);
+        } catch (error: unknown) {
+          const message = error instanceof Error
+            ? error.message
+            : String(error);
+          throw new UserError(`Failed to extract update: ${message}`);
+        }
+      } else {
+        try {
+          const tarFile = await Deno.open(archivePath, { read: true });
+          await extractTarGz(tarFile.readable, tempDir);
+        } catch (error: unknown) {
+          const message = error instanceof Error
+            ? error.message
+            : String(error);
+          throw new UserError(`Failed to extract update: ${message}`);
+        }
       }
 
       // Find the extracted binary
-      const extractedBinary = `${tempDir}/swamp`;
+      const binaryFilename = isZip ? "swamp.exe" : "swamp";
+      const extractedBinary = `${tempDir}/${binaryFilename}`;
       try {
         await Deno.stat(extractedBinary);
       } catch {
         throw new UserError(
-          "Failed to find swamp binary in downloaded archive",
+          `Failed to find ${binaryFilename} in downloaded archive`,
         );
       }
 
