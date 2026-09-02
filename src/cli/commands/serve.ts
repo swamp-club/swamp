@@ -2667,7 +2667,6 @@ export const serveCommand = new Command()
 
     logger.info("Boot: sweeping stale records");
     const swept = await sweepStaleRecords({
-      repoDir: resolvedRepoDir,
       repoContext,
     });
     if (swept.leases + swept.pendingDispatches + swept.workers > 0) {

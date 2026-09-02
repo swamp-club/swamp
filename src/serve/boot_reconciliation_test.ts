@@ -32,7 +32,6 @@ import {
   sweepStaleRecords,
   sweepTokenConsistency,
   type TokenConsistencyDeps,
-  type TransitionInput,
 } from "./boot_reconciliation.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import type { PendingRunEntry } from "../infrastructure/persistence/run_tracker_store.ts";
@@ -71,9 +70,18 @@ function makeData(
   return { data, modelType, modelId };
 }
 
-function createHarness(items: Map<string, DataItem[]>) {
-  const transitions: TransitionInput[] = [];
-  let failOn: string | null = null;
+interface SaveCall {
+  modelType: string;
+  modelId: string;
+  dataName: string;
+  content: Record<string, unknown>;
+}
+
+function createHarness(
+  items: Map<string, DataItem[]>,
+  opts?: { failSave?: boolean },
+) {
+  const saves: SaveCall[] = [];
   const contentMap = new Map<string, Uint8Array>();
   const dataByType = new Map<
     string,
@@ -94,7 +102,6 @@ function createHarness(items: Map<string, DataItem[]>) {
   }
 
   const deps: BootReconciliationDeps = {
-    repoDir: "/tmp/test",
     repoContext: {
       unifiedDataRepo: {
         findAllForType: (type: ModelType) => {
@@ -108,32 +115,39 @@ function createHarness(items: Map<string, DataItem[]>) {
           const key = `${type.normalized}/${modelId}/${dataName}`;
           return Promise.resolve(contentMap.get(key) ?? null);
         },
+        save: (
+          type: ModelType,
+          modelId: string,
+          data: Data,
+          content: Uint8Array,
+        ) => {
+          if (opts?.failSave) {
+            return Promise.reject(new Error("save failed"));
+          }
+          const parsed = JSON.parse(
+            new TextDecoder().decode(content),
+          ) as Record<string, unknown>;
+          saves.push({
+            modelType: type.normalized,
+            modelId,
+            dataName: data.name,
+            content: parsed,
+          });
+          return Promise.resolve({ version: 2 });
+        },
       },
     } as unknown as RepositoryContext,
-    runTransition: (input: TransitionInput) => {
-      if (failOn && input.definitionName === failOn) {
-        return Promise.reject(new Error(`transition failed: ${failOn}`));
-      }
-      transitions.push(input);
-      return Promise.resolve();
-    },
   };
 
-  return {
-    deps,
-    transitions,
-    setFailOn: (name: string) => {
-      failOn = name;
-    },
-  };
+  return { deps, saves };
 }
 
-Deno.test("sweepStaleRecords: clean boot returns zeros with no transitions", async () => {
+Deno.test("sweepStaleRecords: clean boot returns zeros with no writes", async () => {
   const h = createHarness(new Map());
   const result = await sweepStaleRecords(h.deps);
 
   assertEquals(result, { leases: 0, pendingDispatches: 0, workers: 0 });
-  assertEquals(h.transitions.length, 0);
+  assertEquals(h.saves.length, 0);
 });
 
 Deno.test("sweepStaleRecords: expires active leases", async () => {
@@ -159,12 +173,14 @@ Deno.test("sweepStaleRecords: expires active leases", async () => {
   const result = await sweepStaleRecords(h.deps);
 
   assertEquals(result.leases, 2);
-  assertEquals(h.transitions.length, 2);
-  assertEquals(h.transitions[0].typeArg, "swamp/step-lease");
-  assertEquals(h.transitions[0].methodName, "expire");
-  assertEquals(h.transitions[0].inputs.leaseId, "lease-1");
-  assertEquals(h.transitions[0].inputs.error, "orchestrator restart");
-  assertEquals(h.transitions[1].inputs.leaseId, "lease-2");
+  assertEquals(h.saves.length, 2);
+  assertEquals(h.saves[0].modelType, "swamp/step-lease");
+  assertEquals(h.saves[0].content.state, "expired");
+  assertEquals(h.saves[0].content.leaseId, "lease-1");
+  assertEquals(h.saves[0].content.error, "orchestrator restart");
+  assertEquals(typeof h.saves[0].content.endedAt, "string");
+  assertEquals(h.saves[1].content.leaseId, "lease-2");
+  assertEquals(h.saves[1].content.state, "expired");
 });
 
 Deno.test("sweepStaleRecords: orphans waiting pending dispatches", async () => {
@@ -184,14 +200,14 @@ Deno.test("sweepStaleRecords: orphans waiting pending dispatches", async () => {
   const result = await sweepStaleRecords(h.deps);
 
   assertEquals(result.pendingDispatches, 1);
-  assertEquals(h.transitions.length, 1);
-  assertEquals(h.transitions[0].typeArg, "swamp/pending-dispatch");
-  assertEquals(h.transitions[0].methodName, "orphan");
-  assertEquals(h.transitions[0].inputs.queueId, "q-1");
-  assertEquals(typeof h.transitions[0].inputs.endedAt, "string");
+  assertEquals(h.saves.length, 1);
+  assertEquals(h.saves[0].modelType, "swamp/pending-dispatch");
+  assertEquals(h.saves[0].content.state, "orphaned");
+  assertEquals(h.saves[0].content.queueId, "q-1");
+  assertEquals(typeof h.saves[0].content.endedAt, "string");
 });
 
-Deno.test("sweepStaleRecords: disconnects stale workers", async () => {
+Deno.test("sweepStaleRecords: disconnects stale workers with full field update", async () => {
   const h = createHarness(
     new Map([
       ["swamp/worker", [
@@ -199,7 +215,13 @@ Deno.test("sweepStaleRecords: disconnects stale workers", async () => {
           modelName: "worker-w1",
           dataName: "state-main",
           modelType: "swamp/worker",
-          attrs: { name: "w1", status: "idle" },
+          attrs: {
+            name: "w1",
+            status: "idle",
+            activeDispatchIds: ["d-1", "d-2"],
+            lastSeenAt: "2026-01-01T00:00:00.000Z",
+            verifyFailureReason: "probe failed",
+          },
         },
       ]],
     ]),
@@ -208,14 +230,17 @@ Deno.test("sweepStaleRecords: disconnects stale workers", async () => {
   const result = await sweepStaleRecords(h.deps);
 
   assertEquals(result.workers, 1);
-  assertEquals(h.transitions.length, 1);
-  assertEquals(h.transitions[0].typeArg, "swamp/worker");
-  assertEquals(h.transitions[0].definitionName, "worker-w1");
-  assertEquals(h.transitions[0].methodName, "set_status");
-  assertEquals(h.transitions[0].inputs.status, "disconnected");
+  assertEquals(h.saves.length, 1);
+  assertEquals(h.saves[0].modelType, "swamp/worker");
+  assertEquals(h.saves[0].content.status, "disconnected");
+  assertEquals(h.saves[0].content.name, "w1");
+  assertEquals(h.saves[0].content.activeDispatchIds, []);
+  assertEquals(typeof h.saves[0].content.disconnectedAt, "string");
+  assertEquals(typeof h.saves[0].content.lastSeenAt, "string");
+  assertEquals(h.saves[0].content.verifyFailureReason, undefined);
 });
 
-Deno.test("sweepStaleRecords: transition failure warns but continues sweeping", async () => {
+Deno.test("sweepStaleRecords: save failure warns but continues sweeping", async () => {
   const h = createHarness(
     new Map([
       ["swamp/step-lease", [
@@ -233,17 +258,17 @@ Deno.test("sweepStaleRecords: transition failure warns but continues sweeping", 
         },
       ]],
     ]),
+    { failSave: true },
   );
-  h.setFailOn("leases");
 
   const result = await sweepStaleRecords(h.deps);
 
   assertEquals(result.leases, 0);
-  assertEquals(h.transitions.length, 0);
+  assertEquals(h.saves.length, 0);
 });
 
-Deno.test("sweepStaleRecords: mixed failure and success across model types", async () => {
-  let callCount = 0;
+Deno.test("sweepStaleRecords: mixed save failure and success across model types", async () => {
+  let saveCount = 0;
   const leaseItem = makeData({
     modelName: "leases",
     dataName: "data-main",
@@ -270,8 +295,8 @@ Deno.test("sweepStaleRecords: mixed failure and success across model types", asy
     encoder.encode(JSON.stringify(workerAttrs)),
   );
 
+  const saves: SaveCall[] = [];
   const deps: BootReconciliationDeps = {
-    repoDir: "/tmp/test",
     repoContext: {
       unifiedDataRepo: {
         findAllForType: (type: ModelType) => {
@@ -291,15 +316,29 @@ Deno.test("sweepStaleRecords: mixed failure and success across model types", asy
           const key = `${type.normalized}/${modelId}/${dataName}`;
           return Promise.resolve(contentMap.get(key) ?? null);
         },
+        save: (
+          type: ModelType,
+          modelId: string,
+          data: Data,
+          content: Uint8Array,
+        ) => {
+          saveCount++;
+          if (saveCount === 1) {
+            return Promise.reject(new Error("lease save failed"));
+          }
+          const parsed = JSON.parse(
+            new TextDecoder().decode(content),
+          ) as Record<string, unknown>;
+          saves.push({
+            modelType: type.normalized,
+            modelId,
+            dataName: data.name,
+            content: parsed,
+          });
+          return Promise.resolve({ version: 2 });
+        },
       },
     } as unknown as RepositoryContext,
-    runTransition: () => {
-      callCount++;
-      if (callCount === 1) {
-        return Promise.reject(new Error("lease transition failed"));
-      }
-      return Promise.resolve();
-    },
   };
 
   const result = await sweepStaleRecords(deps);
@@ -326,7 +365,7 @@ Deno.test("sweepStaleRecords: skips records with missing leaseId attribute", asy
   const result = await sweepStaleRecords(h.deps);
 
   assertEquals(result.leases, 0);
-  assertEquals(h.transitions.length, 0);
+  assertEquals(h.saves.length, 0);
 });
 
 Deno.test("sweepStaleRecords: skips records with missing queueId attribute", async () => {
@@ -346,7 +385,7 @@ Deno.test("sweepStaleRecords: skips records with missing queueId attribute", asy
   const result = await sweepStaleRecords(h.deps);
 
   assertEquals(result.pendingDispatches, 0);
-  assertEquals(h.transitions.length, 0);
+  assertEquals(h.saves.length, 0);
 });
 
 Deno.test("sweepStaleRecords: skips records with missing worker name attribute", async () => {
@@ -366,7 +405,7 @@ Deno.test("sweepStaleRecords: skips records with missing worker name attribute",
   const result = await sweepStaleRecords(h.deps);
 
   assertEquals(result.workers, 0);
-  assertEquals(h.transitions.length, 0);
+  assertEquals(h.saves.length, 0);
 });
 
 // ── replayPendingRuns tests ──────────────────────────────────────────
@@ -710,7 +749,7 @@ Deno.test("sweepStaleRecords: sweeps all three model types together", async () =
   const result = await sweepStaleRecords(h.deps);
 
   assertEquals(result, { leases: 1, pendingDispatches: 1, workers: 1 });
-  assertEquals(h.transitions.length, 3);
+  assertEquals(h.saves.length, 3);
 });
 
 // ── replayPendingRuns remote merge tests ──────────────────────────────

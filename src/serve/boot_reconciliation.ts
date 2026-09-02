@@ -18,20 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
-import {
-  createLibSwampContext,
-  createWorkerModelRunDeps,
-  modelMethodRun,
-} from "../libswamp/mod.ts";
 import { STEP_LEASE_MODEL_TYPE } from "../domain/models/worker/step_lease_model.ts";
 import { PENDING_DISPATCH_MODEL_TYPE } from "../domain/models/worker/pending_dispatch_model.ts";
-import {
-  WORKER_MODEL_TYPE,
-  workerDefinitionName,
-} from "../domain/models/worker/worker_model.ts";
+import { WORKER_MODEL_TYPE } from "../domain/models/worker/worker_model.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { ModelType } from "../domain/models/model_type.ts";
-import type { Data } from "../domain/data/data.ts";
+import { Data } from "../domain/data/data.ts";
 import type { FileSystemUnifiedDataRepository } from "../infrastructure/persistence/unified_data_repository.ts";
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
@@ -50,17 +42,8 @@ import type {
 
 const logger = getSwampLogger(["serve", "boot-reconciliation"]);
 
-export interface TransitionInput {
-  typeArg: string;
-  definitionName: string;
-  methodName: string;
-  inputs: Record<string, unknown>;
-}
-
 export interface BootReconciliationDeps {
-  repoDir: string;
   repoContext: RepositoryContext;
-  runTransition?: (input: TransitionInput) => Promise<void>;
 }
 
 export interface SweepResult {
@@ -108,46 +91,32 @@ export async function hydrateLocalCache(
   }
 }
 
-async function defaultRunTransition(
-  repoDir: string,
-  repoContext: RepositoryContext,
-  input: TransitionInput,
-): Promise<void> {
-  const runDeps = await createWorkerModelRunDeps(repoDir, repoContext);
-  for await (
-    const event of modelMethodRun(createLibSwampContext({}), runDeps, {
-      modelIdOrName: input.definitionName,
-      methodName: input.methodName,
-      inputs: input.inputs,
-      lastEvaluated: false,
-      typeArg: input.typeArg,
-      definitionName: input.definitionName,
-      skipAllReports: true,
-    })
-  ) {
-    if (event.kind === "error") {
-      const detail = event.error;
-      const message = typeof detail === "object" && detail !== null &&
-          "message" in detail
-        ? String((detail as { message: unknown }).message)
-        : String(detail);
-      throw new Error(message);
-    }
-  }
+const encoder = new TextEncoder();
+
+function writeData(
+  existing: Data,
+  updatedAttrs: Record<string, unknown>,
+): { data: Data; content: Uint8Array } {
+  const content = encoder.encode(JSON.stringify(updatedAttrs));
+  const data = Data.create({
+    name: existing.name,
+    contentType: existing.contentType,
+    lifetime: existing.lifetime,
+    garbageCollection: existing.garbageCollection,
+    tags: existing.tags,
+    ownerDefinition: existing.ownerDefinition,
+  });
+  return { data, content };
 }
 
 export async function sweepStaleRecords(
   deps: BootReconciliationDeps,
 ): Promise<SweepResult> {
-  const transition = deps.runTransition ??
-    ((input: TransitionInput) =>
-      defaultRunTransition(deps.repoDir, deps.repoContext, input));
-
   const result: SweepResult = { leases: 0, pendingDispatches: 0, workers: 0 };
   const repo = deps.repoContext.unifiedDataRepo;
 
   for (
-    const { attrs, modelName } of await loadAttrsForType(
+    const { attrs, modelId, data: existing } of await loadAttrsForType(
       repo,
       STEP_LEASE_MODEL_TYPE,
     )
@@ -156,12 +125,13 @@ export async function sweepStaleRecords(
     const leaseId = attrs.leaseId;
     if (typeof leaseId !== "string") continue;
     try {
-      await transition({
-        typeArg: STEP_LEASE_MODEL_TYPE.normalized,
-        definitionName: modelName,
-        methodName: "expire",
-        inputs: { leaseId, error: "orchestrator restart" },
+      const { data, content } = writeData(existing, {
+        ...attrs,
+        state: "expired",
+        endedAt: new Date().toISOString(),
+        error: "orchestrator restart",
       });
+      await repo.save(STEP_LEASE_MODEL_TYPE, modelId, data, content);
       result.leases++;
     } catch (err) {
       logger.warn("Failed to expire stale lease {leaseId}: {error}", {
@@ -172,7 +142,7 @@ export async function sweepStaleRecords(
   }
 
   for (
-    const { attrs, modelName } of await loadAttrsForType(
+    const { attrs, modelId, data: existing } of await loadAttrsForType(
       repo,
       PENDING_DISPATCH_MODEL_TYPE,
     )
@@ -181,12 +151,12 @@ export async function sweepStaleRecords(
     const queueId = attrs.queueId;
     if (typeof queueId !== "string") continue;
     try {
-      await transition({
-        typeArg: PENDING_DISPATCH_MODEL_TYPE.normalized,
-        definitionName: modelName,
-        methodName: "orphan",
-        inputs: { queueId, endedAt: new Date().toISOString() },
+      const { data, content } = writeData(existing, {
+        ...attrs,
+        state: "orphaned",
+        endedAt: new Date().toISOString(),
       });
+      await repo.save(PENDING_DISPATCH_MODEL_TYPE, modelId, data, content);
       result.pendingDispatches++;
     } catch (err) {
       logger.warn(
@@ -199,23 +169,30 @@ export async function sweepStaleRecords(
     }
   }
 
+  // Mirrors worker_model.ts setStatus (lines 141–162): disconnecting
+  // clears activeDispatchIds, sets disconnectedAt, clears
+  // verifyFailureReason, and updates lastSeenAt.
   for (
-    const { attrs, data } of await loadAttrsForType(
+    const { attrs, modelId, data: existing } of await loadAttrsForType(
       repo,
       WORKER_MODEL_TYPE,
     )
   ) {
-    if (data.name !== "state-main") continue;
+    if (existing.name !== "state-main") continue;
     if (attrs.status === "disconnected") continue;
     const workerName = attrs.name;
     if (typeof workerName !== "string") continue;
     try {
-      await transition({
-        typeArg: WORKER_MODEL_TYPE.normalized,
-        definitionName: workerDefinitionName(workerName),
-        methodName: "set_status",
-        inputs: { status: "disconnected" },
+      const now = new Date().toISOString();
+      const { data, content } = writeData(existing, {
+        ...attrs,
+        status: "disconnected",
+        lastSeenAt: now,
+        activeDispatchIds: [],
+        disconnectedAt: now,
+        verifyFailureReason: undefined,
       });
+      await repo.save(WORKER_MODEL_TYPE, modelId, data, content);
       result.workers++;
     } catch (err) {
       logger.warn(
@@ -855,11 +832,21 @@ async function loadAttrsForType(
   repo: FileSystemUnifiedDataRepository,
   modelType: ModelType,
 ): Promise<
-  Array<{ data: Data; modelName: string; attrs: Record<string, unknown> }>
+  Array<{
+    data: Data;
+    modelId: string;
+    modelName: string;
+    attrs: Record<string, unknown>;
+  }>
 > {
   const items = await repo.findAllForType(modelType);
   const results: Array<
-    { data: Data; modelName: string; attrs: Record<string, unknown> }
+    {
+      data: Data;
+      modelId: string;
+      modelName: string;
+      attrs: Record<string, unknown>;
+    }
   > = [];
   for (const { data, modelType: mt, modelId } of items) {
     if (data.isRenamed || data.isDeleted) continue;
@@ -870,7 +857,12 @@ async function loadAttrsForType(
         string,
         unknown
       >;
-      results.push({ data, modelName: data.tags["modelName"] ?? "", attrs });
+      results.push({
+        data,
+        modelId,
+        modelName: data.tags["modelName"] ?? "",
+        attrs,
+      });
     } catch {
       // Skip items with unparseable content
     }
