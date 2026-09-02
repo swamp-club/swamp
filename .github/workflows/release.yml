@@ -81,6 +81,7 @@ jobs:
             --version "$VERSION" \
             --target x86_64-pc-windows-msvc \
             --output /tmp/swamp.exe
+          cp /tmp/swamp.exe dist/swamp-windows-x86_64
           (cd /tmp && zip -j "$GITHUB_WORKSPACE/dist/swamp-windows-x86_64.zip" swamp.exe)
           rm /tmp/swamp.exe
 
@@ -152,7 +153,7 @@ jobs:
             echo "**Windows (x86_64):**"
             echo '```powershell'
             echo "Invoke-WebRequest -Uri https://github.com/${REPO}/releases/download/v${VERSION}/swamp-windows-x86_64.zip -OutFile swamp.zip"
-            echo "Expand-Archive swamp.zip -DestinationPath .; Move-Item swamp.exe 'C:\\Program Files\\swamp\\'"
+            printf '%s\n' "Expand-Archive swamp.zip -DestinationPath .; Move-Item swamp.exe 'C:\Program Files\swamp\'"
             echo '```'
           } >> /tmp/release_body.md
 
@@ -188,6 +189,13 @@ jobs:
       contents: read
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          sparse-checkout: scripts/install.ps1
+          sparse-checkout-cone-mode: false
+
       - name: Download Windows binary from release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -207,6 +215,21 @@ jobs:
           .\swamp.exe --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\swamp.exe --help | Out-Null
+
+      - name: Test install script
+        env:
+          RELEASE_VERSION: ${{ needs.release.outputs.version }}
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP "swamp-install-test"
+          .\scripts\install.ps1 -Destination $installDir -Version $env:RELEASE_VERSION -AddToPath $false
+          $installed = Join-Path $installDir "swamp.exe"
+          if (-not (Test-Path $installed)) {
+            Write-Error "install.ps1 did not produce $installed"
+            exit 1
+          }
+          $versionOutput = & $installed --version 2>&1
+          Write-Host "Installed version: $versionOutput"
 
   docker:
     name: Build and Push Docker Image
