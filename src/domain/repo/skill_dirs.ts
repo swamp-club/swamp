@@ -36,7 +36,7 @@ export const SKILL_DIRS: Record<string, string> = {
   codex: ".agents/skills",
   copilot: ".agents/skills",
   kiro: ".kiro/skills",
-  pi: ".pi/skills",
+  pi: ".agents/skills",
   antigravity: ".agents/skills",
 };
 
@@ -54,7 +54,7 @@ export const GLOBAL_SKILL_DIRS: Record<string, string> = {
   codex: ".agents/skills",
   copilot: ".agents/skills",
   kiro: ".kiro/skills",
-  pi: ".pi/agent/skills",
+  pi: ".agents/skills",
   antigravity: ".agents/skills",
 };
 

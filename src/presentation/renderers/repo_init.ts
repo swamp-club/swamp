@@ -125,7 +125,7 @@ const TOOL_CLEANUP_PATHS: Partial<Record<string, readonly string[]>> = {
   opencode: [".opencode/", ".agents/skills/"],
   codex: [".agents/skills/"],
   copilot: [".agents/skills/", ".github/hooks/"],
-  pi: [".pi/"],
+  pi: [".pi/", ".agents/skills/"],
   antigravity: [".agents/hooks.json", ".agents/skills/"],
 };
 
