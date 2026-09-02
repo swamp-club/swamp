@@ -528,10 +528,7 @@ export class DataPlane {
     }
 
     if (segments.length === 3 && segments[2] === "files") {
-      if (bundle.filesRoot === undefined) {
-        return json({ files: [] });
-      }
-      return this.#listAssetFiles(bundle.filesRoot);
+      return this.#listDeclaredAssetFiles(bundle);
     }
 
     if (segments.length >= 4 && segments[2] === "file") {
@@ -541,13 +538,19 @@ export class DataPlane {
       const relPath = segments.slice(3).map(decodeURIComponent).join("/");
       const root = resolve(bundle.filesRoot);
       const target = resolve(join(root, normalize(relPath)));
-      // The asset must stay within the extension's files root.
       if (
         isAbsolute(relPath) || relPath.includes("..") ||
         (!target.startsWith(root + "/") && target !== root &&
           !target.startsWith(root + "\\"))
       ) {
         return errorResponse(400, "Asset path escapes the bundle root");
+      }
+      const allowed = bundle.additionalFiles;
+      if (!allowed || !allowed.includes(relPath)) {
+        return errorResponse(
+          404,
+          "Asset not declared in manifest additionalFiles",
+        );
       }
       return this.#serveAssetFile(target, fingerprint, relPath);
     }
@@ -556,49 +559,36 @@ export class DataPlane {
   }
 
   /**
-   * Recursive relative listing of a bundle's co-located files, so a worker
-   * can prefetch the whole (small) asset tree before executing — the
-   * `extensionFile()` context member is synchronous and must resolve to a
-   * local path.
+   * Return only files explicitly declared in the manifest's
+   * `additionalFiles`, verified to exist on disk. Undeclared files —
+   * including `.git/`, `.env`, and other repository content — are never
+   * listed, closing the confidentiality exposure in issue #1910.
    */
-  #listAssetFiles(filesRoot: string): Response {
-    const MAX_WALK_DEPTH = 20;
-    const MAX_FILES = 10_000;
+  #listDeclaredAssetFiles(
+    bundle: import("./bundle_registry.ts").RegisteredBundle,
+  ): Response {
+    const { filesRoot, additionalFiles } = bundle;
+    if (!filesRoot || !additionalFiles || additionalFiles.length === 0) {
+      return json({ files: [] });
+    }
+    const root = resolve(filesRoot);
     const files: string[] = [];
-    const visited = new Set<string>();
-
-    const walk = (dir: string, prefix: string, depth: number) => {
-      if (depth > MAX_WALK_DEPTH || files.length >= MAX_FILES) return;
-
-      let realDir: string;
+    for (const relPath of additionalFiles) {
+      const target = resolve(join(root, relPath));
+      if (
+        !target.startsWith(root + "/") && target !== root &&
+        !target.startsWith(root + "\\")
+      ) {
+        continue;
+      }
       try {
-        realDir = Deno.realPathSync(dir);
-      } catch {
-        return;
-      }
-      if (visited.has(realDir)) return;
-      visited.add(realDir);
-
-      for (const entry of Deno.readDirSync(dir)) {
-        if (entry.isSymlink) continue;
-        const rel = prefix.length === 0
-          ? entry.name
-          : `${prefix}/${entry.name}`;
-        if (entry.isDirectory) {
-          walk(join(dir, entry.name), rel, depth + 1);
-        } else if (entry.isFile) {
-          files.push(rel);
-          if (files.length >= MAX_FILES) return;
+        const stat = Deno.lstatSync(target);
+        if (stat.isFile) {
+          files.push(relPath);
         }
+      } catch {
+        // File declared but missing on disk — skip silently.
       }
-    };
-    try {
-      walk(filesRoot, "", 0);
-    } catch (error) {
-      if (error instanceof Deno.errors.NotFound) {
-        return json({ files: [] });
-      }
-      throw error;
     }
     return json({ files });
   }

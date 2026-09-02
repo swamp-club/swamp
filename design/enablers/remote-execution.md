@@ -762,10 +762,14 @@ binary's registry — enrollment already guaranteed version lockstep, and a
 sentinel for a type the worker does not know is a loud
 binaries-disagree error. Co-located extension assets — files resolved through
 `context.extensionFile(relPath)` — are *not* inlined into the single-file JS
-bundle; the worker prefetches the (small) asset tree via
-`GET /bundle/{fingerprint}/files` + `GET /bundle/{fingerprint}/file/{relPath}`
-before executing, because `extensionFile()` is synchronous and must resolve a
-local path. Assets cache under the fingerprint like the bundle itself.
+bundle; the worker prefetches only the files declared in the manifest's
+`additionalFiles` via `GET /bundle/{fingerprint}/files` +
+`GET /bundle/{fingerprint}/file/{relPath}` before executing, because
+`extensionFile()` is synchronous and must resolve a local path. Both routes
+are gated to the declared set — undeclared files under the extension's
+`filesRoot` are never listed or served, preventing accidental exposure of
+unrelated repository content to remote workers. Assets cache under the
+fingerprint like the bundle itself.
 
 ### Pre-flight checks are skipped for remote steps; reports run at the orchestrator
 
