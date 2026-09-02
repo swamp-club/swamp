@@ -35,7 +35,9 @@ export function resolveOtlpEndpoint(
     : Deno.env.get("OTEL_EXPORTER_OTLP_ENDPOINT");
   if (!genericEndpoint) return undefined;
 
-  return `${genericEndpoint.replace(/\/+$/, "")}/v1/${signal}`;
+  const url = new URL(genericEndpoint);
+  url.pathname = `${url.pathname.replace(/\/+$/, "")}/v1/${signal}`;
+  return url.toString();
 }
 
 /**
