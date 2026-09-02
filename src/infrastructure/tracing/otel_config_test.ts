@@ -124,8 +124,7 @@ Deno.test("resolveOtlpEndpoint: preserves fragment when appending signal path", 
   for (const signal of SIGNALS) {
     withEnv(
       {
-        OTEL_EXPORTER_OTLP_ENDPOINT:
-          "https://collector.example/otlp#section",
+        OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.example/otlp#section",
       },
       () =>
         assertEquals(
