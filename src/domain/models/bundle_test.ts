@@ -313,13 +313,10 @@ Deno.test("rejectZodV3Imports: allows unversioned zod import", () => {
   rejectZodV3Imports(input);
 });
 
-Deno.test("rewriteZodImports: throws on zod@3 before rewriting", () => {
+Deno.test("rewriteZodImports: leaves zod@3 imports untouched", () => {
   const input = `import { z } from "npm:zod@3.22.4";`;
-  assertThrows(
-    () => rewriteZodImports(input),
-    Error,
-    "Zod v3",
-  );
+  const result = rewriteZodImports(input);
+  assertEquals(result, input);
 });
 
 // --- uint8ArrayToBase64 unit tests ---
