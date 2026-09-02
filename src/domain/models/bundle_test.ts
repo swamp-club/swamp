@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import { join } from "@std/path";
 import { z } from "zod";
 import {
@@ -26,6 +26,7 @@ import {
   fixCjsEsmInterop,
   installZodGlobal,
   isExpectedBundleFailure,
+  rejectZodV3Imports,
   rewriteZodImports,
   sanitizeDataUrlError,
   sourceHasBareSpecifiers,
@@ -280,6 +281,42 @@ Deno.test("rewriteZodImports handles single-quoted specifiers", () => {
   const input = `import { z } from 'npm:zod@4';`;
   const result = rewriteZodImports(input);
   assertEquals(result, `const { z } = globalThis.__swamp_zod;`);
+});
+
+// --- rejectZodV3Imports unit tests ---
+
+Deno.test("rejectZodV3Imports: throws on zod@3 named import", () => {
+  const input = `import { z } from "npm:zod@3.23.8";`;
+  assertThrows(
+    () => rejectZodV3Imports(input),
+    Error,
+    "Zod v3",
+  );
+});
+
+Deno.test("rejectZodV3Imports: throws on zod@3 star import", () => {
+  const input = `import * as zod from "npm:zod@3";`;
+  assertThrows(
+    () => rejectZodV3Imports(input),
+    Error,
+    "Swamp requires Zod v4",
+  );
+});
+
+Deno.test("rejectZodV3Imports: allows zod@4 import", () => {
+  const input = `import { z } from "npm:zod@4.3.6";`;
+  rejectZodV3Imports(input);
+});
+
+Deno.test("rejectZodV3Imports: allows unversioned zod import", () => {
+  const input = `import { z } from "zod";`;
+  rejectZodV3Imports(input);
+});
+
+Deno.test("rewriteZodImports: leaves zod@3 imports untouched", () => {
+  const input = `import { z } from "npm:zod@3.22.4";`;
+  const result = rewriteZodImports(input);
+  assertEquals(result, input);
 });
 
 // --- uint8ArrayToBase64 unit tests ---

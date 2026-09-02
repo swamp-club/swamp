@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import {
   buildDataOutputSpecs,
@@ -170,4 +170,24 @@ Deno.test("buildDataOutputSpecs: builds specs from resources and files", () => {
 Deno.test("buildDataOutputSpecs: returns empty array when no specs", () => {
   const result = buildDataOutputSpecs(undefined, undefined);
   assertEquals(result.length, 0);
+});
+
+Deno.test("zodToJsonSchema: returns diagnostic for Zod v3 schema", () => {
+  const fakeV3Schema = {
+    _def: { typeName: "ZodObject" },
+  } as unknown as z.ZodTypeAny;
+
+  const result = zodToJsonSchema(fakeV3Schema) as Record<string, unknown>;
+  assertEquals(result.$error, "unsupported_zod_version");
+  assertStringIncludes(result.message as string, "Zod v3");
+  assertStringIncludes(result.message as string, "Upgrade to Zod v4");
+});
+
+Deno.test("zodToJsonSchema: returns diagnostic for Zod v3 string schema", () => {
+  const fakeV3Schema = {
+    _def: { typeName: "ZodString" },
+  } as unknown as z.ZodTypeAny;
+
+  const result = zodToJsonSchema(fakeV3Schema) as Record<string, unknown>;
+  assertEquals(result.$error, "unsupported_zod_version");
 });

@@ -21,6 +21,7 @@ import { getLogger } from "@logtape/logtape";
 import { stripAnsiCode } from "@std/fmt/colors";
 import { dirname, join, resolve } from "@std/path";
 import * as zodModule from "zod";
+import { UserError } from "../errors.ts";
 
 const logger = getLogger(["swamp", "models", "bundle"]);
 
@@ -109,12 +110,31 @@ export function sanitizeDataUrlError(error: unknown): string {
   );
 }
 
+/**
+ * Detects Zod v3 imports in bundled JS and throws with upgrade guidance.
+ * Swamp ships Zod v4 — extensions using v3 will have broken schema
+ * introspection and should upgrade.
+ */
+export function rejectZodV3Imports(js: string): void {
+  const v3Pattern =
+    /import\s+(?:\{[^}]+\}|\*\s+as\s+\w+)\s+from\s*["'](?:npm:)?zod@3[^"']*["']/;
+  const match = v3Pattern.exec(js);
+  if (match) {
+    throw new UserError(
+      `Extension imports Zod v3 (${match[0].trim()}). ` +
+        `Swamp requires Zod v4 — update your zod dependency to v4 and ` +
+        `rebuild. See https://zod.dev/v4 for migration guidance.`,
+    );
+  }
+}
+
 export function rewriteZodImports(js: string): string {
   // Match: import { ... } from "npm:zod...", "zod", or 'zod'
   // Handles both npm: prefixed specifiers (existing extensions) and
   // bare "zod" specifiers (when externalized via deno.json import map).
-  // Only matches zod 4.x or unversioned — zod 3.x must NOT be rewritten
-  // since globalThis.__swamp_zod provides zod 4.
+  // Only matches zod 4.x or unversioned — zod 3.x is detected separately
+  // at bundle-creation time via rejectZodV3Imports (not here, because
+  // rewriteZodImports is also called at runtime on cached bundles).
   const namedImportPattern =
     /import\s*\{([^}]+)\}\s*from\s*["'](?:npm:)?zod(?:@4[^"']*)?["']\s*;?/g;
   js = js.replace(namedImportPattern, (_match, imports: string) => {
@@ -687,6 +707,7 @@ export async function bundleExtension(
     // Rewrite externalized zod imports to use globalThis.__swamp_zod
     // so extensions share swamp's Zod instance in the compiled binary.
     if (!options?.selfContained) {
+      rejectZodV3Imports(js);
       js = rewriteZodImports(js);
     }
 

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { bold, cyan, dim } from "@std/fmt/colors";
+import { bold, cyan, dim, yellow } from "@std/fmt/colors";
 import type {
   EventHandlers,
   MethodDescribeData,
@@ -64,7 +64,12 @@ export function formatSchemaAttributes(
   schema: object,
   indent: string,
 ): string[] {
-  const s = schema as JsonSchemaObject;
+  const s = schema as JsonSchemaObject & { $error?: string; message?: string };
+  if (s.$error) {
+    return [
+      `${indent}${yellow("⚠")} ${dim(s.message ?? "Schema unavailable")}`,
+    ];
+  }
   if (!s.properties) return [];
 
   const required = new Set(s.required ?? []);

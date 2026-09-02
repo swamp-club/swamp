@@ -429,7 +429,7 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo --json
    driver, datastore, and report files (using the project's `deno.json` config
    if present, otherwise default rules). Include files are excluded.
 8. **Bare specifier check** — scans source files for bare import specifiers
-   (e.g. `from "zod"` instead of `from "npm:zod@3"`). The server-side scorer
+   (e.g. `from "zod"` instead of `from "npm:zod@4"`). The server-side scorer
    cannot resolve bare specifiers, so a warning is added to the review warnings
    prompting the user to confirm before push.
 9. **Bundle TypeScript** — compiles each entry point (models, vaults, drivers,
