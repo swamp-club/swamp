@@ -22,11 +22,10 @@ import type { z } from "zod";
 /**
  * Internal Zod definition structure for schema introspection.
  *
- * Extension authors may import Zod v3 (`npm:zod@3`) or Zod v4 (`npm:zod@4`).
- * The two versions name the type field differently (`typeName` in v3,
- * `type` in v4) and store object shape differently (`shape()` function in
- * v3, `shape` value in v4). Both fields are read here so the helpers work
- * regardless of which Zod version the extension imports.
+ * Extensions must use Zod v4 — v3 imports are rejected at bundle time.
+ * The v3 field variants (`typeName`, `shape` as function) are retained
+ * here for backwards compatibility with already-installed extensions
+ * that were bundled before the v3 gate was added.
  */
 interface ZodDef {
   type?: string;

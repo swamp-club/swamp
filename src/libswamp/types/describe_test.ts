@@ -211,3 +211,46 @@ Deno.test("typeDescribe: dataOutputSpecs is undefined when type has no specs", a
   >;
   assertEquals(completed.data.dataOutputSpecs, undefined);
 });
+
+Deno.test("typeDescribe: Zod v3 method arguments surface upgrade diagnostic", async () => {
+  const v3ArgsSchema = {
+    _def: {
+      typeName: "ZodObject",
+      shape: () => ({
+        clusterId: { _def: { typeName: "ZodString" } },
+        namespace: { _def: { typeName: "ZodString" } },
+      }),
+    },
+  } as unknown as z.ZodTypeAny;
+
+  const modelDef: ModelDefinition = {
+    type: makeModelType(),
+    version: "1.0.0",
+    methods: {
+      probe: {
+        description: "Probe the cluster",
+        arguments: v3ArgsSchema,
+        execute: () => Promise.resolve({}),
+      },
+    },
+  };
+
+  const deps = makeDeps({
+    resolveModelType: () => Promise.resolve(modelDef),
+  });
+
+  const events = await collect<TypeDescribeEvent>(
+    typeDescribe(createLibSwampContext(), deps, makeModelType()),
+  );
+
+  const completed = events[1] as Extract<
+    TypeDescribeEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+
+  const args = completed.data.methods[0].arguments as Record<string, unknown>;
+  assertEquals(args.$error, "unsupported_zod_version");
+  assertStringIncludes(args.message as string, "Zod v3");
+  assertStringIncludes(args.message as string, "Upgrade to Zod v4");
+});

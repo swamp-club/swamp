@@ -170,15 +170,36 @@ function manualZodToJsonSchema(schema: z.ZodTypeAny): object {
 
 /**
  * Converts a Zod schema to JSON Schema format.
- * Falls back to a manual converter if Zod's built-in toJSONSchema() fails.
+ * Falls back to a manual converter if Zod's built-in toJSONSchema() fails
+ * on known v4 edge cases (z.record, z.uuid, z.iso.datetime).
+ * Returns a diagnostic object when the schema appears to be from Zod v3.
  */
 export function zodToJsonSchema(schema: z.ZodTypeAny): object {
   try {
     const result = z.toJSONSchema(schema);
     return stripDefaultsFromRequired(result);
   } catch {
+    const v3Diagnostic = detectZodV3Schema(schema);
+    if (v3Diagnostic) return v3Diagnostic;
     return manualZodToJsonSchema(schema);
   }
+}
+
+function detectZodV3Schema(
+  schema: z.ZodTypeAny,
+): object | undefined {
+  const def = schema as unknown as {
+    _def?: { type?: string; typeName?: string };
+  };
+  if (def._def && !def._def.type && def._def.typeName) {
+    return {
+      $error: "unsupported_zod_version",
+      message:
+        `This schema was created with Zod v3. Upgrade to Zod v4 to see ` +
+        `method arguments. See https://zod.dev/v4 for migration guidance.`,
+    };
+  }
+  return undefined;
 }
 
 /**
