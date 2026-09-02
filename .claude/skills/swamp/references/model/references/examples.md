@@ -26,7 +26,8 @@
 | `self.globalArguments.<field>`                               | This model's own global argument          | CIDR block, region, etc.      |
 | `inputs.<name>`                                              | Runtime input value                       | `production`, `true`, etc.    |
 | `env.<VAR_NAME>`                                             | Environment variable                      | AWS region, credentials       |
-| `vault.get("<vault>", "<key>")`                              | Vault secret                              | API key, password             |
+| `vault.get("<vault>", "<key>")`                              | Vault secret (literal args)               | API key, password             |
+| `vault.get(inputs.vault, inputs.key)`                        | Vault secret (dynamic CEL args)           | Per-target secret             |
 
 ### CEL Path Patterns by Model Type
 

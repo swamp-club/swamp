@@ -41,6 +41,26 @@ import type { SecretRedactor } from "../secrets/mod.ts";
 import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 
 /**
+ * Minimal CEL evaluator interface for resolving dynamic vault.get()
+ * arguments. Defined in the domain layer so ModelResolver does not
+ * depend on the infrastructure CelEvaluator directly.
+ */
+export interface CelArgEvaluator {
+  evaluate(expression: string, context: Record<string, unknown>): unknown;
+}
+
+/**
+ * Options for CEL-evaluating bare-token vault.get() arguments at runtime.
+ * When provided, unquoted arguments that are syntactically valid CEL
+ * (e.g. `inputs.vaultName`) are evaluated against the context before the
+ * vault lookup. Quoted arguments are always used verbatim.
+ */
+export interface VaultArgCelOptions {
+  celEvaluator: CelArgEvaluator;
+  context: ExpressionContext;
+}
+
+/**
  * Builds env context from Deno environment variables.
  *
  * Returns the **entire** process environment as a flat string map. Values are
@@ -1119,15 +1139,25 @@ export class ModelResolver {
    * allowing callers to resolve sentinels later — either to raw values
    * (non-shell contexts) or to environment variable references (shell commands).
    *
+   * When `celOptions` is provided, unquoted (bare-token) arguments are
+   * CEL-evaluated against the supplied context before the vault lookup.
+   * This enables `vault.get(inputs.vaultName, inputs.secretKey)` where the
+   * argument values are determined at runtime. Quoted arguments are always
+   * used verbatim. If a bare token is not syntactically valid CEL (e.g.
+   * `my-vault` containing a hyphen), it is used verbatim for backwards
+   * compatibility.
+   *
    * @param value - The string that may contain vault expressions
    * @param redactor - Optional SecretRedactor to register resolved secret values for redaction
    * @param secretBag - VaultSecretBag to store sentinel-to-value mappings
+   * @param celOptions - Optional CEL evaluator and context for resolving dynamic arguments
    * @returns The string with vault.get() calls replaced by sentinel tokens wrapped as CEL strings
    */
   async resolveVaultExpressions(
     value: string,
     redactor?: SecretRedactor,
     secretBag?: VaultSecretBag,
+    celOptions?: VaultArgCelOptions,
   ): Promise<string> {
     // Pattern to match vault.get(vaultName, secretKey) expressions.
     // Handles both quoted and unquoted arguments. Quoted arguments may
@@ -1152,8 +1182,26 @@ export class ModelResolver {
       // Groups: [1]=quote1, [2]=quoted vault, [3]=unquoted vault,
       //         [4]=quote2, [5]=quoted key,   [6]=unquoted key
       const fullMatch = match[0];
-      const vaultName = match[2] ?? match[3];
-      const secretKey = match[5] ?? match[6];
+      const rawVaultName = match[2] ?? match[3];
+      const rawSecretKey = match[5] ?? match[6];
+      const vaultNameIsQuoted = match[2] !== undefined;
+      const secretKeyIsQuoted = match[5] !== undefined;
+
+      const vaultName = this.resolveVaultArg(
+        rawVaultName,
+        vaultNameIsQuoted,
+        "vault name",
+        fullMatch,
+        celOptions,
+      );
+      const secretKey = this.resolveVaultArg(
+        rawSecretKey,
+        secretKeyIsQuoted,
+        "secret key",
+        fullMatch,
+        celOptions,
+      );
+
       try {
         const secretValue = await vaultService.get(
           vaultName,
@@ -1193,5 +1241,51 @@ export class ModelResolver {
     }
 
     return resolvedValue;
+  }
+
+  /**
+   * Resolves a single vault.get() argument. Quoted arguments are always
+   * returned verbatim. Bare-token arguments are CEL-evaluated when
+   * `celOptions` is provided and the token looks like a CEL member
+   * access (contains `.`, e.g. `inputs.vaultName`). Simple bare tokens
+   * without `.` (e.g. `my-vault`) are used verbatim for backwards
+   * compatibility.
+   */
+  private resolveVaultArg(
+    raw: string,
+    isQuoted: boolean,
+    argLabel: string,
+    fullMatch: string,
+    celOptions?: VaultArgCelOptions,
+  ): string {
+    if (isQuoted || !celOptions) {
+      return raw;
+    }
+
+    // A bare token containing a dot is clearly intended as a CEL member
+    // access expression (inputs.x, self.item.vault, etc.). Tokens
+    // without a dot are likely literal names (my-vault, myvault) — use
+    // verbatim for backwards compatibility.
+    if (!raw.includes(".")) {
+      return raw;
+    }
+
+    const { celEvaluator, context } = celOptions;
+
+    try {
+      const result = celEvaluator.evaluate(raw, context);
+      if (typeof result !== "string") {
+        throw new Error(
+          `vault.get() ${argLabel} must resolve to a string, ` +
+            `got ${typeof result}: ${JSON.stringify(result)}`,
+        );
+      }
+      return result;
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Failed to resolve dynamic ${argLabel} in ${fullMatch}: ${msg}`,
+      );
+    }
   }
 }

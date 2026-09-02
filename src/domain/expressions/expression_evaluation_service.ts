@@ -38,6 +38,7 @@ import {
   type ExpressionContext,
   ModelResolver,
   type ModelResolverRepositories,
+  type VaultArgCelOptions,
 } from "./model_resolver.ts";
 import { CyclicDependencyError } from "./errors.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
@@ -429,11 +430,13 @@ export class ExpressionEvaluationService {
    *
    * @param definition - The definition (may contain remaining ${{ vault.get(...) }} or ${{ env.* }} expressions)
    * @param redactor - Optional SecretRedactor to register resolved secret values for redaction
+   * @param expressionContext - Optional context for CEL-evaluating dynamic vault.get() arguments
    * @returns The definition with sentinels and the VaultSecretBag for resolving them
    */
   async resolveRuntimeExpressionsInDefinition(
     definition: Definition,
     redactor?: SecretRedactor,
+    expressionContext?: ExpressionContext,
   ): Promise<RuntimeResolutionResult> {
     const logger = getLogger(["swamp", "expressions"]);
     const secretBag = new VaultSecretBag();
@@ -461,6 +464,7 @@ export class ExpressionEvaluationService {
       runtimeExpressions,
       redactor,
       secretBag,
+      expressionContext,
     );
 
     return { definition: resolvedDefinition, secretBag };
@@ -475,11 +479,13 @@ export class ExpressionEvaluationService {
    *
    * @param data - The data (may contain remaining runtime expressions)
    * @param redactor - Optional SecretRedactor to register resolved secret values for redaction
+   * @param expressionContext - Optional context for CEL-evaluating dynamic vault.get() arguments
    * @returns The data with all runtime expressions resolved (sentinels replaced with raw values)
    */
   async resolveRuntimeExpressionsInData(
     data: unknown,
     redactor?: SecretRedactor,
+    expressionContext?: ExpressionContext,
   ): Promise<unknown> {
     const expressions = extractExpressions(data);
     const runtimeExpressions = expressions.filter((expr) =>
@@ -489,6 +495,10 @@ export class ExpressionEvaluationService {
     if (runtimeExpressions.length === 0) {
       return data;
     }
+
+    const celOptions: VaultArgCelOptions | undefined = expressionContext
+      ? { celEvaluator: this.celEvaluator, context: expressionContext }
+      : undefined;
 
     const secretBag = new VaultSecretBag();
     const evaluatedValues = new Map<string, unknown>();
@@ -501,6 +511,7 @@ export class ExpressionEvaluationService {
           expr.celExpression,
           redactor,
           secretBag,
+          celOptions,
         );
       }
 
@@ -515,10 +526,15 @@ export class ExpressionEvaluationService {
         continue;
       }
 
-      const value = this.celEvaluator.evaluate(resolvedCelExpr, {
+      const celContext: Record<string, unknown> = {
         model: {},
         env: buildEnvContext(),
-      });
+      };
+      if (expressionContext?.inputs) {
+        celContext.inputs = expressionContext.inputs;
+      }
+
+      const value = this.celEvaluator.evaluate(resolvedCelExpr, celContext);
       evaluatedValues.set(expr.raw, value);
     }
 
@@ -540,7 +556,8 @@ export class ExpressionEvaluationService {
    *      inputs.*, model.*, data.*, etc. against the supplied context.
    *   2. {@link resolveRuntimeExpressionsInData} — env and vault. Vault
    *      values are resolved to raw strings and registered with the
-   *      optional redactor for log scrubbing.
+   *      optional redactor for log scrubbing. The expression context is
+   *      forwarded so dynamic vault.get() arguments can be CEL-evaluated.
    *
    * Used at execution-time seams that consume workflow-level data where
    * CEL must materialize before runtime resolution walks the now-CEL-
@@ -552,7 +569,11 @@ export class ExpressionEvaluationService {
     redactor?: SecretRedactor,
   ): Promise<unknown> {
     const afterCel = await this.evaluateData(data, context);
-    return await this.resolveRuntimeExpressionsInData(afterCel, redactor);
+    return await this.resolveRuntimeExpressionsInData(
+      afterCel,
+      redactor,
+      context,
+    );
   }
 
   /**
@@ -589,16 +610,23 @@ export class ExpressionEvaluationService {
     runtimeExpressions: ExpressionLocation[],
     redactor?: SecretRedactor,
     secretBag?: VaultSecretBag,
+    expressionContext?: ExpressionContext,
   ): Promise<Definition> {
     const logger = getLogger(["swamp", "expressions"]);
     const evaluatedValues = new Map<string, unknown>();
+
+    const celOptions: VaultArgCelOptions | undefined = expressionContext
+      ? { celEvaluator: this.celEvaluator, context: expressionContext }
+      : undefined;
+
     for (const expr of runtimeExpressions) {
       // Resolve vault references first (if any) — vault.get() arguments
       // may contain characters that are not valid CEL identifiers (e.g.
       // hyphens in vault names like "dwh-infra-1password"), so vault
       // resolution must happen BEFORE CEL validation. resolveVaultExpressions
       // replaces vault.get(...) calls with sentinel string literals that
-      // are always valid CEL.
+      // are always valid CEL. When celOptions is provided, bare-token
+      // arguments are CEL-evaluated before the vault lookup.
       let resolvedCelExpr = expr.celExpression;
       if (containsVaultExpression(expr.celExpression)) {
         logger.debug`Resolving vault expression at ${expr.path}`;
@@ -606,6 +634,7 @@ export class ExpressionEvaluationService {
           expr.celExpression,
           redactor,
           secretBag,
+          celOptions,
         );
         logger.debug`Resolved vault expression at ${expr.path}`;
       }
@@ -629,10 +658,15 @@ export class ExpressionEvaluationService {
         continue;
       }
 
-      const value = this.celEvaluator.evaluate(resolvedCelExpr, {
+      const celContext: Record<string, unknown> = {
         model: {},
         env: buildEnvContext(),
-      });
+      };
+      if (expressionContext?.inputs) {
+        celContext.inputs = expressionContext.inputs;
+      }
+
+      const value = this.celEvaluator.evaluate(resolvedCelExpr, celContext);
       evaluatedValues.set(expr.raw, value);
     }
 

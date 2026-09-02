@@ -45,6 +45,10 @@ import type { UnifiedDataRepository } from "../../domain/data/repositories.ts";
 import type { OutputRepository } from "../../domain/models/repositories.ts";
 import type { VaultService } from "../../domain/vaults/vault_service.ts";
 import type { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
+import {
+  buildEnvContext,
+  type ExpressionContext,
+} from "../../domain/expressions/model_resolver.ts";
 import type { SecretRedactor } from "../../domain/secrets/mod.ts";
 import type { DataQueryService } from "../../domain/data/data_query_service.ts";
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
@@ -594,13 +598,21 @@ export async function* modelMethodRun(
 
           // Resolve runtime expressions (vault and env).
           // Vault secrets become sentinel tokens; the secretBag maps sentinels to raw values.
+          // The expression context is passed so that dynamic vault.get() arguments
+          // (e.g. vault.get(inputs.vaultName, inputs.secretKey)) can be CEL-evaluated.
           const runtimeSpan = getTracer().startSpan(
             "swamp.model.method.resolve_runtime",
           );
+          const runtimeContext: ExpressionContext = {
+            model: {},
+            inputs,
+            env: buildEnvContext(),
+          };
           const runtimeResult = await evaluationService
             .resolveRuntimeExpressionsInDefinition(
               evaluatedDefinition,
               redactor,
+              runtimeContext,
             );
           evaluatedDefinition = runtimeResult.definition;
           const secretBag = runtimeResult.secretBag;

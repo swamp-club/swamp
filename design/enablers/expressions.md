@@ -494,6 +494,45 @@ globalArguments:
   keyData: ${{ vault.get('aws', 'machineKeyData') }}
 ```
 
+### Dynamic Vault Arguments
+
+vault.get() arguments can be CEL expressions when passed as bare tokens (without
+quotes). Bare-token arguments containing a `.` (member access) are CEL-evaluated
+against the expression context before the vault lookup:
+
+```yaml
+# Resolve vault name and key from workflow inputs:
+globalArguments:
+  apiKey: ${{ vault.get(inputs.vaultName, inputs.secretKey) }}
+```
+
+```yaml
+# Mixed: literal vault name, dynamic key from inputs:
+globalArguments:
+  password: ${{ vault.get('prod-vault', inputs.passwordKey) }}
+```
+
+Quoted arguments are always used verbatim. Bare tokens without a `.` (e.g.
+`my-vault`) are also used verbatim for backwards compatibility — they cannot be
+confused with CEL expressions.
+
+If a dynamic argument references an input that is missing or evaluates to a
+non-string value, the vault lookup fails with a clear error at runtime — it does
+not silently use the expression text as a literal key.
+
+**Security note:** In local execution, dynamic vault.get() arguments allow
+workflow inputs to select any registered vault and key. This is acceptable
+because the local user already has filesystem access to vault configurations. In
+remote execution (serve dispatch), the `hasDynamicRefs` flag on the
+`VaultExtractionResult` bypasses the per-dispatch secret allowlist, and
+`DENIED_VAULT_NAMES` / `DENIED_SECRET_KEY_PREFIXES` still block infrastructure
+secrets.
+
+**Known limitation:** `vault.get(self.item.vaultName, self.item.key)` inside a
+`forEach` step cannot resolve because the forEach iteration context is not
+available during runtime vault resolution. Use workflow inputs or an extension
+method for per-target secrets in forEach steps.
+
 ### Shell Safety
 
 When vault secrets are used in the `run` field of a `command/shell` model, the
