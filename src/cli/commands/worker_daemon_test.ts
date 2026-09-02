@@ -80,6 +80,26 @@ Deno.test("collectWorkerEnv: returns empty when no options", () => {
   assertEquals(Object.keys(env).length, 0);
 });
 
+Deno.test("collectWorkerEnv: includes SWAMP_WORKER_TOKEN_FILE when provided", () => {
+  const env = collectWorkerEnv({
+    url: "wss://orch:9090",
+    tokenFile: "/tokens/worker-token",
+  });
+  assertEquals(env["SWAMP_WORKER_TOKEN_FILE"], "/tokens/worker-token");
+  assertEquals(env["SWAMP_WORKER_TOKEN"], undefined);
+});
+
+Deno.test("collectWorkerEnv: includes SWAMP_SERVER_TOKEN_FILE when provided", () => {
+  const env = collectWorkerEnv({
+    url: "wss://orch:9090",
+    tokenFile: "/tokens/worker-token",
+    serverTokenFile: "/tokens/server-token",
+  });
+  assertEquals(env["SWAMP_SERVER_TOKEN_FILE"], "/tokens/server-token");
+  assertEquals(env["SWAMP_SERVER_TOKEN"], undefined);
+  assertEquals(env["SWAMP_WORKER_TOKEN_FILE"], "/tokens/worker-token");
+});
+
 Deno.test("validateCacheDir: rejects non-existent absolute path", async () => {
   const err = await assertRejects(
     () => validateCacheDir("/tmp/swamp-nonexistent-dir-abc123"),

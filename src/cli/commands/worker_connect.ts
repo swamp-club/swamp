@@ -43,6 +43,29 @@ import "../../domain/models/models.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
+export async function readTokenFile(
+  path: string,
+  flagName: string,
+): Promise<string> {
+  let raw: string;
+  try {
+    raw = await Deno.readTextFile(path);
+  } catch (err) {
+    if (err instanceof Deno.errors.NotFound) {
+      throw new UserError(`${flagName} file not found: ${path}`);
+    }
+    if (err instanceof Deno.errors.PermissionDenied) {
+      throw new UserError(`${flagName} file not readable: ${path}`);
+    }
+    throw err;
+  }
+  const value = raw.replace(/\r?\n$/, "");
+  if (value === "") {
+    throw new UserError(`${flagName} file is empty: ${path}`);
+  }
+  return value;
+}
+
 function parseCommaSeparatedLabels(envValue: string): Record<string, string> {
   const labels: Record<string, string> = {};
   for (const pair of envValue.split(",")) {
@@ -93,6 +116,10 @@ export const workerConnectCommand = new Command()
     "swamp worker connect wss://orch:4000 --token <token> --concurrency auto",
   )
   .example(
+    "Connect with secrets from a Kubernetes Secret mount",
+    "swamp worker connect wss://orch:9090 --token-file /tokens/worker-token --server-token-file /tokens/server-token",
+  )
+  .example(
     "Connect to a token-authenticated orchestrator",
     "swamp worker connect wss://orch:9090 --server-token admin.secret --token worker-pool.enrollment-secret",
   )
@@ -106,8 +133,16 @@ export const workerConnectCommand = new Command()
     "Enrollment token (<name>.<secret>) (env: SWAMP_WORKER_TOKEN)",
   )
   .option(
+    "--token-file <path:string>",
+    "Path to a file containing the enrollment token; mutually exclusive with --token (env: SWAMP_WORKER_TOKEN_FILE)",
+  )
+  .option(
     "--server-token <token:string>",
     "Server access token for authenticating the WebSocket connection (<name>.<secret>) (env: SWAMP_SERVER_TOKEN)",
+  )
+  .option(
+    "--server-token-file <path:string>",
+    "Path to a file containing the server access token; mutually exclusive with --server-token (env: SWAMP_SERVER_TOKEN_FILE)",
   )
   .option(
     "--label <label:string>",
@@ -158,14 +193,35 @@ export const workerConnectCommand = new Command()
       );
     }
 
-    const serverToken = (options.serverToken as string | undefined) ??
+    const serverTokenValue = (options.serverToken as string | undefined) ??
       Deno.env.get("SWAMP_SERVER_TOKEN");
+    const serverTokenFilePath =
+      (options.serverTokenFile as string | undefined) ??
+        Deno.env.get("SWAMP_SERVER_TOKEN_FILE");
+    if (serverTokenValue && serverTokenFilePath) {
+      throw new UserError(
+        "--server-token and --server-token-file are mutually exclusive",
+      );
+    }
+    const serverToken = serverTokenFilePath
+      ? await readTokenFile(serverTokenFilePath, "--server-token-file")
+      : serverTokenValue;
 
-    const token = (options.token as string | undefined) ??
+    const tokenValue = (options.token as string | undefined) ??
       Deno.env.get("SWAMP_WORKER_TOKEN");
+    const tokenFilePath = (options.tokenFile as string | undefined) ??
+      Deno.env.get("SWAMP_WORKER_TOKEN_FILE");
+    if (tokenValue && tokenFilePath) {
+      throw new UserError(
+        "--token and --token-file are mutually exclusive",
+      );
+    }
+    const token = tokenFilePath
+      ? await readTokenFile(tokenFilePath, "--token-file")
+      : tokenValue;
     if (token === undefined) {
       throw new UserError(
-        "Missing enrollment token — pass --token or set SWAMP_WORKER_TOKEN",
+        "Missing enrollment token — pass --token, --token-file, or set SWAMP_WORKER_TOKEN",
       );
     }
 
