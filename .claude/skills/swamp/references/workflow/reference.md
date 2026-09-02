@@ -1040,6 +1040,16 @@ apiKey: ${{ vault.get(vault-name, secret-key) }}
 dbPassword: ${{ vault.get(prod-secrets, DB_PASSWORD) }}
 ```
 
+Arguments can also be CEL expressions — bare tokens containing `.` are
+CEL-evaluated before the vault lookup:
+
+```yaml
+# Per-target secret from workflow inputs:
+apiKey: ${{ vault.get(inputs.vaultName, inputs.secretKey) }}
+# Mixed: literal vault, dynamic key:
+password: ${{ vault.get('prod-vault', inputs.passwordKey) }}
+```
+
 Vault expressions are resolved **per-step at execution time** — a step that
 writes to a vault makes the new value available to subsequent steps. Example
 token-refresh-then-use pattern:

@@ -291,6 +291,12 @@ before CEL evaluation (`resolveVaultExpressions` in
 when no secret bag is present). There is no `vault.put` expression — writes go
 through `swamp vault put` or sensitive-field marking (below).
 
+Arguments can be quoted literals or bare-token CEL expressions. Bare tokens
+containing `.` (e.g. `inputs.vaultName`) are CEL-evaluated against the runtime
+context before the vault lookup. See
+[expressions.md § Dynamic Vault Arguments](../enablers/expressions.md#dynamic-vault-arguments)
+for details, security notes, and known limitations.
+
 ## CLI Surface
 
 Vault commands live in `src/cli/commands/vault_*.ts`. Beyond `create`, `put`,

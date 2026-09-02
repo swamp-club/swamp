@@ -832,10 +832,13 @@ export class DefaultStepExecutor implements StepExecutor {
 
     // Resolve runtime expressions (vault and env) at runtime (never persisted).
     // Vault secrets become sentinel tokens; the secretBag maps sentinels to raw values.
+    // The expression context is passed so that dynamic vault.get() arguments
+    // (e.g. vault.get(inputs.vaultName, inputs.secretKey)) can be CEL-evaluated.
     const runtimeResult = await expressionEvaluator
       .resolveRuntimeExpressionsInDefinition(
         evaluatedDefinition,
         ctx.secretRedactor,
+        ctx.expressionContext,
       );
     evaluatedDefinition = runtimeResult.definition;
     const secretBag = runtimeResult.secretBag;

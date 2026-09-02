@@ -108,7 +108,8 @@ swamp model create aws/ec2/vpc my-vpc \
 ```
 
 Use `${{ vault.get() }}` expressions for secrets — never resolve a secret and
-pass the literal value (see **swamp-vault** skill for details):
+pass the literal value (see **swamp-vault** skill for details). Arguments can be
+literal or CEL expressions (bare tokens with `.` are CEL-evaluated):
 
 ```bash
 swamp model create @user/my-api api-client \
