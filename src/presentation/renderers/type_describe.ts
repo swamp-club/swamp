@@ -81,7 +81,8 @@ interface JsonSchemaLike {
 }
 
 function compactSchema(schema: object): object {
-  const s = schema as JsonSchemaLike;
+  const s = schema as JsonSchemaLike & { $error?: string };
+  if (s.$error) return schema;
   if (!s.properties) return {};
   const result: Record<string, unknown> = {};
   const props: Record<string, object> = {};
