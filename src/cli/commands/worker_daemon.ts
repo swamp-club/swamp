@@ -22,6 +22,7 @@ import { isAbsolute, resolve } from "@std/path";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { groupCommandAction } from "../group_action.ts";
 import { UserError } from "../../domain/errors.ts";
+import { readTokenFile } from "./worker_connect.ts";
 import { resolveServiceMode } from "../../infrastructure/daemon/service_scheduler_factory.ts";
 import { createWorkerDaemonScheduler } from "../../infrastructure/daemon/worker_daemon_scheduler_factory.ts";
 import {
@@ -87,6 +88,16 @@ export function collectWorkerEnv(options: AnyOptions): Record<string, string> {
     env["SWAMP_SERVER_TOKEN"] = serverToken;
   }
 
+  const serverTokenFile = options.serverTokenFile as string | undefined;
+  if (serverTokenFile) {
+    env["SWAMP_SERVER_TOKEN_FILE"] = serverTokenFile;
+  }
+
+  const tokenFile = options.tokenFile as string | undefined;
+  if (tokenFile) {
+    env["SWAMP_WORKER_TOKEN_FILE"] = tokenFile;
+  }
+
   const labels = options.label as string[] | undefined;
   if (labels && labels.length > 0) {
     env["SWAMP_WORKER_LABELS"] = labels.join(",");
@@ -123,8 +134,16 @@ const daemonEnableCommand = new Command()
     "Enrollment token (<name>.<secret>)",
   )
   .option(
+    "--token-file <path:string>",
+    "Path to a file containing the enrollment token; mutually exclusive with --token",
+  )
+  .option(
     "--server-token <token:string>",
     "Server access token for authenticating the WebSocket connection (<name>.<secret>)",
+  )
+  .option(
+    "--server-token-file <path:string>",
+    "Path to a file containing the server access token; mutually exclusive with --server-token",
   )
   .option(
     "--label <label:string>",
@@ -153,6 +172,10 @@ const daemonEnableCommand = new Command()
     "swamp worker daemon enable wss://orch:9090 --token tok.secret --label tier=ci --cache-dir /var/lib/swamp-worker",
   )
   .example(
+    "Enable with secrets from a Kubernetes Secret mount",
+    "swamp worker daemon enable wss://orch:9090 --token-file /tokens/worker-token --server-token-file /tokens/server-token --label tier=ci",
+  )
+  .example(
     "Enable with a token-authenticated orchestrator",
     "swamp worker daemon enable wss://orch:9090 --token tok.secret --server-token admin.secret --label tier=ci",
   )
@@ -173,10 +196,29 @@ const daemonEnableCommand = new Command()
           "  swamp worker daemon enable wss://orchestrator:9090 --token <token>",
       );
     }
-    if (!options.token) {
+    if (options.token && options.tokenFile) {
       throw new UserError(
-        "Missing enrollment token — pass --token:\n\n" +
+        "--token and --token-file are mutually exclusive",
+      );
+    }
+    if (options.serverToken && options.serverTokenFile) {
+      throw new UserError(
+        "--server-token and --server-token-file are mutually exclusive",
+      );
+    }
+    if (!options.token && !options.tokenFile) {
+      throw new UserError(
+        "Missing enrollment token — pass --token or --token-file:\n\n" +
           "  swamp worker daemon enable wss://orchestrator:9090 --token <name>.<secret>",
+      );
+    }
+    if (options.tokenFile) {
+      await readTokenFile(options.tokenFile as string, "--token-file");
+    }
+    if (options.serverTokenFile) {
+      await readTokenFile(
+        options.serverTokenFile as string,
+        "--server-token-file",
       );
     }
 

@@ -17,8 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+import { readTokenFile } from "./worker_connect.ts";
+import { UserError } from "../../domain/errors.ts";
 
 // Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
@@ -66,4 +68,87 @@ Deno.test("workerConnectCommand: --server-token option exists", async () => {
   const serverTokenOpt = options.find((o) => o.name === "server-token");
   assertEquals(serverTokenOpt !== undefined, true);
   assertEquals(serverTokenOpt?.required ?? false, false);
+});
+
+Deno.test("workerConnectCommand: --token-file option exists", async () => {
+  const { workerConnectCommand } = await import("./worker_connect.ts");
+  const options = workerConnectCommand.getOptions();
+  const opt = options.find((o) => o.name === "token-file");
+  assertEquals(opt !== undefined, true);
+});
+
+Deno.test("workerConnectCommand: --server-token-file option exists", async () => {
+  const { workerConnectCommand } = await import("./worker_connect.ts");
+  const options = workerConnectCommand.getOptions();
+  const opt = options.find((o) => o.name === "server-token-file");
+  assertEquals(opt !== undefined, true);
+});
+
+Deno.test("readTokenFile: reads token and trims trailing newline", async () => {
+  const tmpFile = await Deno.makeTempFile({ prefix: "swamp-token-test-" });
+  try {
+    await Deno.writeTextFile(tmpFile, "pool.secret-value\n");
+    const result = await readTokenFile(tmpFile, "--token-file");
+    assertEquals(result, "pool.secret-value");
+  } finally {
+    await Deno.remove(tmpFile).catch(() => {});
+  }
+});
+
+Deno.test("readTokenFile: reads token without trailing newline", async () => {
+  const tmpFile = await Deno.makeTempFile({ prefix: "swamp-token-test-" });
+  try {
+    await Deno.writeTextFile(tmpFile, "pool.secret-value");
+    const result = await readTokenFile(tmpFile, "--token-file");
+    assertEquals(result, "pool.secret-value");
+  } finally {
+    await Deno.remove(tmpFile).catch(() => {});
+  }
+});
+
+Deno.test("readTokenFile: throws UserError for missing file", async () => {
+  const err = await assertRejects(
+    () => readTokenFile("/tmp/swamp-nonexistent-token-file", "--token-file"),
+    UserError,
+  );
+  assertStringIncludes(err.message, "--token-file file not found");
+});
+
+Deno.test("readTokenFile: throws UserError for empty file", async () => {
+  const tmpFile = await Deno.makeTempFile({ prefix: "swamp-token-test-" });
+  try {
+    await Deno.writeTextFile(tmpFile, "");
+    const err = await assertRejects(
+      () => readTokenFile(tmpFile, "--token-file"),
+      UserError,
+    );
+    assertStringIncludes(err.message, "--token-file file is empty");
+  } finally {
+    await Deno.remove(tmpFile).catch(() => {});
+  }
+});
+
+Deno.test("readTokenFile: trims trailing CRLF", async () => {
+  const tmpFile = await Deno.makeTempFile({ prefix: "swamp-token-test-" });
+  try {
+    await Deno.writeTextFile(tmpFile, "pool.secret-value\r\n");
+    const result = await readTokenFile(tmpFile, "--token-file");
+    assertEquals(result, "pool.secret-value");
+  } finally {
+    await Deno.remove(tmpFile).catch(() => {});
+  }
+});
+
+Deno.test("readTokenFile: throws UserError for file with only a newline", async () => {
+  const tmpFile = await Deno.makeTempFile({ prefix: "swamp-token-test-" });
+  try {
+    await Deno.writeTextFile(tmpFile, "\n");
+    const err = await assertRejects(
+      () => readTokenFile(tmpFile, "--token-file"),
+      UserError,
+    );
+    assertStringIncludes(err.message, "--token-file file is empty");
+  } finally {
+    await Deno.remove(tmpFile).catch(() => {});
+  }
 });
