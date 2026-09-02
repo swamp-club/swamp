@@ -164,7 +164,9 @@ try {
   const r = await fetch(${JSON.stringify(opts.url)});
   console.log("RESULT:OK:" + r.status);
 } catch (e) {
-  console.log("RESULT:ERR:" + (e instanceof Error ? e.message : String(e)));
+  const msg = e instanceof Error ? e.message : String(e);
+  const cause = e instanceof Error && e.cause instanceof Error ? e.cause.message : "";
+  console.log("RESULT:ERR:" + msg + (cause ? ": " + cause : ""));
 }
 `;
   // Preserve PATH/HOME/DENO_DIR so deno can resolve its cache, but drop any
@@ -318,7 +320,7 @@ Deno.env.set("DENO_CERT", ${JSON.stringify(caPath)});
 try { const r = await fetch(${
         JSON.stringify(url)
       }); console.log("RESULT:OK:" + r.status); }
-catch (e) { console.log("RESULT:ERR:" + (e instanceof Error ? e.message : String(e))); }
+catch (e) { const msg = e instanceof Error ? e.message : String(e); const cause = e instanceof Error && e.cause instanceof Error ? e.cause.message : ""; console.log("RESULT:ERR:" + msg + (cause ? ": " + cause : "")); }
 `;
       const result = await runScript(script, {});
       assertStringIncludes(result, "RESULT:ERR:");

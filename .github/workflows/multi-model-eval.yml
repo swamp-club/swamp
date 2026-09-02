@@ -52,7 +52,7 @@ jobs:
         if: steps.check.outputs.run == 'true'
         uses: denoland/setup-deno@v2
         with:
-          deno-version: v2.8.x
+          deno-version: v2.9.x
 
       - name: Setup Node.js
         if: steps.check.outputs.run == 'true'
@@ -92,7 +92,7 @@ jobs:
       - name: Setup Deno
         uses: denoland/setup-deno@v2
         with:
-          deno-version: v2.8.x
+          deno-version: v2.9.x
 
       - name: Download all eval results
         uses: actions/download-artifact@v4

@@ -23,7 +23,7 @@ jobs:
       - name: Setup Deno
         uses: denoland/setup-deno@v2
         with:
-          deno-version: v2.8.x
+          deno-version: v2.9.x
 
       - name: Run deno lint
         run: deno lint
