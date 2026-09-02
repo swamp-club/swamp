@@ -6,7 +6,8 @@
 
 .DESCRIPTION
     Downloads and installs the swamp CLI binary release for Windows x86_64.
-    Automatically detects system architecture and handles installation.
+    Automatically detects system architecture, follows S3 redirects for version
+    resolution, verifies SHA-256 checksums, and handles installation.
 
 .PARAMETER Destination
     Destination directory for installation. Default: C:\Program Files\swamp (admin) or $env:LOCALAPPDATA\swamp (user)
@@ -58,6 +59,7 @@ $ErrorActionPreference = "Stop"
 # Script configuration
 $BinName = "swamp"
 $BinExe = "$BinName.exe"
+$TrustedArtifactHost = "https://artifacts.swamp-club.com/$BinName/"
 
 function Write-Header {
     param([string]$Message)
@@ -100,6 +102,14 @@ function Get-DefaultDestination {
     }
 }
 
+function Assert-TrustedUrl {
+    param([string]$Url)
+
+    if (-not $Url.StartsWith($TrustedArtifactHost)) {
+        throw "Untrusted artifact URL: $Url"
+    }
+}
+
 function Get-AssetUrl {
     param(
         [string]$Version,
@@ -117,6 +127,54 @@ function Get-AssetUrl {
     return $url
 }
 
+function Resolve-S3Redirect {
+    param([string]$Url)
+
+    Assert-TrustedUrl $Url
+
+    try {
+        $response = Invoke-WebRequest -Uri $Url -Method Head -UseBasicParsing -ErrorAction Stop
+        $redirectHeader = $null
+
+        if ($response.Headers -and $response.Headers.ContainsKey("x-amz-meta-x-amz-website-redirect-location")) {
+            $redirectHeader = $response.Headers["x-amz-meta-x-amz-website-redirect-location"]
+            if ($redirectHeader -is [array]) {
+                $redirectHeader = $redirectHeader[0]
+            }
+        }
+
+        if ($redirectHeader) {
+            $redirectHeader = $redirectHeader.Trim()
+            Assert-TrustedUrl $redirectHeader
+            Write-Info "Following S3 redirect to $redirectHeader"
+            return $redirectHeader
+        }
+    } catch {
+        Write-Info "HEAD request failed, proceeding with original URL"
+    }
+
+    return $Url
+}
+
+function Get-ReleaseVersion {
+    param([string]$ResolvedUrl)
+
+    Assert-TrustedUrl $ResolvedUrl
+
+    $path = $ResolvedUrl.Substring($TrustedArtifactHost.Length)
+    $version = $path.Split("/")[0]
+
+    if (-not $version -or $version -eq "stable") {
+        throw "Could not determine the release version for checksum verification"
+    }
+
+    if ($version -notmatch '^[0-9A-Za-z._-]+$') {
+        throw "Invalid release version: $version"
+    }
+
+    return $version
+}
+
 function Download-File {
     param(
         [string]$Url,
@@ -126,12 +184,86 @@ function Download-File {
     Write-Info "Downloading $Url"
 
     try {
-        # Use WebClient for download
-        $webClient = New-Object System.Net.WebClient
-        $webClient.DownloadFile($Url, $Destination)
-        $webClient.Dispose()
+        Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing -ErrorAction Stop
     } catch {
         throw "Failed to download file: $_"
+    }
+}
+
+function Assert-Sha256 {
+    param(
+        [string]$FilePath,
+        [string]$ExpectedHash,
+        [string]$Label
+    )
+
+    $actualHash = (Get-FileHash -Path $FilePath -Algorithm SHA256).Hash.ToLower()
+    $expectedLower = $ExpectedHash.ToLower()
+
+    if ($actualHash -ne $expectedLower) {
+        throw "SHA-256 checksum verification failed for '$Label' (expected: $expectedLower, actual: $actualHash)"
+    }
+
+    Write-Info "Verified SHA-256 checksum for '$Label'"
+}
+
+function Test-Sha256Format {
+    param(
+        [string]$Hash,
+        [string]$Label
+    )
+
+    if ($Hash.Length -ne 64) {
+        throw "Invalid SHA-256 checksum for '$Label'"
+    }
+    if ($Hash -notmatch '^[0-9a-f]+$') {
+        throw "Invalid SHA-256 checksum for '$Label'"
+    }
+}
+
+function Get-ChecksumForAsset {
+    param(
+        [string]$ChecksumFile,
+        [string]$AssetName
+    )
+
+    $content = Get-Content -Path $ChecksumFile
+    $found = $null
+
+    foreach ($line in $content) {
+        $parts = $line -split '\s+', 2
+        if ($parts.Length -eq 2 -and $parts[1].Trim() -eq $AssetName) {
+            if ($null -ne $found) {
+                throw "Duplicate checksum for '$AssetName'"
+            }
+            $found = $parts[0].Trim()
+        }
+    }
+
+    if (-not $found) {
+        throw "No checksum found for '$AssetName'"
+    }
+
+    Test-Sha256Format $found $AssetName
+    return $found
+}
+
+function Confirm-ArchiveContents {
+    param(
+        [string]$ArchivePath,
+        [string]$ExpectedEntry
+    )
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
+    try {
+        $entries = @($archive.Entries | ForEach-Object { $_.FullName })
+
+        if ($entries.Count -ne 1 -or $entries[0] -ne $ExpectedEntry) {
+            throw "Downloaded archive contains unexpected entries: $($entries -join ', ')"
+        }
+    } finally {
+        $archive.Dispose()
     }
 }
 
@@ -144,11 +276,9 @@ function Extract-Archive {
     Write-Info "Extracting archive..."
 
     try {
-        # Use .NET for extraction (works on all PowerShell versions)
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         [System.IO.Compression.ZipFile]::ExtractToDirectory($ArchivePath, $DestinationPath)
 
-        # Verify binary was extracted
         $extractedBinary = Join-Path $DestinationPath $BinExe
         if (-not (Test-Path $extractedBinary)) {
             throw "Failed to extract binary '$BinExe' from archive"
@@ -167,19 +297,16 @@ function Install-Binary {
     Write-Info "Installing '$BinExe' to '$DestinationDir'"
 
     try {
-        # Create destination directory if it doesn't exist
         if (-not (Test-Path $DestinationDir)) {
             New-Item -ItemType Directory -Path $DestinationDir -Force | Out-Null
         }
 
         $destFile = Join-Path $DestinationDir $BinExe
 
-        # Remove existing file if present
         if (Test-Path $destFile) {
             Remove-Item $destFile -Force
         }
 
-        # Copy the binary
         Copy-Item -Path $SourcePath -Destination $destFile -Force
 
         Write-Success "Installed to $destFile"
@@ -196,10 +323,8 @@ function Add-ToPath {
     $isAdmin = Test-Administrator
     $target = if ($isAdmin) { "Machine" } else { "User" }
 
-    # Get current PATH
     $currentPath = [Environment]::GetEnvironmentVariable("Path", $target)
 
-    # Check if directory is already in PATH
     $pathEntries = $currentPath -split ";" | ForEach-Object { $_.Trim() }
     if ($pathEntries -contains $Directory) {
         Write-Info "Directory already in PATH"
@@ -212,7 +337,6 @@ function Add-ToPath {
         $newPath = "$currentPath;$Directory"
         [Environment]::SetEnvironmentVariable("Path", $newPath, $target)
 
-        # Update current session PATH
         $env:Path = "$env:Path;$Directory"
 
         Write-Success "Added to $target PATH"
@@ -267,14 +391,36 @@ function Main {
     New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 
     try {
-        # Get download URL
+        # Build download URL and resolve S3 redirect
         Write-Header "Downloading '$BinName' release '$Version'"
         $assetUrl = Get-AssetUrl -Version $Version -OsType $osType -CpuType $cpuType
         Write-Info "URL: $assetUrl"
 
+        $resolvedUrl = Resolve-S3Redirect $assetUrl
+
+        # Extract the pinned release version from the resolved URL
+        $releaseVersion = Get-ReleaseVersion $resolvedUrl
+        Write-Info "Resolved release version: $releaseVersion"
+
+        # Download the zip from the resolved URL
         $zipFile = Join-Path $tempDir "swamp.zip"
-        Download-File -Url $assetUrl -Destination $zipFile
+        Download-File -Url $resolvedUrl -Destination $zipFile
         Write-Success "Downloaded successfully"
+
+        # Download and verify SHA-256 from S3 sidecar (resolved URL, not alias)
+        Write-Header "Verifying checksums"
+        $checksumFile = Join-Path $tempDir "swamp.zip.sha256"
+        Download-File -Url "$resolvedUrl.sha256" -Destination $checksumFile
+
+        $checksumContent = (Get-Content -Path $checksumFile -Raw).Trim()
+        $expectedHash = ($checksumContent -split '\s+')[0]
+        Test-Sha256Format $expectedHash "$(Split-Path $zipFile -Leaf)"
+        Assert-Sha256 $zipFile $expectedHash (Split-Path $zipFile -Leaf)
+
+        # Validate archive contents before extraction
+        Write-Header "Validating archive"
+        Confirm-ArchiveContents $zipFile $BinExe
+        Write-Success "Archive contains expected binary"
 
         # Extract archive
         Write-Header "Extracting archive"
@@ -282,9 +428,21 @@ function Main {
         Extract-Archive -ArchivePath $zipFile -DestinationPath $extractDir
         Write-Success "Extracted successfully"
 
+        # Cross-verify extracted binary against GitHub release checksums
+        Write-Header "Verifying release binary"
+        $releaseAsset = "$BinName-$osType-$cpuType"
+        $releaseChecksumsFile = Join-Path $tempDir "checksums-$releaseVersion.txt"
+        Download-File `
+            -Url "https://github.com/swamp-club/swamp/releases/download/v$releaseVersion/checksums.txt" `
+            -Destination $releaseChecksumsFile
+
+        $expectedBinaryHash = Get-ChecksumForAsset $releaseChecksumsFile $releaseAsset
+        $binaryPath = Join-Path $extractDir $BinExe
+        Assert-Sha256 $binaryPath $expectedBinaryHash $releaseAsset
+        Write-Success "Verified GitHub release checksum for '$releaseAsset'"
+
         # Install binary
         Write-Header "Installing binary"
-        $binaryPath = Join-Path $extractDir $BinExe
         Install-Binary -SourcePath $binaryPath -DestinationDir $Destination
 
         # Add to PATH
@@ -299,7 +457,6 @@ function Main {
         if (Test-Path $installedBinary) {
             Write-Success "Installation complete: $installedBinary"
 
-            # Try to run --version
             try {
                 $versionOutput = & $installedBinary --version 2>&1
                 Write-Info "Version: $versionOutput"
@@ -317,7 +474,6 @@ function Main {
         Write-Warn "    https://discord.gg/swamp-club"
         exit 1
     } finally {
-        # Cleanup
         if (Test-Path $tempDir) {
             Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
         }
@@ -355,7 +511,19 @@ function Main {
         Write-Host ""
     }
 
-    Write-Success "Run 'swamp --help' to get started"
+    Write-Info "Next steps:"
+    Write-Info ""
+    Write-Info "  1. Initialize a swamp repository:"
+    Write-Info "       cd your-project; swamp repo init"
+    Write-Info ""
+    Write-Info "  2. Set up shell completions (optional):"
+    Write-Info "       swamp completions --help"
+    Write-Info ""
+    Write-Info "  3. Join the community:"
+    Write-Info "       https://discord.gg/swamp-club"
+    Write-Info ""
+    Write-Info "Learn more: https://github.com/swamp-club/swamp"
+
     if (-not $AddToPath) {
         $binaryLocation = Join-Path $Destination $BinExe
         Write-Info "Binary location: $binaryLocation"
