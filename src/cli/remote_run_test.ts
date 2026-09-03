@@ -148,6 +148,69 @@ Deno.test("resolveServeUrl: returns undefined when no flag or env var set", () =
   }
 });
 
+Deno.test("resolveServeUrl: falls back to markerValue when no flag or env var set", () => {
+  const prevServe = Deno.env.get("SWAMP_SERVE_URL");
+  const prevServer = Deno.env.get("SWAMP_SERVER_URL");
+  try {
+    Deno.env.delete("SWAMP_SERVE_URL");
+    Deno.env.delete("SWAMP_SERVER_URL");
+    assertEquals(
+      resolveServeUrl(undefined, "wss://marker.example.com"),
+      "wss://marker.example.com",
+    );
+  } finally {
+    if (prevServe !== undefined) Deno.env.set("SWAMP_SERVE_URL", prevServe);
+    if (prevServer !== undefined) Deno.env.set("SWAMP_SERVER_URL", prevServer);
+  }
+});
+
+Deno.test("resolveServeUrl: env var takes precedence over markerValue", () => {
+  const prevServe = Deno.env.get("SWAMP_SERVE_URL");
+  const prevServer = Deno.env.get("SWAMP_SERVER_URL");
+  try {
+    Deno.env.set("SWAMP_SERVE_URL", "wss://env.example.com");
+    Deno.env.delete("SWAMP_SERVER_URL");
+    assertEquals(
+      resolveServeUrl(undefined, "wss://marker.example.com"),
+      "wss://env.example.com",
+    );
+  } finally {
+    if (prevServe !== undefined) Deno.env.set("SWAMP_SERVE_URL", prevServe);
+    else Deno.env.delete("SWAMP_SERVE_URL");
+    if (prevServer !== undefined) Deno.env.set("SWAMP_SERVER_URL", prevServer);
+    else Deno.env.delete("SWAMP_SERVER_URL");
+  }
+});
+
+Deno.test("resolveServeUrl: flag takes precedence over markerValue", () => {
+  const prevServe = Deno.env.get("SWAMP_SERVE_URL");
+  const prevServer = Deno.env.get("SWAMP_SERVER_URL");
+  try {
+    Deno.env.delete("SWAMP_SERVE_URL");
+    Deno.env.delete("SWAMP_SERVER_URL");
+    assertEquals(
+      resolveServeUrl("wss://flag.example.com", "wss://marker.example.com"),
+      "wss://flag.example.com",
+    );
+  } finally {
+    if (prevServe !== undefined) Deno.env.set("SWAMP_SERVE_URL", prevServe);
+    if (prevServer !== undefined) Deno.env.set("SWAMP_SERVER_URL", prevServer);
+  }
+});
+
+Deno.test("resolveServeUrl: returns undefined when no flag, env var, or markerValue", () => {
+  const prevServe = Deno.env.get("SWAMP_SERVE_URL");
+  const prevServer = Deno.env.get("SWAMP_SERVER_URL");
+  try {
+    Deno.env.delete("SWAMP_SERVE_URL");
+    Deno.env.delete("SWAMP_SERVER_URL");
+    assertEquals(resolveServeUrl(undefined, undefined), undefined);
+  } finally {
+    if (prevServe !== undefined) Deno.env.set("SWAMP_SERVE_URL", prevServe);
+    if (prevServer !== undefined) Deno.env.set("SWAMP_SERVER_URL", prevServer);
+  }
+});
+
 Deno.test("normalizeServerUrl: accepts ws/wss and maps http/https", () => {
   assertEquals(normalizeServerUrl("ws://h:1"), "ws://h:1/");
   assertEquals(normalizeServerUrl("http://h:1"), "ws://h:1/");

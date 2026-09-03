@@ -835,6 +835,32 @@ Deno.test("RepoService.init stores tool in marker", async () => {
   });
 });
 
+Deno.test("RepoService.init stores serverAddress in marker", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath, {
+      serverAddress: "wss://team-serve.internal:4000",
+    });
+
+    const marker = await service.getMarker(repoPath);
+    assertEquals(marker!.serverAddress, "wss://team-serve.internal:4000");
+  });
+});
+
+Deno.test("RepoService.init omits serverAddress when not provided", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath);
+
+    const marker = await service.getMarker(repoPath);
+    assertEquals(marker!.serverAddress, undefined);
+  });
+});
+
 Deno.test("RepoService.upgrade reads tool from marker", async () => {
   await withTempDir(async (tempDir) => {
     const service = new RepoService("0.1.0");

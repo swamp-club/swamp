@@ -238,6 +238,74 @@ Deno.test("repoInit: when both `tools` and `tool` are passed, `tools` wins", asy
   assertEquals(capturedOptions?.tools, ["claude", "kiro"]);
 });
 
+Deno.test("repoInit: serverAddress is forwarded to deps.init", async () => {
+  let capturedOptions:
+    | { force?: boolean; tools?: string[]; serverAddress?: string }
+    | undefined;
+  const deps = makeInitDeps({
+    init: (_repoPath, options) => {
+      capturedOptions = options;
+      return Promise.resolve({
+        path: "/repo",
+        version: "1.0.0",
+        initializedAt: "2026-01-01T00:00:00Z",
+        skillsCopied: [],
+        instructionsFileCreated: true,
+        settingsCreated: true,
+        gitignoreAction: "created",
+        tools: ["claude"],
+        removedTools: [],
+      });
+    },
+  });
+
+  await collect<RepoInitEvent>(
+    repoInit(createLibSwampContext(), deps, {
+      path: "/repo",
+      force: false,
+      version: "1.0.0",
+      serverAddress: "wss://team-serve.internal:4000",
+    }),
+  );
+
+  assertEquals(
+    capturedOptions?.serverAddress,
+    "wss://team-serve.internal:4000",
+  );
+});
+
+Deno.test("repoInit: serverAddress is undefined when not provided", async () => {
+  let capturedOptions:
+    | { force?: boolean; tools?: string[]; serverAddress?: string }
+    | undefined;
+  const deps = makeInitDeps({
+    init: (_repoPath, options) => {
+      capturedOptions = options;
+      return Promise.resolve({
+        path: "/repo",
+        version: "1.0.0",
+        initializedAt: "2026-01-01T00:00:00Z",
+        skillsCopied: [],
+        instructionsFileCreated: true,
+        settingsCreated: true,
+        gitignoreAction: "created",
+        tools: ["claude"],
+        removedTools: [],
+      });
+    },
+  });
+
+  await collect<RepoInitEvent>(
+    repoInit(createLibSwampContext(), deps, {
+      path: "/repo",
+      force: false,
+      version: "1.0.0",
+    }),
+  );
+
+  assertEquals(capturedOptions?.serverAddress, undefined);
+});
+
 Deno.test("repoUpgrade: yields completed on successful upgrade", async () => {
   const deps = makeUpgradeDeps();
 

@@ -240,7 +240,20 @@ Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — 
         : modelOrType;
       const definitionName = isDirectExecution ? definitionNameArg : undefined;
 
-      const server = resolveServeUrl(options.server as string | undefined);
+      let markerServerAddress: string | undefined;
+      try {
+        const markerRepo = new RepoMarkerRepository();
+        const repoDir = resolveRepoDir(options.repoDir);
+        const m = await markerRepo.read(RepoPath.create(repoDir));
+        markerServerAddress = m?.serverAddress;
+      } catch {
+        // Not in a repo — serverAddress fallback unavailable
+      }
+
+      const server = resolveServeUrl(
+        options.server as string | undefined,
+        markerServerAddress,
+      );
       if (server) {
         await runMethodViaServer(
           { ...options, server },
