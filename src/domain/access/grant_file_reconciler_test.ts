@@ -506,3 +506,40 @@ Deno.test("reconcileAllFileGrants: no update when methods unchanged", async () =
   assertEquals(result.totalUpdated, 0);
   assertEquals(result.totalUnchanged, 1);
 });
+
+Deno.test("reconcileAllFileGrants: reactivation applies updated methods from file entry", async () => {
+  const revokedGrant = makeFileGrant({
+    source: "file:ops.yaml",
+    subject: { kind: "user", name: "monitor" },
+    actions: ["run"],
+    resource: { kind: "model", pattern: "@acme/my-model" },
+    methods: ["read"],
+    state: "revoked",
+  });
+  const existingGrants = new Map([
+    ["model-1", {
+      grant: revokedGrant,
+      modelId: "model-1",
+      instanceName: "inst-1",
+    }],
+  ]);
+  const store = createMockStore(existingGrants);
+
+  const entry: GrantFileEntry = {
+    subject: { kind: "user", name: "monitor" },
+    effect: "allow",
+    actions: ["run"],
+    resource: { kind: "model", pattern: "@acme/my-model" },
+    methods: ["read", "list"],
+  };
+
+  const fileEntries = new Map([["ops.yaml", [entry]]]);
+  const result = await reconcileAllFileGrants(fileEntries, store);
+
+  assertEquals(result.totalReactivated, 1);
+  assertEquals(result.totalUpdated, 0);
+
+  const reactivatedGrant = store.written.get("inst-1")!;
+  assertEquals(reactivatedGrant.state, "active");
+  assertEquals(reactivatedGrant.methods, ["read", "list"]);
+});

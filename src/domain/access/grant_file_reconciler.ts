@@ -149,7 +149,11 @@ function reconcileOneFile(
     }
 
     if (existing && existing.grant.state === "revoked") {
-      const reactivated: Grant = { ...existing.grant, state: "active" };
+      const reactivated: Grant = {
+        ...existing.grant,
+        state: "active",
+        methods: entry.methods,
+      };
       writes.push(
         store.writeGrant(
           existing.modelId,
