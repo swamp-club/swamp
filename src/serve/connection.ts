@@ -165,6 +165,7 @@ import { InstanceHeartbeatService } from "./instance_heartbeat.ts";
 
 export {
   exceptionTypeForClient,
+  lockTimeoutErrorForClient,
   sanitizeErrorForClient,
 } from "./handlers/shared.ts";
 export type { ConnectionContext } from "./handlers/shared.ts";

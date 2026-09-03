@@ -122,11 +122,13 @@ import {
   authorizeOrReject,
   type ConnectionContext,
   exceptionTypeForClient,
+  lockTimeoutErrorForClient,
   sanitizeErrorForClient,
   send,
   sendError,
   subscribeUntilDetach,
 } from "./shared.ts";
+import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { join } from "@std/path";
 import {
@@ -236,6 +238,9 @@ export async function handleWorkflowRun(
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      } else if (error instanceof LockTimeoutError) {
+        const lt = lockTimeoutErrorForClient(error);
+        sendError(socket, requestId, lt.code, lt.message, lt.details);
       } else {
         const message = sanitizeErrorForClient(error);
         const exType = exceptionTypeForClient(error);
@@ -357,6 +362,14 @@ export async function handleWorkflowRun(
           kind: "error",
           code: "cancelled",
           message: "Operation was cancelled",
+        });
+      } else if (error instanceof LockTimeoutError) {
+        const lt = lockTimeoutErrorForClient(error);
+        buffer.finish({
+          kind: "error",
+          code: lt.code,
+          message: lt.message,
+          details: lt.details,
         });
       } else {
         const exType = exceptionTypeForClient(error);
@@ -1170,6 +1183,9 @@ export async function handleWorkflowResume(
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      } else if (error instanceof LockTimeoutError) {
+        const lt = lockTimeoutErrorForClient(error);
+        sendError(socket, requestId, lt.code, lt.message, lt.details);
       } else {
         const message = sanitizeErrorForClient(error);
         sendError(socket, requestId, "workflow_resume_failed", message);
@@ -1346,6 +1362,14 @@ export async function handleWorkflowResume(
           kind: "error",
           code: "cancelled",
           message: "Operation was cancelled",
+        });
+      } else if (error instanceof LockTimeoutError) {
+        const lt = lockTimeoutErrorForClient(error);
+        buffer.finish({
+          kind: "error",
+          code: lt.code,
+          message: lt.message,
+          details: lt.details,
         });
       } else {
         buffer.finish({
