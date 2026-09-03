@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { configure, type LogRecord } from "@logtape/logtape";
 import { initializeLogging } from "../logging/logger.ts";
 import {
   flushDatastoreSync,
@@ -612,6 +613,110 @@ Deno.test("registerDatastoreSyncNamed: no namespace means pull/push omit it", as
   await flushDatastoreSyncNamed("no-ns");
 
   assertEquals(pushOptions?.namespace, undefined);
+});
+
+// --- Slow-lock warning namespace guard (#1981) ---
+
+Deno.test("registerDatastoreSyncNamed: slow lock with namespace suppresses contention warning", async () => {
+  const captured: LogRecord[] = [];
+  await configure({
+    sinks: {
+      capture: (record: LogRecord) => {
+        captured.push(record);
+      },
+    },
+    loggers: [
+      {
+        category: ["datastore", "lock"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+    ],
+    reset: true,
+  });
+
+  const originalNow = Date.now;
+  let lockAcquired = false;
+  const baseTime = originalNow.call(Date);
+  Date.now = () => lockAcquired ? baseTime + 6_000 : baseTime;
+
+  try {
+    const lock = new FakeLock();
+    const origAcquire = lock.acquire.bind(lock);
+    lock.acquire = async () => {
+      await origAcquire();
+      lockAcquired = true;
+    };
+    captured.length = 0;
+
+    await registerDatastoreSyncNamed("ns-warn-suppressed", {
+      lock,
+      namespace: "my-namespace",
+    });
+
+    const warnings = captured.filter((r) => r.level === "warning");
+    assertEquals(
+      warnings.length,
+      0,
+      "No contention warning should fire when namespace is set",
+    );
+
+    await flushDatastoreSyncNamed("ns-warn-suppressed");
+  } finally {
+    Date.now = originalNow;
+    await initializeLogging({ _reset: true });
+  }
+});
+
+Deno.test("registerDatastoreSyncNamed: slow lock without namespace emits contention warning", async () => {
+  const captured: LogRecord[] = [];
+  await configure({
+    sinks: {
+      capture: (record: LogRecord) => {
+        captured.push(record);
+      },
+    },
+    loggers: [
+      {
+        category: ["datastore", "lock"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+    ],
+    reset: true,
+  });
+
+  const originalNow = Date.now;
+  let lockAcquired = false;
+  const baseTime = originalNow.call(Date);
+  Date.now = () => lockAcquired ? baseTime + 6_000 : baseTime;
+
+  try {
+    const lock = new FakeLock();
+    const origAcquire = lock.acquire.bind(lock);
+    lock.acquire = async () => {
+      await origAcquire();
+      lockAcquired = true;
+    };
+    captured.length = 0;
+
+    await registerDatastoreSyncNamed("no-ns-warn", { lock });
+
+    const warnings = captured.filter((r) => r.level === "warning");
+    assertEquals(
+      warnings.length,
+      1,
+      "Contention warning should fire when namespace is not set and lock is slow",
+    );
+    const msg = warnings[0].message.map((p) => String(p)).join("");
+    assertStringIncludes(msg, "Lock acquisition took");
+    assertStringIncludes(msg, "namespace set");
+
+    await flushDatastoreSyncNamed("no-ns-warn");
+  } finally {
+    Date.now = originalNow;
+    await initializeLogging({ _reset: true });
+  }
 });
 
 // --- Stream-0 regression net: SIGINT releases locks within 5s deadline ---

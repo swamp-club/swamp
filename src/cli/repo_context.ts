@@ -1246,7 +1246,10 @@ export async function acquireModelLocks(
     // separate entries — prevents the second registration from
     // overwriting the first (which would orphan the first lock).
     const coordinatorKey = `${lockFileKey}#${crypto.randomUUID().slice(0, 8)}`;
-    await registerDatastoreSyncNamed(coordinatorKey, { lock });
+    await registerDatastoreSyncNamed(coordinatorKey, {
+      lock,
+      namespace: config.namespace,
+    });
     lockKeys.push(coordinatorKey);
 
     // Re-check global lock after acquiring each per-model lock to close TOCTOU race.
@@ -1451,9 +1454,9 @@ export async function flushSinglePhasePush(
     if (lockMs > 5_000 && !config.namespace) {
       write(
         yellow(
-          `Lock acquisition took ${lockMs}ms — multiple repos sharing this ` +
-            "datastore without namespaces serialize all writes behind a " +
-            "single global lock. Run 'swamp datastore namespace set " +
+          `Lock acquisition took ${lockMs}ms — if multiple repos share ` +
+            "this datastore without namespaces, all writes serialize " +
+            "behind a single lock. Run 'swamp datastore namespace set " +
             "<name>' to scope each repo to its own lock and index",
         ),
       );
@@ -1570,9 +1573,9 @@ export async function flushTwoPhasePush(
     if (lockMs > 5_000 && !config.namespace) {
       write(
         yellow(
-          `Lock acquisition took ${lockMs}ms — multiple repos sharing this ` +
-            "datastore without namespaces serialize all writes behind a " +
-            "single global lock. Run 'swamp datastore namespace set " +
+          `Lock acquisition took ${lockMs}ms — if multiple repos share ` +
+            "this datastore without namespaces, all writes serialize " +
+            "behind a single lock. Run 'swamp datastore namespace set " +
             "<name>' to scope each repo to its own lock and index",
         ),
       );
