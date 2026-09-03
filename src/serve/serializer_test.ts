@@ -223,6 +223,28 @@ Deno.test("deserializeEvent: error events round-trip losslessly through the wire
   assertEquals(error.details, { stepName: "build", attempt: 2 });
 });
 
+Deno.test("deserializeEvent: exceptionType in details survives serialization round-trip", () => {
+  const original = {
+    kind: "error",
+    error: {
+      code: "method_execution_failed",
+      message: "An internal error occurred",
+      details: { exceptionType: "LockTimeoutError" },
+      cause: new Error("underlying"),
+    },
+  };
+  const wire = JSON.parse(JSON.stringify(serializeEvent(original)));
+  const restored = deserializeEvent(wire);
+  const error = restored.error as {
+    code: string;
+    message: string;
+    details?: unknown;
+  };
+  assertEquals(error.code, "method_execution_failed");
+  assertEquals(error.message, "An internal error occurred");
+  assertEquals(error.details, { exceptionType: "LockTimeoutError" });
+});
+
 Deno.test("deserializeEvent: run events round-trip renderer-equivalent through JSON", () => {
   const corpus: Array<{ kind: string; [key: string]: unknown }> = [
     { kind: "started", workflowName: "deploy", runId: "r-1" },

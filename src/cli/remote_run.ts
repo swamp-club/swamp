@@ -65,6 +65,20 @@ export function writeRemoteIndicator(serverUrl: string): void {
   console.error(gutterLine("Remote", STATUS_COLORS.warn, serverUrl));
 }
 
+function formatServerError(
+  error: { code: string; message: string; details?: unknown },
+): string {
+  const exType = error.details != null &&
+      typeof error.details === "object" &&
+      "exceptionType" in error.details &&
+      typeof (error.details as Record<string, unknown>).exceptionType ===
+        "string"
+    ? (error.details as Record<string, unknown>).exceptionType as string
+    : undefined;
+  const qualifier = exType !== undefined ? ` (${exType})` : "";
+  return `Server reported ${error.code}${qualifier}: ${error.message}`;
+}
+
 /** How long to keep draining after sending `cancel` before giving up. */
 const CANCEL_DRAIN_MS = 10_000;
 
@@ -304,7 +318,7 @@ export function requestServerResponse<T>(
           } catch { /* already closed */ }
           reject(
             new UserError(
-              `Server reported ${message.error.code}: ${message.error.message}`,
+              formatServerError(message.error),
             ),
           );
           return;
@@ -698,7 +712,7 @@ async function* singleConnectionStream(
             throw new DOMException("Run was cancelled", "AbortError");
           }
           throw new UserError(
-            `Server reported ${message.error.code}: ${message.error.message}`,
+            formatServerError(message.error),
           );
         }
         if (message.type === "run.elsewhere") {

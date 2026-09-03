@@ -163,7 +163,10 @@ import {
 import { findActiveRunByRunId } from "./active_run_tracker.ts";
 import { InstanceHeartbeatService } from "./instance_heartbeat.ts";
 
-export { sanitizeErrorForClient } from "./handlers/shared.ts";
+export {
+  exceptionTypeForClient,
+  sanitizeErrorForClient,
+} from "./handlers/shared.ts";
 export type { ConnectionContext } from "./handlers/shared.ts";
 
 const MAX_ACTIVE_REQUESTS = 100;

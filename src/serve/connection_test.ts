@@ -19,6 +19,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  exceptionTypeForClient,
   extractRequestId,
   handleMessage,
   sanitizeErrorForClient,
@@ -2649,6 +2650,55 @@ Deno.test("sanitizeErrorForClient: passes UserError with model type slashes", ()
 Deno.test("sanitizeErrorForClient: handles non-Error values", () => {
   assertEquals(sanitizeErrorForClient("simple string"), "simple string");
   assertEquals(sanitizeErrorForClient(42), "42");
+});
+
+// ── exceptionTypeForClient tests ─────────────────────────────────────────
+
+Deno.test("exceptionTypeForClient: returns constructor name for custom Error subclass", () => {
+  class LockTimeoutError extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = "LockTimeoutError";
+    }
+  }
+  assertEquals(
+    exceptionTypeForClient(new LockTimeoutError("timed out")),
+    "LockTimeoutError",
+  );
+});
+
+Deno.test("exceptionTypeForClient: returns name for TypeError", () => {
+  assertEquals(exceptionTypeForClient(new TypeError("bad")), "TypeError");
+});
+
+Deno.test("exceptionTypeForClient: returns name for RangeError", () => {
+  assertEquals(exceptionTypeForClient(new RangeError("out")), "RangeError");
+});
+
+Deno.test("exceptionTypeForClient: returns undefined for plain Error", () => {
+  assertEquals(exceptionTypeForClient(new Error("plain")), undefined);
+});
+
+Deno.test("exceptionTypeForClient: returns UserError name", () => {
+  assertEquals(exceptionTypeForClient(new UserError("oops")), "UserError");
+});
+
+Deno.test("exceptionTypeForClient: returns undefined for non-Error values", () => {
+  assertEquals(exceptionTypeForClient("a string"), undefined);
+  assertEquals(exceptionTypeForClient(42), undefined);
+  assertEquals(exceptionTypeForClient(null), undefined);
+  assertEquals(exceptionTypeForClient(undefined), undefined);
+});
+
+Deno.test("exceptionTypeForClient: returns name when constructor is Error but name differs", () => {
+  const err = new Error("test");
+  err.name = "CustomName";
+  assertEquals(exceptionTypeForClient(err), "CustomName");
+});
+
+Deno.test("exceptionTypeForClient: returns undefined for anonymous Error subclass", () => {
+  const AnonError = (() => class extends Error {})();
+  assertEquals(exceptionTypeForClient(new AnonError("anon")), undefined);
 });
 
 // ── data.query validation tests ─────────────────────────────────────────

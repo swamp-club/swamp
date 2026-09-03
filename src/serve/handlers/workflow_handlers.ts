@@ -121,6 +121,7 @@ import {
 import {
   authorizeOrReject,
   type ConnectionContext,
+  exceptionTypeForClient,
   sanitizeErrorForClient,
   send,
   sendError,
@@ -237,7 +238,14 @@ export async function handleWorkflowRun(
         sendError(socket, requestId, "cancelled", "Operation was cancelled");
       } else {
         const message = sanitizeErrorForClient(error);
-        sendError(socket, requestId, "workflow_execution_failed", message);
+        const exType = exceptionTypeForClient(error);
+        sendError(
+          socket,
+          requestId,
+          "workflow_execution_failed",
+          message,
+          exType !== undefined ? { exceptionType: exType } : undefined,
+        );
       }
     } finally {
       if (registeredRunId && ctx.cancelRegistry) {
@@ -351,10 +359,14 @@ export async function handleWorkflowRun(
           message: "Operation was cancelled",
         });
       } else {
+        const exType = exceptionTypeForClient(error);
         buffer.finish({
           kind: "error",
           code: "workflow_execution_failed",
           message: sanitizeErrorForClient(error),
+          ...(exType !== undefined && {
+            details: { exceptionType: exType },
+          }),
         });
       }
     } finally {

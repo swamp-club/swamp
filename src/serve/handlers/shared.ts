@@ -70,6 +70,17 @@ export function sanitizeErrorForClient(error: unknown): string {
   return raw;
 }
 
+// Exception class names (e.g. "LockTimeoutError") are safe to surface — they
+// carry no user data or paths, unlike the message which may contain either.
+export function exceptionTypeForClient(error: unknown): string | undefined {
+  if (error instanceof Error) {
+    const ctorName = error.constructor.name;
+    if (ctorName && ctorName !== "Error") return ctorName;
+    if (error.name && error.name !== "Error") return error.name;
+  }
+  return undefined;
+}
+
 export const MAX_PREDICATE_LENGTH = 4096;
 
 export const MAX_QUERY_RESULTS = 10_000;
@@ -337,8 +348,13 @@ export function sendError(
   id: string,
   code: string,
   message: string,
+  details?: unknown,
 ): void {
-  send(socket, { type: "error", id, error: { code, message } });
+  send(socket, {
+    type: "error",
+    id,
+    error: { code, message, ...(details !== undefined && { details }) },
+  });
 }
 
 export function createSocketSubscriber(
@@ -358,7 +374,13 @@ export function createSocketSubscriber(
       if (terminal.kind === "done") {
         send(socket, { type: "done", id: requestId });
       } else {
-        sendError(socket, requestId, terminal.code, terminal.message);
+        sendError(
+          socket,
+          requestId,
+          terminal.code,
+          terminal.message,
+          terminal.details,
+        );
       }
     },
     onDetach() {
