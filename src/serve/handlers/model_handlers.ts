@@ -101,6 +101,7 @@ import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config
 import {
   authorizeOrReject,
   type ConnectionContext,
+  exceptionTypeForClient,
   isAdminOnlyModelType,
   sanitizeErrorForClient,
   send,
@@ -271,7 +272,14 @@ export async function handleModelMethodRun(
         sendError(socket, requestId, "cancelled", "Operation was cancelled");
       } else {
         const message = sanitizeErrorForClient(error);
-        sendError(socket, requestId, "method_execution_failed", message);
+        const exType = exceptionTypeForClient(error);
+        sendError(
+          socket,
+          requestId,
+          "method_execution_failed",
+          message,
+          exType !== undefined ? { exceptionType: exType } : undefined,
+        );
       }
       await telemetry?.finish(
         error instanceof Error ? error : new Error(String(error)),
@@ -498,10 +506,14 @@ export async function handleModelMethodRun(
           message: "Operation was cancelled",
         });
       } else {
+        const exType = exceptionTypeForClient(error);
         buffer.finish({
           kind: "error",
           code: "method_execution_failed",
           message: sanitizeErrorForClient(error),
+          ...(exType !== undefined && {
+            details: { exceptionType: exType },
+          }),
         });
       }
     } finally {

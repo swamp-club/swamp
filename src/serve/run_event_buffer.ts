@@ -21,7 +21,7 @@ import type { SerializedEvent } from "./protocol.ts";
 
 export type BufferTerminal =
   | { kind: "done" }
-  | { kind: "error"; code: string; message: string };
+  | { kind: "error"; code: string; message: string; details?: unknown };
 
 export interface RunEventSubscriber {
   onEvent(seq: number, event: SerializedEvent): void;
