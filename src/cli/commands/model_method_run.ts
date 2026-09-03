@@ -37,7 +37,11 @@ import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../auto_resolver_context.ts";
 import { DefaultMethodExecutionService } from "../../domain/models/method_execution_service.ts";
-import { modelRegistry } from "../../domain/models/model.ts";
+import {
+  inferMethodKind,
+  isMutatingKind,
+  modelRegistry,
+} from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
@@ -420,21 +424,38 @@ Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — 
           modelIdOrName,
         );
         let flushModelLocks: (() => Promise<void>) | null = null;
+        let mutating = true;
         if (preResult) {
-          const lockResult = await acquireModelLocks(
-            datastoreConfig,
-            [
-              {
-                modelType: preResult.type.normalized,
-                modelId: preResult.definition.id,
-              },
-            ],
-            repoDir,
-            syncService,
-            repoContext.catalogStore,
-          );
-          if (lockResult.synced) repoContext.catalogStore.invalidate();
-          flushModelLocks = lockResult.flush;
+          try {
+            const modelDef = await resolveModelType(
+              preResult.type.normalized,
+              getAutoResolver(),
+            );
+            if (modelDef) {
+              const method = modelDef.methods[methodName];
+              mutating = isMutatingKind(
+                inferMethodKind(methodName, method),
+              );
+            }
+          } catch {
+            // Resolution failure — fall back to acquiring locks
+          }
+          if (mutating) {
+            const lockResult = await acquireModelLocks(
+              datastoreConfig,
+              [
+                {
+                  modelType: preResult.type.normalized,
+                  modelId: preResult.definition.id,
+                },
+              ],
+              repoDir,
+              syncService,
+              repoContext.catalogStore,
+            );
+            if (lockResult.synced) repoContext.catalogStore.invalidate();
+            flushModelLocks = lockResult.flush;
+          }
         }
 
         const initiatedBy = await resolveCliInitiatedBy();
