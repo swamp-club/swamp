@@ -417,6 +417,7 @@ export const workflowResumeCommand = withRemoteOptions(
       ephemeral.repo,
       ephemeral.catalog,
       resolvePulledExtensionsRoot(repoDir),
+      repoContext.hydrateFile,
     );
 
     const abort = new AbortController();

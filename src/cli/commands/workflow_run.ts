@@ -433,6 +433,7 @@ export const workflowRunCommand = new Command()
             ephRepo,
             ephCatalog,
             resolvePulledExtensionsRoot(dir),
+            repoContext.hydrateFile,
           );
         },
         catalogStore: repoContext.catalogStore,

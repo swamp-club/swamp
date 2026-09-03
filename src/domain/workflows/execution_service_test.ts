@@ -20,6 +20,7 @@
 import {
   assert,
   assertEquals,
+  assertExists,
   assertNotEquals,
   assertRejects,
   assertStringIncludes,
@@ -5576,6 +5577,145 @@ Deno.test({
         executor.executedSteps.includes("main/cleanup"),
         "cleanup step should have been executed after cancellation",
       );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "DefaultStepExecutor: hydrateFile hook fires when step reads lazy-hydrated resource",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const { z } = await import("zod");
+    const { ModelType } = await import("../models/model_type.ts");
+    const { modelRegistry } = await import("../models/model.ts");
+    const { Definition } = await import("../definitions/definition.ts");
+    const { YamlDefinitionRepository } = await import(
+      "../../infrastructure/persistence/yaml_definition_repository.ts"
+    );
+    const { FileSystemUnifiedDataRepository } = await import(
+      "../../infrastructure/persistence/unified_data_repository.ts"
+    );
+    const { Data } = await import("../data/data.ts");
+    const { initializeLogging } = await import(
+      "../../infrastructure/logging/logger.ts"
+    );
+    await initializeLogging({});
+
+    await withTempDir(async (tempDir) => {
+      const typeName = `@test-issue1984/hydrate-${
+        crypto.randomUUID().slice(0, 8)
+      }`;
+      const modelType = ModelType.create(typeName);
+      let readResult: Record<string, unknown> | null = null;
+
+      modelRegistry.register({
+        type: modelType,
+        version: "2026.01.01.1",
+        globalArguments: z.object({}),
+        resources: {
+          cursor: {
+            description: "cursor state",
+            schema: z.object({ lastSeen: z.number() }),
+            lifetime: "infinite",
+            garbageCollection: 5,
+          },
+        },
+        methods: {
+          run: {
+            description: "reads a resource to test hydration",
+            arguments: z.object({}),
+            execute: async (_args, context) => {
+              readResult = await context.readResource!("cursor");
+              return {};
+            },
+          },
+        },
+      });
+
+      const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+      try {
+        const definitionRepo = new YamlDefinitionRepository(tempDir);
+        const instance = Definition.create({
+          name: "hydrate-instance",
+          type: modelType.normalized,
+        });
+        await definitionRepo.save(modelType, instance);
+
+        const setupRepo = new FileSystemUnifiedDataRepository(
+          tempDir,
+          undefined,
+          catalogStore,
+        );
+        const cursorData = { lastSeen: 42 };
+        const content = new TextEncoder().encode(JSON.stringify(cursorData));
+        const data = Data.create({
+          name: "cursor",
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 5,
+          tags: { type: "resource" },
+          ownerDefinition: {
+            ownerType: "model-method" as const,
+            ownerRef: instance.id,
+          },
+        });
+        await setupRepo.save(modelType, instance.id, data, content);
+
+        const contentPath = setupRepo.getContentPath(
+          modelType,
+          instance.id,
+          "cursor",
+          1,
+        );
+        await Deno.remove(contentPath);
+
+        let hookCalled = false;
+        const hydrateFile = async (absPath: string): Promise<boolean> => {
+          hookCalled = true;
+          await Deno.mkdir(join(absPath, ".."), { recursive: true });
+          await Deno.writeFile(absPath, content);
+          return true;
+        };
+
+        const executor = new DefaultStepExecutor(
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          hydrateFile,
+        );
+
+        const step = Step.create({
+          name: "hydrate-step",
+          task: StepTask.model("hydrate-instance", "run"),
+        });
+        const ctx: StepExecutionContext = {
+          workflowId: createWorkflowId(
+            "00000000-0000-0000-0000-000000000000",
+          ),
+          workflowRunId: "00000000-0000-0000-0000-000000000000",
+          workflowName: "hydration-test",
+          jobName: "job1",
+          stepName: "hydrate-step",
+          repoDir: tempDir,
+          signal: new AbortController().signal,
+          step,
+          catalogStore,
+        };
+
+        await executor.execute(step, ctx);
+
+        assert(hookCalled, "hydrateFile hook should have been called");
+        assertExists(readResult, "readResource should return data");
+        assertEquals(
+          (readResult as Record<string, unknown>).lastSeen,
+          42,
+        );
+      } finally {
+        catalogStore.close();
+      }
     });
   },
 });

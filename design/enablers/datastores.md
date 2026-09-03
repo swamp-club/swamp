@@ -1062,6 +1062,9 @@ wraps `DatastoreSyncService.hydrateFile` with path normalization
 - Wired in `requireInitializedRepo`, `requireInitializedRepoUnlocked`, and
   `requireInitializedRepoReadOnly` (the read-only variant creates a lightweight
   sync service without a lock, solely for single-file downloads).
+- Wired in `WorkflowExecutionService` → `DefaultStepExecutor` via the
+  `RepositoryContext.hydrateFile` field, so workflow steps on serve can hydrate
+  lazy content during `readResource` calls.
 - Returns `true` if the file was downloaded, `false` if it does not exist on the
   remote.
 - Implementations MUST write atomically (tmp + rename) to avoid partial reads
