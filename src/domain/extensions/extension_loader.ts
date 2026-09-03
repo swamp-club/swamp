@@ -1292,6 +1292,7 @@ export class ExtensionLoader {
         : [relativePath.replace(/\.ts$/, ".js")];
       const bundlePath = this.resolveBundlePath(...segments);
 
+      let importUrl: string | undefined;
       try {
         await Deno.stat(bundlePath);
         let cachedJs = await Deno.readTextFile(bundlePath);
@@ -1305,12 +1306,15 @@ export class ExtensionLoader {
           sourceFingerprint ? `fp=${sourceFingerprint}` : "",
           reloadGeneration > 0 ? `gen=${reloadGeneration}` : "",
         ].filter(Boolean).join("&");
-        const importUrl = params ? `${baseUrl}?${params}` : baseUrl;
-        return await import(importUrl);
+        importUrl = params ? `${baseUrl}?${params}` : baseUrl;
       } catch (error) {
-        this.logger.debug`File URL import failed for ${relativePath}: ${
+        this.logger.debug`Bundle file not available for ${relativePath}: ${
           String(error).substring(0, 200)
         }`;
+      }
+
+      if (importUrl) {
+        return await import(importUrl);
       }
     }
 

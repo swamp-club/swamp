@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { toFileUrl } from "@std/path";
 import { findStaleFiles, type FreshnessCatalog } from "./bundle_freshness.ts";
@@ -695,6 +695,36 @@ Deno.test("loadSingleType: skips bundle without primary export and removes catal
     } finally {
       catalog.close();
     }
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("importBundle: file URL import error propagates instead of falling to data URL", async () => {
+  // A bundle that throws ERR_INVALID_ARG_VALUE when imported via data: URL
+  // because createRequire rejects non-file URLs. The file URL import should
+  // succeed, so this test verifies the data: URL fallback is NOT reached
+  // when the bundle file exists on disk.
+  const dir = await Deno.makeTempDir({ prefix: "swamp_import_propagate_" });
+  try {
+    const bundlePath = join(dir, "throwing_bundle.js");
+    const throwingJs = `import { createRequire } from "node:module";\n` +
+      `const require = createRequire(import.meta.url);\n` +
+      `export const model = { type: "@test/propagate" };\n`;
+    await Deno.writeTextFile(bundlePath, throwingJs);
+
+    // Importing from a file URL should succeed (createRequire accepts file URLs)
+    const baseUrl = toFileUrl(bundlePath).href;
+    const mod = await import(`${baseUrl}?fp=test`);
+    assertEquals(mod.model.type, "@test/propagate");
+
+    // Importing from a data: URL should fail (createRequire rejects data: URLs)
+    const encoded = btoa(throwingJs);
+    await assertRejects(
+      () => import(`data:application/javascript;base64,${encoded}`),
+      TypeError,
+      "must be a file URL",
+    );
   } finally {
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }

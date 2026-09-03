@@ -593,3 +593,48 @@ Deno.test(
     );
   },
 );
+
+Deno.test(
+  "InstallExtensionService.execute: phase 8 import failure says bundling/importing, not catalog write",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const ts = Date.now();
+        const extName = `@test/import-fail-${ts}`;
+
+        // Stage a model file that will throw at import time
+        // (references a non-existent module to force an import error)
+        await stageModel(
+          repoDir,
+          extName,
+          "broken.ts",
+          `import "npm:__swamp_nonexistent_package_for_test_${ts}@0.0.0";\nexport const model = { type: "@test/broken-import-${ts}" };\n`,
+        );
+
+        const service = new InstallExtensionService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          installExtensionFn: () =>
+            Promise.resolve(
+              makeStubInstallResult(extName, "1.0.0", []),
+            ),
+        });
+
+        const thrown = await assertRejects(
+          () =>
+            service.execute(
+              { name: extName, version: "1.0.0" } as ExtensionRef,
+              makeInstallContext(repoDir, lockfileRepository),
+            ),
+          UserError,
+          "Install partially applied",
+        );
+        assertStringIncludes(
+          thrown.message,
+          "bundling/importing",
+          "error must identify the failure phase as bundling/importing",
+        );
+      },
+    );
+  },
+);
