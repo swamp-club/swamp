@@ -64,7 +64,10 @@ import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_outp
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { type Namespace, SOLO_NAMESPACE } from "../data/namespace.ts";
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
-import type { MarkDirtyHook } from "../datastore/datastore_sync_service.ts";
+import type {
+  HydrateFileHook,
+  MarkDirtyHook,
+} from "../datastore/datastore_sync_service.ts";
 import { DataQueryService } from "../data/data_query_service.ts";
 import { CompositeUnifiedDataRepository } from "../data/composite_data_repository.ts";
 import { CompositeDataQueryService } from "../data/composite_data_query_service.ts";
@@ -418,6 +421,7 @@ export class DefaultStepExecutor implements StepExecutor {
     directTypeResolver?: DirectTypeResolver,
     private readonly markDirty?: MarkDirtyHook,
     private readonly stepLockHook?: StepLockHook,
+    private readonly hydrateFile?: HydrateFileHook,
   ) {
     this._directTypeResolver = directTypeResolver;
   }
@@ -434,6 +438,7 @@ export class DefaultStepExecutor implements StepExecutor {
       dataBaseDir?: string;
       catalogStore: CatalogStore;
       markDirty?: MarkDirtyHook;
+      hydrateFile?: HydrateFileHook;
       namespace?: Namespace;
     },
   ): Promise<DefaultStepExecutor> {
@@ -455,6 +460,7 @@ export class DefaultStepExecutor implements StepExecutor {
       dataBaseDir: ctx.dataBaseDir,
       catalogStore: ctx.catalogStore,
       markDirty: this.markDirty,
+      hydrateFile: this.hydrateFile,
       namespace: ctx.namespace,
       ephemeralRepo: ctx.ephemeralRepo,
       ephemeralCatalog: ctx.ephemeralCatalog,
@@ -474,6 +480,7 @@ export class DefaultStepExecutor implements StepExecutor {
       dataBaseDir?: string;
       catalogStore: CatalogStore;
       markDirty?: MarkDirtyHook;
+      hydrateFile?: HydrateFileHook;
       namespace?: Namespace;
       ephemeralRepo?: UnifiedDataRepository;
       ephemeralCatalog?: CatalogStore;
@@ -485,7 +492,7 @@ export class DefaultStepExecutor implements StepExecutor {
       opts.dataBaseDir,
       opts.catalogStore,
       opts.markDirty,
-      undefined,
+      opts.hydrateFile,
       opts.namespace ?? SOLO_NAMESPACE,
     );
     const unifiedDataRepo: UnifiedDataRepository = opts.ephemeralRepo
@@ -1565,6 +1572,7 @@ export class WorkflowExecutionService {
     private readonly ephemeralRepo?: UnifiedDataRepository,
     private readonly ephemeralCatalog?: CatalogStore,
     private readonly pulledExtensionsRoot?: string,
+    private readonly hydrateFile?: HydrateFileHook,
   ) {
     this.executor = executor ??
       new DefaultStepExecutor(
@@ -1572,6 +1580,7 @@ export class WorkflowExecutionService {
         directTypeResolver,
         markDirty,
         stepLockHook,
+        hydrateFile,
       );
     this.dataBaseDir = dataBaseDir;
     this.catalogStore = catalogStore;
@@ -1586,7 +1595,7 @@ export class WorkflowExecutionService {
       dataBaseDir,
       catalogStore,
       markDirty,
-      undefined,
+      hydrateFile,
       namespace,
     );
     this.dataRepo = ephemeralRepo
@@ -3434,6 +3443,7 @@ export class WorkflowExecutionService {
       this.ephemeralRepo,
       this.ephemeralCatalog,
       this.pulledExtensionsRoot,
+      this.hydrateFile,
     );
 
     let childRun: WorkflowRun | undefined;

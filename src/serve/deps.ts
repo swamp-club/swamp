@@ -199,6 +199,7 @@ export async function createWorkflowRunDeps(
         ephRepo,
         ephCatalog,
         resolvePulledExtensionsRoot(dir),
+        repoContext.hydrateFile,
       );
     },
     catalogStore: repoContext.catalogStore,

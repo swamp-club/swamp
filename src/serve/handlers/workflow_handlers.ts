@@ -1125,6 +1125,7 @@ export async function handleWorkflowResume(
         ephemeral.repo,
         ephemeral.catalog,
         resolvePulledExtensionsRoot(ctx.repoDir),
+        ctx.repoContext.hydrateFile,
       );
 
       const resumeGenerator = async function* (): AsyncGenerator<
@@ -1308,6 +1309,7 @@ export async function handleWorkflowResume(
         ephemeral.repo,
         ephemeral.catalog,
         resolvePulledExtensionsRoot(ctx.repoDir),
+        ctx.repoContext.hydrateFile,
       );
 
       const doResume = async () => {

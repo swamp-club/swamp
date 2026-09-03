@@ -381,6 +381,7 @@ export interface RepositoryContext {
   catalogStore: CatalogStore;
   dataQueryService: DataQueryService;
   markDirty?: MarkDirtyHook;
+  hydrateFile?: HydrateFileHook;
   autoDefinitionsDir: string;
 }
 
@@ -513,6 +514,7 @@ export function createRepositoryContext(
     catalogStore,
     dataQueryService,
     markDirty,
+    hydrateFile,
     autoDefinitionsDir: autoDefDir,
   };
 }
