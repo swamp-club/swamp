@@ -36,12 +36,3 @@ After creating or modifying a skill, verify it before submitting:
   description or `trigger_evals.json` changed.
 
 See `contributing/skills-pipeline.md` for the full skill testing pipeline.
-
-## Session Learnings (Claude Code)
-
-If you hit a non-obvious problem during a session — something that wasted time,
-caused a wrong approach, or revealed a convention not documented here — propose
-an update to CLAUDE.md or the relevant skill before finishing. Only capture
-things that would trip up future sessions, not one-off issues. Frame learnings
-as positive conventions (what to do) rather than reactive rules (what not to
-do).

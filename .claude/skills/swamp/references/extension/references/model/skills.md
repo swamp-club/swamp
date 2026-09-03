@@ -181,10 +181,10 @@ requires a model extension.
 
 A minimal extension that bundles two workflow skills:
 
-**Directory layout:**
+**Directory layout** (shown with the Claude default `.claude/skills/`):
 
 ```
-.claude/skills/
+<tool-skills-dir>/
 ├── create-story/
 │   └── SKILL.md
 └── hypothesis-task/

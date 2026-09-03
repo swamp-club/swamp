@@ -241,6 +241,7 @@ To construct this checklist:
      },
      "configIntegrity": {
        "claudeMd": "<sha256 of CLAUDE.md>",
+       "agentsMd": "<sha256 of AGENTS.md>",
        "prompts": {
          "code-review": "<sha256 of verification/review-prompts/code-review.md>",
          "adversarial-review": "<sha256 of verification/review-prompts/adversarial-review.md>",
