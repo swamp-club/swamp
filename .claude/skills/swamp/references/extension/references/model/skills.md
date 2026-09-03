@@ -26,10 +26,11 @@ manifest and markdown files.
 ## Skill Directory Structure
 
 Each skill is a directory containing a required `SKILL.md` and optional
-supporting files:
+supporting files. The directory path is tool-specific — `.claude/skills/` is the
+default (Claude); see the tool table below for other tools' directories.
 
 ```
-.claude/skills/<skill-name>/
+<tool-skills-dir>/<skill-name>/
 ├── SKILL.md              # Required — uppercase
 ├── references/           # Optional — detailed docs loaded on demand
 │   └── *.md

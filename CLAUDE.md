@@ -1,25 +1,13 @@
-# Project: swamp
+@AGENTS.md
 
-Deno based CLI for doing AI Native Automation.
+## Workflows (Claude Code)
 
-## Planning
-
-When planning new features, always use the `ddd` skill to inform the
-architecture.
-
-## Workflows
-
-In this repository the word "workflow" — including "create/run/execute/validate/
-debug workflow", "automate", "orchestrate", and "automated/nightly job" — refers
-to a swamp workflow: a declarative YAML DAG of model-method steps authored via
-`swamp workflow create`. This is swamp's own first-class concept, implemented in
-this codebase, and it is the default meaning here. Load and follow the `swamp`
-skill for these requests. Do NOT interpret them as a request to build a Claude
-Code agent task list, spin up worktrees, or schedule a cron/remote agent. Only
-reach for the harness orchestration tools (TaskCreate/TaskList, EnterWorktree,
-CronCreate, RemoteTrigger) when the user explicitly names that mechanism (e.g.
-"task list", "subagent", "worktree", "cron", "remote agent") or explicitly asks
-you to do the work yourself step by step rather than author a swamp workflow.
+Do NOT interpret workflow requests as a request to build a Claude Code agent
+task list, spin up worktrees, or schedule a cron/remote agent. Only reach for
+the harness orchestration tools (TaskCreate/TaskList, EnterWorktree, CronCreate,
+RemoteTrigger) when the user explicitly names that mechanism (e.g. "task list",
+"subagent", "worktree", "cron", "remote agent") or explicitly asks you to do the
+work yourself step by step rather than author a swamp workflow.
 
 ## Skills
 
@@ -49,156 +37,7 @@ After creating or modifying a skill, verify it before submitting:
 
 See `contributing/skills-pipeline.md` for the full skill testing pipeline.
 
-## Code Style
-
-- TypeScript strict mode, no `any` types
-- Use named exports, not default exports
-- Comprehensive unit test coverage
-- All `.ts` and `.tsx` files must include the AGPLv3 copyright header from
-  `FILE-LICENSE-TEMPLATE.md` at the top of the file (as `//` comments). Run
-  `deno run license-headers` to add headers to any new files.
-- No fire-and-forget promises. Every promise must be awaited or explicitly
-  handled — unhandled promises race with `Deno.exit` and silently lose data. For
-  outbound network calls, pass an `AbortSignal` with a timeout so the caller
-  controls cancellation.
-- Interpolate values bare in LogTape tagged templates — let the formatter handle
-  quoting. Strings passed as `${value}` render as `"value"` in log output;
-  wrapping them in literal quotes (`"${value}"`) doubles the quotes to
-  `""value""`. Numbers and other primitives render unquoted, so a bare
-  `${count}` is correct in all cases.
-
-- The `organizations` array from `GET /api/whoami` is an authorization contract,
-  not a general-purpose payload. `getCollectives()` in
-  `src/infrastructure/http/swamp_club_client.ts` reduces it to slugs, and
-  extension push and pull authorize namespace ownership from that list. Add new
-  server-supplied data as its own optional top-level field joined on `slug` (as
-  `collectiveEntitlements` does) rather than as extra keys on the organization
-  entries, so changes to unrelated concerns can never reach the publish path.
-
-Changes should only touch what's necessary — don't refactor adjacent code that
-isn't part of the task. Keep the blast radius small.
-
-## Commands
-
-Use `deno run` to get a complete list of custom tasks. `deno run dev` runs the
-CLI.
-
-## Verification
-
-During development, use these commands for quick feedback:
-
-1. `deno check` - Type checking
-2. `deno lint` - Linting
-3. `deno fmt` - Formatting
-4. `deno run test` - Tests (or `deno run test src/path/to_test.ts` for a single
-   file)
-
-Before opening a PR, run the verification workflow in the container sandbox
-instead of these commands individually — it runs all checks (lint, fmt, test,
-compile, deps audit, agent reviews) as a DAG and produces an attestation. See
-`agent-constraints/verification-conventions.md` for the docker command. Do not
-run `deno check`, `deno lint`, `deno fmt`, `deno run test`, or
-`deno run compile` as a pre-PR gate — the verification workflow covers all of
-them.
-
-## Source Control & Pull Requests
-
-- Use the `github-pr` skill to create commit messages and pull requests.
-- PRs are auto-merged after passing CI and Claude review. To prevent auto-merge,
-  add the `hold` label to the PR.
-- When a PR fixes a GitHub issue filed by an external contributor (not a repo
-  collaborator), add them as a co-author to the commit. Check with
-  `gh api /repos/swamp-club/swamp/collaborators --jq '.[].login'` to determine
-  if the issue author is a team member. If they are not, add
-  `Co-authored-by: Name <email>` to the commit. Use `gh api /users/<username>`
-  to look up their name, and use `<username>@users.noreply.github.com` as the
-  email unless a public email is available from the API response.
-
-## Architecture
-
-- Follows domain driven design principles. Use the `ddd` skill when designing or
-  reviewing code.
-- Uses Cliffy for the command line
-- Uses Ink for interactive terminal UIs (search, TUI dashboard)
-- Uses LogTape for logging and non-interactive output (`"log"` mode)
-- Uses JSON for structured output (`"json"` mode via `--json`)
-- Every command _must_ support both `"log"` and `"json"` output modes
-- Start at `design/README.md` (the six primitives and the index) and
-  `design/architecture.md` to understand the design
-
-IMPORTANT: CLI commands and presentation renderers must import libswamp types
-and functions from `src/libswamp/mod.ts` — never from internal module paths like
-`src/libswamp/data/get.ts`. Only libswamp-internal code (other generators, tests
-in `src/libswamp/`) may import from internal paths.
-
-## Testing
-
-### What tests belong in this repo
-
-- **Unit tests** (`src/**/foo_test.ts`, next to the source): in-process only.
-  Never spawn subprocesses, bind sockets, or mutate process-global state
-  (`PATH`, `HOME`, `Deno.env` races across parallel test files — mock instead:
-  `withMockedCommand` / `withMockedFetch` from `@swamp-club/swamp-testing`). The
-  one exception is infrastructure adapter tests, which may run a localhost mock
-  server on `port: 0`.
-- **Integration tests** (`integration/`): wire real components together
-  in-process — repositories on a real temp filesystem, services + event buses,
-  port-0 mock servers. Must NOT spawn the CLI as a subprocess.
-- **Architecture fitness tests** (`integration/*_rules_test.ts`,
-  `arch_fitness_helpers.ts`): static rules over the source tree (layer
-  boundaries, libswamp encapsulation, json-mode conformance, license headers).
-- **Property tests** (`*_property_test.ts`, fast-check): invariants and
-  round-trips for parsers, serialization, and data lifecycle.
-- **Contract/conformance tests** (`packages/testing/` suites): run first-party
-  providers against the same contracts extension authors are held to.
-- **Acceptance/UAT tests do NOT live here.** Anything that spawns the swamp CLI
-  and asserts user-facing behavior (stdout, exit codes, flags, journeys) belongs
-  in the `swamp-uat` repo, which runs against the compiled binary. Do not add
-  new `runCliCommand`-style subprocess tests to `integration/`.
-
-### Timing and flakiness rules
-
-- Never wait with a fixed `setTimeout` sleep for async work to finish — poll the
-  condition with `waitFor` from `@swamp-club/swamp-testing`.
-- Never assert on measured wall-clock durations (upper bounds, or comparing two
-  elapsed times); assert on work done (call counts, events) instead.
-- Never sleep to advance a file's mtime — set it explicitly with `Deno.utime`.
-- Generate unique test IDs with `crypto.randomUUID()`, not `Date.now()`.
-- Restore env vars with `if (original !== undefined)` — truthiness checks delete
-  vars that were set to the empty string.
-
-### Conventions
-
-- Unit tests live next to source files: `foo.ts` → `foo_test.ts`
-- Integration tests live in `integration/` directory (sibling to `src/`)
-- Use `@std/assert` for assertions (`assertEquals`, `assertStringIncludes`,
-  `assertThrows`, etc.)
-- Use `ink-testing-library` for testing Ink components
-- Test private functions indirectly through public APIs
-- Name tests as `Deno.test("functionName: describes behavior", ...)` — see
-  `src/domain/data/composite_name_test.ts` for a canonical example
-- Run all tests with `deno run test`
-- Run a single test file: `deno run test src/cli/repo_context_test.ts` (do not
-  use `--` before the file path)
-- Refactorings that change shared constants, paths, or cross-component contracts
-  must include integration tests to verify components still work together
-- Tests must run on Linux, macOS, and Windows. Use `assertPathEquals` from
-  `src/infrastructure/persistence/path_test_helpers.ts` for path-string
-  comparisons — `assertEquals` against forward-slash literals fails on Windows.
-- Use `@std/path` (`dirname`, `basename`, `join`, `fromFileUrl`, `SEPARATOR`)
-  for all path operations. Never hand-roll with `lastIndexOf("/")`,
-  `split("/").pop()`, `URL.pathname`, or `"/"`-prefixed concatenation.
-- `Deno.symlink` requires `{ type: "file" | "dir" }` — Windows refuses symlinks
-  whose target doesn't exist at link-creation time without it.
-- `withTempDir` cleanup uses an inline Windows-only `.catch(() => {})` to absorb
-  EBUSY when V8 hasn't GC'd native handles — copy from any existing test file.
-
-IMPORTANT: CLI command tests require logging initialization and model barrel
-imports before they can run. See `src/cli/commands/data_get_test.ts` for the
-pattern (`await initializeLogging({})` and
-`import "../../domain/models/models.ts"`).
-
-## Session Learnings
+## Session Learnings (Claude Code)
 
 If you hit a non-obvious problem during a session — something that wasted time,
 caused a wrong approach, or revealed a convention not documented here — propose
