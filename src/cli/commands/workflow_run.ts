@@ -35,6 +35,8 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import {
@@ -248,7 +250,20 @@ export const workflowRunCommand = new Command()
       );
     }
 
-    const server = resolveServeUrl(options.server as string | undefined);
+    let markerServerAddress: string | undefined;
+    try {
+      const markerRepo = new RepoMarkerRepository();
+      const repoDir = resolveRepoDir(options.repoDir);
+      const m = await markerRepo.read(RepoPath.create(repoDir));
+      markerServerAddress = m?.serverAddress;
+    } catch {
+      // Not in a repo — serverAddress fallback unavailable
+    }
+
+    const server = resolveServeUrl(
+      options.server as string | undefined,
+      markerServerAddress,
+    );
     if (server) {
       if (failOnSeverity) {
         throw new UserError(

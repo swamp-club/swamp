@@ -51,14 +51,16 @@ import {
 } from "../presentation/output/console_writer.ts";
 
 /**
- * Resolves the server URL from the `--server` flag with env var fallbacks.
- * Precedence: flag > SWAMP_SERVE_URL > SWAMP_SERVER_URL.
+ * Resolves the server URL from the `--server` flag with env var and
+ * repo-marker fallbacks.
+ * Precedence: flag > SWAMP_SERVE_URL > SWAMP_SERVER_URL > .swamp.yaml serverAddress.
  */
 export function resolveServeUrl(
   flagValue: string | undefined,
+  markerValue?: string,
 ): string | undefined {
   return flagValue ?? Deno.env.get("SWAMP_SERVE_URL") ??
-    Deno.env.get("SWAMP_SERVER_URL");
+    Deno.env.get("SWAMP_SERVER_URL") ?? markerValue;
 }
 
 export function writeRemoteIndicator(serverUrl: string): void {

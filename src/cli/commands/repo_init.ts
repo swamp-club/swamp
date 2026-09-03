@@ -120,6 +120,7 @@ export async function repoInitAction(
       force: !!options.force,
       tools,
       version: VERSION,
+      serverAddress: options.server as string | undefined,
     }),
     renderer.handlers(),
   );
@@ -150,6 +151,10 @@ export const repoInitCommand = new Command()
   .option("-t, --tool <tool:toolName>", TOOL_FLAG_DESCRIPTION, {
     collect: true,
   })
+  .option(
+    "--server <url:string>",
+    "Default serve URL for this repository — stored in .swamp.yaml as serverAddress (env: SWAMP_SERVE_URL overrides at runtime)",
+  )
   .action(repoInitAction);
 
 export const repoUpgradeCommand = new Command()

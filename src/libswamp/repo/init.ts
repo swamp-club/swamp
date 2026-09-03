@@ -76,13 +76,14 @@ export interface RepoInitInput {
   /** @deprecated Pass `tools` instead. */
   tool?: string;
   version: string;
+  serverAddress?: string;
 }
 
 /** Dependencies for the repo init operation. */
 export interface RepoInitDeps {
   init: (
     repoPath: RepoPath,
-    options: { force?: boolean; tools?: string[] },
+    options: { force?: boolean; tools?: string[]; serverAddress?: string },
   ) => Promise<RepoInitResult>;
 }
 
@@ -115,6 +116,7 @@ export async function* repoInit(
         result = await deps.init(repoPath, {
           force: input.force,
           tools: resolveToolsInput(input.tools, input.tool),
+          serverAddress: input.serverAddress,
         });
       } catch (error) {
         yield {

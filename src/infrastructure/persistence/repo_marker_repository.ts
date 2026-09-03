@@ -62,6 +62,7 @@ export interface RepoMarkerData {
   skillMigrationDismissed?: boolean;
   autoGc?: boolean;
   defaultVault?: string;
+  serverAddress?: string;
 }
 
 /**

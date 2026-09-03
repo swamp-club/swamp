@@ -228,6 +228,7 @@ export interface RepoUpgradeResult {
 export interface RepoInitOptions {
   force?: boolean;
   tools?: string[];
+  serverAddress?: string;
 }
 
 /**
@@ -315,6 +316,9 @@ export class RepoService {
     // Create marker with the new tools list
     const markerData = this.markerRepo.createInitMarker(this.currentVersion);
     markerData.tools = tools;
+    if (options.serverAddress) {
+      markerData.serverAddress = options.serverAddress;
+    }
 
     // Create data directory structure
     await this.createDataDirectoryStructure(repoPath);
