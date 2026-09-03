@@ -23,7 +23,7 @@
 
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import type { DatastoreConfig } from "../../domain/datastore/datastore_config.ts";
-import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
+import type { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { DatastoreSyncService } from "../../domain/datastore/datastore_sync_service.ts";
 import type { ControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
