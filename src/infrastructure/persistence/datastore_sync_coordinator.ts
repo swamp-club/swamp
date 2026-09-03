@@ -313,10 +313,10 @@ export async function registerDatastoreSyncNamed(
       const lockMs = Date.now() - lockStart;
       if (lockMs > 5_000 && !namespace) {
         logger.warn(
-          "Lock acquisition took {ms}ms — multiple repos sharing this " +
-            "datastore without namespaces serialize all writes behind a " +
-            "single global lock. Run 'swamp datastore namespace set " +
-            "<name>' to scope each repo to its own lock and index",
+          "Lock acquisition took {ms}ms — if multiple repos share this " +
+            "datastore without namespaces, all writes serialize behind a " +
+            "single lock. Run 'swamp datastore namespace set <name>' to " +
+            "scope each repo to its own lock and index",
           { ms: lockMs },
         );
       }
