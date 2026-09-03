@@ -22,12 +22,14 @@ import {
   exceptionTypeForClient,
   extractRequestId,
   handleMessage,
+  lockTimeoutErrorForClient,
   sanitizeErrorForClient,
   validateServerRequest,
 } from "./connection.ts";
 import type { ConnectionContext } from "./connection.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { UserError } from "../domain/errors.ts";
+import { LockTimeoutError } from "../domain/datastore/distributed_lock.ts";
 import type { Principal } from "../domain/access/principal.ts";
 import type { ServeAuthConfig } from "../domain/access/serve_auth_config.ts";
 import { PolicySnapshot } from "../domain/access/policy_snapshot.ts";
@@ -2699,6 +2701,68 @@ Deno.test("exceptionTypeForClient: returns name when constructor is Error but na
 Deno.test("exceptionTypeForClient: returns undefined for anonymous Error subclass", () => {
   const AnonError = (() => class extends Error {})();
   assertEquals(exceptionTypeForClient(new AnonError("anon")), undefined);
+});
+
+// ── lockTimeoutErrorForClient tests ──────────────────────────────────────
+
+Deno.test("lockTimeoutErrorForClient: returns lock_timeout code with retryable details", () => {
+  const err = new LockTimeoutError("data/mytype/my-model/.lock", null, 30000);
+  const result = lockTimeoutErrorForClient(err);
+  assertEquals(result.code, "lock_timeout");
+  assertEquals(result.details.retryable, true);
+  assertEquals(result.details.exceptionType, "LockTimeoutError");
+});
+
+Deno.test("lockTimeoutErrorForClient: preserves safe lockKey in message", () => {
+  const err = new LockTimeoutError(".datastore.lock", null, 60000);
+  const result = lockTimeoutErrorForClient(err);
+  assertStringIncludes(result.message, '".datastore.lock"');
+  assertStringIncludes(result.message, "60000ms");
+});
+
+Deno.test("lockTimeoutErrorForClient: includes holder info when present", () => {
+  const holder = {
+    holder: "user@hostname",
+    hostname: "hostname",
+    pid: 12345,
+    acquiredAt: "2026-09-01T00:00:00Z",
+    ttlMs: 30000,
+  };
+  const err = new LockTimeoutError(".datastore.lock", holder, 60000);
+  const result = lockTimeoutErrorForClient(err);
+  assertStringIncludes(result.message, "user@hostname");
+  assertStringIncludes(result.message, "pid 12345");
+});
+
+Deno.test("lockTimeoutErrorForClient: sanitizes absolute filesystem path in lockKey", () => {
+  const err = new LockTimeoutError(
+    "/Users/stack72/code/.swamp/data/mytype/my-model/.lock",
+    null,
+    5000,
+  );
+  const result = lockTimeoutErrorForClient(err);
+  assertStringIncludes(result.message, '"model lock"');
+  assertEquals(result.message.includes("/Users/"), false);
+});
+
+Deno.test("lockTimeoutErrorForClient: sanitizes Windows path in lockKey", () => {
+  const err = new LockTimeoutError(
+    "C:\\Users\\stack72\\.swamp\\data\\mytype\\.lock",
+    null,
+    5000,
+  );
+  const result = lockTimeoutErrorForClient(err);
+  assertStringIncludes(result.message, '"model lock"');
+});
+
+Deno.test("lockTimeoutErrorForClient: sanitizes .swamp internal path in lockKey", () => {
+  const err = new LockTimeoutError(
+    "some/path/.swamp/data/type/id/.lock",
+    null,
+    5000,
+  );
+  const result = lockTimeoutErrorForClient(err);
+  assertStringIncludes(result.message, '"model lock"');
 });
 
 // ── data.query validation tests ─────────────────────────────────────────

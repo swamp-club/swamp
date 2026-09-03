@@ -23,6 +23,7 @@
 
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import type { DatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { DatastoreSyncService } from "../../domain/datastore/datastore_sync_service.ts";
 import type { ControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
@@ -79,6 +80,33 @@ export function exceptionTypeForClient(error: unknown): string | undefined {
     if (error.name && error.name !== "Error") return error.name;
   }
   return undefined;
+}
+
+function isPathLike(value: string): boolean {
+  return ABSOLUTE_PATH_PATTERN.test(value) ||
+    WINDOWS_PATH_PATTERN.test(value) ||
+    SWAMP_INTERNAL_PATH_PATTERN.test(value);
+}
+
+export interface LockTimeoutClientError {
+  code: "lock_timeout";
+  message: string;
+  details: { retryable: true; exceptionType: "LockTimeoutError" };
+}
+
+export function lockTimeoutErrorForClient(
+  error: LockTimeoutError,
+): LockTimeoutClientError {
+  const safeLockKey = isPathLike(error.lockKey) ? "model lock" : error.lockKey;
+  const message = error.holder
+    ? `Lock contention on "${safeLockKey}" held by ${error.holder.holder} ` +
+      `(pid ${error.holder.pid}) — timed out after ${error.waitedMs}ms`
+    : `Lock contention on "${safeLockKey}" — timed out after ${error.waitedMs}ms`;
+  return {
+    code: "lock_timeout",
+    message,
+    details: { retryable: true, exceptionType: "LockTimeoutError" },
+  };
 }
 
 export const MAX_PREDICATE_LENGTH = 4096;

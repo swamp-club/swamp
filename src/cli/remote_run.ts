@@ -321,6 +321,7 @@ export function requestServerResponse<T>(
           reject(
             new UserError(
               formatServerError(message.error),
+              message.error.code,
             ),
           );
           return;
@@ -715,6 +716,7 @@ async function* singleConnectionStream(
           }
           throw new UserError(
             formatServerError(message.error),
+            message.error.code,
           );
         }
         if (message.type === "run.elsewhere") {
