@@ -41,6 +41,7 @@ const GRANT_DATA_NAME = "grant-main";
 
 export interface MaterializeResult {
   created: number;
+  updated: number;
   revoked: number;
   reactivated: number;
   unchanged: number;
@@ -186,11 +187,12 @@ export async function materializeAdmins(
   store: AdminGrantStore,
 ): Promise<MaterializeResult> {
   if (mode === "none") {
-    return { created: 0, revoked: 0, reactivated: 0, unchanged: 0 };
+    return { created: 0, updated: 0, revoked: 0, reactivated: 0, unchanged: 0 };
   }
 
   const result: MaterializeResult = {
     created: 0,
+    updated: 0,
     revoked: 0,
     reactivated: 0,
     unchanged: 0,

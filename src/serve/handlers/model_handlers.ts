@@ -139,6 +139,7 @@ export async function handleModelMethodRun(
         const tags = preResult.definition.tags;
         if (tags && Object.keys(tags).length > 0) modelFields.tags = tags;
       }
+      modelFields.methodName = payload.methodName;
 
       if (
         isAdminOnlyModelType(

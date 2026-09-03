@@ -67,6 +67,10 @@ export const accessCanICommand = new Command()
     "--collectives <collectives:string>",
     "Comma-separated IdP group memberships to simulate",
   )
+  .option(
+    "--method <method:string>",
+    "Model method name to check (e.g. read, create) — used with method-scoped grants",
+  )
   .action(async function (options: AnyOptions) {
     const server = resolveServeUrl(options.server as string | undefined);
     if (!server) {
@@ -107,6 +111,7 @@ export const accessCanICommand = new Command()
           ...(options.action ? { action: options.action as string } : {}),
           ...(options.on ? { resource: options.on as string } : {}),
           ...(collectives ? { collectives } : {}),
+          ...(options.method ? { method: options.method as string } : {}),
         },
       },
     );

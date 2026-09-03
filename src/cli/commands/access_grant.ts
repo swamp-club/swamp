@@ -125,6 +125,10 @@ const accessGrantCreateCommand = new Command()
   )
   .option("--when <condition:string>", "Optional CEL condition")
   .option(
+    "--methods <methods:string>",
+    "Restrict to specific model methods (comma-separated, e.g. read,list)",
+  )
+  .option(
     "--server <url:string>",
     "Run through a 'swamp serve' server instead of locally (env: SWAMP_SERVE_URL)",
   )
@@ -152,6 +156,10 @@ const accessGrantCreateCommand = new Command()
       (options.allow ?? options.deny) as string,
     );
     const resource = parseResourceFlag(options.on as string);
+    const methods = options.methods
+      ? (options.methods as string).split(",").map((m: string) => m.trim())
+        .filter(Boolean)
+      : undefined;
 
     const instanceName = `grant-${crypto.randomUUID().slice(0, 8)}`;
 
@@ -185,6 +193,7 @@ const accessGrantCreateCommand = new Command()
               resourceKind: resource.kind,
               resourcePattern: resource.pattern,
               condition: options.when as string | undefined,
+              methods,
               source: "method",
               createdBy: LOCAL_PRINCIPAL,
             },

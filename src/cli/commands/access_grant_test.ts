@@ -228,3 +228,12 @@ Deno.test({
     assertEquals(await runGrantCreateAgainst({ status: "succeeded" }), 0);
   },
 });
+
+Deno.test("accessGrantCommand: create has --methods option", async () => {
+  const { accessGrantCommand } = await import("./access_grant.ts");
+  const commands = accessGrantCommand.getCommands();
+  const createCmd = commands.find((c) => c.getName() === "create")!;
+  const options = createCmd.getOptions();
+  const methodsOpt = options.find((o) => o.name === "methods");
+  assertEquals(methodsOpt !== undefined, true);
+});

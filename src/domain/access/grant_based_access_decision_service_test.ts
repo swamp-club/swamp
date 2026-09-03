@@ -539,3 +539,137 @@ Deno.test("explain: truncates when aggregate condition budget exceeded", () => {
   );
   assertEquals(result[0].grantId, matchingGrant.id);
 });
+
+Deno.test("decide: grant with methods matches when methodName is in list", () => {
+  const grant = makeGrant({
+    actions: ["run"],
+    resource: { kind: "model", pattern: "*" },
+    methods: ["read", "list"],
+  });
+  const snapshot = new PolicySnapshot([grant], [], celEvaluator);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const result = service.decide(makePrincipal("adam"), "run", {
+    kind: "model",
+    name: "@acme/deploy",
+    fields: { name: "@acme/deploy", methodName: "read" },
+  });
+  assertEquals(result?.effect, "allow");
+});
+
+Deno.test("decide: grant with methods does not match when methodName is absent from list", () => {
+  const grant = makeGrant({
+    actions: ["run"],
+    resource: { kind: "model", pattern: "*" },
+    methods: ["read", "list"],
+  });
+  const snapshot = new PolicySnapshot([grant], [], celEvaluator);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const result = service.decide(makePrincipal("adam"), "run", {
+    kind: "model",
+    name: "@acme/deploy",
+    fields: { name: "@acme/deploy", methodName: "create" },
+  });
+  assertEquals(result, null);
+});
+
+Deno.test("decide: grant without methods matches all method names", () => {
+  const grant = makeGrant({
+    actions: ["run"],
+    resource: { kind: "model", pattern: "*" },
+  });
+  const snapshot = new PolicySnapshot([grant], [], celEvaluator);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const result = service.decide(makePrincipal("adam"), "run", {
+    kind: "model",
+    name: "@acme/deploy",
+    fields: { name: "@acme/deploy", methodName: "create" },
+  });
+  assertEquals(result?.effect, "allow");
+});
+
+Deno.test("decide: grant with empty methods array matches all method names", () => {
+  const grant = makeGrant({
+    actions: ["run"],
+    resource: { kind: "model", pattern: "*" },
+    methods: [],
+  });
+  const snapshot = new PolicySnapshot([grant], [], celEvaluator);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const result = service.decide(makePrincipal("adam"), "run", {
+    kind: "model",
+    name: "@acme/deploy",
+    fields: { name: "@acme/deploy", methodName: "destroy" },
+  });
+  assertEquals(result?.effect, "allow");
+});
+
+Deno.test("decide: grant with methods matches when resource has no methodName", () => {
+  const grant = makeGrant({
+    actions: ["run"],
+    resource: { kind: "model", pattern: "*" },
+    methods: ["read"],
+  });
+  const snapshot = new PolicySnapshot([grant], [], celEvaluator);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const result = service.decide(makePrincipal("adam"), "run", {
+    kind: "model",
+    name: "@acme/deploy",
+    fields: { name: "@acme/deploy" },
+  });
+  assertEquals(result?.effect, "allow");
+});
+
+Deno.test("decide: deny grant with methods blocks matching method", () => {
+  const denyGrant = makeGrant({
+    effect: "deny",
+    actions: ["run"],
+    resource: { kind: "model", pattern: "*" },
+    methods: ["destroy"],
+  });
+  const allowGrant = makeGrant({
+    actions: ["run"],
+    resource: { kind: "model", pattern: "*" },
+  });
+  const snapshot = new PolicySnapshot(
+    [denyGrant, allowGrant],
+    [],
+    celEvaluator,
+  );
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const result = service.decide(makePrincipal("adam"), "run", {
+    kind: "model",
+    name: "@acme/deploy",
+    fields: { name: "@acme/deploy", methodName: "destroy" },
+  });
+  assertEquals(result?.effect, "deny");
+});
+
+Deno.test("explain: methods filtering applies in explain path", () => {
+  const grant = makeGrant({
+    actions: ["run"],
+    resource: { kind: "model", pattern: "*" },
+    methods: ["read"],
+  });
+  const snapshot = new PolicySnapshot([grant], [], celEvaluator);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const withMatch = service.explain(makePrincipal("adam"), "run", {
+    kind: "model",
+    name: "@acme/deploy",
+    fields: { name: "@acme/deploy", methodName: "read" },
+  });
+  assertEquals(withMatch.length, 1);
+
+  const noMatch = service.explain(makePrincipal("adam"), "run", {
+    kind: "model",
+    name: "@acme/deploy",
+    fields: { name: "@acme/deploy", methodName: "create" },
+  });
+  assertEquals(noMatch.length, 0);
+});

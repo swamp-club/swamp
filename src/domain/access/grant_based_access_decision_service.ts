@@ -72,6 +72,16 @@ function grantMatchesAction(grant: Grant, action: Action): boolean {
   return grant.actions.includes(action);
 }
 
+function grantMatchesMethods(
+  grant: Grant,
+  resource: AccessResource,
+): boolean {
+  if (!grant.methods || grant.methods.length === 0) return true;
+  const methodName = resource.fields.methodName;
+  if (typeof methodName !== "string") return true;
+  return grant.methods.includes(methodName);
+}
+
 function buildPrincipalContext(
   accessPrincipal: AccessPrincipal,
   localGroups: readonly string[],
@@ -141,6 +151,7 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     for (const grant of candidates) {
       if (!grantMatchesResource(grant, resource)) continue;
       if (!grantMatchesAction(grant, action)) continue;
+      if (!grantMatchesMethods(grant, resource)) continue;
       if (grant.effect === "deny") {
         denies.push(grant);
       } else {
@@ -207,6 +218,7 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     for (const grant of candidates) {
       if (!grantMatchesResource(grant, resource)) continue;
       if (!grantMatchesAction(grant, action)) continue;
+      if (!grantMatchesMethods(grant, resource)) continue;
       if (grant.condition) {
         conditionsEvaluated++;
         if (conditionsEvaluated > MAX_AGGREGATE_CONDITIONS) {
