@@ -165,11 +165,22 @@ export class InstallExtensionService {
     // not the v1→v2 case), FS rollback the entire set.
     try {
       const installedResults = flattenInstallResults(result);
-      const newExtensions = await Promise.all(
-        installedResults.map((r) =>
-          this.buildExtensionFromDisk(r, ctx.repoDir)
-        ),
-      );
+      let newExtensions: Extension[];
+      try {
+        newExtensions = await Promise.all(
+          installedResults.map((r) =>
+            this.buildExtensionFromDisk(r, ctx.repoDir)
+          ),
+        );
+      } catch (error) {
+        throw new UserError(
+          `Install partially applied for ${ref.name} — files extracted but ` +
+            `bundling/importing the extension failed (${
+              error instanceof Error ? error.message : String(error)
+            }). Run \`swamp doctor extensions\` to inspect, or retry ` +
+            `\`swamp extension pull ${ref.name}\` to reconcile.`,
+        );
+      }
       const tombstones: Extension[] = [];
       for (const newExt of newExtensions) {
         for (const existing of this.repository.loadByName(newExt.name)) {
@@ -189,6 +200,7 @@ export class InstallExtensionService {
         }));
       }
     } catch (error) {
+      if (error instanceof UserError) throw error;
       if (error instanceof DuplicateTypeError) {
         await this.rollbackOnCollision(result, priorEntry, ctx);
         const ghostRow = await isGhostRow(error);
