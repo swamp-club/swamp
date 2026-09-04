@@ -49,14 +49,17 @@ function createMockSink(name: string): AuditSink & {
     written: [] as AuditEvent[][],
     flushed: 0,
     closed: false,
-    async write(events: readonly AuditEvent[]) {
+    write(events: readonly AuditEvent[]): Promise<void> {
       sink.written.push([...events]);
+      return Promise.resolve();
     },
-    async flush() {
+    flush(): Promise<void> {
       sink.flushed++;
+      return Promise.resolve();
     },
-    async close() {
+    close(): Promise<void> {
       sink.closed = true;
+      return Promise.resolve();
     },
   };
   return sink;
@@ -105,11 +108,15 @@ Deno.test("AuditEmitter: fans out to multiple sinks", async () => {
 Deno.test("AuditEmitter: sink error does not propagate to caller", async () => {
   const failingSink: AuditSink = {
     name: "failing",
-    async write() {
-      throw new Error("sink failure");
+    write(): Promise<void> {
+      return Promise.reject(new Error("sink failure"));
     },
-    async flush() {},
-    async close() {},
+    flush(): Promise<void> {
+      return Promise.resolve();
+    },
+    close(): Promise<void> {
+      return Promise.resolve();
+    },
   };
   const goodSink = createMockSink("good");
   const emitter = new AuditEmitter([failingSink, goodSink]);

@@ -30,17 +30,21 @@ function createInMemoryStore(): ControlPlaneStore & {
   const data = new Map<string, Uint8Array>();
   return {
     data,
-    async put(key: string, value: Uint8Array) {
+    put(key: string, value: Uint8Array): Promise<void> {
       data.set(key, value);
+      return Promise.resolve();
     },
-    async get(key: string) {
-      return data.get(key) ?? null;
+    get(key: string): Promise<Uint8Array | null> {
+      return Promise.resolve(data.get(key) ?? null);
     },
-    async delete(key: string) {
+    delete(key: string): Promise<void> {
       data.delete(key);
+      return Promise.resolve();
     },
-    async list(prefix: string) {
-      return [...data.keys()].filter((k) => k.startsWith(prefix));
+    list(prefix: string): Promise<string[]> {
+      return Promise.resolve(
+        [...data.keys()].filter((k) => k.startsWith(prefix)),
+      );
     },
   };
 }
@@ -95,15 +99,17 @@ Deno.test("RemoteAuditStore: custom prefix", async () => {
 
 Deno.test("RemoteAuditStore: propagates put errors", async () => {
   const failing: ControlPlaneStore = {
-    async put() {
-      throw new Error("write failed");
+    put(): Promise<void> {
+      return Promise.reject(new Error("write failed"));
     },
-    async get() {
-      return null;
+    get(): Promise<Uint8Array | null> {
+      return Promise.resolve(null);
     },
-    async delete() {},
-    async list() {
-      return [];
+    delete(): Promise<void> {
+      return Promise.resolve();
+    },
+    list(): Promise<string[]> {
+      return Promise.resolve([]);
     },
   };
   const store = new RemoteAuditStore(failing);

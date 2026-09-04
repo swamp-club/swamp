@@ -30,11 +30,16 @@ function createCaptureSink(): AuditSink & { events: AuditEvent[] } {
   const sink = {
     name: "capture",
     events: [] as AuditEvent[],
-    async write(events: readonly AuditEvent[]) {
+    write(events: readonly AuditEvent[]): Promise<void> {
       sink.events.push(...events);
+      return Promise.resolve();
     },
-    async flush() {},
-    async close() {},
+    flush(): Promise<void> {
+      return Promise.resolve();
+    },
+    close(): Promise<void> {
+      return Promise.resolve();
+    },
   };
   return sink;
 }
@@ -82,8 +87,9 @@ Deno.test("audited: emits failure event and re-throws on handler error", async (
 Deno.test("audited: no-op when emitter is undefined", async () => {
   let handlerRan = false;
   await audited(
-    (async () => {
+    (() => {
       handlerRan = true;
+      return Promise.resolve();
     })(),
     { ...baseOptions, emitter: undefined },
   );

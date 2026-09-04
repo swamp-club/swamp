@@ -53,14 +53,17 @@ function createMockStore(): AuditStore & {
   const written = new Map<string, Uint8Array>();
   return {
     written,
-    async put(key: string, data: Uint8Array) {
+    put(key: string, data: Uint8Array): Promise<void> {
       written.set(key, data);
+      return Promise.resolve();
     },
-    async get(key: string) {
-      return written.get(key) ?? null;
+    get(key: string): Promise<Uint8Array | null> {
+      return Promise.resolve(written.get(key) ?? null);
     },
-    async list(prefix: string) {
-      return [...written.keys()].filter((k) => k.startsWith(prefix));
+    list(prefix: string): Promise<string[]> {
+      return Promise.resolve(
+        [...written.keys()].filter((k) => k.startsWith(prefix)),
+      );
     },
   };
 }
@@ -144,14 +147,14 @@ Deno.test("StoreSink: writes to multiple stores", async () => {
 
 Deno.test("StoreSink: store failure does not crash", async () => {
   const failingStore: AuditStore = {
-    async put() {
-      throw new Error("store down");
+    put(): Promise<void> {
+      return Promise.reject(new Error("store down"));
     },
-    async get() {
-      return null;
+    get(): Promise<Uint8Array | null> {
+      return Promise.resolve(null);
     },
-    async list() {
-      return [];
+    list(): Promise<string[]> {
+      return Promise.resolve([]);
     },
   };
   const goodStore = createMockStore();
