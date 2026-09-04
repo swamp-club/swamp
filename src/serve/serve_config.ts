@@ -1191,6 +1191,13 @@ function validateAuditConfig(audit: unknown, path: string): void {
         ]}`,
       );
     }
+    if (parseDuration(obj["flush-interval"] as string) === null) {
+      throw new UserError(
+        `Invalid audit.flush-interval in ${path}: expected format like "5s", "100ms", or "1m", got "${
+          obj["flush-interval"]
+        }"`,
+      );
+    }
   }
 }
 

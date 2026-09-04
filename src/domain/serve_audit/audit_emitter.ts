@@ -67,9 +67,9 @@ export class AuditEmitter {
       const cursor = this.#cursors.get(sink.name) ?? 0;
       const { items, throughSeq } = this.#buffer.readFrom(cursor);
       if (items.length === 0) continue;
-      this.#cursors.set(sink.name, throughSeq);
       try {
         await sink.write(items);
+        this.#cursors.set(sink.name, throughSeq);
       } catch (error: unknown) {
         logger.warn(
           "Audit sink {sink} failed, events dropped: {error}",

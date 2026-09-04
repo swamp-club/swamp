@@ -2609,11 +2609,19 @@ async function handleCancelRun(
     run.resourceName,
   );
   if (
-    authorizeOrReject(socket, requestId, principal, "run", {
-      kind: resourceKind,
-      name: run.resourceName,
-      fields: cancelFields,
-    }, ctx)
+    authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "run",
+      {
+        kind: resourceKind,
+        name: run.resourceName,
+        fields: cancelFields,
+      },
+      ctx,
+      ctx.auditEmitter,
+    )
   ) {
     ctx.activeRunRegistry!.cancel(requestId);
   }
@@ -2665,11 +2673,19 @@ async function handleRunAttach(
           result.record.resourceName,
         );
         if (
-          !authorizeOrReject(socket, requestId, principal, "run", {
-            kind: resourceKind,
-            name: result.record.resourceName,
-            fields: remoteFields,
-          }, ctx)
+          !authorizeOrReject(
+            socket,
+            requestId,
+            principal,
+            "run",
+            {
+              kind: resourceKind,
+              name: result.record.resourceName,
+              fields: remoteFields,
+            },
+            ctx,
+            ctx.auditEmitter,
+          )
         ) return;
 
         const heartbeatData = await ctx.controlPlaneStore.get(
@@ -2717,11 +2733,19 @@ async function handleRunAttach(
     run.resourceName,
   );
   if (
-    !authorizeOrReject(socket, requestId, principal, "run", {
-      kind: resourceKind,
-      name: run.resourceName,
-      fields: localFields,
-    }, ctx)
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "run",
+      {
+        kind: resourceKind,
+        name: run.resourceName,
+        fields: localFields,
+      },
+      ctx,
+      ctx.auditEmitter,
+    )
   ) return;
 
   send(socket, {
