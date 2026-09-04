@@ -34,6 +34,7 @@ export interface AuditedOptions {
   readonly resourceName: string;
   readonly principal: Principal | null;
   readonly requestId: string;
+  readonly resolvedUserNames?: Record<string, string>;
 }
 
 export function audited(
@@ -44,8 +45,14 @@ export function audited(
 
   const principalKind = options.principal?.kind ?? "anonymous";
   const principalId = options.principal?.id ?? "anonymous";
+  const resolvedName = options.principal?.kind === "user" &&
+      options.resolvedUserNames?.[options.principal.id]
+    ? options.resolvedUserNames[options.principal.id]
+    : null;
   const initiatedBy = options.principal
-    ? principalToString(options.principal)
+    ? (resolvedName
+      ? `user:${resolvedName}`
+      : principalToString(options.principal))
     : "ghost";
 
   return handler.then(() => {

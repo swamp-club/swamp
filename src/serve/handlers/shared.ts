@@ -407,7 +407,11 @@ function emitDenial(
     resourceName: resource.name,
     principalKind: principal?.kind ?? "anonymous",
     principalId: principal?.id ?? "anonymous",
-    initiatedBy: principal ? principalToString(principal) : "ghost",
+    initiatedBy: principal
+      ? (principal.kind === "user" && ctx.resolvedUserNames?.[principal.id]
+        ? `user:${ctx.resolvedUserNames[principal.id]}`
+        : principalToString(principal))
+      : "ghost",
     requestId,
     detail,
   }));

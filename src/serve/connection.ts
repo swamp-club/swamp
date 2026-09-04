@@ -1473,6 +1473,7 @@ export function handleMessage(
       resourceName,
       principal,
       requestId: request.id,
+      resolvedUserNames: ctx.resolvedUserNames,
     };
   }
 

@@ -133,3 +133,37 @@ Deno.test("audited: handles null principal", async () => {
   assertEquals(sink.events[0].principalId, "anonymous");
   assertEquals(sink.events[0].initiatedBy, "ghost");
 });
+
+Deno.test("audited: resolves OAuth sub to username in initiatedBy", async () => {
+  const sink = createCaptureSink();
+  const emitter = new AuditEmitter([sink]);
+
+  await audited(Promise.resolve(), {
+    ...baseOptions,
+    emitter,
+    principal: { kind: "user", id: "abc-123-sub" },
+    resolvedUserNames: { "abc-123-sub": "stack72" },
+  });
+  await emitter.flush();
+
+  assertEquals(sink.events.length, 1);
+  assertEquals(sink.events[0].principalKind, "user");
+  assertEquals(sink.events[0].principalId, "abc-123-sub");
+  assertEquals(sink.events[0].initiatedBy, "user:stack72");
+});
+
+Deno.test("audited: falls back to principalToString when no resolved name", async () => {
+  const sink = createCaptureSink();
+  const emitter = new AuditEmitter([sink]);
+
+  await audited(Promise.resolve(), {
+    ...baseOptions,
+    emitter,
+    principal: { kind: "worker", id: "w1" },
+    resolvedUserNames: {},
+  });
+  await emitter.flush();
+
+  assertEquals(sink.events.length, 1);
+  assertEquals(sink.events[0].initiatedBy, "worker:w1");
+});
