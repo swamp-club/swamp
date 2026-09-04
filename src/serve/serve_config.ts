@@ -130,6 +130,8 @@ export interface ServeConfigFile {
 
 export interface AuditStoreConfigEntry {
   readonly target: string;
+  readonly type?: string;
+  readonly config?: Record<string, unknown>;
 }
 
 export interface AuditConfig {
@@ -1166,6 +1168,20 @@ function validateAuditConfig(audit: unknown, path: string): void {
       if (typeof storeObj.target !== "string" || !storeObj.target) {
         throw new UserError(
           `Invalid audit store at index ${i} in ${path}: target is required and must be a string`,
+        );
+      }
+      if (storeObj.type !== undefined && typeof storeObj.type !== "string") {
+        throw new UserError(
+          `Invalid audit store at index ${i} in ${path}: type must be a string`,
+        );
+      }
+      if (
+        storeObj.config !== undefined &&
+        (typeof storeObj.config !== "object" || storeObj.config === null ||
+          Array.isArray(storeObj.config))
+      ) {
+        throw new UserError(
+          `Invalid audit store at index ${i} in ${path}: config must be an object`,
         );
       }
     }

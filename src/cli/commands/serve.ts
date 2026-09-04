@@ -112,6 +112,7 @@ import {
 import { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";
 import { StoreSink } from "../../serve/audit_sinks/store_sink.ts";
 import { RemoteAuditStore } from "../../infrastructure/persistence/remote_audit_store.ts";
+import type { AuditStore } from "../../domain/serve_audit/audit_store.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
@@ -2726,22 +2727,67 @@ export const serveCommand = new Command()
 
     // ── Audit Pipeline ───────────────────────────────────────────────
     const auditConfig = parseAuditConfig(configFile);
-    if (auditConfig && controlPlaneStore) {
-      const auditStores = auditConfig.stores.map(
-        (entry) =>
-          new RemoteAuditStore(controlPlaneStore, `_audit/${entry.target}/`),
-      );
-      const storeSink = new StoreSink({
-        stores: auditStores,
-        batchSize: auditConfig.batchSize,
-        flushIntervalMs: auditConfig.flushIntervalMs,
-        signal: ac.signal,
-      });
-      connectionCtx.auditEmitter = new AuditEmitter([storeSink]);
-      logger.info(
-        "Audit pipeline enabled with {count} store target(s)",
-        { count: auditConfig.stores.length },
-      );
+    if (auditConfig) {
+      const auditStores: AuditStore[] = [];
+      for (const entry of auditConfig.stores) {
+        if (entry.type && entry.config) {
+          await datastoreTypeRegistry.ensureLoaded();
+          await datastoreTypeRegistry.ensureTypeLoaded(entry.type);
+          const typeInfo = datastoreTypeRegistry.get(entry.type);
+          if (!typeInfo?.createProvider) {
+            throw new UserError(
+              `Audit store target "${entry.target}": datastore type "${entry.type}" is not registered or has no provider`,
+            );
+          }
+          const provider = typeInfo.createProvider(entry.config);
+          const tmpCachePath = join(
+            resolvedRepoDir,
+            ".swamp",
+            `audit-cache-${entry.target}`,
+          );
+          const syncService = provider.createSyncService?.(
+            resolvedRepoDir,
+            tmpCachePath,
+          );
+          const store = syncService?.controlPlaneStore?.();
+          if (!store) {
+            throw new UserError(
+              `Audit store target "${entry.target}": datastore type "${entry.type}" does not support control-plane storage`,
+            );
+          }
+          auditStores.push(
+            new RemoteAuditStore(store, `audit/${entry.target}/`),
+          );
+          logger.info(
+            "Audit target {target}: dedicated {type} datastore",
+            { target: entry.target, type: entry.type },
+          );
+        } else if (controlPlaneStore) {
+          auditStores.push(
+            new RemoteAuditStore(
+              controlPlaneStore,
+              `_audit/${entry.target}/`,
+            ),
+          );
+          logger.warn(
+            "Audit target {target}: using shared control-plane store (configure type + config for a dedicated audit store)",
+            { target: entry.target },
+          );
+        }
+      }
+      if (auditStores.length > 0) {
+        const storeSink = new StoreSink({
+          stores: auditStores,
+          batchSize: auditConfig.batchSize,
+          flushIntervalMs: auditConfig.flushIntervalMs,
+          signal: ac.signal,
+        });
+        connectionCtx.auditEmitter = new AuditEmitter([storeSink]);
+        logger.info(
+          "Audit pipeline enabled with {count} store target(s)",
+          { count: auditStores.length },
+        );
+      }
     }
 
     let telemetryFlushService: DaemonTelemetryFlushService | null = null;

@@ -32,18 +32,40 @@ Handler → authorizeOrReject / audited() → AuditEmitter → RingBuffer → St
 4. **StoreSink** batches events in memory, writes date-partitioned JSONL
    (`events/YYYY-MM-DD/<uuid>.jsonl`) to all configured **AuditStore** targets
    on a timer or when the batch is full. Flushes on shutdown via `AbortSignal`.
-5. **RemoteAuditStore** adapts `ControlPlaneStore` with an `_audit/` key prefix.
+5. **RemoteAuditStore** adapts `ControlPlaneStore` with a key prefix.
 
 ## Configuration
 
 Audit is enabled via `serve.yaml`. No config means zero behavior change.
 
+Each audit store target can reference a **dedicated datastore** — a separate
+S3 bucket, a separate provider, fully independent from the repo's main
+datastore. This is the recommended setup: audit data should not live alongside
+application data, so it cannot be tampered with by someone who has access to
+the main datastore.
+
 ```yaml
+# Recommended: dedicated audit store (separate S3 bucket)
+audit:
+  stores:
+    - target: security-audit
+      type: "@swamp/s3-datastore"
+      config:
+        bucket: my-audit-bucket
+        region: us-east-1
+  batch-size: 100
+  flush-interval: 5s
+```
+
+A store entry without `type` + `config` falls back to the repo's existing
+control-plane store (shared datastore). This works for development but logs
+a warning at startup — production deployments should use a dedicated store.
+
+```yaml
+# Development fallback: shared datastore (warns at startup)
 audit:
   stores:
     - target: default
-  batch-size: 100
-  flush-interval: 5s
 ```
 
 ## What is audited
