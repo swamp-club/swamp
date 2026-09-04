@@ -56,6 +56,7 @@ export class StoreSink implements AuditSink {
         });
       });
     }, this.#flushIntervalMs);
+    Deno.unrefTimer(this.#timer);
 
     if (options.signal) {
       options.signal.addEventListener("abort", () => {
