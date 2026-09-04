@@ -526,6 +526,15 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             unknown
           >
           | null;
+        if (!existingParsed) {
+          // Corrupt/empty file — remove it so the fresh-write path below
+          // overwrites with valid content.
+          try {
+            await Deno.remove(targetPath);
+          } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) throw error;
+          }
+        }
         const normalizedExisting = existingParsed
           ? JSON.parse(
             JSON.stringify(existingParsed),

@@ -659,6 +659,14 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
               const content = await Deno.readTextFile(yamlPath);
               const data = parseYaml(content) as WorkflowRunData | null;
               if (!data) {
+                const logPath = yamlPath.replace(/\.yaml$/, ".log");
+                let fileBytes = stat.size ?? 0;
+                try {
+                  const logStat = await Deno.stat(logPath);
+                  fileBytes += logStat.size ?? 0;
+                } catch {
+                  // log file may not exist
+                }
                 if (!options?.dryRun) {
                   await this.notifyDirty(yamlPath);
                   try {
@@ -666,11 +674,16 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
                   } catch (error) {
                     if (!(error instanceof Deno.errors.NotFound)) throw error;
                   }
+                  try {
+                    await Deno.remove(logPath);
+                  } catch (error) {
+                    if (!(error instanceof Deno.errors.NotFound)) throw error;
+                  }
                   await cleanupEmptyParentDirs(yamlPath, this.baseDir);
                   affectedDirs.add(dir);
                 }
                 deleted++;
-                bytesReclaimed += stat.size ?? 0;
+                bytesReclaimed += fileBytes;
                 continue;
               }
               if (!TERMINAL_STATUSES.has(data.status)) continue;
