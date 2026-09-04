@@ -607,7 +607,7 @@ Deno.test("decide: grant with empty methods array matches all method names", () 
   assertEquals(result?.effect, "allow");
 });
 
-Deno.test("decide: grant with methods does not match when resource has no methodName (fail closed)", () => {
+Deno.test("decide: grant with methods matches when resource has no methodName", () => {
   const grant = makeGrant({
     actions: ["run"],
     resource: { kind: "model", pattern: "*" },
@@ -621,7 +621,7 @@ Deno.test("decide: grant with methods does not match when resource has no method
     name: "@acme/deploy",
     fields: { name: "@acme/deploy" },
   });
-  assertEquals(result, null);
+  assertEquals(result?.effect, "allow");
 });
 
 Deno.test("decide: deny grant with methods blocks matching method", () => {

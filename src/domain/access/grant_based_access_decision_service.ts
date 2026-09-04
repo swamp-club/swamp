@@ -78,7 +78,7 @@ function grantMatchesMethods(
 ): boolean {
   if (!grant.methods || grant.methods.length === 0) return true;
   const methodName = resource.fields.methodName;
-  if (typeof methodName !== "string") return false;
+  if (typeof methodName !== "string") return true;
   return grant.methods.includes(methodName);
 }
 
