@@ -31,6 +31,7 @@ Deno.test("buildAuditEvent: populates all fields", () => {
     resourceName: "my-model",
     principalKind: "token",
     principalId: "tok-abc",
+    initiatedBy: "token:tok-abc",
     requestId: "req-1",
     detail: "completed in 250ms",
   });
@@ -39,6 +40,7 @@ Deno.test("buildAuditEvent: populates all fields", () => {
   assertEquals(event.action, "model.method.run");
   assertEquals(event.resourceName, "my-model");
   assertEquals(event.principalKind, "token");
+  assertEquals(event.initiatedBy, "token:tok-abc");
   assertEquals(event.detail, "completed in 250ms");
 });
 
@@ -51,6 +53,9 @@ Deno.test("buildAuditEvent: sanitizes absolute paths in action", () => {
     action: "/Users/admin/secret/path",
     resourceKind: "data",
     resourceName: "output",
+    principalKind: "user",
+    principalId: "test-user",
+    initiatedBy: "user:test-user",
     requestId: "req-2",
   });
 
@@ -66,6 +71,9 @@ Deno.test("buildAuditEvent: sanitizes paths in resourceName", () => {
     action: "data.get",
     resourceKind: "data",
     resourceName: "/home/user/.swamp/data/output",
+    principalKind: "user",
+    principalId: "test-user",
+    initiatedBy: "user:test-user",
     requestId: "req-3",
   });
 
@@ -81,6 +89,9 @@ Deno.test("buildAuditEvent: sanitizes Windows paths", () => {
     action: "data.get",
     resourceKind: "data",
     resourceName: "C:\\Users\\admin\\file",
+    principalKind: "user",
+    principalId: "test-user",
+    initiatedBy: "user:test-user",
     requestId: "req-4",
   });
 
@@ -96,6 +107,9 @@ Deno.test("buildAuditEvent: sanitizes .swamp internal paths in detail", () => {
     action: "data.get",
     resourceKind: "data",
     resourceName: "output",
+    principalKind: "user",
+    principalId: "test-user",
+    initiatedBy: "user:test-user",
     requestId: "req-5",
     detail: "file not found: /.swamp/data/output",
   });
@@ -112,6 +126,9 @@ Deno.test("buildAuditEvent: passes through safe values unchanged", () => {
     action: "vault.get",
     resourceKind: "vault",
     resourceName: "prod-vault",
+    principalKind: "user",
+    principalId: "test-user",
+    initiatedBy: "user:test-user",
     requestId: "req-6",
     detail: "key: api-token",
   });
@@ -130,6 +147,9 @@ Deno.test("buildAuditEvent: omits detail when undefined", () => {
     action: "serve.reload",
     resourceKind: "access",
     resourceName: "*",
+    principalKind: "user",
+    principalId: "test-user",
+    initiatedBy: "user:test-user",
     requestId: "req-7",
   });
 

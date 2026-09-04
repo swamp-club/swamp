@@ -86,7 +86,12 @@ export class AuditEmitter {
     if (this.#drainPromise) {
       await this.#drainPromise;
     }
-    await this.#drain();
+    if (!this.#drainPromise) {
+      this.#drainPromise = this.#drain().finally(() => {
+        this.#drainPromise = null;
+      });
+    }
+    await this.#drainPromise;
     for (const sink of this.#sinks) {
       try {
         await sink.flush();

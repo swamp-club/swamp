@@ -20,7 +20,10 @@
 import type { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
 import type { AuditCategory } from "../domain/serve_audit/audit_event.ts";
 import { buildAuditEvent } from "../domain/serve_audit/audit_event_builder.ts";
-import type { Principal } from "../domain/access/principal.ts";
+import {
+  type Principal,
+  principalToString,
+} from "../domain/access/principal.ts";
 
 export interface AuditedOptions {
   readonly emitter: AuditEmitter | undefined;
@@ -39,6 +42,12 @@ export function audited(
 ): Promise<void> {
   if (!options.emitter) return handler;
 
+  const principalKind = options.principal?.kind ?? "anonymous";
+  const principalId = options.principal?.id ?? "anonymous";
+  const initiatedBy = options.principal
+    ? principalToString(options.principal)
+    : "ghost";
+
   return handler.then(() => {
     options.emitter!.emit(buildAuditEvent({
       instanceId: options.instanceId,
@@ -48,8 +57,9 @@ export function audited(
       action: options.action,
       resourceKind: options.resourceKind,
       resourceName: options.resourceName,
-      principalKind: options.principal?.kind,
-      principalId: options.principal?.id,
+      principalKind,
+      principalId,
+      initiatedBy,
       requestId: options.requestId,
     }));
   }, (error: unknown) => {
@@ -61,8 +71,9 @@ export function audited(
       action: options.action,
       resourceKind: options.resourceKind,
       resourceName: options.resourceName,
-      principalKind: options.principal?.kind,
-      principalId: options.principal?.id,
+      principalKind,
+      principalId,
+      initiatedBy,
       requestId: options.requestId,
       detail: error instanceof Error ? error.message : String(error),
     }));

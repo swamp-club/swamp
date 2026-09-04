@@ -64,7 +64,9 @@ Deno.test("audited: emits success event on handler success", async () => {
   assertEquals(sink.events.length, 1);
   assertEquals(sink.events[0].outcome, "success");
   assertEquals(sink.events[0].action, "model.method.run");
+  assertEquals(sink.events[0].principalKind, "user");
   assertEquals(sink.events[0].principalId, "tok-abc");
+  assertEquals(sink.events[0].initiatedBy, "user:tok-abc");
 });
 
 Deno.test("audited: emits failure event and re-throws on handler error", async () => {
@@ -127,6 +129,7 @@ Deno.test("audited: handles null principal", async () => {
   await emitter.flush();
 
   assertEquals(sink.events.length, 1);
-  assertEquals(sink.events[0].principalKind, undefined);
-  assertEquals(sink.events[0].principalId, undefined);
+  assertEquals(sink.events[0].principalKind, "anonymous");
+  assertEquals(sink.events[0].principalId, "anonymous");
+  assertEquals(sink.events[0].initiatedBy, "ghost");
 });

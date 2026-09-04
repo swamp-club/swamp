@@ -39,8 +39,9 @@ export interface AuditEvent {
   readonly action: string;
   readonly resourceKind: string;
   readonly resourceName: string;
-  readonly principalKind?: string;
-  readonly principalId?: string;
+  readonly principalKind: string;
+  readonly principalId: string;
+  readonly initiatedBy: string;
   readonly requestId: string;
   readonly detail?: string;
 }

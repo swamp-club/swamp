@@ -35,6 +35,9 @@ function makeEvent(action: string): AuditEvent {
     action,
     resourceKind: "access",
     resourceName: "*",
+    principalKind: "user",
+    principalId: "test-user",
+    initiatedBy: "user:test-user",
     requestId: crypto.randomUUID(),
   });
 }

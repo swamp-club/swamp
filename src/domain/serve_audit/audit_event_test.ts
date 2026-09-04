@@ -33,6 +33,9 @@ Deno.test("createAuditEvent: generates UUID id and ISO timestamp", () => {
     action: "access.check",
     resourceKind: "access",
     resourceName: "*",
+    principalKind: "user",
+    principalId: "test-user",
+    initiatedBy: "user:test-user",
     requestId: "req-1",
   });
 
@@ -46,7 +49,7 @@ Deno.test("createAuditEvent: generates UUID id and ISO timestamp", () => {
   assertEquals(event.requestId, "req-1");
 });
 
-Deno.test("createAuditEvent: preserves optional fields", () => {
+Deno.test("createAuditEvent: preserves principal and detail fields", () => {
   const event = createAuditEvent({
     instanceId: "inst-1",
     category: "execution",
@@ -57,30 +60,15 @@ Deno.test("createAuditEvent: preserves optional fields", () => {
     resourceName: "my-model",
     principalKind: "token",
     principalId: "tok-abc",
+    initiatedBy: "token:tok-abc",
     requestId: "req-2",
     detail: "timeout after 30s",
   });
 
   assertEquals(event.principalKind, "token");
   assertEquals(event.principalId, "tok-abc");
+  assertEquals(event.initiatedBy, "token:tok-abc");
   assertEquals(event.detail, "timeout after 30s");
-});
-
-Deno.test("createAuditEvent: omits undefined optional fields", () => {
-  const event = createAuditEvent({
-    instanceId: "inst-1",
-    category: "data",
-    stage: "request",
-    outcome: "denied",
-    action: "data.get",
-    resourceKind: "data",
-    resourceName: "output",
-    requestId: "req-3",
-  });
-
-  assertEquals(event.principalKind, undefined);
-  assertEquals(event.principalId, undefined);
-  assertEquals(event.detail, undefined);
 });
 
 Deno.test("createAuditEvent: generates unique ids", () => {
@@ -92,6 +80,9 @@ Deno.test("createAuditEvent: generates unique ids", () => {
     action: "serve.reload",
     resourceKind: "access",
     resourceName: "*",
+    principalKind: "user",
+    principalId: "test-user",
+    initiatedBy: "user:test-user",
     requestId: "req-4",
   });
   const b = createAuditEvent({
@@ -102,6 +93,9 @@ Deno.test("createAuditEvent: generates unique ids", () => {
     action: "serve.reload",
     resourceKind: "access",
     resourceName: "*",
+    principalKind: "user",
+    principalId: "test-user",
+    initiatedBy: "user:test-user",
     requestId: "req-5",
   });
 

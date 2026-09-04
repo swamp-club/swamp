@@ -51,8 +51,9 @@ export interface AuditEventInput {
   readonly action: string;
   readonly resourceKind: string;
   readonly resourceName: string;
-  readonly principalKind?: string;
-  readonly principalId?: string;
+  readonly principalKind: string;
+  readonly principalId: string;
+  readonly initiatedBy: string;
   readonly requestId: string;
   readonly detail?: string;
 }
@@ -68,6 +69,7 @@ export function buildAuditEvent(input: AuditEventInput): AuditEvent {
     resourceName: sanitize(input.resourceName),
     principalKind: input.principalKind,
     principalId: input.principalId,
+    initiatedBy: input.initiatedBy,
     requestId: input.requestId,
     detail: input.detail ? sanitize(input.detail) : undefined,
   });

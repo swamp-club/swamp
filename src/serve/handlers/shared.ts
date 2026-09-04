@@ -405,8 +405,9 @@ function emitDenial(
     action: String(action),
     resourceKind: resource.kind,
     resourceName: resource.name,
-    principalKind: principal?.kind,
-    principalId: principal?.id,
+    principalKind: principal?.kind ?? "anonymous",
+    principalId: principal?.id ?? "anonymous",
+    initiatedBy: principal ? principalToString(principal) : "ghost",
     requestId,
     detail,
   }));
