@@ -1334,10 +1334,10 @@ Deno.test("workers.connected() returns empty array when all workers disconnected
 });
 
 // ============================================================================
-// invalidateLatest() causes re-read of written coordinate
+// latest() always returns fresh data from disk (no caching)
 // ============================================================================
 
-Deno.test("invalidateLatest: re-reads coordinate after invalidation", async () => {
+Deno.test("latest: returns fresh data after intervening write", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const defRepo = new YamlDefinitionRepository(repoDir);
@@ -1350,7 +1350,7 @@ Deno.test("invalidateLatest: re-reads coordinate after invalidation", async () =
     const type = ModelType.create("test/model");
 
     const model = Definition.create({
-      name: "cached-model",
+      name: "live-model",
       globalArguments: {},
     });
     await defRepo.save(type, model);
@@ -1360,7 +1360,7 @@ Deno.test("invalidateLatest: re-reads coordinate after invalidation", async () =
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "resource", modelName: "cached-model" },
+      tags: { type: "resource", modelName: "live-model" },
       ownerDefinition: owner,
     });
     await dataRepo.save(
@@ -1381,7 +1381,7 @@ Deno.test("invalidateLatest: re-reads coordinate after invalidation", async () =
     const ctx = await resolver.buildContext();
     assertExists(ctx.data);
 
-    const first = await ctx.data.latest("cached-model", "result");
+    const first = await ctx.data.latest("live-model", "result");
     assertExists(first);
     assertEquals(first.attributes.value, "old");
 
@@ -1392,123 +1392,14 @@ Deno.test("invalidateLatest: re-reads coordinate after invalidation", async () =
       new TextEncoder().encode(JSON.stringify({ value: "new" })),
     );
 
-    const stale = await ctx.data.latest("cached-model", "result");
-    assertExists(stale);
-    assertEquals(stale.attributes.value, "old");
-
-    ctx.data.invalidateLatest!("cached-model", "result");
-
-    const fresh = await ctx.data.latest("cached-model", "result");
+    const fresh = await ctx.data.latest("live-model", "result");
     assertExists(fresh);
     assertEquals(fresh.attributes.value, "new");
     catalog.close();
   });
 });
 
-// ============================================================================
-// invalidateLatest() only affects the targeted coordinate
-// ============================================================================
-
-Deno.test("invalidateLatest: other coordinates remain cached", async () => {
-  await withTempDir(async (repoDir) => {
-    await setupRepoDir(repoDir);
-    const defRepo = new YamlDefinitionRepository(repoDir);
-    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
-    const dataRepo = new FileSystemUnifiedDataRepository(
-      repoDir,
-      undefined,
-      catalog,
-    );
-    const type = ModelType.create("test/model");
-
-    const modelA = Definition.create({
-      name: "model-a",
-      globalArguments: {},
-    });
-    await defRepo.save(type, modelA);
-
-    const modelB = Definition.create({
-      name: "model-b",
-      globalArguments: {},
-    });
-    await defRepo.save(type, modelB);
-
-    const dataA = Data.create({
-      name: "result",
-      contentType: "application/json",
-      lifetime: "infinite",
-      garbageCollection: 10,
-      tags: { type: "resource", modelName: "model-a" },
-      ownerDefinition: owner,
-    });
-    await dataRepo.save(
-      type,
-      modelA.id,
-      dataA,
-      new TextEncoder().encode(JSON.stringify({ from: "a-v1" })),
-    );
-
-    const dataB = Data.create({
-      name: "result",
-      contentType: "application/json",
-      lifetime: "infinite",
-      garbageCollection: 10,
-      tags: { type: "resource", modelName: "model-b" },
-      ownerDefinition: owner,
-    });
-    await dataRepo.save(
-      type,
-      modelB.id,
-      dataB,
-      new TextEncoder().encode(JSON.stringify({ from: "b-v1" })),
-    );
-
-    const dqs = new DataQueryService(catalog, dataRepo);
-    await dqs.query('name == ""');
-
-    const resolver = new ModelResolver(defRepo, {
-      repoDir,
-      dataRepo,
-      dataQueryService: dqs,
-    });
-    const ctx = await resolver.buildContext();
-    assertExists(ctx.data);
-
-    await ctx.data.latest("model-a", "result");
-    await ctx.data.latest("model-b", "result");
-
-    await dataRepo.save(
-      type,
-      modelA.id,
-      dataA,
-      new TextEncoder().encode(JSON.stringify({ from: "a-v2" })),
-    );
-    await dataRepo.save(
-      type,
-      modelB.id,
-      dataB,
-      new TextEncoder().encode(JSON.stringify({ from: "b-v2" })),
-    );
-
-    ctx.data.invalidateLatest!("model-a", "result");
-
-    const freshA = await ctx.data.latest("model-a", "result");
-    assertExists(freshA);
-    assertEquals(freshA.attributes.from, "a-v2");
-
-    const staleB = await ctx.data.latest("model-b", "result");
-    assertExists(staleB);
-    assertEquals(staleB.attributes.from, "b-v1");
-
-    catalog.close();
-  });
-});
-
-// ============================================================================
-// invalidateLatest() clears cached null (miss)
-// ============================================================================
-
-Deno.test("invalidateLatest: clears cached null so new data is visible", async () => {
+Deno.test("latest: returns data written after initial miss", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const defRepo = new YamlDefinitionRepository(repoDir);
@@ -1554,11 +1445,6 @@ Deno.test("invalidateLatest: clears cached null so new data is visible", async (
       data,
       new TextEncoder().encode(JSON.stringify({ appeared: true })),
     );
-
-    const stillNull = await ctx.data.latest("late-writer", "result");
-    assertEquals(stillNull, null);
-
-    ctx.data.invalidateLatest!("late-writer", "result");
 
     const found = await ctx.data.latest("late-writer", "result");
     assertExists(found);

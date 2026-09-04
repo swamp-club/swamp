@@ -260,9 +260,8 @@ export interface DataNamespace {
   ): Promise<DataRecord[] | unknown[]>;
 
   /**
-   * Invalidate the cached `latest()` result for a specific model+data
-   * coordinate so subsequent reads re-fetch from disk. Called by the
-   * workflow engine after a step writes data.
+   * No-op — retained for interface compatibility. `latest()` always reads
+   * from disk so there is no cache to invalidate.
    */
   invalidateLatest?(modelName: string, dataName: string): void;
 }
@@ -788,7 +787,6 @@ export class ModelResolver {
     ownNamespace: Namespace,
     coordsMap: ModelCoordinatesMap,
   ): DataNamespace {
-    const latestCache = new Map<string, DataRecord | null>();
     return {
       version: async (
         rawModelName: string,
@@ -817,12 +815,6 @@ export class ModelResolver {
         const ns = routeNamespace(rawModelName, ownNamespace);
 
         if (!ns.isWildcard) {
-          const nsForKey = ns.namespacePredicate
-            ? (ns.namespacePredicate.match(/ns == "([^"]*)"/)?.[1] ?? "")
-            : ownNamespace;
-          const cacheKey = `${nsForKey}\0${ns.modelName}\0${dataName}`;
-          if (latestCache.has(cacheKey)) return latestCache.get(cacheKey)!;
-
           const coords = coordsMap.get(ns.modelName);
           if (coords && coords.length > 0) {
             for (const { modelType, modelId } of coords) {
@@ -864,7 +856,6 @@ export class ModelResolver {
                     // Vault unavailable — leave refs unresolved
                   }
                 }
-                latestCache.set(cacheKey, record);
                 return record;
               }
             }
@@ -876,16 +867,13 @@ export class ModelResolver {
                 /ns == "([^"]*)"/,
               )?.[1]
               : (ownNamespace || undefined);
-            const record = await this.dataQueryService.getLatestRecord(
+            return await this.dataQueryService.getLatestRecord(
               ns.modelName,
               dataName,
               targetNs,
             );
-            latestCache.set(cacheKey, record);
-            return record;
           }
 
-          latestCache.set(cacheKey, null);
           return null;
         }
 
@@ -965,13 +953,8 @@ export class ModelResolver {
         if (!this.dataQueryService) return [];
         return await this.dataQueryService.query(predicate, { select });
       },
-      invalidateLatest: (modelName: string, dataName: string): void => {
-        const suffix = `\0${modelName}\0${dataName}`;
-        for (const key of latestCache.keys()) {
-          if (key.endsWith(suffix)) {
-            latestCache.delete(key);
-          }
-        }
+      invalidateLatest: (_modelName: string, _dataName: string): void => {
+        // No-op — latest() always reads from disk; no cache to invalidate.
       },
     };
   }
