@@ -111,7 +111,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         ) {
           const path = join(dir, entry.name);
           const content = await Deno.readTextFile(path);
-          const data = parseYaml(content) as WorkflowRunData;
+          const data = parseYaml(content) as WorkflowRunData | null;
+          if (!data) continue;
           if (data.id === runId) {
             // Convert logFile back to absolute path
             if (data.logFile) {
@@ -151,7 +152,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         // means "skip it" — never "abandon the rest of the workflow."
         try {
           const content = await Deno.readTextFile(path);
-          const data = parseYaml(content) as WorkflowRunData;
+          const data = parseYaml(content) as WorkflowRunData | null;
+          if (!data) continue;
           if (data.logFile) {
             data.logFile = toAbsolutePath(this.repoDir, data.logFile);
           }
@@ -219,7 +221,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
           const content = await Deno.readTextFile(path);
           // parseWorkflowRunSummary keeps only the displayed fields; the heavy
           // jobs/output subtree in `parseYaml`'s result is dropped and GC'd.
-          summaries.push(parseWorkflowRunSummary(parseYaml(content)));
+          const parsed = parseYaml(content);
+          if (!parsed) continue;
+          summaries.push(parseWorkflowRunSummary(parsed));
         } catch (error) {
           if (error instanceof Deno.errors.NotFound) continue;
           throw error;
@@ -398,7 +402,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
           // Stage B: parse and verify
           const content = await Deno.readTextFile(path);
-          const data = parseYaml(content) as WorkflowRunData;
+          const data = parseYaml(content) as WorkflowRunData | null;
+          if (!data) continue;
           if (data.logFile) {
             data.logFile = toAbsolutePath(this.repoDir, data.logFile);
           }
@@ -652,7 +657,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
               if (mtimeMs !== undefined && mtimeMs >= cutoffMs) continue;
 
               const content = await Deno.readTextFile(yamlPath);
-              const data = parseYaml(content) as WorkflowRunData;
+              const data = parseYaml(content) as WorkflowRunData | null;
+              if (!data) continue;
               if (!TERMINAL_STATUSES.has(data.status)) continue;
 
               const completedAt = data.completedAt
@@ -779,7 +785,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         const path = join(runsDir, entry.name);
         try {
           const content = await Deno.readTextFile(path);
-          const summary = parseWorkflowRunSummary(parseYaml(content));
+          const parsed = parseYaml(content);
+          if (!parsed) continue;
+          const summary = parseWorkflowRunSummary(parsed);
           index[summary.id] = summaryToIndexEntry(summary);
         } catch (error) {
           if (error instanceof Deno.errors.NotFound) continue;

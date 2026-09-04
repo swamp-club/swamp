@@ -474,7 +474,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     );
     try {
       const content = await Deno.readTextFile(metadataPath);
-      const metadata = parseYaml(content) as DataMetadata;
+      const metadata = parseYaml(content) as DataMetadata | null;
+      if (!metadata) return null;
       const data = Data.fromData(metadata);
 
       // Follow forward references for latest lookups (not explicit version requests)
@@ -1471,7 +1472,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     );
     try {
       const content = Deno.readTextFileSync(metadataPath);
-      const metadata = parseYaml(content) as DataMetadata;
+      const metadata = parseYaml(content) as DataMetadata | null;
+      if (!metadata) return null;
       const data = Data.fromData(metadata);
 
       // Follow forward references for latest lookups (not explicit version requests)

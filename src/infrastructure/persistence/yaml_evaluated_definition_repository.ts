@@ -77,10 +77,12 @@ export class YamlEvaluatedDefinitionRepository {
     const legacyPath = this.getLegacyPath(type, id);
     try {
       const content = await Deno.readTextFile(legacyPath);
-      const data = parseYaml(content) as DefinitionData;
-      const definition = Definition.fromData(data);
-      this.idToActualPath.set(id, legacyPath);
-      return definition;
+      const data = parseYaml(content) as DefinitionData | null;
+      if (data) {
+        const definition = Definition.fromData(data);
+        this.idToActualPath.set(id, legacyPath);
+        return definition;
+      }
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) {
         throw error;
@@ -92,8 +94,8 @@ export class YamlEvaluatedDefinitionRepository {
     if (cachedPath && cachedPath !== legacyPath) {
       try {
         const content = await Deno.readTextFile(cachedPath);
-        const data = parseYaml(content) as DefinitionData;
-        return Definition.fromData(data);
+        const data = parseYaml(content) as DefinitionData | null;
+        if (data) return Definition.fromData(data);
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) {
           throw error;
@@ -121,7 +123,8 @@ export class YamlEvaluatedDefinitionRepository {
         if (entry.isFile && entry.name.endsWith(".yaml")) {
           const path = join(dir, entry.name);
           const content = await Deno.readTextFile(path);
-          const data = parseYaml(content) as DefinitionData;
+          const data = parseYaml(content) as DefinitionData | null;
+          if (!data) continue;
           const definition = Definition.fromData(data);
           this.idToActualPath.set(definition.id as DefinitionId, path);
           definitions.push(definition);
@@ -149,13 +152,15 @@ export class YamlEvaluatedDefinitionRepository {
       const namePath = this.getNamePath(type, name);
       try {
         const content = await Deno.readTextFile(namePath);
-        const data = parseYaml(content) as DefinitionData;
-        const definition = Definition.fromData(data);
-        if (definition.name !== name) {
-          // File content doesn't match filename — fall through to slow path
-        } else {
-          this.idToActualPath.set(definition.id as DefinitionId, namePath);
-          return definition;
+        const data = parseYaml(content) as DefinitionData | null;
+        if (data) {
+          const definition = Definition.fromData(data);
+          if (definition.name !== name) {
+            // File content doesn't match filename — fall through to slow path
+          } else {
+            this.idToActualPath.set(definition.id as DefinitionId, namePath);
+            return definition;
+          }
         }
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) {
@@ -196,7 +201,8 @@ export class YamlEvaluatedDefinitionRepository {
         if (entry.isFile && entry.name.endsWith(".yaml")) {
           // Found a YAML file, check if it matches the name
           const content = await Deno.readTextFile(fullPath);
-          const data = parseYaml(content) as DefinitionData;
+          const data = parseYaml(content) as DefinitionData | null;
+          if (!data) continue;
           const definition = Definition.fromData(data);
 
           if (definition.name === name) {
@@ -256,7 +262,8 @@ export class YamlEvaluatedDefinitionRepository {
         if (entry.isFile && entry.name.endsWith(".yaml")) {
           // Found a YAML file, add it to results
           const content = await Deno.readTextFile(fullPath);
-          const data = parseYaml(content) as DefinitionData;
+          const data = parseYaml(content) as DefinitionData | null;
+          if (!data) continue;
           const definition = Definition.fromData(data);
 
           this.idToActualPath.set(definition.id as DefinitionId, fullPath);
