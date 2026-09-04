@@ -57,6 +57,22 @@ audit:
   flush-interval: 5s
 ```
 
+Config values support the same secret resolution as webhook secrets:
+`$env=VAR_NAME`, `@file=/path/to/secret`, `@vault=vault-name:secret-key`.
+This avoids hardcoding credentials in `serve.yaml`:
+
+```yaml
+audit:
+  stores:
+    - target: security-audit
+      type: "@swamp/s3-datastore"
+      config:
+        bucket: audit-bucket
+        region: us-east-1
+        accessKeyId: "$env=AUDIT_AWS_ACCESS_KEY_ID"
+        secretAccessKey: "@vault=infra:audit-s3-secret"
+```
+
 A store entry without `type` + `config` falls back to the repo's existing
 control-plane store (shared datastore). This works for development but logs
 a warning at startup — production deployments should use a dedicated store.

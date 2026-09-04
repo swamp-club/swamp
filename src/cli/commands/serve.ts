@@ -108,6 +108,7 @@ import {
   parseAuditConfig,
   parseExplicitFlags,
   parseWebhookConfig,
+  resolveAuditStoreConfig,
 } from "../../serve/serve_config.ts";
 import { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";
 import { StoreSink } from "../../serve/audit_sinks/store_sink.ts";
@@ -2739,7 +2740,15 @@ export const serveCommand = new Command()
               `Audit store target "${entry.target}": datastore type "${entry.type}" is not registered or has no provider`,
             );
           }
-          const provider = typeInfo.createProvider(entry.config);
+          const auditVaultService = await VaultService.fromRepository(
+            resolvedRepoDir,
+            { defaultVaultName: repoMarker?.defaultVault },
+          );
+          const resolvedConfig = await resolveAuditStoreConfig(
+            entry.config as Record<string, unknown>,
+            auditVaultService,
+          );
+          const provider = typeInfo.createProvider(resolvedConfig);
           const tmpCachePath = join(
             resolvedRepoDir,
             ".swamp",

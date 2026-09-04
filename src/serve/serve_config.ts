@@ -1237,6 +1237,26 @@ export function parseAuditConfig(
   };
 }
 
+export async function resolveAuditStoreConfig(
+  config: Record<string, unknown>,
+  vault?: VaultSecretResolver,
+): Promise<Record<string, unknown>> {
+  const resolved: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(config)) {
+    if (typeof value === "string" && isSecretReference(value)) {
+      resolved[key] = await resolveSecret(value, vault);
+    } else {
+      resolved[key] = value;
+    }
+  }
+  return resolved;
+}
+
+function isSecretReference(value: string): boolean {
+  return value.startsWith("$env=") || value.startsWith("@file=") ||
+    value.startsWith("@vault=");
+}
+
 function parseDuration(value: string): number | null {
   const match = value.match(/^(\d+)(ms|s|m)$/);
   if (!match) return null;
