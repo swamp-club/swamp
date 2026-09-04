@@ -161,7 +161,10 @@ steps:
    local command performs no authorization of its own: `decidedBy` is recorded
    from `$USER`/`$USERNAME`, falling back to `"unknown"`
    (`src/libswamp/workflows/approve.ts`); authorization applies only on the
-   `--server` path via the `workflow.approve` handler. The `--run` flag
+   `--server` path via the `workflow.approve` handler, which checks the
+   `approve` action (not `run`). A `run` grant implies `approve`, so existing
+   grants continue to work; an `approve`-only grant permits gate decisions
+   without workflow execution authority. The `--run` flag
    disambiguates when multiple runs are suspended; it is optional when only
    one run is suspended.
 3. `swamp workflow resume <workflow> --run <id>` re-enters the executor, skips

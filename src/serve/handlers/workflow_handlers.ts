@@ -920,7 +920,7 @@ export async function handleWorkflowApprove(
     payload.workflowIdOrName,
   );
   if (
-    !authorizeOrReject(socket, requestId, principal, "run", {
+    !authorizeOrReject(socket, requestId, principal, "approve", {
       kind: "workflow",
       name: payload.workflowIdOrName,
       fields: workflowFields,
@@ -993,7 +993,7 @@ export async function handleWorkflowReject(
     payload.workflowIdOrName,
   );
   if (
-    !authorizeOrReject(socket, requestId, principal, "run", {
+    !authorizeOrReject(socket, requestId, principal, "approve", {
       kind: "workflow",
       name: payload.workflowIdOrName,
       fields: workflowFields,

@@ -69,7 +69,10 @@ function grantMatchesResource(grant: Grant, resource: AccessResource): boolean {
 }
 
 function grantMatchesAction(grant: Grant, action: Action): boolean {
-  return grant.actions.includes(action);
+  if (grant.actions.includes(action)) return true;
+  // run implies approve: a grant with "run" also matches "approve" requests
+  if (action === "approve" && grant.actions.includes("run")) return true;
+  return false;
 }
 
 function grantMatchesMethods(

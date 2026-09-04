@@ -386,7 +386,7 @@ export function handleAccessCheck(
         socket,
         requestId,
         "invalid_action",
-        `Invalid action "${payload.action}": must be one of run, read, write, admin`,
+        `Invalid action "${payload.action}": must be one of run, read, write, approve, admin`,
       );
       return Promise.resolve();
     }
@@ -465,7 +465,7 @@ export function handleAccessCanI(
           socket,
           requestId,
           "invalid_action",
-          `Invalid action "${payload.action}": must be one of run, read, write, admin`,
+          `Invalid action "${payload.action}": must be one of run, read, write, approve, admin`,
         );
         return Promise.resolve();
       }

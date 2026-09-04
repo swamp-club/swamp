@@ -160,12 +160,18 @@ Implementation: `src/domain/access/resource_selector.ts`.
 
 ### Actions
 
-| Action  | Typical operations                                  |
-| ------- | --------------------------------------------------- |
-| `run`   | Execute a workflow or model method                  |
-| `read`  | Query data, view definitions, list resources        |
-| `write` | Create or update models, definitions, data          |
-| `admin` | Manage grants, groups, tokens, restricted models    |
+| Action    | Typical operations                                          |
+| --------- | ----------------------------------------------------------- |
+| `run`     | Execute a workflow or model method (implies `approve`)      |
+| `read`    | Query data, view definitions, list resources                |
+| `write`   | Create or update models, definitions, data                  |
+| `approve` | Approve or reject a workflow manual-approval gate           |
+| `admin`   | Manage grants, groups, tokens, restricted models            |
+
+**`run` implies `approve`**: a grant with `actions: [run]` also satisfies
+`approve` checks. This preserves backwards compatibility — existing `run` grants
+continue to permit approval. To grant approval without execution authority, use
+`actions: [approve]` alone.
 
 Implementation: `src/domain/access/action.ts`.
 
@@ -178,7 +184,8 @@ given (principal, action, resource) triple:
    groups)
 2. **Collect candidates** — find all grants whose subject is in the list
 3. **Filter** — keep only grants that match the resource selector, the requested
-   action, and the method name (when the grant specifies a `methods` list)
+   action (including implied actions: `run` implies `approve`), and the method
+   name (when the grant specifies a `methods` list)
 4. **Partition** — separate into deny grants and allow grants
 5. **Evaluate denies first** — for each deny grant, evaluate the condition (if
    any). The first matching deny wins and the request is rejected
