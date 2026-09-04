@@ -1184,6 +1184,13 @@ function validateAuditConfig(audit: unknown, path: string): void {
           `Invalid audit store at index ${i} in ${path}: config must be an object`,
         );
       }
+      if (
+        (storeObj.type !== undefined) !== (storeObj.config !== undefined)
+      ) {
+        throw new UserError(
+          `Invalid audit store at index ${i} in ${path}: type and config must both be present for a dedicated audit store`,
+        );
+      }
     }
   }
 
@@ -1207,9 +1214,17 @@ function validateAuditConfig(audit: unknown, path: string): void {
         ]}`,
       );
     }
-    if (parseDuration(obj["flush-interval"] as string) === null) {
+    const parsed = parseDuration(obj["flush-interval"] as string);
+    if (parsed === null) {
       throw new UserError(
         `Invalid audit.flush-interval in ${path}: expected format like "5s", "100ms", or "1m", got "${
+          obj["flush-interval"]
+        }"`,
+      );
+    }
+    if (parsed <= 0) {
+      throw new UserError(
+        `Invalid audit.flush-interval in ${path}: must be positive, got "${
           obj["flush-interval"]
         }"`,
       );

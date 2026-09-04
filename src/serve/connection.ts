@@ -1452,7 +1452,6 @@ export function handleMessage(
           fields: {},
         },
         ctx,
-        ctx.auditEmitter,
       )
     ) {
       activeRequests.delete(request.id);
@@ -2630,7 +2629,6 @@ async function handleCancelRun(
         fields: cancelFields,
       },
       ctx,
-      ctx.auditEmitter,
     )
   ) {
     ctx.activeRunRegistry!.cancel(requestId);
@@ -2694,7 +2692,6 @@ async function handleRunAttach(
               fields: remoteFields,
             },
             ctx,
-            ctx.auditEmitter,
           )
         ) return;
 
@@ -2754,7 +2751,6 @@ async function handleRunAttach(
         fields: localFields,
       },
       ctx,
-      ctx.auditEmitter,
     )
   ) return;
 

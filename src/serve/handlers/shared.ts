@@ -309,7 +309,6 @@ export function authorizeOrReject(
   action: Action,
   resource: AccessResource,
   ctx: ConnectionContext,
-  auditEmitter?: AuditEmitter,
 ): boolean {
   if (ctx.authConfig.mode === "none") return true;
 
@@ -322,7 +321,6 @@ export function authorizeOrReject(
     );
     emitDenial(
       socket,
-      auditEmitter,
       ctx,
       requestId,
       principal,
@@ -342,7 +340,6 @@ export function authorizeOrReject(
     );
     emitDenial(
       socket,
-      auditEmitter,
       ctx,
       requestId,
       null,
@@ -391,7 +388,6 @@ export function authorizeOrReject(
   }
   emitDenial(
     socket,
-    auditEmitter,
     ctx,
     requestId,
     principal,
@@ -404,7 +400,6 @@ export function authorizeOrReject(
 
 function emitDenial(
   socket: WebSocket,
-  emitter: AuditEmitter | undefined,
   ctx: ConnectionContext,
   requestId: string,
   principal: Principal | null,
@@ -412,8 +407,8 @@ function emitDenial(
   resource: AccessResource,
   detail: string,
 ): void {
-  if (!emitter) return;
-  emitter.emit(buildAuditEvent({
+  if (!ctx.auditEmitter) return;
+  ctx.auditEmitter.emit(buildAuditEvent({
     instanceId: ctx.instanceId ?? "unknown",
     category: "access",
     stage: "response",

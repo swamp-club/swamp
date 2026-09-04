@@ -2779,6 +2779,11 @@ export const serveCommand = new Command()
             "Audit target {target}: using shared control-plane store (configure type + config for a dedicated audit store)",
             { target: entry.target },
           );
+        } else {
+          logger.warn(
+            "Audit target {target}: skipped — no control-plane store available and no dedicated store configured",
+            { target: entry.target },
+          );
         }
       }
       if (auditStores.length > 0) {
