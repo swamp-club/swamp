@@ -196,3 +196,65 @@ Deno.test("audited: omits methodName when not provided", async () => {
   assertEquals(sink.events.length, 1);
   assertEquals(sink.events[0].methodName, undefined);
 });
+
+Deno.test("audited: failure event emitted AND error re-thrown concurrently", async () => {
+  const sink = createCaptureSink();
+  const emitter = new AuditEmitter([sink]);
+  const error = new Error("concurrent fail");
+
+  const promise = audited(
+    Promise.reject(error),
+    { ...baseOptions, emitter },
+  );
+
+  let caught: Error | null = null;
+  try {
+    await promise;
+  } catch (e) {
+    caught = e as Error;
+  }
+
+  await emitter.flush();
+
+  assertEquals(caught, error);
+  assertEquals(sink.events.length, 1);
+  assertEquals(sink.events[0].outcome, "failure");
+  assertEquals(sink.events[0].detail, "concurrent fail");
+});
+
+Deno.test("audited: concurrent success and failure calls emit correctly", async () => {
+  const sink = createCaptureSink();
+  const emitter = new AuditEmitter([sink]);
+
+  const results = await Promise.allSettled([
+    audited(Promise.resolve(), {
+      ...baseOptions,
+      emitter,
+      requestId: "req-success",
+    }),
+    audited(Promise.reject(new Error("boom")), {
+      ...baseOptions,
+      emitter,
+      requestId: "req-fail",
+    }),
+    audited(Promise.resolve(), {
+      ...baseOptions,
+      emitter,
+      requestId: "req-success-2",
+    }),
+  ]);
+
+  await emitter.flush();
+
+  assertEquals(results[0].status, "fulfilled");
+  assertEquals(results[1].status, "rejected");
+  assertEquals(results[2].status, "fulfilled");
+
+  assertEquals(sink.events.length, 3);
+  const outcomes = sink.events.map((e) => e.outcome).sort();
+  assertEquals(outcomes, ["failure", "success", "success"]);
+
+  const failEvent = sink.events.find((e) => e.outcome === "failure")!;
+  assertEquals(failEvent.requestId, "req-fail");
+  assertEquals(failEvent.detail, "boom");
+});

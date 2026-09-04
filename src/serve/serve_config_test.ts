@@ -1314,6 +1314,105 @@ Deno.test("loadServeConfig: rejects audit store without target", () => {
   }
 });
 
+Deno.test("loadServeConfig: rejects audit.batch-size of zero", () => {
+  const dir = Deno.makeTempDirSync();
+  try {
+    const path = join(dir, ".swamp", "serve.yaml");
+    Deno.mkdirSync(join(dir, ".swamp"), { recursive: true });
+    Deno.writeTextFileSync(
+      path,
+      stringifyYaml({
+        audit: {
+          stores: [{ target: "default" }],
+          "batch-size": 0,
+        },
+      }),
+    );
+    assertThrows(
+      () => loadServeConfig(path, dir),
+      Error,
+      "batch-size",
+    );
+  } finally {
+    try {
+      Deno.removeSync(dir, { recursive: true });
+    } catch { /* Windows EBUSY */ }
+  }
+});
+
+Deno.test("loadServeConfig: rejects negative audit.batch-size", () => {
+  const dir = Deno.makeTempDirSync();
+  try {
+    const path = join(dir, ".swamp", "serve.yaml");
+    Deno.mkdirSync(join(dir, ".swamp"), { recursive: true });
+    Deno.writeTextFileSync(
+      path,
+      stringifyYaml({
+        audit: {
+          stores: [{ target: "default" }],
+          "batch-size": -5,
+        },
+      }),
+    );
+    assertThrows(
+      () => loadServeConfig(path, dir),
+      Error,
+      "batch-size",
+    );
+  } finally {
+    try {
+      Deno.removeSync(dir, { recursive: true });
+    } catch { /* Windows EBUSY */ }
+  }
+});
+
+Deno.test("loadServeConfig: rejects non-numeric audit.batch-size", () => {
+  const dir = Deno.makeTempDirSync();
+  try {
+    const path = join(dir, ".swamp", "serve.yaml");
+    Deno.mkdirSync(join(dir, ".swamp"), { recursive: true });
+    Deno.writeTextFileSync(
+      path,
+      stringifyYaml({
+        audit: {
+          stores: [{ target: "default" }],
+          "batch-size": "fifty",
+        },
+      }),
+    );
+    assertThrows(
+      () => loadServeConfig(path, dir),
+      Error,
+      "batch-size",
+    );
+  } finally {
+    try {
+      Deno.removeSync(dir, { recursive: true });
+    } catch { /* Windows EBUSY */ }
+  }
+});
+
+Deno.test("loadServeConfig: rejects non-object audit block", () => {
+  const dir = Deno.makeTempDirSync();
+  try {
+    const path = join(dir, ".swamp", "serve.yaml");
+    Deno.mkdirSync(join(dir, ".swamp"), { recursive: true });
+    Deno.writeTextFileSync(
+      path,
+      stringifyYaml({ audit: "enabled" }),
+    );
+    assertThrows(
+      () => loadServeConfig(path, dir),
+      Error,
+      "audit",
+    );
+  } finally {
+    try {
+      Deno.removeSync(dir, { recursive: true });
+    } catch { /* Windows EBUSY */ }
+  }
+});
+
 Deno.test("readServeConfigFile: returns null when file does not exist", async () => {
   const dir = await Deno.makeTempDir();
   try {

@@ -223,3 +223,69 @@ Deno.test("StoreSink: abort signal triggers close", async () => {
   // Clean up (close is idempotent)
   await sink.close();
 });
+
+Deno.test("StoreSink: close is idempotent", async () => {
+  const store = createMockStore();
+  const sink = new StoreSink({
+    stores: [store],
+    batchSize: 100,
+    flushIntervalMs: 60_000,
+  });
+
+  await sink.write([makeEvent("test")]);
+  await sink.close();
+  await sink.close();
+  await sink.close();
+
+  assertEquals(store.written.size, 1);
+});
+
+Deno.test("StoreSink: slow store does not block subsequent batches", async () => {
+  let writeCount = 0;
+  const slowStore: AuditStore = {
+    put(_key: string, _data: Uint8Array): Promise<void> {
+      writeCount++;
+      return new Promise((resolve) => setTimeout(resolve, 100));
+    },
+    get(): Promise<Uint8Array | null> {
+      return Promise.resolve(null);
+    },
+    list(): Promise<string[]> {
+      return Promise.resolve([]);
+    },
+  };
+  const sink = new StoreSink({
+    stores: [slowStore],
+    batchSize: 1,
+    flushIntervalMs: 60_000,
+  });
+
+  await sink.write([makeEvent("batch-1")]);
+  await sink.write([makeEvent("batch-2")]);
+  await sink.close();
+
+  assertEquals(writeCount, 2);
+});
+
+Deno.test("StoreSink: timer flush during close does not duplicate events", async () => {
+  const store = createMockStore();
+  const sink = new StoreSink({
+    stores: [store],
+    batchSize: 100,
+    flushIntervalMs: 10,
+  });
+
+  await sink.write([makeEvent("event-1")]);
+
+  // Wait for the timer to fire at least once
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  // Close should not write the same events again
+  await sink.close();
+
+  // All writes should be for event-1, and there should be exactly 1 batch
+  assertEquals(store.written.size, 1);
+  const content = decoder.decode([...store.written.values()][0]);
+  const parsed = JSON.parse(content.trim());
+  assertEquals(parsed.action, "event-1");
+});
