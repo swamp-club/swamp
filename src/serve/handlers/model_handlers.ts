@@ -93,7 +93,13 @@ import {
   type Principal,
   principalToString,
 } from "../../domain/access/principal.ts";
-import { modelRegistry } from "../../domain/models/model.ts";
+import {
+  inferMethodKind,
+  isMutatingKind,
+  modelRegistry,
+} from "../../domain/models/model.ts";
+import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
+import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
 import { RegistryCapacityError } from "../active_run_registry.ts";
 import { RunEventBuffer } from "../run_event_buffer.ts";
 import { deleteActiveRun, writeActiveRun } from "../active_run_tracker.ts";
@@ -115,6 +121,20 @@ const logger = getSwampLogger(["serve", "connection"]);
 
 const DEFAULT_BUFFER_CAPACITY = 10_000;
 
+export async function isMethodMutating(
+  modelType: string,
+  methodName: string,
+): Promise<boolean> {
+  try {
+    const modelDef = await resolveModelType(modelType, getAutoResolver());
+    if (!modelDef) return true;
+    const method = modelDef.methods[methodName];
+    return isMutatingKind(inferMethodKind(methodName, method));
+  } catch {
+    return true;
+  }
+}
+
 export async function handleModelMethodRun(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -126,6 +146,7 @@ export async function handleModelMethodRun(
   const registry = ctx.activeRunRegistry;
   if (!registry) {
     let flushLocks: (() => Promise<void>) | null = null;
+    let mutating = true;
     const initiatedBy = principal ? principalToString(principal) : "ghost";
     const telemetry = createCommandTelemetry(initiatedBy);
     try {
@@ -181,18 +202,24 @@ export async function handleModelMethodRun(
       }
 
       if (preResult) {
-        const lockResult = await acquireModelLocks(
-          ctx.datastoreConfig,
-          [{
-            modelType: preResult.type.normalized,
-            modelId: preResult.definition.id,
-          }],
-          ctx.repoDir,
-          ctx.syncService,
-          ctx.repoContext.catalogStore,
+        mutating = await isMethodMutating(
+          preResult.type.normalized,
+          payload.methodName,
         );
-        if (lockResult.synced) ctx.repoContext.catalogStore.invalidate();
-        flushLocks = lockResult.flush;
+        if (mutating) {
+          const lockResult = await acquireModelLocks(
+            ctx.datastoreConfig,
+            [{
+              modelType: preResult.type.normalized,
+              modelId: preResult.definition.id,
+            }],
+            ctx.repoDir,
+            ctx.syncService,
+            ctx.repoContext.catalogStore,
+          );
+          if (lockResult.synced) ctx.repoContext.catalogStore.invalidate();
+          flushLocks = lockResult.flush;
+        }
       }
 
       const isDirectExecution = payload.typeArg !== undefined;
@@ -253,7 +280,7 @@ export async function handleModelMethodRun(
       } else {
         await runMethod();
       }
-      if (ctx.syncService && !flushLocks) {
+      if (ctx.syncService && !flushLocks && mutating) {
         const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
           ? ctx.datastoreConfig.namespace
           : undefined;
@@ -410,10 +437,14 @@ export async function handleModelMethodRun(
 
   const detachedTelemetry = createCommandTelemetry(initiatedBy);
 
+  const detachedMutating = preResult
+    ? await isMethodMutating(preResult.type.normalized, payload.methodName)
+    : true;
+
   (async () => {
     let flushLocks: (() => Promise<void>) | null = null;
     try {
-      if (preResult) {
+      if (preResult && detachedMutating) {
         const lockResult = await acquireModelLocks(
           ctx.datastoreConfig,
           [{
@@ -483,7 +514,7 @@ export async function handleModelMethodRun(
         await doRun();
       }
 
-      if (ctx.syncService && !flushLocks) {
+      if (ctx.syncService && !flushLocks && detachedMutating) {
         const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
           ? ctx.datastoreConfig.namespace
           : undefined;
