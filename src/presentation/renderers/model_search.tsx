@@ -23,7 +23,6 @@ import { Box, Text } from "ink";
 import type {
   EventHandlers,
   ModelGetData,
-  ModelSearchData,
   ModelSearchEvent,
   ModelSearchItem,
 } from "../../libswamp/mod.ts";
@@ -74,6 +73,11 @@ export type ModelSearchRenderer = SearchRenderer<
 
 class JsonModelSearchRenderer implements ModelSearchRenderer {
   private _selected: ModelSearchItem | undefined;
+  private readonly fetchPreview: ModelPreviewFetcher | undefined;
+
+  constructor(fetchPreview?: ModelPreviewFetcher) {
+    this.fetchPreview = fetchPreview;
+  }
 
   selectedItem(): ModelSearchItem | undefined {
     return this._selected;
@@ -82,13 +86,42 @@ class JsonModelSearchRenderer implements ModelSearchRenderer {
   handlers(): EventHandlers<ModelSearchEvent> {
     return {
       resolving: () => {},
-      completed: (e) => {
+      completed: async (e) => {
         const filtered = filterModels(e.data.results, e.data.query);
-        const output: ModelSearchData = {
-          query: e.data.query,
-          results: filtered,
-        };
-        console.log(JSON.stringify(output, null, 2));
+
+        if (!this.fetchPreview) {
+          console.log(
+            JSON.stringify({ query: e.data.query, results: filtered }, null, 2),
+          );
+          return;
+        }
+
+        const typeCache = new Map<
+          string,
+          Pick<ModelGetData, "methods" | "globalArgumentsSchema">
+        >();
+        for (const item of filtered) {
+          if (!typeCache.has(item.type)) {
+            try {
+              const detail = await this.fetchPreview(item);
+              typeCache.set(item.type, {
+                methods: detail.methods,
+                globalArgumentsSchema: detail.globalArgumentsSchema,
+              });
+            } catch {
+              typeCache.set(item.type, {});
+            }
+          }
+        }
+
+        const results = filtered.map((item) => ({
+          ...item,
+          ...typeCache.get(item.type),
+        }));
+
+        console.log(
+          JSON.stringify({ query: e.data.query, results }, null, 2),
+        );
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -154,7 +187,7 @@ export function createModelSearchRenderer(
 ): ModelSearchRenderer {
   switch (mode) {
     case "json":
-      return new JsonModelSearchRenderer();
+      return new JsonModelSearchRenderer(fetchPreview);
     case "log":
       return new InkModelSearchRenderer(fetchPreview);
   }

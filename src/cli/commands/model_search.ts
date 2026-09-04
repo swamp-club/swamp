@@ -119,9 +119,7 @@ export async function modelSearchAction(
   };
 
   const repoDir = resolveRepoDir(options.repoDir);
-  const fetchPreview = effectiveMode === "log"
-    ? await createModelFetchPreview(repoDir)
-    : undefined;
+  const fetchPreview = await createModelFetchPreview(repoDir);
   const renderer = createModelSearchRenderer(effectiveMode, fetchPreview);
   await consumeStream(
     modelSearch(libCtx, deps, { query, includeInternal }),
