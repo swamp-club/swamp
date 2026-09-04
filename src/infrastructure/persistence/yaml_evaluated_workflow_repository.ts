@@ -52,10 +52,11 @@ export class YamlEvaluatedWorkflowRepository {
     try {
       const content = await Deno.readTextFile(legacyPath);
       const data = parseYaml(content) as WorkflowData | null;
-      if (!data) return null;
-      const workflow = Workflow.fromData(data);
-      this.idToActualPath.set(id, legacyPath);
-      return workflow;
+      if (data) {
+        const workflow = Workflow.fromData(data);
+        this.idToActualPath.set(id, legacyPath);
+        return workflow;
+      }
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) {
         throw error;
@@ -68,8 +69,9 @@ export class YamlEvaluatedWorkflowRepository {
       try {
         const content = await Deno.readTextFile(cachedPath);
         const data = parseYaml(content) as WorkflowData | null;
-        if (!data) return null;
-        return Workflow.fromData(data);
+        if (data) {
+          return Workflow.fromData(data);
+        }
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) {
           throw error;
@@ -123,13 +125,14 @@ export class YamlEvaluatedWorkflowRepository {
       try {
         const content = await Deno.readTextFile(namePath);
         const data = parseYaml(content) as WorkflowData | null;
-        if (!data) return null;
-        const workflow = Workflow.fromData(data);
-        if (workflow.name !== name) {
-          // File content doesn't match filename — fall through to slow path
-        } else {
-          this.idToActualPath.set(workflow.id as WorkflowId, namePath);
-          return workflow;
+        if (data) {
+          const workflow = Workflow.fromData(data);
+          if (workflow.name !== name) {
+            // File content doesn't match filename — fall through to slow path
+          } else {
+            this.idToActualPath.set(workflow.id as WorkflowId, namePath);
+            return workflow;
+          }
         }
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) {

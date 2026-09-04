@@ -773,7 +773,7 @@ Deno.test(
 );
 
 Deno.test(
-  "deleteOlderThan: empty YAML file is skipped, not fatal",
+  "deleteOlderThan: empty YAML file is cleaned up",
   async () => {
     await withTempDir(async (dir) => {
       const repo = new YamlOutputRepository(dir);
@@ -797,7 +797,7 @@ Deno.test(
       const result = await repo.deleteOlderThan(
         new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
       );
-      assertEquals(result.deleted, 1);
+      assertEquals(result.deleted, 2);
     });
   },
 );

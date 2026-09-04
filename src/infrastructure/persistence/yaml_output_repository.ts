@@ -390,7 +390,20 @@ export class YamlOutputRepository implements OutputRepository {
 
         const content = await Deno.readTextFile(yamlPath);
         const data = parseYaml(content) as ModelOutputData | null;
-        if (!data) continue;
+        if (!data) {
+          if (!options?.dryRun) {
+            await this.notifyDirty(yamlPath);
+            try {
+              await Deno.remove(yamlPath);
+            } catch (error) {
+              if (!(error instanceof Deno.errors.NotFound)) throw error;
+            }
+            await cleanupEmptyParentDirs(yamlPath, this.baseDir);
+          }
+          deleted++;
+          bytesReclaimed += stat.size ?? 0;
+          continue;
+        }
         if (!TERMINAL_STATUSES.has(data.status)) continue;
         const startedAt = data.startedAt
           ? new Date(data.startedAt).getTime()
