@@ -2247,11 +2247,11 @@ export const serveCommand = new Command()
       adminGrantStore,
     );
     if (
-      materializeResult.created > 0 || materializeResult.revoked > 0 ||
-      materializeResult.reactivated > 0
+      materializeResult.created > 0 || materializeResult.updated > 0 ||
+      materializeResult.revoked > 0 || materializeResult.reactivated > 0
     ) {
       logger
-        .info`Admin grants materialized: ${materializeResult.created} created, ${materializeResult.revoked} revoked, ${materializeResult.reactivated} reactivated, ${materializeResult.unchanged} unchanged`;
+        .info`Admin grants materialized: ${materializeResult.created} created, ${materializeResult.updated} updated, ${materializeResult.revoked} revoked, ${materializeResult.reactivated} reactivated, ${materializeResult.unchanged} unchanged`;
     }
 
     const grantsDir = join(resolvedRepoDir, "grants");
@@ -2420,11 +2420,12 @@ export const serveCommand = new Command()
 
     if (
       fileReconcileResult.totalCreated > 0 ||
+      fileReconcileResult.totalUpdated > 0 ||
       fileReconcileResult.totalRevoked > 0 ||
       fileReconcileResult.totalReactivated > 0
     ) {
       logger
-        .info`File grants reconciled (${fileReconcileResult.filesProcessed} file(s)): ${fileReconcileResult.totalCreated} created, ${fileReconcileResult.totalRevoked} revoked, ${fileReconcileResult.totalReactivated} reactivated, ${fileReconcileResult.totalUnchanged} unchanged`;
+        .info`File grants reconciled (${fileReconcileResult.filesProcessed} file(s)): ${fileReconcileResult.totalCreated} created, ${fileReconcileResult.totalUpdated} updated, ${fileReconcileResult.totalRevoked} revoked, ${fileReconcileResult.totalReactivated} reactivated, ${fileReconcileResult.totalUnchanged} unchanged`;
     }
 
     const policySnapshotLoader = new PolicySnapshotLoader(

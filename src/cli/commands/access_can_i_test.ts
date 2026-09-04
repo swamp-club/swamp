@@ -112,6 +112,13 @@ Deno.test("accessCanICommand: does not have --subject option", async () => {
   assertEquals(opt, undefined);
 });
 
+Deno.test("accessCanICommand: has --method option", async () => {
+  const { accessCanICommand } = await import("./access_can_i.ts");
+  const options = accessCanICommand.getOptions();
+  const opt = options.find((o) => o.name === "method");
+  assertEquals(opt !== undefined, true);
+});
+
 Deno.test({
   name: "accessCanICommand: sets Deno.exitCode 1 when the query is denied",
   sanitizeOps: false,

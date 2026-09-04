@@ -50,8 +50,8 @@ class LogAccessGrantListRenderer implements AccessGrantListRenderer {
     const header = `${"ID".padEnd(idDisplay)}  ${"SUBJECT".padEnd(28)}  ${
       "EFFECT".padEnd(6)
     }  ${"ACTIONS".padEnd(20)}  ${"RESOURCE".padEnd(28)}  ${
-      "CONDITION".padEnd(20)
-    }  SOURCE`;
+      "METHODS".padEnd(16)
+    }  ${"CONDITION".padEnd(20)}  SOURCE`;
     writeOutput(header);
 
     for (const grant of grants) {
@@ -60,10 +60,11 @@ class LogAccessGrantListRenderer implements AccessGrantListRenderer {
       const effect = grant.effect.padEnd(6);
       const actions = grant.actions.join(",").padEnd(20);
       const resource = formatResource(grant.resource).padEnd(28);
+      const methods = (grant.methods?.join(",") ?? "*").padEnd(16);
       const condition = (grant.condition ?? "").padEnd(20);
       const source = grant.source;
       writeOutput(
-        `${id}  ${subject}  ${effect}  ${actions}  ${resource}  ${condition}  ${source}`,
+        `${id}  ${subject}  ${effect}  ${actions}  ${resource}  ${methods}  ${condition}  ${source}`,
       );
     }
   }

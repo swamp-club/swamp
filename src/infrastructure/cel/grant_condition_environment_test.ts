@@ -425,6 +425,9 @@ Deno.test("validateGrantCondition: all existing condition patterns pass cost bou
     ['name == "deploy"', "workflow"],
     ['collective == "acme"', "workflow"],
     ['modelType == "aws/ec2"', "model"],
+    ['methodName == "read"', "model"],
+    ['methodName in ["read", "list"]', "model"],
+    ['methodName == "read" && modelType == "aws/ec2"', "model"],
     ['ns == "infra" && tags.env == "prod"', "data"],
     ["owner.createdBy == principal.sub", "data"],
     ['name == "admin-grant"', "access"],
@@ -441,4 +444,56 @@ Deno.test("validateGrantCondition: all existing condition patterns pass cost bou
     );
     assertEquals(result, { valid: true }, `Failed for: ${condition}`);
   }
+});
+
+Deno.test("evaluateGrantCondition: methodName matches when present", () => {
+  const result = evaluateGrantCondition(
+    'methodName == "read"',
+    "model",
+    {
+      name: "my-model",
+      modelType: "aws/ec2",
+      tags: {},
+      collective: "",
+      methodName: "read",
+    },
+    PRINCIPAL,
+  );
+  assertEquals(result, true);
+});
+
+Deno.test("evaluateGrantCondition: methodName does not match wrong value", () => {
+  const result = evaluateGrantCondition(
+    'methodName == "read"',
+    "model",
+    {
+      name: "my-model",
+      modelType: "aws/ec2",
+      tags: {},
+      collective: "",
+      methodName: "create",
+    },
+    PRINCIPAL,
+  );
+  assertEquals(result, false);
+});
+
+Deno.test("evaluateGrantCondition: absent methodName defaults to empty string", () => {
+  const result = evaluateGrantCondition(
+    'methodName == "read"',
+    "model",
+    { name: "my-model", modelType: "aws/ec2", tags: {}, collective: "" },
+    PRINCIPAL,
+  );
+  assertEquals(result, false);
+});
+
+Deno.test("evaluateGrantCondition: absent field does not throw", () => {
+  const result = evaluateGrantCondition(
+    'methodName == ""',
+    "model",
+    { name: "my-model" },
+    PRINCIPAL,
+  );
+  assertEquals(result, true);
 });

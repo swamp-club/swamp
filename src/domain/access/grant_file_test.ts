@@ -480,3 +480,31 @@ Deno.test("collectErrors: aggregates errors from all files", () => {
   const errors = collectErrors(results);
   assertEquals(errors.length, 3);
 });
+
+Deno.test("parseGrantFile: parses grant with methods field", () => {
+  const content = `
+grants:
+  - subject: "user:monitor"
+    effect: allow
+    actions: [run]
+    resource: "model:@acme/my-model"
+    methods: [read, list]
+`;
+  const result = parseGrantFile("monitor.yaml", content);
+  assertEquals(result.errors.length, 0);
+  assertEquals(result.entries.length, 1);
+  assertEquals(result.entries[0].methods, ["read", "list"]);
+});
+
+Deno.test("parseGrantFile: methods field is optional", () => {
+  const content = `
+grants:
+  - subject: "user:adam"
+    effect: allow
+    actions: [run]
+    resource: "workflow:@acme/*"
+`;
+  const result = parseGrantFile("basic.yaml", content);
+  assertEquals(result.errors.length, 0);
+  assertEquals(result.entries[0].methods, undefined);
+});

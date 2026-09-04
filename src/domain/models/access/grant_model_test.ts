@@ -209,3 +209,32 @@ Deno.test("create: source field is set at creation and persisted", async () => {
   const revoked = store.get("grant-main") as unknown as Grant;
   assertEquals(revoked.source, "file:test.yaml");
 });
+
+Deno.test("create: stores methods field when provided", async () => {
+  const { context, store } = createTestContext();
+  await grantModel.methods.create.execute(
+    { ...VALID_CREATE_ARGS, methods: ["read", "list"] },
+    context,
+  );
+  const grant = store.get("grant-main") as unknown as Grant;
+  assertEquals(grant.methods, ["read", "list"]);
+});
+
+Deno.test("create: methods field is undefined when omitted", async () => {
+  const { context, store } = createTestContext();
+  await grantModel.methods.create.execute(VALID_CREATE_ARGS, context);
+  const grant = store.get("grant-main") as unknown as Grant;
+  assertEquals(grant.methods, undefined);
+});
+
+Deno.test("revoke: preserves methods field", async () => {
+  const { context, store } = createTestContext();
+  await grantModel.methods.create.execute(
+    { ...VALID_CREATE_ARGS, methods: ["read"] },
+    context,
+  );
+  await grantModel.methods.revoke.execute({}, context);
+  const revoked = store.get("grant-main") as unknown as Grant;
+  assertEquals(revoked.methods, ["read"]);
+  assertEquals(revoked.state, "revoked");
+});

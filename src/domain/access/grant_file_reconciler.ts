@@ -65,11 +65,24 @@ function buildFileGrant(entry: GrantFileEntry, filename: string): Grant {
     actions: entry.actions,
     resource: entry.resource,
     condition: entry.condition,
+    methods: entry.methods,
     state: "active",
     source: `file:${filename}`,
     createdBy: { kind: "user", id: "system" },
     createdAt: new Date().toISOString(),
   };
+}
+
+function methodsEqual(
+  a: string[] | undefined,
+  b: string[] | undefined,
+): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  const sortedA = [...a].sort();
+  const sortedB = [...b].sort();
+  return sortedA.every((v, i) => v === sortedB[i]);
 }
 
 interface StoredFileGrant {
@@ -104,6 +117,7 @@ function reconcileOneFile(
 ): { result: MaterializeResult; writes: Promise<void>[] } {
   const result: MaterializeResult = {
     created: 0,
+    updated: 0,
     revoked: 0,
     reactivated: 0,
     unchanged: 0,
@@ -118,12 +132,28 @@ function reconcileOneFile(
     const existing = grantsForFile.get(key);
 
     if (existing && existing.grant.state === "active") {
+      if (!methodsEqual(existing.grant.methods, entry.methods)) {
+        const updated: Grant = { ...existing.grant, methods: entry.methods };
+        writes.push(
+          store.writeGrant(existing.modelId, existing.instanceName, updated),
+        );
+        result.updated++;
+        const subjectStr = subjectToString(entry.subject);
+        const resourceStr = resourceSelectorToString(entry.resource);
+        logger
+          .info`Updated methods on file grant for ${subjectStr} on ${resourceStr} from ${filename}`;
+        continue;
+      }
       result.unchanged++;
       continue;
     }
 
     if (existing && existing.grant.state === "revoked") {
-      const reactivated: Grant = { ...existing.grant, state: "active" };
+      const reactivated: Grant = {
+        ...existing.grant,
+        state: "active",
+        methods: entry.methods,
+      };
       writes.push(
         store.writeGrant(
           existing.modelId,
@@ -174,6 +204,7 @@ function reconcileOneFile(
 
 export interface ReconcileAllResult {
   totalCreated: number;
+  totalUpdated: number;
   totalRevoked: number;
   totalReactivated: number;
   totalUnchanged: number;
@@ -191,6 +222,7 @@ export async function reconcileAllFileGrants(
   const perFile = new Map<string, MaterializeResult>();
   const allWrites: Promise<void>[] = [];
   let totalCreated = 0;
+  let totalUpdated = 0;
   let totalRevoked = 0;
   let totalReactivated = 0;
   let totalUnchanged = 0;
@@ -206,6 +238,7 @@ export async function reconcileAllFileGrants(
     perFile.set(filename, result);
     allWrites.push(...writes);
     totalCreated += result.created;
+    totalUpdated += result.updated;
     totalRevoked += result.revoked;
     totalReactivated += result.reactivated;
     totalUnchanged += result.unchanged;
@@ -222,6 +255,7 @@ export async function reconcileAllFileGrants(
     perFile.set(filename, result);
     allWrites.push(...writes);
     totalCreated += result.created;
+    totalUpdated += result.updated;
     totalRevoked += result.revoked;
     totalReactivated += result.reactivated;
     totalUnchanged += result.unchanged;
@@ -231,6 +265,7 @@ export async function reconcileAllFileGrants(
 
   return {
     totalCreated,
+    totalUpdated,
     totalRevoked,
     totalReactivated,
     totalUnchanged,

@@ -37,6 +37,7 @@ const GrantFileEntryRawSchema = z.object({
   actions: z.array(ActionSchema).min(1),
   resource: z.string().min(1),
   condition: z.string().optional(),
+  methods: z.array(z.string().min(1)).optional(),
 });
 
 const GrantFileRawSchema = z.object({
@@ -49,6 +50,7 @@ export interface GrantFileEntry {
   actions: Action[];
   resource: ResourceSelector;
   condition?: string;
+  methods?: string[];
 }
 
 export interface GrantFileError {
@@ -152,6 +154,7 @@ export function parseGrantFile(
       actions: raw.actions,
       resource,
       condition: raw.condition,
+      methods: raw.methods,
     };
 
     const key = entryIdentityKey(entry);

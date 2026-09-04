@@ -38,7 +38,7 @@ export interface GrantConditionValidationResult {
 
 const RESOURCE_FIELDS: Record<ResourceKind, string[]> = {
   workflow: ["name", "tags", "collective"],
-  model: ["name", "modelType", "tags", "collective"],
+  model: ["name", "modelType", "tags", "collective", "methodName"],
   data: ["name", "ns", "tags", "owner"],
   access: ["name"],
 };
@@ -250,7 +250,7 @@ function createGrantConditionEnvironment(kind: ResourceKind): Environment {
       field === "tags" || field === "owner"
         ? "map"
         : field === "name" || field === "ns" || field === "modelType" ||
-            field === "collective"
+            field === "collective" || field === "methodName"
         ? "string"
         : "dyn",
     );
@@ -334,6 +334,16 @@ export function validateGrantCondition(
   return { valid: true };
 }
 
+const FIELD_ZERO_VALUES: Record<string, unknown> = {
+  tags: {},
+  owner: {},
+  name: "",
+  ns: "",
+  modelType: "",
+  collective: "",
+  methodName: "",
+};
+
 export function evaluateGrantCondition(
   condition: string,
   resourceKind: ResourceKind,
@@ -342,7 +352,10 @@ export function evaluateGrantCondition(
 ): boolean {
   const env = createGrantConditionEnvironment(resourceKind);
 
-  const context: Record<string, unknown> = { ...resourceFields };
+  const context: Record<string, unknown> = {};
+  for (const field of RESOURCE_FIELDS[resourceKind]) {
+    context[field] = resourceFields[field] ?? FIELD_ZERO_VALUES[field] ?? "";
+  }
   context.principal = principalContext;
 
   const result = env.evaluate(condition, context);

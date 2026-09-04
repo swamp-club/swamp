@@ -95,6 +95,7 @@ with state `active` or `revoked`.
 | `actions`   | `Action[]`              | One or more of `run`, `read`, `write`, `admin`      |
 | `resource`  | string                  | Resource selector (`workflow:@acme/*`)               |
 | `condition` | string (optional)       | CEL expression over resource fields and principal context |
+| `methods`   | string[] (optional)     | Restrict to specific model methods (omit for all)   |
 | `state`     | `active` \| `revoked`   | Only `active` grants participate in evaluation      |
 | `source`    | string                  | Origin of the grant (see below)                     |
 
@@ -123,6 +124,11 @@ grants:
     actions: [run, read, write]
     resource: "model:*"
     condition: 'resource.tags.env == "staging"'
+  - subject: "user:monitor"
+    effect: allow
+    actions: [run]
+    resource: "model:@acme/my-model"
+    methods: [read, list]
 ```
 
 The `GrantFileReconciler` syncs file-based grants into model data, creating,
@@ -171,8 +177,8 @@ given (principal, action, resource) triple:
 1. **Resolve subjects** — build the full subject list (user + local groups + IdP
    groups)
 2. **Collect candidates** — find all grants whose subject is in the list
-3. **Filter** — keep only grants that match the resource selector and the
-   requested action
+3. **Filter** — keep only grants that match the resource selector, the requested
+   action, and the method name (when the grant specifies a `methods` list)
 4. **Partition** — separate into deny grants and allow grants
 5. **Evaluate denies first** — for each deny grant, evaluate the condition (if
    any). The first matching deny wins and the request is rejected
@@ -192,12 +198,12 @@ Grant conditions are CEL expressions evaluated in the sealed grant-condition
 environment (see `design/enablers/expressions.md`, surface 3). Available
 variables per resource kind:
 
-| Resource kind | Available fields                                       |
-| ------------- | ------------------------------------------------------ |
-| `workflow`    | `name`, `tags`, `collective`                           |
-| `model`       | `name`, `modelType`, `tags`, `collective`              |
-| `data`        | `name`, `ns`, `tags`, `owner`                          |
-| `access`      | `name`                                                 |
+| Resource kind | Available fields                                             |
+| ------------- | ------------------------------------------------------------ |
+| `workflow`    | `name`, `tags`, `collective`                                 |
+| `model`       | `name`, `modelType`, `tags`, `collective`, `methodName`      |
+| `data`        | `name`, `ns`, `tags`, `owner`                                |
+| `access`      | `name`                                                       |
 
 All resource kinds also have access to `principal.sub`, `principal.groups`, and
 `principal.collectives`.
@@ -266,6 +272,12 @@ server. It operates in two modes:
 
 ```
 swamp access can-i --action run --on workflow:@acme/deploy --server wss://swamp.acme.internal:9090
+```
+
+For method-scoped grants, add `--method` to test a specific model method:
+
+```
+swamp access can-i --action run --on model:@acme/my-model --method read --server wss://swamp.acme.internal:9090
 ```
 
 Returns the matching grant decision (allow or deny) and exits with code 0 for

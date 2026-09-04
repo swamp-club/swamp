@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { createAccessGrantListRenderer } from "./access_grant.ts";
 import type { Grant } from "../../domain/models/access/grant_model.ts";
 
@@ -177,4 +177,46 @@ Deno.test("accessGrantListRenderer log: works without display names argument", (
     console.log = origLog;
   }
   assertStringIncludes(output[1], "user:adam");
+});
+
+Deno.test("accessGrantListRenderer log: shows methods when present", () => {
+  const renderer = createAccessGrantListRenderer("log");
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => output.push(args.join(" "));
+  try {
+    renderer.render([makeGrant({ methods: ["read", "list"] })]);
+  } finally {
+    console.log = origLog;
+  }
+  assertStringIncludes(output[0], "METHODS");
+  assertStringIncludes(output[1], "read,list");
+});
+
+Deno.test("accessGrantListRenderer log: shows * when methods omitted", () => {
+  const renderer = createAccessGrantListRenderer("log");
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => output.push(args.join(" "));
+  try {
+    renderer.render([makeGrant()]);
+  } finally {
+    console.log = origLog;
+  }
+  assertStringIncludes(output[0], "METHODS");
+  assertStringIncludes(output[1], "*");
+});
+
+Deno.test("accessGrantListRenderer json: includes methods in JSON output", () => {
+  const renderer = createAccessGrantListRenderer("json");
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => output.push(args.join(" "));
+  try {
+    renderer.render([makeGrant({ methods: ["read", "list"] })]);
+  } finally {
+    console.log = origLog;
+  }
+  const parsed = JSON.parse(output.join(""));
+  assertEquals(parsed[0].methods, ["read", "list"]);
 });

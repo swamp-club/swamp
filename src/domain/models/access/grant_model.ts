@@ -49,6 +49,7 @@ export const GrantSchema = z.object({
   actions: z.array(ActionSchema).min(1),
   resource: ResourceSelectorSchema,
   condition: z.string().optional(),
+  methods: z.array(z.string().min(1)).optional(),
   state: GrantStateSchema,
   source: GrantSourceSchema,
   createdBy: PrincipalSchema,
@@ -79,6 +80,9 @@ const CreateArgsSchema = z.object({
   ),
   condition: z.string().optional().describe(
     "Optional CEL condition over resource fields and principal context",
+  ),
+  methods: z.array(z.string().min(1)).optional().describe(
+    "Optional list of method names this grant applies to (omit for all methods)",
   ),
   source: GrantSourceSchema,
   createdBy: z.string().min(1).describe(
@@ -119,6 +123,7 @@ async function create(
     actions: args.actions,
     resource,
     condition: args.condition,
+    methods: args.methods,
     state: "active",
     source: args.source,
     createdBy,

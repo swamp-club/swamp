@@ -471,11 +471,15 @@ export function handleAccessCanI(
       }
 
       const resource = parseResourceSelector(payload.resource);
+      const fields: Record<string, unknown> = {};
+      if (payload.method) {
+        fields.methodName = payload.method;
+      }
       const service = ctx.policySnapshotLoader.decisionService;
       const decisions = service.explain(
         accessPrincipal,
         actionResult.data,
-        { kind: resource.kind, name: resource.pattern, fields: {} },
+        { kind: resource.kind, name: resource.pattern, fields },
       );
 
       send(socket, {
@@ -517,6 +521,9 @@ export function handleAccessCanI(
               grantId: g.id,
               via: `${g.subject.kind}:${g.subject.name}`,
               ...(g.condition ? { condition: g.condition } : {}),
+              ...(g.methods && g.methods.length > 0
+                ? { methods: g.methods }
+                : {}),
             }))
           ),
         },
