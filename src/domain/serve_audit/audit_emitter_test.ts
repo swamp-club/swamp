@@ -142,3 +142,89 @@ Deno.test("AuditEmitter: close flushes then closes all sinks", async () => {
   assertEquals(sink.flushed, 1);
   assertEquals(sink.closed, true);
 });
+
+Deno.test("AuditEmitter: suppresses success event for already-denied request", async () => {
+  const sink = createMockSink("test");
+  const emitter = new AuditEmitter([sink]);
+
+  const deniedEvent = createAuditEvent({
+    instanceId: "inst-1",
+    category: "access",
+    stage: "response",
+    outcome: "denied",
+    action: "vault.get",
+    resourceKind: "vault",
+    resourceName: "prod",
+    principalKind: "user",
+    principalId: "test-user",
+    initiatedBy: "user:test-user",
+    sourceIp: "127.0.0.1",
+    requestId: "req-dup",
+    detail: "unauthorized",
+  });
+
+  const falseSuccess = createAuditEvent({
+    instanceId: "inst-1",
+    category: "secrets",
+    stage: "response",
+    outcome: "success",
+    action: "vault.get",
+    resourceKind: "vault",
+    resourceName: "prod",
+    principalKind: "user",
+    principalId: "test-user",
+    initiatedBy: "user:test-user",
+    sourceIp: "127.0.0.1",
+    requestId: "req-dup",
+  });
+
+  emitter.emit(deniedEvent);
+  emitter.emit(falseSuccess);
+  await emitter.flush();
+
+  const allEvents = sink.written.flat();
+  assertEquals(allEvents.length, 1);
+  assertEquals(allEvents[0].outcome, "denied");
+});
+
+Deno.test("AuditEmitter: allows success for non-denied request", async () => {
+  const sink = createMockSink("test");
+  const emitter = new AuditEmitter([sink]);
+
+  const denied = createAuditEvent({
+    instanceId: "inst-1",
+    category: "access",
+    stage: "response",
+    outcome: "denied",
+    action: "vault.get",
+    resourceKind: "vault",
+    resourceName: "prod",
+    principalKind: "user",
+    principalId: "test-user",
+    initiatedBy: "user:test-user",
+    sourceIp: "127.0.0.1",
+    requestId: "req-denied",
+  });
+
+  const success = createAuditEvent({
+    instanceId: "inst-1",
+    category: "execution",
+    stage: "response",
+    outcome: "success",
+    action: "model.method.run",
+    resourceKind: "model",
+    resourceName: "echo",
+    principalKind: "user",
+    principalId: "test-user",
+    initiatedBy: "user:test-user",
+    sourceIp: "127.0.0.1",
+    requestId: "req-ok",
+  });
+
+  emitter.emit(denied);
+  emitter.emit(success);
+  await emitter.flush();
+
+  const allEvents = sink.written.flat();
+  assertEquals(allEvents.length, 2);
+});

@@ -30,6 +30,7 @@ export class AuditEmitter {
   readonly #buffer: RingBuffer<AuditEvent>;
   readonly #sinks: AuditSink[];
   readonly #cursors: Map<string, number> = new Map();
+  readonly #deniedRequests = new Set<string>();
   #drainPending = false;
   #drainPromise: Promise<void> | null = null;
 
@@ -45,6 +46,18 @@ export class AuditEmitter {
   }
 
   emit(event: AuditEvent): void {
+    if (event.outcome === "denied") {
+      this.#deniedRequests.add(event.requestId);
+      if (this.#deniedRequests.size > 10_000) {
+        const first = this.#deniedRequests.values().next().value!;
+        this.#deniedRequests.delete(first);
+      }
+    } else if (
+      event.outcome === "success" &&
+      this.#deniedRequests.has(event.requestId)
+    ) {
+      return;
+    }
     this.#buffer.push(event);
     if (!this.#drainPending) {
       this.#drainPending = true;
