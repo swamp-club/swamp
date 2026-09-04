@@ -376,3 +376,7 @@ reconciliation loop after `--stale-ttl`.
   signing convention needs a swamp release (`src/serve/webhook_verifiers.ts`,
   tracked in #716).
 - Auth mode `none` is deprecated and only permitted on loopback.
+- **Audit**: When configured, serve emits audit events for authorization
+  denials and high-value operations. →
+  [serve-audit](../enablers/serve-audit.md). This is separate from the CLI
+  audit subsystem (`src/domain/audit/`) which tracks local command history.
