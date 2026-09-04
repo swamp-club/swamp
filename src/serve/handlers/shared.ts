@@ -46,6 +46,8 @@ import type { AccessResource } from "../../domain/access/access_decision_service
 import type { ScheduledExecutionService } from "../../libswamp/mod.ts";
 import type { MergedServeOptions } from "../serve_config.ts";
 import type { HealthCollector } from "../health_collector.ts";
+import type { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";
+import { buildAuditEvent } from "../../domain/serve_audit/audit_event_builder.ts";
 
 export const MAX_CLIENT_ERROR_LENGTH = 200;
 
@@ -161,6 +163,8 @@ export interface ConnectionContext {
   healthCollector?: HealthCollector;
   /** Managed definitions directory when managedConfig is active. */
   managedDefinitionsDir?: string;
+  /** Audit emitter — present when audit config is set in serve.yaml. */
+  auditEmitter?: AuditEmitter;
 }
 
 // SECURITY: Authorization must operate on canonical (normalized) model types,
@@ -293,6 +297,7 @@ export function authorizeOrReject(
   action: Action,
   resource: AccessResource,
   ctx: ConnectionContext,
+  auditEmitter?: AuditEmitter,
 ): boolean {
   if (ctx.authConfig.mode === "none") return true;
 
@@ -303,6 +308,15 @@ export function authorizeOrReject(
       "access_not_configured",
       "Authorization enforcement is enabled but no policy snapshot is available",
     );
+    emitDenial(
+      auditEmitter,
+      ctx,
+      requestId,
+      principal,
+      action,
+      resource,
+      "access_not_configured",
+    );
     return false;
   }
 
@@ -312,6 +326,15 @@ export function authorizeOrReject(
       requestId,
       "unauthorized",
       `Access denied: no authenticated principal for '${action}' on ${resource.kind}:${resource.name}`,
+    );
+    emitDenial(
+      auditEmitter,
+      ctx,
+      requestId,
+      null,
+      action,
+      resource,
+      "no_principal",
     );
     return false;
   }
@@ -352,7 +375,41 @@ export function authorizeOrReject(
       `Access denied: ${principalStr} does not have '${action}' on ${resource.kind}:${resource.name}`,
     );
   }
+  emitDenial(
+    auditEmitter,
+    ctx,
+    requestId,
+    principal,
+    action,
+    resource,
+    "unauthorized",
+  );
   return false;
+}
+
+function emitDenial(
+  emitter: AuditEmitter | undefined,
+  ctx: ConnectionContext,
+  requestId: string,
+  principal: Principal | null,
+  action: Action,
+  resource: AccessResource,
+  detail: string,
+): void {
+  if (!emitter) return;
+  emitter.emit(buildAuditEvent({
+    instanceId: ctx.instanceId ?? "unknown",
+    category: "access",
+    stage: "response",
+    outcome: "denied",
+    action: String(action),
+    resourceKind: resource.kind,
+    resourceName: resource.name,
+    principalKind: principal?.kind,
+    principalId: principal?.id,
+    requestId,
+    detail,
+  }));
 }
 
 function resolveDisplayPrincipal(

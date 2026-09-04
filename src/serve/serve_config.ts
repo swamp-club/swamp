@@ -121,6 +121,21 @@ export interface ServeConfigFile {
   "enable-internal-api"?: boolean;
   "remote-only"?: boolean;
   dashboard?: boolean;
+  audit?: {
+    stores?: AuditStoreConfigEntry[];
+    "batch-size"?: number;
+    "flush-interval"?: string;
+  };
+}
+
+export interface AuditStoreConfigEntry {
+  readonly target: string;
+}
+
+export interface AuditConfig {
+  readonly stores: readonly AuditStoreConfigEntry[];
+  readonly batchSize: number;
+  readonly flushIntervalMs: number;
 }
 
 // ── Known Keys ────────────────────────────────────────────────────────
@@ -153,6 +168,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "enable-internal-api",
   "remote-only",
   "dashboard",
+  "audit",
 ]);
 
 const KNOWN_AUTH_KEYS = new Set([
@@ -438,6 +454,10 @@ function validateConfigValues(
         ]}`,
       );
     }
+  }
+
+  if (raw.audit !== undefined) {
+    validateAuditConfig(raw.audit, path);
   }
 }
 
@@ -1111,4 +1131,101 @@ export async function writeServeConfigFile(
     config as unknown as Record<string, unknown>,
   );
   await atomicWriteTextFile(path, content);
+}
+
+// ── Audit Config ─────────────────────────────────────────────────────
+
+const KNOWN_AUDIT_KEYS = new Set(["stores", "batch-size", "flush-interval"]);
+
+function validateAuditConfig(audit: unknown, path: string): void {
+  if (typeof audit !== "object" || audit === null || Array.isArray(audit)) {
+    throw new UserError(
+      `Invalid audit in ${path}: expected mapping`,
+    );
+  }
+  const obj = audit as Record<string, unknown>;
+  warnUnknownKeys(obj, KNOWN_AUDIT_KEYS, path, "audit.");
+
+  if (obj.stores !== undefined) {
+    if (!Array.isArray(obj.stores)) {
+      throw new UserError(
+        `Invalid audit.stores in ${path}: expected array, got ${typeof obj
+          .stores}`,
+      );
+    }
+    for (let i = 0; i < obj.stores.length; i++) {
+      const entry = obj.stores[i];
+      if (
+        typeof entry !== "object" || entry === null || Array.isArray(entry)
+      ) {
+        throw new UserError(
+          `Invalid audit store at index ${i} in ${path}: expected object`,
+        );
+      }
+      const storeObj = entry as Record<string, unknown>;
+      if (typeof storeObj.target !== "string" || !storeObj.target) {
+        throw new UserError(
+          `Invalid audit store at index ${i} in ${path}: target is required and must be a string`,
+        );
+      }
+    }
+  }
+
+  if (obj["batch-size"] !== undefined) {
+    if (
+      typeof obj["batch-size"] !== "number" ||
+      !Number.isInteger(obj["batch-size"]) ||
+      obj["batch-size"] < 1
+    ) {
+      throw new UserError(
+        `Invalid audit.batch-size in ${path}: expected positive integer`,
+      );
+    }
+  }
+
+  if (obj["flush-interval"] !== undefined) {
+    if (typeof obj["flush-interval"] !== "string") {
+      throw new UserError(
+        `Invalid audit.flush-interval in ${path}: expected string (e.g. "5s", "10s"), got ${typeof obj[
+          "flush-interval"
+        ]}`,
+      );
+    }
+  }
+}
+
+export function parseAuditConfig(
+  config: ServeConfigFile | null,
+): AuditConfig | null {
+  if (!config?.audit) return null;
+  const audit = config.audit;
+  if (!audit.stores || audit.stores.length === 0) return null;
+
+  let flushIntervalMs = 5_000;
+  if (audit["flush-interval"]) {
+    const parsed = parseDuration(audit["flush-interval"]);
+    if (parsed !== null) flushIntervalMs = parsed;
+  }
+
+  return {
+    stores: audit.stores,
+    batchSize: audit["batch-size"] ?? 100,
+    flushIntervalMs,
+  };
+}
+
+function parseDuration(value: string): number | null {
+  const match = value.match(/^(\d+)(ms|s|m)$/);
+  if (!match) return null;
+  const num = parseInt(match[1], 10);
+  switch (match[2]) {
+    case "ms":
+      return num;
+    case "s":
+      return num * 1_000;
+    case "m":
+      return num * 60_000;
+    default:
+      return null;
+  }
 }

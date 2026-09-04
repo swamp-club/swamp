@@ -105,9 +105,13 @@ import {
 import {
   loadServeConfig,
   mergeServeOptions,
+  parseAuditConfig,
   parseExplicitFlags,
   parseWebhookConfig,
 } from "../../serve/serve_config.ts";
+import { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";
+import { StoreSink } from "../../serve/audit_sinks/store_sink.ts";
+import { RemoteAuditStore } from "../../infrastructure/persistence/remote_audit_store.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
@@ -2719,6 +2723,27 @@ export const serveCommand = new Command()
       };
 
     const ac = new AbortController();
+
+    // ── Audit Pipeline ───────────────────────────────────────────────
+    const auditConfig = parseAuditConfig(configFile);
+    if (auditConfig && controlPlaneStore) {
+      const auditStores = auditConfig.stores.map(
+        (entry) =>
+          new RemoteAuditStore(controlPlaneStore, `_audit/${entry.target}/`),
+      );
+      const storeSink = new StoreSink({
+        stores: auditStores,
+        batchSize: auditConfig.batchSize,
+        flushIntervalMs: auditConfig.flushIntervalMs,
+        signal: ac.signal,
+      });
+      connectionCtx.auditEmitter = new AuditEmitter([storeSink]);
+      logger.info(
+        "Audit pipeline enabled with {count} store target(s)",
+        { count: auditConfig.stores.length },
+      );
+    }
+
     let telemetryFlushService: DaemonTelemetryFlushService | null = null;
     const enableSchedule = merged.schedule;
     const webhookFlags: string[] = merged.webhook ?? [];
