@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type { AuditEvent } from "../../domain/serve_audit/audit_event.ts";
 import { createAuditEvent } from "../../domain/serve_audit/audit_event.ts";
@@ -216,11 +217,9 @@ Deno.test("StoreSink: abort signal triggers close", async () => {
   await sink.write([makeEvent("before-abort")]);
   ac.abort();
 
-  // Give the signal handler time to run
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await waitFor(() => store.written.size >= 1, "abort signal flush");
 
   assertEquals(store.written.size, 1);
-  // Clean up (close is idempotent)
   await sink.close();
 });
 
@@ -277,10 +276,8 @@ Deno.test("StoreSink: timer flush during close does not duplicate events", async
 
   await sink.write([makeEvent("event-1")]);
 
-  // Wait for the timer to fire at least once
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await waitFor(() => store.written.size >= 1, "timer flush");
 
-  // Close should not write the same events again
   await sink.close();
 
   // All writes should be for event-1, and there should be exactly 1 batch
