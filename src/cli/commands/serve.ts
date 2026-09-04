@@ -108,12 +108,12 @@ import {
   parseAuditConfig,
   parseExplicitFlags,
   parseWebhookConfig,
-  resolveAuditStoreConfig,
 } from "../../serve/serve_config.ts";
 import { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";
 import { StoreSink } from "../../serve/audit_sinks/store_sink.ts";
 import { RemoteAuditStore } from "../../infrastructure/persistence/remote_audit_store.ts";
 import type { AuditStore } from "../../domain/serve_audit/audit_store.ts";
+import { resolveDatastoreExpressions } from "../datastore_expression_resolver.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
@@ -2740,13 +2740,9 @@ export const serveCommand = new Command()
               `Audit store target "${entry.target}": datastore type "${entry.type}" is not registered or has no provider`,
             );
           }
-          const auditVaultService = await VaultService.fromRepository(
-            resolvedRepoDir,
-            { defaultVaultName: repoMarker?.defaultVault },
-          );
-          const resolvedConfig = await resolveAuditStoreConfig(
+          const resolvedConfig = await resolveDatastoreExpressions(
             entry.config as Record<string, unknown>,
-            auditVaultService,
+            { repoDir: resolvedRepoDir },
           );
           const provider = typeInfo.createProvider(resolvedConfig);
           const tmpCachePath = join(

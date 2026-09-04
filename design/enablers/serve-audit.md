@@ -57,9 +57,11 @@ audit:
   flush-interval: 5s
 ```
 
-Config values support the same secret resolution as webhook secrets:
-`$env=VAR_NAME`, `@file=/path/to/secret`, `@vault=vault-name:secret-key`.
-This avoids hardcoding credentials in `serve.yaml`:
+Config values support `${{ }}` expression interpolation — the same syntax as
+datastore config in `.swamp.yaml` (see
+[datastores.md § Config Value Interpolation](datastores.md#config-value-interpolation)).
+Two expression namespaces are available: `${{ env.VAR }}` for environment
+variables and `${{ vault.get(vaultName, secretKey) }}` for vault secrets.
 
 ```yaml
 audit:
@@ -69,8 +71,8 @@ audit:
       config:
         bucket: audit-bucket
         region: us-east-1
-        accessKeyId: "$env=AUDIT_AWS_ACCESS_KEY_ID"
-        secretAccessKey: "@vault=infra:audit-s3-secret"
+        accessKeyId: "${{ env.AUDIT_AWS_ACCESS_KEY_ID }}"
+        secretAccessKey: "${{ vault.get(infra, audit-s3-secret) }}"
 ```
 
 A store entry without `type` + `config` falls back to the repo's existing
