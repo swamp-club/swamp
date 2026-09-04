@@ -97,7 +97,7 @@ export async function modelSearchAction(
       },
     );
     const renderer = createModelSearchRenderer(interactiveOutputMode(ctx));
-    renderer.handlers().completed({
+    await renderer.handlers().completed({
       kind: "completed",
       data: response.data as unknown as ModelSearchData,
     });
@@ -119,9 +119,7 @@ export async function modelSearchAction(
   };
 
   const repoDir = resolveRepoDir(options.repoDir);
-  const fetchPreview = effectiveMode === "log"
-    ? await createModelFetchPreview(repoDir)
-    : undefined;
+  const fetchPreview = await createModelFetchPreview(repoDir);
   const renderer = createModelSearchRenderer(effectiveMode, fetchPreview);
   await consumeStream(
     modelSearch(libCtx, deps, { query, includeInternal }),
