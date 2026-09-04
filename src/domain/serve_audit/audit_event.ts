@@ -42,7 +42,9 @@ export interface AuditEvent {
   readonly principalKind: string;
   readonly principalId: string;
   readonly initiatedBy: string;
+  readonly sourceIp: string;
   readonly requestId: string;
+  readonly methodName?: string;
   readonly detail?: string;
 }
 

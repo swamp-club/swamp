@@ -154,6 +154,7 @@ import {
 import {
   authorizeOrReject,
   type ConnectionContext,
+  getConnectionSourceIp,
   isRestrictedCommand,
   MAX_PREDICATE_LENGTH,
   MAX_QUERY_RESULTS,
@@ -1463,6 +1464,7 @@ export function handleMessage(
     category: AuditedOptions["category"],
     resourceKind: string,
     resourceName: string,
+    methodName?: string,
   ): AuditedOptions {
     return {
       emitter: ctx.auditEmitter,
@@ -1472,7 +1474,9 @@ export function handleMessage(
       resourceKind,
       resourceName,
       principal,
+      sourceIp: getConnectionSourceIp(socket),
       requestId: request.id,
+      methodName,
       resolvedUserNames: ctx.resolvedUserNames,
     };
   }
@@ -1515,7 +1519,12 @@ export function handleMessage(
           controller,
           principal,
         ),
-        auditOpts("execution", "model", request.payload?.modelIdOrName ?? "*"),
+        auditOpts(
+          "execution",
+          "model",
+          request.payload?.modelIdOrName ?? "*",
+          request.payload?.methodName,
+        ),
       );
       break;
     case "access.grant.list":

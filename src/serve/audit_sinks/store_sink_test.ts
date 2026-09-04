@@ -44,6 +44,7 @@ function makeEvent(
       principalKind: "user",
       principalId: "test-user",
       initiatedBy: "user:test-user",
+      sourceIp: "127.0.0.1",
       requestId: crypto.randomUUID(),
     }),
     timestamp,

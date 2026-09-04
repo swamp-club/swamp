@@ -32,6 +32,7 @@ Deno.test("buildAuditEvent: populates all fields", () => {
     principalKind: "token",
     principalId: "tok-abc",
     initiatedBy: "token:tok-abc",
+    sourceIp: "127.0.0.1",
     requestId: "req-1",
     detail: "completed in 250ms",
   });
@@ -56,6 +57,7 @@ Deno.test("buildAuditEvent: sanitizes absolute paths in action", () => {
     principalKind: "user",
     principalId: "test-user",
     initiatedBy: "user:test-user",
+    sourceIp: "127.0.0.1",
     requestId: "req-2",
   });
 
@@ -74,6 +76,7 @@ Deno.test("buildAuditEvent: sanitizes paths in resourceName", () => {
     principalKind: "user",
     principalId: "test-user",
     initiatedBy: "user:test-user",
+    sourceIp: "127.0.0.1",
     requestId: "req-3",
   });
 
@@ -92,6 +95,7 @@ Deno.test("buildAuditEvent: sanitizes Windows paths", () => {
     principalKind: "user",
     principalId: "test-user",
     initiatedBy: "user:test-user",
+    sourceIp: "127.0.0.1",
     requestId: "req-4",
   });
 
@@ -110,6 +114,7 @@ Deno.test("buildAuditEvent: sanitizes .swamp internal paths in detail", () => {
     principalKind: "user",
     principalId: "test-user",
     initiatedBy: "user:test-user",
+    sourceIp: "127.0.0.1",
     requestId: "req-5",
     detail: "file not found: /.swamp/data/output",
   });
@@ -129,6 +134,7 @@ Deno.test("buildAuditEvent: passes through safe values unchanged", () => {
     principalKind: "user",
     principalId: "test-user",
     initiatedBy: "user:test-user",
+    sourceIp: "127.0.0.1",
     requestId: "req-6",
     detail: "key: api-token",
   });
@@ -150,6 +156,7 @@ Deno.test("buildAuditEvent: omits detail when undefined", () => {
     principalKind: "user",
     principalId: "test-user",
     initiatedBy: "user:test-user",
+    sourceIp: "127.0.0.1",
     requestId: "req-7",
   });
 

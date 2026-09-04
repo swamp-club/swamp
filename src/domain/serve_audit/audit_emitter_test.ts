@@ -38,6 +38,7 @@ function makeEvent(action: string): AuditEvent {
     principalKind: "user",
     principalId: "test-user",
     initiatedBy: "user:test-user",
+    sourceIp: "127.0.0.1",
     requestId: crypto.randomUUID(),
   });
 }

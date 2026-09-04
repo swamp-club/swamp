@@ -51,6 +51,7 @@ const baseOptions = {
   resourceKind: "model",
   resourceName: "my-model",
   principal: { kind: "user" as const, id: "tok-abc" },
+  sourceIp: "192.168.1.42",
   requestId: "req-1",
 };
 
@@ -67,6 +68,7 @@ Deno.test("audited: emits success event on handler success", async () => {
   assertEquals(sink.events[0].principalKind, "user");
   assertEquals(sink.events[0].principalId, "tok-abc");
   assertEquals(sink.events[0].initiatedBy, "user:tok-abc");
+  assertEquals(sink.events[0].sourceIp, "192.168.1.42");
 });
 
 Deno.test("audited: emits failure event and re-throws on handler error", async () => {
@@ -166,4 +168,31 @@ Deno.test("audited: falls back to principalToString when no resolved name", asyn
 
   assertEquals(sink.events.length, 1);
   assertEquals(sink.events[0].initiatedBy, "worker:w1");
+});
+
+Deno.test("audited: includes methodName when provided", async () => {
+  const sink = createCaptureSink();
+  const emitter = new AuditEmitter([sink]);
+
+  await audited(Promise.resolve(), {
+    ...baseOptions,
+    emitter,
+    methodName: "execute",
+  });
+  await emitter.flush();
+
+  assertEquals(sink.events.length, 1);
+  assertEquals(sink.events[0].methodName, "execute");
+  assertEquals(sink.events[0].sourceIp, "192.168.1.42");
+});
+
+Deno.test("audited: omits methodName when not provided", async () => {
+  const sink = createCaptureSink();
+  const emitter = new AuditEmitter([sink]);
+
+  await audited(Promise.resolve(), { ...baseOptions, emitter });
+  await emitter.flush();
+
+  assertEquals(sink.events.length, 1);
+  assertEquals(sink.events[0].methodName, undefined);
 });

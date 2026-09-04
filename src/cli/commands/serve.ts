@@ -36,6 +36,7 @@ import {
   closeConnectionsForPrincipal,
   removeConnection,
   setConnectionCollectives,
+  setConnectionSourceIp,
   updateCollectivesForPrincipal,
 } from "../../serve/handlers/shared.ts";
 import {
@@ -3503,6 +3504,7 @@ export const serveCommand = new Command()
               result.groups,
               result.principalId,
             );
+            setConnectionSourceIp(socket, remoteAddr);
             socket.addEventListener("close", () => removeConnection(socket));
             handleConnection(socket, connectionCtx, principal);
             return response;
@@ -3511,6 +3513,7 @@ export const serveCommand = new Command()
             req,
             wsUpgradeOpts,
           );
+          setConnectionSourceIp(socket, remoteAddr);
           handleConnection(socket, connectionCtx, null);
           return response;
         }

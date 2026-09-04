@@ -33,7 +33,9 @@ export interface AuditedOptions {
   readonly resourceKind: string;
   readonly resourceName: string;
   readonly principal: Principal | null;
+  readonly sourceIp: string;
   readonly requestId: string;
+  readonly methodName?: string;
   readonly resolvedUserNames?: Record<string, string>;
 }
 
@@ -67,7 +69,9 @@ export function audited(
       principalKind,
       principalId,
       initiatedBy,
+      sourceIp: options.sourceIp,
       requestId: options.requestId,
+      methodName: options.methodName,
     }));
   }, (error: unknown) => {
     options.emitter!.emit(buildAuditEvent({
@@ -81,7 +85,9 @@ export function audited(
       principalKind,
       principalId,
       initiatedBy,
+      sourceIp: options.sourceIp,
       requestId: options.requestId,
+      methodName: options.methodName,
       detail: error instanceof Error ? error.message : String(error),
     }));
     throw error;

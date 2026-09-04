@@ -224,6 +224,7 @@ export function isRestrictedCommand(
 const connectionCollectives = new WeakMap<WebSocket, readonly string[]>();
 const connectionGroups = new WeakMap<WebSocket, readonly string[]>();
 const connectionPrincipalId = new WeakMap<WebSocket, string>();
+const connectionSourceIp = new WeakMap<WebSocket, string>();
 const principalSockets = new Map<string, Set<WebSocket>>();
 
 export function setConnectionCollectives(
@@ -290,6 +291,17 @@ export function getConnectionGroups(socket: WebSocket): readonly string[] {
   return connectionGroups.get(socket) ?? [];
 }
 
+export function setConnectionSourceIp(
+  socket: WebSocket,
+  ip: string,
+): void {
+  connectionSourceIp.set(socket, ip);
+}
+
+export function getConnectionSourceIp(socket: WebSocket): string {
+  return connectionSourceIp.get(socket) ?? "unknown";
+}
+
 export function authorizeOrReject(
   socket: WebSocket,
   requestId: string,
@@ -309,6 +321,7 @@ export function authorizeOrReject(
       "Authorization enforcement is enabled but no policy snapshot is available",
     );
     emitDenial(
+      socket,
       auditEmitter,
       ctx,
       requestId,
@@ -328,6 +341,7 @@ export function authorizeOrReject(
       `Access denied: no authenticated principal for '${action}' on ${resource.kind}:${resource.name}`,
     );
     emitDenial(
+      socket,
       auditEmitter,
       ctx,
       requestId,
@@ -376,6 +390,7 @@ export function authorizeOrReject(
     );
   }
   emitDenial(
+    socket,
     auditEmitter,
     ctx,
     requestId,
@@ -388,6 +403,7 @@ export function authorizeOrReject(
 }
 
 function emitDenial(
+  socket: WebSocket,
   emitter: AuditEmitter | undefined,
   ctx: ConnectionContext,
   requestId: string,
@@ -412,6 +428,7 @@ function emitDenial(
         ? `user:${ctx.resolvedUserNames[principal.id]}`
         : principalToString(principal))
       : "ghost",
+    sourceIp: getConnectionSourceIp(socket),
     requestId,
     detail,
   }));

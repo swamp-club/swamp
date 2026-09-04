@@ -36,6 +36,7 @@ Deno.test("createAuditEvent: generates UUID id and ISO timestamp", () => {
     principalKind: "user",
     principalId: "test-user",
     initiatedBy: "user:test-user",
+    sourceIp: "127.0.0.1",
     requestId: "req-1",
   });
 
@@ -47,6 +48,7 @@ Deno.test("createAuditEvent: generates UUID id and ISO timestamp", () => {
   assertEquals(event.action, "access.check");
   assertEquals(event.instanceId, "inst-1");
   assertEquals(event.requestId, "req-1");
+  assertEquals(event.sourceIp, "127.0.0.1");
 });
 
 Deno.test("createAuditEvent: preserves principal and detail fields", () => {
@@ -61,6 +63,7 @@ Deno.test("createAuditEvent: preserves principal and detail fields", () => {
     principalKind: "token",
     principalId: "tok-abc",
     initiatedBy: "token:tok-abc",
+    sourceIp: "127.0.0.1",
     requestId: "req-2",
     detail: "timeout after 30s",
   });
@@ -83,6 +86,7 @@ Deno.test("createAuditEvent: generates unique ids", () => {
     principalKind: "user",
     principalId: "test-user",
     initiatedBy: "user:test-user",
+    sourceIp: "127.0.0.1",
     requestId: "req-4",
   });
   const b = createAuditEvent({
@@ -96,6 +100,7 @@ Deno.test("createAuditEvent: generates unique ids", () => {
     principalKind: "user",
     principalId: "test-user",
     initiatedBy: "user:test-user",
+    sourceIp: "127.0.0.1",
     requestId: "req-5",
   });
 
