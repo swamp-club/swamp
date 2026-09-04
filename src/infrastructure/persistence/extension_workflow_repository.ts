@@ -80,7 +80,8 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
           if (MANIFEST_FILENAMES.has(entry.name)) continue;
           try {
             const content = await Deno.readTextFile(entry.path);
-            const data = parseYaml(content) as WorkflowData;
+            const data = parseYaml(content) as WorkflowData | null;
+            if (!data) continue;
             const workflow = Workflow.fromData(data);
             // Deduplicate: first directory wins (user dir before pulled dir)
             if (!seenNames.has(workflow.name)) {
@@ -155,7 +156,8 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
           if (MANIFEST_FILENAMES.has(entry.name)) continue;
           try {
             const content = await Deno.readTextFile(entry.path);
-            const data = parseYaml(content) as WorkflowData;
+            const data = parseYaml(content) as WorkflowData | null;
+            if (!data) continue;
             if (data.id === id) {
               return entry.path;
             }

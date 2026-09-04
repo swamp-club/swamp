@@ -81,7 +81,8 @@ export class YamlOutputRepository implements OutputRepository {
         // exists later in the directory."
         try {
           const content = await Deno.readTextFile(path);
-          const data = parseYaml(content) as ModelOutputData;
+          const data = parseYaml(content) as ModelOutputData | null;
+          if (!data) continue;
           if (data.id === id) {
             // Convert logFile back to absolute path
             if (data.logFile) {
@@ -154,7 +155,8 @@ export class YamlOutputRepository implements OutputRepository {
             // current method directory."
             try {
               const content = await Deno.readTextFile(path);
-              const data = parseYaml(content) as ModelOutputData;
+              const data = parseYaml(content) as ModelOutputData | null;
+              if (!data) continue;
               if (data.logFile) {
                 data.logFile = toAbsolutePath(this.repoDir, data.logFile);
               }
@@ -250,7 +252,8 @@ export class YamlOutputRepository implements OutputRepository {
 
                 // Stage B: parse and verify
                 const content = await Deno.readTextFile(path);
-                const data = parseYaml(content) as ModelOutputData;
+                const data = parseYaml(content) as ModelOutputData | null;
+                if (!data) continue;
                 if (data.logFile) {
                   data.logFile = toAbsolutePath(this.repoDir, data.logFile);
                 }
@@ -332,7 +335,8 @@ export class YamlOutputRepository implements OutputRepository {
 
         try {
           const content = await Deno.readTextFile(path);
-          const data = parseYaml(content) as ModelOutputData;
+          const data = parseYaml(content) as ModelOutputData | null;
+          if (!data) continue;
           if (data.id === id) {
             matchPath = path;
             break;
@@ -385,7 +389,34 @@ export class YamlOutputRepository implements OutputRepository {
         if (mtimeMs !== undefined && mtimeMs >= cutoffMs) continue;
 
         const content = await Deno.readTextFile(yamlPath);
-        const data = parseYaml(content) as ModelOutputData;
+        const data = parseYaml(content) as ModelOutputData | null;
+        if (!data) {
+          const logPath = yamlPath.replace(/\.yaml$/, ".log");
+          let fileBytes = stat.size ?? 0;
+          try {
+            const logStat = await Deno.stat(logPath);
+            fileBytes += logStat.size ?? 0;
+          } catch {
+            // log file may not exist
+          }
+          if (!options?.dryRun) {
+            await this.notifyDirty(yamlPath);
+            try {
+              await Deno.remove(yamlPath);
+            } catch (error) {
+              if (!(error instanceof Deno.errors.NotFound)) throw error;
+            }
+            try {
+              await Deno.remove(logPath);
+            } catch (error) {
+              if (!(error instanceof Deno.errors.NotFound)) throw error;
+            }
+            await cleanupEmptyParentDirs(yamlPath, this.baseDir);
+          }
+          deleted++;
+          bytesReclaimed += fileBytes;
+          continue;
+        }
         if (!TERMINAL_STATUSES.has(data.status)) continue;
         const startedAt = data.startedAt
           ? new Date(data.startedAt).getTime()

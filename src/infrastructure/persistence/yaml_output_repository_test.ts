@@ -19,6 +19,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { assertPathStringIncludes } from "./path_test_helpers.ts";
+import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import {
   createModelOutputId,
@@ -691,6 +692,112 @@ Deno.test(
       // notifyDirty must have fired with the target's path.
       assertEquals(dirtyPaths.length, 1);
       assertEquals(dirtyPaths[0], targetPath);
+    });
+  },
+);
+
+async function seedEmptyYaml(
+  dir: string,
+  type: ModelType,
+  method: string,
+): Promise<void> {
+  const methodDir = join(dir, ".swamp", "outputs", type.normalized, method);
+  await ensureDir(methodDir);
+  await Deno.writeTextFile(join(methodDir, "empty-corrupt.yaml"), "");
+}
+
+Deno.test(
+  "findById: empty YAML file is skipped, not fatal",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const target = await makeOutput(repo, new Date());
+
+      await seedEmptyYaml(dir, registeredType, "run");
+
+      const found = await repo.findById(registeredType, "run", target.id);
+      assertEquals(found?.id, target.id);
+    });
+  },
+);
+
+Deno.test(
+  "findAll: empty YAML file is skipped, not fatal",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const valid = await makeOutput(repo, new Date());
+
+      await seedEmptyYaml(dir, registeredType, "run");
+
+      const found = await repo.findAll(registeredType);
+      assertEquals(found.length, 1);
+      assertEquals(found[0].id, valid.id);
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince: empty YAML file is skipped, not fatal",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const valid = await makeOutput(repo, new Date());
+
+      await seedEmptyYaml(dir, registeredType, "run");
+
+      const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+      const found = await repo.findAllGlobalSince(cutoff);
+      assertEquals(found.length, 1);
+      assertEquals(found[0].output.id, valid.id);
+    });
+  },
+);
+
+Deno.test(
+  "delete: empty YAML file does not crash scan",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const target = await makeOutput(repo, new Date());
+
+      await seedEmptyYaml(dir, registeredType, "run");
+
+      await repo.delete(registeredType, "run", target.id);
+      assertEquals(
+        await repo.findById(registeredType, "run", target.id),
+        null,
+      );
+    });
+  },
+);
+
+Deno.test(
+  "deleteOlderThan: empty YAML file is cleaned up",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+
+      const oldDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      const old = await makeOutput(repo, oldDate);
+      const oldPath = repo.getPath(registeredType, "run", old);
+      await Deno.utime(oldPath, oldDate, oldDate);
+
+      await seedEmptyYaml(dir, registeredType, "run");
+      const emptyPath = join(
+        dir,
+        ".swamp",
+        "outputs",
+        registeredType.normalized,
+        "run",
+        "empty-corrupt.yaml",
+      );
+      await Deno.utime(emptyPath, oldDate, oldDate);
+
+      const result = await repo.deleteOlderThan(
+        new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+      );
+      assertEquals(result.deleted, 2);
     });
   },
 );

@@ -134,7 +134,8 @@ export class RepoMarkerRepository {
     const path = this.getMarkerPath(repoPath);
     try {
       const content = await Deno.readTextFile(path);
-      const data = parseYaml(content) as RepoMarkerData;
+      const data = parseYaml(content) as RepoMarkerData | null;
+      if (!data) return null;
       rejectRemovedDriverFields(data, path);
       return normalizeMarker(data);
     } catch (error) {

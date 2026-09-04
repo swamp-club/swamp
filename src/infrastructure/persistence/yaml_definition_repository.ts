@@ -98,10 +98,12 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     const legacyPath = this.getLegacyPath(type, id);
     try {
       const content = await Deno.readTextFile(legacyPath);
-      const data = parseYaml(content) as DefinitionData;
-      const definition = Definition.fromData(data);
-      this.idToActualPath.set(id, legacyPath);
-      return definition;
+      const data = parseYaml(content) as DefinitionData | null;
+      if (data) {
+        const definition = Definition.fromData(data);
+        this.idToActualPath.set(id, legacyPath);
+        return definition;
+      }
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) {
         throw error;
@@ -113,8 +115,8 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     if (cachedPath && cachedPath !== legacyPath) {
       try {
         const content = await Deno.readTextFile(cachedPath);
-        const data = parseYaml(content) as DefinitionData;
-        return Definition.fromData(data);
+        const data = parseYaml(content) as DefinitionData | null;
+        if (data) return Definition.fromData(data);
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) {
           throw error;
@@ -143,8 +145,8 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     const path = join(dir, type.toDirectoryPath(), `${id}.yaml`);
     try {
       const content = await Deno.readTextFile(path);
-      const data = parseYaml(content) as DefinitionData;
-      return Definition.fromData(data);
+      const data = parseYaml(content) as DefinitionData | null;
+      if (data) return Definition.fromData(data);
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) {
         throw error;
@@ -158,7 +160,8 @@ export class YamlDefinitionRepository implements DefinitionRepository {
         if (entry.isFile && entry.name.endsWith(".yaml")) {
           try {
             const content = await Deno.readTextFile(join(typeDir, entry.name));
-            const data = parseYaml(content) as DefinitionData;
+            const data = parseYaml(content) as DefinitionData | null;
+            if (!data) continue;
             const definition = Definition.fromData(data);
             if (definition.id === id) {
               return definition;
@@ -193,7 +196,8 @@ export class YamlDefinitionRepository implements DefinitionRepository {
               await assertSafePath(path, this.repoDir);
             }
             const content = await Deno.readTextFile(path);
-            const data = parseYaml(content) as DefinitionData;
+            const data = parseYaml(content) as DefinitionData | null;
+            if (!data) continue;
             const definition = Definition.fromData(data);
             this.idToActualPath.set(
               definition.id as DefinitionId,
@@ -229,13 +233,15 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       const namePath = this.getNamePath(type, name);
       try {
         const content = await Deno.readTextFile(namePath);
-        const data = parseYaml(content) as DefinitionData;
-        const definition = Definition.fromData(data);
-        if (definition.name !== name) {
-          // File content doesn't match filename — fall through to slow path
-        } else {
-          this.idToActualPath.set(definition.id as DefinitionId, namePath);
-          return definition;
+        const data = parseYaml(content) as DefinitionData | null;
+        if (data) {
+          const definition = Definition.fromData(data);
+          if (definition.name !== name) {
+            // File content doesn't match filename — fall through to slow path
+          } else {
+            this.idToActualPath.set(definition.id as DefinitionId, namePath);
+            return definition;
+          }
         }
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) {
@@ -269,7 +275,8 @@ export class YamlDefinitionRepository implements DefinitionRepository {
               await assertSafePath(path, this.repoDir);
             }
             const content = await Deno.readTextFile(path);
-            const data = parseYaml(content) as DefinitionData;
+            const data = parseYaml(content) as DefinitionData | null;
+            if (!data) continue;
             definitions.push(Definition.fromData(data));
           } catch (error) {
             if (isIoError(error)) {
@@ -329,7 +336,8 @@ export class YamlDefinitionRepository implements DefinitionRepository {
               await assertSafePath(fullPath, this.repoDir);
             }
             const content = await Deno.readTextFile(fullPath);
-            const data = parseYaml(content) as DefinitionData;
+            const data = parseYaml(content) as DefinitionData | null;
+            if (!data) continue;
             const definition = Definition.fromData(data);
 
             if (definition.name === name) {
@@ -406,7 +414,8 @@ export class YamlDefinitionRepository implements DefinitionRepository {
               await assertSafePath(fullPath, this.repoDir);
             }
             const content = await Deno.readTextFile(fullPath);
-            const data = parseYaml(content) as DefinitionData;
+            const data = parseYaml(content) as DefinitionData | null;
+            if (!data) continue;
             const definition = Definition.fromData(data);
 
             this.idToActualPath.set(
@@ -511,15 +520,29 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     if (!isNew && await this.exists(targetPath)) {
       try {
         const existingRaw = await Deno.readTextFile(targetPath);
-        const existingParsed = parseYaml(existingRaw) as Record<
-          string,
-          unknown
-        >;
-        const normalizedExisting = JSON.parse(
-          JSON.stringify(existingParsed),
-        ) as Record<string, unknown>;
+        const existingParsed = parseYaml(existingRaw) as
+          | Record<
+            string,
+            unknown
+          >
+          | null;
+        if (!existingParsed) {
+          // Corrupt/empty file — remove it so the fresh-write path below
+          // overwrites with valid content.
+          try {
+            await Deno.remove(targetPath);
+          } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) throw error;
+          }
+        }
+        const normalizedExisting = existingParsed
+          ? JSON.parse(
+            JSON.stringify(existingParsed),
+          ) as Record<string, unknown>
+          : null;
 
         if (
+          normalizedExisting &&
           canonicalJson(cleanData) === canonicalJson(normalizedExisting)
         ) {
           this.idToActualPath.set(definition.id, targetPath);
@@ -528,9 +551,11 @@ export class YamlDefinitionRepository implements DefinitionRepository {
         }
 
         // Data changed — merge onto existing document to preserve comments
-        const doc = parseDocument(existingRaw);
-        mergeIntoDocument(doc, cleanData);
-        await atomicWriteTextFile(targetPath, doc.toString());
+        if (normalizedExisting) {
+          const doc = parseDocument(existingRaw);
+          mergeIntoDocument(doc, cleanData);
+          await atomicWriteTextFile(targetPath, doc.toString());
+        }
       } catch (error) {
         if (error instanceof Deno.errors.NotFound) {
           // File disappeared between exists() and read — fall through to

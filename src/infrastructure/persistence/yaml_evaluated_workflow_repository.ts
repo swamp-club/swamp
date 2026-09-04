@@ -51,10 +51,12 @@ export class YamlEvaluatedWorkflowRepository {
     const legacyPath = this.getLegacyPath(id);
     try {
       const content = await Deno.readTextFile(legacyPath);
-      const data = parseYaml(content) as WorkflowData;
-      const workflow = Workflow.fromData(data);
-      this.idToActualPath.set(id, legacyPath);
-      return workflow;
+      const data = parseYaml(content) as WorkflowData | null;
+      if (data) {
+        const workflow = Workflow.fromData(data);
+        this.idToActualPath.set(id, legacyPath);
+        return workflow;
+      }
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) {
         throw error;
@@ -66,8 +68,10 @@ export class YamlEvaluatedWorkflowRepository {
     if (cachedPath && cachedPath !== legacyPath) {
       try {
         const content = await Deno.readTextFile(cachedPath);
-        const data = parseYaml(content) as WorkflowData;
-        return Workflow.fromData(data);
+        const data = parseYaml(content) as WorkflowData | null;
+        if (data) {
+          return Workflow.fromData(data);
+        }
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) {
           throw error;
@@ -92,7 +96,8 @@ export class YamlEvaluatedWorkflowRepository {
         ) {
           const path = join(dir, entry.name);
           const content = await Deno.readTextFile(path);
-          const data = parseYaml(content) as WorkflowData;
+          const data = parseYaml(content) as WorkflowData | null;
+          if (!data) continue;
           const workflow = Workflow.fromData(data);
           this.idToActualPath.set(workflow.id as WorkflowId, path);
           workflows.push(workflow);
@@ -119,13 +124,15 @@ export class YamlEvaluatedWorkflowRepository {
       const namePath = this.getNamePath(name);
       try {
         const content = await Deno.readTextFile(namePath);
-        const data = parseYaml(content) as WorkflowData;
-        const workflow = Workflow.fromData(data);
-        if (workflow.name !== name) {
-          // File content doesn't match filename — fall through to slow path
-        } else {
-          this.idToActualPath.set(workflow.id as WorkflowId, namePath);
-          return workflow;
+        const data = parseYaml(content) as WorkflowData | null;
+        if (data) {
+          const workflow = Workflow.fromData(data);
+          if (workflow.name !== name) {
+            // File content doesn't match filename — fall through to slow path
+          } else {
+            this.idToActualPath.set(workflow.id as WorkflowId, namePath);
+            return workflow;
+          }
         }
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) {
