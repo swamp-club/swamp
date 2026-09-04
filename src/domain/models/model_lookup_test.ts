@@ -51,6 +51,17 @@ Deno.test("isUuid returns true for valid UUID v4", () => {
   assertEquals(isUuid("f47ac10b-58cc-4372-a567-0e02b2c3d479"), true);
 });
 
+Deno.test("isUuid returns true for non-v4 UUID versions", () => {
+  // UUIDv1
+  assertEquals(isUuid("550e8400-e29b-11d4-a716-446655440000"), true);
+  // UUIDv3
+  assertEquals(isUuid("550e8400-e29b-31d4-a716-446655440000"), true);
+  // UUIDv5 (from issue #1999)
+  assertEquals(isUuid("de8ad612-90b7-56bc-82dc-ba90e425e6f6"), true);
+  // UUIDv7
+  assertEquals(isUuid("01929b6e-f83d-7f32-8eb2-3a1f0b5e4c9d"), true);
+});
+
 Deno.test("isUuid is case insensitive", () => {
   assertEquals(isUuid("550E8400-E29B-41D4-A716-446655440000"), true);
   assertEquals(isUuid("550e8400-E29B-41d4-a716-446655440000"), true);
@@ -68,9 +79,9 @@ Deno.test("isUuid returns false for invalid UUIDs", () => {
   // Wrong format (missing dashes)
   assertEquals(isUuid("550e8400e29b41d4a716446655440000"), false);
 
-  // Not a v4 UUID (version digit is not 4)
-  assertEquals(isUuid("550e8400-e29b-11d4-a716-446655440000"), false);
-  assertEquals(isUuid("550e8400-e29b-51d4-a716-446655440000"), false);
+  // Invalid version digit (0 and 9+ are not valid UUID versions)
+  assertEquals(isUuid("550e8400-e29b-01d4-a716-446655440000"), false);
+  assertEquals(isUuid("550e8400-e29b-91d4-a716-446655440000"), false);
 
   // Invalid variant (4th group must start with 8, 9, a, or b)
   assertEquals(isUuid("550e8400-e29b-41d4-0716-446655440000"), false);

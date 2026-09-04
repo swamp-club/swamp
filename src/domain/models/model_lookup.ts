@@ -24,10 +24,10 @@ import { createDefinitionId } from "../definitions/definition.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 
 /**
- * UUID v4 regex pattern for detecting if an argument is a UUID.
+ * UUID regex pattern for detecting if an argument is a UUID (versions 1-8).
  */
 const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
  * Partial ID pattern - at least 3 hex characters (with optional dashes).
@@ -36,7 +36,7 @@ const UUID_PATTERN =
 const PARTIAL_ID_PATTERN = /^[0-9a-f-]{3,}$/i;
 
 /**
- * Checks if a string looks like a UUID v4.
+ * Checks if a string looks like a UUID.
  */
 export function isUuid(value: string): boolean {
   return UUID_PATTERN.test(value);
