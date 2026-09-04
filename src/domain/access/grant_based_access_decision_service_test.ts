@@ -673,3 +673,90 @@ Deno.test("explain: methods filtering applies in explain path", () => {
   });
   assertEquals(noMatch.length, 0);
 });
+
+Deno.test("decide: run grant implies approve — allows approve action", () => {
+  const snapshot = new PolicySnapshot(
+    [makeGrant({ actions: ["run"] })],
+    [],
+    celEvaluator,
+  );
+  const service = new GrantBasedAccessDecisionService(snapshot);
+  const result = service.decide(
+    makePrincipal("adam"),
+    "approve",
+    makeResource(),
+  );
+  assertEquals(result?.effect, "allow");
+});
+
+Deno.test("decide: approve-only grant allows approve but not run", () => {
+  const snapshot = new PolicySnapshot(
+    [makeGrant({ actions: ["approve"] })],
+    [],
+    celEvaluator,
+  );
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const approveResult = service.decide(
+    makePrincipal("adam"),
+    "approve",
+    makeResource(),
+  );
+  assertEquals(approveResult?.effect, "allow");
+
+  const runResult = service.decide(
+    makePrincipal("adam"),
+    "run",
+    makeResource(),
+  );
+  assertEquals(runResult, null);
+});
+
+Deno.test("decide: deny on approve blocks approval even with run grant", () => {
+  const snapshot = new PolicySnapshot(
+    [
+      makeGrant({ actions: ["run"], effect: "allow" }),
+      makeGrant({ actions: ["approve"], effect: "deny" }),
+    ],
+    [],
+    celEvaluator,
+  );
+  const service = new GrantBasedAccessDecisionService(snapshot);
+  const result = service.decide(
+    makePrincipal("adam"),
+    "approve",
+    makeResource(),
+  );
+  assertEquals(result?.effect, "deny");
+});
+
+Deno.test("decide: run grant without approve still permits run action", () => {
+  const snapshot = new PolicySnapshot(
+    [makeGrant({ actions: ["run"] })],
+    [],
+    celEvaluator,
+  );
+  const service = new GrantBasedAccessDecisionService(snapshot);
+  const result = service.decide(
+    makePrincipal("adam"),
+    "run",
+    makeResource(),
+  );
+  assertEquals(result?.effect, "allow");
+});
+
+Deno.test("explain: run-implies-approve flows through explain", () => {
+  const snapshot = new PolicySnapshot(
+    [makeGrant({ actions: ["run"] })],
+    [],
+    celEvaluator,
+  );
+  const service = new GrantBasedAccessDecisionService(snapshot);
+  const results = service.explain(
+    makePrincipal("adam"),
+    "approve",
+    makeResource(),
+  );
+  assertEquals(results.length, 1);
+  assertEquals(results[0].effect, "allow");
+});

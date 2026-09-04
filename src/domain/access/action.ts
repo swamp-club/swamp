@@ -19,6 +19,12 @@
 
 import { z } from "zod";
 
-export const ActionSchema = z.enum(["run", "read", "write", "admin"]);
+export const ActionSchema = z.enum([
+  "run",
+  "read",
+  "write",
+  "approve",
+  "admin",
+]);
 
 export type Action = z.infer<typeof ActionSchema>;

@@ -76,7 +76,7 @@ export const accessCheckCommand = new Command()
   )
   .option(
     "--action <action:string>",
-    "Action to check (run, read, write, admin)",
+    "Action to check (run, read, write, approve, admin)",
     { required: true },
   )
   .option(
@@ -177,7 +177,7 @@ export const accessCheckCommand = new Command()
     const actionResult = ActionSchema.safeParse(options.action);
     if (!actionResult.success) {
       throw new UserError(
-        `Invalid action "${options.action}": must be one of run, read, write, admin`,
+        `Invalid action "${options.action}": must be one of run, read, write, approve, admin`,
       );
     }
     const action: Action = actionResult.data;

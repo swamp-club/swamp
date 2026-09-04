@@ -57,7 +57,7 @@ export const accessCanICommand = new Command()
   )
   .option(
     "--action <action:string>",
-    "Action to check (run, read, write, admin)",
+    "Action to check (run, read, write, approve, admin)",
   )
   .option(
     "--on <resource:string>",

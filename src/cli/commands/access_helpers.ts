@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { ActionSchema } from "../../domain/access/action.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../auto_resolver_context.ts";
@@ -118,9 +119,9 @@ export function parseActionsFlag(value: string): string[] {
   const actions = value.split(",").map((a) => a.trim()).filter((a) =>
     a.length > 0
   );
-  const validActions = ["run", "read", "write", "admin"];
+  const validActions = ActionSchema.options;
   for (const action of actions) {
-    if (!validActions.includes(action)) {
+    if (!validActions.includes(action as typeof validActions[number])) {
       throw new UserError(
         `Invalid action "${action}": must be one of ${validActions.join(", ")}`,
       );
