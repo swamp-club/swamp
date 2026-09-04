@@ -4153,6 +4153,9 @@ export const serveCommand = new Command()
       if (telemetryFlushService) {
         await telemetryFlushService.stop();
       }
+      if (connectionCtx.auditEmitter) {
+        await connectionCtx.auditEmitter.close();
+      }
       rejectionGuard.dispose();
       setRemoteStepDispatcher(null);
       setRemoteOnlyMode(false);

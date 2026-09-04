@@ -57,9 +57,22 @@ export class AuditEmitter {
 
   #drainSerialized(): void {
     if (this.#drainPromise) return;
-    this.#drainPromise = this.#drain().finally(() => {
+    this.#drainPromise = this.#drain().then(() => {
+      this.#drainPromise = null;
+      if (this.#buffer.highSeq > this.#minCursor()) {
+        this.#drainSerialized();
+      }
+    }, () => {
       this.#drainPromise = null;
     });
+  }
+
+  #minCursor(): number {
+    let min = this.#buffer.highSeq;
+    for (const cursor of this.#cursors.values()) {
+      if (cursor < min) min = cursor;
+    }
+    return min;
   }
 
   async #drain(): Promise<void> {
