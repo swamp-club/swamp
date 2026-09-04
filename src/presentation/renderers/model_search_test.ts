@@ -28,7 +28,7 @@ import {
   type ModelPreviewFetcher,
 } from "./model_search.tsx";
 
-Deno.test("JsonModelSearchRenderer: single match returns envelope shape", () => {
+Deno.test("JsonModelSearchRenderer: single match returns envelope shape", async () => {
   const renderer = createModelSearchRenderer("json");
   const handlers = renderer.handlers();
 
@@ -41,7 +41,7 @@ Deno.test("JsonModelSearchRenderer: single match returns envelope shape", () => 
   console.log = (...args: unknown[]) => logs.push(String(args[0]));
   try {
     const data: ModelSearchData = { query: "unique", results: items };
-    handlers.completed({ kind: "completed", data });
+    await handlers.completed({ kind: "completed", data });
   } finally {
     console.log = originalLog;
   }
@@ -54,7 +54,7 @@ Deno.test("JsonModelSearchRenderer: single match returns envelope shape", () => 
   assertEquals(renderer.selectedItem(), undefined);
 });
 
-Deno.test("JsonModelSearchRenderer: multiple matches returns envelope shape", () => {
+Deno.test("JsonModelSearchRenderer: multiple matches returns envelope shape", async () => {
   const renderer = createModelSearchRenderer("json");
   const handlers = renderer.handlers();
 
@@ -68,7 +68,7 @@ Deno.test("JsonModelSearchRenderer: multiple matches returns envelope shape", ()
   console.log = (...args: unknown[]) => logs.push(String(args[0]));
   try {
     const data: ModelSearchData = { query: "model", results: items };
-    handlers.completed({ kind: "completed", data });
+    await handlers.completed({ kind: "completed", data });
   } finally {
     console.log = originalLog;
   }
@@ -80,7 +80,7 @@ Deno.test("JsonModelSearchRenderer: multiple matches returns envelope shape", ()
   assertEquals(renderer.selectedItem(), undefined);
 });
 
-Deno.test("JsonModelSearchRenderer: zero matches returns envelope shape", () => {
+Deno.test("JsonModelSearchRenderer: zero matches returns envelope shape", async () => {
   const renderer = createModelSearchRenderer("json");
   const handlers = renderer.handlers();
 
@@ -89,7 +89,7 @@ Deno.test("JsonModelSearchRenderer: zero matches returns envelope shape", () => 
   console.log = (...args: unknown[]) => logs.push(String(args[0]));
   try {
     const data: ModelSearchData = { query: "nonexistent", results: [] };
-    handlers.completed({ kind: "completed", data });
+    await handlers.completed({ kind: "completed", data });
   } finally {
     console.log = originalLog;
   }
