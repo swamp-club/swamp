@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { AuditEmitter } from "./audit_emitter.ts";
 import type { AuditEvent } from "./audit_event.ts";
@@ -97,16 +97,14 @@ Deno.test("AuditEmitter: batches multiple events in single drain", async () => {
   assertEquals(sink.written[0].length, 3);
 });
 
-Deno.test("AuditEmitter: fans out to multiple sinks", async () => {
+Deno.test("AuditEmitter: rejects multiple sinks", () => {
   const sinkA = createMockSink("a");
   const sinkB = createMockSink("b");
-  const emitter = new AuditEmitter([sinkA, sinkB]);
-
-  emitter.emit(makeEvent("test"));
-  await emitter.flush();
-
-  assertEquals(sinkA.written.length, 1);
-  assertEquals(sinkB.written.length, 1);
+  assertThrows(
+    () => new AuditEmitter([sinkA, sinkB]),
+    Error,
+    "single sink",
+  );
 });
 
 Deno.test("AuditEmitter: sink error does not propagate to caller", async () => {
@@ -122,13 +120,10 @@ Deno.test("AuditEmitter: sink error does not propagate to caller", async () => {
       return Promise.resolve();
     },
   };
-  const goodSink = createMockSink("good");
-  const emitter = new AuditEmitter([failingSink, goodSink]);
+  const emitter = new AuditEmitter([failingSink]);
 
   emitter.emit(makeEvent("test"));
   await emitter.flush();
-
-  assertEquals(goodSink.written.length, 1);
 });
 
 Deno.test("AuditEmitter: close flushes then closes all sinks", async () => {

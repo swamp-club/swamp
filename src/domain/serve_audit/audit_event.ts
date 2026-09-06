@@ -29,6 +29,15 @@ export type AuditStage = "request" | "response";
 
 export type AuditOutcome = "success" | "failure" | "denied";
 
+export interface AuditDecision {
+  readonly action: string;
+  readonly resourceKind: string;
+  readonly resourceName: string;
+  readonly effect: "allow" | "deny";
+  readonly grantId: string | null;
+  readonly principalGroups: readonly string[];
+}
+
 export interface AuditEvent {
   readonly id: string;
   readonly timestamp: string;
@@ -46,7 +55,17 @@ export interface AuditEvent {
   readonly requestId: string;
   readonly methodName?: string;
   readonly detail?: string;
+  readonly version?: number;
+  readonly sequence?: number;
+  readonly digest?: string;
+  readonly decision?: AuditDecision;
 }
+
+export type ChainedAuditEvent = AuditEvent & {
+  readonly version: 1;
+  readonly sequence: number;
+  readonly digest: string;
+};
 
 export function createAuditEvent(
   fields: Omit<AuditEvent, "id" | "timestamp">,

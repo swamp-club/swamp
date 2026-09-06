@@ -24,6 +24,7 @@ import {
   type Principal,
   principalToString,
 } from "../domain/access/principal.ts";
+import { clearRequestErrored, wasRequestErrored } from "./handlers/shared.ts";
 
 export interface AuditedOptions {
   readonly emitter: AuditEmitter | undefined;
@@ -37,6 +38,7 @@ export interface AuditedOptions {
   readonly requestId: string;
   readonly methodName?: string;
   readonly resolvedUserNames?: Record<string, string>;
+  readonly socket?: WebSocket;
 }
 
 export function audited(
@@ -58,11 +60,17 @@ export function audited(
     : "ghost";
 
   return handler.then(() => {
+    const errored = options.socket
+      ? wasRequestErrored(options.socket, options.requestId)
+      : false;
+    if (errored && options.socket) {
+      clearRequestErrored(options.socket, options.requestId);
+    }
     options.emitter!.emit(buildAuditEvent({
       instanceId: options.instanceId,
       category: options.category,
       stage: "response",
-      outcome: "success",
+      outcome: errored ? "failure" : "success",
       action: options.action,
       resourceKind: options.resourceKind,
       resourceName: options.resourceName,
@@ -72,8 +80,12 @@ export function audited(
       sourceIp: options.sourceIp,
       requestId: options.requestId,
       methodName: options.methodName,
+      detail: errored ? "handler sent error response" : undefined,
     }));
   }, (error: unknown) => {
+    if (options.socket) {
+      clearRequestErrored(options.socket, options.requestId);
+    }
     options.emitter!.emit(buildAuditEvent({
       instanceId: options.instanceId,
       category: options.category,

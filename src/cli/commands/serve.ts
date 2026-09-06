@@ -110,10 +110,20 @@ import {
   parseExplicitFlags,
   parseWebhookConfig,
 } from "../../serve/serve_config.ts";
-import { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";
+import {
+  type AuditCategory,
+  AuditChainState,
+  AuditEmitter,
+  type AuditLevel,
+  AuditPolicy,
+  type AuditPolicyRule,
+  type AuditStore,
+  AuditWal,
+  type ChainedAuditEvent,
+} from "../../domain/serve_audit/mod.ts";
 import { StoreSink } from "../../serve/audit_sinks/store_sink.ts";
+import { WalSink } from "../../serve/audit_sinks/wal_sink.ts";
 import { RemoteAuditStore } from "../../infrastructure/persistence/remote_audit_store.ts";
-import type { AuditStore } from "../../domain/serve_audit/audit_store.ts";
 import { resolveDatastoreExpressions } from "../datastore_expression_resolver.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
@@ -259,6 +269,53 @@ export interface CancelDeps {
   cancelRegistry: RunCancelRegistry;
   activeRunRegistry?: ActiveRunRegistry;
   scheduledCancelByRunId?: (id: string) => boolean;
+}
+
+async function reconstructChainStateFromStore(
+  store: AuditStore,
+): Promise<{ sequence: number; previousDigest: string } | null> {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(
+      0,
+      10,
+    );
+    let latestEvent: ChainedAuditEvent | null = null;
+    for (const date of [today, yesterday]) {
+      const keys = await store.list(`events/${date}/`);
+      for (const key of keys) {
+        const data = await store.get(key);
+        if (!data) continue;
+        const text = new TextDecoder().decode(data);
+        for (const line of text.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            const event = JSON.parse(line) as ChainedAuditEvent;
+            if (
+              event.version === 1 &&
+              typeof event.sequence === "number" &&
+              typeof event.digest === "string"
+            ) {
+              if (!latestEvent || event.sequence > latestEvent.sequence) {
+                latestEvent = event;
+              }
+            }
+          } catch {
+            // skip malformed
+          }
+        }
+      }
+    }
+    if (latestEvent) {
+      return {
+        sequence: latestEvent.sequence,
+        previousDigest: latestEvent.digest,
+      };
+    }
+  } catch {
+    // best-effort reconstruction
+  }
+  return null;
 }
 
 export async function cancelExecution(
@@ -2787,16 +2844,88 @@ export const serveCommand = new Command()
         }
       }
       if (auditStores.length > 0) {
+        const storesWithRetention = auditStores.map((store, i) => {
+          const entry = auditConfig.stores[i] as {
+            retention?: { days?: number };
+          };
+          return entry?.retention?.days
+            ? { store, retentionDays: entry.retention.days }
+            : store;
+        });
         const storeSink = new StoreSink({
-          stores: auditStores,
+          stores: storesWithRetention,
           batchSize: auditConfig.batchSize,
           flushIntervalMs: auditConfig.flushIntervalMs,
           signal: ac.signal,
         });
-        connectionCtx.auditEmitter = new AuditEmitter([storeSink]);
+
+        const walDir = resolve(resolvedRepoDir, auditConfig.walDir);
+        const wal = new AuditWal({
+          dir: walDir,
+          maxWalBytes: auditConfig.walMaxBytes,
+        });
+        await wal.initialize();
+        const walSink = new WalSink({
+          wal,
+          downstream: storeSink,
+        });
+
+        const policyRules = auditConfig.policyRules.map((r) => ({
+          category: r.category as AuditCategory | undefined,
+          action: r.action,
+          tier: r.tier as AuditPolicyRule["tier"],
+          level: r.level as AuditLevel,
+        }));
+        const policy = new AuditPolicy(
+          policyRules,
+          auditConfig.policyDefaultLevel as AuditLevel,
+        );
+
+        const replayed = await walSink.replay();
+        if (replayed > 0) {
+          logger.info(
+            "Replayed {count} WAL segment(s) from previous session",
+            { count: replayed },
+          );
+        }
+
+        let chainState: AuditChainState | undefined;
+        const savedChainState = await wal.loadChainState();
+        if (savedChainState) {
+          chainState = new AuditChainState(
+            savedChainState.sequence,
+            savedChainState.previousDigest,
+          );
+        }
+        if (!chainState && replayed > 0) {
+          const reconstructed = await reconstructChainStateFromStore(
+            auditStores[0],
+          );
+          if (reconstructed) {
+            chainState = new AuditChainState(
+              reconstructed.sequence,
+              reconstructed.previousDigest,
+            );
+            logger.info(
+              "Reconstructed chain state from store (no saved state): sequence {seq}",
+              { seq: reconstructed.sequence },
+            );
+          }
+        }
+
+        connectionCtx.auditEmitter = new AuditEmitter({
+          sinks: [walSink],
+          policy,
+          chainState,
+        });
+        connectionCtx.auditStores = auditStores;
+        connectionCtx.auditPolicy = policy;
+        connectionCtx.auditFailOpen = auditConfig.failOpen;
+        connectionCtx.auditWal = wal;
+
         logger.info(
-          "Audit pipeline enabled with {count} store target(s)",
-          { count: auditStores.length },
+          "Audit pipeline enabled with {count} store target(s), WAL at {walDir}",
+          { count: auditStores.length, walDir },
         );
       }
     }
@@ -4160,6 +4289,11 @@ export const serveCommand = new Command()
       }
       if (connectionCtx.auditEmitter) {
         await connectionCtx.auditEmitter.close();
+        if (connectionCtx.auditWal) {
+          await connectionCtx.auditWal.saveChainState(
+            connectionCtx.auditEmitter.chainState.snapshot(),
+          );
+        }
       }
       rejectionGuard.dispose();
       setRemoteStepDispatcher(null);

@@ -53,6 +53,8 @@ import {
   createLibSwampContext,
 } from "../../libswamp/mod.ts";
 import { createAuditTimelineRenderer } from "../../presentation/renderers/audit_timeline.ts";
+import { auditLogCommand } from "./audit_log.ts";
+import { auditVerifyCommand } from "./audit_verify.ts";
 
 /**
  * Reads all of stdin as a string.
@@ -245,4 +247,6 @@ export const auditCommand = withRemoteOptions(
   );
 
   ctx.logger.debug("Audit command completed");
-}).command("record", auditRecordCommand);
+}).command("record", auditRecordCommand)
+  .command("log", auditLogCommand)
+  .command("verify", auditVerifyCommand);

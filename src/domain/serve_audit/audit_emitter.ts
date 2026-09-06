@@ -18,44 +18,82 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
-import type { AuditEvent } from "./audit_event.ts";
+import type {
+  AuditCategory,
+  AuditEvent,
+  ChainedAuditEvent,
+} from "./audit_event.ts";
 import type { AuditSink } from "./audit_sink.ts";
+import { AuditChainState } from "./audit_chain.ts";
+import type { AuditPolicy } from "./audit_policy.ts";
 import { RingBuffer } from "./ring_buffer.ts";
 
 const logger = getSwampLogger(["serve", "audit", "emitter"]);
 
 const DEFAULT_BUFFER_CAPACITY = 10_000;
 
+export interface AuditEmitterOptions {
+  readonly sinks: AuditSink[];
+  readonly capacity?: number;
+  readonly chainState?: AuditChainState;
+  readonly policy?: AuditPolicy;
+}
+
 export class AuditEmitter {
   readonly #buffer: RingBuffer<AuditEvent>;
   readonly #sinks: AuditSink[];
   readonly #cursors: Map<string, number> = new Map();
   readonly #deniedRequests = new Set<string>();
+  readonly #chainState: AuditChainState;
+  readonly #policy: AuditPolicy | undefined;
   #drainPending = false;
   #drainPromise: Promise<void> | null = null;
 
   constructor(
-    sinks: AuditSink[],
-    capacity: number = DEFAULT_BUFFER_CAPACITY,
+    sinksOrOptions: AuditSink[] | AuditEmitterOptions,
+    capacity?: number,
   ) {
-    this.#buffer = new RingBuffer(capacity);
-    this.#sinks = sinks;
-    for (const sink of sinks) {
+    if (Array.isArray(sinksOrOptions)) {
+      this.#buffer = new RingBuffer(capacity ?? DEFAULT_BUFFER_CAPACITY);
+      this.#sinks = sinksOrOptions;
+      this.#chainState = new AuditChainState();
+    } else {
+      this.#buffer = new RingBuffer(
+        sinksOrOptions.capacity ?? DEFAULT_BUFFER_CAPACITY,
+      );
+      this.#sinks = sinksOrOptions.sinks;
+      this.#chainState = sinksOrOptions.chainState ?? new AuditChainState();
+      this.#policy = sinksOrOptions.policy;
+    }
+    if (this.#sinks.length > 1) {
+      throw new Error(
+        "AuditEmitter currently supports a single sink — multi-sink chain integrity requires per-sink chain state (planned for a future phase)",
+      );
+    }
+    for (const sink of this.#sinks) {
       this.#cursors.set(sink.name, 0);
     }
   }
 
+  get chainState(): AuditChainState {
+    return this.#chainState;
+  }
+
   emit(event: AuditEvent): void {
+    if (this.#policy) {
+      const level = this.#policy.evaluate(
+        event.category as AuditCategory,
+        event.action,
+      );
+      if (level === "none") return;
+    }
     if (event.outcome === "denied") {
       this.#deniedRequests.add(event.requestId);
       if (this.#deniedRequests.size > 10_000) {
         const first = this.#deniedRequests.values().next().value!;
         this.#deniedRequests.delete(first);
       }
-    } else if (
-      event.outcome === "success" &&
-      this.#deniedRequests.has(event.requestId)
-    ) {
+    } else if (this.#deniedRequests.has(event.requestId)) {
       return;
     }
     this.#buffer.push(event);
@@ -89,13 +127,26 @@ export class AuditEmitter {
   }
 
   async #drain(): Promise<void> {
+    const minCursor = this.#minCursor();
+    const { items, throughSeq } = this.#buffer.readFrom(minCursor);
+    if (items.length === 0) return;
+
+    const chainSnapshot = this.#chainState.snapshot();
+    const chained: ChainedAuditEvent[] = [];
+    for (const event of items) {
+      chained.push(await this.#chainState.chain(event));
+    }
+
+    let anyWriteSucceeded = false;
     for (const sink of this.#sinks) {
-      const cursor = this.#cursors.get(sink.name) ?? 0;
-      const { items, throughSeq } = this.#buffer.readFrom(cursor);
-      if (items.length === 0) continue;
+      const sinkCursor = this.#cursors.get(sink.name) ?? 0;
+      const offset = sinkCursor - minCursor;
+      const sinkEvents = offset > 0 ? chained.slice(offset) : chained;
+      if (sinkEvents.length === 0) continue;
       try {
-        await sink.write(items);
+        await sink.write(sinkEvents);
         this.#cursors.set(sink.name, throughSeq);
+        anyWriteSucceeded = true;
       } catch (error: unknown) {
         logger.warn(
           "Audit sink {sink} failed, events dropped: {error}",
@@ -105,6 +156,10 @@ export class AuditEmitter {
           },
         );
       }
+    }
+
+    if (!anyWriteSucceeded) {
+      this.#chainState.restore(chainSnapshot);
     }
   }
 

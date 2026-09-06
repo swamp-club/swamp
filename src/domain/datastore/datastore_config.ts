@@ -39,6 +39,7 @@ export const ALWAYS_LOCAL_SUBDIRS = [
   "bundles",
   "vault-bundles",
   "report-bundles",
+  "audit-wal",
 ] as const;
 
 /**

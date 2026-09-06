@@ -125,6 +125,20 @@ export interface ServeConfigFile {
     stores?: AuditStoreConfigEntry[];
     "batch-size"?: number;
     "flush-interval"?: string;
+    "fail-open"?: boolean;
+    policy?: {
+      "default-level"?: string;
+      rules?: Array<{
+        category?: string;
+        action?: string;
+        tier?: string;
+        level: string;
+      }>;
+    };
+    wal?: {
+      directory?: string;
+      "max-size"?: string;
+    };
   };
 }
 
@@ -132,12 +146,25 @@ export interface AuditStoreConfigEntry {
   readonly target: string;
   readonly type?: string;
   readonly config?: Record<string, unknown>;
+  readonly retention?: {
+    readonly days: number;
+  };
 }
 
 export interface AuditConfig {
   readonly stores: readonly AuditStoreConfigEntry[];
   readonly batchSize: number;
   readonly flushIntervalMs: number;
+  readonly failOpen: boolean;
+  readonly walDir: string;
+  readonly walMaxBytes: number;
+  readonly policyDefaultLevel: string;
+  readonly policyRules: readonly {
+    readonly category?: string;
+    readonly action?: string;
+    readonly tier?: string;
+    readonly level: string;
+  }[];
 }
 
 // ── Known Keys ────────────────────────────────────────────────────────
@@ -1137,7 +1164,14 @@ export async function writeServeConfigFile(
 
 // ── Audit Config ─────────────────────────────────────────────────────
 
-const KNOWN_AUDIT_KEYS = new Set(["stores", "batch-size", "flush-interval"]);
+const KNOWN_AUDIT_KEYS = new Set([
+  "stores",
+  "batch-size",
+  "flush-interval",
+  "fail-open",
+  "policy",
+  "wal",
+]);
 
 function validateAuditConfig(audit: unknown, path: string): void {
   if (typeof audit !== "object" || audit === null || Array.isArray(audit)) {
@@ -1189,6 +1223,136 @@ function validateAuditConfig(audit: unknown, path: string): void {
       ) {
         throw new UserError(
           `Invalid audit store at index ${i} in ${path}: type and config must both be present for a dedicated audit store`,
+        );
+      }
+      if (storeObj.retention !== undefined) {
+        if (
+          typeof storeObj.retention !== "object" ||
+          storeObj.retention === null ||
+          Array.isArray(storeObj.retention)
+        ) {
+          throw new UserError(
+            `Invalid audit store at index ${i} in ${path}: retention must be an object`,
+          );
+        }
+        const retention = storeObj.retention as Record<string, unknown>;
+        if (
+          typeof retention.days !== "number" ||
+          !Number.isInteger(retention.days) ||
+          retention.days < 1
+        ) {
+          throw new UserError(
+            `Invalid audit store at index ${i} in ${path}: retention.days must be a positive integer`,
+          );
+        }
+      }
+    }
+  }
+
+  if (obj["fail-open"] !== undefined) {
+    if (typeof obj["fail-open"] !== "boolean") {
+      throw new UserError(
+        `Invalid audit.fail-open in ${path}: expected boolean`,
+      );
+    }
+  }
+
+  if (obj.policy !== undefined) {
+    if (
+      typeof obj.policy !== "object" || obj.policy === null ||
+      Array.isArray(obj.policy)
+    ) {
+      throw new UserError(
+        `Invalid audit.policy in ${path}: expected mapping`,
+      );
+    }
+    const policy = obj.policy as Record<string, unknown>;
+    const validLevels = new Set([
+      "none",
+      "metadata",
+      "request",
+      "requestResponse",
+    ]);
+    if (
+      policy["default-level"] !== undefined &&
+      (typeof policy["default-level"] !== "string" ||
+        !validLevels.has(policy["default-level"]))
+    ) {
+      throw new UserError(
+        `Invalid audit.policy.default-level in ${path}: expected one of none, metadata, request, requestResponse`,
+      );
+    }
+    if (policy.rules !== undefined) {
+      if (!Array.isArray(policy.rules)) {
+        throw new UserError(
+          `Invalid audit.policy.rules in ${path}: expected array`,
+        );
+      }
+      const validTiers = new Set(["management", "data"]);
+      for (let i = 0; i < policy.rules.length; i++) {
+        const rule = policy.rules[i] as Record<string, unknown>;
+        if (typeof rule !== "object" || rule === null || Array.isArray(rule)) {
+          throw new UserError(
+            `Invalid audit.policy.rules[${i}] in ${path}: expected object`,
+          );
+        }
+        if (
+          typeof rule.level !== "string" || !validLevels.has(rule.level)
+        ) {
+          throw new UserError(
+            `Invalid audit.policy.rules[${i}].level in ${path}: expected one of none, metadata, request, requestResponse`,
+          );
+        }
+        if (
+          rule.category !== undefined && typeof rule.category !== "string"
+        ) {
+          throw new UserError(
+            `Invalid audit.policy.rules[${i}].category in ${path}: expected string`,
+          );
+        }
+        if (rule.action !== undefined && typeof rule.action !== "string") {
+          throw new UserError(
+            `Invalid audit.policy.rules[${i}].action in ${path}: expected string`,
+          );
+        }
+        if (
+          rule.tier !== undefined &&
+          (typeof rule.tier !== "string" || !validTiers.has(rule.tier))
+        ) {
+          throw new UserError(
+            `Invalid audit.policy.rules[${i}].tier in ${path}: expected one of management, data`,
+          );
+        }
+      }
+    }
+  }
+
+  if (obj.wal !== undefined) {
+    if (
+      typeof obj.wal !== "object" || obj.wal === null ||
+      Array.isArray(obj.wal)
+    ) {
+      throw new UserError(
+        `Invalid audit.wal in ${path}: expected mapping`,
+      );
+    }
+    const wal = obj.wal as Record<string, unknown>;
+    if (wal.directory !== undefined && typeof wal.directory !== "string") {
+      throw new UserError(
+        `Invalid audit.wal.directory in ${path}: expected string`,
+      );
+    }
+    if (wal["max-size"] !== undefined) {
+      if (typeof wal["max-size"] !== "string") {
+        throw new UserError(
+          `Invalid audit.wal.max-size in ${path}: expected string (e.g. "100MB", "1GB")`,
+        );
+      }
+      if (parseByteSize(wal["max-size"]) === null) {
+        throw new UserError(
+          `Invalid audit.wal.max-size in ${path}: expected format like "100MB" or "1GB", got "${
+            wal["max-size"]
+          }"`,
         );
       }
     }
@@ -1245,10 +1409,21 @@ export function parseAuditConfig(
     if (parsed !== null) flushIntervalMs = parsed;
   }
 
+  let walMaxBytes = 100 * 1024 * 1024; // 100MB default
+  if (audit.wal?.["max-size"]) {
+    const parsed = parseByteSize(audit.wal["max-size"]);
+    if (parsed !== null) walMaxBytes = parsed;
+  }
+
   return {
     stores: audit.stores,
     batchSize: audit["batch-size"] ?? 100,
     flushIntervalMs,
+    failOpen: audit["fail-open"] ?? true,
+    walDir: audit.wal?.directory ?? ".swamp/audit-wal",
+    walMaxBytes,
+    policyDefaultLevel: audit.policy?.["default-level"] ?? "metadata",
+    policyRules: audit.policy?.rules ?? [],
   };
 }
 
@@ -1263,6 +1438,22 @@ function parseDuration(value: string): number | null {
       return num * 1_000;
     case "m":
       return num * 60_000;
+    default:
+      return null;
+  }
+}
+
+function parseByteSize(value: string): number | null {
+  const match = value.match(/^(\d+)(KB|MB|GB)$/i);
+  if (!match) return null;
+  const num = parseInt(match[1], 10);
+  switch (match[2].toUpperCase()) {
+    case "KB":
+      return num * 1024;
+    case "MB":
+      return num * 1024 * 1024;
+    case "GB":
+      return num * 1024 * 1024 * 1024;
     default:
       return null;
   }

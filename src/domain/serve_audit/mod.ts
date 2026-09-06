@@ -19,9 +19,11 @@
 
 export {
   type AuditCategory,
+  type AuditDecision,
   type AuditEvent,
   type AuditOutcome,
   type AuditStage,
+  type ChainedAuditEvent,
   createAuditEvent,
 } from "./audit_event.ts";
 
@@ -30,7 +32,35 @@ export {
   buildAuditEvent,
 } from "./audit_event_builder.ts";
 
-export { AuditEmitter } from "./audit_emitter.ts";
+export { AuditEmitter, type AuditEmitterOptions } from "./audit_emitter.ts";
+
+export {
+  AuditChainState,
+  CHAIN_SEED_DIGEST,
+  verifyChain,
+} from "./audit_chain.ts";
+
+export {
+  AuditWal,
+  type AuditWalOptions,
+  type WalCursorState,
+} from "./audit_wal.ts";
+
+export {
+  type AuditEventTier,
+  type AuditLevel,
+  AuditPolicy,
+  type AuditPolicyRule,
+  classifyTier,
+  DEFAULT_AUDIT_POLICY,
+} from "./audit_policy.ts";
+
+export {
+  type AuditQueryFilters,
+  type AuditQueryResult,
+  AuditQueryService,
+  type AuditVerifyResult,
+} from "./audit_query_service.ts";
 
 export type { AuditSink } from "./audit_sink.ts";
 

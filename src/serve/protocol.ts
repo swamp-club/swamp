@@ -156,6 +156,23 @@ export interface AuditTimelinePayload {
   includeDiagnostic?: boolean;
 }
 
+export interface AuditQueryPayload {
+  since?: string;
+  until?: string;
+  principal?: string;
+  category?: string;
+  action?: string;
+  outcome?: string;
+  resource?: string;
+  limit?: number;
+  cursor?: string;
+}
+
+export interface AuditVerifyPayload {
+  since?: string;
+  until?: string;
+}
+
 export interface SummarisePayload {
   since?: string;
   limit?: number;
@@ -731,6 +748,8 @@ export type ServerRequest =
   | { type: "vault.search"; id: string; payload?: VaultSearchPayload }
   | { type: "vault.annotate"; id: string; payload: VaultAnnotatePayload }
   | { type: "audit.timeline"; id: string; payload?: AuditTimelinePayload }
+  | { type: "audit.query"; id: string; payload: AuditQueryPayload }
+  | { type: "audit.verify"; id: string; payload: AuditVerifyPayload }
   | { type: "summarise"; id: string; payload?: SummarisePayload }
   | { type: "report.get"; id: string; payload: ReportGetPayload }
   | { type: "report.search"; id: string; payload?: ReportSearchPayload }
@@ -1143,6 +1162,19 @@ export interface AuditTimelineResponse {
   data: Record<string, unknown>;
 }
 
+export interface AuditQueryResponse {
+  events: readonly Record<string, unknown>[];
+  cursor?: string;
+  total?: number;
+}
+
+export interface AuditVerifyResponse {
+  valid: boolean;
+  eventsChecked: number;
+  brokenAt?: number;
+  message: string;
+}
+
 export interface SummariseResponse {
   data: Record<string, unknown>;
 }
@@ -1518,6 +1550,8 @@ export type ServerMessage =
   | { type: "vault.search"; id: string; payload: VaultSearchResponse }
   | { type: "vault.annotate"; id: string; payload: VaultAnnotateResponse }
   | { type: "audit.timeline"; id: string; payload: AuditTimelineResponse }
+  | { type: "audit.query"; id: string; payload: AuditQueryResponse }
+  | { type: "audit.verify"; id: string; payload: AuditVerifyResponse }
   | { type: "summarise"; id: string; payload: SummariseResponse }
   | { type: "report.get"; id: string; payload: ReportGetResponse }
   | { type: "report.search"; id: string; payload: ReportSearchResponse }

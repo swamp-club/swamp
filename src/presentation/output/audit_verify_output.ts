@@ -17,9 +17,27 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-export interface AuditStore {
-  put(key: string, data: Uint8Array): Promise<void>;
-  get(key: string): Promise<Uint8Array | null>;
-  list(prefix: string): Promise<string[]>;
-  delete(key: string): Promise<void>;
+import { bold, green, red } from "@std/fmt/colors";
+import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import type { AuditVerifyResponse } from "../../serve/protocol.ts";
+import type { OutputMode } from "./output.ts";
+
+export function renderAuditVerify(
+  data: AuditVerifyResponse,
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(JSON.stringify(data, null, 2));
+    return;
+  }
+
+  if (data.valid) {
+    writeOutput(
+      `${green("✓")} ${bold("Chain integrity verified")}: ${data.message}`,
+    );
+  } else {
+    writeOutput(
+      `${red("✗")} ${bold("Chain integrity broken")}: ${data.message}`,
+    );
+  }
 }

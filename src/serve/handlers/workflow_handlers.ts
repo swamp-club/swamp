@@ -179,7 +179,7 @@ export async function handleWorkflowRun(
       kind: "workflow",
       name: payload.workflowIdOrName,
       fields: workflowFields,
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   const initiatedBy = principal ? principalToString(principal) : "ghost";
@@ -427,7 +427,7 @@ export async function handleWorkflowSearch(
       kind: "workflow",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -478,7 +478,7 @@ export async function handleWorkflowApprovals(
       kind: "workflow",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -548,7 +548,7 @@ export async function handleWorkflowGet(
       kind: "workflow",
       name: payload.workflowIdOrName,
       fields: workflowFields,
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -607,7 +607,7 @@ export async function handleWorkflowHistoryGet(
       kind: "workflow",
       name: payload.workflowIdOrName,
       fields: workflowFields,
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -675,7 +675,7 @@ export async function handleWorkflowHistoryLogs(
       kind: "workflow",
       name: payload.runIdOrWorkflow,
       fields: workflowFields,
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -743,7 +743,7 @@ export async function handleWorkflowHistorySearch(
       kind: "workflow",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -809,7 +809,7 @@ export async function handleWorkflowRunSearch(
       kind: "workflow",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -872,7 +872,7 @@ export async function handleWorkflowSchema(
       kind: "workflow",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -924,7 +924,7 @@ export async function handleWorkflowApprove(
       kind: "workflow",
       name: payload.workflowIdOrName,
       fields: workflowFields,
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -997,7 +997,7 @@ export async function handleWorkflowReject(
       kind: "workflow",
       name: payload.workflowIdOrName,
       fields: workflowFields,
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1071,7 +1071,7 @@ export async function handleWorkflowResume(
       kind: "workflow",
       name: payload.workflowIdOrName,
       fields: workflowFields,
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   const registry = ctx.activeRunRegistry;
@@ -1449,7 +1449,7 @@ export async function handleWorkflowCreate(
       kind: "workflow",
       name: payload.name,
       fields: { name: payload.name },
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1503,7 +1503,7 @@ export async function handleWorkflowDelete(
       kind: "workflow",
       name: payload.workflowIdOrName,
       fields: workflowFields,
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1559,7 +1559,7 @@ export async function handleWorkflowEdit(
       kind: "workflow",
       name: payload.workflowIdOrName,
       fields: workflowFields,
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1619,7 +1619,7 @@ export async function handleWorkflowValidate(
       kind: "workflow",
       name: resourceName,
       fields: workflowFields,
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1679,7 +1679,7 @@ export async function handleWorkflowEvaluate(
       kind: "workflow",
       name: resourceName,
       fields: workflowFields,
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1742,7 +1742,7 @@ export async function handleWorkflowTriggerSet(
       kind: "workflow",
       name: payload.workflowName,
       fields: workflowFields,
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1792,7 +1792,7 @@ export async function handleWorkflowTriggerGet(
       kind: "workflow",
       name: payload.workflowName,
       fields: workflowFields,
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1856,7 +1856,7 @@ export async function handleWorkflowTriggerRemove(
       kind: "workflow",
       name: payload.workflowName,
       fields: workflowFields,
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
