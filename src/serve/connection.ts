@@ -27,6 +27,7 @@ import type { ServerRequest } from "./protocol.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { Principal } from "../domain/access/principal.ts";
 import { audited, type AuditedOptions } from "./audited.ts";
+import { AuditQueryService } from "../domain/serve_audit/audit_query_service.ts";
 import {
   GIT_SHA as SERVER_GIT_SHA,
   VERSION as SERVER_VERSION,
@@ -441,6 +442,31 @@ const AuditTimelineRequestSchema = z.object({
     sessionId: z.string().optional(),
     includeDiagnostic: z.boolean().optional(),
   }).optional(),
+});
+
+const AuditQueryRequestSchema = z.object({
+  type: z.literal("audit.query"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    since: z.string().optional(),
+    until: z.string().optional(),
+    principal: z.string().optional(),
+    category: z.string().optional(),
+    action: z.string().optional(),
+    outcome: z.string().optional(),
+    resource: z.string().optional(),
+    limit: z.number().int().min(1).max(1000).optional(),
+    cursor: z.string().optional(),
+  }),
+});
+
+const AuditVerifyRequestSchema = z.object({
+  type: z.literal("audit.verify"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    since: z.string().optional(),
+    until: z.string().optional(),
+  }),
 });
 
 const SummariseRequestSchema = z.object({
@@ -1176,6 +1202,8 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   VaultPutRequestSchema,
   VaultDeleteRequestSchema,
   AuditTimelineRequestSchema,
+  AuditQueryRequestSchema,
+  AuditVerifyRequestSchema,
   SummariseRequestSchema,
   ReportGetRequestSchema,
   ReportSearchRequestSchema,
@@ -1438,6 +1466,21 @@ export function handleMessage(
   activeRequests.set(request.id, controller);
 
   if (
+    ctx.auditEmitter && ctx.auditFailOpen === false &&
+    (ctx.auditWal?.isFull === true ||
+      ctx.auditWal?.hasDroppedEvents === true)
+  ) {
+    sendError(
+      socket,
+      request.id,
+      "audit_unavailable",
+      "Request rejected: audit subsystem cannot durably record events (fail-secure mode)",
+    );
+    activeRequests.delete(request.id);
+    return;
+  }
+
+  if (
     isRestrictedCommand(request.type, ctx.authConfig.restrictedCommands)
   ) {
     if (
@@ -1452,7 +1495,7 @@ export function handleMessage(
           fields: {},
         },
         ctx,
-      )
+      ).allowed
     ) {
       activeRequests.delete(request.id);
       return;
@@ -1477,18 +1520,22 @@ export function handleMessage(
       requestId: request.id,
       methodName,
       resolvedUserNames: ctx.resolvedUserNames,
+      socket,
     };
   }
 
   let task: Promise<void>;
   switch (request.type) {
     case "server.version":
-      task = Promise.resolve(
-        send(socket, {
-          type: "server.version",
-          id: request.id,
-          payload: { version: SERVER_VERSION, gitSha: SERVER_GIT_SHA },
-        }),
+      task = audited(
+        Promise.resolve(
+          send(socket, {
+            type: "server.version",
+            id: request.id,
+            payload: { version: SERVER_VERSION, gitSha: SERVER_GIT_SHA },
+          }),
+        ),
+        auditOpts("admin", "server", "*"),
       );
       break;
     case "workflow.run":
@@ -1504,7 +1551,7 @@ export function handleMessage(
         auditOpts(
           "execution",
           "workflow",
-          request.payload?.workflowIdOrName ?? "*",
+          "*",
         ),
       );
       break;
@@ -1598,53 +1645,68 @@ export function handleMessage(
       );
       break;
     case "data.get":
-      task = handleDataGet(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleDataGet(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("data", "data", request.payload?.modelIdOrName ?? "*"),
       );
       break;
     case "data.query":
-      task = handleDataQuery(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleDataQuery(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("data", "data", "*"),
       );
       break;
     case "data.list":
-      task = handleDataList(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleDataList(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("data", "data", request.payload?.modelIdOrName ?? "*"),
       );
       break;
     case "data.search":
-      task = handleDataSearch(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
-        request.payload,
+      task = audited(
+        handleDataSearch(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+          request.payload,
+        ),
+        auditOpts("data", "data", "*"),
       );
       break;
     case "data.versions":
-      task = handleDataVersions(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleDataVersions(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("data", "data", request.payload?.modelIdOrName ?? "*"),
       );
       break;
     case "data.delete":
@@ -1661,52 +1723,67 @@ export function handleMessage(
       );
       break;
     case "data.rename":
-      task = handleDataRename(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleDataRename(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("data", "data", request.payload?.modelIdOrName ?? "*"),
       );
       break;
     case "model.search":
-      task = handleModelSearch(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
-        request.payload,
+      task = audited(
+        handleModelSearch(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+          request.payload,
+        ),
+        auditOpts("data", "model", "*"),
       );
       break;
     case "model.method.describe":
-      task = handleModelMethodDescribe(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleModelMethodDescribe(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("data", "model", request.payload?.modelIdOrName ?? "*"),
       );
       break;
     case "workflow.search":
-      task = handleWorkflowSearch(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
-        request.payload,
+      task = audited(
+        handleWorkflowSearch(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+          request.payload,
+        ),
+        auditOpts("data", "workflow", "*"),
       );
       break;
     case "workflow.approvals":
-      task = handleWorkflowApprovals(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
+      task = audited(
+        handleWorkflowApprovals(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+        ),
+        auditOpts("data", "workflow", "*"),
       );
       break;
     case "vault.get":
@@ -1719,7 +1796,7 @@ export function handleMessage(
           controller,
           principal,
         ),
-        auditOpts("secrets", "vault", request.payload?.vaultNameOrId ?? "*"),
+        auditOpts("secrets", "vault", "*"),
       );
       break;
     case "vault.put":
@@ -1749,73 +1826,177 @@ export function handleMessage(
       );
       break;
     case "audit.timeline":
-      task = handleAuditTimeline(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
-        request.payload,
+      task = audited(
+        handleAuditTimeline(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+          request.payload,
+        ),
+        auditOpts("admin", "audit", "*"),
+      );
+      break;
+    case "audit.query":
+      if (
+        !authorizeOrReject(
+          socket,
+          request.id,
+          principal,
+          "admin",
+          { kind: "access", name: "audit", fields: {} },
+          ctx,
+        ).allowed
+      ) {
+        task = Promise.resolve();
+        activeRequests.delete(request.id);
+        break;
+      }
+      task = audited(
+        (async () => {
+          if (!ctx.auditStores || ctx.auditStores.length === 0) {
+            send(socket, {
+              type: "audit.query",
+              id: request.id,
+              payload: { events: [], total: 0 },
+            });
+            return;
+          }
+          const queryService = new AuditQueryService(ctx.auditStores[0]);
+          const result = await queryService.query(request.payload);
+          send(socket, {
+            type: "audit.query",
+            id: request.id,
+            payload: {
+              events: result.events as unknown as Record<string, unknown>[],
+              cursor: result.cursor,
+              total: result.total,
+            },
+          });
+        })(),
+        auditOpts("admin", "access", "audit"),
+      );
+      break;
+    case "audit.verify":
+      if (
+        !authorizeOrReject(
+          socket,
+          request.id,
+          principal,
+          "admin",
+          { kind: "access", name: "audit", fields: {} },
+          ctx,
+        ).allowed
+      ) {
+        task = Promise.resolve();
+        activeRequests.delete(request.id);
+        break;
+      }
+      task = audited(
+        (async () => {
+          if (!ctx.auditStores || ctx.auditStores.length === 0) {
+            send(socket, {
+              type: "audit.verify",
+              id: request.id,
+              payload: {
+                valid: true,
+                eventsChecked: 0,
+                message: "No audit stores configured",
+              },
+            });
+            return;
+          }
+          const verifyService = new AuditQueryService(ctx.auditStores[0]);
+          const verifyResult = await verifyService.verify(
+            request.payload.since,
+            request.payload.until,
+          );
+          send(socket, {
+            type: "audit.verify",
+            id: request.id,
+            payload: verifyResult,
+          });
+        })(),
+        auditOpts("admin", "access", "audit"),
       );
       break;
     case "summarise":
-      task = handleSummarise(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
-        request.payload,
+      task = audited(
+        handleSummarise(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+          request.payload,
+        ),
+        auditOpts("data", "data", "*"),
       );
       break;
     case "report.get":
-      task = handleReportGet(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleReportGet(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("data", "report", request.payload?.reportName ?? "*"),
       );
       break;
     case "report.search":
-      task = handleReportSearch(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
-        request.payload,
+      task = audited(
+        handleReportSearch(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+          request.payload,
+        ),
+        auditOpts("data", "report", "*"),
       );
       break;
     case "report.describe":
-      task = handleReportDescribe(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleReportDescribe(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("data", "report", request.payload?.reportName ?? "*"),
       );
       break;
     case "report.type.search":
-      task = handleReportTypeSearch(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
-        request.payload,
+      task = audited(
+        handleReportTypeSearch(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+          request.payload,
+        ),
+        auditOpts("data", "report", "*"),
       );
       break;
     case "model.get":
-      task = handleModelGet(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleModelGet(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("data", "model", request.payload?.modelIdOrName ?? "*"),
       );
       break;
     case "model.create":
@@ -1845,470 +2026,614 @@ export function handleMessage(
       );
       break;
     case "model.output.get":
-      task = handleModelOutputGet(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleModelOutputGet(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("data", "model", "*"),
       );
       break;
     case "model.output.data":
-      task = handleModelOutputData(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleModelOutputData(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("data", "model", "*"),
       );
       break;
     case "model.output.logs":
-      task = handleModelOutputLogs(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleModelOutputLogs(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("data", "model", "*"),
       );
       break;
     case "model.output.search":
-      task = handleModelOutputSearch(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
-        request.payload,
+      task = audited(
+        handleModelOutputSearch(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+          request.payload,
+        ),
+        auditOpts("data", "model", "*"),
       );
       break;
     case "model.method.history.get":
-      task = handleModelMethodHistoryGet(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleModelMethodHistoryGet(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("data", "model", "*"),
       );
       break;
     case "model.method.history.logs":
-      task = handleModelMethodHistoryLogs(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleModelMethodHistoryLogs(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("data", "model", "*"),
       );
       break;
     case "model.method.history.search":
-      task = handleModelMethodHistorySearch(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
-        request.payload,
+      task = audited(
+        handleModelMethodHistorySearch(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+          request.payload,
+        ),
+        auditOpts("data", "model", "*"),
       );
       break;
     case "model.validate":
-      task = handleModelValidate(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
-        request.payload,
+      task = audited(
+        handleModelValidate(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+          request.payload,
+        ),
+        auditOpts("data", "model", "*"),
       );
       break;
     case "model.evaluate":
-      task = handleModelEvaluate(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
-        request.payload,
+      task = audited(
+        handleModelEvaluate(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+          request.payload,
+        ),
+        auditOpts("execution", "model", "*"),
       );
       break;
     case "workflow.get":
-      task = handleWorkflowGet(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleWorkflowGet(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("data", "workflow", "*"),
       );
       break;
     case "workflow.history.get":
-      task = handleWorkflowHistoryGet(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleWorkflowHistoryGet(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("data", "workflow", "*"),
       );
       break;
     case "workflow.history.logs":
-      task = handleWorkflowHistoryLogs(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleWorkflowHistoryLogs(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("data", "workflow", request.payload?.runIdOrWorkflow ?? "*"),
       );
       break;
     case "workflow.history.search":
-      task = handleWorkflowHistorySearch(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
-        request.payload,
+      task = audited(
+        handleWorkflowHistorySearch(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+          request.payload,
+        ),
+        auditOpts("data", "workflow", "*"),
       );
       break;
     case "workflow.run.search":
-      task = handleWorkflowRunSearch(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
-        request.payload,
+      task = audited(
+        handleWorkflowRunSearch(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+          request.payload,
+        ),
+        auditOpts("data", "workflow", "*"),
       );
       break;
     case "workflow.schema":
-      task = handleWorkflowSchema(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleWorkflowSchema(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("data", "workflow", "*"),
       );
       break;
     case "workflow.approve":
-      task = handleWorkflowApprove(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleWorkflowApprove(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("execution", "workflow", request.payload?.runId ?? "*"),
       );
       break;
     case "workflow.reject":
-      task = handleWorkflowReject(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleWorkflowReject(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("execution", "workflow", request.payload?.runId ?? "*"),
       );
       break;
     case "workflow.resume":
-      task = handleWorkflowResume(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleWorkflowResume(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("execution", "workflow", request.payload?.runId ?? "*"),
       );
       break;
     case "vault.describe":
-      task = handleVaultDescribe(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleVaultDescribe(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("secrets", "vault", "*"),
       );
       break;
     case "vault.inspect":
-      task = handleVaultInspect(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleVaultInspect(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("secrets", "vault", request.payload?.vaultName ?? "*"),
       );
       break;
     case "vault.list-keys":
-      task = handleVaultListKeys(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
-        request.payload,
+      task = audited(
+        handleVaultListKeys(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+          request.payload,
+        ),
+        auditOpts("secrets", "vault", "*"),
       );
       break;
     case "vault.search":
-      task = handleVaultSearch(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
-        request.payload,
+      task = audited(
+        handleVaultSearch(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+          request.payload,
+        ),
+        auditOpts("secrets", "vault", "*"),
       );
       break;
     case "vault.annotate":
-      task = handleVaultAnnotate(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleVaultAnnotate(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("secrets", "vault", request.payload?.vaultName ?? "*"),
       );
       break;
     case "worker.list":
-      task = handleWorkerList(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
-        request.payload,
+      task = audited(
+        handleWorkerList(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+          request.payload,
+        ),
+        auditOpts("admin", "worker", "*"),
       );
       break;
     case "worker.queue.list":
-      task = handleWorkerQueueList(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
+      task = audited(
+        handleWorkerQueueList(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "worker", "*"),
       );
       break;
     case "worker.verify":
-      task = handleWorkerVerify(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleWorkerVerify(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "worker", "*"),
       );
       break;
     case "datastore.status":
-      task = handleDatastoreStatus(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
+      task = audited(
+        handleDatastoreStatus(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "datastore", "*"),
       );
       break;
     case "datastore.setup.extension":
-      task = handleDatastoreSetupExtension(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleDatastoreSetupExtension(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "datastore", "*"),
       );
       break;
     case "vault.migrate":
-      task = handleVaultMigrate(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleVaultMigrate(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "vault", "*"),
       );
       break;
     case "extension.list":
-      task = handleExtensionList(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
+      task = audited(
+        handleExtensionList(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "extension", "*"),
       );
       break;
     case "extension.search":
-      task = handleExtensionSearch(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
-        request.payload,
+      task = audited(
+        handleExtensionSearch(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+          request.payload,
+        ),
+        auditOpts("admin", "extension", "*"),
       );
       break;
     case "extension.info":
-      task = handleExtensionInfo(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleExtensionInfo(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "extension", request.payload?.extensionName ?? "*"),
       );
       break;
     case "extension.install":
-      task = handleExtensionInstall(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
+      task = audited(
+        handleExtensionInstall(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "extension", "*"),
       );
       break;
     case "extension.pull":
-      task = handleExtensionPull(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleExtensionPull(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "extension", request.payload?.extensionName ?? "*"),
       );
       break;
     case "extension.rm":
-      task = handleExtensionRm(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleExtensionRm(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "extension", request.payload?.extensionName ?? "*"),
       );
       break;
     case "extension.outdated":
-      task = handleExtensionOutdated(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
+      task = audited(
+        handleExtensionOutdated(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "extension", "*"),
       );
       break;
     case "extension.update":
-      task = handleExtensionUpdate(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleExtensionUpdate(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "extension", request.payload?.extensionName ?? "*"),
       );
       break;
     case "doctor.datastores":
-      task = handleDoctorDatastores(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
+      task = audited(
+        handleDoctorDatastores(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "doctor", "*"),
       );
       break;
     case "doctor.vaults":
-      task = handleDoctorVaults(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
+      task = audited(
+        handleDoctorVaults(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "doctor", "*"),
       );
       break;
     case "doctor.secrets":
-      task = handleDoctorSecrets(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
+      task = audited(
+        handleDoctorSecrets(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "doctor", "*"),
       );
       break;
     case "doctor.workflows":
-      task = handleDoctorWorkflows(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
+      task = audited(
+        handleDoctorWorkflows(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "doctor", "*"),
       );
       break;
     case "doctor.extensions":
-      task = handleDoctorExtensions(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
+      task = audited(
+        handleDoctorExtensions(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "doctor", "*"),
       );
       break;
     case "run.history":
-      task = Promise.resolve(handleRunHistory(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        principal,
-      ));
+      task = audited(
+        Promise.resolve(handleRunHistory(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          principal,
+        )),
+        auditOpts("execution", "run", "*"),
+      );
       break;
     case "run.doctor":
-      task = Promise.resolve(handleRunDoctor(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        principal,
-      ));
+      task = audited(
+        Promise.resolve(handleRunDoctor(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          principal,
+        )),
+        auditOpts("execution", "run", "*"),
+      );
       break;
     case "run.attach":
-      task = handleRunAttach(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleRunAttach(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("execution", "run", request.payload?.runId ?? "*"),
       );
       break;
     case "access.token.list":
-      task = handleAccessTokenList(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
+      task = audited(
+        handleAccessTokenList(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+        ),
+        auditOpts("access", "access", "*"),
       );
       break;
     case "access.token.revoke":
-      task = handleAccessTokenRevoke(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleAccessTokenRevoke(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("access", "access", "*"),
       );
       break;
     case "access.token.rotate":
-      task = handleAccessTokenRotate(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleAccessTokenRotate(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("access", "access", "*"),
       );
       break;
     case "model.edit":
@@ -2325,23 +2650,29 @@ export function handleMessage(
       );
       break;
     case "model.type.describe":
-      task = handleModelTypeDescribe(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
+      task = audited(
+        handleModelTypeDescribe(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("data", "model", request.payload?.typeArg ?? "*"),
       );
       break;
     case "model.type.search":
-      task = handleModelTypeSearch(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
-        request.payload,
+      task = audited(
+        handleModelTypeSearch(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+          request.payload,
+        ),
+        auditOpts("data", "model", "*"),
       );
       break;
     case "workflow.create":
@@ -2370,7 +2701,7 @@ export function handleMessage(
         auditOpts(
           "admin",
           "workflow",
-          request.payload?.workflowIdOrName ?? "*",
+          "*",
         ),
       );
       break;
@@ -2387,195 +2718,252 @@ export function handleMessage(
         auditOpts(
           "admin",
           "workflow",
-          request.payload?.workflowIdOrName ?? "*",
+          "*",
         ),
       );
       break;
     case "workflow.validate":
-      task = handleWorkflowValidate(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
-      );
-      break;
-    case "workflow.evaluate":
-      task = handleWorkflowEvaluate(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
-      );
-      break;
-    case "workflow.trigger.set":
-      task = handleWorkflowTriggerSet(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
-      );
-      break;
-    case "workflow.trigger.get":
-      task = handleWorkflowTriggerGet(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
-      );
-      break;
-    case "workflow.trigger.remove":
-      task = handleWorkflowTriggerRemove(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
-      );
-      break;
-    case "vault.create":
-      task = handleVaultCreate(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
-      );
-      break;
-    case "vault.edit":
-      task = handleVaultEdit(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
-      );
-      break;
-    case "vault.audit-trail":
-      task = handleVaultAuditTrail(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
-      );
-      break;
-    case "vault.read-secret":
-      task = handleVaultReadSecret(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
-      );
-      break;
-    case "vault.type.search":
-      task = handleVaultTypeSearch(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
-        request.payload,
-      );
-      break;
-    case "worker.token.create":
-      task = handleWorkerTokenCreate(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
-      );
-      break;
-    case "worker.token.list":
-      task = handleWorkerTokenList(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
-      );
-      break;
-    case "worker.token.revoke":
-      task = handleWorkerTokenRevoke(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
-      );
-      break;
-    case "data.gc":
-      task = handleDataGc(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
-      );
-      break;
-    case "data.prune":
-      task = handleDataPrune(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
-      );
-      break;
-    case "run.gc":
-      task = handleRunGc(
-        socket,
-        ctx,
-        request.id,
-        request.payload,
-        controller,
-        principal,
-      );
-      break;
-    case "datastore.namespace.list":
-      task = handleDatastoreNamespaceList(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
-      );
-      break;
-    case "cluster.instances":
-      task = handleClusterInstances(
-        socket,
-        ctx,
-        request.id,
-        controller,
-        principal,
-      );
-      break;
-    case "serve.config":
-      task = Promise.resolve(
-        handleServeConfig(
+      task = audited(
+        handleWorkflowValidate(
           socket,
           ctx,
           request.id,
+          request.payload,
+          controller,
           principal,
         ),
+        auditOpts("data", "workflow", "*"),
+      );
+      break;
+    case "workflow.evaluate":
+      task = audited(
+        handleWorkflowEvaluate(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("execution", "workflow", "*"),
+      );
+      break;
+    case "workflow.trigger.set":
+      task = audited(
+        handleWorkflowTriggerSet(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "workflow", "*"),
+      );
+      break;
+    case "workflow.trigger.get":
+      task = audited(
+        handleWorkflowTriggerGet(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("data", "workflow", "*"),
+      );
+      break;
+    case "workflow.trigger.remove":
+      task = audited(
+        handleWorkflowTriggerRemove(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "workflow", "*"),
+      );
+      break;
+    case "vault.create":
+      task = audited(
+        handleVaultCreate(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "vault", request.payload?.name ?? "*"),
+      );
+      break;
+    case "vault.edit":
+      task = audited(
+        handleVaultEdit(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "vault", "*"),
+      );
+      break;
+    case "vault.audit-trail":
+      task = audited(
+        handleVaultAuditTrail(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("secrets", "vault", request.payload?.vaultName ?? "*"),
+      );
+      break;
+    case "vault.read-secret":
+      task = audited(
+        handleVaultReadSecret(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("secrets", "vault", request.payload?.vaultName ?? "*"),
+      );
+      break;
+    case "vault.type.search":
+      task = audited(
+        handleVaultTypeSearch(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+          request.payload,
+        ),
+        auditOpts("secrets", "vault", "*"),
+      );
+      break;
+    case "worker.token.create":
+      task = audited(
+        handleWorkerTokenCreate(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "worker", "*"),
+      );
+      break;
+    case "worker.token.list":
+      task = audited(
+        handleWorkerTokenList(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "worker", "*"),
+      );
+      break;
+    case "worker.token.revoke":
+      task = audited(
+        handleWorkerTokenRevoke(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "worker", "*"),
+      );
+      break;
+    case "data.gc":
+      task = audited(
+        handleDataGc(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "data", "*"),
+      );
+      break;
+    case "data.prune":
+      task = audited(
+        handleDataPrune(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "data", "*"),
+      );
+      break;
+    case "run.gc":
+      task = audited(
+        handleRunGc(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "run", "*"),
+      );
+      break;
+    case "datastore.namespace.list":
+      task = audited(
+        handleDatastoreNamespaceList(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "datastore", "*"),
+      );
+      break;
+    case "cluster.instances":
+      task = audited(
+        handleClusterInstances(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "cluster", "*"),
+      );
+      break;
+    case "serve.config":
+      task = audited(
+        Promise.resolve(
+          handleServeConfig(
+            socket,
+            ctx,
+            request.id,
+            principal,
+          ),
+        ),
+        auditOpts("admin", "server", "*"),
       );
       break;
     default: {
@@ -2629,7 +3017,7 @@ async function handleCancelRun(
         fields: cancelFields,
       },
       ctx,
-    )
+    ).allowed
   ) {
     ctx.activeRunRegistry!.cancel(requestId);
   }
@@ -2692,7 +3080,7 @@ async function handleRunAttach(
               fields: remoteFields,
             },
             ctx,
-          )
+          ).allowed
         ) return;
 
         const heartbeatData = await ctx.controlPlaneStore.get(
@@ -2751,7 +3139,7 @@ async function handleRunAttach(
         fields: localFields,
       },
       ctx,
-    )
+    ).allowed
   ) return;
 
   send(socket, {

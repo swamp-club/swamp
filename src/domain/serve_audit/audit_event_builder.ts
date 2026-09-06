@@ -19,6 +19,7 @@
 
 import {
   type AuditCategory,
+  type AuditDecision,
   type AuditEvent,
   type AuditOutcome,
   type AuditStage,
@@ -58,6 +59,7 @@ export interface AuditEventInput {
   readonly requestId: string;
   readonly methodName?: string;
   readonly detail?: string;
+  readonly decision?: AuditDecision;
 }
 
 export function buildAuditEvent(input: AuditEventInput): AuditEvent {
@@ -76,5 +78,6 @@ export function buildAuditEvent(input: AuditEventInput): AuditEvent {
     requestId: input.requestId,
     methodName: input.methodName,
     detail: input.detail ? sanitize(input.detail) : undefined,
+    decision: input.decision,
   });
 }

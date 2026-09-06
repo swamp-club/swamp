@@ -42,12 +42,19 @@ import {
   principalToString,
 } from "../../domain/access/principal.ts";
 import type { Action } from "../../domain/access/action.ts";
-import type { AccessResource } from "../../domain/access/access_decision_service.ts";
+import type {
+  AccessDecision,
+  AccessResource,
+} from "../../domain/access/access_decision_service.ts";
 import type { ScheduledExecutionService } from "../../libswamp/mod.ts";
 import type { MergedServeOptions } from "../serve_config.ts";
 import type { HealthCollector } from "../health_collector.ts";
 import type { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";
+import type { AuditDecision } from "../../domain/serve_audit/audit_event.ts";
 import { buildAuditEvent } from "../../domain/serve_audit/audit_event_builder.ts";
+import type { AuditStore } from "../../domain/serve_audit/audit_store.ts";
+import type { AuditPolicy } from "../../domain/serve_audit/audit_policy.ts";
+import type { AuditWal } from "../../domain/serve_audit/audit_wal.ts";
 
 export const MAX_CLIENT_ERROR_LENGTH = 200;
 
@@ -165,6 +172,14 @@ export interface ConnectionContext {
   managedDefinitionsDir?: string;
   /** Audit emitter — present when audit config is set in serve.yaml. */
   auditEmitter?: AuditEmitter;
+  /** Audit stores — present when audit config is set in serve.yaml. */
+  auditStores?: readonly AuditStore[];
+  /** Audit policy — controls detail level per event category/action. */
+  auditPolicy?: AuditPolicy;
+  /** When false, refuse requests that cannot be durably audited. */
+  auditFailOpen?: boolean;
+  /** WAL instance — used to check health for fail-secure mode. */
+  auditWal?: AuditWal;
 }
 
 // SECURITY: Authorization must operate on canonical (normalized) model types,
@@ -302,6 +317,11 @@ export function getConnectionSourceIp(socket: WebSocket): string {
   return connectionSourceIp.get(socket) ?? "unknown";
 }
 
+export interface AuthorizationResult {
+  readonly allowed: boolean;
+  readonly decision: AccessDecision | null;
+}
+
 export function authorizeOrReject(
   socket: WebSocket,
   requestId: string,
@@ -309,8 +329,10 @@ export function authorizeOrReject(
   action: Action,
   resource: AccessResource,
   ctx: ConnectionContext,
-): boolean {
-  if (ctx.authConfig.mode === "none") return true;
+): AuthorizationResult {
+  if (ctx.authConfig.mode === "none") {
+    return { allowed: true, decision: null };
+  }
 
   if (!ctx.policySnapshotLoader) {
     sendError(
@@ -327,8 +349,10 @@ export function authorizeOrReject(
       action,
       resource,
       "access_not_configured",
+      null,
+      [],
     );
-    return false;
+    return { allowed: false, decision: null };
   }
 
   if (!principal) {
@@ -346,8 +370,10 @@ export function authorizeOrReject(
       action,
       resource,
       "no_principal",
+      null,
+      [],
     );
-    return false;
+    return { allowed: false, decision: null };
   }
 
   const collectives = connectionCollectives.get(socket) ?? [];
@@ -359,7 +385,9 @@ export function authorizeOrReject(
     resource,
   );
 
-  if (decision && decision.effect === "allow") return true;
+  if (decision && decision.effect === "allow") {
+    return { allowed: true, decision };
+  }
 
   if (!decision) {
     const adminDecision = service.decide(
@@ -367,7 +395,9 @@ export function authorizeOrReject(
       "admin",
       { kind: "access", name: "*", fields: {} },
     );
-    if (adminDecision && adminDecision.effect === "allow") return true;
+    if (adminDecision && adminDecision.effect === "allow") {
+      return { allowed: true, decision: adminDecision };
+    }
   }
 
   const principalStr = resolveDisplayPrincipal(principal, ctx);
@@ -394,8 +424,26 @@ export function authorizeOrReject(
     action,
     resource,
     "unauthorized",
+    decision,
+    groups,
   );
-  return false;
+  return { allowed: false, decision: decision ?? null };
+}
+
+function buildAuditDecision(
+  action: Action,
+  resource: AccessResource,
+  decision: AccessDecision | null,
+  groups: readonly string[],
+): AuditDecision {
+  return {
+    action: String(action),
+    resourceKind: resource.kind,
+    resourceName: resource.name,
+    effect: decision?.effect ?? "deny",
+    grantId: decision?.grantId ?? null,
+    principalGroups: groups,
+  };
 }
 
 function emitDenial(
@@ -406,6 +454,8 @@ function emitDenial(
   action: Action,
   resource: AccessResource,
   detail: string,
+  accessDecision: AccessDecision | null,
+  groups: readonly string[],
 ): void {
   if (!ctx.auditEmitter) return;
   ctx.auditEmitter.emit(buildAuditEvent({
@@ -426,6 +476,7 @@ function emitDenial(
     sourceIp: getConnectionSourceIp(socket),
     requestId,
     detail,
+    decision: buildAuditDecision(action, resource, accessDecision, groups),
   }));
 }
 
@@ -445,6 +496,9 @@ export function send(socket: WebSocket, message: ServerMessage): void {
   }
 }
 
+const MAX_ERRORED_REQUESTS = 10_000;
+const erroredRequests = new WeakMap<WebSocket, Set<string>>();
+
 export function sendError(
   socket: WebSocket,
   id: string,
@@ -452,11 +506,35 @@ export function sendError(
   message: string,
   details?: unknown,
 ): void {
+  let errors = erroredRequests.get(socket);
+  if (!errors) {
+    errors = new Set();
+    erroredRequests.set(socket, errors);
+  }
+  errors.add(id);
+  if (errors.size > MAX_ERRORED_REQUESTS) {
+    const first = errors.values().next().value!;
+    errors.delete(first);
+  }
   send(socket, {
     type: "error",
     id,
     error: { code, message, ...(details !== undefined && { details }) },
   });
+}
+
+export function wasRequestErrored(
+  socket: WebSocket,
+  requestId: string,
+): boolean {
+  return erroredRequests.get(socket)?.has(requestId) ?? false;
+}
+
+export function clearRequestErrored(
+  socket: WebSocket,
+  requestId: string,
+): void {
+  erroredRequests.get(socket)?.delete(requestId);
 }
 
 export function createSocketSubscriber(

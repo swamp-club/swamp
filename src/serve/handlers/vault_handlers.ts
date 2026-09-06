@@ -114,7 +114,7 @@ export async function handleVaultGet(
       kind: "data",
       name: "vault",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -172,7 +172,7 @@ export async function handleVaultPut(
         kind: "data",
         name: "vault",
         fields: {},
-      }, ctx)
+      }, ctx).allowed
     ) return;
   } else {
     if (
@@ -180,7 +180,7 @@ export async function handleVaultPut(
         kind: "data",
         name: "vault",
         fields: {},
-      }, ctx)
+      }, ctx).allowed
     ) return;
   }
 
@@ -290,7 +290,7 @@ export async function handleVaultDelete(
       kind: "data",
       name: "vault",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   let flush: (() => Promise<void>) | undefined;
@@ -413,7 +413,7 @@ export async function handleVaultDescribe(
       kind: "data",
       name: "vault",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -470,7 +470,7 @@ export async function handleVaultInspect(
       kind: "data",
       name: "vault",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -530,7 +530,7 @@ export async function handleVaultListKeys(
       kind: "data",
       name: "vault",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -582,7 +582,7 @@ export async function handleVaultSearch(
       kind: "data",
       name: "vault",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -636,7 +636,7 @@ export async function handleVaultAnnotate(
       kind: "data",
       name: "vault",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -712,7 +712,7 @@ export async function handleVaultCreate(
       kind: "data",
       name: payload.name,
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -768,7 +768,7 @@ export async function handleVaultEdit(
       kind: "data",
       name: payload.vaultNameOrId,
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -821,7 +821,7 @@ export async function handleVaultAuditTrail(
       kind: "data",
       name: payload?.vaultName ?? "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -880,7 +880,7 @@ export async function handleVaultReadSecret(
       kind: "data",
       name: payload.vaultName,
       fields: { key: payload.secretKey },
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -936,7 +936,7 @@ export async function handleVaultTypeSearch(
       kind: "data",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {

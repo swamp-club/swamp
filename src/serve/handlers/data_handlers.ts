@@ -117,7 +117,7 @@ export async function handleDataGet(
       kind: "data",
       name: resourceName,
       fields: dataFields,
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -185,7 +185,7 @@ export async function handleDataQuery(
       kind: "data",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -253,7 +253,7 @@ export async function handleDataList(
       kind: "data",
       name: resourceName,
       fields: listFields,
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -319,7 +319,7 @@ export async function handleDataSearch(
       kind: "data",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -397,7 +397,7 @@ export async function handleDataVersions(
       kind: "data",
       name: resourceName,
       fields: versionFields,
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -463,7 +463,7 @@ export async function handleDataDelete(
       kind: "data",
       name: payload.modelIdOrName,
       fields: deleteFields,
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -530,7 +530,7 @@ export async function handleDataRename(
       kind: "data",
       name: payload.modelIdOrName,
       fields: renameFields,
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -593,7 +593,7 @@ export async function handleSummarise(
       kind: "model",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -656,7 +656,7 @@ export async function handleDataGc(
       kind: "data",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -710,7 +710,7 @@ export async function handleDataPrune(
       kind: "data",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -764,7 +764,7 @@ export async function handleRunGc(
       kind: "data",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {

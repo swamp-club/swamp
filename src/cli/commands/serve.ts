@@ -110,10 +110,19 @@ import {
   parseExplicitFlags,
   parseWebhookConfig,
 } from "../../serve/serve_config.ts";
-import { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";
+import {
+  type AuditCategory,
+  AuditChainState,
+  AuditEmitter,
+  type AuditLevel,
+  AuditPolicy,
+  type AuditPolicyRule,
+  type AuditStore,
+  AuditWal,
+} from "../../domain/serve_audit/mod.ts";
 import { StoreSink } from "../../serve/audit_sinks/store_sink.ts";
+import { WalSink } from "../../serve/audit_sinks/wal_sink.ts";
 import { RemoteAuditStore } from "../../infrastructure/persistence/remote_audit_store.ts";
-import type { AuditStore } from "../../domain/serve_audit/audit_store.ts";
 import { resolveDatastoreExpressions } from "../datastore_expression_resolver.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
@@ -259,6 +268,61 @@ export interface CancelDeps {
   cancelRegistry: RunCancelRegistry;
   activeRunRegistry?: ActiveRunRegistry;
   scheduledCancelByRunId?: (id: string) => boolean;
+}
+
+const CHAIN_RECONSTRUCT_LOOKBACK_DAYS = 14;
+
+async function reconstructChainStateFromStore(
+  store: AuditStore,
+): Promise<{ sequence: number; previousDigest: string } | null> {
+  try {
+    let latestSeq = -1;
+    let latestDigest = "";
+    let found = false;
+    for (let d = 0; d < CHAIN_RECONSTRUCT_LOOKBACK_DAYS; d++) {
+      const date = new Date(Date.now() - d * 86_400_000).toISOString().slice(
+        0,
+        10,
+      );
+      const keys = await store.list(`events/${date}/`);
+      for (const key of keys) {
+        const data = await store.get(key);
+        if (!data) continue;
+        const text = new TextDecoder().decode(data);
+        for (const line of text.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            const event = JSON.parse(line) as Record<string, unknown>;
+            const seq = event.sequence;
+            const digest = event.digest;
+            if (
+              event.version === 1 &&
+              typeof seq === "number" &&
+              typeof digest === "string"
+            ) {
+              if (seq > latestSeq) {
+                latestSeq = seq;
+                latestDigest = digest;
+                found = true;
+              }
+            }
+          } catch {
+            // skip malformed
+          }
+        }
+      }
+      if (found) break;
+    }
+    if (found) {
+      return {
+        sequence: latestSeq,
+        previousDigest: latestDigest,
+      };
+    }
+  } catch {
+    // best-effort reconstruction
+  }
+  return null;
 }
 
 export async function cancelExecution(
@@ -2730,7 +2794,10 @@ export const serveCommand = new Command()
     // ── Audit Pipeline ───────────────────────────────────────────────
     const auditConfig = parseAuditConfig(configFile);
     if (auditConfig) {
-      const auditStores: AuditStore[] = [];
+      const auditStoresWithConfig: {
+        store: AuditStore;
+        entry: (typeof auditConfig.stores)[number];
+      }[] = [];
       for (const entry of auditConfig.stores) {
         if (entry.type && entry.config) {
           await datastoreTypeRegistry.ensureLoaded();
@@ -2761,20 +2828,22 @@ export const serveCommand = new Command()
               `Audit store target "${entry.target}": datastore type "${entry.type}" does not support control-plane storage`,
             );
           }
-          auditStores.push(
-            new RemoteAuditStore(store, `audit/${entry.target}/`),
-          );
+          auditStoresWithConfig.push({
+            store: new RemoteAuditStore(store, `audit/${entry.target}/`),
+            entry,
+          });
           logger.info(
             "Audit target {target}: dedicated {type} datastore",
             { target: entry.target, type: entry.type },
           );
         } else if (controlPlaneStore) {
-          auditStores.push(
-            new RemoteAuditStore(
+          auditStoresWithConfig.push({
+            store: new RemoteAuditStore(
               controlPlaneStore,
               `_audit/${entry.target}/`,
             ),
-          );
+            entry,
+          });
           logger.warn(
             "Audit target {target}: using shared control-plane store (configure type + config for a dedicated audit store)",
             { target: entry.target },
@@ -2786,17 +2855,112 @@ export const serveCommand = new Command()
           );
         }
       }
+      const auditStores = auditStoresWithConfig.map((s) => s.store);
       if (auditStores.length > 0) {
+        const storesWithRetention = auditStoresWithConfig.map(
+          ({ store, entry }) => {
+            const retentionDays = (entry as { retention?: { days?: number } })
+              ?.retention?.days;
+            return retentionDays ? { store, retentionDays } : store;
+          },
+        );
         const storeSink = new StoreSink({
-          stores: auditStores,
+          stores: storesWithRetention,
           batchSize: auditConfig.batchSize,
           flushIntervalMs: auditConfig.flushIntervalMs,
           signal: ac.signal,
         });
-        connectionCtx.auditEmitter = new AuditEmitter([storeSink]);
+
+        const walDir = resolve(resolvedRepoDir, auditConfig.walDir);
+        const wal = new AuditWal({
+          dir: walDir,
+          maxWalBytes: auditConfig.walMaxBytes,
+        });
+        await wal.initialize();
+        const walSink = new WalSink({
+          wal,
+          downstream: storeSink,
+        });
+
+        const policyRules = auditConfig.policyRules.map((r) => ({
+          category: r.category as AuditCategory | undefined,
+          action: r.action,
+          tier: r.tier as AuditPolicyRule["tier"],
+          level: r.level as AuditLevel,
+        }));
+        const policy = new AuditPolicy(
+          policyRules,
+          auditConfig.policyDefaultLevel as AuditLevel,
+        );
+
+        let highestSeq = -1;
+        let highestDigest = "";
+        for (const segName of wal.listSegments()) {
+          const events = await wal.readSegment(segName);
+          for (const event of events) {
+            const e = event as unknown as Record<string, unknown>;
+            if (
+              typeof e.sequence === "number" && typeof e.digest === "string" &&
+              e.sequence > highestSeq
+            ) {
+              highestSeq = e.sequence;
+              highestDigest = e.digest as string;
+            }
+          }
+        }
+
+        const replayed = await walSink.replay();
+        if (replayed > 0) {
+          logger.info(
+            "Replayed {count} WAL event(s) from previous session",
+            { count: replayed },
+          );
+        }
+
+        let chainState: AuditChainState | undefined;
+        const savedChainState = await wal.loadChainState();
+        if (savedChainState) {
+          chainState = new AuditChainState(
+            savedChainState.sequence,
+            savedChainState.previousDigest,
+          );
+        }
+        if (highestSeq > (chainState?.sequence ?? -1)) {
+          chainState = new AuditChainState(highestSeq, highestDigest);
+          logger.info(
+            "Chain state advanced from WAL segments: sequence {seq}",
+            { seq: highestSeq },
+          );
+        }
+        if (!chainState) {
+          const reconstructed = await reconstructChainStateFromStore(
+            auditStores[0],
+          );
+          if (reconstructed) {
+            chainState = new AuditChainState(
+              reconstructed.sequence,
+              reconstructed.previousDigest,
+            );
+            logger.info(
+              "Reconstructed chain state from store: sequence {seq}",
+              { seq: reconstructed.sequence },
+            );
+          }
+        }
+
+        connectionCtx.auditEmitter = new AuditEmitter({
+          sinks: [walSink],
+          policy,
+          chainState,
+        });
+        connectionCtx.auditStores = auditStores;
+        connectionCtx.auditPolicy = policy;
+        connectionCtx.auditFailOpen = auditConfig.failOpen;
+        connectionCtx.auditWal = wal;
+
         logger.info(
-          "Audit pipeline enabled with {count} store target(s)",
-          { count: auditStores.length },
+          "Audit pipeline enabled with {count} store target(s), WAL at {walDir}",
+          { count: auditStores.length, walDir },
         );
       }
     }
@@ -4160,6 +4324,11 @@ export const serveCommand = new Command()
       }
       if (connectionCtx.auditEmitter) {
         await connectionCtx.auditEmitter.close();
+        if (connectionCtx.auditWal) {
+          await connectionCtx.auditWal.saveChainState(
+            connectionCtx.auditEmitter.chainState.snapshot(),
+          );
+        }
       }
       rejectionGuard.dispose();
       setRemoteStepDispatcher(null);
