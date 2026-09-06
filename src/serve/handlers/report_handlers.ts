@@ -65,7 +65,7 @@ export async function handleReportGet(
       kind: "model",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -152,7 +152,7 @@ export async function handleReportSearch(
       kind: "model",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -233,7 +233,7 @@ export async function handleReportDescribe(
       kind: "model",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -294,7 +294,7 @@ export async function handleReportTypeSearch(
       kind: "model",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {

@@ -104,7 +104,7 @@ export async function handleAccessGrantList(
       kind: "access",
       name: "grant",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -226,7 +226,7 @@ export async function handleAccessGroupList(
       kind: "access",
       name: "group",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -291,7 +291,7 @@ export async function handleAccessGroupListIdp(
       kind: "access",
       name: "group",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -365,7 +365,7 @@ export function handleAccessCheck(
       kind: "access",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return Promise.resolve();
 
   try {
@@ -557,7 +557,7 @@ export async function handleAccessReload(
       kind: "access",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   const logger = getSwampLogger(["access", "reload"]);
@@ -802,7 +802,7 @@ export async function handleAccessTokenList(
       kind: "access",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -853,7 +853,7 @@ export async function handleAccessTokenRevoke(
       kind: "access",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -906,7 +906,7 @@ export async function handleAccessTokenRotate(
       kind: "access",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {

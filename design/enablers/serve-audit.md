@@ -1,14 +1,14 @@
 ---
 audience: everyone
-last-verified: 2026-09-04 @ HEAD
+last-verified: 2026-09-05 @ HEAD
 ---
 
 # Serve Audit
 
-Audit event pipeline for `swamp serve`. Automatically captures authorization
-denials across all handlers and success/failure events for high-value operations
-(execution, secrets, admin, access). Events persist to remote stores as
-date-partitioned JSONL.
+Audit event pipeline for `swamp serve`. Captures authorization decisions across
+all handlers and success/failure events for every operation. Events are
+chain-hashed for tamper evidence, persisted durably via a write-ahead log, and
+queryable through the `audit.query` API and `swamp audit log` CLI command.
 
 This is distinct from the CLI audit subsystem (`src/domain/audit/`), which
 tracks local command history. The serve audit bounded context
@@ -18,21 +18,30 @@ authenticated WebSocket connections.
 ## How it works
 
 ```
-Handler → authorizeOrReject / audited() → AuditEmitter → RingBuffer → StoreSink → AuditStore(s)
+Handler → authorizeOrReject / audited() → AuditEmitter → RingBuffer → [chain hash] → WalSink/StoreSink → AuditStore(s)
 ```
 
-1. **authorizeOrReject** emits a denial event as a side effect when access is
-   denied (optional `AuditEmitter` parameter — existing callers are unaffected).
+1. **authorizeOrReject** returns `{ allowed, decision }` — the `AccessDecision`
+   is captured in the audit event so every allow/deny is traceable to a specific
+   grant rule. Denials emit an audit event as a side effect.
 2. **audited()** wraps a handler's `Promise<void>`, emitting success on
    resolution and failure on rejection. It re-throws the original error so
-   handler semantics are unchanged.
+   handler semantics are unchanged. All 106+ handlers are wrapped.
 3. **AuditEmitter** appends events synchronously to a **RingBuffer** (10,000
-   capacity), then drains asynchronously to registered sinks. Sink errors are
-   logged and absorbed — audit never disrupts request handling.
-4. **StoreSink** batches events in memory, writes date-partitioned JSONL
+   capacity). During drain, events receive chain-hashed integrity fields
+   (sequence, SHA-256 digest, version) via **AuditChainState** before reaching
+   sinks. Sink errors are logged and absorbed — audit never disrupts request
+   handling unless fail-secure mode is enabled.
+4. **AuditPolicy** evaluates each event against ordered rules to determine the
+   detail level (none, metadata, request, requestResponse). Management-tier
+   events (audit.query, audit.verify) default to metadata level.
+5. **WalSink** spills events to local disk when the remote backend is
+   unreachable, replays on reconnection. Configurable max size (default 100MB).
+6. **StoreSink** batches events in memory, writes date-partitioned JSONL
    (`events/YYYY-MM-DD/<uuid>.jsonl`) to all configured **AuditStore** targets
-   on a timer or when the batch is full. Flushes on shutdown via `AbortSignal`.
-5. **RemoteAuditStore** adapts `ControlPlaneStore` with a key prefix.
+   on a timer or when the batch is full. Supports per-target retention with
+   automatic date-partition GC.
+7. **RemoteAuditStore** adapts `ControlPlaneStore` with a key prefix.
 
 ## Configuration
 
@@ -45,7 +54,6 @@ application data, so it cannot be tampered with by someone who has access to
 the main datastore.
 
 ```yaml
-# Recommended: dedicated audit store (separate S3 bucket)
 audit:
   stores:
     - target: security-audit
@@ -53,70 +61,82 @@ audit:
       config:
         bucket: my-audit-bucket
         region: us-east-1
+      retention:
+        days: 90
   batch-size: 100
   flush-interval: 5s
+  fail-open: true
+  policy:
+    default-level: metadata
+    rules:
+      - category: secrets
+        level: requestResponse
+      - tier: management
+        level: metadata
+  wal:
+    directory: .swamp/audit-wal
+    max-size: 100MB
 ```
 
 Config values support `${{ }}` expression interpolation — the same syntax as
 datastore config in `.swamp.yaml` (see
 [datastores.md § Config Value Interpolation](datastores.md#config-value-interpolation)).
-Two expression namespaces are available: `${{ env.VAR }}` for environment
-variables and `${{ vault.get(vaultName, secretKey) }}` for vault secrets.
-
-```yaml
-audit:
-  stores:
-    - target: security-audit
-      type: "@swamp/s3-datastore"
-      config:
-        bucket: audit-bucket
-        region: us-east-1
-        accessKeyId: "${{ env.AUDIT_AWS_ACCESS_KEY_ID }}"
-        secretAccessKey: "${{ vault.get(infra, audit-s3-secret) }}"
-```
 
 A store entry without `type` + `config` falls back to the repo's existing
 control-plane store (shared datastore). This works for development but logs
 a warning at startup — production deployments should use a dedicated store.
 
-```yaml
-# Development fallback: shared datastore (warns at startup)
-audit:
-  stores:
-    - target: default
-```
-
 ## What is audited
 
-- **All 106 handlers**: automatic denial auditing via `authorizeOrReject`
-- **~20 high-value handlers**: success/failure via `audited()` wrapper
-  - Execution: `workflow.run`, `model.method.run`
-  - Secrets: `vault.get`, `vault.put`, `vault.delete`
-  - Access: `access.check`, `access.can-i`, `access.grant.list`,
-    `access.group.list`, `access.group.list-idp`, `access.reload`
-  - Admin: `serve.reload`, `model.create`, `model.delete`, `model.edit`,
-    `workflow.create`, `workflow.delete`, `workflow.edit`, `data.delete`
+- **All handlers**: authorization decision capture via `authorizeOrReject` and
+  success/failure auditing via `audited()` wrapper
+- **Chain hashing**: every event carries a sequence number and SHA-256 digest
+  chaining it to the previous event for tamper evidence
+- **Access decisions**: every allow/deny is recorded with the matched grant
+  rule, effect, and principal groups at decision time
+
+## Query API
+
+- `audit.query` — paginated query with filters (time range, principal,
+  category, action, resource, outcome). Requires `read` permission on the
+  `audit` resource kind.
+- `audit.verify` — verify chain integrity for a time range, reports broken
+  chains or missing events
+
+## CLI commands
+
+- `swamp audit log` — query the audit log with filters (`--since`, `--until`,
+  `--principal`, `--category`, `--action`, `--outcome`, `--limit`)
+- `swamp audit verify` — check chain integrity for a time range
 
 ## Domain model
 
 | Type              | DDD Building Block | Location                          |
 | ----------------- | ------------------ | --------------------------------- |
 | AuditEvent        | Entity             | `src/domain/serve_audit/`         |
+| ChainedAuditEvent | Type Alias         | `src/domain/serve_audit/`         |
+| AuditDecision     | Value Object       | `src/domain/serve_audit/`         |
 | AuditCategory     | Value Object       | `src/domain/serve_audit/`         |
 | AuditStage        | Value Object       | `src/domain/serve_audit/`         |
 | AuditOutcome      | Value Object       | `src/domain/serve_audit/`         |
+| AuditLevel        | Value Object       | `src/domain/serve_audit/`         |
+| AuditPolicyRule   | Value Object       | `src/domain/serve_audit/`         |
+| AuditChainState   | Domain Service     | `src/domain/serve_audit/`         |
 | RingBuffer        | Data Structure     | `src/domain/serve_audit/`         |
 | AuditEmitter      | Domain Service     | `src/domain/serve_audit/`         |
+| AuditPolicy       | Value Object       | `src/domain/serve_audit/`         |
+| AuditWal          | Domain Service     | `src/domain/serve_audit/`         |
+| AuditQueryService | Domain Service     | `src/domain/serve_audit/`         |
 | AuditSink         | Port Interface     | `src/domain/serve_audit/`         |
 | AuditStore        | Port Interface     | `src/domain/serve_audit/`         |
 | AuditEventBuilder | Factory            | `src/domain/serve_audit/`         |
 | RemoteAuditStore  | Adapter            | `src/infrastructure/persistence/` |
 | StoreSink         | Adapter            | `src/serve/audit_sinks/`          |
+| WalSink           | Adapter            | `src/serve/audit_sinks/`          |
 
 ## Future phases
 
-- **Phase 2**: Write-ahead log, chain hashing, query API, complete handler
-  coverage
-- **Phase 3**: Real-time WebSocket streaming
-- **Phase 4**: Webhook and syslog sinks, bulk export
-- **Phase 5**: Extension sinks, alerting
+- **Phase 3**: Real-time WebSocket streaming (`audit.subscribe`), `--follow`
+  for `swamp audit log`
+- **Phase 4**: Webhook and syslog sinks, bulk export, HMAC
+- **Phase 5**: Extension sinks, alerting, compliance templates

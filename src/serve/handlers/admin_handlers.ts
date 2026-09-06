@@ -172,7 +172,7 @@ export async function handleWorkerList(
       kind: "access",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -223,7 +223,7 @@ export async function handleWorkerQueueList(
       kind: "access",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -273,7 +273,7 @@ export async function handleWorkerVerify(
       kind: "access",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   if (!ctx.workerGateway) {
@@ -354,7 +354,7 @@ export async function handleDatastoreStatus(
       kind: "access",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -402,7 +402,7 @@ export async function handleExtensionList(
       kind: "model",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -452,7 +452,7 @@ export async function handleExtensionSearch(
       kind: "model",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -538,7 +538,7 @@ export async function handleExtensionInfo(
       kind: "model",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -601,7 +601,7 @@ export async function handleExtensionInstall(
       kind: "model",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -663,7 +663,7 @@ export async function handleExtensionPull(
       kind: "model",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   let catalog: ExtensionCatalogStore | undefined;
@@ -790,7 +790,7 @@ export async function handleExtensionRm(
       kind: "model",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   let deps: Awaited<ReturnType<typeof createExtensionRmDeps>> | undefined;
@@ -862,7 +862,7 @@ export async function handleExtensionOutdated(
       kind: "model",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -937,7 +937,7 @@ export async function handleExtensionUpdate(
       kind: "model",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   let catalog: ExtensionCatalogStore | undefined;
@@ -1062,7 +1062,7 @@ export async function handleDatastoreSetupExtension(
       kind: "model",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1155,7 +1155,7 @@ export async function handleVaultMigrate(
       kind: "model",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1231,7 +1231,7 @@ export async function handleDoctorVaults(
       kind: "access",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1280,7 +1280,7 @@ export async function handleDoctorDatastores(
       kind: "access",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1368,7 +1368,7 @@ export async function handleDoctorSecrets(
       kind: "access",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1417,7 +1417,7 @@ export async function handleDoctorWorkflows(
       kind: "access",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1470,7 +1470,7 @@ export async function handleDoctorExtensions(
       kind: "access",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   const logger = getSwampLogger(["serve", "doctor", "extensions"]);
@@ -1622,7 +1622,7 @@ export function handleRunHistory(
       kind: "model",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
   if (!ctx.runTracker) {
     sendError(socket, requestId, "not_available", "Run tracker not available");
@@ -1669,7 +1669,7 @@ export function handleRunDoctor(
       kind: "model",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
   if (!ctx.runTracker) {
     sendError(socket, requestId, "not_available", "Run tracker not available");
@@ -1732,7 +1732,7 @@ export async function handleAuditTimeline(
       kind: "model",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1789,7 +1789,7 @@ export async function handleServeReload(
       kind: "access",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   if (!ctx.hotReload) {
@@ -1860,7 +1860,7 @@ export async function handleWorkerTokenCreate(
       kind: "access",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1917,7 +1917,7 @@ export async function handleWorkerTokenList(
       kind: "access",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1968,7 +1968,7 @@ export async function handleWorkerTokenRevoke(
       kind: "access",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -2020,7 +2020,7 @@ export async function handleDatastoreNamespaceList(
       kind: "data",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -2183,7 +2183,7 @@ export async function handleClusterInstances(
       kind: "access",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -2253,7 +2253,7 @@ export function handleServeConfig(
       kind: "access",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   if (!ctx.serveOptions) {

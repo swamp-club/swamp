@@ -70,6 +70,10 @@ function createMockStore(): AuditStore & {
         [...written.keys()].filter((k) => k.startsWith(prefix)),
       );
     },
+    delete(key: string): Promise<void> {
+      written.delete(key);
+      return Promise.resolve();
+    },
   };
 }
 
@@ -161,6 +165,9 @@ Deno.test("StoreSink: store failure does not crash", async () => {
     list(): Promise<string[]> {
       return Promise.resolve([]);
     },
+    delete(): Promise<void> {
+      return Promise.resolve();
+    },
   };
   const goodStore = createMockStore();
   const sink = new StoreSink({
@@ -251,6 +258,9 @@ Deno.test("StoreSink: slow store does not block subsequent batches", async () =>
     },
     list(): Promise<string[]> {
       return Promise.resolve([]);
+    },
+    delete(): Promise<void> {
+      return Promise.resolve();
     },
   };
   const sink = new StoreSink({

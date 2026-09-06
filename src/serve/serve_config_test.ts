@@ -1413,6 +1413,281 @@ Deno.test("loadServeConfig: rejects non-object audit block", () => {
   }
 });
 
+// ── Phase 2 audit config fields ──────────────────────────────────────
+
+Deno.test("parseAuditConfig: returns Phase 2 defaults", () => {
+  const result = parseAuditConfig({
+    audit: { stores: [{ target: "default" }] },
+  });
+  assertEquals(result?.failOpen, true);
+  assertEquals(result?.walDir, ".swamp/audit-wal");
+  assertEquals(result?.walMaxBytes, 100 * 1024 * 1024);
+  assertEquals(result?.policyDefaultLevel, "metadata");
+  assertEquals(result?.policyRules, []);
+});
+
+Deno.test("parseAuditConfig: parses fail-open false", () => {
+  const result = parseAuditConfig({
+    audit: { stores: [{ target: "a" }], "fail-open": false },
+  });
+  assertEquals(result?.failOpen, false);
+});
+
+Deno.test("parseAuditConfig: parses wal config", () => {
+  const result = parseAuditConfig({
+    audit: {
+      stores: [{ target: "a" }],
+      wal: { directory: "custom/wal", "max-size": "50MB" },
+    },
+  });
+  assertEquals(result?.walDir, "custom/wal");
+  assertEquals(result?.walMaxBytes, 50 * 1024 * 1024);
+});
+
+Deno.test("parseAuditConfig: parses wal max-size KB", () => {
+  const result = parseAuditConfig({
+    audit: {
+      stores: [{ target: "a" }],
+      wal: { "max-size": "512KB" },
+    },
+  });
+  assertEquals(result?.walMaxBytes, 512 * 1024);
+});
+
+Deno.test("parseAuditConfig: parses wal max-size GB", () => {
+  const result = parseAuditConfig({
+    audit: {
+      stores: [{ target: "a" }],
+      wal: { "max-size": "1GB" },
+    },
+  });
+  assertEquals(result?.walMaxBytes, 1024 * 1024 * 1024);
+});
+
+Deno.test("parseAuditConfig: parses wal max-size case-insensitive", () => {
+  const result = parseAuditConfig({
+    audit: {
+      stores: [{ target: "a" }],
+      wal: { "max-size": "100mb" },
+    },
+  });
+  assertEquals(result?.walMaxBytes, 100 * 1024 * 1024);
+});
+
+Deno.test("parseAuditConfig: parses policy config", () => {
+  const result = parseAuditConfig({
+    audit: {
+      stores: [{ target: "a" }],
+      policy: {
+        "default-level": "requestResponse",
+        rules: [
+          { category: "secrets", level: "requestResponse" },
+          { tier: "management", level: "none" },
+          { action: "vault.get", level: "request" },
+        ],
+      },
+    },
+  });
+  assertEquals(result?.policyDefaultLevel, "requestResponse");
+  assertEquals(result?.policyRules.length, 3);
+  assertEquals(result?.policyRules[0], {
+    category: "secrets",
+    level: "requestResponse",
+  });
+  assertEquals(result?.policyRules[1], {
+    tier: "management",
+    level: "none",
+  });
+});
+
+Deno.test("parseAuditConfig: parses store retention", () => {
+  const result = parseAuditConfig({
+    audit: {
+      stores: [{ target: "a", retention: { days: 90 } }],
+    },
+  });
+  const store = result?.stores[0] as { retention?: { days: number } };
+  assertEquals(store?.retention?.days, 90);
+});
+
+Deno.test("loadServeConfig: rejects non-boolean fail-open", () => {
+  const dir = Deno.makeTempDirSync();
+  try {
+    const path = join(dir, ".swamp", "serve.yaml");
+    Deno.mkdirSync(join(dir, ".swamp"), { recursive: true });
+    Deno.writeTextFileSync(
+      path,
+      stringifyYaml({
+        audit: { stores: [{ target: "default" }], "fail-open": "yes" },
+      }),
+    );
+    assertThrows(
+      () => loadServeConfig(path, dir),
+      Error,
+      "fail-open",
+    );
+  } finally {
+    try {
+      Deno.removeSync(dir, { recursive: true });
+    } catch { /* Windows EBUSY */ }
+  }
+});
+
+Deno.test("loadServeConfig: rejects invalid policy default-level", () => {
+  const dir = Deno.makeTempDirSync();
+  try {
+    const path = join(dir, ".swamp", "serve.yaml");
+    Deno.mkdirSync(join(dir, ".swamp"), { recursive: true });
+    Deno.writeTextFileSync(
+      path,
+      stringifyYaml({
+        audit: {
+          stores: [{ target: "default" }],
+          policy: { "default-level": "verbose" },
+        },
+      }),
+    );
+    assertThrows(
+      () => loadServeConfig(path, dir),
+      Error,
+      "default-level",
+    );
+  } finally {
+    try {
+      Deno.removeSync(dir, { recursive: true });
+    } catch { /* Windows EBUSY */ }
+  }
+});
+
+Deno.test("loadServeConfig: rejects invalid policy rule level", () => {
+  const dir = Deno.makeTempDirSync();
+  try {
+    const path = join(dir, ".swamp", "serve.yaml");
+    Deno.mkdirSync(join(dir, ".swamp"), { recursive: true });
+    Deno.writeTextFileSync(
+      path,
+      stringifyYaml({
+        audit: {
+          stores: [{ target: "default" }],
+          policy: { rules: [{ level: "invalid" }] },
+        },
+      }),
+    );
+    assertThrows(
+      () => loadServeConfig(path, dir),
+      Error,
+      "level",
+    );
+  } finally {
+    try {
+      Deno.removeSync(dir, { recursive: true });
+    } catch { /* Windows EBUSY */ }
+  }
+});
+
+Deno.test("loadServeConfig: rejects invalid policy rule tier", () => {
+  const dir = Deno.makeTempDirSync();
+  try {
+    const path = join(dir, ".swamp", "serve.yaml");
+    Deno.mkdirSync(join(dir, ".swamp"), { recursive: true });
+    Deno.writeTextFileSync(
+      path,
+      stringifyYaml({
+        audit: {
+          stores: [{ target: "default" }],
+          policy: { rules: [{ level: "metadata", tier: "invalid" }] },
+        },
+      }),
+    );
+    assertThrows(
+      () => loadServeConfig(path, dir),
+      Error,
+      "tier",
+    );
+  } finally {
+    try {
+      Deno.removeSync(dir, { recursive: true });
+    } catch { /* Windows EBUSY */ }
+  }
+});
+
+Deno.test("loadServeConfig: rejects invalid wal max-size format", () => {
+  const dir = Deno.makeTempDirSync();
+  try {
+    const path = join(dir, ".swamp", "serve.yaml");
+    Deno.mkdirSync(join(dir, ".swamp"), { recursive: true });
+    Deno.writeTextFileSync(
+      path,
+      stringifyYaml({
+        audit: {
+          stores: [{ target: "default" }],
+          wal: { "max-size": "100bytes" },
+        },
+      }),
+    );
+    assertThrows(
+      () => loadServeConfig(path, dir),
+      Error,
+      "max-size",
+    );
+  } finally {
+    try {
+      Deno.removeSync(dir, { recursive: true });
+    } catch { /* Windows EBUSY */ }
+  }
+});
+
+Deno.test("loadServeConfig: rejects non-integer retention days", () => {
+  const dir = Deno.makeTempDirSync();
+  try {
+    const path = join(dir, ".swamp", "serve.yaml");
+    Deno.mkdirSync(join(dir, ".swamp"), { recursive: true });
+    Deno.writeTextFileSync(
+      path,
+      stringifyYaml({
+        audit: {
+          stores: [{ target: "default", retention: { days: 0 } }],
+        },
+      }),
+    );
+    assertThrows(
+      () => loadServeConfig(path, dir),
+      Error,
+      "retention.days",
+    );
+  } finally {
+    try {
+      Deno.removeSync(dir, { recursive: true });
+    } catch { /* Windows EBUSY */ }
+  }
+});
+
+Deno.test("loadServeConfig: rejects non-string wal directory", () => {
+  const dir = Deno.makeTempDirSync();
+  try {
+    const path = join(dir, ".swamp", "serve.yaml");
+    Deno.mkdirSync(join(dir, ".swamp"), { recursive: true });
+    Deno.writeTextFileSync(
+      path,
+      stringifyYaml({
+        audit: {
+          stores: [{ target: "default" }],
+          wal: { directory: 123 },
+        },
+      }),
+    );
+    assertThrows(
+      () => loadServeConfig(path, dir),
+      Error,
+      "directory",
+    );
+  } finally {
+    try {
+      Deno.removeSync(dir, { recursive: true });
+    } catch { /* Windows EBUSY */ }
+  }
+});
+
 Deno.test("readServeConfigFile: returns null when file does not exist", async () => {
   const dir = await Deno.makeTempDir();
   try {

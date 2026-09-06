@@ -68,4 +68,16 @@ export class RemoteAuditStore implements AuditStore {
       throw error;
     }
   }
+
+  async delete(key: string): Promise<void> {
+    try {
+      await this.#store.delete(`${this.#prefix}${key}`);
+    } catch (error: unknown) {
+      logger.warn("Audit store delete failed for {key}: {error}", {
+        key,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
 }
