@@ -215,6 +215,7 @@ async function persistReportData(
   markdown: string,
   json: Record<string, unknown>,
   varySuffix?: string,
+  modelName?: string,
 ): Promise<DataHandle[]> {
   const handles: DataHandle[] = [];
   const tags: Record<string, string> = {
@@ -222,6 +223,7 @@ async function persistReportData(
     reportName,
     reportScope: scope,
     ...(varySuffix ? { varySuffix } : {}),
+    ...(modelName ? { modelName } : {}),
   };
 
   const sanitized = sanitizeReportNameForData(reportName);
@@ -329,6 +331,10 @@ export async function executeReports(
   varySuffix?: string,
   emitUnresolvableRequireFailures = true,
 ): Promise<ReportExecutionSummary> {
+  const modelName = context.scope === "workflow"
+    ? context.workflowName
+    : context.definition.name;
+
   // Promote lazy-registered reports for every candidate name before calling
   // getAll(). getAll() only returns fully-loaded entries from the registry's
   // `reports` Map; lazy entries in `lazyTypes` are excluded. Without this
@@ -415,6 +421,7 @@ export async function executeReports(
           fallback.markdown,
           fallback.json,
           varySuffix,
+          modelName,
         );
       } catch {
         // Best-effort — the failure event carries the message regardless.
@@ -486,6 +493,7 @@ export async function executeReports(
         result.markdown,
         result.json,
         varySuffix,
+        modelName,
       );
 
       events?.onReportCompleted(
@@ -528,6 +536,7 @@ export async function executeReports(
           fallback.markdown,
           fallback.json,
           varySuffix,
+          modelName,
         );
       } catch {
         // Best-effort — don't mask the original report error.
