@@ -165,6 +165,19 @@ export class FileLock implements DistributedLock {
             .warn`Waiting for lock ${this.lockPath} held by ${existing.holder} (pid ${existing.pid}, acquired ${ageMs}ms ago)`;
           contentionLogged = true;
         }
+      } else {
+        // Lock file exists on disk but is unreadable (0 bytes, corrupt
+        // JSON, or partial write from a crashed process). No holder info
+        // to respect — treat as stale and clean up.
+        const logger = getSwampLogger(["datastore", "lock"]);
+        logger
+          .warn`Removing unreadable lock file ${this.lockPath}`;
+        try {
+          await Deno.remove(this.lockPath);
+        } catch {
+          // Another process may have already cleaned it up
+        }
+        continue;
       }
 
       // Jittered exponential backoff, clamped to remaining budget
