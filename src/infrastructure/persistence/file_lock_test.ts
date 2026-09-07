@@ -451,6 +451,43 @@ Deno.test("FileLock - maxWaitMs override is respected", async () => {
   });
 });
 
+Deno.test("FileLock - zero-byte lock file is cleaned up and acquire succeeds", async () => {
+  await withTempDir(async (dir) => {
+    const lockPath = `${dir}/.datastore.lock`;
+    // Simulate a crash between Deno.open({ createNew }) and file.write()
+    const file = await Deno.open(lockPath, { createNew: true, write: true });
+    file.close();
+    const stat = await Deno.stat(lockPath);
+    assertEquals(stat.size, 0);
+
+    const lock = new FileLock(dir, { ttlMs: 5000, maxWaitMs: 2000 });
+    await lock.acquire();
+
+    const info = await lock.inspect();
+    assertEquals(info !== null, true);
+    assertEquals(info!.pid, Deno.pid);
+
+    await lock.release();
+  });
+});
+
+Deno.test("FileLock - corrupt JSON lock file is cleaned up and acquire succeeds", async () => {
+  await withTempDir(async (dir) => {
+    const lockPath = `${dir}/.datastore.lock`;
+    // Simulate a partial write (truncated JSON)
+    await Deno.writeTextFile(lockPath, '{"holder":"crash@host","hos');
+
+    const lock = new FileLock(dir, { ttlMs: 5000, maxWaitMs: 2000 });
+    await lock.acquire();
+
+    const info = await lock.inspect();
+    assertEquals(info !== null, true);
+    assertEquals(info!.pid, Deno.pid);
+
+    await lock.release();
+  });
+});
+
 Deno.test("FileLock - contention message includes lock file path", async () => {
   await withTempDir(async (dir) => {
     // Set up a LogTape capture sink for the datastore.lock category
