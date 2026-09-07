@@ -55,6 +55,7 @@ const testDefinition = {
   version: 3,
   tags: { env: "prod" },
   globalArguments: { region: "us-east-1" },
+  methodData: {},
 };
 
 const testModelType = {
@@ -87,6 +88,7 @@ Deno.test("modelGet yields resolving -> completed with model data on success", a
         typeVersion: undefined,
         globalArgumentsSchema: undefined,
         methods: undefined,
+        configuredMethods: undefined,
       },
     },
   ]);
@@ -134,6 +136,7 @@ Deno.test("modelGet redacts sensitive global arguments when the schema is known"
         version: 1,
         tags: {},
         globalArguments: { apiKey: "SUPERSECRET123", region: "us-east-1" },
+        methodData: {},
       },
       type: { normalized: "acme/widget" },
     },
@@ -157,6 +160,53 @@ Deno.test("modelGet redacts sensitive global arguments when the schema is known"
   });
 });
 
+Deno.test("modelGet: exposes configured method arguments and redacts sensitive values", async () => {
+  const deps = makeDeps({
+    lookupResult: {
+      definition: {
+        ...testDefinition,
+        methodData: {
+          import: {
+            arguments: {
+              chunkSize: 1000,
+              credentials: { token: "SUPERSECRET123", account: "primary" },
+            },
+          },
+        },
+      },
+      type: testModelType,
+    },
+    modelDef: {
+      version: "2026.05.28.1",
+      globalArguments: z.object({}),
+      methods: {
+        import: {
+          arguments: z.object({
+            chunkSize: z.number(),
+            credentials: z.object({
+              token: z.string().meta({ sensitive: true }),
+              account: z.string(),
+            }),
+          }),
+        },
+      },
+    },
+  });
+
+  const events = await collect<ModelGetEvent>(
+    modelGet(createLibSwampContext(), deps, "my-model"),
+  );
+
+  assertEquals(completedData(events).configuredMethods, {
+    import: {
+      arguments: {
+        chunkSize: 1000,
+        credentials: { token: "***", account: "primary" },
+      },
+    },
+  });
+});
+
 Deno.test("modelGet passes global arguments through unredacted when the model type is unavailable", async () => {
   const deps = makeDeps({
     lookupResult: {
@@ -166,6 +216,7 @@ Deno.test("modelGet passes global arguments through unredacted when the model ty
         version: 1,
         tags: {},
         globalArguments: { apiKey: "SUPERSECRET123" },
+        methodData: {},
       },
       type: { normalized: "acme/widget" },
     },
@@ -178,6 +229,29 @@ Deno.test("modelGet passes global arguments through unredacted when the model ty
 
   assertEquals(completedData(events).globalArguments, {
     apiKey: "SUPERSECRET123",
+  });
+});
+
+Deno.test("modelGet: exposes configured method arguments when the model type is unavailable", async () => {
+  const deps = makeDeps({
+    lookupResult: {
+      definition: {
+        ...testDefinition,
+        methodData: {
+          import: { arguments: { apiKey: "SUPERSECRET123" } },
+        },
+      },
+      type: testModelType,
+    },
+    modelDef: undefined,
+  });
+
+  const events = await collect<ModelGetEvent>(
+    modelGet(createLibSwampContext(), deps, "my-model"),
+  );
+
+  assertEquals(completedData(events).configuredMethods, {
+    import: { arguments: { apiKey: "SUPERSECRET123" } },
   });
 });
 
