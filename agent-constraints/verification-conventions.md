@@ -57,7 +57,7 @@ Reviews are guarded by file path — they skip when no relevant files changed:
 | Review | Guard (run when any match) | Model |
 | --- | --- | --- |
 | code-review | always | claude-opus-4-6 |
-| adversarial-review | `src/domain/`, `src/infrastructure/`, `src/libswamp/`, `src/serve/`, `src/worker/` | claude-opus-4-6 |
+| adversarial-review | `src/cli/`, `src/domain/`, `src/infrastructure/`, `src/libswamp/`, `src/serve/`, `src/worker/` | claude-opus-4-6 |
 | ux-review | `src/cli/commands/`, `src/presentation/`, `src/domain/errors.ts`, `src/libswamp/` | claude-sonnet-4-6 |
 | ci-security-review | `.github/workflows/` | claude-opus-4-6 |
 

@@ -112,7 +112,7 @@ jobs:
             workingDir: "/tmp/swamp-verify-reviews-${{ run.id }}"
 
       - name: adversarial-review
-        guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('src/domain/') || f.startsWith('src/infrastructure/') || f.startsWith('src/libswamp/') || f.startsWith('src/serve/') || f.startsWith('src/worker/')).size() == 0 }}"
+        guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('src/cli/') || f.startsWith('src/domain/') || f.startsWith('src/infrastructure/') || f.startsWith('src/libswamp/') || f.startsWith('src/serve/') || f.startsWith('src/worker/')).size() == 0 }}"
         task:
           type: model_method
           modelType: "command/shell"
