@@ -113,7 +113,13 @@ function formatRecord(
   indent: string,
 ): string[] {
   return Object.entries(record).map(([key, value]) =>
-    `${indent}${key}: ${dim(String(value))}`
+    `${indent}${key}: ${
+      dim(
+        value !== null && typeof value === "object"
+          ? JSON.stringify(value)
+          : String(value),
+      )
+    }`
   );
 }
 
@@ -175,6 +181,15 @@ class LogModelGetRenderer implements Renderer<ModelGetEvent> {
           lines.push("");
           lines.push(bold(cyan("Methods:")));
           lines.push(...formatMethodLines(data.methods));
+        }
+
+        if (data.configuredMethods) {
+          lines.push("");
+          lines.push(bold(cyan("Configured Method Arguments:")));
+          for (const [name, method] of Object.entries(data.configuredMethods)) {
+            lines.push(`  ${bold(cyan(name))}:`);
+            lines.push(...formatRecord(method.arguments, "    "));
+          }
         }
 
         writeOutput(lines.join("\n"));

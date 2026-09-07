@@ -39,6 +39,18 @@ const testDataWithDescription: ModelGetData = {
   description: "An echo model for testing",
 };
 
+const testDataWithConfiguredMethods: ModelGetData = {
+  ...testData,
+  configuredMethods: {
+    execute: {
+      arguments: {
+        timeout: 5000,
+        credentials: { token: "***", account: "primary" },
+      },
+    },
+  },
+};
+
 Deno.test("renderModelGet with json mode outputs valid JSON", () => {
   const logs: string[] = [];
   const originalLog = console.log;
@@ -68,6 +80,20 @@ Deno.test("renderModelGet JSON includes tags and attributes", () => {
     assertEquals(parsed.tags.env, "test");
     assertEquals(parsed.tags.project, "demo");
     assertEquals(parsed.globalArguments.message, "Hello World");
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("renderModelGet JSON includes configured method arguments", () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    renderModelGet(testDataWithConfiguredMethods, "json");
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.configuredMethods.execute.arguments.timeout, 5000);
   } finally {
     console.log = originalLog;
   }
@@ -149,6 +175,25 @@ Deno.test("renderModelGet log mode shows model details", () => {
     assertStringIncludes(combined, "env:");
     assertStringIncludes(combined, "Global Arguments:");
     assertStringIncludes(combined, "message:");
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("renderModelGet log mode shows configured method arguments", () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    renderModelGet(testDataWithConfiguredMethods, "log");
+    const combined = stripAnsiCode(logs.join("\n"));
+    assertStringIncludes(combined, "Configured Method Arguments:");
+    assertStringIncludes(combined, "execute:");
+    assertStringIncludes(combined, "timeout:");
+    assertStringIncludes(combined, "5000");
+    assertStringIncludes(combined, '"token":"***"');
+    assertEquals(combined.includes("[object Object]"), false);
   } finally {
     console.log = originalLog;
   }

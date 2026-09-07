@@ -49,6 +49,10 @@ export interface ModelGetData {
   typeVersion?: string;
   globalArgumentsSchema?: object;
   methods?: MethodDescribeData[];
+  configuredMethods?: Record<
+    string,
+    { arguments: Record<string, unknown> }
+  >;
 }
 
 export type ModelGetEvent =
@@ -130,6 +134,20 @@ export async function* modelGet(
         )
         : definition.globalArguments;
 
+      const configuredMethods: Record<
+        string,
+        { arguments: Record<string, unknown> }
+      > = {};
+      for (const [name, methodData] of Object.entries(definition.methodData)) {
+        if (methodData.arguments === undefined) continue;
+        const schema = modelDef?.methods[name]?.arguments;
+        configuredMethods[name] = {
+          arguments: schema
+            ? redactSensitiveValues(schema, methodData.arguments)
+            : methodData.arguments,
+        };
+      }
+
       const data: ModelGetData = {
         id: definition.id,
         name: definition.name,
@@ -147,6 +165,9 @@ export async function* modelGet(
           ? Object.entries(modelDef.methods).map(
             ([name, method]) => toMethodDescribeData(name, method),
           )
+          : undefined,
+        configuredMethods: Object.keys(configuredMethods).length > 0
+          ? configuredMethods
           : undefined,
       };
 
