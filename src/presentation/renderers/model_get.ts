@@ -113,7 +113,13 @@ function formatRecord(
   indent: string,
 ): string[] {
   return Object.entries(record).map(([key, value]) =>
-    `${indent}${key}: ${dim(String(value))}`
+    `${indent}${key}: ${
+      dim(
+        value !== null && typeof value === "object"
+          ? JSON.stringify(value)
+          : String(value),
+      )
+    }`
   );
 }
 

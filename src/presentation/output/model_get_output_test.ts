@@ -42,7 +42,12 @@ const testDataWithDescription: ModelGetData = {
 const testDataWithConfiguredMethods: ModelGetData = {
   ...testData,
   configuredMethods: {
-    execute: { arguments: { timeout: 5000 } },
+    execute: {
+      arguments: {
+        timeout: 5000,
+        credentials: { token: "***", account: "primary" },
+      },
+    },
   },
 };
 
@@ -187,6 +192,8 @@ Deno.test("renderModelGet log mode shows configured method arguments", () => {
     assertStringIncludes(combined, "execute:");
     assertStringIncludes(combined, "timeout:");
     assertStringIncludes(combined, "5000");
+    assertStringIncludes(combined, '"token":"***"');
+    assertEquals(combined.includes("[object Object]"), false);
   } finally {
     console.log = originalLog;
   }
