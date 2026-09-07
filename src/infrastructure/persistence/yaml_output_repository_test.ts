@@ -29,6 +29,7 @@ import {
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { YamlOutputRepository } from "./yaml_output_repository.ts";
+import { SERVER_TOKEN_MODEL_TYPE } from "../../domain/models/access/server_token_model.ts";
 
 // Import the models barrel so `modelRegistry.types()` returns real entries —
 // `findAllGlobalSince` and `findAll` both walk the registry, so tests that
@@ -798,6 +799,125 @@ Deno.test(
         new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
       );
       assertEquals(result.deleted, 2);
+    });
+  },
+);
+
+// --- deleteByMethodLifetime ---
+
+async function makeOutputForMethod(
+  repo: YamlOutputRepository,
+  type: ModelType,
+  method: string,
+  startedAt: Date,
+): Promise<ModelOutput> {
+  const output = ModelOutput.create({
+    definitionId: createDefinitionId(crypto.randomUUID()),
+    methodName: method,
+    status: "running",
+    startedAt,
+    provenance: defaultProvenance,
+  });
+  output.markSucceeded();
+  await repo.save(type, method, output);
+  return output;
+}
+
+Deno.test(
+  "deleteByMethodLifetime: respects per-method outputLifetime",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+
+      // server-token redeem has outputLifetime: "1d"
+      const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+      const old = await makeOutputForMethod(
+        repo,
+        SERVER_TOKEN_MODEL_TYPE,
+        "redeem",
+        twoDaysAgo,
+      );
+      const oldPath = repo.getPath(SERVER_TOKEN_MODEL_TYPE, "redeem", old);
+      await Deno.utime(oldPath, twoDaysAgo, twoDaysAgo);
+
+      // Use a 30-day fallback — the 1d method lifetime should still clean up
+      const fallback = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      const result = await repo.deleteByMethodLifetime(fallback);
+      assertEquals(result.deleted, 1);
+    });
+  },
+);
+
+Deno.test(
+  "deleteByMethodLifetime: uses fallback for methods without outputLifetime",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+
+      // command/shell has no outputLifetime
+      const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+      const old = await makeOutputForMethod(
+        repo,
+        registeredType,
+        "run",
+        twoDaysAgo,
+      );
+      const oldPath = repo.getPath(registeredType, "run", old);
+      await Deno.utime(oldPath, twoDaysAgo, twoDaysAgo);
+
+      // Fallback is 1 day — should delete the 2-day-old output
+      const fallback = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000);
+      const result = await repo.deleteByMethodLifetime(fallback);
+      assertEquals(result.deleted, 1);
+    });
+  },
+);
+
+Deno.test(
+  "deleteByMethodLifetime: skips non-terminal outputs",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+
+      const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+      const running = ModelOutput.create({
+        definitionId: createDefinitionId(crypto.randomUUID()),
+        methodName: "redeem",
+        status: "running",
+        startedAt: twoDaysAgo,
+        provenance: defaultProvenance,
+      });
+      await repo.save(SERVER_TOKEN_MODEL_TYPE, "redeem", running);
+      const runPath = repo.getPath(SERVER_TOKEN_MODEL_TYPE, "redeem", running);
+      await Deno.utime(runPath, twoDaysAgo, twoDaysAgo);
+
+      const fallback = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      const result = await repo.deleteByMethodLifetime(fallback);
+      assertEquals(result.deleted, 0);
+    });
+  },
+);
+
+Deno.test(
+  "deleteByMethodLifetime: cleans orphaned type outputs using fallback",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const orphanType = ModelType.create("orphan/unregistered");
+
+      const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+      const old = await makeOutputForMethod(
+        repo,
+        orphanType,
+        "run",
+        twoDaysAgo,
+      );
+      const oldPath = repo.getPath(orphanType, "run", old);
+      await Deno.utime(oldPath, twoDaysAgo, twoDaysAgo);
+
+      const fallback = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000);
+      const result = await repo.deleteByMethodLifetime(fallback);
+      assertEquals(result.deleted, 1);
     });
   },
 );

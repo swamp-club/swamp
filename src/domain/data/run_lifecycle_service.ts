@@ -70,7 +70,7 @@ export class DefaultRunLifecycleService implements RunLifecycleService {
     dryRun: boolean;
   }): Promise<{ deleted: number; bytesReclaimed: number }> {
     const cutoffMs = Date.now() - options.retentionDays * 86_400_000;
-    return await this.outputRepo.deleteOlderThan(new Date(cutoffMs), {
+    return await this.outputRepo.deleteByMethodLifetime(new Date(cutoffMs), {
       dryRun: options.dryRun,
     });
   }

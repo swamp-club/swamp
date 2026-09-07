@@ -72,6 +72,14 @@ function createMockOutputRepo(
       mock.lastDryRun = options?.dryRun;
       return Promise.resolve(result);
     },
+    deleteByMethodLifetime: (
+      fallbackCutoff: Date,
+      options?: { dryRun?: boolean },
+    ) => {
+      mock.lastCutoff = fallbackCutoff;
+      mock.lastDryRun = options?.dryRun;
+      return Promise.resolve(result);
+    },
     nextId: () => "mock-id" as ReturnType<OutputRepository["nextId"]>,
     getPath: () => "",
   };

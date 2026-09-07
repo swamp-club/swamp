@@ -136,6 +136,8 @@ function createMockOutputRepo(
     save: () => Promise.resolve(),
     delete: () => Promise.resolve(),
     deleteOlderThan: () => Promise.resolve({ deleted: 0, bytesReclaimed: 0 }),
+    deleteByMethodLifetime: () =>
+      Promise.resolve({ deleted: 0, bytesReclaimed: 0 }),
     nextId: () => "mock-id" as ReturnType<OutputRepository["nextId"]>,
     getPath: () => "",
   };

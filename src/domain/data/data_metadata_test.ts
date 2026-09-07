@@ -22,7 +22,9 @@ import {
   DataLifecycleSchema,
   GarbageCollectionSchema,
   type Lifetime,
+  lifetimeToMs,
   normalizeLifetime,
+  OutputLifetimeSchema,
 } from "./data_metadata.ts";
 
 // --- normalizeLifetime: zero-duration strings become "workflow" ---
@@ -251,4 +253,49 @@ Deno.test("DataLifecycleSchema - accepts undefined (optional in metadata)", () =
   const optionalSchema = DataLifecycleSchema.optional();
   const result = optionalSchema.safeParse(undefined);
   assertEquals(result.success, true);
+});
+
+// --- lifetimeToMs ---
+
+Deno.test("lifetimeToMs: converts duration strings to milliseconds", () => {
+  assertEquals(lifetimeToMs("1h"), 60 * 60 * 1000);
+  assertEquals(lifetimeToMs("5m"), 5 * 60 * 1000);
+  assertEquals(lifetimeToMs("1d"), 24 * 60 * 60 * 1000);
+  assertEquals(lifetimeToMs("7d"), 7 * 24 * 60 * 60 * 1000);
+  assertEquals(lifetimeToMs("2w"), 14 * 24 * 60 * 60 * 1000);
+  assertEquals(lifetimeToMs("1mo"), 30 * 24 * 60 * 60 * 1000);
+  assertEquals(lifetimeToMs("1y"), 365 * 24 * 60 * 60 * 1000);
+});
+
+Deno.test("lifetimeToMs: returns null for non-duration lifetimes", () => {
+  assertEquals(lifetimeToMs("infinite"), null);
+  assertEquals(lifetimeToMs("ephemeral"), null);
+  assertEquals(lifetimeToMs("workflow"), null);
+  assertEquals(lifetimeToMs("job"), null);
+});
+
+// --- OutputLifetimeSchema ---
+
+Deno.test("OutputLifetimeSchema: accepts duration strings", () => {
+  assertEquals(OutputLifetimeSchema.safeParse("1d").success, true);
+  assertEquals(OutputLifetimeSchema.safeParse("7d").success, true);
+  assertEquals(OutputLifetimeSchema.safeParse("1h").success, true);
+  assertEquals(OutputLifetimeSchema.safeParse("2w").success, true);
+  assertEquals(OutputLifetimeSchema.safeParse("1mo").success, true);
+});
+
+Deno.test("OutputLifetimeSchema: accepts 'infinite'", () => {
+  assertEquals(OutputLifetimeSchema.safeParse("infinite").success, true);
+});
+
+Deno.test("OutputLifetimeSchema: rejects scoped lifetimes", () => {
+  assertEquals(OutputLifetimeSchema.safeParse("ephemeral").success, false);
+  assertEquals(OutputLifetimeSchema.safeParse("workflow").success, false);
+  assertEquals(OutputLifetimeSchema.safeParse("job").success, false);
+});
+
+Deno.test("OutputLifetimeSchema: rejects zero-duration strings", () => {
+  assertEquals(OutputLifetimeSchema.safeParse("0d").success, false);
+  assertEquals(OutputLifetimeSchema.safeParse("0h").success, false);
+  assertEquals(OutputLifetimeSchema.safeParse("00w").success, false);
 });

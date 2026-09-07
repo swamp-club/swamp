@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { ensureDir } from "@std/fs";
-import { join } from "@std/path";
+import { join, SEPARATOR } from "@std/path";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
@@ -40,6 +40,7 @@ import {
   type ModelOutputId,
 } from "../../domain/models/model_output.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
+import { lifetimeToMs } from "../../domain/data/data_metadata.ts";
 
 /**
  * YAML-based implementation of OutputRepository.
@@ -434,6 +435,125 @@ export class YamlOutputRepository implements OutputRepository {
         } catch {
           // log file may not exist
         }
+
+        if (!options?.dryRun) {
+          await this.notifyDirty(yamlPath);
+          try {
+            await Deno.remove(yamlPath);
+          } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) throw error;
+          }
+          try {
+            await Deno.remove(logPath);
+          } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) throw error;
+          }
+          await cleanupEmptyParentDirs(yamlPath, this.baseDir);
+        }
+
+        deleted++;
+        bytesReclaimed += fileBytes;
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) continue;
+        throw error;
+      }
+    }
+
+    return { deleted, bytesReclaimed };
+  }
+
+  async deleteByMethodLifetime(
+    fallbackCutoff: Date,
+    options?: { dryRun?: boolean },
+  ): Promise<{ deleted: number; bytesReclaimed: number }> {
+    const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
+    const fallbackCutoffMs = fallbackCutoff.getTime();
+    const nowMs = Date.now();
+    let deleted = 0;
+    let bytesReclaimed = 0;
+
+    const registeredTypes: {
+      normalized: string;
+      def: NonNullable<ReturnType<typeof modelRegistry.get>>;
+    }[] = [];
+    for (const modelType of modelRegistry.types()) {
+      const def = modelRegistry.get(modelType);
+      if (def) registeredTypes.push({ normalized: modelType.normalized, def });
+    }
+    registeredTypes.sort((a, b) => b.normalized.length - a.normalized.length);
+
+    const yamlFiles = await this.collectYamlFiles(this.baseDir);
+    for (const yamlPath of yamlFiles) {
+      try {
+        const relativePath = yamlPath.slice(this.baseDir.length + 1);
+
+        let cutoffMs = fallbackCutoffMs;
+        for (const { normalized, def } of registeredTypes) {
+          const typePrefix = normalized.replaceAll("/", SEPARATOR);
+          if (
+            relativePath.startsWith(typePrefix + SEPARATOR)
+          ) {
+            const afterType = relativePath.slice(typePrefix.length + 1);
+            const methodName = afterType.split(SEPARATOR)[0];
+            const method = def.methods[methodName];
+            if (method?.outputLifetime) {
+              const lifetimeMs = lifetimeToMs(method.outputLifetime);
+              if (lifetimeMs !== null) {
+                const methodCutoffMs = nowMs - lifetimeMs;
+                cutoffMs = Math.max(cutoffMs, methodCutoffMs);
+              }
+            }
+            break;
+          }
+        }
+
+        const stat = await Deno.stat(yamlPath);
+        const mtimeMs = stat.mtime?.getTime();
+        if (mtimeMs !== undefined && mtimeMs >= cutoffMs) continue;
+
+        const content = await Deno.readTextFile(yamlPath);
+        const data = parseYaml(content) as ModelOutputData | null;
+        if (!data) {
+          const logPath = yamlPath.replace(/\.yaml$/, ".log");
+          let fileBytes = stat.size ?? 0;
+          try {
+            const logStat = await Deno.stat(logPath);
+            fileBytes += logStat.size ?? 0;
+          } catch { /* log file may not exist */ }
+          if (!options?.dryRun) {
+            await this.notifyDirty(yamlPath);
+            try {
+              await Deno.remove(yamlPath);
+            } catch (error) {
+              if (!(error instanceof Deno.errors.NotFound)) throw error;
+            }
+            try {
+              await Deno.remove(logPath);
+            } catch (error) {
+              if (!(error instanceof Deno.errors.NotFound)) throw error;
+            }
+            await cleanupEmptyParentDirs(yamlPath, this.baseDir);
+          }
+          deleted++;
+          bytesReclaimed += fileBytes;
+          continue;
+        }
+
+        if (!TERMINAL_STATUSES.has(data.status)) continue;
+        const startedAt = data.startedAt
+          ? new Date(data.startedAt).getTime()
+          : undefined;
+        if (
+          startedAt === undefined || Number.isNaN(startedAt) ||
+          startedAt >= cutoffMs
+        ) continue;
+
+        const logPath = yamlPath.replace(/\.yaml$/, ".log");
+        let fileBytes = stat.size ?? 0;
+        try {
+          const logStat = await Deno.stat(logPath);
+          fileBytes += logStat.size ?? 0;
+        } catch { /* log file may not exist */ }
 
         if (!options?.dryRun) {
           await this.notifyDirty(yamlPath);

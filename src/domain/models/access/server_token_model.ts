@@ -313,6 +313,7 @@ export const serverTokenModel: ModelDefinition = defineModel({
         "Mint a server token: write the plaintext to a vault and record the lifecycle aggregate",
       kind: "create",
       arguments: MintArgsSchema,
+      outputLifetime: "7d",
       execute: mint,
     },
     redeem: {
@@ -320,6 +321,7 @@ export const serverTokenModel: ModelDefinition = defineModel({
         "Validate a presented <name>.<secret> token, update lastUsedAt on success",
       kind: "action",
       arguments: RedeemArgsSchema,
+      outputLifetime: "1d",
       execute: redeem,
     },
     rotate: {
@@ -327,18 +329,21 @@ export const serverTokenModel: ModelDefinition = defineModel({
         "Atomically revoke the current token and mint a replacement with the same name and principal",
       kind: "action",
       arguments: RotateArgsSchema,
+      outputLifetime: "7d",
       execute: rotate,
     },
     revoke: {
       description: "Revoke the token — takes effect immediately, idempotent",
       kind: "action",
       arguments: EmptyArgsSchema,
+      outputLifetime: "7d",
       execute: revoke,
     },
     expire: {
       description: "Record that the token lifetime has elapsed",
       kind: "action",
       arguments: EmptyArgsSchema,
+      outputLifetime: "7d",
       execute: expire,
     },
     updateCollectives: {
@@ -346,6 +351,7 @@ export const serverTokenModel: ModelDefinition = defineModel({
         "Update the collective memberships on an active token (used by the background refresh loop)",
       kind: "action",
       arguments: UpdateCollectivesArgsSchema,
+      outputLifetime: "1d",
       execute: updateCollectives,
     },
   },
