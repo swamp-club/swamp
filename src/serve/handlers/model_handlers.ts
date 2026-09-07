@@ -176,7 +176,7 @@ export async function handleModelMethodRun(
             kind: "access",
             name: "*",
             fields: modelFields,
-          }, ctx)
+          }, ctx).allowed
         ) return;
       } else {
         if (
@@ -184,7 +184,7 @@ export async function handleModelMethodRun(
             kind: "model",
             name: payload.modelIdOrName,
             fields: modelFields,
-          }, ctx)
+          }, ctx).allowed
         ) return;
 
         if (payload.typeArg) {
@@ -197,7 +197,7 @@ export async function handleModelMethodRun(
               kind: "model",
               name: executionTarget,
               fields: {},
-            }, ctx)
+            }, ctx).allowed
           ) return;
         }
       }
@@ -372,7 +372,7 @@ export async function handleModelMethodRun(
         kind: "access",
         name: "*",
         fields: modelFields,
-      }, ctx)
+      }, ctx).allowed
     ) return;
   } else {
     if (
@@ -380,7 +380,7 @@ export async function handleModelMethodRun(
         kind: "model",
         name: payload.modelIdOrName,
         fields: modelFields,
-      }, ctx)
+      }, ctx).allowed
     ) return;
 
     if (payload.typeArg) {
@@ -393,7 +393,7 @@ export async function handleModelMethodRun(
           kind: "model",
           name: executionTarget,
           fields: {},
-        }, ctx)
+        }, ctx).allowed
       ) return;
     }
   }
@@ -618,7 +618,7 @@ export async function handleModelSearch(
       kind: "model",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -674,7 +674,7 @@ export async function handleModelMethodDescribe(
       kind: "model",
       name: payload.modelIdOrName,
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -735,7 +735,7 @@ export async function handleModelGet(
       kind: "model",
       name: payload.modelIdOrName,
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -797,7 +797,7 @@ export async function handleModelCreate(
         kind: "access",
         name: "*",
         fields: {},
-      }, ctx)
+      }, ctx).allowed
     ) return;
   } else {
     if (
@@ -805,7 +805,7 @@ export async function handleModelCreate(
         kind: "model",
         name: payload.name ?? payload.typeArg,
         fields: {},
-      }, ctx)
+      }, ctx).allowed
     ) return;
   }
 
@@ -881,7 +881,7 @@ export async function handleModelDelete(
       kind: "model",
       name: payload.modelIdOrName,
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -974,7 +974,7 @@ export async function handleModelOutputGet(
       kind: "model",
       name: payload.outputIdOrModelName,
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1029,7 +1029,7 @@ export async function handleModelOutputData(
       kind: "model",
       name: payload.outputIdArg,
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1093,7 +1093,7 @@ export async function handleModelOutputLogs(
       kind: "model",
       name: payload.outputIdArg,
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1155,7 +1155,7 @@ export async function handleModelOutputSearch(
       kind: "model",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1215,7 +1215,7 @@ export async function handleModelMethodHistoryGet(
       kind: "model",
       name: payload.outputIdOrModelName,
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1275,7 +1275,7 @@ export async function handleModelMethodHistoryLogs(
       kind: "model",
       name: payload.outputIdOrModelName,
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1344,7 +1344,7 @@ export async function handleModelMethodHistorySearch(
       kind: "model",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1409,7 +1409,7 @@ export async function handleModelValidate(
       kind: "model",
       name: payload?.modelIdOrName ?? "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1470,7 +1470,7 @@ export async function handleModelEvaluate(
       kind: "model",
       name: payload?.modelIdOrName ?? "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1527,7 +1527,7 @@ export async function handleModelEdit(
       kind: "model",
       name: payload.modelIdOrName,
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1580,7 +1580,7 @@ export async function handleModelTypeDescribe(
       kind: "model",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {
@@ -1631,7 +1631,7 @@ export async function handleModelTypeSearch(
       kind: "model",
       name: "*",
       fields: {},
-    }, ctx)
+    }, ctx).allowed
   ) return;
 
   try {

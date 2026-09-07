@@ -27,24 +27,43 @@ const logger = getSwampLogger(["serve", "audit", "store-sink"]);
 const DEFAULT_BATCH_SIZE = 100;
 const DEFAULT_FLUSH_INTERVAL_MS = 5_000;
 
+const DEFAULT_GC_INTERVAL_MS = 60 * 60 * 1000;
+
+export interface AuditStoreWithRetention {
+  readonly store: AuditStore;
+  readonly retentionDays?: number;
+}
+
 export interface StoreSinkOptions {
-  readonly stores: readonly AuditStore[];
+  readonly stores: readonly (AuditStore | AuditStoreWithRetention)[];
   readonly batchSize?: number;
   readonly flushIntervalMs?: number;
   readonly signal?: AbortSignal;
+  readonly gcIntervalMs?: number;
+}
+
+function unwrapStore(
+  s: AuditStore | AuditStoreWithRetention,
+): { store: AuditStore; retentionDays?: number } {
+  if ("store" in s && "put" in (s as AuditStoreWithRetention).store) {
+    const swr = s as AuditStoreWithRetention;
+    return { store: swr.store, retentionDays: swr.retentionDays };
+  }
+  return { store: s as AuditStore };
 }
 
 export class StoreSink implements AuditSink {
   readonly name = "store";
-  readonly #stores: readonly AuditStore[];
+  readonly #stores: readonly { store: AuditStore; retentionDays?: number }[];
   readonly #batchSize: number;
   readonly #flushIntervalMs: number;
   #batch: AuditEvent[] = [];
   #timer: ReturnType<typeof setInterval> | null = null;
+  #gcTimer: ReturnType<typeof setInterval> | null = null;
   readonly #encoder = new TextEncoder();
 
   constructor(options: StoreSinkOptions) {
-    this.#stores = options.stores;
+    this.#stores = options.stores.map(unwrapStore);
     this.#batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
     this.#flushIntervalMs = options.flushIntervalMs ??
       DEFAULT_FLUSH_INTERVAL_MS;
@@ -57,6 +76,21 @@ export class StoreSink implements AuditSink {
       });
     }, this.#flushIntervalMs);
     Deno.unrefTimer(this.#timer);
+
+    const hasRetention = this.#stores.some((s) =>
+      s.retentionDays !== undefined
+    );
+    if (hasRetention) {
+      const gcInterval = options.gcIntervalMs ?? DEFAULT_GC_INTERVAL_MS;
+      this.#gcTimer = setInterval(() => {
+        this.#runGc().catch((error: unknown) => {
+          logger.warn("Audit GC failed: {error}", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }, gcInterval);
+      Deno.unrefTimer(this.#gcTimer);
+    }
 
     if (options.signal) {
       options.signal.addEventListener("abort", () => {
@@ -87,7 +121,54 @@ export class StoreSink implements AuditSink {
       clearInterval(this.#timer);
       this.#timer = null;
     }
+    if (this.#gcTimer !== null) {
+      clearInterval(this.#gcTimer);
+      this.#gcTimer = null;
+    }
     await this.flush();
+  }
+
+  async #runGc(): Promise<void> {
+    for (const { store, retentionDays } of this.#stores) {
+      if (retentionDays === undefined) continue;
+
+      const cutoff = new Date();
+      cutoff.setUTCDate(cutoff.getUTCDate() - retentionDays);
+      const cutoffDate = cutoff.toISOString().slice(0, 10);
+
+      try {
+        const keys = await store.list("events/");
+        const partitions = new Set<string>();
+        for (const key of keys) {
+          const parts = key.split("/");
+          if (parts.length >= 2) {
+            partitions.add(parts[1]);
+          }
+        }
+
+        for (const partition of partitions) {
+          if (partition < cutoffDate) {
+            const partitionKeys = keys.filter((k) =>
+              k.startsWith(`events/${partition}/`)
+            );
+            for (const key of partitionKeys) {
+              try {
+                await store.delete(key);
+              } catch {
+                // best-effort deletion
+              }
+            }
+            logger.info("Deleted expired audit partition {partition}", {
+              partition,
+            });
+          }
+        }
+      } catch (error: unknown) {
+        logger.warn("Audit GC failed for store: {error}", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
   }
 
   async #writeBatch(): Promise<void> {
@@ -111,7 +192,7 @@ export class StoreSink implements AuditSink {
       const data = this.#encoder.encode(jsonl);
       const key = `events/${dateKey}/${crypto.randomUUID()}.jsonl`;
 
-      for (const store of this.#stores) {
+      for (const { store } of this.#stores) {
         try {
           await store.put(key, data);
         } catch (error: unknown) {
