@@ -20,7 +20,10 @@
 import { assertEquals } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
-import { createAutoResolveInstallerAdapter } from "./auto_resolver_adapters.ts";
+import {
+  createAutoResolveInstallerAdapter,
+  isBundleArtifactPath,
+} from "./auto_resolver_adapters.ts";
 import type { DenoRuntime } from "../domain/runtime/deno_runtime.ts";
 import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
@@ -659,6 +662,58 @@ Deno.test("auto_resolver_adapters: hotLoadModels catalog walk skips types whose 
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
+});
+
+// swamp-club#2050: isBundleArtifactPath must recognise all four bundle
+// stores so the auto-resolver can distinguish bundle-only ConflictErrors
+// (safe to force-overwrite) from source-file conflicts (user WIP).
+
+Deno.test("isBundleArtifactPath: recognises all four bundle stores", () => {
+  assertEquals(isBundleArtifactPath(".swamp/bundles/abc123/x.js"), true);
+  assertEquals(isBundleArtifactPath(".swamp/vault-bundles/abc123/v.js"), true);
+  assertEquals(
+    isBundleArtifactPath(".swamp/datastore-bundles/abc123/ds.js"),
+    true,
+  );
+  assertEquals(
+    isBundleArtifactPath(".swamp/report-bundles/abc123/r.js"),
+    true,
+  );
+});
+
+Deno.test("isBundleArtifactPath: rejects non-bundle paths", () => {
+  assertEquals(
+    isBundleArtifactPath(
+      ".swamp/pulled-extensions/@fake/ext/models/foo.ts",
+    ),
+    false,
+  );
+  assertEquals(
+    isBundleArtifactPath(
+      ".swamp/pulled-extensions/@fake/ext/datastores/bar.ts",
+    ),
+    false,
+  );
+  assertEquals(isBundleArtifactPath(".swamp/definitions/my-model.yaml"), false);
+  assertEquals(isBundleArtifactPath("models/foo.ts"), false);
+});
+
+Deno.test("isBundleArtifactPath: bundle-only conflict set is detected as all-bundles", () => {
+  const conflicts = [
+    ".swamp/bundles/abc123/model.js",
+    ".swamp/vault-bundles/def456/vault.js",
+    ".swamp/datastore-bundles/789ghi/s3.js",
+    ".swamp/report-bundles/jkl012/report.js",
+  ];
+  assertEquals(conflicts.every(isBundleArtifactPath), true);
+});
+
+Deno.test("isBundleArtifactPath: mixed conflict set is not all-bundles", () => {
+  const conflicts = [
+    ".swamp/datastore-bundles/abc123/s3.js",
+    ".swamp/pulled-extensions/@swamp/s3-datastore/datastores/s3.ts",
+  ];
+  assertEquals(conflicts.every(isBundleArtifactPath), false);
 });
 
 Deno.test("auto_resolver_adapters: hotLoadModels catalog walk attempts attach when base is fully loaded", async () => {

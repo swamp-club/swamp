@@ -188,31 +188,9 @@ export function createAutoResolveInstallerAdapter(
     },
 
     async install(extensionName: string) {
-      // force: false so installExtension raises ConflictError rather than
-      // silently overwriting any existing files. The service's
-      // inspectInstallation check normally prevents reaching this point
-      // when the extension is already on disk (intact or truncated); the
-      // ConflictError catch below is defence-in-depth for races between
-      // inspect and install that the per-type re-entrancy guard in the
-      // resolver cannot cover (e.g. two types resolving the same
-      // extension concurrently).
-      try {
-        // Construct a fresh LockfileRepository per install to capture a
-        // current snapshot — the InstallContext is single-use per its
-        // JSDoc.
-        const lockfileRepository = await LockfileRepository.create(
-          lockfilePath,
-        );
-        // Honor the committed lockfile pin (swamp-club#465): when an entry
-        // already exists for this extension, install the recorded version and
-        // verify the download against the recorded checksum — the same
-        // integrity-anchored restore path `swamp extension install` uses —
-        // rather than silently fetching latest. This stops a fresh checkout
-        // (where .swamp/pulled-extensions is gitignored but the lockfile is
-        // committed) from pulling an unreviewed newer version. First-ever
-        // installs have no entry and fall back to latest (version: null),
-        // which then becomes the pin for next time.
-        const pinnedEntry = lockfileRepository.getEntry(extensionName);
+      async function runInstall(force: boolean) {
+        const lockfileRepo = await LockfileRepository.create(lockfilePath);
+        const pinnedEntry = lockfileRepo.getEntry(extensionName);
         const ref = {
           name: extensionName,
           version: pinnedEntry?.version ?? null,
@@ -222,32 +200,49 @@ export function createAutoResolveInstallerAdapter(
           downloadArchive,
           getChecksum,
           logger,
-          lockfileRepository,
+          lockfileRepository: lockfileRepo,
           skillsDirs: [swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills)],
           repoDir,
-          force: false,
+          force,
           alreadyPulled: new Set<string>(),
           depth: 0,
           ...(pinnedEntry?.checksum
             ? { expectedChecksum: pinnedEntry.checksum }
             : {}),
         };
-        // W2 (commit 3): route through InstallExtensionService when an
-        // ExtensionRepository is available so phase 8 fires (catalog
-        // populated synchronously, I-Repo-1 fires on `(kind, type)`
-        // collision). When the repository isn't wired (e.g. headless
-        // bootstrap paths), fall back to the pre-W2 free function — the
-        // catalog gets populated lazily on next loader pass.
-        const result = repository !== undefined
+        return repository !== undefined
           ? await new InstallExtensionService({ denoRuntime, repository })
             .execute(ref, installCtx)
           : await installExtension(ref, installCtx);
+      }
+
+      // force: false so installExtension raises ConflictError rather than
+      // silently overwriting any existing files. The service's
+      // inspectInstallation check normally prevents reaching this point
+      // when the extension is already on disk (intact or truncated); the
+      // ConflictError catch below is defence-in-depth for races between
+      // inspect and install that the per-type re-entrancy guard in the
+      // resolver cannot cover (e.g. two types resolving the same
+      // extension concurrently).
+      try {
+        const result = await runInstall(false);
         if (!result) return null;
         return { version: result.version };
       } catch (error) {
         if (error instanceof ConflictError) {
+          const allBundles = error.conflicts.length > 0 &&
+            error.conflicts.every((p) =>
+              isBundleArtifactPath(p.replaceAll("\\", "/"))
+            );
+          if (allBundles) {
+            logger
+              .warn`Auto-install of ${extensionName}: overwriting stale bundle cache (${error.conflicts.length} file(s))`;
+            const retryResult = await runInstall(true);
+            if (!retryResult) return null;
+            return { version: retryResult.version };
+          }
           logger
-            .warn`Auto-install of ${extensionName} failed: bundle files already exist on disk and the type was not registered. To resolve: swamp extension pull ${extensionName} --force`;
+            .warn`Auto-install of ${extensionName} failed: files already exist on disk and the type was not registered. To resolve: swamp extension pull ${extensionName} --force`;
           return null;
         }
         throw error;
