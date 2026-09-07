@@ -44,8 +44,10 @@ import {
 import type { Action } from "../../domain/access/action.ts";
 import type {
   AccessDecision,
+  AccessPrincipal,
   AccessResource,
 } from "../../domain/access/access_decision_service.ts";
+import type { ResourceKind } from "../../domain/access/resource_selector.ts";
 import type { ScheduledExecutionService } from "../../libswamp/mod.ts";
 import type { MergedServeOptions } from "../serve_config.ts";
 import type { HealthCollector } from "../health_collector.ts";
@@ -488,6 +490,135 @@ function resolveDisplayPrincipal(
     return `user:${ctx.resolvedUserNames[principal.id]}`;
   }
   return principalToString(principal);
+}
+
+export function filterByAuthorization<T>(
+  items: T[],
+  nameExtractor: (item: T) => string | undefined,
+  fieldsExtractor: (item: T) => Record<string, unknown>,
+  socket: WebSocket,
+  principal: Principal | null,
+  action: Action,
+  kind: ResourceKind,
+  ctx: ConnectionContext,
+): T[] {
+  if (ctx.authConfig.mode === "none") return items;
+  if (!ctx.policySnapshotLoader || !principal) return [];
+
+  const collectives = connectionCollectives.get(socket) ?? [];
+  const groups = connectionGroups.get(socket) ?? [];
+  const service = ctx.policySnapshotLoader.decisionService;
+  const accessPrincipal: AccessPrincipal = { principal, collectives, groups };
+
+  const adminDecision = service.decide(
+    accessPrincipal,
+    "admin",
+    { kind: "access", name: "*", fields: {} },
+  );
+  const isAdmin = adminDecision !== null && adminDecision.effect === "allow";
+
+  return items.filter((item) => {
+    const name = nameExtractor(item);
+    if (name === undefined) return false;
+    const resource: AccessResource = {
+      kind,
+      name,
+      fields: fieldsExtractor(item),
+    };
+    const decision = service.decide(accessPrincipal, action, resource);
+    if (decision && decision.effect === "allow") return true;
+    if (decision && decision.effect === "deny") return false;
+    return isAdmin;
+  });
+}
+
+export function authorizeAnyOrReject(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  action: Action,
+  kind: ResourceKind,
+  ctx: ConnectionContext,
+): boolean {
+  if (ctx.authConfig.mode === "none") return true;
+
+  const resource: AccessResource = { kind, name: "*", fields: {} };
+
+  if (!ctx.policySnapshotLoader) {
+    sendError(
+      socket,
+      requestId,
+      "access_not_configured",
+      "Authorization enforcement is enabled but no policy snapshot is available",
+    );
+    emitDenial(
+      socket,
+      ctx,
+      requestId,
+      principal,
+      action,
+      resource,
+      "access_not_configured",
+      null,
+      [],
+    );
+    return false;
+  }
+
+  if (!principal) {
+    sendError(
+      socket,
+      requestId,
+      "unauthorized",
+      `Access denied: no authenticated principal for '${action}' on ${kind}:*`,
+    );
+    emitDenial(
+      socket,
+      ctx,
+      requestId,
+      null,
+      action,
+      resource,
+      "no_principal",
+      null,
+      [],
+    );
+    return false;
+  }
+
+  const collectives = connectionCollectives.get(socket) ?? [];
+  const groups = connectionGroups.get(socket) ?? [];
+  const service = ctx.policySnapshotLoader.decisionService;
+  const accessPrincipal: AccessPrincipal = { principal, collectives, groups };
+
+  if (service.hasAnyGrantForKind(accessPrincipal, action, kind)) return true;
+
+  const adminDecision = service.decide(
+    accessPrincipal,
+    "admin",
+    { kind: "access", name: "*", fields: {} },
+  );
+  if (adminDecision && adminDecision.effect === "allow") return true;
+
+  const principalStr = resolveDisplayPrincipal(principal, ctx);
+  sendError(
+    socket,
+    requestId,
+    "unauthorized",
+    `Access denied: ${principalStr} does not have '${action}' on ${kind}:*`,
+  );
+  emitDenial(
+    socket,
+    ctx,
+    requestId,
+    principal,
+    action,
+    resource,
+    "unauthorized",
+    null,
+    groups,
+  );
+  return false;
 }
 
 export function send(socket: WebSocket, message: ServerMessage): void {

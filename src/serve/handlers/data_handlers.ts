@@ -67,9 +67,11 @@ import { ModelType } from "../../domain/models/model_type.ts";
 import { findLatestItemsFromCatalog } from "../../infrastructure/persistence/catalog_search_adapter.ts";
 import type { Principal } from "../../domain/access/principal.ts";
 import {
+  authorizeAnyOrReject,
   authorizeOrReject,
   type ConnectionContext,
   DEFAULT_QUERY_LIMIT,
+  filterByAuthorization,
   MAX_QUERY_RESULTS,
   sanitizeErrorForClient,
   send,
@@ -180,13 +182,26 @@ export async function handleDataQuery(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "data",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
-  ) return;
+  if (payload.select) {
+    if (
+      !authorizeOrReject(socket, requestId, principal, "read", {
+        kind: "data",
+        name: "*",
+        fields: {},
+      }, ctx).allowed
+    ) return;
+  } else {
+    if (
+      !authorizeAnyOrReject(
+        socket,
+        requestId,
+        principal,
+        "read",
+        "data",
+        ctx,
+      )
+    ) return;
+  }
 
   try {
     const libCtx = createLibSwampContext();
@@ -225,10 +240,28 @@ export async function handleDataQuery(
       return;
     }
 
+    const data = (result ?? {}) as {
+      results?: Array<{ modelName: string; modelType: string }>;
+      total?: number;
+    };
+    if (!payload.select && data.results) {
+      data.results = filterByAuthorization(
+        data.results,
+        (item) => item.modelName,
+        (item) => ({ name: item.modelName, modelType: item.modelType }),
+        socket,
+        principal,
+        "read",
+        "data",
+        ctx,
+      );
+      data.total = data.results.length;
+    }
+
     send(socket, {
       type: "data.query",
       id: requestId,
-      payload: { data: result ?? {} },
+      payload: { data },
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);
@@ -245,16 +278,30 @@ export async function handleDataList(
   principal: Principal | null,
 ): Promise<void> {
   const resourceName = payload.modelIdOrName ?? "*";
-  const listFields = resourceName !== "*"
-    ? await resolveDataFields(ctx.repoContext.definitionRepo, resourceName)
-    : {};
-  if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "data",
-      name: resourceName,
-      fields: listFields,
-    }, ctx).allowed
-  ) return;
+  if (resourceName !== "*") {
+    const listFields = await resolveDataFields(
+      ctx.repoContext.definitionRepo,
+      resourceName,
+    );
+    if (
+      !authorizeOrReject(socket, requestId, principal, "read", {
+        kind: "data",
+        name: resourceName,
+        fields: listFields,
+      }, ctx).allowed
+    ) return;
+  } else {
+    if (
+      !authorizeAnyOrReject(
+        socket,
+        requestId,
+        principal,
+        "read",
+        "data",
+        ctx,
+      )
+    ) return;
+  }
 
   try {
     const libCtx = createLibSwampContext();
@@ -295,6 +342,57 @@ export async function handleDataList(
       return;
     }
 
+    if (resourceName === "*") {
+      const listData = result as {
+        modelName?: string;
+        modelType?: string;
+        groups?: Array<{
+          type: string;
+          items: Array<{ modelName: string; modelType: string }>;
+        }>;
+        total?: number;
+      };
+      if (listData.modelName) {
+        const filtered = filterByAuthorization(
+          [listData],
+          (item) => item.modelName,
+          (item) => ({
+            name: item.modelName,
+            modelType: item.modelType,
+          }),
+          socket,
+          principal,
+          "read",
+          "data",
+          ctx,
+        );
+        if (filtered.length === 0) {
+          sendError(socket, requestId, "not_found", "No data found");
+          return;
+        }
+      } else if (listData.groups) {
+        let total = 0;
+        for (const group of listData.groups) {
+          group.items = filterByAuthorization(
+            group.items,
+            (item) => item.modelName,
+            (item) => ({
+              name: item.modelName,
+              modelType: item.modelType,
+            }),
+            socket,
+            principal,
+            "read",
+            "data",
+            ctx,
+          );
+          total += group.items.length;
+        }
+        listData.groups = listData.groups.filter((g) => g.items.length > 0);
+        listData.total = total;
+      }
+    }
+
     send(socket, {
       type: "data.list",
       id: requestId,
@@ -315,11 +413,14 @@ export async function handleDataSearch(
   payload?: DataSearchPayload,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "data",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeAnyOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      "data",
+      ctx,
+    )
   ) return;
 
   try {
@@ -368,10 +469,28 @@ export async function handleDataSearch(
       return;
     }
 
+    const data = (result ?? { results: [], total: 0 }) as {
+      results?: Array<{ modelName: string; modelType: string }>;
+      total?: number;
+    };
+    if (data.results) {
+      data.results = filterByAuthorization(
+        data.results,
+        (item) => item.modelName,
+        (item) => ({ name: item.modelName, modelType: item.modelType }),
+        socket,
+        principal,
+        "read",
+        "data",
+        ctx,
+      );
+      data.total = data.results.length;
+    }
+
     send(socket, {
       type: "data.search",
       id: requestId,
-      payload: { data: result ?? { items: [], totalCount: 0 } },
+      payload: { data },
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);

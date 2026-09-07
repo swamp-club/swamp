@@ -119,9 +119,11 @@ import {
   writeActiveRun,
 } from "../active_run_tracker.ts";
 import {
+  authorizeAnyOrReject,
   authorizeOrReject,
   type ConnectionContext,
   exceptionTypeForClient,
+  filterByAuthorization,
   lockTimeoutErrorForClient,
   sanitizeErrorForClient,
   send,
@@ -423,11 +425,14 @@ export async function handleWorkflowSearch(
   payload?: WorkflowSearchPayload,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "workflow",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeAnyOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      "workflow",
+      ctx,
+    )
   ) return;
 
   try {
@@ -455,10 +460,26 @@ export async function handleWorkflowSearch(
       return;
     }
 
+    const data = (result ?? {}) as {
+      results?: Array<{ name: string }>;
+    };
+    if (data.results) {
+      data.results = filterByAuthorization(
+        data.results,
+        (item) => item.name,
+        (item) => ({ name: item.name }),
+        socket,
+        principal,
+        "read",
+        "workflow",
+        ctx,
+      );
+    }
+
     send(socket, {
       type: "workflow.search",
       id: requestId,
-      payload: { data: result ?? {} },
+      payload: { data },
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);
@@ -474,11 +495,14 @@ export async function handleWorkflowApprovals(
   principal: Principal | null,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "workflow",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeAnyOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      "workflow",
+      ctx,
+    )
   ) return;
 
   try {
@@ -520,10 +544,26 @@ export async function handleWorkflowApprovals(
       return;
     }
 
+    const data = (result ?? {}) as {
+      approvals?: Array<{ workflowName: string }>;
+    };
+    if (data.approvals) {
+      data.approvals = filterByAuthorization(
+        data.approvals,
+        (item) => item.workflowName,
+        (item) => ({ name: item.workflowName }),
+        socket,
+        principal,
+        "read",
+        "workflow",
+        ctx,
+      );
+    }
+
     send(socket, {
       type: "workflow.approvals",
       id: requestId,
-      payload: { data: result ?? {} },
+      payload: { data },
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);
@@ -739,11 +779,14 @@ export async function handleWorkflowHistorySearch(
   payload?: WorkflowHistorySearchPayload,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "workflow",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeAnyOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      "workflow",
+      ctx,
+    )
   ) return;
 
   try {
@@ -780,10 +823,26 @@ export async function handleWorkflowHistorySearch(
       return;
     }
 
+    const data = (result ?? {}) as {
+      results?: Array<{ workflowName: string }>;
+    };
+    if (data.results) {
+      data.results = filterByAuthorization(
+        data.results,
+        (item) => item.workflowName,
+        (item) => ({ name: item.workflowName }),
+        socket,
+        principal,
+        "read",
+        "workflow",
+        ctx,
+      );
+    }
+
     send(socket, {
       type: "workflow.history.search",
       id: requestId,
-      payload: { data: result ?? {} },
+      payload: { data },
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);
@@ -805,11 +864,14 @@ export async function handleWorkflowRunSearch(
   payload?: WorkflowRunSearchPayload,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "workflow",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeAnyOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      "workflow",
+      ctx,
+    )
   ) return;
 
   try {
@@ -848,10 +910,26 @@ export async function handleWorkflowRunSearch(
       return;
     }
 
+    const data = (result ?? {}) as {
+      results?: Array<{ workflowName: string }>;
+    };
+    if (data.results) {
+      data.results = filterByAuthorization(
+        data.results,
+        (item) => item.workflowName,
+        (item) => ({ name: item.workflowName }),
+        socket,
+        principal,
+        "read",
+        "workflow",
+        ctx,
+      );
+    }
+
     send(socket, {
       type: "workflow.run.search",
       id: requestId,
-      payload: { data: result ?? {} },
+      payload: { data },
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);
@@ -868,11 +946,14 @@ export async function handleWorkflowSchema(
   principal: Principal | null,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "workflow",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeAnyOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      "workflow",
+      ctx,
+    )
   ) return;
 
   try {
