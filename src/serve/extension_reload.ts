@@ -223,15 +223,21 @@ export async function reloadTrustedCollectives(
 
 export async function resolveLockfilePath(
   repoDir: string,
+  datastoreResolver?:
+    import("../domain/datastore/datastore_path_resolver.ts").DatastorePathResolver,
 ): Promise<string> {
   let marker: RepoMarkerData | null = null;
   try {
     const markerRepo = new RepoMarkerRepository();
     marker = await markerRepo.read(RepoPath.create(repoDir));
   } catch {
-    // Not in a swamp repo or marker unreadable — resolveManagedConfigPaths uses default paths
+    // Not in a swamp repo or marker unreadable — use default paths
   }
   if (marker?.datastore?.managedConfig) {
+    if (datastoreResolver) {
+      const configBase = datastoreResolver.resolvePath("config");
+      return join(configBase, "upstream_extensions.json");
+    }
     return managedConfigLockfilePath(repoDir);
   }
   const modelsDir = resolveModelsDir(marker);

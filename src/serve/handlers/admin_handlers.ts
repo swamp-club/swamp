@@ -106,7 +106,6 @@ import {
 } from "../../infrastructure/persistence/namespace_manifest.ts";
 import { createExtensionInstallDeps } from "../../cli/create_extension_install_deps.ts";
 import { loadIdentity } from "../../cli/load_identity.ts";
-import { managedConfigLockfilePath } from "../../infrastructure/persistence/paths.ts";
 import { resolveModelsDir } from "../../cli/resolve_models_dir.ts";
 import type {
   AuditTimelinePayload,
@@ -158,6 +157,34 @@ import {
   resolveLockfilePath,
 } from "../extension_reload.ts";
 import { isReservedVaultName } from "./vault_handlers.ts";
+
+/**
+ * Derives managed-config paths from the connection context's datastore resolver.
+ * When managedConfig is true, the lockfile and pulled-extensions root live at
+ * the datastore-resolved config path (cache path for S3, local for filesystem).
+ */
+function resolveManagedPathsFromContext(
+  ctx: ConnectionContext,
+  marker:
+    | import("../../infrastructure/persistence/repo_marker_repository.ts").RepoMarkerData
+    | null,
+): { lockfilePath: string; pulledExtensionsRoot: string | undefined } {
+  if (marker?.datastore?.managedConfig) {
+    const configBase = ctx.datastoreResolver.resolvePath("config");
+    return {
+      lockfilePath: join(configBase, "upstream_extensions.json"),
+      pulledExtensionsRoot: join(configBase, "pulled-extensions"),
+    };
+  }
+  const modelsDir = resolveModelsDir(marker);
+  return {
+    lockfilePath: join(
+      isAbsolute(modelsDir) ? modelsDir : resolve(ctx.repoDir, modelsDir),
+      "upstream_extensions.json",
+    ),
+    pulledExtensionsRoot: undefined,
+  };
+}
 
 export async function handleWorkerList(
   socket: WebSocket,
@@ -683,14 +710,8 @@ export async function handleExtensionPull(
 
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(RepoPath.create(repoDir));
-    const lockfilePath = marker?.datastore?.managedConfig
-      ? managedConfigLockfilePath(repoDir)
-      : join(
-        isAbsolute(resolveModelsDir(marker))
-          ? resolveModelsDir(marker)
-          : resolve(repoDir, resolveModelsDir(marker)),
-        "upstream_extensions.json",
-      );
+    const { lockfilePath, pulledExtensionsRoot } =
+      resolveManagedPathsFromContext(ctx, marker);
 
     const tools = marker?.tools?.length ? marker.tools : ["claude"];
     const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
@@ -707,7 +728,7 @@ export async function handleExtensionPull(
       lockfilePath,
       skillsDirs,
       repoDir,
-      { identity },
+      { identity, pulledExtensionsRoot },
     );
     const repository = new ExtensionRepository({
       catalog,
@@ -816,14 +837,7 @@ export async function handleExtensionRm(
     const repoDir = ctx.repoDir;
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(RepoPath.create(repoDir));
-    const lockfilePath = marker?.datastore?.managedConfig
-      ? managedConfigLockfilePath(repoDir)
-      : join(
-        isAbsolute(resolveModelsDir(marker))
-          ? resolveModelsDir(marker)
-          : resolve(repoDir, resolveModelsDir(marker)),
-        "upstream_extensions.json",
-      );
+    const { lockfilePath } = resolveManagedPathsFromContext(ctx, marker);
 
     deps = await createExtensionRmDeps(repoDir, lockfilePath);
     const libCtx = createLibSwampContext();
@@ -896,14 +910,7 @@ export async function handleExtensionOutdated(
     const repoDir = ctx.repoDir;
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(RepoPath.create(repoDir));
-    const lockfilePath = marker?.datastore?.managedConfig
-      ? managedConfigLockfilePath(repoDir)
-      : join(
-        isAbsolute(resolveModelsDir(marker))
-          ? resolveModelsDir(marker)
-          : resolve(repoDir, resolveModelsDir(marker)),
-        "upstream_extensions.json",
-      );
+    const { lockfilePath } = resolveManagedPathsFromContext(ctx, marker);
 
     const identity = await loadIdentity();
     const deps = await createExtensionUpdateDeps({
@@ -973,14 +980,7 @@ export async function handleExtensionUpdate(
     const repoDir = ctx.repoDir;
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(RepoPath.create(repoDir));
-    const lockfilePath = marker?.datastore?.managedConfig
-      ? managedConfigLockfilePath(repoDir)
-      : join(
-        isAbsolute(resolveModelsDir(marker))
-          ? resolveModelsDir(marker)
-          : resolve(repoDir, resolveModelsDir(marker)),
-        "upstream_extensions.json",
-      );
+    const { lockfilePath } = resolveManagedPathsFromContext(ctx, marker);
 
     const tools = marker?.tools?.length ? marker.tools : ["claude"];
     const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
@@ -1523,14 +1523,7 @@ export async function handleDoctorExtensions(
     const repoPath = RepoPath.create(repoDir);
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(repoPath);
-    const lockfilePath = marker?.datastore?.managedConfig
-      ? managedConfigLockfilePath(repoDir)
-      : join(
-        isAbsolute(resolveModelsDir(marker))
-          ? resolveModelsDir(marker)
-          : resolve(repoDir, resolveModelsDir(marker)),
-        "upstream_extensions.json",
-      );
+    const { lockfilePath } = resolveManagedPathsFromContext(ctx, marker);
 
     const catalogDbPath = swampPath(repoDir, "_extension_catalog.db");
     sharedCatalog = new ExtensionCatalogStore(catalogDbPath);
@@ -1850,7 +1843,10 @@ export async function handleServeReload(
   logger.info`Extension reload requested by ${who}`;
 
   try {
-    const lockfilePath = await resolveLockfilePath(ctx.repoDir);
+    const lockfilePath = await resolveLockfilePath(
+      ctx.repoDir,
+      ctx.datastoreResolver,
+    );
     const reloadOptions = ctx.scheduledExecution
       ? {
         triggerOverrideUpdater: (

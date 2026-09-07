@@ -62,6 +62,7 @@ import {
 import { summarizeSyncError } from "../infrastructure/persistence/sync_error_diagnostic.ts";
 import { FileLock } from "../infrastructure/persistence/file_lock.ts";
 import {
+  getManagedConfigBase,
   registerManagedConfig,
   swampPath,
 } from "../infrastructure/persistence/paths.ts";
@@ -238,10 +239,68 @@ export interface RequireRepoOptions {
 }
 
 /**
+ * Pre-populates the module-level managed config registry by resolving the
+ * datastore config. Call this before {@link resolveManagedConfigPaths} in
+ * commands that use {@link requireRepoMarker} (lightweight, no datastore
+ * resolution) so the registry-based fallback in resolveManagedConfigPaths
+ * returns the correct cache-relative paths for custom datastores (S3, GCS).
+ *
+ * Commands that go through {@link requireInitializedRepo} /
+ * {@link requireInitializedRepoReadOnly} / {@link requireInitializedRepoUnlocked}
+ * already pass `configBasePath` to resolveManagedConfigPaths and do NOT need
+ * this call.
+ *
+ * @param resolverOverride Test seam — inject a mock resolver to avoid loading
+ *   real datastore extensions in tests.
+ */
+export async function ensureManagedConfigBase(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+  resolverOverride?: DatastorePathResolver,
+): Promise<void> {
+  if (marker?.datastore?.managedConfig !== true) return;
+
+  try {
+    if (resolverOverride) {
+      const configBase = resolverOverride.resolvePath("config");
+      registerManagedConfig(repoDir, true, configBase);
+      return;
+    }
+    const datastoreConfig = await resolveDatastoreConfig(
+      marker,
+      undefined,
+      repoDir,
+    );
+    const resolver = new DefaultDatastorePathResolver(
+      repoDir,
+      datastoreConfig,
+    );
+    const configBase = resolver.resolvePath("config");
+    registerManagedConfig(repoDir, true, configBase);
+  } catch (error) {
+    const logger = getSwampLogger(["cli", "managed-config"]);
+    logger.debug`Failed to resolve datastore for managedConfig base: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+    // Datastore extension not loadable — fall back to sentinel-based
+    // detection in resolveManagedConfigPaths. This can happen when
+    // pulling the datastore extension itself, but managedConfig is
+    // only true after config migrate which requires a working
+    // datastore, so this is an edge case.
+  }
+}
+
+/**
  * Resolves the pulled-extensions root and lockfile path based on
  * whether managed config is enabled. When managedConfig is true,
  * these paths point into .swamp/config/ (the datastore interface
  * layer). When false, they use the traditional locations.
+ *
+ * When the sentinel check fails but managedConfig is set in the marker,
+ * checks the module-level registry for a base path populated by a prior
+ * {@link ensureManagedConfigBase} call. This handles custom datastores
+ * (S3, GCS) where the sentinel lives at the cache path, not the
+ * repo-local `.swamp/config/`.
  */
 export function resolveManagedConfigPaths(
   repoDir: string,
@@ -250,7 +309,7 @@ export function resolveManagedConfigPaths(
   options?: { skipSentinelCheck?: boolean },
 ): { pulledExtensionsRoot: string; lockfilePath: string; active: boolean } {
   const managedConfig = marker?.datastore?.managedConfig === true;
-  const effectiveBase = configBasePath ?? swampPath(repoDir, "config");
+  let effectiveBase = configBasePath ?? swampPath(repoDir, "config");
 
   let active = false;
   if (managedConfig) {
@@ -261,7 +320,18 @@ export function resolveManagedConfigPaths(
         Deno.statSync(join(effectiveBase, "managed-config-migrated.json"));
         active = true;
       } catch {
-        // Sentinel not found — migration hasn't run yet, fall back
+        // Sentinel not found at the default path — check the registry
+        // for a base path populated by ensureManagedConfigBase (which
+        // resolves the datastore to find the cache-relative path).
+        // Only fall back to the registry when no explicit configBasePath
+        // was provided — an explicit argument takes precedence.
+        if (!configBasePath) {
+          const registeredBase = getManagedConfigBase(repoDir);
+          if (registeredBase) {
+            effectiveBase = registeredBase;
+            active = true;
+          }
+        }
       }
     }
   }

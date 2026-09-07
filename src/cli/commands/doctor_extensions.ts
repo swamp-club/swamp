@@ -82,7 +82,10 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { DoctorExtensionsResponse } from "../../serve/protocol.ts";
-import { resolveManagedConfigPaths } from "../repo_context.ts";
+import {
+  ensureManagedConfigBase,
+  resolveManagedConfigPaths,
+} from "../repo_context.ts";
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -193,6 +196,7 @@ export const doctorExtensionsCommand = withRemoteOptions(
   const repoPath = RepoPath.create(repoDir);
   const markerRepo = new RepoMarkerRepository();
   const marker = await markerRepo.read(repoPath);
+  await ensureManagedConfigBase(repoDir, marker);
   const { lockfilePath } = resolveManagedConfigPaths(repoDir, marker);
 
   // A single shared catalog connection for all doctor phases

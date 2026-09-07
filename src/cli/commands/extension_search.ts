@@ -24,8 +24,11 @@ import {
   type GlobalOptions,
   interactiveOutputMode,
 } from "../context.ts";
-import { requireRepoMarker } from "../repo_context.ts";
-import { resolveManagedConfigPaths } from "../repo_context.ts";
+import {
+  ensureManagedConfigBase,
+  requireRepoMarker,
+  resolveManagedConfigPaths,
+} from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { ReleaseChannel } from "../../domain/extensions/release_channel.ts";
 import {
@@ -257,6 +260,7 @@ export const extensionSearchCommand = withRemoteOptions(
     // Extension install writes to local files only (pulled-extensions/,
     // lockfile) — no datastore needed; see #445.
     const { repoDir, marker } = await requireRepoMarker(".");
+    await ensureManagedConfigBase(repoDir, marker);
     const { lockfilePath } = resolveManagedConfigPaths(repoDir, marker);
 
     const tools = marker?.tools?.length ? marker.tools : ["claude"];
