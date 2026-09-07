@@ -129,17 +129,17 @@ Deno.test("summarizeSyncError: empty message treated as missing", () => {
   assertEquals(fields.errorMessage, undefined);
 });
 
-Deno.test("summarizeSyncError: long message truncated at 200 chars with ellipsis", () => {
-  const long = "a".repeat(500);
+Deno.test("summarizeSyncError: long message truncated at 2000 chars with ellipsis", () => {
+  const long = "a".repeat(5000);
   const err = new Error(long);
   const { summary, fields } = summarizeSyncError("pull", "@t/x", err);
   // `fields.errorMessage` retains the full message for consumers that want it
   // (e.g. .cause-walking renderers); only the summary is truncated.
   assertEquals(fields.errorMessage, long);
-  // Summary contains exactly 200 'a's followed by ellipsis.
-  assertStringIncludes(summary, "a".repeat(200) + "…");
-  // Summary does NOT contain the 201st 'a' because it was truncated.
-  const after = summary.split("a".repeat(200))[1] ?? "";
+  // Summary contains exactly 2000 'a's followed by ellipsis.
+  assertStringIncludes(summary, "a".repeat(2000) + "…");
+  // Summary does NOT contain the 2001st 'a' because it was truncated.
+  const after = summary.split("a".repeat(2000))[1] ?? "";
   assertEquals(after.startsWith("a"), false);
 });
 
