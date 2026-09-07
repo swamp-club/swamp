@@ -247,7 +247,7 @@ export function createAutoResolveInstallerAdapter(
       } catch (error) {
         if (error instanceof ConflictError) {
           logger
-            .debug`Auto-install of ${extensionName} hit conflicts: ${error.conflicts}`;
+            .warn`Auto-install of ${extensionName} failed: bundle files already exist on disk and the type was not registered. To resolve: swamp extension pull ${extensionName} --force`;
           return null;
         }
         throw error;
