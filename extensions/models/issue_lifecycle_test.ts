@@ -1035,6 +1035,107 @@ Deno.test("notify: accepts custom message", async () => {
   }
 });
 
+Deno.test("notify: includes PR link and plan summary in default message", async () => {
+  const { context, restore } = await buildTestContext(42, {
+    resources: {
+      "context-main": {
+        title: "Test",
+        body: "Body",
+        type: "bug",
+        status: "open",
+        author: "external-user",
+        comments: [],
+        fetchedAt: "2026-05-21T00:00:00.000Z",
+      },
+      "pullRequest-main": {
+        url: "https://github.com/swamp-club/swamp/pull/999",
+        attempt: 1,
+        linkedAt: "2026-05-21T00:00:00.000Z",
+      },
+      "plan-main": {
+        version: 1,
+        summary: "Fix the widget alignment",
+        dddAnalysis: "",
+        steps: [],
+        testingStrategy: "",
+        potentialChallenges: [],
+        feedbackIncorporated: [],
+        generatedAt: "2026-05-21T00:00:00.000Z",
+      },
+    },
+  });
+  try {
+    await model.methods.notify.execute({}, context);
+  } finally {
+    await restore();
+  }
+});
+
+Deno.test("notify: includes PR link without plan summary when plan is missing", async () => {
+  const { context, restore } = await buildTestContext(42, {
+    resources: {
+      "context-main": {
+        title: "Test",
+        body: "Body",
+        type: "bug",
+        status: "open",
+        author: "external-user",
+        comments: [],
+        fetchedAt: "2026-05-21T00:00:00.000Z",
+      },
+      "pullRequest-main": {
+        url: "https://github.com/swamp-club/swamp/pull/999",
+        attempt: 1,
+        linkedAt: "2026-05-21T00:00:00.000Z",
+      },
+    },
+  });
+  try {
+    await model.methods.notify.execute({}, context);
+  } finally {
+    await restore();
+  }
+});
+
+Deno.test("notify: custom message is not overridden by PR or plan data", async () => {
+  const { context, restore } = await buildTestContext(42, {
+    resources: {
+      "context-main": {
+        title: "Test",
+        body: "Body",
+        type: "bug",
+        status: "open",
+        author: "contributor",
+        comments: [],
+        fetchedAt: "2026-05-21T00:00:00.000Z",
+      },
+      "pullRequest-main": {
+        url: "https://github.com/swamp-club/swamp/pull/999",
+        attempt: 1,
+        linkedAt: "2026-05-21T00:00:00.000Z",
+      },
+      "plan-main": {
+        version: 1,
+        summary: "Fix the widget alignment",
+        dddAnalysis: "",
+        steps: [],
+        testingStrategy: "",
+        potentialChallenges: [],
+        feedbackIncorporated: [],
+        generatedAt: "2026-05-21T00:00:00.000Z",
+      },
+    },
+  });
+  try {
+    await model.methods.notify.execute(
+      { message: "Custom thanks @contributor!" },
+      context,
+    );
+  } finally {
+    await restore();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // skip_notify
 // ---------------------------------------------------------------------------
