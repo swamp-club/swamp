@@ -1979,3 +1979,100 @@ Deno.test("executeReports: mixed empty and non-empty reports persist only non-em
   assertEquals(contentResult?.dataHandles?.length, 2);
   assertEquals(saved.length, 2);
 });
+
+// --- modelName tag tests ---
+
+Deno.test("executeReports - method scope includes modelName tag from definition", async () => {
+  const registry = new ReportRegistry();
+  registry.register("tag-test", makeReport("method"));
+
+  const { repo, saved } = createInMemoryDataRepo();
+  const modelType = ModelType.create("test/model");
+
+  const context: MethodReportContext = {
+    scope: "method",
+    repoDir: "/tmp/test",
+    logger: {
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      fatal: () => {},
+    } as unknown as MethodReportContext["logger"],
+    // deno-lint-ignore no-explicit-any
+    dataRepository: repo as any,
+    // deno-lint-ignore no-explicit-any
+    definitionRepository: {} as any,
+    modelType,
+    modelId: "test-id",
+    definition: { id: "test-id", name: "my-model", version: 1, tags: {} },
+    globalArgs: {},
+    methodArgs: {},
+    methodName: "run",
+    executionStatus: "succeeded",
+    dataHandles: [],
+    extensionFile: () => {
+      throw new Error("extensionFile not stubbed in this test");
+    },
+  };
+
+  await executeReports(
+    registry,
+    context,
+    modelType,
+    "test-id",
+    { require: ["tag-test"] },
+    {},
+    undefined,
+    "run",
+  );
+
+  assertEquals(saved.length, 2);
+  assertEquals(saved[0].tags.modelName, "my-model");
+  assertEquals(saved[1].tags.modelName, "my-model");
+});
+
+Deno.test("executeReports - workflow scope includes modelName tag from workflowName", async () => {
+  const registry = new ReportRegistry();
+  registry.register("wf-report", makeReport("workflow"));
+
+  const { repo, saved } = createInMemoryDataRepo();
+  const modelType = ModelType.create("workflow");
+
+  const context: WorkflowReportContext = {
+    scope: "workflow",
+    repoDir: "/tmp/test",
+    logger: {
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      fatal: () => {},
+    } as unknown as WorkflowReportContext["logger"],
+    // deno-lint-ignore no-explicit-any
+    dataRepository: repo as any,
+    // deno-lint-ignore no-explicit-any
+    definitionRepository: {} as any,
+    workflowId: "wf-123",
+    workflowRunId: "run-456",
+    workflowName: "my-workflow",
+    workflowStatus: "succeeded",
+    stepExecutions: [],
+  };
+
+  await executeReports(
+    registry,
+    context,
+    modelType,
+    "wf-123",
+    { require: ["wf-report"] },
+    {},
+    undefined,
+    undefined,
+    undefined,
+  );
+
+  assertEquals(saved.length, 2);
+  assertEquals(saved[0].tags.modelName, "my-workflow");
+  assertEquals(saved[1].tags.modelName, "my-workflow");
+});
