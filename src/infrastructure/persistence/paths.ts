@@ -128,6 +128,11 @@ export function registerManagedConfig(
   active: boolean,
   configBasePath?: string,
 ): void {
+  if (active && !configBasePath) {
+    throw new Error(
+      "registerManagedConfig: active is true but configBasePath is missing",
+    );
+  }
   const key = resolve(repoDir);
   const existing = managedConfigRegistry.get(key);
   if (typeof existing === "string") return;
@@ -139,8 +144,8 @@ export function registerManagedConfig(
 }
 
 export function isManagedConfig(repoDir: string): boolean {
-  return managedConfigRegistry.get(resolve(repoDir)) !== false &&
-    managedConfigRegistry.get(resolve(repoDir)) !== undefined;
+  const val = managedConfigRegistry.get(resolve(repoDir));
+  return typeof val === "string";
 }
 
 export function getManagedConfigBase(repoDir: string): string | undefined {
@@ -163,17 +168,10 @@ export function resolveEffectiveVaultsDir(repoDir: string): string {
   return base ? join(base, "vaults") : join(repoDir, "vaults");
 }
 
-/**
- * Resolves the pulled-extensions root for a repository.
- * When managedConfig is explicitly passed, uses that value.
- * Otherwise checks the module-level registry.
- */
 export function resolvePulledExtensionsRoot(
   repoDir: string,
-  managedConfig?: boolean,
 ): string {
-  const active = managedConfig ?? isManagedConfig(repoDir);
-  return active
+  return isManagedConfig(repoDir)
     ? swampPath(repoDir, "config", "pulled-extensions")
     : swampPath(repoDir, "pulled-extensions");
 }

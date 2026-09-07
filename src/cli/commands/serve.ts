@@ -207,7 +207,6 @@ import {
 } from "../../infrastructure/persistence/run_tracker_store.ts";
 import {
   getSwampConfigDir,
-  registerManagedConfig,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
@@ -1486,7 +1485,6 @@ export const serveCommand = new Command()
       repoDir: resolvedRepoDir,
       repoContext,
       datastoreConfig,
-      datastoreResolver: initialResolver,
       syncService,
       lockfilePath: managedLockfilePath,
     } = await requireInitializedRepoUnlocked({
@@ -1503,11 +1501,6 @@ export const serveCommand = new Command()
     } catch {
       // Not in a swamp repo or marker unreadable — resolveModelsDir(null) returns the default
     }
-    registerManagedConfig(
-      resolvedRepoDir,
-      repoMarker?.datastore?.managedConfig === true,
-      initialResolver.resolvePath("config"),
-    );
     const extensionLockfilePath = managedLockfilePath;
 
     // Remote-execution control plane: capability verbs, worker enrollment,
