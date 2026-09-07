@@ -96,6 +96,7 @@ export function createWorkflowDeleteDeps(
     repoDir,
     undefined,
     dsPath(SWAMP_SUBDIRS.workflowRuns),
+    markDirty,
   );
   const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
     repoDir,

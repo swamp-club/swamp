@@ -149,11 +149,13 @@ export function createModelDeleteDeps(
   const outputRepo = new YamlOutputRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.outputs),
+    markDirty,
   );
   const workflowRunRepo = new YamlWorkflowRunRepository(
     repoDir,
     undefined,
     dsPath(SWAMP_SUBDIRS.workflowRuns),
+    markDirty,
   );
   const lifecycleService = new DefaultDataLifecycleService(
     unifiedDataRepo,
@@ -361,18 +363,9 @@ export async function* modelDelete(
       }
 
       // Delete evaluated definition
-      let evaluatedInputDeleted = false;
-      try {
-        ctx.logger.debug`Deleting evaluated definition: ${definition.id}`;
-        await deps.deleteEvaluatedDefinition(modelType, definition.id);
-        evaluatedInputDeleted = true;
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) {
-          ctx.logger.warn`Failed to delete evaluated definition: ${
-            error instanceof Error ? error.message : String(error)
-          }`;
-        }
-      }
+      ctx.logger.debug`Deleting evaluated definition: ${definition.id}`;
+      await deps.deleteEvaluatedDefinition(modelType, definition.id);
+      const evaluatedInputDeleted = true;
 
       // Delete definition
       ctx.logger.debug`Deleting definition: ${definition.id}`;
