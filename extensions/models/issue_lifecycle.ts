@@ -72,8 +72,7 @@ async function readState(
   return JSON.parse(new TextDecoder().decode(content)) as StateData;
 }
 
-/** Build the default thank-you message for the notify method. */
-function buildNotifyMessage(
+export function buildNotifyMessage(
   author: string,
   prData: PullRequestData | null,
   planData: PlanData | null,

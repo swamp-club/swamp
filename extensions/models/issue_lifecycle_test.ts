@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
-import { model } from "./issue_lifecycle.ts";
+import { buildNotifyMessage, model } from "./issue_lifecycle.ts";
 import { PR_COOLDOWN_MS } from "./_lib/schemas.ts";
 
 // ---------------------------------------------------------------------------
@@ -1035,105 +1035,51 @@ Deno.test("notify: accepts custom message", async () => {
   }
 });
 
-Deno.test("notify: includes PR link and plan summary in default message", async () => {
-  const { context, restore } = await buildTestContext(42, {
-    resources: {
-      "context-main": {
-        title: "Test",
-        body: "Body",
-        type: "bug",
-        status: "open",
-        author: "external-user",
-        comments: [],
-        fetchedAt: "2026-05-21T00:00:00.000Z",
-      },
-      "pullRequest-main": {
-        url: "https://github.com/swamp-club/swamp/pull/999",
-        attempt: 1,
-        linkedAt: "2026-05-21T00:00:00.000Z",
-      },
-      "plan-main": {
-        version: 1,
-        summary: "Fix the widget alignment",
-        dddAnalysis: "",
-        steps: [],
-        testingStrategy: "",
-        potentialChallenges: [],
-        feedbackIncorporated: [],
-        generatedAt: "2026-05-21T00:00:00.000Z",
-      },
-    },
-  });
-  try {
-    await model.methods.notify.execute({}, context);
-  } finally {
-    await restore();
-  }
+Deno.test("buildNotifyMessage: includes PR link and plan summary", () => {
+  const pr = {
+    url: "https://github.com/swamp-club/swamp/pull/999",
+    attempt: 1,
+    linkedAt: "2026-05-21T00:00:00.000Z",
+  };
+  const plan = {
+    version: 1,
+    summary: "Fix the widget alignment",
+    dddAnalysis: "",
+    steps: [],
+    testingStrategy: "",
+    potentialChallenges: [],
+    feedbackIncorporated: [],
+    generatedAt: "2026-05-21T00:00:00.000Z",
+  };
+  const msg = buildNotifyMessage("external-user", pr, plan);
+  assertStringIncludes(
+    msg,
+    "[merged](https://github.com/swamp-club/swamp/pull/999)",
+  );
+  assertStringIncludes(msg, "Fix the widget alignment");
+  assertStringIncludes(msg, "@external-user");
 });
 
-Deno.test("notify: includes PR link without plan summary when plan is missing", async () => {
-  const { context, restore } = await buildTestContext(42, {
-    resources: {
-      "context-main": {
-        title: "Test",
-        body: "Body",
-        type: "bug",
-        status: "open",
-        author: "external-user",
-        comments: [],
-        fetchedAt: "2026-05-21T00:00:00.000Z",
-      },
-      "pullRequest-main": {
-        url: "https://github.com/swamp-club/swamp/pull/999",
-        attempt: 1,
-        linkedAt: "2026-05-21T00:00:00.000Z",
-      },
-    },
-  });
-  try {
-    await model.methods.notify.execute({}, context);
-  } finally {
-    await restore();
-  }
+Deno.test("buildNotifyMessage: includes PR link without plan summary when plan is missing", () => {
+  const pr = {
+    url: "https://github.com/swamp-club/swamp/pull/999",
+    attempt: 1,
+    linkedAt: "2026-05-21T00:00:00.000Z",
+  };
+  const msg = buildNotifyMessage("external-user", pr, null);
+  assertStringIncludes(
+    msg,
+    "[merged](https://github.com/swamp-club/swamp/pull/999)",
+  );
+  assertStringIncludes(msg, "@external-user");
+  assertEquals(msg.includes("We shipped:"), false);
 });
 
-Deno.test("notify: custom message is not overridden by PR or plan data", async () => {
-  const { context, restore } = await buildTestContext(42, {
-    resources: {
-      "context-main": {
-        title: "Test",
-        body: "Body",
-        type: "bug",
-        status: "open",
-        author: "contributor",
-        comments: [],
-        fetchedAt: "2026-05-21T00:00:00.000Z",
-      },
-      "pullRequest-main": {
-        url: "https://github.com/swamp-club/swamp/pull/999",
-        attempt: 1,
-        linkedAt: "2026-05-21T00:00:00.000Z",
-      },
-      "plan-main": {
-        version: 1,
-        summary: "Fix the widget alignment",
-        dddAnalysis: "",
-        steps: [],
-        testingStrategy: "",
-        potentialChallenges: [],
-        feedbackIncorporated: [],
-        generatedAt: "2026-05-21T00:00:00.000Z",
-      },
-    },
-  });
-  try {
-    await model.methods.notify.execute(
-      { message: "Custom thanks @contributor!" },
-      context,
-    );
-  } finally {
-    await restore();
-  }
+Deno.test("buildNotifyMessage: falls back to plain text when no PR is available", () => {
+  const msg = buildNotifyMessage("external-user", null, null);
+  assertStringIncludes(msg, "merged");
+  assertEquals(msg.includes("[merged]"), false);
+  assertStringIncludes(msg, "@external-user");
 });
 
 // ---------------------------------------------------------------------------
