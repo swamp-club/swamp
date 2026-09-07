@@ -50,9 +50,19 @@ import {
   STATUS_COLORS,
 } from "../presentation/output/console_writer.ts";
 
+let _cachedMarkerServerAddress: string | undefined;
+
+/** Called once from the CLI entry point after the marker is read. */
+export function setMarkerServerAddress(value: string | undefined): void {
+  _cachedMarkerServerAddress = value;
+}
+
+/** Test-only: resets the cached marker server address between test cases. */
+export function resetMarkerServerAddress(): void {
+  _cachedMarkerServerAddress = undefined;
+}
+
 /**
- * Resolves the server URL from the `--server` flag with env var and
- * repo-marker fallbacks.
  * Precedence: flag > SWAMP_SERVE_URL > SWAMP_SERVER_URL > .swamp.yaml serverAddress.
  */
 export function resolveServeUrl(
@@ -60,7 +70,8 @@ export function resolveServeUrl(
   markerValue?: string,
 ): string | undefined {
   return flagValue ?? Deno.env.get("SWAMP_SERVE_URL") ??
-    Deno.env.get("SWAMP_SERVER_URL") ?? markerValue;
+    Deno.env.get("SWAMP_SERVER_URL") ?? markerValue ??
+    _cachedMarkerServerAddress;
 }
 
 export function writeRemoteIndicator(serverUrl: string): void {

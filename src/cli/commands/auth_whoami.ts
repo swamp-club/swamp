@@ -27,6 +27,7 @@ import {
 } from "../../libswamp/mod.ts";
 import { createAuthWhoamiRenderer } from "../../presentation/renderers/auth_whoami.ts";
 import { loadIdentity } from "../load_identity.ts";
+import { resolveServeUrl } from "../remote_run.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -48,7 +49,10 @@ export const authWhoamiCommand = new Command()
       identity,
     });
 
-    const renderer = createAuthWhoamiRenderer(cliCtx.outputMode);
+    const effectiveServeUrl = resolveServeUrl(undefined);
+    const renderer = createAuthWhoamiRenderer(cliCtx.outputMode, {
+      effectiveServeUrl,
+    });
     await consumeStream(whoami(ctx, deps), renderer.handlers());
 
     cliCtx.logger.debug("Auth whoami command completed");

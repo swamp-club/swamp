@@ -29,10 +29,12 @@ import {
   normalizeServerUrl,
   probeServerHealth,
   requestServerResponse,
+  resetMarkerServerAddress,
   resolveServerToken,
   resolveServeUrl,
   runModelMethodOverServer,
   runWorkflowOverServer,
+  setMarkerServerAddress,
   warnServerReloadNeeded,
   writeRemoteIndicator,
 } from "./remote_run.ts";
@@ -205,6 +207,88 @@ Deno.test("resolveServeUrl: returns undefined when no flag, env var, or markerVa
     Deno.env.delete("SWAMP_SERVE_URL");
     Deno.env.delete("SWAMP_SERVER_URL");
     assertEquals(resolveServeUrl(undefined, undefined), undefined);
+  } finally {
+    if (prevServe !== undefined) Deno.env.set("SWAMP_SERVE_URL", prevServe);
+    if (prevServer !== undefined) Deno.env.set("SWAMP_SERVER_URL", prevServer);
+  }
+});
+
+// ── cached marker serverAddress tests ─────────────────────────────────
+
+Deno.test("resolveServeUrl: falls back to cached marker serverAddress", () => {
+  const prevServe = Deno.env.get("SWAMP_SERVE_URL");
+  const prevServer = Deno.env.get("SWAMP_SERVER_URL");
+  try {
+    Deno.env.delete("SWAMP_SERVE_URL");
+    Deno.env.delete("SWAMP_SERVER_URL");
+    setMarkerServerAddress("wss://cached.example.com");
+    assertEquals(resolveServeUrl(undefined), "wss://cached.example.com");
+  } finally {
+    resetMarkerServerAddress();
+    if (prevServe !== undefined) Deno.env.set("SWAMP_SERVE_URL", prevServe);
+    if (prevServer !== undefined) Deno.env.set("SWAMP_SERVER_URL", prevServer);
+  }
+});
+
+Deno.test("resolveServeUrl: explicit markerValue takes precedence over cached value", () => {
+  const prevServe = Deno.env.get("SWAMP_SERVE_URL");
+  const prevServer = Deno.env.get("SWAMP_SERVER_URL");
+  try {
+    Deno.env.delete("SWAMP_SERVE_URL");
+    Deno.env.delete("SWAMP_SERVER_URL");
+    setMarkerServerAddress("wss://cached.example.com");
+    assertEquals(
+      resolveServeUrl(undefined, "wss://explicit.example.com"),
+      "wss://explicit.example.com",
+    );
+  } finally {
+    resetMarkerServerAddress();
+    if (prevServe !== undefined) Deno.env.set("SWAMP_SERVE_URL", prevServe);
+    if (prevServer !== undefined) Deno.env.set("SWAMP_SERVER_URL", prevServer);
+  }
+});
+
+Deno.test("resolveServeUrl: env var takes precedence over cached marker value", () => {
+  const prevServe = Deno.env.get("SWAMP_SERVE_URL");
+  const prevServer = Deno.env.get("SWAMP_SERVER_URL");
+  try {
+    Deno.env.set("SWAMP_SERVE_URL", "wss://env.example.com");
+    Deno.env.delete("SWAMP_SERVER_URL");
+    setMarkerServerAddress("wss://cached.example.com");
+    assertEquals(resolveServeUrl(undefined), "wss://env.example.com");
+  } finally {
+    resetMarkerServerAddress();
+    if (prevServe !== undefined) Deno.env.set("SWAMP_SERVE_URL", prevServe);
+    else Deno.env.delete("SWAMP_SERVE_URL");
+    if (prevServer !== undefined) Deno.env.set("SWAMP_SERVER_URL", prevServer);
+    else Deno.env.delete("SWAMP_SERVER_URL");
+  }
+});
+
+Deno.test("resolveServeUrl: returns undefined when cache is not set and no other source", () => {
+  const prevServe = Deno.env.get("SWAMP_SERVE_URL");
+  const prevServer = Deno.env.get("SWAMP_SERVER_URL");
+  try {
+    Deno.env.delete("SWAMP_SERVE_URL");
+    Deno.env.delete("SWAMP_SERVER_URL");
+    resetMarkerServerAddress();
+    assertEquals(resolveServeUrl(undefined), undefined);
+  } finally {
+    if (prevServe !== undefined) Deno.env.set("SWAMP_SERVE_URL", prevServe);
+    if (prevServer !== undefined) Deno.env.set("SWAMP_SERVER_URL", prevServer);
+  }
+});
+
+Deno.test("resetMarkerServerAddress: clears the cached value", () => {
+  const prevServe = Deno.env.get("SWAMP_SERVE_URL");
+  const prevServer = Deno.env.get("SWAMP_SERVER_URL");
+  try {
+    Deno.env.delete("SWAMP_SERVE_URL");
+    Deno.env.delete("SWAMP_SERVER_URL");
+    setMarkerServerAddress("wss://cached.example.com");
+    assertEquals(resolveServeUrl(undefined), "wss://cached.example.com");
+    resetMarkerServerAddress();
+    assertEquals(resolveServeUrl(undefined), undefined);
   } finally {
     if (prevServe !== undefined) Deno.env.set("SWAMP_SERVE_URL", prevServe);
     if (prevServer !== undefined) Deno.env.set("SWAMP_SERVER_URL", prevServer);

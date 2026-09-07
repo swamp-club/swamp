@@ -86,7 +86,13 @@ function collectiveLines(
   });
 }
 
+export interface AuthWhoamiRendererOptions {
+  effectiveServeUrl?: string;
+}
+
 class LogAuthWhoamiRenderer implements Renderer<AuthWhoamiEvent> {
+  constructor(private readonly options: AuthWhoamiRendererOptions) {}
+
   handlers(): EventHandlers<AuthWhoamiEvent> {
     return {
       loading_credentials: () => {},
@@ -103,6 +109,10 @@ class LogAuthWhoamiRenderer implements Renderer<AuthWhoamiEvent> {
           writeOutput(
             `${e.identity.username} (${e.identity.email}) on ${e.identity.serverUrl}`,
           );
+        }
+
+        if (this.options.effectiveServeUrl) {
+          writeOutput(`Serve: ${this.options.effectiveServeUrl}`);
         }
 
         const entitlements = e.identity.collectiveEntitlements;
@@ -131,6 +141,8 @@ class LogAuthWhoamiRenderer implements Renderer<AuthWhoamiEvent> {
 }
 
 class JsonAuthWhoamiRenderer implements Renderer<AuthWhoamiEvent> {
+  constructor(private readonly options: AuthWhoamiRendererOptions) {}
+
   handlers(): EventHandlers<AuthWhoamiEvent> {
     return {
       loading_credentials: () => {},
@@ -140,6 +152,9 @@ class JsonAuthWhoamiRenderer implements Renderer<AuthWhoamiEvent> {
           {
             authenticated: true,
             serverUrl: e.identity.serverUrl,
+            ...(this.options.effectiveServeUrl
+              ? { effectiveServeUrl: this.options.effectiveServeUrl }
+              : {}),
             ...(e.identity.collectiveToken
               ? {
                 collectiveToken: true,
@@ -176,11 +191,12 @@ class JsonAuthWhoamiRenderer implements Renderer<AuthWhoamiEvent> {
 
 export function createAuthWhoamiRenderer(
   mode: OutputMode,
+  options: AuthWhoamiRendererOptions = {},
 ): Renderer<AuthWhoamiEvent> {
   switch (mode) {
     case "json":
-      return new JsonAuthWhoamiRenderer();
+      return new JsonAuthWhoamiRenderer(options);
     case "log":
-      return new LogAuthWhoamiRenderer();
+      return new LogAuthWhoamiRenderer(options);
   }
 }

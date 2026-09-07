@@ -133,10 +133,9 @@ options are:
   synced datastore the deletions ride along with the same post-run push.
   `swamp data gc` remains available for repo-wide manual GC.
 - `serverAddress`: Default `swamp serve` URL for this repository. When set,
-  `model method run` and `workflow run` route through this serve instance
-  without requiring `SWAMP_SERVE_URL` or `--server`. Other serve-aware
-  commands will gain support in follow-up work. Precedence: `--server`
-  flag > `SWAMP_SERVE_URL` env > `SWAMP_SERVER_URL` env > `.swamp.yaml
+  all serve-aware commands route through this serve instance without
+  requiring `SWAMP_SERVE_URL` or `--server`. Precedence: `--server` flag >
+  `SWAMP_SERVE_URL` env > `SWAMP_SERVER_URL` env > `.swamp.yaml
   serverAddress`. Set during init with `swamp repo init --server <url>` or
   by editing `.swamp.yaml` directly.
 

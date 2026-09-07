@@ -69,6 +69,7 @@ import {
   WorkflowNameType,
 } from "./completion_types.ts";
 import { isTransientError } from "../infrastructure/persistence/io_errors.ts";
+import { setMarkerServerAddress } from "./remote_run.ts";
 import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
 import { readLocalManifestIdentity } from "../infrastructure/persistence/local_manifest_reader.ts";
@@ -1335,8 +1336,9 @@ export async function runCli(args: string[]): Promise<void> {
     setActiveTelemetryContext(telemetryCtx);
   }
 
-  // Read marker once for log level, extension loading, and auto-resolver.
-  // Hook commands skip this — null marker gives default "info" log level.
+  // Read marker once for log level, extension loading, auto-resolver,
+  // and serverAddress cache. Hook commands skip this — null marker gives
+  // default "info" log level and no serverAddress fallback.
   let marker: RepoMarkerData | null = null;
   if (!hookMode) {
     try {
@@ -1347,6 +1349,7 @@ export async function runCli(args: string[]): Promise<void> {
       // Not in a swamp repo - marker stays null
     }
   }
+  setMarkerServerAddress(marker?.serverAddress);
 
   // Read extension sources (additional extension directories from
   // .swamp-sources.yaml). Resolved once and shared across all loaders.
