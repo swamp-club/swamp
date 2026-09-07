@@ -332,3 +332,100 @@ Deno.test("writeCatalogExport: yields event loop between pages", async () => {
     cleanup();
   }
 });
+
+Deno.test("writeCatalogExport: no temp files left after successful write", async () => {
+  const { store, cachePath, cleanup } = setupCatalogExportFixture();
+  try {
+    store.upsert(makeRow());
+    await writeCatalogExport(store, cachePath, "test-ns");
+    const nsDir = join(cachePath, "test-ns");
+    const files: string[] = [];
+    for await (const entry of Deno.readDir(nsDir)) {
+      files.push(entry.name);
+    }
+    const tmpFiles = files.filter((f) => f.endsWith(".tmp"));
+    assertEquals(tmpFiles, [], "temp files should be cleaned up after export");
+    assert(
+      files.includes(".catalog-export.json"),
+      "export file should exist",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("writeCatalogExport: old export survives when write fails mid-iteration", async () => {
+  const { store, cachePath, cleanup } = setupCatalogExportFixture();
+  try {
+    store.upsert(makeRow());
+    await writeCatalogExport(store, cachePath, "test-ns");
+    const originalContent = await Deno.readTextFile(
+      join(cachePath, "test-ns", ".catalog-export.json"),
+    );
+
+    const failingStore = {
+      iterateNamespace(_ns: string) {
+        return (function* () {
+          yield makeRow({ data_name: "will-fail", id: "fail-uuid" });
+          throw new Error("simulated mid-iteration failure");
+        })();
+      },
+    } as unknown as CatalogStore;
+
+    let threw = false;
+    try {
+      await writeCatalogExport(failingStore, cachePath, "test-ns");
+    } catch {
+      threw = true;
+    }
+    assert(threw, "writeCatalogExport should have thrown");
+
+    const survivingContent = await Deno.readTextFile(
+      join(cachePath, "test-ns", ".catalog-export.json"),
+    );
+    assertEquals(
+      survivingContent,
+      originalContent,
+      "original export should be intact after failed write",
+    );
+
+    const nsDir = join(cachePath, "test-ns");
+    for await (const entry of Deno.readDir(nsDir)) {
+      assert(
+        !entry.name.endsWith(".tmp"),
+        `temp file ${entry.name} should have been cleaned up`,
+      );
+    }
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("writeCatalogExport: 100k rows benchmark", async () => {
+  const { store, cachePath, cleanup } = setupCatalogExportFixture();
+  try {
+    const totalRows = 100_000;
+    for (let i = 0; i < totalRows; i++) {
+      store.upsert(makeRow({
+        data_name: `data-${i}`,
+        version: 1,
+        id: `uuid-${i}`,
+        size: i * 10,
+        tags: `{"type":"resource","specName":"result","index":"${i}"}`,
+      }));
+    }
+    const start = performance.now();
+    const count = await writeCatalogExport(store, cachePath, "test-ns");
+    const elapsed = performance.now() - start;
+    assertEquals(count, totalRows);
+    console.log(`  writeCatalogExport 100k rows: ${elapsed.toFixed(0)}ms`);
+
+    const content = await Deno.readTextFile(
+      join(cachePath, "test-ns", ".catalog-export.json"),
+    );
+    const parsed = JSON.parse(content) as CatalogRow[];
+    assertEquals(parsed.length, totalRows);
+  } finally {
+    cleanup();
+  }
+});

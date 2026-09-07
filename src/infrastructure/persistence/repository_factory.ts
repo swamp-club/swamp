@@ -152,10 +152,13 @@ export function createCatalogStore(
  * flat JSON array. Extensions upload this file to the remote datastore
  * via {@link DatastoreSyncService.exportCatalog}.
  *
- * Uses cooperative yielding: iterates the catalog page by page, writing
- * each row's JSON incrementally, and yields the event loop between pages
- * so concurrent async work (HTTP handlers, WebSocket messages, workflow
- * steps) is not starved by the synchronous SQLite reads.
+ * Writes to a temp file first, then atomically renames to the final path
+ * so a crash mid-write never corrupts the previous valid export.
+ *
+ * Uses page-buffered writes (one write per {@link ITERATE_PAGE_SIZE}
+ * batch) and compact JSON to minimize I/O syscalls and output size.
+ * Yields the event loop between pages so concurrent async work is not
+ * starved by the synchronous SQLite reads.
  */
 export async function writeCatalogExport(
   catalogStore: CatalogStore,
@@ -163,31 +166,46 @@ export async function writeCatalogExport(
   namespace: string,
 ): Promise<number> {
   const exportPath = join(cachePath, namespace, ".catalog-export.json");
+  const tmpPath = join(
+    cachePath,
+    namespace,
+    `.${crypto.randomUUID()}.tmp`,
+  );
   const encoder = new TextEncoder();
-  const file = await Deno.open(exportPath, {
+  const file = await Deno.open(tmpPath, {
     write: true,
     create: true,
     truncate: true,
   });
   try {
     let rowCount = 0;
-    let first = true;
-    await file.write(encoder.encode("[\n"));
+    const pageBuffer: string[] = [];
+    await file.write(encoder.encode("["));
     for (const row of catalogStore.iterateNamespace(namespace)) {
-      if (!first) {
-        await file.write(encoder.encode(",\n"));
-      }
-      first = false;
-      await file.write(encoder.encode(JSON.stringify(row, null, 2)));
+      if (rowCount > 0) pageBuffer.push(",");
+      pageBuffer.push(JSON.stringify(row));
       rowCount++;
       if (rowCount % ITERATE_PAGE_SIZE === 0) {
+        await file.write(encoder.encode(pageBuffer.join("")));
+        pageBuffer.length = 0;
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
       }
     }
-    await file.write(encoder.encode("\n]\n"));
-    return rowCount;
-  } finally {
+    if (pageBuffer.length > 0) {
+      await file.write(encoder.encode(pageBuffer.join("")));
+    }
+    await file.write(encoder.encode("]\n"));
     file.close();
+    await Deno.rename(tmpPath, exportPath);
+    return rowCount;
+  } catch (error) {
+    try {
+      file.close();
+    } catch { /* already closed or I/O error */ }
+    try {
+      await Deno.remove(tmpPath);
+    } catch { /* best-effort cleanup */ }
+    throw error;
   }
 }
 
