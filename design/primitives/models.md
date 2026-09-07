@@ -714,6 +714,24 @@ of artifacts produced by the method. It should track state as the method
 executes. It should be structured as
 `outputs/{normalized-type}/{method}/{definition-id}-{timestamp}.yaml`.
 
+### Output Lifetime
+
+By default, method invocation outputs persist indefinitely (cleaned up only by
+`swamp run gc --older-than`). Methods can declare an `outputLifetime` to set a
+retention ceiling — a duration string like `"1d"` or `"7d"`, or `"infinite"` for
+the default behavior. The scoped lifetimes `"ephemeral"`, `"job"`, and
+`"workflow"` are not valid for output records since invocation outputs are not
+scoped to a process or workflow run.
+
+When `swamp run gc` runs, it applies `min(globalRetention, methodOutputLifetime)`
+as the effective cutoff for each method's outputs. This means an operator can
+always tighten retention globally but the model author's declared ceiling is
+respected regardless.
+
+High-traffic methods whose return value is consumed synchronously (e.g.
+`swamp/server-token.redeem`) should declare a short lifetime (e.g. `"1d"`) to
+prevent unbounded growth of the outputs directory and the datastore index.
+
 ## Domain Events
 
 The ModelRepository emits domain events when model data changes:

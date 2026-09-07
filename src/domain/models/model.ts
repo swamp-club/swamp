@@ -37,6 +37,7 @@ import {
   GarbageCollectionSchema,
   type Lifetime,
   LifetimeSchema,
+  type OutputLifetime,
   type OwnerDefinition,
 } from "../data/mod.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
@@ -757,6 +758,13 @@ export interface MethodDefinition<
    * all written version directories are deleted.
    */
   rollbackOnFailure?: boolean;
+
+  /**
+   * Retention ceiling for this method's invocation output records.
+   * Duration strings ("1d", "7d") or "infinite". When set, `swamp run gc`
+   * deletes outputs older than this regardless of the global retention flag.
+   */
+  outputLifetime?: OutputLifetime;
 
   /**
    * Zod schema for validating per-method arguments.

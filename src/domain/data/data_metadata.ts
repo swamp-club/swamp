@@ -41,6 +41,55 @@ export const LifetimeSchema = z.union([
 export type Lifetime = z.infer<typeof LifetimeSchema>;
 
 /**
+ * Restricted lifetime for method invocation outputs.
+ * Only duration strings and "infinite" are valid — "ephemeral", "job", and
+ * "workflow" have no clear semantics for invocation records.
+ */
+export const OutputLifetimeSchema = z.union([
+  z.string().regex(/^\d+(mo|y|h|m|d|w)$/, {
+    message:
+      "Duration must match pattern like '1h', '5m', '10d', '2w', '1mo', '10y'",
+  }).refine((val) => {
+    const match = val.match(/^(\d+)/);
+    return match !== null && parseInt(match[1], 10) > 0;
+  }, {
+    message: "Output lifetime duration must be greater than zero",
+  }),
+  z.literal("infinite"),
+]);
+
+export type OutputLifetime = z.infer<typeof OutputLifetimeSchema>;
+
+/**
+ * Converts a duration lifetime string to milliseconds.
+ * Returns null for non-duration lifetimes ("infinite", "ephemeral", etc.).
+ */
+export function lifetimeToMs(lifetime: Lifetime): number | null {
+  const match = lifetime.match(/^(\d+)(mo|y|h|m|d|w)$/);
+  if (!match) return null;
+
+  const value = parseInt(match[1], 10);
+  const unit = match[2];
+
+  switch (unit) {
+    case "mo":
+      return value * 30 * 24 * 60 * 60 * 1000;
+    case "y":
+      return value * 365 * 24 * 60 * 60 * 1000;
+    case "h":
+      return value * 60 * 60 * 1000;
+    case "m":
+      return value * 60 * 1000;
+    case "d":
+      return value * 24 * 60 * 60 * 1000;
+    case "w":
+      return value * 7 * 24 * 60 * 60 * 1000;
+    default:
+      return null;
+  }
+}
+
+/**
  * Garbage collection policy determines version retention.
  * - number: Keep N most recent versions
  * - duration string: Keep versions created within the duration

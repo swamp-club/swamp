@@ -46,6 +46,7 @@ export interface MethodDescribeData {
   name: string;
   description: string;
   arguments: object;
+  outputLifetime?: string;
 }
 
 /**
@@ -244,6 +245,7 @@ export function toMethodDescribeData(
     name,
     description: method.description,
     arguments: zodToJsonSchema(method.arguments),
+    ...(method.outputLifetime ? { outputLifetime: method.outputLifetime } : {}),
   };
 }
 

@@ -3446,6 +3446,8 @@ function createMockOutputRepo(): {
       },
       delete: () => Promise.resolve(),
       deleteOlderThan: () => Promise.resolve({ deleted: 0, bytesReclaimed: 0 }),
+      deleteByMethodLifetime: () =>
+        Promise.resolve({ deleted: 0, bytesReclaimed: 0 }),
       nextId: () => createModelOutputId(crypto.randomUUID()),
       getPath: () => "",
     },

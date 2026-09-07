@@ -137,4 +137,16 @@ export interface OutputRepository {
     cutoff: Date,
     options?: { dryRun?: boolean },
   ): Promise<{ deleted: number; bytesReclaimed: number }>;
+
+  /**
+   * Deletes outputs that exceed their method's declared outputLifetime.
+   * Scans all output directories on disk, looking up per-method lifetime
+   * policies from the model registry when available. Methods without a declared
+   * lifetime (or from unregistered types) use the fallback cutoff. The effective
+   * cutoff for a method is the more aggressive (more recent) of the two.
+   */
+  deleteByMethodLifetime(
+    fallbackCutoff: Date,
+    options?: { dryRun?: boolean },
+  ): Promise<{ deleted: number; bytesReclaimed: number }>;
 }

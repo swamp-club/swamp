@@ -467,3 +467,27 @@ Deno.test("serverTokenModel: updateCollectives is a no-op on expired token", asy
   );
   assertEquals(versions.get("token-main"), versionBefore);
 });
+
+// --- outputLifetime ---
+
+Deno.test("serverTokenModel: all methods declare an outputLifetime", () => {
+  for (const [name, method] of Object.entries(serverTokenModel.methods)) {
+    assertNotEquals(
+      method.outputLifetime,
+      undefined,
+      `Method '${name}' must declare an outputLifetime`,
+    );
+  }
+});
+
+Deno.test("serverTokenModel: high-traffic methods use 1d outputLifetime", () => {
+  assertEquals(serverTokenModel.methods.redeem.outputLifetime, "1d");
+  assertEquals(serverTokenModel.methods.updateCollectives.outputLifetime, "1d");
+});
+
+Deno.test("serverTokenModel: lifecycle methods use 7d outputLifetime", () => {
+  assertEquals(serverTokenModel.methods.mint.outputLifetime, "7d");
+  assertEquals(serverTokenModel.methods.rotate.outputLifetime, "7d");
+  assertEquals(serverTokenModel.methods.revoke.outputLifetime, "7d");
+  assertEquals(serverTokenModel.methods.expire.outputLifetime, "7d");
+});
