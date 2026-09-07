@@ -27,7 +27,7 @@
 
 export type SyncOperation = "pull" | "push";
 
-const MESSAGE_PREVIEW_LIMIT = 200;
+const MESSAGE_PREVIEW_LIMIT = 2000;
 
 export interface SyncErrorSummary {
   /**
