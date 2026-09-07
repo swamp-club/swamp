@@ -25,7 +25,9 @@ import {
   globalTelemetryDir,
   homeDirectory,
   homeDirectoryIsSet,
+  isManagedConfig,
   managedConfigLockfilePath,
+  registerManagedConfig,
   resolvePulledExtensionsRoot,
   SWAMP_DATA_DIR,
   SWAMP_MARKER_FILE,
@@ -559,19 +561,68 @@ Deno.test("bundleNamespace: returns 8-char hex string", () => {
   assertEquals(/^[0-9a-f]{8}$/.test(hash), true);
 });
 
-// --- resolvePulledExtensionsRoot / managedConfigLockfilePath ---
+// --- registerManagedConfig / isManagedConfig ---
 
-Deno.test("resolvePulledExtensionsRoot: managedConfig=false returns .swamp/pulled-extensions", () => {
-  assertPathEquals(
-    resolvePulledExtensionsRoot("/repo", false),
-    "/repo/.swamp/pulled-extensions",
+Deno.test("registerManagedConfig: throws on active with no configBasePath", () => {
+  assertThrows(
+    () => registerManagedConfig("/repo/throw-test-1", true),
+    Error,
+    "active is true but configBasePath is missing",
   );
 });
 
-Deno.test("resolvePulledExtensionsRoot: managedConfig=true returns .swamp/config/pulled-extensions", () => {
+Deno.test("registerManagedConfig: throws on active with undefined configBasePath", () => {
+  assertThrows(
+    () => registerManagedConfig("/repo/throw-test-2", true, undefined),
+    Error,
+    "active is true but configBasePath is missing",
+  );
+});
+
+Deno.test("isManagedConfig: returns false when registry has no entry", () => {
+  assertEquals(isManagedConfig("/repo/unregistered-test-1"), false);
+});
+
+Deno.test("isManagedConfig: returns false when registered as inactive", () => {
+  registerManagedConfig("/repo/inactive-test-1", false);
+  assertEquals(isManagedConfig("/repo/inactive-test-1"), false);
+});
+
+Deno.test("isManagedConfig: returns true when registered as active", () => {
+  registerManagedConfig(
+    "/repo/active-test-1",
+    true,
+    "/repo/active-test-1/.swamp/config",
+  );
+  assertEquals(isManagedConfig("/repo/active-test-1"), true);
+});
+
+// --- resolvePulledExtensionsRoot / managedConfigLockfilePath ---
+
+Deno.test("resolvePulledExtensionsRoot: unregistered returns .swamp/pulled-extensions", () => {
   assertPathEquals(
-    resolvePulledExtensionsRoot("/repo", true),
-    "/repo/.swamp/config/pulled-extensions",
+    resolvePulledExtensionsRoot("/repo/unregistered-test-2"),
+    "/repo/unregistered-test-2/.swamp/pulled-extensions",
+  );
+});
+
+Deno.test("resolvePulledExtensionsRoot: inactive returns .swamp/pulled-extensions", () => {
+  registerManagedConfig("/repo/inactive-test-2", false);
+  assertPathEquals(
+    resolvePulledExtensionsRoot("/repo/inactive-test-2"),
+    "/repo/inactive-test-2/.swamp/pulled-extensions",
+  );
+});
+
+Deno.test("resolvePulledExtensionsRoot: active returns .swamp/config/pulled-extensions", () => {
+  registerManagedConfig(
+    "/repo/active-test-2",
+    true,
+    "/repo/active-test-2/.swamp/config",
+  );
+  assertPathEquals(
+    resolvePulledExtensionsRoot("/repo/active-test-2"),
+    "/repo/active-test-2/.swamp/config/pulled-extensions",
   );
 });
 
