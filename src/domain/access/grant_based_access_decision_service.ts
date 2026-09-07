@@ -29,7 +29,10 @@ import type { Action } from "./action.ts";
 import type { PolicySnapshot } from "./policy_snapshot.ts";
 import { principalToString } from "./principal.ts";
 import type { PrincipalContext } from "./principal_context.ts";
-import { resourceSelectorMatches } from "./resource_selector.ts";
+import {
+  type ResourceKind,
+  resourceSelectorMatches,
+} from "./resource_selector.ts";
 
 export const MAX_AGGREGATE_CONDITIONS = 100;
 
@@ -240,5 +243,25 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     }
 
     return [...denyDecisions, ...allowDecisions];
+  }
+
+  hasAnyGrantForKind(
+    principal: AccessPrincipal,
+    action: Action,
+    kind: ResourceKind,
+  ): boolean {
+    const snapshot = this.#snapshot;
+    const principalKey = principalToString(principal.principal);
+    const localGroups = snapshot.groupsForPrincipal(principalKey);
+    const subjects = resolveSubjects(principal, localGroups);
+    const candidates = snapshot.grantsForSubjects(subjects);
+
+    for (const grant of candidates) {
+      if (grant.effect !== "allow") continue;
+      if (grant.resource.kind !== kind) continue;
+      if (!grantMatchesAction(grant, action)) continue;
+      return true;
+    }
+    return false;
   }
 }

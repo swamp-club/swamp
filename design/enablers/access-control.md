@@ -246,6 +246,36 @@ request — there is no request-level locking or snapshot versioning.
 
 Implementation: `src/domain/access/policy_snapshot_loader.ts`.
 
+## Collection operations and grant-scoped filtering
+
+Single-resource operations (`model.get`, `workflow.run`, `data.get`) authorize
+against the specific resource name — e.g., `model:@acme/deploy`. Collection
+operations (`model.search`, `workflow.search`, `data.search`, `data.query`, and
+their history/output/approval variants) cannot name a single resource upfront
+because they return multiple results.
+
+These handlers use **post-query filtering**: they run the query, then filter each
+result item through `decide()` using the item's resource name. A user with
+`model:@acme/*` running `model search` sees only models whose names match that
+pattern. A user with `model:*` sees everything (unchanged behavior). A user with
+no `read` grants for the resource kind sees an empty result set.
+
+Metadata-only endpoints that return type definitions or schemas (e.g.,
+`model.type.search`, `workflow.schema`) require at least one `read` grant for
+the resource kind but do not filter per item — they return static metadata, not
+per-resource data.
+
+**CEL conditions and search results**: search result items carry a subset of the
+fields available to the condition evaluator (typically `name` and `modelType`).
+Conditional grants that reference fields not present in search results (e.g.,
+`resource.tags`) fail closed — the condition evaluator returns `false` for
+unknown variables, so the grant does not match. This means conditional grants may
+be more restrictive for collection operations than for single-resource
+operations where the full field set is available.
+
+Implementation: `filterByAuthorization` and `authorizeAnyOrReject` in
+`src/serve/handlers/shared.ts`.
+
 ## Workflow execution context
 
 Authorization is checked at the serve handler boundary, not at the domain layer.

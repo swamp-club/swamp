@@ -760,3 +760,93 @@ Deno.test("explain: run-implies-approve flows through explain", () => {
   assertEquals(results.length, 1);
   assertEquals(results[0].effect, "allow");
 });
+
+Deno.test("hasAnyGrantForKind: returns true when user has matching grant", () => {
+  const grant = makeGrant({
+    actions: ["read"],
+    resource: { kind: "model", pattern: "@acme/*" },
+  });
+  const snapshot = new PolicySnapshot([grant], []);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+  assertEquals(
+    service.hasAnyGrantForKind(makePrincipal("adam"), "read", "model"),
+    true,
+  );
+});
+
+Deno.test("hasAnyGrantForKind: returns false for wrong kind", () => {
+  const grant = makeGrant({
+    actions: ["read"],
+    resource: { kind: "model", pattern: "@acme/*" },
+  });
+  const snapshot = new PolicySnapshot([grant], []);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+  assertEquals(
+    service.hasAnyGrantForKind(makePrincipal("adam"), "read", "workflow"),
+    false,
+  );
+});
+
+Deno.test("hasAnyGrantForKind: returns false for wrong action", () => {
+  const grant = makeGrant({
+    actions: ["read"],
+    resource: { kind: "model", pattern: "*" },
+  });
+  const snapshot = new PolicySnapshot([grant], []);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+  assertEquals(
+    service.hasAnyGrantForKind(makePrincipal("adam"), "write", "model"),
+    false,
+  );
+});
+
+Deno.test("hasAnyGrantForKind: returns false for deny-only grants", () => {
+  const grant = makeGrant({
+    effect: "deny",
+    actions: ["read"],
+    resource: { kind: "model", pattern: "@secret/*" },
+  });
+  const snapshot = new PolicySnapshot([grant], []);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+  assertEquals(
+    service.hasAnyGrantForKind(makePrincipal("adam"), "read", "model"),
+    false,
+  );
+});
+
+Deno.test("hasAnyGrantForKind: returns false when no grants exist", () => {
+  const snapshot = new PolicySnapshot([], []);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+  assertEquals(
+    service.hasAnyGrantForKind(makePrincipal("adam"), "read", "model"),
+    false,
+  );
+});
+
+Deno.test("hasAnyGrantForKind: matches via group membership", () => {
+  const grant = makeGrant({
+    subject: { kind: "group", name: "readers" },
+    actions: ["read"],
+    resource: { kind: "model", pattern: "@acme/*" },
+  });
+  const group = makeGroup("readers", ["adam"]);
+  const snapshot = new PolicySnapshot([grant], [group]);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+  assertEquals(
+    service.hasAnyGrantForKind(makePrincipal("adam"), "read", "model"),
+    true,
+  );
+});
+
+Deno.test("hasAnyGrantForKind: run implies approve", () => {
+  const grant = makeGrant({
+    actions: ["run"],
+    resource: { kind: "workflow", pattern: "@acme/*" },
+  });
+  const snapshot = new PolicySnapshot([grant], []);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+  assertEquals(
+    service.hasAnyGrantForKind(makePrincipal("adam"), "approve", "workflow"),
+    true,
+  );
+});

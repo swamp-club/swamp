@@ -105,9 +105,11 @@ import { RunEventBuffer } from "../run_event_buffer.ts";
 import { deleteActiveRun, writeActiveRun } from "../active_run_tracker.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import {
+  authorizeAnyOrReject,
   authorizeOrReject,
   type ConnectionContext,
   exceptionTypeForClient,
+  filterByAuthorization,
   isAdminOnlyModelType,
   lockTimeoutErrorForClient,
   sanitizeErrorForClient,
@@ -614,11 +616,14 @@ export async function handleModelSearch(
   payload?: ModelSearchPayload,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "model",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeAnyOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      "model",
+      ctx,
+    )
   ) return;
 
   try {
@@ -650,10 +655,26 @@ export async function handleModelSearch(
       return;
     }
 
+    const data = (result ?? {}) as {
+      results?: Array<{ name: string; type: string }>;
+    };
+    if (data.results) {
+      data.results = filterByAuthorization(
+        data.results,
+        (item) => item.name,
+        (item) => ({ name: item.name, modelType: item.type }),
+        socket,
+        principal,
+        "read",
+        "model",
+        ctx,
+      );
+    }
+
     send(socket, {
       type: "model.search",
       id: requestId,
-      payload: { data: result ?? {} },
+      payload: { data },
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);
@@ -1151,11 +1172,14 @@ export async function handleModelOutputSearch(
   payload?: ModelOutputSearchPayload,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "model",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeAnyOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      "model",
+      ctx,
+    )
   ) return;
 
   try {
@@ -1191,10 +1215,26 @@ export async function handleModelOutputSearch(
       return;
     }
 
+    const data = (result ?? {}) as {
+      results?: Array<{ modelName?: string; type: string }>;
+    };
+    if (data.results) {
+      data.results = filterByAuthorization(
+        data.results,
+        (item) => item.modelName,
+        (item) => ({ name: item.modelName, modelType: item.type }),
+        socket,
+        principal,
+        "read",
+        "model",
+        ctx,
+      );
+    }
+
     send(socket, {
       type: "model.output.search",
       id: requestId,
-      payload: { data: result ?? {} },
+      payload: { data },
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);
@@ -1340,11 +1380,14 @@ export async function handleModelMethodHistorySearch(
   payload?: ModelMethodHistorySearchPayload,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "model",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeAnyOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      "model",
+      ctx,
+    )
   ) return;
 
   try {
@@ -1380,10 +1423,26 @@ export async function handleModelMethodHistorySearch(
       return;
     }
 
+    const data = (result ?? {}) as {
+      results?: Array<{ modelName?: string; type: string }>;
+    };
+    if (data.results) {
+      data.results = filterByAuthorization(
+        data.results,
+        (item) => item.modelName,
+        (item) => ({ name: item.modelName, modelType: item.type }),
+        socket,
+        principal,
+        "read",
+        "model",
+        ctx,
+      );
+    }
+
     send(socket, {
       type: "model.method.history.search",
       id: requestId,
-      payload: { data: result ?? {} },
+      payload: { data },
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);
@@ -1576,11 +1635,14 @@ export async function handleModelTypeDescribe(
   principal: Principal | null,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "model",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeAnyOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      "model",
+      ctx,
+    )
   ) return;
 
   try {
@@ -1627,11 +1689,14 @@ export async function handleModelTypeSearch(
   payload?: ModelTypeSearchPayload,
 ): Promise<void> {
   if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "model",
-      name: "*",
-      fields: {},
-    }, ctx).allowed
+    !authorizeAnyOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      "model",
+      ctx,
+    )
   ) return;
 
   try {

@@ -53,4 +53,10 @@ export interface AccessDecisionService {
     action: Action,
     resource: AccessResource,
   ): AccessDecision[];
+
+  hasAnyGrantForKind(
+    principal: AccessPrincipal,
+    action: Action,
+    kind: ResourceKind,
+  ): boolean;
 }

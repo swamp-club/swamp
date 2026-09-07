@@ -58,6 +58,9 @@ function createMockDecisionService(): {
       calls.push({ principal, action, resource });
       return [];
     },
+    hasAnyGrantForKind() {
+      return true;
+    },
   };
   return { service, calls };
 }
