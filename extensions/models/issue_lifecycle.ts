@@ -72,6 +72,24 @@ async function readState(
   return JSON.parse(new TextDecoder().decode(content)) as StateData;
 }
 
+export function buildNotifyMessage(
+  author: string,
+  prData: PullRequestData | null,
+  planData: PlanData | null,
+): string {
+  const mergedText = prData?.url ? `[merged](${prData.url})` : "merged";
+
+  const summaryText = planData?.summary
+    ? ` We shipped: ${planData.summary}.`
+    : "";
+
+  return (
+    `Thanks @${author} for reporting this!${summaryText} ` +
+    `The fix has been ${mergedText} and a release is on its way. ` +
+    `We appreciate your contribution to swamp.`
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Model Definition
 // ---------------------------------------------------------------------------
@@ -2526,6 +2544,13 @@ export const model = {
           author = contextData.author;
         }
 
+        const prData = await context.readResource("pullRequest-main") as
+          | PullRequestData
+          | null;
+        const planData = await context.readResource("plan-main") as
+          | PlanData
+          | null;
+
         const sc = await createSwampClubClient(
           context.globalArgs,
           context.logger,
@@ -2538,7 +2563,7 @@ export const model = {
 
         if (author && author !== "unknown" && sc) {
           const body = args.message ??
-            `Thanks @${author} for reporting this! The fix has been merged and a release is on its way. We appreciate your contribution to swamp.`;
+            buildNotifyMessage(author, prData, planData);
           await sc.submitComment(body);
           context.logger.info(
             "Posted thank-you ripple for @{author} on issue #{issueNumber}",

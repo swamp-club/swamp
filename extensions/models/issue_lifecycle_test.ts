@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
-import { model } from "./issue_lifecycle.ts";
+import { buildNotifyMessage, model } from "./issue_lifecycle.ts";
 import { PR_COOLDOWN_MS } from "./_lib/schemas.ts";
 
 // ---------------------------------------------------------------------------
@@ -1033,6 +1033,53 @@ Deno.test("notify: accepts custom message", async () => {
   } finally {
     await restore();
   }
+});
+
+Deno.test("buildNotifyMessage: includes PR link and plan summary", () => {
+  const pr = {
+    url: "https://github.com/swamp-club/swamp/pull/999",
+    attempt: 1,
+    linkedAt: "2026-05-21T00:00:00.000Z",
+  };
+  const plan = {
+    version: 1,
+    summary: "Fix the widget alignment",
+    dddAnalysis: "",
+    steps: [],
+    testingStrategy: "",
+    potentialChallenges: [],
+    feedbackIncorporated: [],
+    generatedAt: "2026-05-21T00:00:00.000Z",
+  };
+  const msg = buildNotifyMessage("external-user", pr, plan);
+  assertStringIncludes(
+    msg,
+    "[merged](https://github.com/swamp-club/swamp/pull/999)",
+  );
+  assertStringIncludes(msg, "Fix the widget alignment");
+  assertStringIncludes(msg, "@external-user");
+});
+
+Deno.test("buildNotifyMessage: includes PR link without plan summary when plan is missing", () => {
+  const pr = {
+    url: "https://github.com/swamp-club/swamp/pull/999",
+    attempt: 1,
+    linkedAt: "2026-05-21T00:00:00.000Z",
+  };
+  const msg = buildNotifyMessage("external-user", pr, null);
+  assertStringIncludes(
+    msg,
+    "[merged](https://github.com/swamp-club/swamp/pull/999)",
+  );
+  assertStringIncludes(msg, "@external-user");
+  assertEquals(msg.includes("We shipped:"), false);
+});
+
+Deno.test("buildNotifyMessage: falls back to plain text when no PR is available", () => {
+  const msg = buildNotifyMessage("external-user", null, null);
+  assertStringIncludes(msg, "merged");
+  assertEquals(msg.includes("[merged]"), false);
+  assertStringIncludes(msg, "@external-user");
 });
 
 // ---------------------------------------------------------------------------
