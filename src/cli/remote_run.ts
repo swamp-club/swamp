@@ -192,7 +192,16 @@ export function resumeWorkflowOverServer(
 }
 
 /** Default timeout for request-response operations (30 seconds). */
-const REQUEST_RESPONSE_TIMEOUT_MS = 30_000;
+const DEFAULT_TIMEOUT_MS = 30_000;
+
+function resolveRequestTimeoutMs(): number {
+  const env = Deno.env.get("SWAMP_SERVE_TIMEOUT_MS");
+  if (env !== undefined) {
+    const parsed = parseInt(env, 10);
+    if (!Number.isNaN(parsed) && parsed > 0) return parsed;
+  }
+  return DEFAULT_TIMEOUT_MS;
+}
 
 export interface RequestResponseOptions {
   server: string;
@@ -221,7 +230,7 @@ export function requestServerResponse<T>(
   const socket = options.createSocket
     ? options.createSocket(baseUrl, headers)
     : createSocket(baseUrl, headers, options.caCerts);
-  const timeoutMs = options.timeoutMs ?? REQUEST_RESPONSE_TIMEOUT_MS;
+  const timeoutMs = options.timeoutMs ?? resolveRequestTimeoutMs();
 
   const raw = new Promise<T>((resolve, reject) => {
     let settled = false;
@@ -233,7 +242,7 @@ export function requestServerResponse<T>(
         } catch { /* already closed */ }
         reject(
           new UserError(
-            `Request timed out after ${timeoutMs}ms — the server may not support this operation`,
+            `Request timed out after ${timeoutMs}ms — if the server needs more time, set SWAMP_SERVE_TIMEOUT_MS to a higher value`,
           ),
         );
       }

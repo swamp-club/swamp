@@ -79,6 +79,13 @@ export async function* withGeneratorSpan<T extends { kind: string }>(
       code: SpanStatusCode.ERROR,
       message: error instanceof Error ? error.message : String(error),
     });
+    if (error instanceof Error) {
+      span.addEvent("exception", {
+        "exception.type": error.name,
+        "exception.message": error.message,
+        "exception.stacktrace": error.stack ?? "",
+      });
+    }
     throw error;
   } finally {
     span.end();

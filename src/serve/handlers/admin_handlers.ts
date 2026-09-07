@@ -631,19 +631,27 @@ export async function handleExtensionInstall(
       return;
     }
 
-    if (ctx.syncService) {
-      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-        ? ctx.datastoreConfig.namespace
-        : undefined;
-      await ctx.syncService.markDirty();
-      await ctx.syncService.pushChanged({ namespace });
-    }
-
     send(socket, {
       type: "extension.install",
       id: requestId,
       payload: { data: result ?? {} },
     });
+
+    if (ctx.syncService) {
+      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+        ? ctx.datastoreConfig.namespace
+        : undefined;
+      try {
+        await ctx.syncService.markDirty();
+        await ctx.syncService.pushChanged({ namespace });
+      } catch (pushError) {
+        logger.warn("Failed to push changes to remote datastore: {error}", {
+          error: pushError instanceof Error
+            ? pushError.message
+            : String(pushError),
+        });
+      }
+    }
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "extension_install_failed", message);
@@ -658,6 +666,7 @@ export async function handleExtensionPull(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  const logger = getSwampLogger(["serve", "extension", "pull"]);
   if (
     !authorizeOrReject(socket, requestId, principal, "admin", {
       kind: "model",
@@ -751,19 +760,27 @@ export async function handleExtensionPull(
       return;
     }
 
-    if (ctx.syncService) {
-      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-        ? ctx.datastoreConfig.namespace
-        : undefined;
-      await ctx.syncService.markDirty();
-      await ctx.syncService.pushChanged({ namespace });
-    }
-
     send(socket, {
       type: "extension.pull",
       id: requestId,
       payload: { data: result ?? {} },
     });
+
+    if (ctx.syncService) {
+      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+        ? ctx.datastoreConfig.namespace
+        : undefined;
+      try {
+        await ctx.syncService.markDirty();
+        await ctx.syncService.pushChanged({ namespace });
+      } catch (pushError) {
+        logger.warn("Failed to push changes to remote datastore: {error}", {
+          error: pushError instanceof Error
+            ? pushError.message
+            : String(pushError),
+        });
+      }
+    }
   } catch (error) {
     const raw = error instanceof Error
       ? error
@@ -785,6 +802,7 @@ export async function handleExtensionRm(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  const logger = getSwampLogger(["serve", "extension", "rm"]);
   if (
     !authorizeOrReject(socket, requestId, principal, "admin", {
       kind: "model",
@@ -829,19 +847,27 @@ export async function handleExtensionRm(
       return;
     }
 
-    if (ctx.syncService) {
-      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-        ? ctx.datastoreConfig.namespace
-        : undefined;
-      await ctx.syncService.markDirty();
-      await ctx.syncService.pushChanged({ namespace });
-    }
-
     send(socket, {
       type: "extension.rm",
       id: requestId,
       payload: { data: result ?? {} },
     });
+
+    if (ctx.syncService) {
+      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+        ? ctx.datastoreConfig.namespace
+        : undefined;
+      try {
+        await ctx.syncService.markDirty();
+        await ctx.syncService.pushChanged({ namespace });
+      } catch (pushError) {
+        logger.warn("Failed to push changes to remote datastore: {error}", {
+          error: pushError instanceof Error
+            ? pushError.message
+            : String(pushError),
+        });
+      }
+    }
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "extension_rm_failed", message);
@@ -1023,19 +1049,27 @@ export async function handleExtensionUpdate(
       return;
     }
 
-    if (ctx.syncService) {
-      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-        ? ctx.datastoreConfig.namespace
-        : undefined;
-      await ctx.syncService.markDirty();
-      await ctx.syncService.pushChanged({ namespace });
-    }
-
     send(socket, {
       type: "extension.update",
       id: requestId,
       payload: { data: result ?? {} },
     });
+
+    if (ctx.syncService) {
+      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+        ? ctx.datastoreConfig.namespace
+        : undefined;
+      try {
+        await ctx.syncService.markDirty();
+        await ctx.syncService.pushChanged({ namespace });
+      } catch (pushError) {
+        logger.warn("Failed to push changes to remote datastore: {error}", {
+          error: pushError instanceof Error
+            ? pushError.message
+            : String(pushError),
+        });
+      }
+    }
   } catch (error) {
     const raw = error instanceof Error
       ? error
@@ -1140,6 +1174,7 @@ export async function handleVaultMigrate(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  const logger = getSwampLogger(["serve", "vault", "migrate"]);
   if (isReservedVaultName(payload.vaultName)) {
     sendError(
       socket,
@@ -1195,19 +1230,27 @@ export async function handleVaultMigrate(
       return;
     }
 
-    if (ctx.syncService) {
-      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-        ? ctx.datastoreConfig.namespace
-        : undefined;
-      await ctx.syncService.markDirty();
-      await ctx.syncService.pushChanged({ namespace });
-    }
-
     send(socket, {
       type: "vault.migrate",
       id: requestId,
       payload: { data: result ?? {} },
     });
+
+    if (ctx.syncService) {
+      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+        ? ctx.datastoreConfig.namespace
+        : undefined;
+      try {
+        await ctx.syncService.markDirty();
+        await ctx.syncService.pushChanged({ namespace });
+      } catch (pushError) {
+        logger.warn("Failed to push changes to remote datastore: {error}", {
+          error: pushError instanceof Error
+            ? pushError.message
+            : String(pushError),
+        });
+      }
+    }
   } catch (error) {
     const raw = error instanceof Error
       ? error
