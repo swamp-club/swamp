@@ -114,20 +114,33 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
     // Ensure target directory exists
     await Deno.mkdir(swampDir, { recursive: true });
 
+    // Clean up stale temp files from a previous crashed extraction
+    await this.cleanupStaleTempFiles(swampDir);
+
     // Read embedded binary
     const embeddedBinary = await this.readEmbeddedBinary();
 
-    // Write binary to target
-    await Deno.writeFile(targetBinary, embeddedBinary);
+    // Write to a temp file, set permissions, then atomic-rename into place.
+    // Atomic rename creates a new inode — running processes keep their vnode
+    // reference to the old inode (no ETXTBSY on Linux, no SIGKILL on macOS).
+    const tmpPath = join(swampDir, `.deno.tmp.${crypto.randomUUID()}`);
+    try {
+      await Deno.writeFile(tmpPath, embeddedBinary);
 
-    // Set executable permissions (unix)
-    if (Deno.build.os !== "windows") {
-      await Deno.chmod(targetBinary, 0o755);
+      if (Deno.build.os !== "windows") {
+        await Deno.chmod(tmpPath, 0o755);
+      }
+
+      await this.clearMacOSExtendedAttributes(tmpPath);
+      await Deno.rename(tmpPath, targetBinary);
+    } catch (error) {
+      try {
+        await Deno.remove(tmpPath);
+      } catch {
+        // Temp file may not exist if writeFile failed before creating it
+      }
+      throw error;
     }
-
-    // On macOS, clear extended attributes after writing so the OS doesn't
-    // apply provenance-based security restrictions (SIGKILL) to the binary.
-    await this.clearMacOSExtendedAttributes(targetBinary);
 
     // Write version marker
     await Deno.writeTextFile(versionMarker, embeddedVersion.value);
@@ -178,6 +191,22 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
       return { ok: result.success, stderr };
     } catch (e) {
       return { ok: false, stderr: String(e).slice(0, 500) };
+    }
+  }
+
+  private async cleanupStaleTempFiles(dir: string): Promise<void> {
+    try {
+      for await (const entry of Deno.readDir(dir)) {
+        if (entry.name.startsWith(".deno.tmp.")) {
+          try {
+            await Deno.remove(join(dir, entry.name));
+          } catch {
+            // Best-effort cleanup
+          }
+        }
+      }
+    } catch {
+      // readDir may fail if directory is new — not fatal
     }
   }
 
