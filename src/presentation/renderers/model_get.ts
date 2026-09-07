@@ -177,6 +177,15 @@ class LogModelGetRenderer implements Renderer<ModelGetEvent> {
           lines.push(...formatMethodLines(data.methods));
         }
 
+        if (data.configuredMethods) {
+          lines.push("");
+          lines.push(bold(cyan("Configured Method Arguments:")));
+          for (const [name, method] of Object.entries(data.configuredMethods)) {
+            lines.push(`  ${bold(cyan(name))}:`);
+            lines.push(...formatRecord(method.arguments, "    "));
+          }
+        }
+
         writeOutput(lines.join("\n"));
       },
       error: (e) => {
