@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
-import { getTracer, withSpan } from "./tracer.ts";
+import { getTracer, withGeneratorSpan, withSpan } from "./tracer.ts";
 
 Deno.test("getTracer: returns a tracer instance", () => {
   const tracer = getTracer();
@@ -54,4 +54,52 @@ Deno.test("withSpan: handles non-Error throws", async () => {
     () =>
       withSpan("test.string.throw", {}, () => Promise.reject("string error")),
   );
+});
+
+// ── withGeneratorSpan tests ─────────────────────────────────────────
+
+async function collectEvents<T extends { kind: string }>(
+  gen: AsyncIterable<T>,
+): Promise<T[]> {
+  const events: T[] = [];
+  for await (const event of gen) {
+    events.push(event);
+  }
+  return events;
+}
+
+Deno.test("withGeneratorSpan: yields all events from the inner generator", async () => {
+  async function* inner() {
+    yield { kind: "starting" as const };
+    yield { kind: "completed" as const };
+  }
+  const events = await collectEvents(
+    withGeneratorSpan("test.gen.span", {}, inner()),
+  );
+  assertEquals(events.length, 2);
+  assertEquals(events[0].kind, "starting");
+  assertEquals(events[1].kind, "completed");
+});
+
+Deno.test("withGeneratorSpan: re-throws errors from the inner generator", async () => {
+  async function* failing() {
+    yield { kind: "starting" as const };
+    throw new Error("cascade failed");
+  }
+  await assertRejects(
+    () => collectEvents(withGeneratorSpan("test.gen.error", {}, failing())),
+    Error,
+    "cascade failed",
+  );
+});
+
+Deno.test("withGeneratorSpan: propagates error kind events without throwing", async () => {
+  async function* withError() {
+    yield { kind: "error" as const, message: "something broke" };
+  }
+  const events = await collectEvents(
+    withGeneratorSpan("test.gen.errorkind", {}, withError()),
+  );
+  assertEquals(events.length, 1);
+  assertEquals(events[0].kind, "error");
 });

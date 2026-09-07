@@ -1409,3 +1409,60 @@ Deno.test("writeRemoteIndicator: includes ws URL verbatim", () => {
     console.error = originalError;
   }
 });
+
+Deno.test({
+  name:
+    "requestServerResponse: SWAMP_SERVE_TIMEOUT_MS env var overrides default timeout",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = scriptedServer((_request, _reply) => {
+      // Intentionally never reply — triggers timeout
+    });
+    const original = Deno.env.get("SWAMP_SERVE_TIMEOUT_MS");
+    Deno.env.set("SWAMP_SERVE_TIMEOUT_MS", "200");
+    try {
+      await assertRejects(
+        () =>
+          requestServerResponse(
+            { server: server.url },
+            { type: "test.timeout" },
+          ),
+        UserError,
+        "timed out after 200ms",
+      );
+    } finally {
+      if (original !== undefined) {
+        Deno.env.set("SWAMP_SERVE_TIMEOUT_MS", original);
+      } else {
+        Deno.env.delete("SWAMP_SERVE_TIMEOUT_MS");
+      }
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "requestServerResponse: timeout error message mentions SWAMP_SERVE_TIMEOUT_MS",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = scriptedServer((_request, _reply) => {
+      // Never reply
+    });
+    try {
+      await assertRejects(
+        () =>
+          requestServerResponse(
+            { server: server.url, timeoutMs: 200 },
+            { type: "test.timeout" },
+          ),
+        UserError,
+        "SWAMP_SERVE_TIMEOUT_MS",
+      );
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
