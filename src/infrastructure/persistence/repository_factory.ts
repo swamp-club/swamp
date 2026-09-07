@@ -432,11 +432,13 @@ export function createRepositoryContext(
     enableIndexing ? eventBus : undefined,
     definitionsDir,
     autoDefDir,
+    markDirty,
   );
   const yamlWorkflowRepo = new YamlWorkflowRepository(
     repoDir,
     enableIndexing ? eventBus : undefined,
     yamlWorkflowsDir,
+    markDirty,
   );
 
   // Create composite workflow repo if extension workflows dir is provided

@@ -29,6 +29,7 @@ import {
   Workflow,
   type WorkflowData,
 } from "../../domain/workflows/workflow.ts";
+import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 
 /**
  * Repository for storing evaluated workflows.
@@ -41,9 +42,17 @@ export class YamlEvaluatedWorkflowRepository {
   private readonly baseDir: string;
   private readonly idToActualPath = new Map<WorkflowId, string>();
 
-  constructor(private readonly repoDir: string, baseDir?: string) {
+  constructor(
+    private readonly repoDir: string,
+    baseDir?: string,
+    private readonly markDirtyHook?: MarkDirtyHook,
+  ) {
     this.baseDir = baseDir ??
       swampPath(repoDir, SWAMP_SUBDIRS.workflowsEvaluated);
+  }
+
+  private async notifyDirty(relPath?: string): Promise<void> {
+    if (this.markDirtyHook) await this.markDirtyHook(relPath);
   }
 
   async findById(id: WorkflowId): Promise<Workflow | null> {
@@ -151,6 +160,7 @@ export class YamlEvaluatedWorkflowRepository {
     await ensureDir(dir);
 
     const targetPath = this.resolveWritePath(workflow);
+    await this.notifyDirty(targetPath);
     const data = workflow.toData();
     // Remove undefined values since YAML can't stringify them
     const cleanData = JSON.parse(JSON.stringify(data));
@@ -195,6 +205,9 @@ export class YamlEvaluatedWorkflowRepository {
       pathsToTry.add(this.getNamePath(workflow.name));
     }
 
+    const resolvedPath = cachedPath ?? this.getLegacyPath(id);
+    await this.notifyDirty(resolvedPath);
+
     for (const path of pathsToTry) {
       try {
         await Deno.remove(path);
@@ -212,6 +225,7 @@ export class YamlEvaluatedWorkflowRepository {
    * Clears all evaluated workflows.
    */
   async clear(): Promise<void> {
+    await this.notifyDirty();
     const dir = this.getWorkflowsDir();
     try {
       await Deno.remove(dir, { recursive: true });

@@ -970,6 +970,10 @@ markDirty-then-slow-walk is always recoverable; a lost dirty-flip is not.
 | `collectGarbage` (non-dry-run)             | one signal per removed version directory, or the data-name directory when the whole name goes |
 | `pruneExcessVersions` (write-time cap)     | one signal per removed version directory                         |
 | Yaml repos: `save`, `delete`, `deleteOlderThan` | per-yaml file path                                          |
+| Definition repo: `save`, `delete`          | target file path                                                 |
+| Workflow repo: `save`, `delete`            | target file path                                                 |
+| Evaluated workflow repo: `save`, `delete`  | target file path                                                 |
+| Evaluated workflow repo: `clear`           | `undefined` (bulk)                                               |
 | `deleteAllByWorkflowId`, `clearAll`        | `undefined` (bulk)                                               |
 
 `advanceLatestMarkers` and `rollbackVersions` emit nothing — they rely on the

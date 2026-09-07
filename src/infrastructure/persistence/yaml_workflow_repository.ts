@@ -37,6 +37,7 @@ import {
 } from "../../domain/workflows/workflow.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
+import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import {
   createWorkflowCreated,
   createWorkflowDeleted,
@@ -62,8 +63,13 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     private readonly repoDir: string,
     private readonly eventBus?: EventBus,
     baseDir?: string,
+    private readonly markDirtyHook?: MarkDirtyHook,
   ) {
     this.baseDir = baseDir ?? resolveEffectiveWorkflowsDir(repoDir);
+  }
+
+  private async notifyDirty(relPath?: string): Promise<void> {
+    if (this.markDirtyHook) await this.markDirtyHook(relPath);
   }
 
   async findById(id: WorkflowId): Promise<Workflow | null> {
@@ -189,6 +195,7 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     await ensureDir(dir);
 
     const targetPath = this.resolveWritePath(workflow);
+    await this.notifyDirty(targetPath);
     const previousPath = this.idToActualPath.get(workflow.id);
 
     // Check if this is a new workflow or an update
@@ -278,6 +285,9 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     ]);
     const cachedPath = this.idToActualPath.get(id);
     if (cachedPath) pathsToTry.add(cachedPath);
+
+    const resolvedPath = cachedPath ?? this.getLegacyPath(id);
+    await this.notifyDirty(resolvedPath);
 
     let deleted = false;
     for (const path of pathsToTry) {

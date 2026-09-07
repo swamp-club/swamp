@@ -92,13 +92,18 @@ export const workflowDeleteCommand = withRemoteOptions(
       return;
     }
 
-    const { repoDir, datastoreResolver } = await requireInitializedRepo({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
+    const { repoDir, repoContext, datastoreResolver } =
+      await requireInitializedRepo({
+        repoDir: resolveRepoDir(options.repoDir),
+        outputMode: cliCtx.outputMode,
+      });
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createWorkflowDeleteDeps(repoDir, datastoreResolver);
+    const deps = createWorkflowDeleteDeps(
+      repoDir,
+      datastoreResolver,
+      repoContext.markDirty,
+    );
 
     // Phase 1: Preview
     let preview;
