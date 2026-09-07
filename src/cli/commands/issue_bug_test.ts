@@ -17,95 +17,23 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import { buildBugTemplate, parseBugContent } from "./issue_bug.ts";
 
-// Re-export the parse function for testing by copying the logic
-// (since the original is not exported)
-
-/**
- * Template for bug reports (copied from issue_bug.ts for testing).
- */
-const BUG_TEMPLATE = `
-# Bug Report
-
-## Title
-<!-- Enter a brief, descriptive title for the bug on the line below -->
-
-
-## Description
-<!-- Describe the bug in detail. What did you expect to happen? What actually happened? -->
-
-
-## Steps to Reproduce
-<!-- List the steps to reproduce the bug -->
-1.
-2.
-3.
-
-## Environment
-<!-- Include relevant environment information -->
-- swamp version:
-- OS:
-- Shell:
-
-## Additional Context
-<!-- Add any other context about the problem here -->
-
-`.trimStart();
-
-/**
- * Parses the bug report content from the editor.
- * Returns null if the content is empty or unchanged from the template.
- */
-function parseBugContent(
-  content: string,
-): { title: string; body: string } | null {
-  // Check if content is essentially empty or unchanged
-  const trimmedContent = content.trim();
-  if (!trimmedContent || trimmedContent === BUG_TEMPLATE.trim()) {
-    return null;
-  }
-
-  // Extract title from the "## Title" section
-  // Title must be a single line that doesn't start with # or <!--
-  const titleMatch = content.match(
-    /## Title\s*\n(?:<!--[^>]*-->\s*\n)?([^\n#<][^\n]*)/,
-  );
-  const title = titleMatch?.[1]?.trim();
-
-  if (!title) {
-    return null;
-  }
-
-  // Build body from remaining sections (everything after ## Description)
-  const descriptionIndex = content.indexOf("## Description");
-  if (descriptionIndex === -1) {
-    return { title, body: "" };
-  }
-
-  const body = content.substring(descriptionIndex);
-
-  // Clean up the body by removing HTML comment lines
-  const cleanedBody = body
-    .split("\n")
-    .filter((line) => !line.match(/^\s*<!--.*-->\s*$/))
-    .join("\n")
-    .trim();
-
-  return { title, body: cleanedBody };
-}
-
-Deno.test("parseBugContent returns null for empty content", () => {
-  const result = parseBugContent("");
+Deno.test("parseBugContent: returns null for empty content", () => {
+  const template = buildBugTemplate();
+  const result = parseBugContent("", template);
   assertEquals(result, null);
 });
 
-Deno.test("parseBugContent returns null for unchanged template", () => {
-  const result = parseBugContent(BUG_TEMPLATE);
+Deno.test("parseBugContent: returns null for unchanged template", () => {
+  const template = buildBugTemplate();
+  const result = parseBugContent(template, template);
   assertEquals(result, null);
 });
 
-Deno.test("parseBugContent extracts title and body", () => {
+Deno.test("parseBugContent: extracts title and body", () => {
+  const template = buildBugTemplate();
   const content = `
 # Bug Report
 
@@ -133,13 +61,14 @@ When I run swamp without any arguments, it crashes.
 None
 `.trimStart();
 
-  const result = parseBugContent(content);
+  const result = parseBugContent(content, template);
   assertEquals(result?.title, "CLI crashes when running without arguments");
   assertEquals(result?.body.includes("When I run swamp"), true);
   assertEquals(result?.body.startsWith("## Description"), true);
 });
 
-Deno.test("parseBugContent returns null when no title provided", () => {
+Deno.test("parseBugContent: returns null when no title provided", () => {
+  const template = buildBugTemplate();
   const content = `
 # Bug Report
 
@@ -151,11 +80,12 @@ Deno.test("parseBugContent returns null when no title provided", () => {
 Some description here
 `.trimStart();
 
-  const result = parseBugContent(content);
+  const result = parseBugContent(content, template);
   assertEquals(result, null);
 });
 
-Deno.test("parseBugContent handles title with only whitespace after", () => {
+Deno.test("parseBugContent: handles title with only whitespace after", () => {
+  const template = buildBugTemplate();
   const content = `
 # Bug Report
 
@@ -166,7 +96,21 @@ My bug title
 Bug description
 `.trimStart();
 
-  const result = parseBugContent(content);
+  const result = parseBugContent(content, template);
   assertEquals(result?.title, "My bug title");
   assertEquals(result?.body.includes("Bug description"), true);
+});
+
+Deno.test("buildBugTemplate: auto-populates environment values", () => {
+  const template = buildBugTemplate();
+  assertStringIncludes(template, `- OS: ${Deno.build.os}`);
+  assertStringIncludes(
+    template,
+    `- Shell: ${Deno.env.get("SHELL") ?? "unknown"}`,
+  );
+  assertStringIncludes(template, "- swamp version: ");
+  // Version is non-empty
+  const versionMatch = template.match(/- swamp version: (.+)/);
+  assertEquals(versionMatch !== null, true);
+  assertEquals(versionMatch![1].trim().length > 0, true);
 });

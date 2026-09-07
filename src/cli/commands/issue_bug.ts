@@ -35,14 +35,17 @@ import {
   submitIssue,
   type UsableExtensionTarget,
 } from "./issue_submit.ts";
+import { VERSION } from "./version.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/**
- * Template for bug reports.
- */
-const BUG_TEMPLATE = `
+export function buildBugTemplate(): string {
+  const swampVersion = VERSION;
+  const os = Deno.build.os;
+  const shell = Deno.env.get("SHELL") ?? "unknown";
+
+  return `
 # Bug Report
 
 ## Title
@@ -61,25 +64,22 @@ const BUG_TEMPLATE = `
 
 ## Environment
 <!-- Include relevant environment information -->
-- swamp version:
-- OS:
-- Shell:
+- swamp version: ${swampVersion}
+- OS: ${os}
+- Shell: ${shell}
 
 ## Additional Context
 <!-- Add any other context about the problem here -->
 
 `.trimStart();
+}
 
-/**
- * Parses the bug report content from the editor.
- * Returns null if the content is empty or unchanged from the template.
- */
-function parseBugContent(
+export function parseBugContent(
   content: string,
+  template: string,
 ): { title: string; body: string } | null {
-  // Check if content is essentially empty or unchanged
   const trimmedContent = content.trim();
-  if (!trimmedContent || trimmedContent === BUG_TEMPLATE.trim()) {
+  if (!trimmedContent || trimmedContent === template.trim()) {
     return null;
   }
 
@@ -197,12 +197,13 @@ export const issueBugCommand = new Command()
       });
 
       try {
-        await Deno.writeTextFile(tempFile, BUG_TEMPLATE);
+        const template = buildBugTemplate();
+        await Deno.writeTextFile(tempFile, template);
         ctx.logger.debug`Opening editor for bug report`;
         await editorService.openFile(tempFile, { wait: true });
 
         const content = await Deno.readTextFile(tempFile);
-        const parsed = parseBugContent(content);
+        const parsed = parseBugContent(content, template);
         if (!parsed) {
           renderIssueCancelled(
             { type: "bug", reason: "empty" },
