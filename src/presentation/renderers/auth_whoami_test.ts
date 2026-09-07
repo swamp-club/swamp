@@ -253,12 +253,16 @@ function makeEntitledIdentity(
   };
 }
 
-function captureLog(identity: WhoamiIdentity, mode: OutputMode): string {
+function captureLog(
+  identity: WhoamiIdentity,
+  mode: OutputMode,
+  options?: { effectiveServeUrl?: string },
+): string {
   const logs: string[] = [];
   const originalLog = console.log;
   console.log = (msg: string) => logs.push(msg);
   try {
-    const renderer = createAuthWhoamiRenderer(mode);
+    const renderer = createAuthWhoamiRenderer(mode, options);
     renderer.handlers().completed({ kind: "completed", identity });
   } finally {
     console.log = originalLog;
@@ -425,4 +429,36 @@ Deno.test("JsonAuthWhoamiRenderer - omits entitlement keys when the server sent 
   assertEquals("plan" in parsed, false);
   assertEquals("collectiveEntitlements" in parsed, false);
   assertEquals(parsed.collectives, ["org-a"]);
+});
+
+// --- effectiveServeUrl rendering ---
+
+Deno.test("LogAuthWhoamiRenderer - shows effective serve URL when set", () => {
+  const output = captureLog(
+    makeIdentity(),
+    "log",
+    { effectiveServeUrl: "wss://serve.example.com" },
+  );
+  assertStringIncludes(output, "Serve: wss://serve.example.com");
+});
+
+Deno.test("LogAuthWhoamiRenderer - omits serve line when no effective serve URL", () => {
+  const output = captureLog(makeIdentity(), "log");
+  assertEquals(output.includes("Serve:"), false);
+});
+
+Deno.test("JsonAuthWhoamiRenderer - includes effectiveServeUrl when set", () => {
+  const output = captureLog(
+    makeIdentity(),
+    "json",
+    { effectiveServeUrl: "wss://serve.example.com" },
+  );
+  const parsed = JSON.parse(output);
+  assertEquals(parsed.effectiveServeUrl, "wss://serve.example.com");
+});
+
+Deno.test("JsonAuthWhoamiRenderer - omits effectiveServeUrl when not set", () => {
+  const output = captureLog(makeIdentity(), "json");
+  const parsed = JSON.parse(output);
+  assertEquals("effectiveServeUrl" in parsed, false);
 });
