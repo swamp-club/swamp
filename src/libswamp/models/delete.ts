@@ -24,6 +24,7 @@ import type { ModelType } from "../../domain/models/model_type.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { YamlEvaluatedDefinitionRepository } from "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
@@ -104,6 +105,10 @@ export interface ModelDeleteDeps {
     name: string,
   ) => Promise<void>;
   deleteDefinition: (type: ModelType, id: DefinitionId) => Promise<void>;
+  deleteEvaluatedDefinition: (
+    type: ModelType,
+    id: DefinitionId,
+  ) => Promise<void>;
   isExpired?: (data: Data) => Promise<boolean>;
 }
 
@@ -116,7 +121,18 @@ export function createModelDeleteDeps(
 ): ModelDeleteDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
-  const definitionRepo = new YamlDefinitionRepository(repoDir);
+  const definitionRepo = new YamlDefinitionRepository(
+    repoDir,
+    undefined,
+    undefined,
+    undefined,
+    markDirty,
+  );
+  const evaluatedDefinitionRepo = new YamlEvaluatedDefinitionRepository(
+    repoDir,
+    dsPath(SWAMP_SUBDIRS.definitionsEvaluated),
+    markDirty,
+  );
   const workflowRepo = new YamlWorkflowRepository(repoDir);
   // Reuse an injected shared data repo (e.g. serve's process-scoped
   // RepositoryContext) so we don't open a new file-based catalog store — and
@@ -155,6 +171,8 @@ export function createModelDeleteDeps(
     deleteData: (type, defId, name) =>
       unifiedDataRepo.delete(type, defId, name),
     deleteDefinition: (type, id) => definitionRepo.delete(type, id),
+    deleteEvaluatedDefinition: (type, id) =>
+      evaluatedDefinitionRepo.delete(type, id),
     isExpired: (data) => lifecycleService.isExpired(data),
   };
 }
@@ -342,6 +360,20 @@ export async function* modelDelete(
         dataDeleted = true;
       }
 
+      // Delete evaluated definition
+      let evaluatedInputDeleted = false;
+      try {
+        ctx.logger.debug`Deleting evaluated definition: ${definition.id}`;
+        await deps.deleteEvaluatedDefinition(modelType, definition.id);
+        evaluatedInputDeleted = true;
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          ctx.logger.warn`Failed to delete evaluated definition: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+        }
+      }
+
       // Delete definition
       ctx.logger.debug`Deleting definition: ${definition.id}`;
       await deps.deleteDefinition(modelType, definition.id);
@@ -355,7 +387,7 @@ export async function* modelDelete(
           inputPath: definitionPath,
           resourceDeleted: false,
           outputsDeleted,
-          evaluatedInputDeleted: false,
+          evaluatedInputDeleted,
           dataDeleted,
           expiredDataAutoCollected,
         },

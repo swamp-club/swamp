@@ -890,6 +890,7 @@ export async function handleModelDelete(
       ctx.repoDir,
       ctx.datastoreResolver,
       ctx.repoContext.unifiedDataRepo,
+      ctx.repoContext.markDirty,
     );
 
     const preview = await modelDeletePreview(

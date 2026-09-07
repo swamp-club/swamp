@@ -138,7 +138,12 @@ export const modelDeleteCommand = withRemoteOptions(
 
     try {
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = createModelDeleteDeps(repoDir, datastoreResolver);
+      const deps = createModelDeleteDeps(
+        repoDir,
+        datastoreResolver,
+        undefined,
+        repoContext.markDirty,
+      );
       const force = !!options.force;
 
       // Phase 1: Preview — gather what will be affected (under lock)

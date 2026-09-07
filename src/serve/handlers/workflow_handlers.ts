@@ -1508,7 +1508,11 @@ export async function handleWorkflowDelete(
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = createWorkflowDeleteDeps(ctx.repoDir, ctx.datastoreResolver);
+    const deps = createWorkflowDeleteDeps(
+      ctx.repoDir,
+      ctx.datastoreResolver,
+      ctx.repoContext.markDirty,
+    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(

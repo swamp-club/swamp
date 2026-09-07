@@ -38,6 +38,7 @@ import {
   swampPath,
 } from "./paths.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
+import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import {
   createDefinitionId,
@@ -82,12 +83,17 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     baseDir?: string,
     /** Pass `false` to disable secondary search. Omit to auto-compute from repoDir. */
     secondaryBaseDir?: string | false,
+    private readonly markDirtyHook?: MarkDirtyHook,
   ) {
     this.baseDir = baseDir ?? resolveEffectiveDefinitionsDir(repoDir);
     this.secondaryBaseDir = secondaryBaseDir === false
       ? undefined
       : (secondaryBaseDir ??
         swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions));
+  }
+
+  private async notifyDirty(relPath?: string): Promise<void> {
+    if (this.markDirtyHook) await this.markDirtyHook(relPath);
   }
 
   async findById(
@@ -458,6 +464,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     await ensureDir(dir);
 
     const targetPath = this.resolveWritePath(type, definition);
+    await this.notifyDirty(targetPath);
     const previousPath = this.idToActualPath.get(definition.id);
 
     // Check if this is a new definition or an update
@@ -636,6 +643,9 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     if (definitionName && isFilenameSafeDefinitionName(definitionName)) {
       pathsToTry.add(this.getNamePath(type, definitionName));
     }
+
+    const resolvedPath = cachedPath ?? this.getLegacyPath(type, id);
+    await this.notifyDirty(resolvedPath);
 
     let deleted = false;
     for (const path of pathsToTry) {

@@ -110,6 +110,7 @@ function makeDeps(overrides: Partial<ModelDeleteDeps> = {}): ModelDeleteDeps {
     deleteOutput: () => Promise.resolve(),
     deleteData: () => Promise.resolve(),
     deleteDefinition: () => Promise.resolve(),
+    deleteEvaluatedDefinition: () => Promise.resolve(),
     ...overrides,
   };
 }
