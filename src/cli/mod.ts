@@ -194,7 +194,10 @@ import "../domain/models/models.ts";
 // separate files to avoid circular imports through mod.ts.
 import { resolveModelsDir } from "./resolve_models_dir.ts";
 export { resolveModelsDir };
-import { resolveManagedConfigPaths } from "./repo_context.ts";
+import {
+  ensureManagedConfigBase,
+  resolveManagedConfigPaths,
+} from "./repo_context.ts";
 import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
 export { resolveWorkflowsDir };
 import { resolveVaultsDir } from "./resolve_vaults_dir.ts";
@@ -1379,6 +1382,7 @@ export async function runCli(args: string[]): Promise<void> {
     const loaderSpan = getTracer().startSpan(
       "swamp.cli.configure_extension_loaders",
     );
+    await ensureManagedConfigBase(repoDir, marker);
     const { lockfilePath: managedLockfilePath } = resolveManagedConfigPaths(
       repoDir,
       marker,
@@ -1481,6 +1485,9 @@ export async function runCli(args: string[]): Promise<void> {
   if (!hookMode) {
     const autoResolverIdentity = await loadIdentity();
     setAuthenticated(Boolean(autoResolverIdentity.bearerToken));
+    if (!commandNeedsLoaderSetup(args) || marker === null) {
+      await ensureManagedConfigBase(repoDir, marker);
+    }
     const { lockfilePath: autoResolverLockfilePath } =
       resolveManagedConfigPaths(repoDir, marker);
     configureExtensionAutoResolver(

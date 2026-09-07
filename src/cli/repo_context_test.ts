@@ -31,6 +31,7 @@ import {
   createLockProgressWriter,
   createModelLock,
   datastoreGlobalLockOptions,
+  ensureManagedConfigBase,
   flushSinglePhasePush,
   flushTwoPhasePush,
   type LockProgressWriter,
@@ -2373,6 +2374,137 @@ Deno.test("resolveManagedConfigPaths: custom modelsDir is used when managedConfi
     lockfilePath,
     join(repo, "custom", "models", "upstream_extensions.json"),
   );
+});
+
+// ── ensureManagedConfigBase Tests ────────────────────────────────────────────
+
+Deno.test("ensureManagedConfigBase: no-ops when managedConfig is false", async () => {
+  const repo = resolve("/repo-no-managed");
+  const marker: RepoMarkerData = {
+    swampVersion: "1.0.0",
+    initializedAt: "2026-01-01T00:00:00.000Z",
+  };
+  await ensureManagedConfigBase(repo, marker);
+  const { pulledExtensionsRoot } = resolveManagedConfigPaths(repo, marker);
+  assertPathEquals(
+    pulledExtensionsRoot,
+    join(repo, ".swamp", "pulled-extensions"),
+  );
+});
+
+Deno.test("ensureManagedConfigBase: registers cache-based config path via resolver override", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const cachePath = join(tmpDir, "cache");
+    await Deno.mkdir(cachePath, { recursive: true });
+    const marker: RepoMarkerData = {
+      swampVersion: "1.0.0",
+      initializedAt: "2026-01-01T00:00:00.000Z",
+      datastore: { type: "@swamp/s3-datastore", managedConfig: true },
+    };
+    const mockResolver = {
+      resolvePath: (subdir: string) => join(cachePath, subdir),
+      localPath: () => "",
+      datastorePath: () => "",
+      isDatastoreSubdir: () => false,
+      isExcluded: () => false,
+      config: () => ({ type: "filesystem", path: tmpDir }) as DatastoreConfig,
+    };
+    await ensureManagedConfigBase(tmpDir, marker, mockResolver);
+    const { pulledExtensionsRoot, lockfilePath, active } =
+      resolveManagedConfigPaths(tmpDir, marker);
+    assertEquals(active, true);
+    assertPathEquals(
+      pulledExtensionsRoot,
+      join(cachePath, "config", "pulled-extensions"),
+    );
+    assertPathEquals(
+      lockfilePath,
+      join(cachePath, "config", "upstream_extensions.json"),
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("resolveManagedConfigPaths: picks up registry-populated base when sentinel missing", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const cachePath = join(tmpDir, "remote-cache");
+    await Deno.mkdir(cachePath, { recursive: true });
+    const marker: RepoMarkerData = {
+      swampVersion: "1.0.0",
+      initializedAt: "2026-01-01T00:00:00.000Z",
+      datastore: { type: "@swamp/s3-datastore", managedConfig: true },
+    };
+    const mockResolver = {
+      resolvePath: (subdir: string) => join(cachePath, subdir),
+      localPath: () => "",
+      datastorePath: () => "",
+      isDatastoreSubdir: () => false,
+      isExcluded: () => false,
+      config: () => ({ type: "filesystem", path: tmpDir }) as DatastoreConfig,
+    };
+    await ensureManagedConfigBase(tmpDir, marker, mockResolver);
+    const { pulledExtensionsRoot, lockfilePath, active } =
+      resolveManagedConfigPaths(tmpDir, marker);
+    assertEquals(active, true);
+    assertPathEquals(
+      pulledExtensionsRoot,
+      join(cachePath, "config", "pulled-extensions"),
+    );
+    assertPathEquals(
+      lockfilePath,
+      join(cachePath, "config", "upstream_extensions.json"),
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("ensureManagedConfigBase: explicit configBasePath still takes precedence", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const explicitBase = join(tmpDir, "explicit-config");
+    await Deno.mkdir(
+      join(explicitBase, "managed-config-migrated.json").replace(
+        "managed-config-migrated.json",
+        "",
+      ),
+      { recursive: true },
+    );
+    await Deno.writeTextFile(
+      join(explicitBase, "managed-config-migrated.json"),
+      "{}",
+    );
+    const cachePath = join(tmpDir, "cache");
+    await Deno.mkdir(cachePath, { recursive: true });
+    const marker: RepoMarkerData = {
+      swampVersion: "1.0.0",
+      initializedAt: "2026-01-01T00:00:00.000Z",
+      datastore: { type: "@swamp/s3-datastore", managedConfig: true },
+    };
+    const mockResolver = {
+      resolvePath: (subdir: string) => join(cachePath, subdir),
+      localPath: () => "",
+      datastorePath: () => "",
+      isDatastoreSubdir: () => false,
+      isExcluded: () => false,
+      config: () => ({ type: "filesystem", path: tmpDir }) as DatastoreConfig,
+    };
+    await ensureManagedConfigBase(tmpDir, marker, mockResolver);
+    const { lockfilePath } = resolveManagedConfigPaths(
+      tmpDir,
+      marker,
+      explicitBase,
+    );
+    assertPathEquals(
+      lockfilePath,
+      join(explicitBase, "upstream_extensions.json"),
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
 });
 
 // ── flushSinglePhasePush: catalog export ordering ──────────────────────────

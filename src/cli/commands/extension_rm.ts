@@ -24,8 +24,11 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireRepoMarker } from "../repo_context.ts";
-import { resolveManagedConfigPaths } from "../repo_context.ts";
+import {
+  ensureManagedConfigBase,
+  requireRepoMarker,
+  resolveManagedConfigPaths,
+} from "../repo_context.ts";
 import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
 import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
 import {
@@ -110,6 +113,7 @@ export const extensionRemoveCommand = withRemoteOptions(
     resolveRepoDir(options.repoDir),
   );
 
+  await ensureManagedConfigBase(repoDir, marker);
   const { lockfilePath } = resolveManagedConfigPaths(repoDir, marker);
 
   const tool = resolvePrimaryTool(marker);

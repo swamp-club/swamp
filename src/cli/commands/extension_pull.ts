@@ -31,8 +31,11 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireRepoMarker } from "../repo_context.ts";
-import { resolveManagedConfigPaths } from "../repo_context.ts";
+import {
+  ensureManagedConfigBase,
+  requireRepoMarker,
+  resolveManagedConfigPaths,
+} from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { loadIdentity } from "../load_identity.ts";
@@ -273,7 +276,11 @@ export const extensionPullCommand = withRemoteOptions(
 
   // 3. Validate name format
   validateExtensionName(ref.name);
-  const { lockfilePath } = resolveManagedConfigPaths(repoDir, marker);
+  await ensureManagedConfigBase(repoDir, marker);
+  const { lockfilePath, pulledExtensionsRoot } = resolveManagedConfigPaths(
+    repoDir,
+    marker,
+  );
 
   const tools = marker?.tools?.length ? marker.tools : ["claude"];
   const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
@@ -300,7 +307,7 @@ export const extensionPullCommand = withRemoteOptions(
       lockfilePath,
       skillsDirs,
       repoDir,
-      { identity },
+      { identity, pulledExtensionsRoot },
     );
     const repository = new ExtensionRepository({
       catalog,

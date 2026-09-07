@@ -41,7 +41,10 @@ import {
 import { resolvePulledExtensionsRoot } from "../../infrastructure/persistence/paths.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
-import { resolveManagedConfigPaths } from "../repo_context.ts";
+import {
+  ensureManagedConfigBase,
+  resolveManagedConfigPaths,
+} from "../repo_context.ts";
 import { readSwampSources } from "../../infrastructure/persistence/swamp_sources_repository.ts";
 import {
   checkGithubPvrEnabled,
@@ -169,6 +172,7 @@ export async function resolveExtensionTarget(
     };
   }
 
+  await ensureManagedConfigBase(repoDir, marker);
   const { lockfilePath } = resolveManagedConfigPaths(repoDir, marker);
   const extensionVersion =
     (await readInstalledExtensionVersion(lockfilePath, extensionName)) ??

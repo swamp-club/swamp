@@ -29,7 +29,10 @@ import {
   LockfileRepository,
   resolveServerUrl,
 } from "../libswamp/mod.ts";
-import { resolveManagedConfigPaths } from "./repo_context.ts";
+import {
+  ensureManagedConfigBase,
+  resolveManagedConfigPaths,
+} from "./repo_context.ts";
 
 /**
  * Wires `ExtensionInstallDeps` from a repo directory and a logger.
@@ -52,6 +55,7 @@ export async function createExtensionInstallDeps(
   const repoPath = RepoPath.create(absoluteRepoDir);
   const markerRepo = new RepoMarkerRepository();
   const marker = await markerRepo.read(repoPath);
+  await ensureManagedConfigBase(absoluteRepoDir, marker);
   const { lockfilePath } = resolveManagedConfigPaths(absoluteRepoDir, marker);
   const tools = marker?.tools?.length ? marker.tools : ["claude"];
   const absoluteSkillsDirs = resolveUniqueLocalSkillsDirs(

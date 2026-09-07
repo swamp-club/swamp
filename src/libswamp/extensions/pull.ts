@@ -300,6 +300,13 @@ export interface ExtensionPullDeps {
    */
   denoRuntime?: DenoRuntime;
   repository?: ExtensionRepository;
+  /**
+   * Root directory for pulled extension sources. When provided, passed
+   * through to {@link InstallContext.pulledExtensionsRoot}. With
+   * managedConfig, callers pass the datastore-resolved
+   * `config/pulled-extensions` path.
+   */
+  pulledExtensionsRoot?: string;
 }
 
 /**
@@ -1290,6 +1297,7 @@ export async function* extensionPull(
         alreadyPulled: deps.alreadyPulled,
         depth: deps.depth,
         channel: input.channel,
+        pulledExtensionsRoot: deps.pulledExtensionsRoot,
       };
 
       // Let ConflictError propagate — CLI catches it for the two-phase prompt
@@ -1388,6 +1396,7 @@ export async function createExtensionPullDeps(
     denoRuntime?: DenoRuntime;
     repository?: ExtensionRepository;
     identity?: ClientIdentity;
+    pulledExtensionsRoot?: string;
   },
 ): Promise<ExtensionPullDeps> {
   const client = new ExtensionApiClient(serverUrl, args?.identity);
@@ -1410,6 +1419,7 @@ export async function createExtensionPullDeps(
     depth: 0,
     denoRuntime: args?.denoRuntime,
     repository: args?.repository,
+    pulledExtensionsRoot: args?.pulledExtensionsRoot,
   };
 }
 

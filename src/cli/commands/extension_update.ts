@@ -24,8 +24,11 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireRepoMarker } from "../repo_context.ts";
-import { resolveManagedConfigPaths } from "../repo_context.ts";
+import {
+  ensureManagedConfigBase,
+  requireRepoMarker,
+  resolveManagedConfigPaths,
+} from "../repo_context.ts";
 import { createInstallContext, parseExtensionRef } from "./extension_pull.ts";
 import {
   consumeStream,
@@ -121,6 +124,7 @@ export const extensionUpdateCommand = withRemoteOptions(
   const { repoDir, marker } = await requireRepoMarker(
     resolveRepoDir(options.repoDir),
   );
+  await ensureManagedConfigBase(repoDir, marker);
   const { lockfilePath } = resolveManagedConfigPaths(repoDir, marker);
 
   // Per-extension models/workflows/vaults/datastores/reports

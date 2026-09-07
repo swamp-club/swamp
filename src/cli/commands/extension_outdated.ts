@@ -23,8 +23,11 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { resolveManagedConfigPaths } from "../repo_context.ts";
+import {
+  ensureManagedConfigBase,
+  requireInitializedRepoReadOnly,
+  resolveManagedConfigPaths,
+} from "../repo_context.ts";
 import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -153,6 +156,7 @@ export const extensionOutdatedCommand = withRemoteOptions(
   const repoPath = RepoPath.create(repoDir);
   const markerRepo = new RepoMarkerRepository();
   const marker = await markerRepo.read(repoPath);
+  await ensureManagedConfigBase(repoDir, marker);
   const { lockfilePath } = resolveManagedConfigPaths(repoDir, marker);
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
