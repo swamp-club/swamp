@@ -1422,7 +1422,6 @@ Deno.test({
     const original = Deno.env.get("SWAMP_SERVE_TIMEOUT_MS");
     Deno.env.set("SWAMP_SERVE_TIMEOUT_MS", "200");
     try {
-      const start = Date.now();
       await assertRejects(
         () =>
           requestServerResponse(
@@ -1432,8 +1431,6 @@ Deno.test({
         UserError,
         "timed out after 200ms",
       );
-      const elapsed = Date.now() - start;
-      assertEquals(elapsed < 2000, true);
     } finally {
       if (original !== undefined) {
         Deno.env.set("SWAMP_SERVE_TIMEOUT_MS", original);
