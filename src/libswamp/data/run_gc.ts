@@ -33,6 +33,7 @@ import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_servic
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import { parseDuration } from "./search.ts";
 
 export interface RunGcData {
   workflowRunsDeleted: number;
@@ -52,6 +53,39 @@ export interface RunGcInput {
   dryRun: boolean;
   workflowRunRetentionDays?: number;
   outputRetentionDays?: number;
+}
+
+export interface RunGcGarbageCollectionPolicy {
+  workflowRuns?: string;
+  outputs?: string;
+}
+
+/** Maps repository garbage-collection durations to the existing GC input. */
+export function runGcRetentionFromPolicy(
+  policy?: RunGcGarbageCollectionPolicy,
+): Pick<RunGcInput, "workflowRunRetentionDays" | "outputRetentionDays"> {
+  const toDays = (duration: string | undefined): number | undefined =>
+    duration === undefined ? undefined : parseDuration(duration) / 86_400_000;
+
+  return {
+    workflowRunRetentionDays: toDays(policy?.workflowRuns),
+    outputRetentionDays: toDays(policy?.outputs),
+  };
+}
+
+export function runGcInputFromPolicy(
+  dryRun: boolean,
+  policy?: RunGcGarbageCollectionPolicy,
+  overrideRetentionDays?: number,
+): RunGcInput {
+  const configuredRetention = runGcRetentionFromPolicy(policy);
+  return {
+    dryRun,
+    workflowRunRetentionDays: overrideRetentionDays ??
+      configuredRetention.workflowRunRetentionDays,
+    outputRetentionDays: overrideRetentionDays ??
+      configuredRetention.outputRetentionDays,
+  };
 }
 
 export interface RunGcPreview {

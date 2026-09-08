@@ -26,6 +26,7 @@ import {
   parseDuration,
   runGc,
   type RunGcData,
+  runGcInputFromPolicy,
   runGcPreview,
 } from "../../libswamp/mod.ts";
 import {
@@ -76,16 +77,14 @@ export const runGcCommand = withRemoteOptions(
     .option("-f, --force", "Skip confirmation prompt (alias for --yes)")
     .option(
       "--older-than <duration:string>",
-      `Retention period. Units: m=minutes, h=hours, d=days, w=weeks, mo=months, y=years (e.g. 7d, 2w, 1mo). Default: ${DEFAULT_WORKFLOW_RUN_RETENTION_DAYS}d`,
+      `Retention period. Units: m=minutes, h=hours, d=days, w=weeks, mo=months, y=years (e.g. 7d, 2w, 1mo). Overrides .swamp.yaml garbageCollection; default: ${DEFAULT_WORKFLOW_RUN_RETENTION_DAYS}d`,
     ),
 ).action(async function (options: AnyOptions) {
   const cliCtx = createContext(options as GlobalOptions, ["run", "gc"]);
 
-  let retentionDays = DEFAULT_WORKFLOW_RUN_RETENTION_DAYS;
-  if (options.olderThan) {
-    const ms = parseDuration(options.olderThan);
-    retentionDays = ms / (24 * 60 * 60 * 1000);
-  }
+  const retentionDays = options.olderThan
+    ? parseDuration(options.olderThan) / (24 * 60 * 60 * 1000)
+    : undefined;
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
@@ -97,7 +96,7 @@ export const runGcCommand = withRemoteOptions(
       { server, token },
       {
         type: "run.gc",
-        payload: {
+        payload: retentionDays === undefined ? { dryRun: !!options.dryRun } : {
           dryRun: !!options.dryRun,
           workflowRunRetentionDays: retentionDays,
           outputRetentionDays: retentionDays,
@@ -116,7 +115,7 @@ export const runGcCommand = withRemoteOptions(
     repoDir: resolveRepoDir(options.repoDir),
     outputMode: cliCtx.outputMode,
   };
-  const { repoDir, repoContext, datastoreResolver } = options.dryRun
+  const { repoDir, repoContext, datastoreResolver, marker } = options.dryRun
     ? await requireInitializedRepoReadOnly(repoOpts)
     : await requireInitializedRepo(repoOpts);
 
@@ -127,11 +126,11 @@ export const runGcCommand = withRemoteOptions(
     repoContext.markDirty,
   );
 
-  const gcInput = {
-    dryRun: !!options.dryRun,
-    workflowRunRetentionDays: retentionDays,
-    outputRetentionDays: retentionDays,
-  };
+  const gcInput = runGcInputFromPolicy(
+    !!options.dryRun,
+    marker?.garbageCollection,
+    retentionDays,
+  );
 
   if (
     cliCtx.outputMode === "log" && !options.yes && !options.force &&

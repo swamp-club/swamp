@@ -361,6 +361,7 @@ export function resolveManagedConfigPaths(
  */
 export interface RepoValidationContext {
   repoDir: string;
+  marker: RepoMarkerData | null;
   repoContext: RepositoryContext;
   datastoreResolver: DatastorePathResolver;
   pulledExtensionsRoot: string;
@@ -611,6 +612,7 @@ export async function requireInitializedRepoReadOnly(
 
   return {
     repoDir: repoPath.value,
+    marker,
     repoContext,
     datastoreResolver,
     pulledExtensionsRoot,
@@ -849,6 +851,7 @@ export function requireInitializedRepo(
 
     return {
       repoDir: repoPath.value,
+      marker,
       repoContext,
       datastoreResolver,
       pulledExtensionsRoot,
@@ -1003,6 +1006,7 @@ export async function requireInitializedRepoUnlocked(
 
   return {
     repoDir: repoPath.value,
+    marker,
     repoContext,
     datastoreResolver,
     datastoreConfig,

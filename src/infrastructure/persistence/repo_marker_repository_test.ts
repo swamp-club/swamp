@@ -144,6 +144,66 @@ upgradedAt: "2024-02-20T14:00:00.000Z"
   });
 });
 
+Deno.test("RepoMarkerRepository.read parses garbage collection retention", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new RepoMarkerRepository();
+    const repoPath = RepoPath.create(dir);
+    await Deno.writeTextFile(
+      join(dir, ".swamp.yaml"),
+      `swampVersion: "1.2.3"
+initializedAt: "2024-01-15T10:30:00.000Z"
+garbageCollection:
+  workflowRuns: 7d
+  outputs: 1d
+`,
+    );
+
+    const result = await repo.read(repoPath);
+
+    assertEquals(result?.garbageCollection, {
+      workflowRuns: "7d",
+      outputs: "1d",
+    });
+  });
+});
+
+Deno.test("RepoMarkerRepository.read rejects invalid garbage collection retention", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new RepoMarkerRepository();
+    const repoPath = RepoPath.create(dir);
+    await Deno.writeTextFile(
+      join(dir, ".swamp.yaml"),
+      `swampVersion: "1.2.3"
+initializedAt: "2024-01-15T10:30:00.000Z"
+garbageCollection:
+  workflowRuns: never
+`,
+    );
+
+    await assertRejects(
+      () => repo.read(repoPath),
+      Error,
+      "garbageCollection.workflowRuns must be a positive duration",
+    );
+  });
+});
+
+Deno.test("RepoMarkerRepository.write and read roundtrip garbage collection retention", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new RepoMarkerRepository();
+    const repoPath = RepoPath.create(dir);
+    const marker = {
+      swampVersion: "1.2.3",
+      initializedAt: "2024-01-15T10:30:00.000Z",
+      garbageCollection: { workflowRuns: "2w", outputs: "1d" },
+    };
+
+    await repo.write(repoPath, marker);
+
+    assertEquals(await repo.read(repoPath), marker);
+  });
+});
+
 Deno.test("RepoMarkerRepository.write creates valid YAML", async () => {
   await withTempDir(async (dir) => {
     const repo = new RepoMarkerRepository();

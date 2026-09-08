@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { resolveDataFields } from "./data_handlers.ts";
+import { resolveDataFields, resolveRunGcInput } from "./data_handlers.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 
 function makeDefinitionRepo(
@@ -118,4 +118,54 @@ Deno.test("resolveDataFields: falls back to name-only when repo throws", async (
 
   assertEquals(fields.name, "erroring-model");
   assertEquals(fields.tags, undefined);
+});
+
+Deno.test("resolveRunGcInput: uses repository retention when request omits it", () => {
+  assertEquals(
+    resolveRunGcInput(undefined, { workflowRuns: "2w", outputs: "1d" }),
+    {
+      dryRun: false,
+      workflowRunRetentionDays: 14,
+      outputRetentionDays: 1,
+    },
+  );
+});
+
+Deno.test("resolveRunGcInput: request retention overrides repository retention", () => {
+  assertEquals(
+    resolveRunGcInput(
+      { dryRun: true, workflowRunRetentionDays: 3, outputRetentionDays: 2 },
+      { workflowRuns: "2w", outputs: "1d" },
+    ),
+    {
+      dryRun: true,
+      workflowRunRetentionDays: 3,
+      outputRetentionDays: 2,
+    },
+  );
+});
+
+Deno.test("resolveRunGcInput: output policy survives a workflow-only request override", () => {
+  assertEquals(
+    resolveRunGcInput(
+      { workflowRunRetentionDays: 3 },
+      { workflowRuns: "2w", outputs: "1d" },
+    ),
+    {
+      dryRun: false,
+      workflowRunRetentionDays: 3,
+      outputRetentionDays: 1,
+    },
+  );
+});
+
+Deno.test("resolveRunGcInput: omitted output policy uses the output default", () => {
+  assertEquals(
+    resolveRunGcInput(undefined, { workflowRuns: "2w" }),
+    {
+      dryRun: false,
+      workflowRunRetentionDays: 14,
+      outputRetentionDays: 30,
+    },
+  );
 });

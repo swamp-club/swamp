@@ -44,9 +44,13 @@ import {
   dataSearch,
   type DataSearchDeps,
   dataVersions,
+  DEFAULT_OUTPUT_RETENTION_DAYS,
   DEFAULT_WORKFLOW_RUN_RETENTION_DAYS,
   parseDuration,
   runGc,
+  type RunGcGarbageCollectionPolicy,
+  type RunGcInput,
+  runGcRetentionFromPolicy,
   summarise,
 } from "../../libswamp/mod.ts";
 import type {
@@ -78,6 +82,25 @@ import {
   sendError,
 } from "./shared.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
+
+export function resolveRunGcInput(
+  payload: RunGcPayload | undefined,
+  policy?: RunGcGarbageCollectionPolicy,
+): RunGcInput {
+  const configuredRetention = runGcRetentionFromPolicy(policy);
+  const workflowRunRetentionDays = payload?.workflowRunRetentionDays ??
+    configuredRetention.workflowRunRetentionDays ??
+    DEFAULT_WORKFLOW_RUN_RETENTION_DAYS;
+
+  return {
+    dryRun: payload?.dryRun ?? false,
+    workflowRunRetentionDays,
+    outputRetentionDays: payload?.outputRetentionDays ??
+      configuredRetention.outputRetentionDays ?? DEFAULT_OUTPUT_RETENTION_DAYS,
+  };
+}
 
 export async function resolveDataFields(
   definitionRepo: DefinitionRepository,
@@ -894,16 +917,17 @@ export async function handleRunGc(
       ctx.repoContext.markDirty,
     );
 
-    const retentionDays = payload?.workflowRunRetentionDays ??
-      DEFAULT_WORKFLOW_RUN_RETENTION_DAYS;
+    const marker = await new RepoMarkerRepository().read(
+      RepoPath.create(ctx.repoDir),
+    );
+    const gcInput = resolveRunGcInput(
+      payload,
+      marker?.garbageCollection,
+    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
-      runGc(libCtx, deps, {
-        dryRun: payload?.dryRun ?? false,
-        workflowRunRetentionDays: retentionDays,
-        outputRetentionDays: payload?.outputRetentionDays ?? retentionDays,
-      }),
+      runGc(libCtx, deps, gcInput),
       {
         collecting: () => {},
         completed: (e) => {

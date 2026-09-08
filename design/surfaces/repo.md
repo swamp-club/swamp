@@ -1,6 +1,6 @@
 ---
 audience: maintainer, operator
-last-verified: 2026-08-28 @ 3d5955a9
+last-verified: 2026-09-07 @ 58652907
 ---
 
 # swamp repo
@@ -132,6 +132,10 @@ options are:
   before the CLI releases model locks and flushes the datastore sync, so on a
   synced datastore the deletions ride along with the same post-run push.
   `swamp data gc` remains available for repo-wide manual GC.
+- `garbageCollection`: Repository defaults for manual `swamp run gc` cleanup.
+  `workflowRuns` and `outputs` accept positive duration strings such as `7d`
+  or `2w`; omitted values retain the 30-day default. This setting does not run
+  cleanup automatically and does not change model data's `autoGc` behavior.
 - `serverAddress`: Default `swamp serve` URL for this repository. When set,
   all serve-aware commands route through this serve instance without
   requiring `SWAMP_SERVE_URL` or `--server`. Precedence: `--server` flag >
@@ -146,9 +150,16 @@ options are:
 two runtime artifact stores are not covered by `data gc`, which handles
 `.swamp/data/` (versioned data with lifetime/version policies).
 
-- **Default retention**: 30 days (`DEFAULT_WORKFLOW_RUN_RETENTION_DAYS` and
+- **Default retention**: `.swamp.yaml` can configure independent values:
+  ```yaml
+  garbageCollection:
+    workflowRuns: 7d
+    outputs: 1d
+  ```
+  Omitted values use 30 days (`DEFAULT_WORKFLOW_RUN_RETENTION_DAYS` and
   `DEFAULT_OUTPUT_RETENTION_DAYS` in
-  `src/domain/data/run_lifecycle_service.ts`)
+  `src/domain/data/run_lifecycle_service.ts`). `--older-than` overrides both
+  configured values for one invocation.
 - **Terminal runs only**: Only runs in a terminal state (succeeded, failed,
   cancelled) are deleted. Running and suspended workflow runs are never deleted
   regardless of age.

@@ -24,11 +24,17 @@ import type { SwampVersion } from "../../domain/repo/swamp_version.ts";
 import type { RepoPath } from "../../domain/repo/repo_path.ts";
 import { swampMarkerPath } from "./paths.ts";
 import type { DatastoreConfigData } from "../../domain/datastore/datastore_config.ts";
+import { parseDataDuration } from "../../domain/data/duration.ts";
 import type { AiTool } from "../../domain/repo/ai_tool.ts";
 import { UserError } from "../../domain/errors.ts";
 import { removedDriverFieldMessage } from "../../domain/removed_driver_fields.ts";
 
 export type { AiTool };
+
+export interface GarbageCollectionConfig {
+  workflowRuns?: string;
+  outputs?: string;
+}
 
 /**
  * Data structure for the .swamp.yaml marker file.
@@ -61,6 +67,7 @@ export interface RepoMarkerData {
   trustMemberCollectives?: boolean;
   skillMigrationDismissed?: boolean;
   autoGc?: boolean;
+  garbageCollection?: GarbageCollectionConfig;
   defaultVault?: string;
   serverAddress?: string;
 }
@@ -90,6 +97,38 @@ function rejectRemovedDriverFields(data: RepoMarkerData, path: string): void {
     if (field in data) {
       throw new UserError(
         `${path}: ${removedDriverFieldMessage(field)}`,
+      );
+    }
+  }
+}
+
+function validateGarbageCollection(
+  data: RepoMarkerData,
+  path: string,
+): void {
+  const config = data.garbageCollection;
+  if (config === undefined) return;
+
+  if (typeof config !== "object" || config === null || Array.isArray(config)) {
+    throw new UserError(`${path}: garbageCollection must be a mapping`);
+  }
+
+  for (const field of ["workflowRuns", "outputs"] as const) {
+    const duration = config[field];
+    if (duration === undefined) continue;
+    if (typeof duration !== "string") {
+      throw new UserError(
+        `${path}: garbageCollection.${field} must be a duration string`,
+      );
+    }
+
+    try {
+      if (parseDataDuration(duration) <= 0) {
+        throw new Error("duration must be positive");
+      }
+    } catch {
+      throw new UserError(
+        `${path}: garbageCollection.${field} must be a positive duration like 1h, 7d, or 2w`,
       );
     }
   }
@@ -137,6 +176,7 @@ export class RepoMarkerRepository {
       const data = parseYaml(content) as RepoMarkerData | null;
       if (!data) return null;
       rejectRemovedDriverFields(data, path);
+      validateGarbageCollection(data, path);
       return normalizeMarker(data);
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {

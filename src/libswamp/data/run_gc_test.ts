@@ -18,7 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { runGc, type RunGcDeps, runGcPreview } from "./run_gc.ts";
+import {
+  runGc,
+  type RunGcDeps,
+  runGcInputFromPolicy,
+  runGcPreview,
+  runGcRetentionFromPolicy,
+} from "./run_gc.ts";
 import { createLibSwampContext } from "../context.ts";
 import { getLogger } from "@logtape/logtape";
 
@@ -115,4 +121,22 @@ Deno.test("runGc: uses default retention when not specified", async () => {
   assertEquals(capturedOptions?.workflowRunRetentionDays, 30);
   assertEquals(capturedOptions?.outputRetentionDays, 30);
   assertEquals(capturedOptions?.dryRun, true);
+});
+
+Deno.test("runGcRetentionFromPolicy: maps independent retention durations", () => {
+  assertEquals(
+    runGcRetentionFromPolicy({ workflowRuns: "2w", outputs: "1d" }),
+    { workflowRunRetentionDays: 14, outputRetentionDays: 1 },
+  );
+});
+
+Deno.test("runGcInputFromPolicy: uses configured retention unless overridden", () => {
+  assertEquals(
+    runGcInputFromPolicy(false, { workflowRuns: "2w", outputs: "1d" }),
+    { dryRun: false, workflowRunRetentionDays: 14, outputRetentionDays: 1 },
+  );
+  assertEquals(
+    runGcInputFromPolicy(false, { workflowRuns: "2w", outputs: "1d" }, 3),
+    { dryRun: false, workflowRunRetentionDays: 3, outputRetentionDays: 3 },
+  );
 });

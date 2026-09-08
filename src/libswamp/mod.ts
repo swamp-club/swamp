@@ -1211,9 +1211,12 @@ export {
   type RunGcData,
   type RunGcDeps,
   type RunGcEvent,
+  type RunGcGarbageCollectionPolicy,
   type RunGcInput,
+  runGcInputFromPolicy,
   type RunGcPreview,
   runGcPreview,
+  runGcRetentionFromPolicy,
 } from "./data/run_gc.ts";
 
 // Model create operations
