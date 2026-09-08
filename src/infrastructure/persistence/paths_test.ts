@@ -198,24 +198,59 @@ Deno.test("getSwampConfigDir falls back to HOME/.config/swamp", () => {
   }
 });
 
-Deno.test("getSwampConfigDir throws when neither SWAMP_HOME nor HOME is set", () => {
+Deno.test("getSwampConfigDir falls back to USERPROFILE/.config/swamp", () => {
+  const saved = {
+    swampHome: Deno.env.get("SWAMP_HOME"),
+    xdg: Deno.env.get("XDG_CONFIG_HOME"),
+    home: Deno.env.get("HOME"),
+    profile: Deno.env.get("USERPROFILE"),
+  };
+  try {
+    Deno.env.delete("SWAMP_HOME");
+    Deno.env.delete("XDG_CONFIG_HOME");
+    Deno.env.delete("HOME");
+    Deno.env.set("USERPROFILE", "C:\\Users\\testuser");
+    assertPathEquals(
+      getSwampConfigDir(),
+      "C:\\Users\\testuser/.config/swamp",
+    );
+  } finally {
+    if (saved.swampHome !== undefined) {
+      Deno.env.set("SWAMP_HOME", saved.swampHome);
+    } else Deno.env.delete("SWAMP_HOME");
+    if (saved.xdg !== undefined) Deno.env.set("XDG_CONFIG_HOME", saved.xdg);
+    else Deno.env.delete("XDG_CONFIG_HOME");
+    if (saved.home !== undefined) Deno.env.set("HOME", saved.home);
+    else Deno.env.delete("HOME");
+    if (saved.profile !== undefined) {
+      Deno.env.set("USERPROFILE", saved.profile);
+    } else Deno.env.delete("USERPROFILE");
+  }
+});
+
+Deno.test("getSwampConfigDir throws when no home environment variable is set", () => {
   const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
   const originalHome = Deno.env.get("HOME");
+  const originalProfile = Deno.env.get("USERPROFILE");
   const originalSwampHome = Deno.env.get("SWAMP_HOME");
   try {
     Deno.env.delete("SWAMP_HOME");
     Deno.env.delete("XDG_CONFIG_HOME");
     Deno.env.delete("HOME");
+    Deno.env.delete("USERPROFILE");
     assertThrows(
       () => getSwampConfigDir(),
       Error,
-      "HOME environment variable is not set",
+      "Cannot determine config directory: neither HOME nor USERPROFILE is set",
     );
   } finally {
     if (originalXdg !== undefined) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
     else Deno.env.delete("XDG_CONFIG_HOME");
     if (originalHome !== undefined) Deno.env.set("HOME", originalHome);
     else Deno.env.delete("HOME");
+    if (originalProfile !== undefined) {
+      Deno.env.set("USERPROFILE", originalProfile);
+    } else Deno.env.delete("USERPROFILE");
     if (originalSwampHome !== undefined) {
       Deno.env.set("SWAMP_HOME", originalSwampHome);
     } else Deno.env.delete("SWAMP_HOME");
