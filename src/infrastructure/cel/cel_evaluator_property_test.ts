@@ -75,6 +75,14 @@ const CEL_RESERVED = new Set([
   "matches",
   "size",
   "type",
+  // cel-js type keywords resolve as type references, not variable lookups
+  "bool",
+  "bytes",
+  "double",
+  "int",
+  "list",
+  "string",
+  "uint",
 ]);
 
 const arbIdent = fc
