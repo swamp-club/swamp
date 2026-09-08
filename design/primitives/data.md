@@ -1,6 +1,6 @@
 ---
 audience: maintainer, operator
-last-verified: 2026-08-28 @ 3d5955a9
+last-verified: 2026-09-07 @ 58652907
 ---
 
 # Data
@@ -209,7 +209,7 @@ directories). What can remove versions:
 | `swamp data gc`                 | Phase 1: whole names whose `lifetime` expired. Phase 2: per-name version GC by count or duration        | `src/domain/data/data_lifecycle_service.ts` `deleteExpiredData`                |
 | `swamp data delete`             | One version, one name, `--prefix` many names, or `--all` for a model; confirms unless `--force`/`--yes`; `--dry-run` previews `--prefix`/`--all` | `src/domain/data/data_delete_service.ts`; `src/libswamp/data/delete.ts`        |
 | `swamp data prune`              | Every name under a `(type, modelId)` whose definition no longer resolves                                | `data_lifecycle_service.ts` `deleteOrphanedData`; `src/libswamp/data/prune.ts` |
-| `swamp run gc`                  | Old `outputs/` and `workflow-runs/` records (default retention 30 days each) — never `data/`            | `src/domain/data/run_lifecycle_service.ts`                                     |
+| `swamp run gc`                  | Old `outputs/` and `workflow-runs/` records (configured by `.swamp.yaml` `garbageCollection`, otherwise 30 days each) — never `data/` | `src/domain/data/run_lifecycle_service.ts`                                     |
 
 Expiry rules (`calculateExpiration`, `isExpired`): duration lifetimes expire at
 `createdAt + duration`; `infinite` never; `workflow` and `job` expire when the

@@ -1,6 +1,6 @@
 ---
 audience: maintainer, extension-author
-last-verified: 2026-08-28 @ 3d5955a9
+last-verified: 2026-09-07 @ 58652907
 ---
 
 # Models
@@ -716,12 +716,14 @@ executes. It should be structured as
 
 ### Output Lifetime
 
-By default, method invocation outputs persist indefinitely (cleaned up only by
-`swamp run gc --older-than`). Methods can declare an `outputLifetime` to set a
-retention ceiling — a duration string like `"1d"` or `"7d"`, or `"infinite"` for
-the default behavior. The scoped lifetimes `"ephemeral"`, `"job"`, and
-`"workflow"` are not valid for output records since invocation outputs are not
-scoped to a process or workflow run.
+By default, method invocation outputs persist until manually removed by
+`swamp run gc`. That command uses the repository's `.swamp.yaml`
+`garbageCollection.outputs` retention (30 days when unset), while
+`--older-than` overrides it for one invocation. Methods can declare an
+`outputLifetime` to set a retention ceiling — a duration string like `"1d"` or
+`"7d"`, or `"infinite"` for the default behavior. The scoped lifetimes
+`"ephemeral"`, `"job"`, and `"workflow"` are not valid for output records since
+invocation outputs are not scoped to a process or workflow run.
 
 When `swamp run gc` runs, it applies `min(globalRetention, methodOutputLifetime)`
 as the effective cutoff for each method's outputs. This means an operator can
