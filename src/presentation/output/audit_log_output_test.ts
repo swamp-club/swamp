@@ -20,7 +20,11 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
 import type { AuditQueryResponse } from "../../serve/protocol.ts";
-import { renderAuditLog } from "./audit_log_output.ts";
+import {
+  renderAuditEvent,
+  renderAuditLog,
+  renderAuditLogHeader,
+} from "./audit_log_output.ts";
 
 function captureLogs(fn: () => void): string {
   const logs: string[] = [];
@@ -121,4 +125,47 @@ Deno.test("renderAuditLog: log mode includes date in timestamp", () => {
   // The formatter uses local time, so just check that it has MM-DD format
   // (two digits, dash, two digits pattern somewhere)
   assertEquals(output.match(/\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}/) !== null, true);
+});
+
+// ── renderAuditLogHeader tests ─────────────────────────────────────────
+
+Deno.test("renderAuditLogHeader: log mode prints column headers", () => {
+  const output = captureLogs(() => renderAuditLogHeader("log"));
+  assertStringIncludes(output, "TIME");
+  assertStringIncludes(output, "OUTCOME");
+  assertStringIncludes(output, "CATEGORY");
+  assertStringIncludes(output, "ACTION");
+});
+
+Deno.test("renderAuditLogHeader: json mode prints nothing", () => {
+  const output = captureLogs(() => renderAuditLogHeader("json"));
+  assertEquals(output, "");
+});
+
+// ── renderAuditEvent tests ────────────────────────────────────────────
+
+Deno.test("renderAuditEvent: log mode prints event row", () => {
+  const event = {
+    timestamp: "2026-09-06T12:00:00.000Z",
+    outcome: "success",
+    category: "execution",
+    action: "model.method.run",
+    principalId: "user:test",
+    resourceKind: "model",
+    resourceName: "hello",
+  };
+  const output = captureLogs(() => renderAuditEvent(event, "log"));
+  assertStringIncludes(output, "model.method.run");
+  assertStringIncludes(output, "user:test");
+});
+
+Deno.test("renderAuditEvent: json mode prints JSON", () => {
+  const event = {
+    action: "vault.get",
+    outcome: "denied",
+  };
+  const output = captureLogs(() => renderAuditEvent(event, "json"));
+  const parsed = JSON.parse(output);
+  assertEquals(parsed.action, "vault.get");
+  assertEquals(parsed.outcome, "denied");
 });
