@@ -344,10 +344,10 @@ export function getSwampDataDir(): string {
  * Resolution order:
  * 1. `SWAMP_HOME` — if set, returns `$SWAMP_HOME/config`.
  * 2. `XDG_CONFIG_HOME` — returns `$XDG_CONFIG_HOME/swamp/`.
- * 3. `HOME` — falls back to `~/.config/swamp/`.
+ * 3. `HOME` / `USERPROFILE` — falls back to `~/.config/swamp/`.
  *
  * @returns The absolute path to the swamp config directory
- * @throws Error if neither SWAMP_HOME nor HOME is set
+ * @throws Error if neither SWAMP_HOME, HOME, nor USERPROFILE is set
  */
 export function getSwampConfigDir(): string {
   const swampHome = Deno.env.get("SWAMP_HOME");
@@ -360,9 +360,11 @@ export function getSwampConfigDir(): string {
     return join(xdgConfigHome, "swamp");
   }
 
-  const home = Deno.env.get("HOME");
+  const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE");
   if (!home) {
-    throw new Error("HOME environment variable is not set");
+    throw new Error(
+      "Cannot determine config directory: neither HOME nor USERPROFILE is set",
+    );
   }
   return join(home, ".config", "swamp");
 }
@@ -376,7 +378,7 @@ export function getSwampConfigDir(): string {
  *
  * @returns The absolute path to `<config>/telemetry` (XDG-aware via
  *   {@link getSwampConfigDir})
- * @throws Error if HOME environment variable is not set
+ * @throws Error if no user home environment variable is set
  */
 export function globalTelemetryDir(): string {
   return join(getSwampConfigDir(), SWAMP_SUBDIRS.telemetry);
