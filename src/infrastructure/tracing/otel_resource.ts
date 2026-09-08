@@ -39,15 +39,16 @@ export function buildOtelResource(
     serviceNameAttr: string;
     serviceVersionAttr: string;
   },
+  envGet: (key: string) => string | undefined = Deno.env.get.bind(Deno.env),
 ): Resource {
-  const serviceName = Deno.env.get("OTEL_SERVICE_NAME") ?? "swamp";
+  const serviceName = envGet("OTEL_SERVICE_NAME") ?? "swamp";
 
   return ResourceCtor.default()
     .merge(envDetectorSync.detect())
     .merge(
       new ResourceCtor({
         [attributes.serviceNameAttr]: serviceName,
-        [attributes.serviceVersionAttr]: Deno.env.get("SWAMP_VERSION") ?? "dev",
+        [attributes.serviceVersionAttr]: envGet("SWAMP_VERSION") ?? "dev",
       }),
     );
 }

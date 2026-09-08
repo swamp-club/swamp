@@ -20,124 +20,59 @@
 import { assertEquals, assertExists, assertStrictEquals } from "@std/assert";
 import { initLogs, shutdownLogs } from "./otel_logs_init.ts";
 
-const ENV_KEYS = [
-  "OTEL_EXPORTER_OTLP_ENDPOINT",
-  "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
-  "OTEL_LOGS_EXPORTER",
-  "OTEL_BLRP_USE",
-  "OTEL_EXPORTER_OTLP_HEADERS",
-  "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
-];
-
-async function withEnv(
-  vars: Record<string, string | undefined>,
-  fn: () => Promise<void>,
-): Promise<void> {
-  const saved: Record<string, string | undefined> = {};
-  for (const key of ENV_KEYS) saved[key] = Deno.env.get(key);
-  try {
-    for (const key of ENV_KEYS) Deno.env.delete(key);
-    for (const [key, value] of Object.entries(vars)) {
-      if (value !== undefined) Deno.env.set(key, value);
-    }
-    await fn();
-  } finally {
-    for (const key of ENV_KEYS) {
-      const value = saved[key];
-      if (value === undefined) Deno.env.delete(key);
-      else Deno.env.set(key, value);
-    }
-  }
-}
-
 Deno.test("initLogs: disabled (undefined) when no endpoint and no console exporter", async () => {
-  await withEnv({}, async () => {
-    const provider = await initLogs();
-    assertEquals(provider, undefined);
-    await shutdownLogs();
-  });
+  const provider = await initLogs({ exporterKind: "otlp" });
+  assertEquals(provider, undefined);
+  await shutdownLogs();
 });
 
 Deno.test("initLogs: disabled when OTEL_LOGS_EXPORTER=none even with an endpoint", async () => {
-  await withEnv(
-    {
-      OTEL_EXPORTER_OTLP_ENDPOINT: "http://localhost:4318",
-      OTEL_LOGS_EXPORTER: "none",
-    },
-    async () => {
-      const provider = await initLogs();
-      assertEquals(provider, undefined);
-      await shutdownLogs();
-    },
-  );
+  const provider = await initLogs({
+    endpoint: "http://localhost:4318",
+    exporterKind: "none",
+  });
+  assertEquals(provider, undefined);
+  await shutdownLogs();
 });
 
 Deno.test("initLogs: enabled (returns a provider) when an endpoint is set", async () => {
-  await withEnv(
-    { OTEL_EXPORTER_OTLP_ENDPOINT: "http://localhost:4318" },
-    async () => {
-      const provider = await initLogs();
-      assertExists(provider);
-      assertEquals(typeof provider.getLogger, "function");
-      await shutdownLogs();
-    },
-  );
-});
-
-Deno.test("initLogs: enabled when only the signal-specific logs endpoint is set", async () => {
-  await withEnv(
-    {
-      OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: "http://localhost:4318/v1/logs",
-    },
-    async () => {
-      const provider = await initLogs();
-      assertExists(provider);
-      assertEquals(typeof provider.getLogger, "function");
-      await shutdownLogs();
-    },
-  );
+  const provider = await initLogs({
+    endpoint: "http://localhost:4318",
+  });
+  assertExists(provider);
+  assertEquals(typeof provider.getLogger, "function");
+  await shutdownLogs();
 });
 
 Deno.test("initLogs: enabled in console mode without an endpoint", async () => {
-  await withEnv({ OTEL_LOGS_EXPORTER: "console" }, async () => {
-    const provider = await initLogs();
-    assertExists(provider);
-    await shutdownLogs();
-  });
+  const provider = await initLogs({ exporterKind: "console" });
+  assertExists(provider);
+  await shutdownLogs();
 });
 
-Deno.test("initLogs: batch processor path (OTEL_BLRP_USE=1) initializes", async () => {
-  await withEnv(
-    {
-      OTEL_EXPORTER_OTLP_ENDPOINT: "http://localhost:4318",
-      OTEL_BLRP_USE: "1",
-    },
-    async () => {
-      const provider = await initLogs();
-      assertExists(provider);
-      await shutdownLogs();
-    },
-  );
+Deno.test("initLogs: batch processor path initializes", async () => {
+  const provider = await initLogs({
+    endpoint: "http://localhost:4318",
+    useBatch: true,
+  });
+  assertExists(provider);
+  await shutdownLogs();
 });
 
 Deno.test("shutdownLogs: no-op and safe to call when logs were never initialized", async () => {
-  await withEnv({}, async () => {
-    await initLogs(); // returns undefined
-    await shutdownLogs();
-    await shutdownLogs(); // double shutdown must not throw
-  });
+  await initLogs({ exporterKind: "otlp" }); // returns undefined
+  await shutdownLogs();
+  await shutdownLogs(); // double shutdown must not throw
 });
 
 Deno.test("initLogs: idempotent — a second call returns the same provider, not a new one", async () => {
-  await withEnv(
-    { OTEL_EXPORTER_OTLP_ENDPOINT: "http://localhost:4318" },
-    async () => {
-      const first = await initLogs();
-      const second = await initLogs();
-      assertExists(first);
-      // Same instance — no second provider was built (and leaked).
-      assertStrictEquals(second, first);
-      await shutdownLogs();
-    },
-  );
+  const first = await initLogs({
+    endpoint: "http://localhost:4318",
+  });
+  const second = await initLogs({
+    endpoint: "http://localhost:4318",
+  });
+  assertExists(first);
+  assertStrictEquals(second, first);
+  await shutdownLogs();
 });

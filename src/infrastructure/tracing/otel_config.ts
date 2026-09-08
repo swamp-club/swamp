@@ -23,16 +23,17 @@ export type OtlpSignal = "traces" | "logs" | "metrics";
 export function resolveOtlpEndpoint(
   signal: OtlpSignal,
   config?: { genericEndpoint?: string; signalEndpoint?: string },
+  envGet: (key: string) => string | undefined = Deno.env.get.bind(Deno.env),
 ): string | undefined {
   const signalName = signal.toUpperCase();
   const signalEndpoint = config
     ? config.signalEndpoint
-    : Deno.env.get(`OTEL_EXPORTER_OTLP_${signalName}_ENDPOINT`);
+    : envGet(`OTEL_EXPORTER_OTLP_${signalName}_ENDPOINT`);
   if (signalEndpoint) return signalEndpoint;
 
   const genericEndpoint = config
     ? config.genericEndpoint
-    : Deno.env.get("OTEL_EXPORTER_OTLP_ENDPOINT");
+    : envGet("OTEL_EXPORTER_OTLP_ENDPOINT");
   if (!genericEndpoint) return undefined;
 
   const url = new URL(genericEndpoint);
@@ -46,11 +47,12 @@ export function resolveOtlpEndpoint(
  */
 export function parseOtlpHeaders(
   signal: OtlpSignal,
+  envGet: (key: string) => string | undefined = Deno.env.get.bind(Deno.env),
 ): Record<string, string> {
   const headers: Record<string, string> = {};
   const signalName = signal.toUpperCase();
-  const raw = Deno.env.get(`OTEL_EXPORTER_OTLP_${signalName}_HEADERS`) ||
-    Deno.env.get("OTEL_EXPORTER_OTLP_HEADERS");
+  const raw = envGet(`OTEL_EXPORTER_OTLP_${signalName}_HEADERS`) ||
+    envGet("OTEL_EXPORTER_OTLP_HEADERS");
   if (raw) {
     for (const pair of raw.split(",")) {
       const eqIdx = pair.indexOf("=");
