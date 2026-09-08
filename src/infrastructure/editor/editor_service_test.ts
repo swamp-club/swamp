@@ -55,6 +55,19 @@ Deno.test("EditorService.findEditor handles $EDITOR with arguments", async () =>
   }
 });
 
+Deno.test("EditorService.prepareOpenFile exposes wait state before launching", async () => {
+  const service = new class extends EditorService {
+    override findEditor(): Promise<string> {
+      return Promise.resolve("code --reuse-window");
+    }
+  }();
+  const launch = await service.prepareOpenFile("/tmp/definition.yaml", {
+    wait: true,
+  });
+  assertEquals(launch.editor, "VS Code");
+  assertEquals(launch.waitsForExit, true);
+});
+
 Deno.test("EditorService.findEditor falls back when $EDITOR is not available", async () => {
   const originalEditor = Deno.env.get("EDITOR");
   try {

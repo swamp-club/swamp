@@ -22,6 +22,15 @@ import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import { vaultEdit, type VaultEditDeps, type VaultEditEvent } from "./edit.ts";
 
+function prepareEditor(editor: string) {
+  return (path: string) =>
+    Promise.resolve({
+      editor,
+      waitsForExit: false,
+      open: () => Promise.resolve({ editor, path }),
+    });
+}
+
 function makeDeps(overrides: Partial<VaultEditDeps> = {}): VaultEditDeps {
   return {
     findByName: () => Promise.resolve(null),
@@ -29,7 +38,7 @@ function makeDeps(overrides: Partial<VaultEditDeps> = {}): VaultEditDeps {
     findAll: () => Promise.resolve([]),
     getVaultPath: () => "/fake/path/vault.yaml",
     fileExists: () => Promise.resolve(true),
-    openEditor: () => Promise.resolve({ editor: "VS Code" }),
+    prepareEditor: prepareEditor("VS Code"),
     ...overrides,
   };
 }
@@ -60,7 +69,7 @@ Deno.test("vaultEdit: opens editor when vault found by name", async () => {
   const deps = makeDeps({
     findByName: () => Promise.resolve(testVaultConfig),
     getVaultPath: () => "/repo/vaults/env/vault-1.yaml",
-    openEditor: () => Promise.resolve({ editor: "Neovim" }),
+    prepareEditor: prepareEditor("Neovim"),
   });
 
   const events = await collect<VaultEditEvent>(
@@ -71,6 +80,14 @@ Deno.test("vaultEdit: opens editor when vault found by name", async () => {
 
   assertEquals(events, [
     { kind: "resolving" },
+    {
+      kind: "launching",
+      data: {
+        editor: "Neovim",
+        path: "/repo/vaults/env/vault-1.yaml",
+        waitsForExit: false,
+      },
+    },
     {
       kind: "completed",
       data: {
@@ -84,12 +101,48 @@ Deno.test("vaultEdit: opens editor when vault found by name", async () => {
   ]);
 });
 
+Deno.test("vaultEdit: announces editor launch before opening", async () => {
+  let opened = false;
+  const deps = makeDeps({
+    findByName: () => Promise.resolve(testVaultConfig),
+    getVaultPath: () => "/repo/vaults/env/vault-1.yaml",
+    prepareEditor: (path) =>
+      Promise.resolve({
+        editor: "VS Code",
+        waitsForExit: true,
+        open: () => {
+          opened = true;
+          return Promise.resolve({ editor: "VS Code", path });
+        },
+      }),
+  });
+
+  const iterator = vaultEdit(createLibSwampContext(), deps, {
+    vaultNameOrId: "my-vault",
+  })[Symbol.asyncIterator]();
+
+  await iterator.next();
+  const launch = await iterator.next();
+  assertEquals(launch.value, {
+    kind: "launching",
+    data: {
+      editor: "VS Code",
+      path: "/repo/vaults/env/vault-1.yaml",
+      waitsForExit: true,
+    },
+  });
+  assertEquals(opened, false);
+
+  await iterator.next();
+  assertEquals(opened, true);
+});
+
 Deno.test("vaultEdit: finds vault by ID when name lookup fails", async () => {
   const deps = makeDeps({
     findByName: () => Promise.resolve(null),
     findAll: () => Promise.resolve([testVaultConfig]),
     getVaultPath: () => "/repo/vaults/env/vault-1.yaml",
-    openEditor: () => Promise.resolve({ editor: "VS Code" }),
+    prepareEditor: prepareEditor("VS Code"),
   });
 
   const events = await collect<VaultEditEvent>(
@@ -98,7 +151,7 @@ Deno.test("vaultEdit: finds vault by ID when name lookup fails", async () => {
     }),
   );
 
-  const completed = events[1] as Extract<
+  const completed = events[2] as Extract<
     VaultEditEvent,
     { kind: "completed" }
   >;
@@ -115,7 +168,7 @@ Deno.test("vaultEdit: finds vault by ID with type hint", async () => {
       return Promise.resolve(null);
     },
     getVaultPath: () => "/repo/vaults/env/vault-1.yaml",
-    openEditor: () => Promise.resolve({ editor: "VS Code" }),
+    prepareEditor: prepareEditor("VS Code"),
   });
 
   const events = await collect<VaultEditEvent>(
@@ -125,7 +178,7 @@ Deno.test("vaultEdit: finds vault by ID with type hint", async () => {
     }),
   );
 
-  const completed = events[1] as Extract<
+  const completed = events[2] as Extract<
     VaultEditEvent,
     { kind: "completed" }
   >;

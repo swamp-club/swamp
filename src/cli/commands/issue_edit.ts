@@ -199,7 +199,14 @@ export const issueEditCommand = new Command()
           buildEditTemplate(current.title, current.body, current.type),
         );
         ctx.logger.debug`Opening editor to edit issue #${issueNumber}`;
-        await new EditorService().openFile(tempFile, { wait: true });
+        const launch = await new EditorService().prepareOpenFile(tempFile, {
+          wait: true,
+        });
+        ctx.logger.info(
+          "Opening {editor} and waiting for it to close. To edit without an editor, use --title, --body, or --type.",
+          { editor: launch.editor },
+        );
+        await launch.open();
 
         const content = await Deno.readTextFile(tempFile);
         const parsed = parseEditContent(content);

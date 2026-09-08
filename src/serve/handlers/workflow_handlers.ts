@@ -1662,6 +1662,7 @@ export async function handleWorkflowEdit(
       }),
       {
         resolving: () => {},
+        launching: () => {},
         completed: (e) => {
           result = e.data as unknown as Record<string, unknown>;
         },

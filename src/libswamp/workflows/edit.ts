@@ -28,7 +28,10 @@ import {
   type WorkflowId,
 } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
-import { EditorService } from "../../infrastructure/editor/editor_service.ts";
+import {
+  type EditorLaunch,
+  EditorService,
+} from "../../infrastructure/editor/editor_service.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
@@ -62,6 +65,10 @@ export interface WorkflowEditData {
 
 export type WorkflowEditEvent =
   | { kind: "resolving" }
+  | {
+    kind: "launching";
+    data: { editor: string; path: string; waitsForExit: boolean };
+  }
   | { kind: "completed"; data: WorkflowEditData }
   | { kind: "error"; error: SwampError };
 
@@ -79,7 +86,7 @@ export interface WorkflowEditDeps {
   getPath: (id: WorkflowId) => string;
   resolveSymlink: (name: string) => Promise<string | null>;
   fileExists: (path: string) => Promise<boolean>;
-  openEditor: (path: string) => Promise<{ editor: string }>;
+  prepareEditor: (path: string) => Promise<EditorLaunch>;
   updateFromStdin: (
     workflow: Workflow,
     content: string,
@@ -116,10 +123,7 @@ export function createWorkflowEditDeps(
         throw error;
       }
     },
-    openEditor: async (path) => {
-      const result = await editorService.openFile(path);
-      return { editor: result.editor };
-    },
+    prepareEditor: (path) => editorService.prepareOpenFile(path),
     updateFromStdin: async (workflow, content) => {
       const yamlData = parseYaml(content) as WorkflowData;
       yamlData.id = workflow.id;
@@ -262,7 +266,16 @@ export async function* workflowEdit(
 
       // Editor mode
       ctx.logger.debug`Opening file: ${filePath}`;
-      const result = await deps.openEditor(filePath);
+      const launch = await deps.prepareEditor(filePath);
+      yield {
+        kind: "launching",
+        data: {
+          editor: launch.editor,
+          path: filePath,
+          waitsForExit: launch.waitsForExit,
+        },
+      };
+      const result = await launch.open();
 
       yield {
         kind: "completed",

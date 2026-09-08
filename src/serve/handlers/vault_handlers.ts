@@ -783,6 +783,7 @@ export async function handleVaultEdit(
       }),
       {
         resolving: () => {},
+        launching: () => {},
         completed: (e) => {
           result = e.data as unknown as Record<string, unknown>;
         },
