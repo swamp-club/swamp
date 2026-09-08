@@ -11,8 +11,8 @@ machine-readable output.
   `swamp workflow create <name> --json` first, then edit the scaffold at the
   returned `path`, preserving the assigned `id`.
 - **Never modify the `id` field** in an existing workflow file.
-- **Verify CLI syntax**: If unsure about exact flags or subcommands, run
-  `swamp help workflow` for the complete, up-to-date CLI schema.
+- **Verify CLI syntax**: Always run `swamp help workflow` to confirm exact flags
+  before executing — the output is structured JSON.
 
 Correct flow: `swamp workflow create <name> --json` → edit the YAML → validate →
 run.

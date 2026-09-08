@@ -30,8 +30,8 @@ assess → datastore (gate) → vaults (gate) → commit → joiner instructions
   working (e.g. `op whoami` for 1Password, `aws sts get-caller-identity` for
   AWS). Surface the auth requirement and let the user fix it before attempting
   the migration.
-- **Verify CLI syntax**: If unsure about exact flags, run `swamp help <command>`
-  for the up-to-date schema.
+- **Verify CLI syntax**: Always run `swamp help <command>` to confirm exact
+  flags before executing — the output is structured JSON.
 - **VCS detection**: Check for `.jj` directory to determine if the repo uses
   jujutsu or git. Hand off to the `jujutsu` skill or `github-pr` skill
   accordingly for the commit step.
