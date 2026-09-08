@@ -90,11 +90,15 @@ export function useAuditStream(): {
   useEffect(() => {
     if (!connected || !liveEnabled) {
       if (wsRef.current) {
-        wsRef.current.send(JSON.stringify({
-          type: "audit.unsubscribe",
-          id: crypto.randomUUID(),
-        }));
-        wsRef.current.close();
+        if (wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({
+            type: "audit.unsubscribe",
+            id: crypto.randomUUID(),
+          }));
+          wsRef.current.close();
+        } else {
+          wsRef.current.close();
+        }
         wsRef.current = null;
       }
       setStreaming(false);
