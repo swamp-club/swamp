@@ -43,6 +43,7 @@ import {
   dataRename,
   dataSearch,
   type DataSearchDeps,
+  DEFAULT_OUTPUT_RETENTION_DAYS,
   dataVersions,
   DEFAULT_WORKFLOW_RUN_RETENTION_DAYS,
   parseDuration,
@@ -97,7 +98,7 @@ export function resolveRunGcInput(
     dryRun: payload?.dryRun ?? false,
     workflowRunRetentionDays,
     outputRetentionDays: payload?.outputRetentionDays ??
-      configuredRetention.outputRetentionDays ?? workflowRunRetentionDays,
+      configuredRetention.outputRetentionDays ?? DEFAULT_OUTPUT_RETENTION_DAYS,
   };
 }
 

@@ -158,3 +158,14 @@ Deno.test("resolveRunGcInput: output policy survives a workflow-only request ove
     },
   );
 });
+
+Deno.test("resolveRunGcInput: omitted output policy uses the output default", () => {
+  assertEquals(
+    resolveRunGcInput(undefined, { workflowRuns: "2w" }),
+    {
+      dryRun: false,
+      workflowRunRetentionDays: 14,
+      outputRetentionDays: 30,
+    },
+  );
+});
