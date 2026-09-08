@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { walk } from "@std/fs";
-import { join, relative } from "@std/path";
+import { join, normalize, relative } from "@std/path";
 import type {
   Extension,
   ExtensionOrigin,
@@ -162,6 +162,23 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
+/**
+ * Converts an internal catalog key to the native path users expect to see.
+ * Catalog keys intentionally case-fold and slash-normalize on Windows, so
+ * recover the filesystem spelling there where the file still exists. Other
+ * platforms retain the input to avoid resolving symlink aliases in output.
+ * Windows orphans have no filesystem entry to recover and fall back to
+ * native-separator formatting.
+ */
+async function toDisplayPath(path: string): Promise<string> {
+  if (Deno.build.os !== "windows") return path;
+  try {
+    return await Deno.realPath(path);
+  } catch {
+    return normalize(path);
+  }
+}
+
 /** Builds the aggregate-state report from Extension aggregates. */
 export async function buildAggregateState(deps: {
   extensions: readonly Extension[];
@@ -170,6 +187,7 @@ export async function buildAggregateState(deps: {
   const aggregates: DoctorAggregateSummary[] = [];
   const sourceDetails: DoctorSourceDetail[] = [];
   const catalogOrphans: DoctorCatalogOrphan[] = [];
+  const displayPaths = new Set<string>();
   let totalSources = 0;
   let healthySources = 0;
 
@@ -203,6 +221,8 @@ export async function buildAggregateState(deps: {
       }
 
       const bundlePath = extractBundlePath(source);
+      displayPaths.add(source.id.canonicalPath);
+      if (bundlePath) displayPaths.add(bundlePath);
       if (bundlePath) {
         referencedBundleRelPaths.add(
           toForwardSlashes(relative(deps.repoDir, bundlePath)),
@@ -241,13 +261,28 @@ export async function buildAggregateState(deps: {
     });
   }
 
+  const nativePaths = new Map(
+    await Promise.all(
+      [...displayPaths].map(async (path) =>
+        [path, await toDisplayPath(path)] as const
+      ),
+    ),
+  );
+
   // Batch all fileExists checks in parallel.
   const existsResults = await Promise.all(
     orphanCandidates.map((c) => fileExists(c.sourcePath)),
   );
   for (let i = 0; i < orphanCandidates.length; i++) {
     if (!existsResults[i]) {
-      catalogOrphans.push(orphanCandidates[i]);
+      const orphan = orphanCandidates[i];
+      catalogOrphans.push({
+        ...orphan,
+        sourcePath: nativePaths.get(orphan.sourcePath) ?? orphan.sourcePath,
+        bundlePath: orphan.bundlePath
+          ? (nativePaths.get(orphan.bundlePath) ?? orphan.bundlePath)
+          : "",
+      });
     }
   }
 
@@ -263,7 +298,13 @@ export async function buildAggregateState(deps: {
 
   return {
     aggregates,
-    sourceDetails,
+    sourceDetails: sourceDetails.map((detail) => ({
+      ...detail,
+      sourcePath: nativePaths.get(detail.sourcePath) ?? detail.sourcePath,
+      bundlePath: detail.bundlePath
+        ? (nativePaths.get(detail.bundlePath) ?? detail.bundlePath)
+        : "",
+    })),
     catalogOrphans,
     bundleOrphans,
     totalSources,

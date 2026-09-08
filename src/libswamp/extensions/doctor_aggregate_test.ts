@@ -19,7 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import { ensureDir } from "@std/fs";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import {
   buildAggregateState,
   enumerateBundleFiles,
@@ -79,10 +79,10 @@ Deno.test("buildAggregateState: counts each RowState tag correctly", async () =>
     await ensureDir(join(dir, "extensions", "models"));
     await Deno.writeTextFile(srcPath, "// test");
 
-    const bundle = makeBundleLocation(
-      join(dir, ".swamp", "bundles", "test.js"),
-      "fp-test",
-    );
+    const bundlePath = join(dir, ".swamp", "bundles", "test.js");
+    const bundle = makeBundleLocation(bundlePath, "fp-test");
+    await ensureDir(dirname(bundlePath));
+    await Deno.writeTextFile(bundlePath, "// bundle");
 
     const sources = [
       makeTestSource(dir, "extensions/models/test.ts", {
@@ -103,6 +103,8 @@ Deno.test("buildAggregateState: counts each RowState tag correctly", async () =>
     assertEquals(report.aggregates.length, 1);
     assertEquals(report.aggregates[0].stateDistribution.Indexed, 1);
     assertEquals(report.aggregates[0].stateDistribution.Tombstoned, 0);
+    assertEquals(report.sourceDetails[0].sourcePath, srcPath);
+    assertEquals(report.sourceDetails[0].bundlePath, bundlePath);
   });
 });
 
