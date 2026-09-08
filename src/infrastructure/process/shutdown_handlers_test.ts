@@ -55,8 +55,10 @@ Deno.test({
             },
             includePosixSignals: false,
           });
-          // Re-raise SIGINT to exercise the new handler.
-          Deno.kill(Deno.pid, "SIGINT");
+          // Re-raise after this callback returns. Delivering a signal while
+          // Deno is still dispatching the original one can fall through to
+          // the default SIGINT handler during listener teardown.
+          setTimeout(() => Deno.kill(Deno.pid, "SIGINT"), 0);
         },
       });
 
