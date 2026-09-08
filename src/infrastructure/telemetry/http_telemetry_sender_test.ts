@@ -345,6 +345,7 @@ Deno.test("HttpTelemetrySender.sendBatch lands invocationContext at properties.i
       agentSessionDetected: true,
       isInteractive: false,
       externalDatastoreConfigured: true,
+      externalVaultConfigured: false,
     },
   });
 

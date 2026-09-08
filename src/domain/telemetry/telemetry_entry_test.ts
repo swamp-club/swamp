@@ -173,6 +173,7 @@ Deno.test("TelemetryEntry.create accepts invocationContext", () => {
       agentSessionDetected: true,
       isInteractive: false,
       externalDatastoreConfigured: false,
+      externalVaultConfigured: false,
     },
   });
 
@@ -205,6 +206,7 @@ Deno.test("TelemetryEntry round-trips invocationContext through toData/fromData"
       agentSessionDetected: true,
       isInteractive: false,
       externalDatastoreConfigured: true,
+      externalVaultConfigured: false,
     },
   });
 

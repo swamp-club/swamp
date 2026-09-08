@@ -28,6 +28,9 @@ import {
 import type { TelemetryService } from "../domain/telemetry/telemetry_service.ts";
 
 import type { DatastoreConfigData } from "../domain/datastore/datastore_config.ts";
+import type { VaultConfigData } from "../domain/vaults/vault_config.ts";
+
+const BUILTIN_VAULT_TYPES = new Set(["local_encryption", "mock"]);
 
 /**
  * True when the repo marker declares a non-`filesystem` datastore. Local
@@ -39,6 +42,17 @@ export function isExternalDatastoreConfigured(
   datastore: DatastoreConfigData | undefined,
 ): boolean {
   return datastore !== undefined && datastore.type !== "filesystem";
+}
+
+/**
+ * True when any vault in the repo uses a non-builtin provider. Builtin
+ * types (`local_encryption`, `mock`) report false — the signal is "secrets
+ * live behind an external vault provider."
+ */
+export function isExternalVaultConfigured(
+  vaults: VaultConfigData[],
+): boolean {
+  return vaults.some((v) => !BUILTIN_VAULT_TYPES.has(v.type));
 }
 
 /**
@@ -344,18 +358,24 @@ export function buildInvocationContext(
   envSnapshot: Record<string, string>,
   configuredAiTools: string[] | undefined,
   externalDatastoreConfigured: boolean,
+  datastoreType: string | undefined,
+  externalVaultConfigured: boolean,
 ): InvocationContextData {
   const detection = detectAgentHarness(envSnapshot);
   const data: InvocationContextData = {
     agentSessionDetected: detection.agentSessionDetected,
     isInteractive: Deno.stdin.isTerminal(),
     externalDatastoreConfigured,
+    externalVaultConfigured,
   };
   if (configuredAiTools !== undefined) {
     data.configuredAiTools = configuredAiTools;
   }
   if (detection.detectedAiTool !== undefined) {
     data.detectedAiTool = detection.detectedAiTool;
+  }
+  if (datastoreType !== undefined) {
+    data.datastoreType = datastoreType;
   }
   return data;
 }

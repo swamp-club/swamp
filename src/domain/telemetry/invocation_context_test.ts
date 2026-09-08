@@ -30,12 +30,15 @@ Deno.test("createInvocationContext: minimal context with mandatory fields only",
     agentSessionDetected: false,
     isInteractive: true,
     externalDatastoreConfigured: false,
+    externalVaultConfigured: false,
   });
   assertEquals(ctx.configuredAiTools, undefined);
   assertEquals(ctx.detectedAiTool, undefined);
   assertEquals(ctx.agentSessionDetected, false);
   assertEquals(ctx.isInteractive, true);
   assertEquals(ctx.externalDatastoreConfigured, false);
+  assertEquals(ctx.datastoreType, undefined);
+  assertEquals(ctx.externalVaultConfigured, false);
 });
 
 Deno.test("createInvocationContext: configuredAiTools=[] preserved (not coerced to undefined)", () => {
@@ -44,6 +47,7 @@ Deno.test("createInvocationContext: configuredAiTools=[] preserved (not coerced 
     agentSessionDetected: false,
     isInteractive: false,
     externalDatastoreConfigured: false,
+    externalVaultConfigured: false,
   });
   assertEquals(ctx.configuredAiTools, []);
 });
@@ -55,6 +59,7 @@ Deno.test("createInvocationContext: copies configuredAiTools array (no aliasing)
     agentSessionDetected: true,
     isInteractive: false,
     externalDatastoreConfigured: false,
+    externalVaultConfigured: false,
   });
   tools.push("kiro");
   assertEquals(ctx.configuredAiTools, ["claude", "cursor"]);
@@ -65,6 +70,7 @@ Deno.test("createInvocationContext: externalDatastoreConfigured=true preserved",
     agentSessionDetected: false,
     isInteractive: false,
     externalDatastoreConfigured: true,
+    externalVaultConfigured: false,
   });
   assertEquals(ctx.externalDatastoreConfigured, true);
 });
@@ -76,6 +82,7 @@ Deno.test("invocationContextToData: round-trip with detectedAiTool and tools", (
     agentSessionDetected: true,
     isInteractive: false,
     externalDatastoreConfigured: true,
+    externalVaultConfigured: false,
   });
   const data = invocationContextToData(ctx);
   assertEquals(data, {
@@ -84,6 +91,7 @@ Deno.test("invocationContextToData: round-trip with detectedAiTool and tools", (
     agentSessionDetected: true,
     isInteractive: false,
     externalDatastoreConfigured: true,
+    externalVaultConfigured: false,
   });
 });
 
@@ -92,10 +100,12 @@ Deno.test("invocationContextToData: omits absent optional fields", () => {
     agentSessionDetected: false,
     isInteractive: true,
     externalDatastoreConfigured: false,
+    externalVaultConfigured: false,
   });
   const data = invocationContextToData(ctx);
   assertEquals("configuredAiTools" in data, false);
   assertEquals("detectedAiTool" in data, false);
+  assertEquals("datastoreType" in data, false);
 });
 
 Deno.test("invocationContextToData: empty configuredAiTools array is preserved on the wire", () => {
@@ -104,6 +114,7 @@ Deno.test("invocationContextToData: empty configuredAiTools array is preserved o
     agentSessionDetected: false,
     isInteractive: false,
     externalDatastoreConfigured: false,
+    externalVaultConfigured: false,
   });
   const data = invocationContextToData(ctx);
   assertEquals(data.configuredAiTools, []);
@@ -116,6 +127,8 @@ Deno.test("invocationContextFromData: round-trip preserves every field", () => {
     agentSessionDetected: true,
     isInteractive: true,
     externalDatastoreConfigured: true,
+    datastoreType: "@swamp/s3",
+    externalVaultConfigured: true,
   });
   const restored = invocationContextFromData(invocationContextToData(original));
   assertEquals(restored.configuredAiTools, ["claude"]);
@@ -123,6 +136,8 @@ Deno.test("invocationContextFromData: round-trip preserves every field", () => {
   assertEquals(restored.agentSessionDetected, true);
   assertEquals(restored.isInteractive, true);
   assertEquals(restored.externalDatastoreConfigured, true);
+  assertEquals(restored.datastoreType, "@swamp/s3");
+  assertEquals(restored.externalVaultConfigured, true);
 });
 
 Deno.test("invocationContextFromData: agent detected without specific tool round-trips", () => {
@@ -130,8 +145,43 @@ Deno.test("invocationContextFromData: agent detected without specific tool round
     agentSessionDetected: true,
     isInteractive: false,
     externalDatastoreConfigured: false,
+    externalVaultConfigured: false,
   });
   const restored = invocationContextFromData(invocationContextToData(original));
   assertEquals(restored.detectedAiTool, undefined);
   assertEquals(restored.agentSessionDetected, true);
+});
+
+Deno.test("createInvocationContext: externalVaultConfigured=true preserved", () => {
+  const ctx = createInvocationContext({
+    agentSessionDetected: false,
+    isInteractive: false,
+    externalDatastoreConfigured: false,
+    externalVaultConfigured: true,
+  });
+  assertEquals(ctx.externalVaultConfigured, true);
+});
+
+Deno.test("createInvocationContext: datastoreType preserved", () => {
+  const ctx = createInvocationContext({
+    agentSessionDetected: false,
+    isInteractive: false,
+    externalDatastoreConfigured: true,
+    datastoreType: "@swamp/s3",
+    externalVaultConfigured: false,
+  });
+  assertEquals(ctx.datastoreType, "@swamp/s3");
+});
+
+Deno.test("invocationContextToData: datastoreType included when set", () => {
+  const ctx = createInvocationContext({
+    agentSessionDetected: false,
+    isInteractive: false,
+    externalDatastoreConfigured: true,
+    datastoreType: "@swamp/gcs",
+    externalVaultConfigured: true,
+  });
+  const data = invocationContextToData(ctx);
+  assertEquals(data.datastoreType, "@swamp/gcs");
+  assertEquals(data.externalVaultConfigured, true);
 });

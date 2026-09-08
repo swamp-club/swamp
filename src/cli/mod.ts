@@ -125,6 +125,7 @@ import {
 } from "./auto_resolver_adapters.ts";
 import { TelemetryService } from "../domain/telemetry/telemetry_service.ts";
 import { JsonTelemetryRepository } from "../infrastructure/persistence/json_telemetry_repository.ts";
+import { YamlVaultConfigRepository } from "../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { HttpTelemetrySender } from "../infrastructure/telemetry/http_telemetry_sender.ts";
 import {
   buildInvocationContext,
@@ -132,6 +133,7 @@ import {
   clearActiveTelemetryService,
   extractCommandInfo,
   isExternalDatastoreConfigured,
+  isExternalVaultConfigured,
   isTelemetryDisabled,
   projectEnvSnapshot,
   setActiveTelemetryContext,
@@ -1165,6 +1167,8 @@ async function initTelemetryService(
     let repoId: string | undefined;
     let configuredAiTools: string[] | undefined;
     let externalDatastore = false;
+    let datastoreType: string | undefined;
+    let externalVault = false;
     let markerEndpoint: string | undefined;
     let keepFlushed = false;
 
@@ -1182,6 +1186,18 @@ async function initTelemetryService(
       }
       configuredAiTools = marker.tools;
       externalDatastore = isExternalDatastoreConfigured(marker.datastore);
+      datastoreType = marker.datastore?.type;
+
+      try {
+        const vaultRepo = new YamlVaultConfigRepository(repoDir);
+        const vaultConfigs = await vaultRepo.findAll();
+        externalVault = isExternalVaultConfigured(
+          vaultConfigs.map((v) => v.toData()),
+        );
+      } catch {
+        // Vault dir missing or unreadable — default to false
+      }
+
       markerEndpoint = marker.telemetryEndpoint;
       keepFlushed = marker.telemetryKeepFlushed ?? false;
     } else {
@@ -1232,6 +1248,8 @@ async function initTelemetryService(
       projectEnvSnapshot(),
       configuredAiTools,
       externalDatastore,
+      datastoreType,
+      externalVault,
     );
     const service = new TelemetryService(
       repository,

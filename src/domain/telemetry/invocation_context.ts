@@ -45,6 +45,8 @@ export interface InvocationContext {
   readonly agentSessionDetected: boolean;
   readonly isInteractive: boolean;
   readonly externalDatastoreConfigured: boolean;
+  readonly datastoreType?: string;
+  readonly externalVaultConfigured: boolean;
 }
 
 /**
@@ -56,6 +58,8 @@ export interface InvocationContextData {
   agentSessionDetected: boolean;
   isInteractive: boolean;
   externalDatastoreConfigured: boolean;
+  datastoreType?: string;
+  externalVaultConfigured: boolean;
 }
 
 /**
@@ -72,6 +76,8 @@ export function createInvocationContext(
     agentSessionDetected: props.agentSessionDetected,
     isInteractive: props.isInteractive,
     externalDatastoreConfigured: props.externalDatastoreConfigured,
+    datastoreType: props.datastoreType,
+    externalVaultConfigured: props.externalVaultConfigured,
   };
 }
 
@@ -85,7 +91,11 @@ export function invocationContextToData(
     agentSessionDetected: context.agentSessionDetected,
     isInteractive: context.isInteractive,
     externalDatastoreConfigured: context.externalDatastoreConfigured,
+    externalVaultConfigured: context.externalVaultConfigured,
   };
+  if (context.datastoreType !== undefined) {
+    data.datastoreType = context.datastoreType;
+  }
   if (context.configuredAiTools !== undefined) {
     data.configuredAiTools = [...context.configuredAiTools];
   }

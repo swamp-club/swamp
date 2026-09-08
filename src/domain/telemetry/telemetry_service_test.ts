@@ -420,6 +420,7 @@ Deno.test("TelemetryService.recordSuccess stamps invocationContext on entries", 
     agentSessionDetected: true,
     isInteractive: false,
     externalDatastoreConfigured: false,
+    externalVaultConfigured: false,
   });
 
   await service.recordSuccess(
@@ -446,6 +447,7 @@ Deno.test("TelemetryService.recordError stamps invocationContext on entries", as
     agentSessionDetected: true,
     isInteractive: false,
     externalDatastoreConfigured: false,
+    externalVaultConfigured: false,
   });
 
   await service.recordError(
