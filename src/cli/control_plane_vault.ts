@@ -25,12 +25,29 @@ import {
 import { FileSystemControlPlaneStore } from "../infrastructure/persistence/fs_control_plane_store.ts";
 import { swampPath } from "../infrastructure/persistence/paths.ts";
 
+export interface ControlPlaneVaultCliOptions {
+  namespace?: string;
+  catalogInvalidate?: () => void;
+}
+
 export async function initializeControlPlaneVaultForCli(
   repoDir: string,
   syncService?: DatastoreSyncService,
+  options?: ControlPlaneVaultCliOptions,
 ): Promise<ControlPlaneVaultInitResult | null> {
   const caps = syncService?.capabilities?.();
   const hasRemote = !!(caps?.controlPlane && syncService?.controlPlaneStore);
+
+  // Bind the sync service's namespace before obtaining the control plane
+  // store. The S3/GCS extensions irrevocably bind namespace on the first
+  // call to any sync or control-plane method — calling controlPlaneStore()
+  // without a prior pullChanged({ namespace }) binds to root (undefined),
+  // causing all subsequent namespace-aware pushChanged calls to fail with
+  // "Namespace mismatch". This mirrors the serve.ts boot sequence.
+  if (hasRemote && options?.namespace) {
+    await syncService!.pullChanged({ namespace: options.namespace });
+    options.catalogInvalidate?.();
+  }
 
   const store = hasRemote
     ? syncService!.controlPlaneStore!()

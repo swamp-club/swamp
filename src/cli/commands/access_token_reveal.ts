@@ -25,6 +25,7 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import {
   consumeStream,
   createLibSwampContext,
@@ -76,13 +77,20 @@ export const accessTokenRevealCommand = new Command()
       "reveal",
     ]);
 
-    const { repoDir, repoContext, syncService } =
+    const { repoDir, repoContext, datastoreConfig, syncService } =
       await requireInitializedRepoUnlocked({
         repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
       });
 
-    await initializeControlPlaneVaultForCli(repoDir, syncService);
+    const namespace = isCustomDatastoreConfig(datastoreConfig)
+      ? datastoreConfig.namespace
+      : undefined;
+
+    await initializeControlPlaneVaultForCli(repoDir, syncService, {
+      namespace,
+      catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+    });
 
     const vaultService = await VaultService.fromRepository(repoDir);
     const deps = createServerTokenRevealDeps(

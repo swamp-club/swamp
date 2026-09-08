@@ -123,9 +123,17 @@ export const accessTokenMintCommand = new Command()
 
     cliCtx.logger.debug`Minting server token ${name}`;
 
+    const namespace = isCustomDatastoreConfig(datastoreConfig)
+      ? datastoreConfig.namespace
+      : undefined;
+
     const controlPlaneResult = await initializeControlPlaneVaultForCli(
       repoDir,
       syncService,
+      {
+        namespace,
+        catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+      },
     );
 
     let effectiveVault = options.vault as string | undefined;
@@ -238,33 +246,19 @@ export const accessTokenMintCommand = new Command()
       }
 
       if (syncService) {
-        const namespace = isCustomDatastoreConfig(datastoreConfig)
-          ? datastoreConfig.namespace
-          : undefined;
-        try {
-          await syncService.markDirty();
-          await syncService.pushChanged({ namespace });
+        await syncService.markDirty();
+        await syncService.pushChanged({ namespace });
 
-          repoContext.catalogStore.invalidate();
-          const verifyResult = await findDefinitionByIdOrName(
-            repoContext.definitionRepo,
-            name,
-          );
-          if (!verifyResult) {
-            cliCtx.logger.warn(
-              "Server token {name} was minted but its definition could not be read back — it may not survive a pod restart. Re-mint the token if authentication fails after restart.",
-              { name },
-            );
-          }
-        } catch (syncError) {
-          cliCtx.logger.warn(
-            "Sync failed after minting token {name} — token is local only and may not survive a pod restart: {error}",
-            {
-              name,
-              error: syncError instanceof Error
-                ? syncError.message
-                : String(syncError),
-            },
+        repoContext.catalogStore.invalidate();
+        const verifyResult = await findDefinitionByIdOrName(
+          repoContext.definitionRepo,
+          name,
+        );
+        if (!verifyResult) {
+          throw new UserError(
+            `Server token '${name}' was minted but its definition could not be ` +
+              `read back after sync — the token will not be usable by serve. ` +
+              `Re-mint the token after resolving the datastore issue.`,
           );
         }
       }

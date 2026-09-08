@@ -28,6 +28,7 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import {
   consumeStream,
@@ -136,9 +137,17 @@ export const accessTokenRotateCommand = withRemoteOptions(
 
   cliCtx.logger.debug`Rotating server token ${name}`;
 
+  const namespace = isCustomDatastoreConfig(datastoreConfig)
+    ? datastoreConfig.namespace
+    : undefined;
+
   const controlPlaneResult = await initializeControlPlaneVaultForCli(
     repoDir,
     syncService,
+    {
+      namespace,
+      catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+    },
   );
 
   let effectiveVault = options.vault as string | undefined;
