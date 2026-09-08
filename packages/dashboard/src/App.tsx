@@ -19,6 +19,7 @@
 
 import { useEffect, useState } from "react";
 import { SwampProvider, useSwamp } from "./client/SwampProvider";
+import { useAuditStream } from "./client/useAuditStream";
 import { useHealthStream } from "./client/useHealthStream";
 import { useRequest } from "./client/useRequest";
 import { extractArray } from "./client/extract";
@@ -37,6 +38,7 @@ import { Approvals } from "./views/Approvals";
 import { Data } from "./views/Data";
 import { Vaults } from "./views/Vaults";
 import { Extensions } from "./views/Extensions";
+import { Activity } from "./views/Activity";
 import { RunDetail } from "./views/RunDetail";
 
 export function App() {
@@ -75,6 +77,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [view, setView] = useState<View>("overview");
   const [detail, setDetail] = useState<DetailView>(null);
   const health = useHealthStream();
+  const auditStream = useAuditStream();
 
   const { data: approvalsData } = useRequest("workflow.approvals");
   const approvalCount = extractArray(approvalsData).length;
@@ -155,6 +158,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               {view === "schedules" && <Schedules health={health} />}
               {view === "webhooks" && <Webhooks health={health} />}
               {view === "approvals" && <Approvals />}
+              {view === "activity" && <Activity auditStream={auditStream} />}
               {view === "data" && <Data />}
               {view === "vaults" && <Vaults />}
               {view === "extensions" && <Extensions />}

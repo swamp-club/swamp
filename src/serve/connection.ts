@@ -1602,7 +1602,7 @@ export function handleMessage(
         auditOpts(
           "execution",
           "workflow",
-          "*",
+          request.payload?.workflowIdOrName ?? "*",
         ),
       );
       break;
@@ -1718,7 +1718,7 @@ export function handleMessage(
           controller,
           principal,
         ),
-        auditOpts("data", "data", "*"),
+        auditOpts("data", "data", request.payload?.predicate ?? "*"),
       );
       break;
     case "data.list":
@@ -1744,7 +1744,11 @@ export function handleMessage(
           principal,
           request.payload,
         ),
-        auditOpts("data", "data", "*"),
+        auditOpts(
+          "data",
+          "data",
+          request.payload?.query ?? request.payload?.model ?? "*",
+        ),
       );
       break;
     case "data.versions":
@@ -1796,7 +1800,7 @@ export function handleMessage(
           principal,
           request.payload,
         ),
-        auditOpts("data", "model", "*"),
+        auditOpts("data", "model", request.payload?.query ?? "*"),
       );
       break;
     case "model.method.describe":
@@ -1822,7 +1826,7 @@ export function handleMessage(
           principal,
           request.payload,
         ),
-        auditOpts("data", "workflow", "*"),
+        auditOpts("data", "workflow", request.payload?.query ?? "*"),
       );
       break;
     case "workflow.approvals":
@@ -2189,7 +2193,11 @@ export function handleMessage(
           controller,
           principal,
         ),
-        auditOpts("data", "model", "*"),
+        auditOpts(
+          "data",
+          "model",
+          request.payload?.outputIdOrModelName ?? "*",
+        ),
       );
       break;
     case "model.output.data":
@@ -2202,7 +2210,7 @@ export function handleMessage(
           controller,
           principal,
         ),
-        auditOpts("data", "model", "*"),
+        auditOpts("data", "model", request.payload?.outputIdArg ?? "*"),
       );
       break;
     case "model.output.logs":
@@ -2215,7 +2223,7 @@ export function handleMessage(
           controller,
           principal,
         ),
-        auditOpts("data", "model", "*"),
+        auditOpts("data", "model", request.payload?.outputIdArg ?? "*"),
       );
       break;
     case "model.output.search":
@@ -2228,7 +2236,7 @@ export function handleMessage(
           principal,
           request.payload,
         ),
-        auditOpts("data", "model", "*"),
+        auditOpts("data", "model", request.payload?.query ?? "*"),
       );
       break;
     case "model.method.history.get":
@@ -2241,7 +2249,11 @@ export function handleMessage(
           controller,
           principal,
         ),
-        auditOpts("data", "model", "*"),
+        auditOpts(
+          "data",
+          "model",
+          request.payload?.outputIdOrModelName ?? "*",
+        ),
       );
       break;
     case "model.method.history.logs":
@@ -2254,7 +2266,11 @@ export function handleMessage(
           controller,
           principal,
         ),
-        auditOpts("data", "model", "*"),
+        auditOpts(
+          "data",
+          "model",
+          request.payload?.outputIdOrModelName ?? "*",
+        ),
       );
       break;
     case "model.method.history.search":
@@ -2267,7 +2283,7 @@ export function handleMessage(
           principal,
           request.payload,
         ),
-        auditOpts("data", "model", "*"),
+        auditOpts("data", "model", request.payload?.query ?? "*"),
       );
       break;
     case "model.validate":
@@ -2280,7 +2296,11 @@ export function handleMessage(
           principal,
           request.payload,
         ),
-        auditOpts("data", "model", "*"),
+        auditOpts(
+          "data",
+          "model",
+          request.payload?.modelIdOrName ?? "*",
+        ),
       );
       break;
     case "model.evaluate":
@@ -2293,7 +2313,11 @@ export function handleMessage(
           principal,
           request.payload,
         ),
-        auditOpts("execution", "model", "*"),
+        auditOpts(
+          "execution",
+          "model",
+          request.payload?.modelIdOrName ?? "*",
+        ),
       );
       break;
     case "workflow.get":
@@ -2306,7 +2330,11 @@ export function handleMessage(
           controller,
           principal,
         ),
-        auditOpts("data", "workflow", "*"),
+        auditOpts(
+          "data",
+          "workflow",
+          request.payload?.workflowIdOrName ?? "*",
+        ),
       );
       break;
     case "workflow.history.get":
@@ -2319,7 +2347,11 @@ export function handleMessage(
           controller,
           principal,
         ),
-        auditOpts("data", "workflow", "*"),
+        auditOpts(
+          "data",
+          "workflow",
+          request.payload?.workflowIdOrName ?? "*",
+        ),
       );
       break;
     case "workflow.history.logs":
@@ -2345,7 +2377,11 @@ export function handleMessage(
           principal,
           request.payload,
         ),
-        auditOpts("data", "workflow", "*"),
+        auditOpts(
+          "data",
+          "workflow",
+          request.payload?.query ?? request.payload?.workflow ?? "*",
+        ),
       );
       break;
     case "workflow.run.search":
@@ -2358,7 +2394,7 @@ export function handleMessage(
           principal,
           request.payload,
         ),
-        auditOpts("data", "workflow", "*"),
+        auditOpts("data", "workflow", request.payload?.query ?? "*"),
       );
       break;
     case "workflow.schema":
@@ -2371,7 +2407,11 @@ export function handleMessage(
           controller,
           principal,
         ),
-        auditOpts("data", "workflow", "*"),
+        auditOpts(
+          "data",
+          "workflow",
+          request.payload?.workflowIdOrName ?? "*",
+        ),
       );
       break;
     case "workflow.approve":
@@ -2826,7 +2866,7 @@ export function handleMessage(
           principal,
           request.payload,
         ),
-        auditOpts("data", "model", "*"),
+        auditOpts("data", "model", request.payload?.query ?? "*"),
       );
       break;
     case "workflow.create":
@@ -2855,7 +2895,7 @@ export function handleMessage(
         auditOpts(
           "admin",
           "workflow",
-          "*",
+          request.payload?.workflowIdOrName ?? "*",
         ),
       );
       break;
@@ -2872,7 +2912,7 @@ export function handleMessage(
         auditOpts(
           "admin",
           "workflow",
-          "*",
+          request.payload?.workflowIdOrName ?? "*",
         ),
       );
       break;
@@ -2886,7 +2926,11 @@ export function handleMessage(
           controller,
           principal,
         ),
-        auditOpts("data", "workflow", "*"),
+        auditOpts(
+          "data",
+          "workflow",
+          request.payload?.workflowIdOrName ?? "*",
+        ),
       );
       break;
     case "workflow.evaluate":
@@ -2899,7 +2943,11 @@ export function handleMessage(
           controller,
           principal,
         ),
-        auditOpts("execution", "workflow", "*"),
+        auditOpts(
+          "execution",
+          "workflow",
+          request.payload?.workflowIdOrName ?? "*",
+        ),
       );
       break;
     case "workflow.trigger.set":
@@ -2912,7 +2960,11 @@ export function handleMessage(
           controller,
           principal,
         ),
-        auditOpts("admin", "workflow", "*"),
+        auditOpts(
+          "admin",
+          "workflow",
+          request.payload?.workflowName ?? "*",
+        ),
       );
       break;
     case "workflow.trigger.get":
@@ -2925,7 +2977,7 @@ export function handleMessage(
           controller,
           principal,
         ),
-        auditOpts("data", "workflow", "*"),
+        auditOpts("data", "workflow", request.payload?.workflowName ?? "*"),
       );
       break;
     case "workflow.trigger.remove":
@@ -2938,7 +2990,11 @@ export function handleMessage(
           controller,
           principal,
         ),
-        auditOpts("admin", "workflow", "*"),
+        auditOpts(
+          "admin",
+          "workflow",
+          request.payload?.workflowName ?? "*",
+        ),
       );
       break;
     case "vault.create":
