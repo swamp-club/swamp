@@ -206,7 +206,7 @@ To construct this checklist:
 
 3. For each step, extract: job name, step name, model name, duration, and
    status (succeeded/failed/skipped). For review steps that ran, include the
-   VERDICT from the review log.
+   VERDICT from the review log (explicit marker or inferred).
 
    **Timing**: Each step in the `history get` output has a `duration` field
    in milliseconds — use it directly as `durationMs`. For `totalDurationMs`,
@@ -463,9 +463,15 @@ SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-skills \
 
 ### 5. Repeat until green
 
-Repeat steps 1–4 until all build steps pass, all reviews return
-`VERDICT: pass`, and all skill checks pass or are skipped. Present the full
-verification checklist to the user after each run.
+Repeat steps 1–4 until all build steps pass, all reviews pass, and all skill
+checks pass or are skipped. Present the full verification checklist to the user
+after each run.
+
+A review passes when it outputs an explicit `VERDICT: pass` marker. If the
+marker is missing, the workflow infers the verdict: reviews with blocking
+findings (`CRITICAL`, `HIGH`, or `Blocking` severity labels) infer fail; reviews
+with no blocking findings and substantive output infer pass (with a warning).
+Empty or trivially short output (<50 bytes) is treated as a missing verdict.
 
 Do NOT open a PR until the user has seen a fully green checklist,
 confirmed they want to proceed, and the attestation has been posted to

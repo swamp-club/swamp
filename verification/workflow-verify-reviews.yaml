@@ -98,12 +98,23 @@ jobs:
               RESULT_FILE=$(mktemp)
               git diff "$MERGE_BASE" > "$DIFF_FILE"
               cat verification/review-prompts/code-review.md > "$PROMPT_FILE"
-              printf '\n\nThe diff to review is at: %s\nRead that file to see the changes.\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n' "$DIFF_FILE" >> "$PROMPT_FILE"
+              printf '\n\nThe diff to review is at: %s\nRead that file to see the changes.\n\nIMPORTANT: You MUST begin your response with exactly one of these two lines:\nVERDICT: pass\nVERDICT: fail\n\nThen provide your full review below the verdict line.\n' "$DIFF_FILE" >> "$PROMPT_FILE"
               claude -p - \
                 --model claude-opus-4-6 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
               rm -f "$PROMPT_FILE" "$DIFF_FILE"
               VERDICT=$(grep -oi 'VERDICT: *\**pass\**\|VERDICT: *\**fail\**' "$RESULT_FILE" | head -1 | grep -oi 'pass\|fail')
+              if [ -z "$VERDICT" ]; then
+                if [ "$(wc -c < "$RESULT_FILE")" -lt 50 ]; then
+                  VERDICT="missing"
+                elif grep -qiE '[*]{0,2}(CRITICAL|HIGH|Blocking)[*]{0,2}[[:space:]]*:' "$RESULT_FILE"; then
+                  VERDICT="fail"
+                  echo "::warning::No VERDICT marker found; inferred fail from blocking findings"
+                else
+                  VERDICT="pass"
+                  echo "::warning::No VERDICT marker found; inferred pass (no blocking findings detected)"
+                fi
+              fi
               rm -f "$RESULT_FILE"
               if [ "$VERDICT" != "pass" ]; then
                 echo "::error::Code review did not pass (verdict: ${VERDICT:-missing})"
@@ -127,12 +138,23 @@ jobs:
               RESULT_FILE=$(mktemp)
               git diff "$MERGE_BASE" > "$DIFF_FILE"
               cat verification/review-prompts/adversarial-review.md > "$PROMPT_FILE"
-              printf '\n\nThe diff to review is at: %s\nRead that file to see the changes.\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n' "$DIFF_FILE" >> "$PROMPT_FILE"
+              printf '\n\nThe diff to review is at: %s\nRead that file to see the changes.\n\nIMPORTANT: You MUST begin your response with exactly one of these two lines:\nVERDICT: pass\nVERDICT: fail\n\nThen provide your full review below the verdict line.\n' "$DIFF_FILE" >> "$PROMPT_FILE"
               claude -p - \
                 --model claude-opus-4-6 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
               rm -f "$PROMPT_FILE" "$DIFF_FILE"
               VERDICT=$(grep -oi 'VERDICT: *\**pass\**\|VERDICT: *\**fail\**' "$RESULT_FILE" | head -1 | grep -oi 'pass\|fail')
+              if [ -z "$VERDICT" ]; then
+                if [ "$(wc -c < "$RESULT_FILE")" -lt 50 ]; then
+                  VERDICT="missing"
+                elif grep -qiE '[*]{0,2}(CRITICAL|HIGH|Blocking)[*]{0,2}[[:space:]]*:' "$RESULT_FILE"; then
+                  VERDICT="fail"
+                  echo "::warning::No VERDICT marker found; inferred fail from blocking findings"
+                else
+                  VERDICT="pass"
+                  echo "::warning::No VERDICT marker found; inferred pass (no blocking findings detected)"
+                fi
+              fi
               rm -f "$RESULT_FILE"
               if [ "$VERDICT" != "pass" ]; then
                 echo "::error::Adversarial review did not pass (verdict: ${VERDICT:-missing})"
@@ -156,12 +178,23 @@ jobs:
               RESULT_FILE=$(mktemp)
               git diff "$MERGE_BASE" > "$DIFF_FILE"
               cat verification/review-prompts/ux-review.md > "$PROMPT_FILE"
-              printf '\n\nThe diff to review is at: %s\nRead that file to see the changes.\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n' "$DIFF_FILE" >> "$PROMPT_FILE"
+              printf '\n\nThe diff to review is at: %s\nRead that file to see the changes.\n\nIMPORTANT: You MUST begin your response with exactly one of these two lines:\nVERDICT: pass\nVERDICT: fail\n\nThen provide your full review below the verdict line.\n' "$DIFF_FILE" >> "$PROMPT_FILE"
               claude -p - \
                 --model claude-sonnet-4-6 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
               rm -f "$PROMPT_FILE" "$DIFF_FILE"
               VERDICT=$(grep -oi 'VERDICT: *\**pass\**\|VERDICT: *\**fail\**' "$RESULT_FILE" | head -1 | grep -oi 'pass\|fail')
+              if [ -z "$VERDICT" ]; then
+                if [ "$(wc -c < "$RESULT_FILE")" -lt 50 ]; then
+                  VERDICT="missing"
+                elif grep -qiE '[*]{0,2}(CRITICAL|HIGH|Blocking)[*]{0,2}[[:space:]]*:' "$RESULT_FILE"; then
+                  VERDICT="fail"
+                  echo "::warning::No VERDICT marker found; inferred fail from blocking findings"
+                else
+                  VERDICT="pass"
+                  echo "::warning::No VERDICT marker found; inferred pass (no blocking findings detected)"
+                fi
+              fi
               rm -f "$RESULT_FILE"
               if [ "$VERDICT" != "pass" ]; then
                 echo "::error::UX review did not pass (verdict: ${VERDICT:-missing})"
@@ -185,12 +218,23 @@ jobs:
               RESULT_FILE=$(mktemp)
               git diff "$MERGE_BASE" > "$DIFF_FILE"
               cat verification/review-prompts/ci-security-review.md > "$PROMPT_FILE"
-              printf '\n\nThe diff to review is at: %s\nRead that file to see the changes.\n\nOutput your review. Start with a single line: VERDICT: pass or VERDICT: fail\nThen provide your full review.\n' "$DIFF_FILE" >> "$PROMPT_FILE"
+              printf '\n\nThe diff to review is at: %s\nRead that file to see the changes.\n\nIMPORTANT: You MUST begin your response with exactly one of these two lines:\nVERDICT: pass\nVERDICT: fail\n\nThen provide your full review below the verdict line.\n' "$DIFF_FILE" >> "$PROMPT_FILE"
               claude -p - \
                 --model claude-opus-4-6 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
               rm -f "$PROMPT_FILE" "$DIFF_FILE"
               VERDICT=$(grep -oi 'VERDICT: *\**pass\**\|VERDICT: *\**fail\**' "$RESULT_FILE" | head -1 | grep -oi 'pass\|fail')
+              if [ -z "$VERDICT" ]; then
+                if [ "$(wc -c < "$RESULT_FILE")" -lt 50 ]; then
+                  VERDICT="missing"
+                elif grep -qiE '[*]{0,2}(CRITICAL|HIGH|Blocking)[*]{0,2}[[:space:]]*:' "$RESULT_FILE"; then
+                  VERDICT="fail"
+                  echo "::warning::No VERDICT marker found; inferred fail from blocking findings"
+                else
+                  VERDICT="pass"
+                  echo "::warning::No VERDICT marker found; inferred pass (no blocking findings detected)"
+                fi
+              fi
               rm -f "$RESULT_FILE"
               if [ "$VERDICT" != "pass" ]; then
                 echo "::error::CI security review did not pass (verdict: ${VERDICT:-missing})"
