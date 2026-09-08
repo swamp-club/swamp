@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Skill review script that runs `npx tessl skill review` on each bundled skill
+ * Skill review script that runs `npx tessl review run` on each bundled skill
  * and reports scores. Fails if any skill's average score drops below 90%.
  *
  * Usage: deno run review-skills
@@ -34,8 +34,11 @@ const THRESHOLD = 0.9;
 
 interface ReviewResult {
   validation: { overallPassed: boolean };
-  descriptionJudge: { normalizedScore: number };
-  contentJudge: { normalizedScore: number };
+  judges: {
+    description: { normalizedScore: number };
+    content: { normalizedScore: number };
+  };
+  review: { reviewScore: number };
 }
 
 interface SkillScore {
@@ -48,7 +51,15 @@ interface SkillScore {
 
 async function reviewSkill(skillDir: string): Promise<ReviewResult> {
   const command = new Deno.Command("npx", {
-    args: ["tessl", "skill", "review", skillDir, "--json"],
+    args: [
+      "tessl",
+      "review",
+      "run",
+      skillDir,
+      "--json",
+      "--workspace",
+      "swamp-club",
+    ],
     stdout: "piped",
     stderr: "piped",
   });
@@ -94,13 +105,11 @@ async function reviewSkill(skillDir: string): Promise<ReviewResult> {
     unknown
   >;
 
-  // Validate required fields are present and scores are finite numbers
-  const descScore =
-    (parsed.descriptionJudge as Record<string, unknown> | undefined)
-      ?.normalizedScore;
-  const contScore =
-    (parsed.contentJudge as Record<string, unknown> | undefined)
-      ?.normalizedScore;
+  const judges = parsed.judges as
+    | Record<string, Record<string, unknown>>
+    | undefined;
+  const descScore = judges?.description?.normalizedScore;
+  const contScore = judges?.content?.normalizedScore;
 
   if (
     typeof descScore !== "number" || !Number.isFinite(descScore) ||
@@ -120,10 +129,18 @@ async function reviewSkill(skillDir: string): Promise<ReviewResult> {
     );
   }
 
+  const reviewScore = (parsed.review as Record<string, unknown> | undefined)
+    ?.reviewScore;
+
   return {
     validation: { overallPassed: validation.overallPassed },
-    descriptionJudge: { normalizedScore: descScore },
-    contentJudge: { normalizedScore: contScore },
+    judges: {
+      description: { normalizedScore: descScore },
+      content: { normalizedScore: contScore },
+    },
+    review: {
+      reviewScore: typeof reviewScore === "number" ? reviewScore : 0,
+    },
   };
 }
 
@@ -177,8 +194,8 @@ async function main(): Promise<void> {
 
     try {
       const result = await reviewSkill(skillDir);
-      const descriptionScore = result.descriptionJudge.normalizedScore;
-      const contentScore = result.contentJudge.normalizedScore;
+      const descriptionScore = result.judges.description.normalizedScore;
+      const contentScore = result.judges.content.normalizedScore;
       const averageScore = (descriptionScore + contentScore) / 2;
       const validationPassed = result.validation.overallPassed;
 
