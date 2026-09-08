@@ -22,12 +22,21 @@ import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import { modelEdit, type ModelEditDeps, type ModelEditEvent } from "./edit.ts";
 
+function prepareEditor(editor: string) {
+  return (path: string) =>
+    Promise.resolve({
+      editor,
+      waitsForExit: false,
+      open: () => Promise.resolve({ editor, path }),
+    });
+}
+
 function makeDeps(overrides: Partial<ModelEditDeps> = {}): ModelEditDeps {
   return {
     lookupDefinition: () => Promise.resolve(null),
     resolveSymlink: () => Promise.resolve(null),
     getDefinitionPath: () => "/fake/path/definition.yaml",
-    openEditor: () => Promise.resolve({ editor: "VS Code" }),
+    prepareEditor: prepareEditor("VS Code"),
     updateFromStdin: () =>
       Promise.resolve(
         {
@@ -74,7 +83,7 @@ Deno.test("modelEdit: opens editor when model found", async () => {
         type: testModelType,
       }),
     getDefinitionPath: () => "/repo/models/my-model/definition.yaml",
-    openEditor: () => Promise.resolve({ editor: "Neovim" }),
+    prepareEditor: prepareEditor("Neovim"),
   });
 
   const events = await collect<ModelEditEvent>(
@@ -85,6 +94,14 @@ Deno.test("modelEdit: opens editor when model found", async () => {
 
   assertEquals(events, [
     { kind: "resolving" },
+    {
+      kind: "launching",
+      data: {
+        editor: "Neovim",
+        path: "/repo/models/my-model/definition.yaml",
+        waitsForExit: false,
+      },
+    },
     {
       kind: "completed",
       data: {
@@ -99,6 +116,43 @@ Deno.test("modelEdit: opens editor when model found", async () => {
   ]);
 });
 
+Deno.test("modelEdit: announces editor launch before opening", async () => {
+  let opened = false;
+  const deps = makeDeps({
+    lookupDefinition: () =>
+      Promise.resolve({ definition: testDefinition, type: testModelType }),
+    getDefinitionPath: () => "/repo/models/my-model/definition.yaml",
+    prepareEditor: (path) =>
+      Promise.resolve({
+        editor: "VS Code",
+        waitsForExit: true,
+        open: () => {
+          opened = true;
+          return Promise.resolve({ editor: "VS Code", path });
+        },
+      }),
+  });
+
+  const iterator = modelEdit(createLibSwampContext(), deps, {
+    modelIdOrName: "my-model",
+  })[Symbol.asyncIterator]();
+
+  await iterator.next();
+  const launch = await iterator.next();
+  assertEquals(launch.value, {
+    kind: "launching",
+    data: {
+      editor: "VS Code",
+      path: "/repo/models/my-model/definition.yaml",
+      waitsForExit: true,
+    },
+  });
+  assertEquals(opened, false);
+
+  await iterator.next();
+  assertEquals(opened, true);
+});
+
 Deno.test("modelEdit: falls back to symlink when lookup fails", async () => {
   const deps = makeDeps({
     lookupDefinition: () => {
@@ -106,7 +160,7 @@ Deno.test("modelEdit: falls back to symlink when lookup fails", async () => {
     },
     resolveSymlink: () =>
       Promise.resolve("/repo/extensions/models/broken/definition.yaml"),
-    openEditor: () => Promise.resolve({ editor: "VS Code" }),
+    prepareEditor: prepareEditor("VS Code"),
   });
 
   const events = await collect<ModelEditEvent>(
@@ -117,6 +171,14 @@ Deno.test("modelEdit: falls back to symlink when lookup fails", async () => {
 
   assertEquals(events, [
     { kind: "resolving" },
+    {
+      kind: "launching",
+      data: {
+        editor: "VS Code",
+        path: "/repo/extensions/models/broken/definition.yaml",
+        waitsForExit: false,
+      },
+    },
     {
       kind: "completed",
       data: {

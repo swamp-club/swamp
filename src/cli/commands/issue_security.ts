@@ -199,7 +199,14 @@ export const issueSecurityCommand = new Command()
       try {
         await Deno.writeTextFile(tempFile, SECURITY_TEMPLATE);
         ctx.logger.debug`Opening editor for security report`;
-        await editorService.openFile(tempFile, { wait: true });
+        const launch = await editorService.prepareOpenFile(tempFile, {
+          wait: true,
+        });
+        ctx.logger.info(
+          "Opening {editor} and waiting for it to close. To submit without an editor, use --title and --body.",
+          { editor: launch.editor },
+        );
+        await launch.open();
 
         const content = await Deno.readTextFile(tempFile);
         const parsed = parseSecurityContent(content);

@@ -28,7 +28,10 @@ import {
 import type { ModelType } from "../../domain/models/model_type.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
-import { EditorService } from "../../infrastructure/editor/editor_service.ts";
+import {
+  type EditorLaunch,
+  EditorService,
+} from "../../infrastructure/editor/editor_service.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
@@ -48,6 +51,10 @@ export interface ModelEditData {
 
 export type ModelEditEvent =
   | { kind: "resolving" }
+  | {
+    kind: "launching";
+    data: { editor: string; path: string; waitsForExit: boolean };
+  }
   | { kind: "completed"; data: ModelEditData }
   | { kind: "error"; error: SwampError };
 
@@ -64,7 +71,7 @@ export interface ModelEditDeps {
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
   resolveSymlink: (name: string) => Promise<string | null>;
   getDefinitionPath: (type: ModelType, id: DefinitionId) => string;
-  openEditor: (path: string) => Promise<{ editor: string }>;
+  prepareEditor: (path: string) => Promise<EditorLaunch>;
   updateFromStdin: (
     definition: Definition,
     type: ModelType,
@@ -88,10 +95,7 @@ export function createModelEditDeps(repoDir: string): ModelEditDeps {
       }
     },
     getDefinitionPath: (type, id) => definitionRepo.getPath(type, id),
-    openEditor: async (path) => {
-      const result = await editorService.openFile(path);
-      return { editor: result.editor };
-    },
+    prepareEditor: (path) => editorService.prepareOpenFile(path),
     updateFromStdin: async (definition, type, content) => {
       const yamlData = parseYaml(content) as DefinitionData;
       yamlData.id = definition.id;
@@ -195,7 +199,16 @@ export async function* modelEdit(
 
       // Editor mode
       ctx.logger.debug`Opening file: ${filePath}`;
-      const result = await deps.openEditor(filePath);
+      const launch = await deps.prepareEditor(filePath);
+      yield {
+        kind: "launching",
+        data: {
+          editor: launch.editor,
+          path: filePath,
+          waitsForExit: launch.waitsForExit,
+        },
+      };
+      const result = await launch.open();
 
       yield {
         kind: "completed",

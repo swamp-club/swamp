@@ -27,6 +27,15 @@ import {
 } from "./edit.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 
+function prepareEditor(editor: string) {
+  return (path: string) =>
+    Promise.resolve({
+      editor,
+      waitsForExit: false,
+      open: () => Promise.resolve({ editor, path }),
+    });
+}
+
 function makeDeps(
   overrides: Partial<WorkflowEditDeps> = {},
 ): WorkflowEditDeps {
@@ -37,7 +46,7 @@ function makeDeps(
     getPath: () => "/fake/path/workflow.yaml",
     resolveSymlink: () => Promise.resolve(null),
     fileExists: () => Promise.resolve(true),
-    openEditor: () => Promise.resolve({ editor: "VS Code" }),
+    prepareEditor: prepareEditor("VS Code"),
     updateFromStdin: () =>
       Promise.resolve(
         {
@@ -92,7 +101,7 @@ Deno.test("workflowEdit: opens editor when workflow found by name", async () => 
   const deps = makeDeps({
     findByName: () => Promise.resolve(testWorkflow),
     getPath: () => "/repo/workflows/deploy-workflow/workflow.yaml",
-    openEditor: () => Promise.resolve({ editor: "Neovim" }),
+    prepareEditor: prepareEditor("Neovim"),
   });
 
   const events = await collect<WorkflowEditEvent>(
@@ -103,6 +112,14 @@ Deno.test("workflowEdit: opens editor when workflow found by name", async () => 
 
   assertEquals(events, [
     { kind: "resolving" },
+    {
+      kind: "launching",
+      data: {
+        editor: "Neovim",
+        path: "/repo/workflows/deploy-workflow/workflow.yaml",
+        waitsForExit: false,
+      },
+    },
     {
       kind: "completed",
       data: {
@@ -116,6 +133,42 @@ Deno.test("workflowEdit: opens editor when workflow found by name", async () => 
   ]);
 });
 
+Deno.test("workflowEdit: announces editor launch before opening", async () => {
+  let opened = false;
+  const deps = makeDeps({
+    findByName: () => Promise.resolve(testWorkflow),
+    getPath: () => "/repo/workflows/deploy-workflow/workflow.yaml",
+    prepareEditor: (path) =>
+      Promise.resolve({
+        editor: "VS Code",
+        waitsForExit: true,
+        open: () => {
+          opened = true;
+          return Promise.resolve({ editor: "VS Code", path });
+        },
+      }),
+  });
+
+  const iterator = workflowEdit(createLibSwampContext(), deps, {
+    workflowIdOrName: "deploy-workflow",
+  })[Symbol.asyncIterator]();
+
+  await iterator.next();
+  const launch = await iterator.next();
+  assertEquals(launch.value, {
+    kind: "launching",
+    data: {
+      editor: "VS Code",
+      path: "/repo/workflows/deploy-workflow/workflow.yaml",
+      waitsForExit: true,
+    },
+  });
+  assertEquals(opened, false);
+
+  await iterator.next();
+  assertEquals(opened, true);
+});
+
 Deno.test("workflowEdit: falls back to symlink when name lookup fails", async () => {
   const deps = makeDeps({
     findByName: () => {
@@ -123,7 +176,7 @@ Deno.test("workflowEdit: falls back to symlink when name lookup fails", async ()
     },
     resolveSymlink: () =>
       Promise.resolve("/repo/extensions/workflows/broken/workflow.yaml"),
-    openEditor: () => Promise.resolve({ editor: "VS Code" }),
+    prepareEditor: prepareEditor("VS Code"),
   });
 
   const events = await collect<WorkflowEditEvent>(
@@ -134,6 +187,14 @@ Deno.test("workflowEdit: falls back to symlink when name lookup fails", async ()
 
   assertEquals(events, [
     { kind: "resolving" },
+    {
+      kind: "launching",
+      data: {
+        editor: "VS Code",
+        path: "/repo/extensions/workflows/broken/workflow.yaml",
+        waitsForExit: false,
+      },
+    },
     {
       kind: "completed",
       data: {
@@ -156,7 +217,7 @@ Deno.test("workflowEdit: resolves symlink for extension workflows when file miss
       Promise.resolve(
         "/repo/extensions/workflows/deploy-workflow/workflow.yaml",
       ),
-    openEditor: () => Promise.resolve({ editor: "VS Code" }),
+    prepareEditor: prepareEditor("VS Code"),
   });
 
   const events = await collect<WorkflowEditEvent>(
@@ -165,7 +226,7 @@ Deno.test("workflowEdit: resolves symlink for extension workflows when file miss
     }),
   );
 
-  const completed = events[1] as Extract<
+  const completed = events[2] as Extract<
     WorkflowEditEvent,
     { kind: "completed" }
   >;
@@ -208,7 +269,7 @@ Deno.test("workflowEdit: opens broken workflow by name via findBrokenWorkflow fa
         id: "abc",
         error: "Unknown key 'ependssss'",
       }),
-    openEditor: () => Promise.resolve({ editor: "Neovim" }),
+    prepareEditor: prepareEditor("Neovim"),
   });
 
   const events = await collect<WorkflowEditEvent>(
@@ -219,6 +280,14 @@ Deno.test("workflowEdit: opens broken workflow by name via findBrokenWorkflow fa
 
   assertEquals(events, [
     { kind: "resolving" },
+    {
+      kind: "launching",
+      data: {
+        editor: "Neovim",
+        path: "/repo/workflows/workflow-abc.yaml",
+        waitsForExit: false,
+      },
+    },
     {
       kind: "completed",
       data: {
@@ -245,7 +314,7 @@ Deno.test("workflowEdit: opens broken workflow by UUID via findBrokenWorkflow fa
         id: brokenId,
         error: "Unknown key 'ependssss'",
       }),
-    openEditor: () => Promise.resolve({ editor: "Neovim" }),
+    prepareEditor: prepareEditor("Neovim"),
   });
 
   const events = await collect<WorkflowEditEvent>(
@@ -256,6 +325,14 @@ Deno.test("workflowEdit: opens broken workflow by UUID via findBrokenWorkflow fa
 
   assertEquals(events, [
     { kind: "resolving" },
+    {
+      kind: "launching",
+      data: {
+        editor: "Neovim",
+        path: `/repo/workflows/workflow-${brokenId}.yaml`,
+        waitsForExit: false,
+      },
+    },
     {
       kind: "completed",
       data: {

@@ -28,6 +28,19 @@ class LogModelEditRenderer implements Renderer<ModelEditEvent> {
     const logger = getSwampLogger(["model", "edit"]);
     return {
       resolving: () => {},
+      launching: (e) => {
+        if (e.data.waitsForExit) {
+          logger.info(
+            "Launching {editor} for {path}; waiting for it to close",
+            { editor: e.data.editor, path: e.data.path },
+          );
+          return;
+        }
+        logger.info("Launching {editor} for {path}", {
+          editor: e.data.editor,
+          path: e.data.path,
+        });
+      },
       completed: (e) => {
         const data = e.data;
         if (data.status === "opened") {
@@ -64,6 +77,7 @@ class JsonModelEditRenderer implements Renderer<ModelEditEvent> {
   handlers(): EventHandlers<ModelEditEvent> {
     return {
       resolving: () => {},
+      launching: () => {},
       completed: (e) => {
         console.log(JSON.stringify(e.data, null, 2));
       },

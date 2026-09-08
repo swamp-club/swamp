@@ -200,7 +200,14 @@ export const issueBugCommand = new Command()
         const template = buildBugTemplate();
         await Deno.writeTextFile(tempFile, template);
         ctx.logger.debug`Opening editor for bug report`;
-        await editorService.openFile(tempFile, { wait: true });
+        const launch = await editorService.prepareOpenFile(tempFile, {
+          wait: true,
+        });
+        ctx.logger.info(
+          "Opening {editor} and waiting for it to close. To submit without an editor, use --title and --body.",
+          { editor: launch.editor },
+        );
+        await launch.open();
 
         const content = await Deno.readTextFile(tempFile);
         const parsed = parseBugContent(content, template);

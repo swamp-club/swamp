@@ -19,7 +19,10 @@
 
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { join } from "@std/path";
-import { EditorService } from "../../infrastructure/editor/editor_service.ts";
+import {
+  type EditorLaunch,
+  EditorService,
+} from "../../infrastructure/editor/editor_service.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
@@ -45,6 +48,10 @@ export interface VaultEditData {
 
 export type VaultEditEvent =
   | { kind: "resolving" }
+  | {
+    kind: "launching";
+    data: { editor: string; path: string; waitsForExit: boolean };
+  }
   | { kind: "completed"; data: VaultEditData }
   | { kind: "error"; error: SwampError };
 
@@ -61,7 +68,7 @@ export interface VaultEditDeps {
   findAll: () => Promise<VaultEditConfigInfo[]>;
   getVaultPath: (config: VaultEditConfigInfo) => string;
   fileExists: (path: string) => Promise<boolean>;
-  openEditor: (path: string) => Promise<{ editor: string }>;
+  prepareEditor: (path: string) => Promise<EditorLaunch>;
 }
 
 /** Wires real infrastructure into VaultEditDeps. */
@@ -83,10 +90,7 @@ export function createVaultEditDeps(repoDir: string): VaultEditDeps {
         throw error;
       }
     },
-    openEditor: async (path) => {
-      const result = await editorService.openFile(path);
-      return { editor: result.editor };
-    },
+    prepareEditor: (path) => editorService.prepareOpenFile(path),
   };
 }
 
@@ -158,7 +162,16 @@ export async function* vaultEdit(
       }
 
       ctx.logger.debug`Opening file: ${filePath}`;
-      const result = await deps.openEditor(filePath);
+      const launch = await deps.prepareEditor(filePath);
+      yield {
+        kind: "launching",
+        data: {
+          editor: launch.editor,
+          path: filePath,
+          waitsForExit: launch.waitsForExit,
+        },
+      };
+      const result = await launch.open();
 
       yield {
         kind: "completed",

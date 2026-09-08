@@ -28,6 +28,19 @@ class LogVaultEditRenderer implements Renderer<VaultEditEvent> {
     const logger = getSwampLogger(["vault", "edit"]);
     return {
       resolving: () => {},
+      launching: (e) => {
+        if (e.data.waitsForExit) {
+          logger.info(
+            "Launching {editor} for {path}; waiting for it to close",
+            { editor: e.data.editor, path: e.data.path },
+          );
+          return;
+        }
+        logger.info("Launching {editor} for {path}", {
+          editor: e.data.editor,
+          path: e.data.path,
+        });
+      },
       completed: (e) => {
         const data = e.data;
         logger
@@ -44,6 +57,7 @@ class JsonVaultEditRenderer implements Renderer<VaultEditEvent> {
   handlers(): EventHandlers<VaultEditEvent> {
     return {
       resolving: () => {},
+      launching: () => {},
       completed: (e) => {
         console.log(JSON.stringify(e.data, null, 2));
       },

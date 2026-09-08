@@ -124,7 +124,14 @@ export const issueRippleCommand = new Command()
       try {
         await Deno.writeTextFile(tempFile, RIPPLE_TEMPLATE);
         ctx.logger.debug`Opening editor for ripple on issue #${issueNumber}`;
-        await new EditorService().openFile(tempFile, { wait: true });
+        const launch = await new EditorService().prepareOpenFile(tempFile, {
+          wait: true,
+        });
+        ctx.logger.info(
+          "Opening {editor} and waiting for it to close. To post without an editor, use --body.",
+          { editor: launch.editor },
+        );
+        await launch.open();
 
         const content = await Deno.readTextFile(tempFile);
         const parsed = parseRippleContent(content);

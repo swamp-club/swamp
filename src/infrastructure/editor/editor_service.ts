@@ -28,6 +28,15 @@ export interface EditorResult {
 }
 
 /**
+ * A resolved editor process that can be announced before it is started.
+ */
+export interface EditorLaunch {
+  editor: string;
+  waitsForExit: boolean;
+  open: () => Promise<EditorResult>;
+}
+
+/**
  * Options for opening a file in an editor.
  */
 export interface OpenFileOptions {
@@ -109,32 +118,48 @@ export class EditorService {
     filePath: string,
     options: OpenFileOptions = {},
   ): Promise<EditorResult> {
+    const launch = await this.prepareOpenFile(filePath, options);
+    return await launch.open();
+  }
+
+  /**
+   * Resolves an editor launch without starting its process.
+   */
+  async prepareOpenFile(
+    filePath: string,
+    options: OpenFileOptions = {},
+  ): Promise<EditorLaunch> {
     const editor = await this.findEditor();
 
     // Determine whether to wait: use explicit option, or auto-detect based on editor type
     const shouldWait = options.wait ?? this.isTerminalEditor(editor);
 
     const args = this.buildEditorArgs(editor, filePath, { wait: shouldWait });
-
-    const command = new Deno.Command(args[0], {
-      args: args.slice(1),
-      stdin: "inherit",
-      stdout: "inherit",
-      stderr: "inherit",
-    });
-
-    if (shouldWait) {
-      // Wait for the editor to close (terminal editors)
-      const process = command.spawn();
-      await process.status;
-    } else {
-      // Spawn and return immediately (GUI editors)
-      command.spawn();
-    }
-
     return {
       editor: this.getEditorDisplayName(editor),
-      path: filePath,
+      waitsForExit: shouldWait,
+      open: async () => {
+        const command = new Deno.Command(args[0], {
+          args: args.slice(1),
+          stdin: "inherit",
+          stdout: "inherit",
+          stderr: "inherit",
+        });
+
+        if (shouldWait) {
+          // Wait for the editor to close (terminal editors)
+          const process = command.spawn();
+          await process.status;
+        } else {
+          // Spawn and return immediately (GUI editors)
+          command.spawn();
+        }
+
+        return {
+          editor: this.getEditorDisplayName(editor),
+          path: filePath,
+        };
+      },
     };
   }
 
