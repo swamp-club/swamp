@@ -21,6 +21,7 @@ import type { AuditEvent } from "./audit_event.ts";
 
 export interface AuditSink {
   readonly name: string;
+  readonly durable: boolean;
   write(events: readonly AuditEvent[]): Promise<void>;
   flush(): Promise<void>;
   close(): Promise<void>;

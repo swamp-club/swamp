@@ -52,7 +52,10 @@ import type { ScheduledExecutionService } from "../../libswamp/mod.ts";
 import type { MergedServeOptions } from "../serve_config.ts";
 import type { HealthCollector } from "../health_collector.ts";
 import type { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";
-import type { AuditDecision } from "../../domain/serve_audit/audit_event.ts";
+import type {
+  AuditCategory,
+  AuditDecision,
+} from "../../domain/serve_audit/audit_event.ts";
 import { buildAuditEvent } from "../../domain/serve_audit/audit_event_builder.ts";
 import type { AuditStore } from "../../domain/serve_audit/audit_store.ts";
 import type { AuditPolicy } from "../../domain/serve_audit/audit_policy.ts";
@@ -182,6 +185,8 @@ export interface ConnectionContext {
   auditFailOpen?: boolean;
   /** WAL instance — used to check health for fail-secure mode. */
   auditWal?: AuditWal;
+  /** WebSocket audit sink — broadcasts events to subscribed connections. */
+  auditWebSocketSink?: import("../audit_sinks/websocket_sink.ts").WebSocketSink;
 }
 
 // SECURITY: Authorization must operate on canonical (normalized) model types,
@@ -716,4 +721,27 @@ export function subscribeUntilDetach(
       unsub();
     }, { once: true });
   });
+}
+
+export function emitSystemAuditEvent(
+  ctx: ConnectionContext,
+  action: string,
+  detail?: string,
+): void {
+  if (!ctx.auditEmitter) return;
+  ctx.auditEmitter.emit(buildAuditEvent({
+    instanceId: ctx.instanceId ?? "unknown",
+    category: "system" as AuditCategory,
+    stage: "response",
+    outcome: "success",
+    action,
+    resourceKind: "server",
+    resourceName: ctx.instanceId ?? "unknown",
+    principalKind: "system",
+    principalId: "system",
+    initiatedBy: "system",
+    sourceIp: "127.0.0.1",
+    requestId: crypto.randomUUID(),
+    detail,
+  }));
 }

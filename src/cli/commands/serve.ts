@@ -34,6 +34,7 @@ import {
 } from "../../serve/handlers/admin_handlers.ts";
 import {
   closeConnectionsForPrincipal,
+  emitSystemAuditEvent,
   removeConnection,
   setConnectionCollectives,
   setConnectionSourceIp,
@@ -122,6 +123,7 @@ import {
 } from "../../domain/serve_audit/mod.ts";
 import { StoreSink } from "../../serve/audit_sinks/store_sink.ts";
 import { WalSink } from "../../serve/audit_sinks/wal_sink.ts";
+import { WebSocketSink } from "../../serve/audit_sinks/websocket_sink.ts";
 import { RemoteAuditStore } from "../../infrastructure/persistence/remote_audit_store.ts";
 import { resolveDatastoreExpressions } from "../datastore_expression_resolver.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
@@ -2941,8 +2943,9 @@ export const serveCommand = new Command()
           }
         }
 
+        const webSocketSink = new WebSocketSink();
         connectionCtx.auditEmitter = new AuditEmitter({
-          sinks: [walSink],
+          sinks: [walSink, webSocketSink],
           policy,
           chainState,
         });
@@ -2950,10 +2953,17 @@ export const serveCommand = new Command()
         connectionCtx.auditPolicy = policy;
         connectionCtx.auditFailOpen = auditConfig.failOpen;
         connectionCtx.auditWal = wal;
+        connectionCtx.auditWebSocketSink = webSocketSink;
 
         logger.info(
           "Audit pipeline enabled with {count} store target(s), WAL at {walDir}",
           { count: auditStores.length, walDir },
+        );
+
+        emitSystemAuditEvent(
+          connectionCtx,
+          "instance.start",
+          `version=${VERSION}`,
         );
       }
     }
@@ -4316,6 +4326,7 @@ export const serveCommand = new Command()
         await telemetryFlushService.stop();
       }
       if (connectionCtx.auditEmitter) {
+        emitSystemAuditEvent(connectionCtx, "instance.stop");
         await connectionCtx.auditEmitter.close();
         if (connectionCtx.auditWal) {
           await connectionCtx.auditWal.saveChainState(

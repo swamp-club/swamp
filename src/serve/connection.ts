@@ -28,6 +28,7 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { Principal } from "../domain/access/principal.ts";
 import { audited, type AuditedOptions } from "./audited.ts";
 import { AuditQueryService } from "../domain/serve_audit/audit_query_service.ts";
+import type { AuditSubscriptionFilter } from "./audit_sinks/websocket_sink.ts";
 import {
   GIT_SHA as SERVER_GIT_SHA,
   VERSION as SERVER_VERSION,
@@ -467,6 +468,29 @@ const AuditVerifyRequestSchema = z.object({
     since: z.string().optional(),
     until: z.string().optional(),
   }),
+});
+
+const MAX_AUDIT_FILTER_ITEMS = 20;
+
+const AuditSubscribeRequestSchema = z.object({
+  type: z.literal("audit.subscribe"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    categories: z.array(z.string().max(64)).max(MAX_AUDIT_FILTER_ITEMS)
+      .optional(),
+    principals: z.array(z.string().max(256)).max(MAX_AUDIT_FILTER_ITEMS)
+      .optional(),
+    actions: z.array(z.string().max(256)).max(MAX_AUDIT_FILTER_ITEMS)
+      .optional(),
+    outcomes: z.array(z.string().max(64)).max(MAX_AUDIT_FILTER_ITEMS)
+      .optional(),
+    resourceKind: z.string().max(256).optional(),
+  }).optional(),
+});
+
+const AuditUnsubscribeRequestSchema = z.object({
+  type: z.literal("audit.unsubscribe"),
+  id: z.string().min(1).max(256),
 });
 
 const SummariseRequestSchema = z.object({
@@ -1204,6 +1228,8 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   AuditTimelineRequestSchema,
   AuditQueryRequestSchema,
   AuditVerifyRequestSchema,
+  AuditSubscribeRequestSchema,
+  AuditUnsubscribeRequestSchema,
   SummariseRequestSchema,
   ReportGetRequestSchema,
   ReportSearchRequestSchema,
@@ -1322,12 +1348,17 @@ export function extractRequestId(data: unknown): string {
 
 const logger = getSwampLogger(["serve", "connection"]);
 
+const MAX_SUBSCRIPTIONS_PER_CONNECTION = 2;
+const SUBSCRIPTION_REAUTH_INTERVAL_MS = 60_000;
+
 export function handleConnection(
   socket: WebSocket,
   ctx: ConnectionContext,
   principal: Principal | null,
 ): void {
   const activeRequests = new Map<string, AbortController>();
+  const activeSubscriptions = new Set<string>();
+  const subscriptionTimers = new Map<string, ReturnType<typeof setInterval>>();
   const workerAttachment = ctx.workerGateway?.attachTransport({
     send: (data) => {
       if (socket.readyState === WebSocket.OPEN) {
@@ -1364,7 +1395,15 @@ export function handleConnection(
     ) {
       return;
     }
-    handleMessage(socket, ctx, activeRequests, event, principal);
+    handleMessage(
+      socket,
+      ctx,
+      activeRequests,
+      event,
+      principal,
+      activeSubscriptions,
+      subscriptionTimers,
+    );
   };
 
   socket.onclose = () => {
@@ -1374,6 +1413,16 @@ export function handleConnection(
       controller.abort();
     }
     activeRequests.clear();
+    if (ctx.auditWebSocketSink) {
+      for (const subId of activeSubscriptions) {
+        ctx.auditWebSocketSink.unsubscribe(subId);
+      }
+    }
+    for (const timer of subscriptionTimers.values()) {
+      clearInterval(timer);
+    }
+    activeSubscriptions.clear();
+    subscriptionTimers.clear();
   };
 
   socket.onerror = (event) => {
@@ -1393,6 +1442,8 @@ export function handleMessage(
   activeRequests: Map<string, AbortController>,
   event: MessageEvent,
   principal: Principal | null = null,
+  activeSubscriptions: Set<string> = new Set(),
+  subscriptionTimers: Map<string, ReturnType<typeof setInterval>> = new Map(),
 ): void {
   let parsed: unknown;
   try {
@@ -1921,6 +1972,109 @@ export function handleMessage(
         auditOpts("admin", "access", "audit"),
       );
       break;
+    case "audit.subscribe":
+      if (
+        !authorizeOrReject(
+          socket,
+          request.id,
+          principal,
+          "admin",
+          { kind: "access", name: "audit", fields: {} },
+          ctx,
+        ).allowed
+      ) {
+        task = Promise.resolve();
+        activeRequests.delete(request.id);
+        break;
+      }
+      task = audited(
+        (() => {
+          if (!ctx.auditWebSocketSink) {
+            sendError(
+              socket,
+              request.id,
+              "audit_not_configured",
+              "Audit subsystem is not enabled",
+            );
+            return Promise.resolve();
+          }
+          if (activeSubscriptions.size >= MAX_SUBSCRIPTIONS_PER_CONNECTION) {
+            sendError(
+              socket,
+              request.id,
+              "subscription_limit",
+              `Maximum ${MAX_SUBSCRIPTIONS_PER_CONNECTION} audit subscriptions per connection`,
+            );
+            return Promise.resolve();
+          }
+          const filter: AuditSubscriptionFilter = request.payload
+            ? {
+              categories: request.payload.categories as
+                | AuditSubscriptionFilter["categories"]
+                | undefined,
+              principals: request.payload.principals,
+              actions: request.payload.actions,
+              outcomes: request.payload.outcomes as
+                | AuditSubscriptionFilter["outcomes"]
+                | undefined,
+              resourceKind: request.payload.resourceKind,
+            }
+            : {};
+          const subscriptionId = crypto.randomUUID();
+          ctx.auditWebSocketSink.subscribe({
+            id: subscriptionId,
+            socket,
+            filter,
+          });
+          activeSubscriptions.add(subscriptionId);
+
+          const reauthTimer = setInterval(() => {
+            const result = authorizeOrReject(
+              socket,
+              subscriptionId,
+              principal,
+              "admin",
+              { kind: "access", name: "audit", fields: {} },
+              ctx,
+            );
+            if (!result.allowed) {
+              ctx.auditWebSocketSink!.unsubscribe(subscriptionId);
+              activeSubscriptions.delete(subscriptionId);
+              clearInterval(reauthTimer);
+              subscriptionTimers.delete(subscriptionId);
+            }
+          }, SUBSCRIPTION_REAUTH_INTERVAL_MS);
+          Deno.unrefTimer(reauthTimer);
+          subscriptionTimers.set(subscriptionId, reauthTimer);
+
+          send(socket, {
+            type: "audit.subscribe",
+            id: request.id,
+            payload: { subscriptionId },
+          });
+          return Promise.resolve();
+        })(),
+        auditOpts("admin", "access", "audit"),
+      );
+      break;
+    case "audit.unsubscribe": {
+      const subIds = ctx.auditWebSocketSink
+        ? ctx.auditWebSocketSink.subscriptionsForSocket(socket)
+        : [];
+      for (const subId of subIds) {
+        ctx.auditWebSocketSink!.unsubscribe(subId);
+        activeSubscriptions.delete(subId);
+        const timer = subscriptionTimers.get(subId);
+        if (timer) {
+          clearInterval(timer);
+          subscriptionTimers.delete(subId);
+        }
+      }
+      send(socket, { type: "audit.unsubscribe", id: request.id });
+      task = Promise.resolve();
+      activeRequests.delete(request.id);
+      break;
+    }
     case "summarise":
       task = audited(
         handleSummarise(

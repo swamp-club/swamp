@@ -1,6 +1,6 @@
 ---
 audience: everyone
-last-verified: 2026-09-05 @ HEAD
+last-verified: 2026-09-08 @ HEAD
 ---
 
 # Serve Audit
@@ -108,35 +108,62 @@ a warning at startup — production deployments should use a dedicated store.
 - `swamp audit log` — query the audit log with filters (`--since`, `--until`,
   `--principal`, `--category`, `--action`, `--outcome`, `--limit`)
 - `swamp audit verify` — check chain integrity for a time range
+- `swamp audit log --follow` — stream new audit events in real-time after the
+  initial query (Ctrl+C to stop)
+
+## Real-time streaming
+
+`audit.subscribe` starts a live stream of audit events over the existing
+WebSocket connection. The server sends `audit.event` messages as they occur,
+filtered by the subscription parameters. Subscriptions stay active until the
+connection closes or the client sends `audit.unsubscribe`.
+
+Filter shape matches `audit.query`: categories, principals, actions, outcomes,
+resourceKind. Per-connection subscription cap: 2. Subscriptions are
+re-authorized every 60 seconds — revoked grants terminate the stream.
+
+No durability guarantee — this is live streaming, not a replay mechanism. Missed
+events are queryable via `audit.query`.
+
+## System events
+
+The `system` audit category captures infrastructure lifecycle events with
+`principalKind: "system"`:
+
+- `instance.start` — emitted when the serve instance starts (with version)
+- `instance.stop` — emitted on graceful shutdown
+
+System events are always at `metadata` audit level (management tier).
 
 ## Domain model
 
-| Type              | DDD Building Block | Location                          |
-| ----------------- | ------------------ | --------------------------------- |
-| AuditEvent        | Entity             | `src/domain/serve_audit/`         |
-| ChainedAuditEvent | Type Alias         | `src/domain/serve_audit/`         |
-| AuditDecision     | Value Object       | `src/domain/serve_audit/`         |
-| AuditCategory     | Value Object       | `src/domain/serve_audit/`         |
-| AuditStage        | Value Object       | `src/domain/serve_audit/`         |
-| AuditOutcome      | Value Object       | `src/domain/serve_audit/`         |
-| AuditLevel        | Value Object       | `src/domain/serve_audit/`         |
-| AuditPolicyRule   | Value Object       | `src/domain/serve_audit/`         |
-| AuditChainState   | Domain Service     | `src/domain/serve_audit/`         |
-| RingBuffer        | Data Structure     | `src/domain/serve_audit/`         |
-| AuditEmitter      | Domain Service     | `src/domain/serve_audit/`         |
-| AuditPolicy       | Value Object       | `src/domain/serve_audit/`         |
-| AuditWal          | Domain Service     | `src/domain/serve_audit/`         |
-| AuditQueryService | Domain Service     | `src/domain/serve_audit/`         |
-| AuditSink         | Port Interface     | `src/domain/serve_audit/`         |
-| AuditStore        | Port Interface     | `src/domain/serve_audit/`         |
-| AuditEventBuilder | Factory            | `src/domain/serve_audit/`         |
-| RemoteAuditStore  | Adapter            | `src/infrastructure/persistence/` |
-| StoreSink         | Adapter            | `src/serve/audit_sinks/`          |
-| WalSink           | Adapter            | `src/serve/audit_sinks/`          |
+| Type                    | DDD Building Block | Location                          |
+| ----------------------- | ------------------ | --------------------------------- |
+| AuditEvent              | Entity             | `src/domain/serve_audit/`         |
+| ChainedAuditEvent       | Type Alias         | `src/domain/serve_audit/`         |
+| AuditDecision           | Value Object       | `src/domain/serve_audit/`         |
+| AuditCategory           | Value Object       | `src/domain/serve_audit/`         |
+| AuditStage              | Value Object       | `src/domain/serve_audit/`         |
+| AuditOutcome            | Value Object       | `src/domain/serve_audit/`         |
+| AuditLevel              | Value Object       | `src/domain/serve_audit/`         |
+| AuditPolicyRule         | Value Object       | `src/domain/serve_audit/`         |
+| AuditSubscriptionFilter | Value Object       | `src/serve/audit_sinks/`          |
+| AuditChainState         | Domain Service     | `src/domain/serve_audit/`         |
+| RingBuffer              | Data Structure     | `src/domain/serve_audit/`         |
+| AuditEmitter            | Domain Service     | `src/domain/serve_audit/`         |
+| AuditPolicy             | Value Object       | `src/domain/serve_audit/`         |
+| AuditWal                | Domain Service     | `src/domain/serve_audit/`         |
+| AuditQueryService       | Domain Service     | `src/domain/serve_audit/`         |
+| AuditSink               | Port Interface     | `src/domain/serve_audit/`         |
+| AuditStore              | Port Interface     | `src/domain/serve_audit/`         |
+| AuditEventBuilder       | Factory            | `src/domain/serve_audit/`         |
+| RemoteAuditStore        | Adapter            | `src/infrastructure/persistence/` |
+| StoreSink               | Adapter            | `src/serve/audit_sinks/`          |
+| WalSink                 | Adapter            | `src/serve/audit_sinks/`          |
+| WebSocketSink           | Adapter            | `src/serve/audit_sinks/`          |
 
 ## Future phases
 
-- **Phase 3**: Real-time WebSocket streaming (`audit.subscribe`), `--follow`
-  for `swamp audit log`
-- **Phase 4**: Webhook and syslog sinks, bulk export, HMAC
+- **Phase 4**: Webhook and syslog sinks, bulk export, HMAC, HA join/leave
+  system events, health state transition events
 - **Phase 5**: Extension sinks, alerting, compliance templates

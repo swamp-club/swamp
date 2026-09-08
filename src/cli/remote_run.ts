@@ -371,6 +371,133 @@ export function requestServerResponse<T>(
   });
 }
 
+export interface SubscribeServerOptions {
+  readonly server: string;
+  readonly token: string | undefined;
+  readonly signal?: AbortSignal;
+  readonly caCerts?: string[];
+  readonly headers?: Record<string, string>;
+}
+
+export async function* subscribeServerEvents(
+  options: SubscribeServerOptions,
+  request: { type: string; payload?: unknown },
+): AsyncGenerator<Record<string, unknown>> {
+  const baseUrl = normalizeServerUrl(options.server);
+  const extraHeaders = options.headers ?? resolveExtraHeaders();
+  const headers: Record<string, string> = { ...extraHeaders };
+  if (options.token) {
+    headers["Authorization"] = `Bearer ${options.token}`;
+  }
+  const requestId = crypto.randomUUID();
+  const socket = createSocket(baseUrl, headers, options.caCerts);
+
+  type QueueItem =
+    | { kind: "message"; data: Record<string, unknown> }
+    | { kind: "error"; error: Error }
+    | { kind: "close" };
+
+  const queue: QueueItem[] = [];
+  let resolve: (() => void) | null = null;
+  let subscriptionId: string | undefined;
+
+  function enqueue(item: QueueItem) {
+    queue.push(item);
+    if (resolve) {
+      resolve();
+      resolve = null;
+    }
+  }
+
+  function waitForItem(): Promise<void> {
+    if (queue.length > 0) return Promise.resolve();
+    return new Promise<void>((r) => {
+      resolve = r;
+    });
+  }
+
+  const onAbort = () => {
+    if (socket.readyState === WebSocket.OPEN && subscriptionId) {
+      socket.send(JSON.stringify({
+        type: "audit.unsubscribe",
+        id: crypto.randomUUID(),
+      }));
+    }
+    try {
+      socket.close();
+    } catch { /* already closed */ }
+    enqueue({ kind: "close" });
+  };
+
+  options.signal?.addEventListener("abort", onAbort, { once: true });
+
+  socket.onerror = (event) => {
+    const msg = event instanceof ErrorEvent ? event.message : "unknown";
+    enqueue({ kind: "error", error: new UserError(`WebSocket error: ${msg}`) });
+  };
+
+  socket.onclose = () => {
+    enqueue({ kind: "close" });
+  };
+
+  socket.onopen = () => {
+    socket.send(JSON.stringify({ ...request, id: requestId }));
+  };
+
+  socket.onmessage = (event) => {
+    if (typeof event.data !== "string") return;
+    try {
+      const message = JSON.parse(event.data) as Record<string, unknown>;
+      if (typeof message !== "object" || message === null) return;
+
+      if (message.type === "error" && message.id === requestId) {
+        enqueue({
+          kind: "error",
+          error: new UserError(
+            formatServerError(
+              message.error as { code: string; message: string },
+            ),
+          ),
+        });
+        return;
+      }
+
+      if (
+        message.type === "audit.subscribe" && message.id === requestId &&
+        message.payload
+      ) {
+        const payload = message.payload as { subscriptionId: string };
+        subscriptionId = payload.subscriptionId;
+        return;
+      }
+
+      if (message.type === "audit.event" && message.payload) {
+        enqueue({
+          kind: "message",
+          data: (message.payload as { event: Record<string, unknown> }).event,
+        });
+      }
+    } catch { /* not a protocol frame */ }
+  };
+
+  try {
+    while (true) {
+      await waitForItem();
+      while (queue.length > 0) {
+        const item = queue.shift()!;
+        if (item.kind === "close") return;
+        if (item.kind === "error") throw item.error;
+        yield item.data;
+      }
+    }
+  } finally {
+    options.signal?.removeEventListener("abort", onAbort);
+    try {
+      socket.close();
+    } catch { /* already closed */ }
+  }
+}
+
 // deno-lint-ignore no-explicit-any
 type AnyCommand = Command<any, any, any, any, any, any, any, any>;
 

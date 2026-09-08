@@ -33,12 +33,21 @@ export interface AuditPolicyRule {
 const MANAGEMENT_ACTIONS = new Set([
   "audit.query",
   "audit.verify",
+  "audit.subscribe",
   "serve.reload",
   "serve.health",
 ]);
 
-export function classifyTier(action: string): AuditEventTier {
+const MANAGEMENT_CATEGORIES = new Set<string>(["system"]);
+
+export function classifyTier(
+  action: string,
+  category?: string,
+): AuditEventTier {
   if (MANAGEMENT_ACTIONS.has(action)) return "management";
+  if (category !== undefined && MANAGEMENT_CATEGORIES.has(category)) {
+    return "management";
+  }
   return "data";
 }
 
@@ -63,7 +72,7 @@ export class AuditPolicy {
   }
 
   evaluate(category: AuditCategory, action: string): AuditLevel {
-    const tier = classifyTier(action);
+    const tier = classifyTier(action, category);
     for (const rule of this.#rules) {
       if (rule.category !== undefined && rule.category !== category) continue;
       if (rule.action !== undefined && rule.action !== action) continue;
