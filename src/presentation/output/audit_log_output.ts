@@ -22,6 +22,16 @@ import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { AuditQueryResponse } from "../../serve/protocol.ts";
 import type { OutputMode } from "./output.ts";
 
+const COL_WIDTHS = [16, 9, 12, 30, 20, 30];
+const HEADERS = [
+  "TIME",
+  "OUTCOME",
+  "CATEGORY",
+  "ACTION",
+  "PRINCIPAL",
+  "RESOURCE",
+];
+
 function formatTimestamp(iso: string): string {
   try {
     const date = new Date(iso);
@@ -49,6 +59,39 @@ function outcomeColor(outcome: string): string {
   }
 }
 
+function formatEventRow(e: Record<string, string>): string {
+  const time = formatTimestamp(e.timestamp ?? "");
+  const outcome = outcomeColor(e.outcome ?? "");
+  const category = e.category ?? "";
+  const action = e.action ?? "";
+  const principal = e.principalId ?? "";
+  const resource = `${e.resourceKind ?? ""}:${e.resourceName ?? ""}`;
+
+  return `${dim(time.padEnd(COL_WIDTHS[0]))}  ${
+    outcome.padEnd(COL_WIDTHS[1] + (outcome.length - (e.outcome ?? "").length))
+  }  ${category.padEnd(COL_WIDTHS[2])}  ${action.padEnd(COL_WIDTHS[3])}  ${
+    principal.padEnd(COL_WIDTHS[4])
+  }  ${resource}`;
+}
+
+export function renderAuditLogHeader(mode: OutputMode): void {
+  if (mode === "json") return;
+  writeOutput(bold(dim(
+    HEADERS.map((h, i) => h.padEnd(COL_WIDTHS[i])).join("  "),
+  )));
+}
+
+export function renderAuditEvent(
+  event: Record<string, string>,
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(JSON.stringify(event));
+    return;
+  }
+  writeOutput(formatEventRow(event));
+}
+
 export function renderAuditLog(
   data: AuditQueryResponse,
   mode: OutputMode,
@@ -63,37 +106,10 @@ export function renderAuditLog(
     return;
   }
 
-  const headers = [
-    "TIME",
-    "OUTCOME",
-    "CATEGORY",
-    "ACTION",
-    "PRINCIPAL",
-    "RESOURCE",
-  ];
-  writeOutput(bold(dim(
-    headers.map((h, i) => {
-      const widths = [16, 9, 12, 30, 20, 30];
-      return h.padEnd(widths[i]);
-    }).join("  "),
-  )));
+  renderAuditLogHeader(mode);
 
   for (const event of data.events) {
-    const e = event as Record<string, string>;
-    const time = formatTimestamp(e.timestamp ?? "");
-    const outcome = outcomeColor(e.outcome ?? "");
-    const category = e.category ?? "";
-    const action = e.action ?? "";
-    const principal = e.principalId ?? "";
-    const resource = `${e.resourceKind ?? ""}:${e.resourceName ?? ""}`;
-
-    writeOutput(
-      `${dim(time.padEnd(16))}  ${
-        outcome.padEnd(9 + (outcome.length - (e.outcome ?? "").length))
-      }  ${category.padEnd(12)}  ${action.padEnd(30)}  ${
-        principal.padEnd(20)
-      }  ${resource}`,
-    );
+    renderAuditEvent(event as Record<string, string>, mode);
   }
 
   if (data.total !== undefined) {

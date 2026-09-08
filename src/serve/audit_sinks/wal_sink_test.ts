@@ -64,6 +64,7 @@ function createMockSink(): AuditSink & {
 } {
   const sink = {
     name: "mock-downstream",
+    durable: true,
     written: [] as AuditEvent[][],
     flushed: 0,
     closed: false,
@@ -86,6 +87,7 @@ function createMockSink(): AuditSink & {
 function createFailingSink(): AuditSink & { failWrites: boolean } {
   return {
     name: "failing-downstream",
+    durable: true,
     failWrites: true,
     write(): Promise<void> {
       if (this.failWrites) {
@@ -180,6 +182,7 @@ Deno.test(
     let writeCount = 0;
     const failOnSecond: AuditSink = {
       name: "fail-on-second",
+      durable: true,
       write(): Promise<void> {
         writeCount++;
         if (writeCount >= 2) {

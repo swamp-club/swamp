@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { AuditEmitter } from "./audit_emitter.ts";
 import type { AuditEvent } from "./audit_event.ts";
@@ -43,13 +43,17 @@ function makeEvent(action: string): AuditEvent {
   });
 }
 
-function createMockSink(name: string): AuditSink & {
+function createMockSink(
+  name: string,
+  durable = true,
+): AuditSink & {
   written: AuditEvent[][];
   flushed: number;
   closed: boolean;
 } {
   const sink = {
     name,
+    durable,
     written: [] as AuditEvent[][],
     flushed: 0,
     closed: false,
@@ -97,19 +101,72 @@ Deno.test("AuditEmitter: batches multiple events in single drain", async () => {
   assertEquals(sink.written[0].length, 3);
 });
 
-Deno.test("AuditEmitter: rejects multiple sinks", () => {
+Deno.test("AuditEmitter: supports multiple sinks", async () => {
   const sinkA = createMockSink("a");
   const sinkB = createMockSink("b");
-  assertThrows(
-    () => new AuditEmitter([sinkA, sinkB]),
-    Error,
-    "single sink",
-  );
+  const emitter = new AuditEmitter([sinkA, sinkB]);
+
+  emitter.emit(makeEvent("test"));
+  await emitter.flush();
+
+  assertEquals(sinkA.written.length, 1);
+  assertEquals(sinkB.written.length, 1);
+});
+
+Deno.test("AuditEmitter: chain state preserved when non-durable sink fails but durable succeeds", async () => {
+  const durableSink = createMockSink("durable", true);
+  const nonDurableSink: AuditSink = {
+    name: "non-durable",
+    durable: false,
+    write(): Promise<void> {
+      return Promise.reject(new Error("non-durable failed"));
+    },
+    flush(): Promise<void> {
+      return Promise.resolve();
+    },
+    close(): Promise<void> {
+      return Promise.resolve();
+    },
+  };
+  const emitter = new AuditEmitter([durableSink, nonDurableSink]);
+  const initialSeq = emitter.chainState.sequence;
+
+  emitter.emit(makeEvent("test"));
+  await emitter.flush();
+
+  assertEquals(durableSink.written.length, 1);
+  assertEquals(emitter.chainState.sequence, initialSeq + 1);
+});
+
+Deno.test("AuditEmitter: chain state rolled back when only non-durable sink succeeds", async () => {
+  const failingDurable: AuditSink = {
+    name: "durable",
+    durable: true,
+    write(): Promise<void> {
+      return Promise.reject(new Error("durable failed"));
+    },
+    flush(): Promise<void> {
+      return Promise.resolve();
+    },
+    close(): Promise<void> {
+      return Promise.resolve();
+    },
+  };
+  const nonDurableSink = createMockSink("non-durable", false);
+  const emitter = new AuditEmitter([failingDurable, nonDurableSink]);
+  const initialSeq = emitter.chainState.sequence;
+
+  emitter.emit(makeEvent("test"));
+  await emitter.flush();
+
+  assertEquals(nonDurableSink.written.length, 1);
+  assertEquals(emitter.chainState.sequence, initialSeq);
 });
 
 Deno.test("AuditEmitter: sink error does not propagate to caller", async () => {
   const failingSink: AuditSink = {
     name: "failing",
+    durable: true,
     write(): Promise<void> {
       return Promise.reject(new Error("sink failure"));
     },

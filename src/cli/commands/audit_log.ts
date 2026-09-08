@@ -23,10 +23,15 @@ import {
   requestServerResponse,
   resolveServerToken,
   resolveServeUrl,
+  subscribeServerEvents,
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { AuditQueryResponse } from "../../serve/protocol.ts";
-import { renderAuditLog } from "../../presentation/output/audit_log_output.ts";
+import {
+  renderAuditEvent,
+  renderAuditLog,
+  renderAuditLogHeader,
+} from "../../presentation/output/audit_log_output.ts";
 import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -45,6 +50,10 @@ export const auditLogCommand = withRemoteOptions(
       "Filter by outcome",
       "swamp audit log --server http://localhost:7443 --outcome denied",
     )
+    .example(
+      "Follow live",
+      "swamp audit log --server http://localhost:7443 --follow",
+    )
     .option(
       "--since <date:string>",
       "Start time, e.g. 2026-09-01T00:00:00Z [default: 24 hours ago]",
@@ -56,7 +65,7 @@ export const auditLogCommand = withRemoteOptions(
     .option("--principal <id:string>", "Filter by principal ID")
     .option(
       "--category <cat:string>",
-      "Filter by audit category (auth, access, execution, secrets, admin, data)",
+      "Filter by audit category (auth, access, execution, secrets, admin, data, system)",
     )
     .option("--action <action:string>", "Filter by action")
     .option(
@@ -69,7 +78,11 @@ export const auditLogCommand = withRemoteOptions(
     )
     .option("--limit <count:integer>", "Max events to return [default: 100]", {
       default: 100,
-    }),
+    })
+    .option(
+      "--follow",
+      "Stream new audit events in real-time after the initial query",
+    ),
 ).action(async function (options: AnyOptions) {
   const ctx = createContext(options as GlobalOptions, ["audit", "log"]);
 
@@ -102,5 +115,39 @@ export const auditLogCommand = withRemoteOptions(
     },
   );
 
-  renderAuditLog(response, ctx.outputMode);
+  if (!options.follow) {
+    renderAuditLog(response, ctx.outputMode);
+    return;
+  }
+
+  renderAuditLogHeader(ctx.outputMode);
+  for (const event of response.events) {
+    renderAuditEvent(event as Record<string, string>, ctx.outputMode);
+  }
+
+  const ac = new AbortController();
+  const onSignal = () => ac.abort();
+  Deno.addSignalListener("SIGINT", onSignal);
+
+  try {
+    const filter: Record<string, unknown> = {};
+    if (options.category) filter.categories = [options.category];
+    if (options.principal) filter.principals = [options.principal];
+    if (options.action) filter.actions = [options.action];
+    if (options.outcome) filter.outcomes = [options.outcome];
+
+    const stream = subscribeServerEvents(
+      { server, token, signal: ac.signal },
+      {
+        type: "audit.subscribe",
+        payload: Object.keys(filter).length > 0 ? filter : undefined,
+      },
+    );
+
+    for await (const event of stream) {
+      renderAuditEvent(event as Record<string, string>, ctx.outputMode);
+    }
+  } finally {
+    Deno.removeSignalListener("SIGINT", onSignal);
+  }
 });

@@ -65,11 +65,6 @@ export class AuditEmitter {
       this.#chainState = sinksOrOptions.chainState ?? new AuditChainState();
       this.#policy = sinksOrOptions.policy;
     }
-    if (this.#sinks.length > 1) {
-      throw new Error(
-        "AuditEmitter currently supports a single sink — multi-sink chain integrity requires per-sink chain state (planned for a future phase)",
-      );
-    }
     for (const sink of this.#sinks) {
       this.#cursors.set(sink.name, 0);
     }
@@ -140,7 +135,7 @@ export class AuditEmitter {
       chained.push(await this.#chainState.chain(event));
     }
 
-    let anyWriteSucceeded = false;
+    let anyDurableWriteSucceeded = false;
     for (const sink of this.#sinks) {
       const sinkCursor = this.#cursors.get(sink.name) ?? 0;
       const offset = sinkCursor - minCursor;
@@ -149,7 +144,7 @@ export class AuditEmitter {
       try {
         await sink.write(sinkEvents);
         this.#cursors.set(sink.name, throughSeq);
-        anyWriteSucceeded = true;
+        if (sink.durable) anyDurableWriteSucceeded = true;
       } catch (error: unknown) {
         logger.warn(
           "Audit sink {sink} failed, events dropped: {error}",
@@ -161,7 +156,7 @@ export class AuditEmitter {
       }
     }
 
-    if (!anyWriteSucceeded) {
+    if (!anyDurableWriteSucceeded) {
       this.#chainState.restore(chainSnapshot);
     }
   }

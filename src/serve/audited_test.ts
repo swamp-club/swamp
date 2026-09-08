@@ -29,6 +29,7 @@ await initializeLogging({});
 function createCaptureSink(): AuditSink & { events: AuditEvent[] } {
   const sink = {
     name: "capture",
+    durable: true,
     events: [] as AuditEvent[],
     write(events: readonly AuditEvent[]): Promise<void> {
       sink.events.push(...events);

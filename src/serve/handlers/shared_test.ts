@@ -26,6 +26,7 @@ import type { Principal } from "../../domain/access/principal.ts";
 import {
   authorizeAnyOrReject,
   type ConnectionContext,
+  emitSystemAuditEvent,
   filterByAuthorization,
   setConnectionCollectives,
 } from "./shared.ts";
@@ -335,4 +336,34 @@ Deno.test("authorizeAnyOrReject: returns true for admin fallback", () => {
     ctx,
   );
   assertEquals(result, true);
+});
+
+// ── emitSystemAuditEvent tests ─────────────────────────────────────────
+
+Deno.test("emitSystemAuditEvent: emits event with system category", () => {
+  const emitted: unknown[] = [];
+  const ctx = {
+    auditEmitter: {
+      emit(event: unknown) {
+        emitted.push(event);
+      },
+    },
+    instanceId: "test-instance",
+  } as unknown as ConnectionContext;
+
+  emitSystemAuditEvent(ctx, "instance.start", "version=1.0");
+
+  assertEquals(emitted.length, 1);
+  const event = emitted[0] as Record<string, unknown>;
+  assertEquals(event.category, "system");
+  assertEquals(event.action, "instance.start");
+  assertEquals(event.principalKind, "system");
+  assertEquals(event.principalId, "system");
+  assertEquals(event.detail, "version=1.0");
+  assertEquals(event.resourceKind, "server");
+});
+
+Deno.test("emitSystemAuditEvent: no-op without emitter", () => {
+  const ctx = {} as unknown as ConnectionContext;
+  emitSystemAuditEvent(ctx, "instance.start");
 });

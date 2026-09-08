@@ -31,6 +31,7 @@ export interface WalSinkOptions {
 
 export class WalSink implements AuditSink {
   readonly name = "wal";
+  readonly durable = true;
   readonly #wal: AuditWal;
   readonly #downstream: AuditSink;
   readonly #delivered = new Set<string>();

@@ -27,8 +27,18 @@ import {
 Deno.test("classifyTier: management actions", () => {
   assertEquals(classifyTier("audit.query"), "management");
   assertEquals(classifyTier("audit.verify"), "management");
+  assertEquals(classifyTier("audit.subscribe"), "management");
   assertEquals(classifyTier("serve.reload"), "management");
   assertEquals(classifyTier("serve.health"), "management");
+});
+
+Deno.test("classifyTier: system category is management tier", () => {
+  assertEquals(classifyTier("instance.start", "system"), "management");
+  assertEquals(classifyTier("instance.stop", "system"), "management");
+});
+
+Deno.test("classifyTier: non-system category with data action is data tier", () => {
+  assertEquals(classifyTier("model.run", "execution"), "data");
 });
 
 Deno.test("classifyTier: data actions", () => {

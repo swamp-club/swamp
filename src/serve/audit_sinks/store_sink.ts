@@ -54,6 +54,7 @@ function unwrapStore(
 
 export class StoreSink implements AuditSink {
   readonly name = "store";
+  readonly durable = true;
   readonly #stores: readonly { store: AuditStore; retentionDays?: number }[];
   readonly #batchSize: number;
   readonly #flushIntervalMs: number;

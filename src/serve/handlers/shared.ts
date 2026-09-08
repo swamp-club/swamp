@@ -182,6 +182,8 @@ export interface ConnectionContext {
   auditFailOpen?: boolean;
   /** WAL instance — used to check health for fail-secure mode. */
   auditWal?: AuditWal;
+  /** WebSocket audit sink — broadcasts events to subscribed connections. */
+  auditWebSocketSink?: import("../audit_sinks/websocket_sink.ts").WebSocketSink;
 }
 
 // SECURITY: Authorization must operate on canonical (normalized) model types,
@@ -716,4 +718,27 @@ export function subscribeUntilDetach(
       unsub();
     }, { once: true });
   });
+}
+
+export function emitSystemAuditEvent(
+  ctx: ConnectionContext,
+  action: string,
+  detail?: string,
+): void {
+  if (!ctx.auditEmitter) return;
+  ctx.auditEmitter.emit(buildAuditEvent({
+    instanceId: ctx.instanceId ?? "unknown",
+    category: "system",
+    stage: "response",
+    outcome: "success",
+    action,
+    resourceKind: "server",
+    resourceName: ctx.instanceId ?? "unknown",
+    principalKind: "system",
+    principalId: "system",
+    initiatedBy: "system",
+    sourceIp: "127.0.0.1",
+    requestId: crypto.randomUUID(),
+    detail,
+  }));
 }

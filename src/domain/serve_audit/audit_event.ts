@@ -23,7 +23,8 @@ export type AuditCategory =
   | "execution"
   | "secrets"
   | "admin"
-  | "data";
+  | "data"
+  | "system";
 
 export type AuditStage = "request" | "response";
 

@@ -173,6 +173,22 @@ export interface AuditVerifyPayload {
   until?: string;
 }
 
+export interface AuditSubscribePayload {
+  categories?: string[];
+  principals?: string[];
+  actions?: string[];
+  outcomes?: string[];
+  resourceKind?: string;
+}
+
+export interface AuditEventPayload {
+  event: Record<string, unknown>;
+}
+
+export interface AuditSubscribeResponse {
+  subscriptionId: string;
+}
+
 export interface SummarisePayload {
   since?: string;
   limit?: number;
@@ -750,6 +766,8 @@ export type ServerRequest =
   | { type: "audit.timeline"; id: string; payload?: AuditTimelinePayload }
   | { type: "audit.query"; id: string; payload: AuditQueryPayload }
   | { type: "audit.verify"; id: string; payload: AuditVerifyPayload }
+  | { type: "audit.subscribe"; id: string; payload?: AuditSubscribePayload }
+  | { type: "audit.unsubscribe"; id: string }
   | { type: "summarise"; id: string; payload?: SummarisePayload }
   | { type: "report.get"; id: string; payload: ReportGetPayload }
   | { type: "report.search"; id: string; payload?: ReportSearchPayload }
@@ -1552,6 +1570,9 @@ export type ServerMessage =
   | { type: "audit.timeline"; id: string; payload: AuditTimelineResponse }
   | { type: "audit.query"; id: string; payload: AuditQueryResponse }
   | { type: "audit.verify"; id: string; payload: AuditVerifyResponse }
+  | { type: "audit.subscribe"; id: string; payload: AuditSubscribeResponse }
+  | { type: "audit.unsubscribe"; id: string }
+  | { type: "audit.event"; id: string; payload: AuditEventPayload }
   | { type: "summarise"; id: string; payload: SummariseResponse }
   | { type: "report.get"; id: string; payload: ReportGetResponse }
   | { type: "report.search"; id: string; payload: ReportSearchResponse }
