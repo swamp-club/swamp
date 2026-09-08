@@ -22,6 +22,7 @@ import {
   buildInvocationContext,
   extractCommandInfo,
   isExternalDatastoreConfigured,
+  isExternalVaultConfigured,
   isTelemetryDisabled,
   projectEnvSnapshot,
 } from "./telemetry_integration.ts";
@@ -323,43 +324,80 @@ Deno.test("buildInvocationContext: claude detected, tools configured", () => {
     { CLAUDECODE: "1" },
     ["claude", "cursor"],
     false,
+    undefined,
+    false,
   );
   assertEquals(ctx.configuredAiTools, ["claude", "cursor"]);
   assertEquals(ctx.detectedAiTool, "claude");
   assertEquals(ctx.agentSessionDetected, true);
   assertEquals(ctx.externalDatastoreConfigured, false);
+  assertEquals(ctx.externalVaultConfigured, false);
 });
 
 Deno.test("buildInvocationContext: configuredAiTools=undefined when no marker passed", () => {
-  const ctx = buildInvocationContext({ CLAUDECODE: "1" }, undefined, false);
+  const ctx = buildInvocationContext(
+    { CLAUDECODE: "1" },
+    undefined,
+    false,
+    undefined,
+    false,
+  );
   assertEquals("configuredAiTools" in ctx, false);
   assertEquals(ctx.detectedAiTool, "claude");
   assertEquals(ctx.agentSessionDetected, true);
 });
 
 Deno.test("buildInvocationContext: configuredAiTools=[] preserved (legacy opt-out)", () => {
-  const ctx = buildInvocationContext({}, [], false);
+  const ctx = buildInvocationContext({}, [], false, undefined, false);
   assertEquals(ctx.configuredAiTools, []);
   assertEquals("detectedAiTool" in ctx, false);
   assertEquals(ctx.agentSessionDetected, false);
 });
 
 Deno.test("buildInvocationContext: generic AGENT fallback flips agentSessionDetected", () => {
-  const ctx = buildInvocationContext({ AGENT: "1" }, ["claude"], false);
+  const ctx = buildInvocationContext(
+    { AGENT: "1" },
+    ["claude"],
+    false,
+    undefined,
+    false,
+  );
   assertEquals(ctx.configuredAiTools, ["claude"]);
   assertEquals("detectedAiTool" in ctx, false);
   assertEquals(ctx.agentSessionDetected, true);
 });
 
 Deno.test("buildInvocationContext: empty env yields no detection", () => {
-  const ctx = buildInvocationContext({}, ["claude"], false);
+  const ctx = buildInvocationContext({}, ["claude"], false, undefined, false);
   assertEquals("detectedAiTool" in ctx, false);
   assertEquals(ctx.agentSessionDetected, false);
 });
 
 Deno.test("buildInvocationContext: externalDatastoreConfigured=true is recorded", () => {
-  const ctx = buildInvocationContext({}, ["claude"], true);
+  const ctx = buildInvocationContext({}, ["claude"], true, undefined, false);
   assertEquals(ctx.externalDatastoreConfigured, true);
+});
+
+Deno.test("buildInvocationContext: datastoreType is recorded", () => {
+  const ctx = buildInvocationContext(
+    {},
+    ["claude"],
+    true,
+    "@swamp/s3",
+    false,
+  );
+  assertEquals(ctx.datastoreType, "@swamp/s3");
+  assertEquals(ctx.externalDatastoreConfigured, true);
+});
+
+Deno.test("buildInvocationContext: datastoreType omitted when undefined", () => {
+  const ctx = buildInvocationContext({}, ["claude"], false, undefined, false);
+  assertEquals("datastoreType" in ctx, false);
+});
+
+Deno.test("buildInvocationContext: externalVaultConfigured=true is recorded", () => {
+  const ctx = buildInvocationContext({}, ["claude"], false, undefined, true);
+  assertEquals(ctx.externalVaultConfigured, true);
 });
 
 Deno.test("isExternalDatastoreConfigured: undefined marker datastore is not external", () => {
@@ -376,6 +414,84 @@ Deno.test("isExternalDatastoreConfigured: filesystem type is not external", () =
 Deno.test("isExternalDatastoreConfigured: custom (non-filesystem) type is external", () => {
   assertEquals(
     isExternalDatastoreConfigured({ type: "s3", bucket: "my-bucket" }),
+    true,
+  );
+});
+
+Deno.test("isExternalVaultConfigured: empty vault list is not external", () => {
+  assertEquals(isExternalVaultConfigured([]), false);
+});
+
+Deno.test("isExternalVaultConfigured: only local_encryption vaults is not external", () => {
+  assertEquals(
+    isExternalVaultConfigured([
+      {
+        id: "v1",
+        name: "default",
+        type: "local_encryption",
+        config: {},
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ]),
+    false,
+  );
+});
+
+Deno.test("isExternalVaultConfigured: mock vault type is not external", () => {
+  assertEquals(
+    isExternalVaultConfigured([
+      {
+        id: "v1",
+        name: "test",
+        type: "mock",
+        config: {},
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ]),
+    false,
+  );
+});
+
+Deno.test("isExternalVaultConfigured: external vault type detected", () => {
+  assertEquals(
+    isExternalVaultConfigured([
+      {
+        id: "v1",
+        name: "default",
+        type: "local_encryption",
+        config: {},
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "v2",
+        name: "aws",
+        type: "@swamp/aws-sm",
+        config: {},
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ]),
+    true,
+  );
+});
+
+Deno.test("isExternalVaultConfigured: all external vaults detected", () => {
+  assertEquals(
+    isExternalVaultConfigured([
+      {
+        id: "v1",
+        name: "aws",
+        type: "@swamp/aws-sm",
+        config: {},
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "v2",
+        name: "op",
+        type: "@swamp/1password",
+        config: {},
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ]),
     true,
   );
 });
