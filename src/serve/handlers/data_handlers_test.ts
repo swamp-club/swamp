@@ -144,3 +144,17 @@ Deno.test("resolveRunGcInput: request retention overrides repository retention",
     },
   );
 });
+
+Deno.test("resolveRunGcInput: output policy survives a workflow-only request override", () => {
+  assertEquals(
+    resolveRunGcInput(
+      { workflowRunRetentionDays: 3 },
+      { workflowRuns: "2w", outputs: "1d" },
+    ),
+    {
+      dryRun: false,
+      workflowRunRetentionDays: 3,
+      outputRetentionDays: 1,
+    },
+  );
+});

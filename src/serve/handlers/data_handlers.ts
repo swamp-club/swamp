@@ -97,8 +97,7 @@ export function resolveRunGcInput(
     dryRun: payload?.dryRun ?? false,
     workflowRunRetentionDays,
     outputRetentionDays: payload?.outputRetentionDays ??
-      (payload?.workflowRunRetentionDays ??
-        configuredRetention.outputRetentionDays ?? workflowRunRetentionDays),
+      configuredRetention.outputRetentionDays ?? workflowRunRetentionDays,
   };
 }
 
