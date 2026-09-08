@@ -30,6 +30,9 @@ let providerRef: { shutdown(): Promise<void> } | undefined;
 export interface InitTracingConfig {
   endpoint?: string;
   exporterKind?: string;
+  bspUse?: boolean;
+  traceparent?: string;
+  tracestate?: string;
 }
 
 /**
@@ -77,7 +80,7 @@ export async function initTracing(
   // window completes (Deno.exit short-circuits finally blocks). Default to
   // SimpleSpanProcessor for predictable per-span flush; allow opting back into
   // BatchSpanProcessor via OTEL_BSP_USE=1 for long-running modes (`swamp serve`).
-  const useBatch = Deno.env.get("OTEL_BSP_USE") === "1";
+  const useBatch = config?.bspUse ?? Deno.env.get("OTEL_BSP_USE") === "1";
 
   // Register AsyncLocalStorage-based context manager
   const contextManager = new AsyncLocalStorageContextManager();
@@ -122,10 +125,10 @@ export async function initTracing(
   providerRef = provider;
 
   // Extract inbound TRACEPARENT from the parent process, if present.
-  const traceparent = Deno.env.get("TRACEPARENT");
+  const traceparent = config?.traceparent ?? Deno.env.get("TRACEPARENT");
   if (traceparent) {
     const headers: Record<string, string> = { traceparent };
-    const tracestate = Deno.env.get("TRACESTATE");
+    const tracestate = config?.tracestate ?? Deno.env.get("TRACESTATE");
     if (tracestate) headers.tracestate = tracestate;
     return contextApi.propagation.extract(
       contextApi.context.active(),

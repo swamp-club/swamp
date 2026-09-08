@@ -22,54 +22,23 @@ import { propagation, trace } from "@opentelemetry/api";
 import { initTracing, shutdownTracing } from "./otel_init.ts";
 
 Deno.test("initTracing: no-op when no endpoint is set", async () => {
-  const original = Deno.env.get("OTEL_EXPORTER_OTLP_ENDPOINT");
-  const originalSpecific = Deno.env.get(
-    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-  );
-  const originalExporter = Deno.env.get("OTEL_TRACES_EXPORTER");
-  try {
-    Deno.env.delete("OTEL_EXPORTER_OTLP_ENDPOINT");
-    Deno.env.delete("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
-    Deno.env.delete("OTEL_TRACES_EXPORTER");
+  const parentCtx = await initTracing({ exporterKind: "otlp" });
+  assertEquals(parentCtx, undefined);
 
-    const parentCtx = await initTracing();
-    assertEquals(parentCtx, undefined);
+  const tracer = trace.getTracer("test");
+  const span = tracer.startSpan("test-span");
+  const ctx = span.spanContext();
+  assertEquals(ctx.traceId, "00000000000000000000000000000000");
+  span.end();
 
-    // Tracer should return a no-op tracer (no provider registered)
-    const tracer = trace.getTracer("test");
-    const span = tracer.startSpan("test-span");
-    // No-op spans have an invalid (all-zeros) span context
-    const ctx = span.spanContext();
-    assertEquals(ctx.traceId, "00000000000000000000000000000000");
-    span.end();
-
-    await shutdownTracing();
-  } finally {
-    if (original) Deno.env.set("OTEL_EXPORTER_OTLP_ENDPOINT", original);
-    if (originalSpecific) {
-      Deno.env.set("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", originalSpecific);
-    }
-    if (originalExporter) {
-      Deno.env.set("OTEL_TRACES_EXPORTER", originalExporter);
-    }
-  }
+  await shutdownTracing();
 });
 
-Deno.test("initTracing: initializes from the signal-specific traces endpoint", async () => {
-  const keys = [
-    "OTEL_EXPORTER_OTLP_ENDPOINT",
-    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-    "OTEL_TRACES_EXPORTER",
-  ];
-  const saved = new Map(keys.map((key) => [key, Deno.env.get(key)]));
+Deno.test("initTracing: initializes from an endpoint passed via config", async () => {
   try {
-    for (const key of keys) Deno.env.delete(key);
-    Deno.env.set(
-      "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-      "http://localhost:4318/v1/traces",
-    );
-
-    await initTracing();
+    await initTracing({
+      endpoint: "http://localhost:4318",
+    });
 
     const span = trace.getTracer("test").startSpan("specific-endpoint");
     assertEquals(
@@ -79,50 +48,28 @@ Deno.test("initTracing: initializes from the signal-specific traces endpoint", a
     span.end();
   } finally {
     await shutdownTracing();
-    for (const [key, value] of saved) {
-      if (value === undefined) Deno.env.delete(key);
-      else Deno.env.set(key, value);
-    }
   }
 });
 
-Deno.test("initTracing: initializes when OTEL_TRACES_EXPORTER=console", async () => {
-  const originalEndpoint = Deno.env.get("OTEL_EXPORTER_OTLP_ENDPOINT");
-  const originalExporter = Deno.env.get("OTEL_TRACES_EXPORTER");
+Deno.test("initTracing: initializes when exporterKind is console", async () => {
   try {
-    Deno.env.delete("OTEL_EXPORTER_OTLP_ENDPOINT");
-    Deno.env.set("OTEL_TRACES_EXPORTER", "console");
-
-    await initTracing();
+    await initTracing({ exporterKind: "console" });
 
     const tracer = trace.getTracer("test");
     const span = tracer.startSpan("test-span");
     const ctx = span.spanContext();
-    // When initialized, trace ID should not be all zeros
     assertEquals(ctx.traceId !== "00000000000000000000000000000000", true);
     span.end();
 
     await shutdownTracing();
   } finally {
-    if (originalEndpoint) {
-      Deno.env.set("OTEL_EXPORTER_OTLP_ENDPOINT", originalEndpoint);
-    }
-    if (originalExporter) {
-      Deno.env.set("OTEL_TRACES_EXPORTER", originalExporter);
-    } else {
-      Deno.env.delete("OTEL_TRACES_EXPORTER");
-    }
+    await shutdownTracing();
   }
 });
 
 Deno.test("initTracing: W3C propagator is registered (inject/extract roundtrip)", async () => {
-  const originalEndpoint = Deno.env.get("OTEL_EXPORTER_OTLP_ENDPOINT");
-  const originalExporter = Deno.env.get("OTEL_TRACES_EXPORTER");
   try {
-    Deno.env.delete("OTEL_EXPORTER_OTLP_ENDPOINT");
-    Deno.env.set("OTEL_TRACES_EXPORTER", "console");
-
-    await initTracing();
+    await initTracing({ exporterKind: "console" });
 
     const carrier: Record<string, string> = {};
     const tracer = trace.getTracer("test");
@@ -137,151 +84,92 @@ Deno.test("initTracing: W3C propagator is registered (inject/extract roundtrip)"
 
     await shutdownTracing();
   } finally {
-    if (originalEndpoint) {
-      Deno.env.set("OTEL_EXPORTER_OTLP_ENDPOINT", originalEndpoint);
-    }
-    if (originalExporter) {
-      Deno.env.set("OTEL_TRACES_EXPORTER", originalExporter);
-    } else {
-      Deno.env.delete("OTEL_TRACES_EXPORTER");
-    }
+    await shutdownTracing();
   }
 });
 
-Deno.test("initTracing: extracts inbound TRACEPARENT from environment", async () => {
-  const originalEndpoint = Deno.env.get("OTEL_EXPORTER_OTLP_ENDPOINT");
-  const originalExporter = Deno.env.get("OTEL_TRACES_EXPORTER");
-  const originalTraceparent = Deno.env.get("TRACEPARENT");
+Deno.test("initTracing: extracts inbound traceparent from config", async () => {
   try {
-    Deno.env.delete("OTEL_EXPORTER_OTLP_ENDPOINT");
-    Deno.env.set("OTEL_TRACES_EXPORTER", "console");
-    Deno.env.set(
-      "TRACEPARENT",
-      "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
-    );
-
-    const parentCtx = await initTracing();
+    const parentCtx = await initTracing({
+      exporterKind: "console",
+      traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+    });
     assertExists(parentCtx);
 
     await shutdownTracing();
   } finally {
-    if (originalEndpoint) {
-      Deno.env.set("OTEL_EXPORTER_OTLP_ENDPOINT", originalEndpoint);
-    }
-    if (originalExporter) {
-      Deno.env.set("OTEL_TRACES_EXPORTER", originalExporter);
-    } else {
-      Deno.env.delete("OTEL_TRACES_EXPORTER");
-    }
-    if (originalTraceparent) {
-      Deno.env.set("TRACEPARENT", originalTraceparent);
-    } else {
-      Deno.env.delete("TRACEPARENT");
-    }
+    await shutdownTracing();
   }
 });
 
-Deno.test("initTracing: returns undefined when no TRACEPARENT is set", async () => {
-  const originalEndpoint = Deno.env.get("OTEL_EXPORTER_OTLP_ENDPOINT");
-  const originalExporter = Deno.env.get("OTEL_TRACES_EXPORTER");
-  const originalTraceparent = Deno.env.get("TRACEPARENT");
+Deno.test("initTracing: returns undefined when no traceparent is set", async () => {
   try {
-    Deno.env.delete("OTEL_EXPORTER_OTLP_ENDPOINT");
-    Deno.env.set("OTEL_TRACES_EXPORTER", "console");
-    Deno.env.delete("TRACEPARENT");
-
-    const parentCtx = await initTracing();
+    const parentCtx = await initTracing({ exporterKind: "console" });
     assertEquals(parentCtx, undefined);
 
     await shutdownTracing();
   } finally {
-    if (originalEndpoint) {
-      Deno.env.set("OTEL_EXPORTER_OTLP_ENDPOINT", originalEndpoint);
-    }
-    if (originalExporter) {
-      Deno.env.set("OTEL_TRACES_EXPORTER", originalExporter);
-    } else {
-      Deno.env.delete("OTEL_TRACES_EXPORTER");
-    }
-    if (originalTraceparent) {
-      Deno.env.set("TRACEPARENT", originalTraceparent);
-    } else {
-      Deno.env.delete("TRACEPARENT");
-    }
+    await shutdownTracing();
   }
 });
 
-Deno.test("initTracing: includes OTEL_RESOURCE_ATTRIBUTES in resource", async () => {
-  const originalResAttrs = Deno.env.get("OTEL_RESOURCE_ATTRIBUTES");
-  try {
-    Deno.env.set(
-      "OTEL_RESOURCE_ATTRIBUTES",
-      "site=bed,deployment.environment=prod",
-    );
+Deno.test("initTracing: resource includes attributes from detector merge", async () => {
+  const { Resource } = await import("@opentelemetry/resources");
+  const { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } = await import(
+    "@opentelemetry/semantic-conventions"
+  );
+  const { buildOtelResource } = await import("./otel_resource.ts");
 
-    const { Resource, envDetectorSync } = await import(
-      "@opentelemetry/resources"
-    );
-    const { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } = await import(
-      "@opentelemetry/semantic-conventions"
-    );
+  const stubDetector = {
+    detect: () =>
+      new Resource({
+        "site": "bed",
+        "deployment.environment": "prod",
+      }),
+  };
 
-    const resource = Resource.default()
-      .merge(envDetectorSync.detect())
-      .merge(
-        new Resource({
-          [ATTR_SERVICE_NAME]: "swamp-test",
-          [ATTR_SERVICE_VERSION]: "1.0.0",
-        }),
-      );
+  const resource = buildOtelResource(
+    Resource,
+    stubDetector,
+    {
+      serviceNameAttr: ATTR_SERVICE_NAME,
+      serviceVersionAttr: ATTR_SERVICE_VERSION,
+    },
+    () => undefined,
+  );
 
-    const attrs = resource.attributes;
-    assertEquals(attrs["site"], "bed");
-    assertEquals(attrs["deployment.environment"], "prod");
-    assertEquals(attrs["service.name"], "swamp-test");
-    assertEquals(attrs["service.version"], "1.0.0");
-    assertEquals(attrs["telemetry.sdk.language"], "nodejs");
-  } finally {
-    if (originalResAttrs) {
-      Deno.env.set("OTEL_RESOURCE_ATTRIBUTES", originalResAttrs);
-    } else {
-      Deno.env.delete("OTEL_RESOURCE_ATTRIBUTES");
-    }
-  }
+  const attrs = resource.attributes;
+  assertEquals(attrs["site"], "bed");
+  assertEquals(attrs["deployment.environment"], "prod");
+  assertEquals(attrs["service.name"], "swamp");
+  assertEquals(attrs["service.version"], "dev");
+  assertEquals(attrs["telemetry.sdk.language"], "nodejs");
 });
 
-Deno.test("initTracing: explicit service.name wins over OTEL_RESOURCE_ATTRIBUTES", async () => {
-  const originalResAttrs = Deno.env.get("OTEL_RESOURCE_ATTRIBUTES");
-  try {
-    Deno.env.set("OTEL_RESOURCE_ATTRIBUTES", "service.name=from-env");
+Deno.test("initTracing: explicit service.name wins over detector attributes", async () => {
+  const { Resource } = await import("@opentelemetry/resources");
+  const { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } = await import(
+    "@opentelemetry/semantic-conventions"
+  );
+  const { buildOtelResource } = await import("./otel_resource.ts");
 
-    const { Resource, envDetectorSync } = await import(
-      "@opentelemetry/resources"
-    );
-    const { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } = await import(
-      "@opentelemetry/semantic-conventions"
-    );
+  const stubDetector = {
+    detect: () => new Resource({ "service.name": "from-detector" }),
+  };
 
-    const resource = Resource.default()
-      .merge(envDetectorSync.detect())
-      .merge(
-        new Resource({
-          [ATTR_SERVICE_NAME]: "swamp",
-          [ATTR_SERVICE_VERSION]: "dev",
-        }),
-      );
+  const resource = buildOtelResource(
+    Resource,
+    stubDetector,
+    {
+      serviceNameAttr: ATTR_SERVICE_NAME,
+      serviceVersionAttr: ATTR_SERVICE_VERSION,
+    },
+    () => undefined,
+  );
 
-    assertEquals(resource.attributes["service.name"], "swamp");
-  } finally {
-    if (originalResAttrs) {
-      Deno.env.set("OTEL_RESOURCE_ATTRIBUTES", originalResAttrs);
-    } else {
-      Deno.env.delete("OTEL_RESOURCE_ATTRIBUTES");
-    }
-  }
+  assertEquals(resource.attributes["service.name"], "swamp");
 });
 
 Deno.test("shutdownTracing: no-op when tracing was not initialized", async () => {
-  // Should not throw
   await shutdownTracing();
 });

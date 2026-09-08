@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { envDetectorSync, Resource } from "@opentelemetry/resources";
+import { Resource } from "@opentelemetry/resources";
 import {
   ATTR_SERVICE_NAME,
   ATTR_SERVICE_VERSION,
@@ -30,63 +30,52 @@ const ATTRS = {
   serviceVersionAttr: ATTR_SERVICE_VERSION,
 };
 
-function withEnv(
-  vars: Record<string, string | undefined>,
-  fn: () => void,
-): void {
-  const saved: Record<string, string | undefined> = {};
-  for (const key of Object.keys(vars)) {
-    saved[key] = Deno.env.get(key);
-  }
-  try {
-    for (const [key, value] of Object.entries(vars)) {
-      if (value === undefined) Deno.env.delete(key);
-      else Deno.env.set(key, value);
-    }
-    fn();
-  } finally {
-    for (const [key, value] of Object.entries(saved)) {
-      if (value === undefined) Deno.env.delete(key);
-      else Deno.env.set(key, value);
-    }
-  }
+function fakeEnv(
+  vars: Record<string, string>,
+): (key: string) => string | undefined {
+  return (key: string) => vars[key];
+}
+
+function stubDetector(
+  attrs: Record<string, string>,
+): { detect(): Resource } {
+  return { detect: () => new Resource(attrs) };
 }
 
 Deno.test("buildOtelResource: defaults service.name to 'swamp' and version to 'dev'", () => {
-  withEnv(
-    { OTEL_SERVICE_NAME: undefined, SWAMP_VERSION: undefined },
-    () => {
-      const resource = buildOtelResource(Resource, envDetectorSync, ATTRS);
-      assertEquals(resource.attributes[ATTR_SERVICE_NAME], "swamp");
-      assertEquals(resource.attributes[ATTR_SERVICE_VERSION], "dev");
-    },
+  const resource = buildOtelResource(
+    Resource,
+    stubDetector({}),
+    ATTRS,
+    fakeEnv({}),
   );
+  assertEquals(resource.attributes[ATTR_SERVICE_NAME], "swamp");
+  assertEquals(resource.attributes[ATTR_SERVICE_VERSION], "dev");
 });
 
 Deno.test("buildOtelResource: honors OTEL_SERVICE_NAME and SWAMP_VERSION", () => {
-  withEnv(
-    { OTEL_SERVICE_NAME: "asdlc-harness", SWAMP_VERSION: "1.2.3" },
-    () => {
-      const resource = buildOtelResource(Resource, envDetectorSync, ATTRS);
-      assertEquals(resource.attributes[ATTR_SERVICE_NAME], "asdlc-harness");
-      assertEquals(resource.attributes[ATTR_SERVICE_VERSION], "1.2.3");
-    },
+  const resource = buildOtelResource(
+    Resource,
+    stubDetector({}),
+    ATTRS,
+    fakeEnv({
+      OTEL_SERVICE_NAME: "asdlc-harness",
+      SWAMP_VERSION: "1.2.3",
+    }),
   );
+  assertEquals(resource.attributes[ATTR_SERVICE_NAME], "asdlc-harness");
+  assertEquals(resource.attributes[ATTR_SERVICE_VERSION], "1.2.3");
 });
 
-Deno.test("buildOtelResource: picks up OTEL_RESOURCE_ATTRIBUTES via envDetectorSync", () => {
-  withEnv(
-    {
-      OTEL_SERVICE_NAME: undefined,
-      SWAMP_VERSION: undefined,
-      OTEL_RESOURCE_ATTRIBUTES: "deployment.environment=staging",
-    },
-    () => {
-      const resource = buildOtelResource(Resource, envDetectorSync, ATTRS);
-      assertEquals(
-        resource.attributes["deployment.environment"],
-        "staging",
-      );
-    },
+Deno.test("buildOtelResource: merges detector attributes into resource", () => {
+  const resource = buildOtelResource(
+    Resource,
+    stubDetector({ "deployment.environment": "staging" }),
+    ATTRS,
+    fakeEnv({}),
+  );
+  assertEquals(
+    resource.attributes["deployment.environment"],
+    "staging",
   );
 });
