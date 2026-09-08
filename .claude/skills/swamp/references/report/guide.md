@@ -2,9 +2,9 @@
 
 Create and run reports that analyze model and workflow executions. Reports
 produce markdown (human-readable) and JSON (machine-readable) output. All
-commands support `--json`. If unsure about exact flags or subcommands, run
-`swamp report --help` or `swamp model method run --help` for the up-to-date
-schema.
+commands support `--json`. Always run `swamp help report` or
+`swamp help model method run` to confirm exact flags before executing — the
+output is structured JSON.
 
 ## Quick Reference
 

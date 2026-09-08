@@ -467,7 +467,7 @@ The central command is `swamp run`:
 | What completed runs exist (YAML outputs)? | `swamp model output search`         |
 | Execution history with duration/status    | `swamp model method history search` |
 
-See `swamp run history --help` for full details.
+See `swamp help run history` for the full schema.
 
 ## Workflow Example
 
