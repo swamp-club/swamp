@@ -52,10 +52,7 @@ import type { ScheduledExecutionService } from "../../libswamp/mod.ts";
 import type { MergedServeOptions } from "../serve_config.ts";
 import type { HealthCollector } from "../health_collector.ts";
 import type { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";
-import type {
-  AuditCategory,
-  AuditDecision,
-} from "../../domain/serve_audit/audit_event.ts";
+import type { AuditDecision } from "../../domain/serve_audit/audit_event.ts";
 import { buildAuditEvent } from "../../domain/serve_audit/audit_event_builder.ts";
 import type { AuditStore } from "../../domain/serve_audit/audit_store.ts";
 import type { AuditPolicy } from "../../domain/serve_audit/audit_policy.ts";
@@ -731,7 +728,7 @@ export function emitSystemAuditEvent(
   if (!ctx.auditEmitter) return;
   ctx.auditEmitter.emit(buildAuditEvent({
     instanceId: ctx.instanceId ?? "unknown",
-    category: "system" as AuditCategory,
+    category: "system",
     stage: "response",
     outcome: "success",
     action,

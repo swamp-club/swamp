@@ -35,6 +35,7 @@ import {
   runModelMethodOverServer,
   runWorkflowOverServer,
   setMarkerServerAddress,
+  subscribeServerEvents,
   warnServerReloadNeeded,
   writeRemoteIndicator,
 } from "./remote_run.ts";
@@ -1549,4 +1550,105 @@ Deno.test({
       await server.shutdown();
     }
   },
+});
+
+// ── subscribeServerEvents tests ──────────────────────────────────────
+
+Deno.test("subscribeServerEvents: yields audit events from server", async () => {
+  const server = scriptedServer((request, reply) => {
+    if (request.type === "audit.subscribe") {
+      reply({
+        type: "audit.subscribe",
+        id: request.id,
+        payload: { subscriptionId: "sub-1" },
+      });
+      reply({
+        type: "audit.event",
+        id: "sub-1",
+        payload: { event: { action: "vault.get", outcome: "success" } },
+      });
+      reply({
+        type: "audit.event",
+        id: "sub-1",
+        payload: { event: { action: "model.run", outcome: "denied" } },
+      });
+    }
+  });
+  try {
+    const events: Record<string, unknown>[] = [];
+    const ac = new AbortController();
+    const stream = subscribeServerEvents(
+      { server: server.url, token: undefined, signal: ac.signal },
+      { type: "audit.subscribe" },
+    );
+    for await (const event of stream) {
+      events.push(event);
+      if (events.length >= 2) {
+        ac.abort();
+      }
+    }
+    assertEquals(events.length, 2);
+    assertEquals(events[0].action, "vault.get");
+    assertEquals(events[1].action, "model.run");
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("subscribeServerEvents: propagates server error", async () => {
+  const server = scriptedServer((request, reply) => {
+    reply({
+      type: "error",
+      id: request.id,
+      error: { code: "audit_not_configured", message: "Audit not enabled" },
+    });
+  });
+  try {
+    const stream = subscribeServerEvents(
+      { server: server.url, token: undefined },
+      { type: "audit.subscribe" },
+    );
+    await assertRejects(
+      async () => {
+        for await (const _ of stream) {
+          // should not yield
+        }
+      },
+      UserError,
+      "Audit not enabled",
+    );
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("subscribeServerEvents: terminates on socket close", async () => {
+  const server = scriptedServer((request, reply, socket) => {
+    if (request.type === "audit.subscribe") {
+      reply({
+        type: "audit.subscribe",
+        id: request.id,
+        payload: { subscriptionId: "sub-1" },
+      });
+      reply({
+        type: "audit.event",
+        id: "sub-1",
+        payload: { event: { action: "test" } },
+      });
+      setTimeout(() => socket.close(), 50);
+    }
+  });
+  try {
+    const events: Record<string, unknown>[] = [];
+    const stream = subscribeServerEvents(
+      { server: server.url, token: undefined },
+      { type: "audit.subscribe" },
+    );
+    for await (const event of stream) {
+      events.push(event);
+    }
+    assertEquals(events.length, 1);
+  } finally {
+    await server.shutdown();
+  }
 });

@@ -4327,6 +4327,7 @@ export const serveCommand = new Command()
       }
       if (connectionCtx.auditEmitter) {
         emitSystemAuditEvent(connectionCtx, "instance.stop");
+        await connectionCtx.auditEmitter.flush();
         await connectionCtx.auditEmitter.close();
         if (connectionCtx.auditWal) {
           await connectionCtx.auditWal.saveChainState(
