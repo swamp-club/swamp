@@ -24,6 +24,28 @@ import {
 } from "./device_auth_handler.ts";
 import { DeviceGrantPollError } from "./oauth_client.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
+import { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
+import type { AuditEvent } from "../domain/serve_audit/audit_event.ts";
+import type { AuditSink } from "../domain/serve_audit/audit_sink.ts";
+
+function createCollectingSink(): AuditSink & { events: AuditEvent[] } {
+  const sink = {
+    name: "test-collector",
+    durable: false,
+    events: [] as AuditEvent[],
+    write(events: readonly AuditEvent[]): Promise<void> {
+      sink.events.push(...events);
+      return Promise.resolve();
+    },
+    flush(): Promise<void> {
+      return Promise.resolve();
+    },
+    close(): Promise<void> {
+      return Promise.resolve();
+    },
+  };
+  return sink;
+}
 
 function makeMockDeps(
   overrides: Partial<DeviceAuthDeps> = {},
@@ -527,4 +549,149 @@ Deno.test("handleDeviceAuth: POST /auth/device/token returns 500 on mintServerTo
   assertEquals(result?.status, 500);
   const body = await result!.json();
   assertEquals(body.error, "Internal error during token exchange");
+});
+
+// ── Audit event emission ─────────────────────────────────────────────
+
+Deno.test("handleDeviceAuth: POST /auth/device emits auth.login.started event", async () => {
+  const sink = createCollectingSink();
+  const emitter = new AuditEmitter([sink]);
+  const deps = makeMockDeps({
+    auditEmitter: emitter,
+    instanceId: "test-instance",
+    sourceIp: "192.168.1.1",
+  });
+  const result = await handleDeviceAuth(postRequest("/auth/device"), deps);
+  assertEquals(result?.status, 200);
+  await emitter.flush();
+  assertEquals(sink.events.length, 1);
+  assertEquals(sink.events[0].category, "auth");
+  assertEquals(sink.events[0].action, "auth.login.started");
+  assertEquals(sink.events[0].outcome, "success");
+  assertEquals(sink.events[0].instanceId, "test-instance");
+  assertEquals(sink.events[0].sourceIp, "192.168.1.1");
+  assertEquals(sink.events[0].principalKind, "anonymous");
+});
+
+Deno.test("handleDeviceAuth: POST /auth/device/token emits auth.login.completed on success", async () => {
+  const sink = createCollectingSink();
+  const emitter = new AuditEmitter([sink]);
+  const deps = makeMockDeps({
+    auditEmitter: emitter,
+    instanceId: "test-instance",
+    sourceIp: "10.0.0.1",
+  });
+  const result = await handleDeviceAuth(
+    postRequest("/auth/device/token", { deviceCode: "dev-123" }),
+    deps,
+  );
+  assertEquals(result?.status, 200);
+  await emitter.flush();
+  assertEquals(sink.events.length, 1);
+  assertEquals(sink.events[0].category, "auth");
+  assertEquals(sink.events[0].action, "auth.login.completed");
+  assertEquals(sink.events[0].outcome, "success");
+  assertEquals(sink.events[0].principalKind, "user");
+  assertEquals(sink.events[0].principalId, "user-1");
+  assertEquals(sink.events[0].sourceIp, "10.0.0.1");
+});
+
+Deno.test("handleDeviceAuth: POST /auth/device/token emits auth.login.denied on admission failure", async () => {
+  const sink = createCollectingSink();
+  const emitter = new AuditEmitter([sink]);
+  const deps = makeMockDeps({
+    auditEmitter: emitter,
+    instanceId: "test-instance",
+    sourceIp: "10.0.0.1",
+    checkAdmission: () => ({
+      admitted: false,
+      reason: "user is not a member of any allowed collective",
+    }),
+  });
+  const result = await handleDeviceAuth(
+    postRequest("/auth/device/token", { deviceCode: "dev-123" }),
+    deps,
+  );
+  assertEquals(result?.status, 403);
+  await emitter.flush();
+  assertEquals(sink.events.length, 1);
+  assertEquals(sink.events[0].category, "auth");
+  assertEquals(sink.events[0].action, "auth.login.denied");
+  assertEquals(sink.events[0].outcome, "denied");
+  assertEquals(sink.events[0].principalId, "user-1");
+  assertEquals(
+    sink.events[0].detail,
+    "user is not a member of any allowed collective",
+  );
+});
+
+Deno.test("handleDeviceAuth: POST /auth/device/token emits auth.login.expired on expired_token", async () => {
+  const sink = createCollectingSink();
+  const emitter = new AuditEmitter([sink]);
+  const deps = makeMockDeps({
+    auditEmitter: emitter,
+    instanceId: "test-instance",
+    sourceIp: "10.0.0.1",
+    pollForToken: () =>
+      Promise.reject(new DeviceGrantPollError("expired_token")),
+  });
+  const result = await handleDeviceAuth(
+    postRequest("/auth/device/token", { deviceCode: "dev-123" }),
+    deps,
+  );
+  assertEquals(result?.status, 410);
+  await emitter.flush();
+  assertEquals(sink.events.length, 1);
+  assertEquals(sink.events[0].category, "auth");
+  assertEquals(sink.events[0].action, "auth.login.expired");
+  assertEquals(sink.events[0].outcome, "failure");
+  assertEquals(sink.events[0].principalKind, "anonymous");
+});
+
+Deno.test("handleDeviceAuth: POST /auth/device/token emits auth.login.denied on access_denied", async () => {
+  const sink = createCollectingSink();
+  const emitter = new AuditEmitter([sink]);
+  const deps = makeMockDeps({
+    auditEmitter: emitter,
+    instanceId: "test-instance",
+    sourceIp: "10.0.0.1",
+    pollForToken: () =>
+      Promise.reject(new DeviceGrantPollError("access_denied")),
+  });
+  const result = await handleDeviceAuth(
+    postRequest("/auth/device/token", { deviceCode: "dev-123" }),
+    deps,
+  );
+  assertEquals(result?.status, 403);
+  await emitter.flush();
+  assertEquals(sink.events.length, 1);
+  assertEquals(sink.events[0].category, "auth");
+  assertEquals(sink.events[0].action, "auth.login.denied");
+  assertEquals(sink.events[0].outcome, "denied");
+});
+
+Deno.test("handleDeviceAuth: no audit events emitted when auditEmitter is undefined", async () => {
+  const deps = makeMockDeps();
+  const result = await handleDeviceAuth(postRequest("/auth/device"), deps);
+  assertEquals(result?.status, 200);
+  // No crash, no events — auditEmitter is undefined by default in makeMockDeps
+});
+
+Deno.test("handleDeviceAuth: no audit events on pending poll (not a security event)", async () => {
+  const sink = createCollectingSink();
+  const emitter = new AuditEmitter([sink]);
+  const deps = makeMockDeps({
+    auditEmitter: emitter,
+    instanceId: "test-instance",
+    sourceIp: "10.0.0.1",
+    pollForToken: () =>
+      Promise.reject(new DeviceGrantPollError("authorization_pending")),
+  });
+  const result = await handleDeviceAuth(
+    postRequest("/auth/device/token", { deviceCode: "dev-123" }),
+    deps,
+  );
+  assertEquals(result?.status, 202);
+  await emitter.flush();
+  assertEquals(sink.events.length, 0);
 });

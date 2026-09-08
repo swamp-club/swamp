@@ -4004,16 +4004,16 @@ export const serveCommand = new Command()
 
         // Device authorization endpoints (OAuth mode only)
         if (authConfig.mode === "oauth" && authConfig.oauthClientId) {
+          const deviceRemoteAddr = trustProxy
+            ? (req.headers.get("x-forwarded-for")
+              ?.split(",")[0]?.trim() ??
+              info.remoteAddr.hostname)
+            : info.remoteAddr.hostname;
           const url = new URL(req.url);
           if (
             url.pathname === "/auth/device" ||
             url.pathname === "/auth/device/token"
           ) {
-            const deviceRemoteAddr = trustProxy
-              ? (req.headers.get("x-forwarded-for")
-                ?.split(",")[0]?.trim() ??
-                info.remoteAddr.hostname)
-              : info.remoteAddr.hostname;
             const deviceRateCheck = checkIpBurst(deviceRemoteAddr);
             if (!deviceRateCheck.allowed) {
               return new Response(
@@ -4040,6 +4040,9 @@ export const serveCommand = new Command()
             repoMarker?.defaultVault,
             syncService,
             serveNamespace,
+            connectionCtx.auditEmitter,
+            connectionCtx.instanceId,
+            deviceRemoteAddr,
           );
           const deviceAuthResponse = await handleDeviceAuth(
             req,

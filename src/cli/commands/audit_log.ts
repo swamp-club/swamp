@@ -81,7 +81,7 @@ export const auditLogCommand = withRemoteOptions(
     })
     .option(
       "--follow",
-      "Stream new audit events in real-time after the initial query",
+      "Stream new audit events in real-time after the initial query (Ctrl+C to stop). In JSON mode, emits one event object per line (NDJSON).",
     ),
 ).action(async function (options: AnyOptions) {
   const ctx = createContext(options as GlobalOptions, ["audit", "log"]);

@@ -125,6 +125,31 @@ re-authorized every 60 seconds — revoked grants terminate the stream.
 No durability guarantee — this is live streaming, not a replay mechanism. Missed
 events are queryable via `audit.query`.
 
+## Auth events
+
+The `auth` audit category captures OAuth device flow operations. Unlike other
+categories that flow through the `audited()` wrapper on WebSocket handlers, auth
+events are emitted inline from the HTTP device auth handler
+(`src/serve/device_auth_handler.ts`) via `buildAuditEvent` + `emitter.emit`.
+This is because the device auth flow runs in the HTTP request path
+pre-authentication — there is no WebSocket connection or authenticated principal
+at this point.
+
+Actions:
+
+- `auth.login.started` — device grant initiated (anonymous principal)
+- `auth.login.completed` — OAuth flow completed, server token minted (success)
+- `auth.login.denied` — admission check failed or user denied authorization
+- `auth.login.expired` — device code expired before completion
+
+The `AuditEmitter` and `instanceId` are threaded through `DeviceAuthDeps`; the
+`sourceIp` is resolved by the serve HTTP handler (respecting `trustProxy` /
+`X-Forwarded-For`) and passed through. When audit is not configured (no
+`auditEmitter`), the emit helper is a no-op.
+
+Token revocation is audited separately via the `access.token.revoke` WebSocket
+handler under the `admin` category.
+
 ## System events
 
 The `system` audit category captures infrastructure lifecycle events with

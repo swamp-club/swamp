@@ -22,6 +22,12 @@ import { checkAdmission } from "../domain/access/admission.ts";
 import type { ServeAuthConfig } from "../domain/access/serve_auth_config.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import type { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
+import type {
+  AuditEvent,
+  AuditOutcome,
+} from "../domain/serve_audit/audit_event.ts";
+import { buildAuditEvent } from "../domain/serve_audit/audit_event_builder.ts";
 import {
   DeviceGrantPollError,
   type DeviceGrantResponse,
@@ -96,6 +102,36 @@ export interface DeviceAuthDeps {
     accessToken: string,
   ) => Promise<void>;
   readonly clientSecret: string;
+  readonly auditEmitter?: AuditEmitter;
+  readonly instanceId?: string;
+  readonly sourceIp?: string;
+}
+
+function emitAuthAuditEvent(
+  deps: DeviceAuthDeps,
+  action: string,
+  outcome: AuditOutcome,
+  principalId?: string,
+  detail?: string,
+): AuditEvent | undefined {
+  if (!deps.auditEmitter) return undefined;
+  const event = buildAuditEvent({
+    instanceId: deps.instanceId ?? "unknown",
+    category: "auth",
+    stage: "response",
+    outcome,
+    action,
+    resourceKind: "server",
+    resourceName: deps.instanceId ?? "unknown",
+    principalKind: principalId ? "user" : "anonymous",
+    principalId: principalId ?? "anonymous",
+    initiatedBy: principalId ? `user:${principalId}` : "anonymous",
+    sourceIp: deps.sourceIp ?? "unknown",
+    requestId: crypto.randomUUID(),
+    detail,
+  });
+  deps.auditEmitter.emit(event);
+  return event;
 }
 
 function jsonResponse(
@@ -155,6 +191,7 @@ async function handleStartDeviceGrant(
     logger.info("Device grant started for provider {provider}", {
       provider: deps.authConfig.oauthProvider,
     });
+    emitAuthAuditEvent(deps, "auth.login.started", "success");
     return jsonResponse(200, {
       deviceCode: grant.deviceCode,
       userCode: grant.userCode,
@@ -218,6 +255,13 @@ async function handleDeviceToken(
         sub: userInfo.sub,
         reason: admissionResult.reason,
       });
+      emitAuthAuditEvent(
+        deps,
+        "auth.login.denied",
+        "denied",
+        userInfo.sub,
+        admissionResult.reason,
+      );
       return jsonResponse(403, {
         error: "Not admitted",
         reason: admissionResult.reason,
@@ -243,6 +287,12 @@ async function handleDeviceToken(
     logger.info("OAuth device flow completed for {principal}", {
       principal: principalId,
     });
+    emitAuthAuditEvent(
+      deps,
+      "auth.login.completed",
+      "success",
+      userInfo.sub,
+    );
     return jsonResponse(200, {
       token,
       principal: {
@@ -261,8 +311,10 @@ async function handleDeviceToken(
         case "slow_down":
           return jsonResponse(202, { status: "pending", slowDown: true });
         case "expired_token":
+          emitAuthAuditEvent(deps, "auth.login.expired", "failure");
           return jsonResponse(410, { error: "Device code expired" });
         case "access_denied":
+          emitAuthAuditEvent(deps, "auth.login.denied", "denied");
           return jsonResponse(403, {
             error: "Authorization denied by user",
           });
@@ -402,6 +454,9 @@ export function createDeviceAuthDeps(
   defaultVault?: string,
   syncService?: DatastoreSyncService,
   namespace?: string,
+  auditEmitter?: AuditEmitter,
+  instanceId?: string,
+  sourceIp?: string,
 ): DeviceAuthDeps {
   return {
     authConfig,
@@ -442,5 +497,8 @@ export function createDeviceAuthDeps(
         accessToken,
       );
     },
+    auditEmitter,
+    instanceId,
+    sourceIp,
   };
 }
