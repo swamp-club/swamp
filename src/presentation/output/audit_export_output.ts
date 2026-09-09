@@ -56,8 +56,8 @@ export function createAuditExportRenderer(outputMode: OutputMode) {
           }
 
           if (data.truncated) {
-            writeOutput(
-              "\nWarning: Results truncated. Narrow the date range for complete data.",
+            console.error(
+              "Warning: Results truncated. Narrow the date range for complete data.",
             );
           }
         },

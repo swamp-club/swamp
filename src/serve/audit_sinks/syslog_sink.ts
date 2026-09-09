@@ -135,6 +135,7 @@ export class SyslogSink implements AuditSink {
 
   async write(events: readonly AuditEvent[]): Promise<void> {
     this.#connectionFailed = false;
+    this.#reconnectAttempts = 0;
     for (const event of events) {
       if (this.#connectionFailed) break;
       if (!matchesSinkFilter(event, this.#filter)) continue;
