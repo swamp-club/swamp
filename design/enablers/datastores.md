@@ -1386,13 +1386,14 @@ process left a lock that hasn't expired yet.
   (`datastore_compact.ts`).
 - `swamp datastore config migrate` — copy definitions, vault configs, the
   extension lockfile and pulled extensions into the datastore `config/` tier
-  and set `managedConfig: true`; once the sentinel exists,
-  `resolveManagedConfigPaths` (`src/cli/repo_context.ts`) points the
-  pulled-extensions root and lockfile at the datastore-resolved config path.
-  For custom datastores (S3, GCS), `ensureManagedConfigBase` resolves the
-  datastore config to derive the cache-relative config path — extension
-  commands call it before `resolveManagedConfigPaths` so the module-level
-  registry is populated correctly (`datastore_config_migrate.ts`).
+  and set `managedConfig: true`; the marker flag is the sole authority for
+  activation — `resolveManagedConfigPaths` (`src/cli/repo_context.ts`)
+  points the pulled-extensions root and lockfile at the datastore-resolved
+  config path whenever `managedConfig` is true. For custom datastores
+  (S3, GCS), `ensureManagedConfigBase` resolves the datastore config to
+  derive the cache-relative config path — extension commands call it before
+  `resolveManagedConfigPaths` so the module-level registry is populated
+  correctly (`datastore_config_migrate.ts`).
 - `swamp doctor datastores [--repair [-y]]` — health check plus optional
   repair of catalog completeness, root-level unmigrated data and foreign
   namespace contamination, the last via the optional
