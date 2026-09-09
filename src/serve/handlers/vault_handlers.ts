@@ -69,6 +69,7 @@ import type {
   VaultTypeSearchPayload,
 } from "../protocol.ts";
 import { acquireVaultSync } from "../../cli/repo_context.ts";
+import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import type { Principal } from "../../domain/access/principal.ts";
 import { getVaultTypes } from "../../domain/vaults/vault_types.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
@@ -79,6 +80,9 @@ import {
   send,
   sendError,
 } from "./shared.ts";
+import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+
+const logger = getSwampLogger(["serve", "connection"]);
 
 export function isReservedVaultName(name: string): boolean {
   return name.startsWith("_");
@@ -362,6 +366,25 @@ export async function handleVaultDelete(
       id: requestId,
       payload: { data: result ?? {} },
     });
+
+    if (ctx.syncService) {
+      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+        ? ctx.datastoreConfig.namespace
+        : undefined;
+      try {
+        await ctx.syncService.markDirty();
+        await ctx.syncService.pushChanged({ namespace });
+      } catch (pushError) {
+        logger.warn(
+          "Failed to push vault delete to remote datastore: {error}",
+          {
+            error: pushError instanceof Error
+              ? pushError.message
+              : String(pushError),
+          },
+        );
+      }
+    }
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
@@ -749,6 +772,25 @@ export async function handleVaultCreate(
       id: requestId,
       payload: { data: result ?? {} },
     });
+
+    if (ctx.syncService) {
+      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+        ? ctx.datastoreConfig.namespace
+        : undefined;
+      try {
+        await ctx.syncService.markDirty();
+        await ctx.syncService.pushChanged({ namespace });
+      } catch (pushError) {
+        logger.warn(
+          "Failed to push vault create to remote datastore: {error}",
+          {
+            error: pushError instanceof Error
+              ? pushError.message
+              : String(pushError),
+          },
+        );
+      }
+    }
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "vault_create_failed", message);
@@ -803,6 +845,25 @@ export async function handleVaultEdit(
       id: requestId,
       payload: { data: result ?? {} },
     });
+
+    if (ctx.syncService) {
+      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+        ? ctx.datastoreConfig.namespace
+        : undefined;
+      try {
+        await ctx.syncService.markDirty();
+        await ctx.syncService.pushChanged({ namespace });
+      } catch (pushError) {
+        logger.warn(
+          "Failed to push vault edit to remote datastore: {error}",
+          {
+            error: pushError instanceof Error
+              ? pushError.message
+              : String(pushError),
+          },
+        );
+      }
+    }
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "vault_edit_failed", message);
