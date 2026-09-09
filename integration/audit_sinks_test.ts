@@ -69,11 +69,16 @@ class CollectorSink implements AuditSink {
   readonly durable = false;
   readonly events: AuditEvent[] = [];
 
-  async write(events: readonly AuditEvent[]): Promise<void> {
+  write(events: readonly AuditEvent[]): Promise<void> {
     this.events.push(...events);
+    return Promise.resolve();
   }
-  async flush(): Promise<void> {}
-  async close(): Promise<void> {}
+  flush(): Promise<void> {
+    return Promise.resolve();
+  }
+  close(): Promise<void> {
+    return Promise.resolve();
+  }
 }
 
 Deno.test("Integration: HMAC applied through emitter to collector sink", async () => {

@@ -44,10 +44,14 @@ export async function hmacField(
     .join("");
 }
 
-export async function importHmacKey(raw: Uint8Array): Promise<CryptoKey> {
+export function importHmacKey(raw: Uint8Array): Promise<CryptoKey> {
+  const buf = raw.buffer.slice(
+    raw.byteOffset,
+    raw.byteOffset + raw.byteLength,
+  ) as ArrayBuffer;
   return crypto.subtle.importKey(
     "raw",
-    raw.buffer as ArrayBuffer,
+    buf,
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],

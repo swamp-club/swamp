@@ -143,11 +143,11 @@ export class SyslogSink implements AuditSink {
     }
   }
 
-  async flush(): Promise<void> {
-    // syslog messages are sent immediately, no batching
+  flush(): Promise<void> {
+    return Promise.resolve();
   }
 
-  async close(): Promise<void> {
+  close(): Promise<void> {
     this.#closed = true;
     if (this.#tcpConn) {
       try {
@@ -165,6 +165,7 @@ export class SyslogSink implements AuditSink {
       }
       this.#udpSocket = null;
     }
+    return Promise.resolve();
   }
 
   async #send(message: string): Promise<void> {
@@ -253,6 +254,11 @@ export class SyslogSink implements AuditSink {
           });
         }
         this.#reconnectAttempts = 0;
+        if (this.#closed) {
+          this.#tcpConn.close();
+          this.#tcpConn = null;
+          return null;
+        }
         return this.#tcpConn;
       } catch (error: unknown) {
         this.#reconnectAttempts++;

@@ -62,7 +62,7 @@ export function parseSinkFilter(
 
   return {
     categories: filter.categories as AuditCategory[] | undefined,
-    tier: (filter.tier as AuditEventTier | "all" | undefined) ?? "management",
+    tier: filter.tier as AuditEventTier | "all" | undefined,
     outcomes: filter.outcomes as AuditOutcome[] | undefined,
   };
 }

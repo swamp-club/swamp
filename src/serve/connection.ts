@@ -2065,7 +2065,7 @@ export function handleMessage(
             });
           } else {
             const csvHeader =
-              "id,timestamp,instanceId,category,action,stage,outcome,principalKind,principalId,initiatedBy,resourceKind,resourceName,decision.effect,decision.grantId,detail";
+              "id,timestamp,instanceId,category,action,stage,outcome,principalKind,principalId,initiatedBy,sourceIp,requestId,resourceKind,resourceName,decision.effect,decision.grantId,detail";
             const csvRows = events.map((e) => {
               const fields = [
                 e.id,
@@ -2078,6 +2078,8 @@ export function handleMessage(
                 e.principalKind,
                 e.principalId,
                 e.initiatedBy,
+                e.sourceIp,
+                e.requestId,
                 e.resourceKind,
                 e.resourceName,
                 e.decision?.effect ?? "",

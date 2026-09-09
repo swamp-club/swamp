@@ -1552,7 +1552,7 @@ export function parseAuditConfig(
     policyRules: audit.policy?.rules ?? [],
     hmacVault: audit.hmac?.vault ?? "_audit",
     hmacKey: audit.hmac?.key ?? "hmac-key",
-    hmacEnabled: audit.hmac?.enabled ?? true,
+    hmacEnabled: audit.hmac?.enabled ?? false,
     sinks,
   };
 }
