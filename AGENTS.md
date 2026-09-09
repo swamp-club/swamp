@@ -51,7 +51,8 @@ isn't part of the task. Keep the blast radius small.
 ## Commands
 
 Use `deno run` to get a complete list of custom tasks. `deno run dev` runs the
-CLI.
+CLI. `swamp help <command>` outputs the full CLI schema as structured JSON — use
+it to verify exact flags and arguments before running any swamp command.
 
 ## Verification
 

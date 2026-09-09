@@ -93,8 +93,11 @@ swamp extension init <name>                    # scaffold a new extension
    Before destructive methods (delete, stop, destroy):
    `swamp model get <name> --json` to confirm the target exists and is in the
    expected state. Proceed only when validation passes.
-4. **Execute** — run the command.
-5. **On failure** — load
+4. **Verify args** — run `swamp help <subcommand>` (e.g.
+   `swamp help model method run`) to confirm exact flags and arguments before
+   executing. The output is structured JSON — the canonical CLI schema.
+5. **Execute** — run the command.
+6. **On failure** — load
    [references/troubleshooting/guide.md](references/troubleshooting/guide.md)
    and diagnose before retrying or changing definitions.
 
@@ -113,3 +116,7 @@ swamp extension init <name>                    # scaffold a new extension
    API — check with `swamp model type search`. Composing with `--json` output
    (e.g. piping through `jq`) is fine — the anti-pattern is bypassing swamp
    entirely.
+4. **Verify flags with `swamp help` before executing.** `swamp help <command>`
+   outputs the full CLI schema as structured JSON — every subcommand, argument,
+   and option. Always run it to confirm exact flags before executing a swamp
+   command (workflow step 4). Do not guess flags from memory.

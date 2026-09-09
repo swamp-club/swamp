@@ -4,8 +4,8 @@ Diagnose swamp problems by working through four diagnostic tiers, cheapest
 first. Each tier answers a different kind of question; escalate only when the
 current tier doesn't resolve the issue.
 
-**Verify CLI syntax:** If unsure about exact flags or subcommands, run
-`swamp help <command>` for the up-to-date schema. Every swamp command supports
+**Verify CLI syntax:** Always run `swamp help <command>` to confirm exact flags
+before executing — the output is structured JSON. Every swamp command supports
 both `log` (default, human-readable) and `--json` (structured) output, and
 returns non-zero on user-facing failure.
 

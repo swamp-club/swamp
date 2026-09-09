@@ -3,8 +3,8 @@
 Manage model data lifecycle through the CLI. All commands support `--json` for
 machine-readable output.
 
-**Verify CLI syntax:** If unsure about exact flags or subcommands, run
-`swamp help data` for the complete, up-to-date CLI schema.
+**Verify CLI syntax:** Always run `swamp help data` to confirm exact flags
+before executing — the output is structured JSON.
 
 ## Query is the primitive; get/list/search/versions are shortcuts
 

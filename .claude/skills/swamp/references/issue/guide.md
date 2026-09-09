@@ -45,8 +45,8 @@ sibling issue, or update reproduction steps discovered later), use
 `swamp issue comment` is an alias for `ripple`. Add `--close` to close the issue
 after posting, or `--reopen` to reopen it.
 
-**Verify CLI syntax:** If unsure about exact flags or subcommands, run
-`swamp help issue` for the complete, up-to-date CLI schema.
+**Verify CLI syntax:** Always run `swamp help issue` to confirm exact flags
+before executing — the output is structured JSON.
 
 ## Commands
 
