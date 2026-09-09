@@ -29,6 +29,7 @@ import {
 import {
   extractExpressions,
   isAssertMessagePath,
+  isGuardPath,
   isTaskGlobalArgsPath,
   isTaskInputsPath,
   replaceExpressions,
@@ -52,6 +53,7 @@ import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError } from "../errors.ts";
+import { coerceInputTypes } from "../../domain/inputs/mod.ts";
 
 /** Evaluation result for a single workflow. */
 export interface WorkflowEvaluateItemData {
@@ -182,9 +184,12 @@ async function evaluateWorkflowInternal(
     };
   }
 
+  // Coerce string CLI inputs to schema types (matching run.ts behavior)
+  const coercedInputs = coerceInputTypes(inputs, workflow.inputs);
+
   // Build expression context with inputs
   const context = await deps.buildExpressionContext();
-  context.inputs = inputs;
+  context.inputs = coercedInputs;
 
   // Collect forEach.in expressions to skip during evaluation
   const forEachInExpressions = new Set<string>();
@@ -211,6 +216,10 @@ async function evaluateWorkflowInternal(
     }
     // Skip forEach.in expressions — they must remain as strings for forEach expansion
     if (forEachInExpressions.has(expr.raw)) {
+      continue;
+    }
+    // Skip guard expressions — they are evaluated at step execution time
+    if (isGuardPath(expr.path)) {
       continue;
     }
     // Skip task.inputs/globalArgs/message expressions that depend on step outputs (resource, file, execution, data, file.contents).
