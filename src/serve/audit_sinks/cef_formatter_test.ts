@@ -74,14 +74,14 @@ Deno.test("formatCefLine: maps system category to severity 3", () => {
   assert(severity === "3", `Expected severity 3, got ${severity}`);
 });
 
-Deno.test("formatCefLine: includes principal in src extension", () => {
+Deno.test("formatCefLine: includes principal in suser extension", () => {
   const line = formatCefLine(makeEvent());
-  assertStringIncludes(line, "src=user:paul");
+  assertStringIncludes(line, "suser=user:paul");
 });
 
-Deno.test("formatCefLine: includes resource in dst extension", () => {
+Deno.test("formatCefLine: includes resource in dhost extension", () => {
   const line = formatCefLine(makeEvent());
-  assertStringIncludes(line, "dst=vault:api-keys");
+  assertStringIncludes(line, "dhost=vault:api-keys");
 });
 
 Deno.test("formatCefLine: includes instanceId as cs3", () => {

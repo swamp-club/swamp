@@ -3077,9 +3077,9 @@ export const serveCommand = new Command()
                 key: keyName,
               });
             }
-            if (!/^[0-9a-f]+$/i.test(rawKey)) {
+            if (!/^[0-9a-f]+$/i.test(rawKey) || rawKey.length % 2 !== 0) {
               throw new Error(
-                `HMAC key in vault ${vaultName}:${keyName} is not valid hex`,
+                `HMAC key in vault ${vaultName}:${keyName} is not valid hex (must be even-length hex string)`,
               );
             }
             const keyBytes = new Uint8Array(

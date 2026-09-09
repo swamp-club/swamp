@@ -89,8 +89,8 @@ export function formatCefLine(
   ].join("|");
 
   const extensions: string[] = [
-    `src=${escapeExtension(`${event.principalKind}:${event.principalId}`)}`,
-    `dst=${escapeExtension(`${event.resourceKind}:${event.resourceName}`)}`,
+    `suser=${escapeExtension(`${event.principalKind}:${event.principalId}`)}`,
+    `dhost=${escapeExtension(`${event.resourceKind}:${event.resourceName}`)}`,
     `outcome=${escapeExtension(event.outcome)}`,
     `rt=${escapeExtension(event.timestamp)}`,
     `cs3=${escapeExtension(event.instanceId)}`,
@@ -108,7 +108,7 @@ export function formatCefLine(
   }
 
   if (event.sourceIp) {
-    extensions.push(`spt=${escapeExtension(event.sourceIp)}`);
+    extensions.push(`src=${escapeExtension(event.sourceIp)}`);
   }
 
   return `${header}|${extensions.join(" ")}`;

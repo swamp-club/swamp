@@ -223,6 +223,7 @@ export class SyslogSink implements AuditSink {
         error: error instanceof Error ? error.message : String(error),
       });
       this.#tcpConn = null;
+      this.#connectionFailed = true;
       try {
         conn.close();
       } catch {

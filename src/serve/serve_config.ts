@@ -1491,10 +1491,19 @@ function validateAuditConfig(audit: unknown, path: string): void {
       } else if (s.type === "syslog") {
         warnUnknownKeys(s, knownSyslogKeys, path, `audit.sinks[${i}].`);
       }
-      if (s.type === "webhook" && typeof s.url !== "string") {
-        throw new UserError(
-          `Invalid audit.sinks[${i}].url in ${path}: webhook sink requires a url`,
-        );
+      if (s.type === "webhook") {
+        if (typeof s.url !== "string") {
+          throw new UserError(
+            `Invalid audit.sinks[${i}].url in ${path}: webhook sink requires a url`,
+          );
+        }
+        try {
+          new URL(s.url);
+        } catch {
+          throw new UserError(
+            `Invalid audit.sinks[${i}].url in ${path}: "${s.url}" is not a valid URL`,
+          );
+        }
       }
       if (s.type === "syslog") {
         if (typeof s.host !== "string") {
