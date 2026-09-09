@@ -139,6 +139,12 @@ export interface ServeConfigFile {
       directory?: string;
       "max-size"?: string;
     };
+    hmac?: {
+      vault?: string;
+      key?: string;
+      enabled?: boolean;
+    };
+    sinks?: Array<Record<string, unknown>>;
   };
 }
 
@@ -164,7 +170,17 @@ export interface AuditConfig {
     readonly action?: string;
     readonly tier?: string;
     readonly level: string;
+    readonly hmac?: boolean;
   }[];
+  readonly hmacVault: string;
+  readonly hmacKey: string;
+  readonly hmacEnabled: boolean;
+  readonly sinks: readonly AuditSinkConfigEntry[];
+}
+
+export interface AuditSinkConfigEntry {
+  readonly type: "webhook" | "syslog";
+  readonly config: Record<string, unknown>;
 }
 
 // ── Known Keys ────────────────────────────────────────────────────────
@@ -1166,11 +1182,13 @@ export async function writeServeConfigFile(
 
 const KNOWN_AUDIT_KEYS = new Set([
   "stores",
+  "sinks",
   "batch-size",
   "flush-interval",
   "fail-open",
   "policy",
   "wal",
+  "hmac",
 ]);
 
 function validateAuditConfig(audit: unknown, path: string): void {
@@ -1323,6 +1341,11 @@ function validateAuditConfig(audit: unknown, path: string): void {
             `Invalid audit.policy.rules[${i}].tier in ${path}: expected one of management, data`,
           );
         }
+        if (rule.hmac !== undefined && typeof rule.hmac !== "boolean") {
+          throw new UserError(
+            `Invalid audit.policy.rules[${i}].hmac in ${path}: expected boolean`,
+          );
+        }
       }
     }
   }
@@ -1394,6 +1417,99 @@ function validateAuditConfig(audit: unknown, path: string): void {
       );
     }
   }
+
+  if (obj.hmac !== undefined) {
+    if (
+      typeof obj.hmac !== "object" || obj.hmac === null ||
+      Array.isArray(obj.hmac)
+    ) {
+      throw new UserError(
+        `Invalid audit.hmac in ${path}: expected mapping`,
+      );
+    }
+    const hmac = obj.hmac as Record<string, unknown>;
+    const knownHmacKeys = new Set(["vault", "key", "enabled"]);
+    warnUnknownKeys(hmac, knownHmacKeys, path, "audit.hmac.");
+    if (hmac.vault !== undefined && typeof hmac.vault !== "string") {
+      throw new UserError(
+        `Invalid audit.hmac.vault in ${path}: expected string`,
+      );
+    }
+    if (hmac.key !== undefined && typeof hmac.key !== "string") {
+      throw new UserError(
+        `Invalid audit.hmac.key in ${path}: expected string`,
+      );
+    }
+    if (hmac.enabled !== undefined && typeof hmac.enabled !== "boolean") {
+      throw new UserError(
+        `Invalid audit.hmac.enabled in ${path}: expected boolean`,
+      );
+    }
+  }
+
+  if (obj.sinks !== undefined) {
+    if (!Array.isArray(obj.sinks)) {
+      throw new UserError(
+        `Invalid audit.sinks in ${path}: expected array`,
+      );
+    }
+    const validSinkTypes = new Set(["webhook", "syslog"]);
+    const knownWebhookKeys = new Set([
+      "type",
+      "url",
+      "format",
+      "auth",
+      "batch",
+      "retry",
+      "filter",
+      "max-pending",
+    ]);
+    const knownSyslogKeys = new Set([
+      "type",
+      "host",
+      "port",
+      "transport",
+      "filter",
+      "ca-cert",
+      "hostname",
+    ]);
+    for (let i = 0; i < obj.sinks.length; i++) {
+      const sink = obj.sinks[i];
+      if (typeof sink !== "object" || sink === null || Array.isArray(sink)) {
+        throw new UserError(
+          `Invalid audit.sinks[${i}] in ${path}: expected object`,
+        );
+      }
+      const s = sink as Record<string, unknown>;
+      if (typeof s.type !== "string" || !validSinkTypes.has(s.type)) {
+        throw new UserError(
+          `Invalid audit.sinks[${i}].type in ${path}: expected one of webhook, syslog`,
+        );
+      }
+      if (s.type === "webhook") {
+        warnUnknownKeys(s, knownWebhookKeys, path, `audit.sinks[${i}].`);
+      } else if (s.type === "syslog") {
+        warnUnknownKeys(s, knownSyslogKeys, path, `audit.sinks[${i}].`);
+      }
+      if (s.type === "webhook" && typeof s.url !== "string") {
+        throw new UserError(
+          `Invalid audit.sinks[${i}].url in ${path}: webhook sink requires a url`,
+        );
+      }
+      if (s.type === "syslog") {
+        if (typeof s.host !== "string") {
+          throw new UserError(
+            `Invalid audit.sinks[${i}].host in ${path}: syslog sink requires a host`,
+          );
+        }
+        if (typeof s.port !== "number" || !Number.isInteger(s.port)) {
+          throw new UserError(
+            `Invalid audit.sinks[${i}].port in ${path}: syslog sink requires an integer port`,
+          );
+        }
+      }
+    }
+  }
 }
 
 export function parseAuditConfig(
@@ -1415,6 +1531,16 @@ export function parseAuditConfig(
     if (parsed !== null) walMaxBytes = parsed;
   }
 
+  const sinks: AuditSinkConfigEntry[] = [];
+  if (audit.sinks) {
+    for (const raw of audit.sinks) {
+      const type = raw.type as string;
+      if (type === "webhook" || type === "syslog") {
+        sinks.push({ type, config: raw });
+      }
+    }
+  }
+
   return {
     stores: audit.stores,
     batchSize: audit["batch-size"] ?? 100,
@@ -1424,6 +1550,10 @@ export function parseAuditConfig(
     walMaxBytes,
     policyDefaultLevel: audit.policy?.["default-level"] ?? "metadata",
     policyRules: audit.policy?.rules ?? [],
+    hmacVault: audit.hmac?.vault ?? "_audit",
+    hmacKey: audit.hmac?.key ?? "hmac-key",
+    hmacEnabled: audit.hmac?.enabled ?? true,
+    sinks,
   };
 }
 

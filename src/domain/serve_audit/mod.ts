@@ -64,6 +64,21 @@ export {
 
 export type { AuditSink } from "./audit_sink.ts";
 
+export {
+  applyHmac,
+  generateHmacKeyBytes,
+  type HmacContext,
+  hmacField,
+  type HmacKeyProvider,
+  importHmacKey,
+} from "./audit_hmac.ts";
+
 export type { AuditStore } from "./audit_store.ts";
+
+export {
+  matchesSinkFilter,
+  parseSinkFilter,
+  type SinkFilterConfig,
+} from "./sink_filter.ts";
 
 export { RingBuffer } from "./ring_buffer.ts";

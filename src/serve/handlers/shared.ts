@@ -184,6 +184,7 @@ export interface ConnectionContext {
   auditWal?: AuditWal;
   /** WebSocket audit sink — broadcasts events to subscribed connections. */
   auditWebSocketSink?: import("../audit_sinks/websocket_sink.ts").WebSocketSink;
+  auditNamespace?: string;
 }
 
 // SECURITY: Authorization must operate on canonical (normalized) model types,

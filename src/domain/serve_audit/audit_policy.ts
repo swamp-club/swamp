@@ -28,6 +28,7 @@ export interface AuditPolicyRule {
   readonly action?: string;
   readonly tier?: AuditEventTier;
   readonly level: AuditLevel;
+  readonly hmac?: boolean;
 }
 
 const MANAGEMENT_ACTIONS = new Set([
@@ -80,6 +81,17 @@ export class AuditPolicy {
       return rule.level;
     }
     return this.#defaultLevel;
+  }
+
+  shouldHmac(category: AuditCategory, action: string): boolean {
+    const tier = classifyTier(action, category);
+    for (const rule of this.#rules) {
+      if (rule.category !== undefined && rule.category !== category) continue;
+      if (rule.action !== undefined && rule.action !== action) continue;
+      if (rule.tier !== undefined && rule.tier !== tier) continue;
+      return rule.hmac !== false;
+    }
+    return true;
   }
 }
 
