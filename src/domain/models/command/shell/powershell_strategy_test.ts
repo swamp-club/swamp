@@ -21,26 +21,29 @@ import { assertEquals } from "@std/assert";
 import { PowerShellStrategy } from "./powershell_strategy.ts";
 import { VaultSecretBag } from "../../../vaults/vault_secret_bag.ts";
 
-Deno.test("PowerShellStrategy.buildInvocation: wraps command in powershell.exe -NoProfile -Command", () => {
+const UTF8_PREFIX =
+  "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " +
+  "$OutputEncoding = [System.Text.Encoding]::UTF8; ";
+
+Deno.test("PowerShellStrategy.buildInvocation: wraps command in powershell.exe -NoProfile -Command with UTF-8 prefix", () => {
   const strategy = new PowerShellStrategy();
   assertEquals(
     strategy.buildInvocation("Get-ChildItem"),
     {
       command: "powershell.exe",
-      args: ["-NoProfile", "-Command", "Get-ChildItem"],
+      args: ["-NoProfile", "-Command", UTF8_PREFIX + "Get-ChildItem"],
     },
   );
 });
 
-Deno.test("PowerShellStrategy.buildInvocation: passes command through verbatim (no escaping)", () => {
-  // The shell handles parsing — strategy doesn't pre-escape.
+Deno.test("PowerShellStrategy.buildInvocation: passes command through verbatim after UTF-8 prefix", () => {
   const strategy = new PowerShellStrategy();
   const cmd = `Write-Output "hello $env:USERNAME"; exit 0`;
   assertEquals(
     strategy.buildInvocation(cmd),
     {
       command: "powershell.exe",
-      args: ["-NoProfile", "-Command", cmd],
+      args: ["-NoProfile", "-Command", UTF8_PREFIX + cmd],
     },
   );
 });
