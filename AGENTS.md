@@ -75,8 +75,14 @@ them.
 ## Source Control & Pull Requests
 
 - Use the `github-pr` skill to create commit messages and pull requests.
-- PRs are auto-merged after passing CI and Claude review. To prevent auto-merge,
-  add the `hold` label to the PR.
+- PRs are auto-merged after passing CI security gates and attestation
+  validation. The CI merge gate requires: `validate-attestation` (always runs),
+  `claude-adversarial-review` (runs on core source changes),
+  `claude-ci-security-review` (runs on workflow changes), and
+  `claude-review-integrity` (runs on trust-root changes). All other checks
+  (lint, test, compile, code review, UX review, skill review) run locally via
+  the verification workflow and are validated through the attestation. To
+  prevent auto-merge, add the `hold` label to the PR.
 - When a PR fixes a GitHub issue filed by an external contributor (not a repo
   collaborator), add them as a co-author to the commit. Check with
   `gh api /repos/swamp-club/swamp/collaborators --jq '.[].login'` to determine

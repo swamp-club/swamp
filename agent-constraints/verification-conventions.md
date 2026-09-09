@@ -481,6 +481,6 @@ push — do not post it automatically.
 ## Review Prompts
 
 Agent review prompts live at `verification/review-prompts/`. Each prompt is
-read by the workflow step and combined with the diff. The prompts are the single
-source of truth for review criteria — both the verification workflow and CI
-reference them.
+read by the local verification workflow step and combined with the diff. The
+prompts are the single source of truth for review criteria. CI does not run
+these reviews — it validates that local verification ran via the attestation.
