@@ -679,6 +679,128 @@ Deno.test("forEach: resolves self.* in platform", async () => {
   assertEquals(steps[1].platform, "linux/arm64");
 });
 
+// --- Guard expression skipping ---
+
+Deno.test("evaluate: guard expressions remain as strings (not resolved to booleans)", async () => {
+  const workflow = Workflow.fromData({
+    id: "00000000-0000-4000-8000-000000000020",
+    name: "guarded-workflow",
+    inputs: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["start", "stop"], default: "start" },
+      },
+      required: ["action"],
+    },
+    jobs: [{
+      name: "main",
+      steps: [
+        {
+          name: "on-branch",
+          guard: '${{ inputs.action != "start" }}',
+          task: { type: "assert", expr: "true", message: "on-branch ran" },
+        },
+        {
+          name: "off-branch",
+          guard: '${{ inputs.action != "stop" }}',
+          task: { type: "assert", expr: "true", message: "off-branch ran" },
+        },
+      ],
+    }],
+  });
+
+  const deps = makeDeps({
+    findWorkflowByName: () => Promise.resolve(workflow),
+    findWorkflowById: () => Promise.resolve(workflow),
+    evaluateCel: (expr: string, ctx?: unknown) => {
+      const context = ctx as Record<string, Record<string, unknown>>;
+      if (expr === 'inputs.action != "start"') {
+        return context?.inputs?.action !== "start";
+      }
+      if (expr === 'inputs.action != "stop"') {
+        return context?.inputs?.action !== "stop";
+      }
+      return expr;
+    },
+  });
+
+  const events = await collect<WorkflowEvaluateEvent>(
+    workflowEvaluate(createLibSwampContext(), deps, {
+      workflowIdOrName: "guarded-workflow",
+      inputs: { action: "start" },
+    }),
+  );
+
+  assertEquals(events[events.length - 1].kind, "completed");
+  const completed = events[events.length - 1] as Extract<
+    WorkflowEvaluateEvent,
+    { kind: "completed" }
+  >;
+  const data = completed.data as WorkflowEvaluateItemData;
+  const steps = data.jobs![0].steps;
+  assertEquals(typeof steps[0].guard, "string");
+  assertEquals(steps[0].guard, '${{ inputs.action != "start" }}');
+  assertEquals(typeof steps[1].guard, "string");
+  assertEquals(steps[1].guard, '${{ inputs.action != "stop" }}');
+});
+
+// --- Input coercion ---
+
+Deno.test("evaluate: string boolean inputs are coerced to native booleans", async () => {
+  const workflow = Workflow.fromData({
+    id: "00000000-0000-4000-8000-000000000021",
+    name: "bool-input-workflow",
+    inputs: {
+      type: "object",
+      properties: {
+        dryRun: { type: "boolean", default: false },
+      },
+    },
+    jobs: [{
+      name: "main",
+      steps: [{
+        name: "check",
+        task: { type: "assert", expr: "true", message: "check ran" },
+      }],
+    }],
+  });
+
+  let capturedInputs: Record<string, unknown> | undefined;
+
+  const deps = makeDeps({
+    findWorkflowByName: () => Promise.resolve(workflow),
+    findWorkflowById: () => Promise.resolve(workflow),
+    buildExpressionContext: () => {
+      const ctx = { model: {}, env: {}, inputs: {} } as ReturnType<
+        WorkflowEvaluateDeps["buildExpressionContext"]
+      > extends Promise<infer T> ? T : never;
+      // Intercept via proxy to capture what inputs are set
+      return Promise.resolve(
+        new Proxy(ctx, {
+          set(target, prop, value) {
+            if (prop === "inputs") {
+              capturedInputs = value as Record<string, unknown>;
+            }
+            // deno-lint-ignore no-explicit-any
+            (target as any)[prop] = value;
+            return true;
+          },
+        }),
+      );
+    },
+  });
+
+  const events = await collect<WorkflowEvaluateEvent>(
+    workflowEvaluate(createLibSwampContext(), deps, {
+      workflowIdOrName: "bool-input-workflow",
+      inputs: { dryRun: "true" },
+    }),
+  );
+
+  assertEquals(events[events.length - 1].kind, "completed");
+  assertEquals(capturedInputs?.dryRun, true);
+});
+
 Deno.test("isWorkflowEvaluateAllData: returns true for AllData, false for ItemData", () => {
   const allData: WorkflowEvaluateAllData = {
     items: [],
