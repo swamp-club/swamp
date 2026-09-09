@@ -124,3 +124,38 @@ Deno.test("DEFAULT_AUDIT_POLICY: data tier uses default metadata", () => {
     "metadata",
   );
 });
+
+Deno.test("shouldHmac: returns true by default with no rules", () => {
+  const policy = new AuditPolicy();
+  assertEquals(policy.shouldHmac("secrets", "vault.read-secret"), true);
+});
+
+Deno.test("shouldHmac: returns true when matching rule has no hmac field", () => {
+  const policy = new AuditPolicy([
+    { category: "secrets", level: "metadata" },
+  ]);
+  assertEquals(policy.shouldHmac("secrets", "vault.read-secret"), true);
+});
+
+Deno.test("shouldHmac: returns false when matching rule has hmac: false", () => {
+  const policy = new AuditPolicy([
+    { category: "execution", level: "requestResponse", hmac: false },
+  ]);
+  assertEquals(policy.shouldHmac("execution", "model.method.run"), false);
+});
+
+Deno.test("shouldHmac: returns true when matching rule has hmac: true", () => {
+  const policy = new AuditPolicy([
+    { category: "secrets", level: "metadata", hmac: true },
+  ]);
+  assertEquals(policy.shouldHmac("secrets", "vault.read-secret"), true);
+});
+
+Deno.test("shouldHmac: first matching rule wins", () => {
+  const policy = new AuditPolicy([
+    { category: "secrets", level: "metadata", hmac: false },
+    { level: "metadata", hmac: true },
+  ]);
+  assertEquals(policy.shouldHmac("secrets", "vault.read-secret"), false);
+  assertEquals(policy.shouldHmac("auth", "auth.login"), true);
+});

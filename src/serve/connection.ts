@@ -2087,7 +2087,10 @@ export function handleMessage(
                 e.detail ?? "",
               ];
               return fields.map((f) => {
-                const s = String(f);
+                let s = String(f);
+                if (/^[=+\-@\t\r]/.test(s)) {
+                  s = `\t${s}`;
+                }
                 if (s.includes(",") || s.includes('"') || s.includes("\n")) {
                   return `"${s.replace(/"/g, '""')}"`;
                 }
