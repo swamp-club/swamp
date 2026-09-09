@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import type { AiTool } from "../../../repo/repo_service.ts";
 import type { CheckContext } from "../check.ts";
@@ -43,24 +42,6 @@ function makeCtx(repoPath: string, tool: AiTool): CheckContext {
   };
 }
 
-async function writeKiroHook(repo: string, swampPath: string): Promise<void> {
-  const path = join(repo, ".kiro/hooks/swamp-audit.kiro.hook");
-  await ensureDir(join(path, ".."));
-  await Deno.writeTextFile(
-    path,
-    JSON.stringify({
-      name: "Swamp Audit",
-      version: "1",
-      when: { type: "postToolUse", toolTypes: ["*"] },
-      then: {
-        type: "runCommand",
-        command: `"${swampPath}" audit record --from-hook --tool kiro`,
-        timeout: 5,
-      },
-    }),
-  );
-}
-
 Deno.test("swampBinaryOnPath: fails when swamp is not on PATH", async () => {
   const check = makeSwampBinaryOnPathCheck({
     resolveBinary: () => Promise.resolve(null),
@@ -72,55 +53,25 @@ Deno.test("swampBinaryOnPath: fails when swamp is not on PATH", async () => {
   });
 });
 
-Deno.test("swampBinaryOnPath: passes for non-kiro when PATH resolves", async () => {
+Deno.test("swampBinaryOnPath: passes for all tools when PATH resolves", async () => {
   const check = makeSwampBinaryOnPathCheck({
     resolveBinary: () => Promise.resolve("/usr/local/bin/swamp"),
   });
   await withTempRepo(async (repo) => {
-    for (const tool of ["claude", "cursor", "opencode", "copilot"] as const) {
+    for (
+      const tool of [
+        "claude",
+        "cursor",
+        "kiro",
+        "opencode",
+        "copilot",
+        "pi",
+        "antigravity",
+      ] as const
+    ) {
       const result = await check.run(makeCtx(repo, tool));
       assertEquals(result.status, "pass", `failed for tool ${tool}`);
+      assertStringIncludes(result.message, "/usr/local/bin/swamp");
     }
-  });
-});
-
-Deno.test("swampBinaryOnPath: kiro passes when baked path exists", async () => {
-  const check = makeSwampBinaryOnPathCheck({
-    resolveBinary: () => Promise.resolve("/usr/local/bin/swamp"),
-  });
-  await withTempRepo(async (repo) => {
-    const fakeBinary = await Deno.makeTempFile({ prefix: "fake-swamp-" });
-    try {
-      await writeKiroHook(repo, fakeBinary);
-      const result = await check.run(makeCtx(repo, "kiro"));
-      assertEquals(result.status, "pass");
-      assertStringIncludes(result.message, fakeBinary);
-    } finally {
-      await Deno.remove(fakeBinary);
-    }
-  });
-});
-
-Deno.test("swampBinaryOnPath: kiro fails when baked path is stale", async () => {
-  const check = makeSwampBinaryOnPathCheck({
-    resolveBinary: () => Promise.resolve("/usr/local/bin/swamp"),
-  });
-  await withTempRepo(async (repo) => {
-    await writeKiroHook(repo, "/nonexistent/swamp");
-    const result = await check.run(makeCtx(repo, "kiro"));
-    assertEquals(result.status, "fail");
-    assertStringIncludes(result.message, "/nonexistent/swamp");
-    assertStringIncludes(result.hint ?? "", "re-bake");
-  });
-});
-
-Deno.test("swampBinaryOnPath: kiro fails when hook file is missing", async () => {
-  const check = makeSwampBinaryOnPathCheck({
-    resolveBinary: () => Promise.resolve("/usr/local/bin/swamp"),
-  });
-  await withTempRepo(async (repo) => {
-    const result = await check.run(makeCtx(repo, "kiro"));
-    assertEquals(result.status, "fail");
-    assertStringIncludes(result.message, "missing");
   });
 });

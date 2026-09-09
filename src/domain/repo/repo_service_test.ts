@@ -1682,9 +1682,9 @@ Deno.test("RepoService.init with kiro creates .kiro/hooks/swamp-audit.kiro.hook"
     assertEquals(hook.when.toolTypes, ["*"]);
     assertEquals(hook.then.type, "runCommand");
     assertEquals(hook.then.timeout, 5);
-    assertStringIncludes(
+    assertEquals(
       hook.then.command,
-      "audit record --from-hook --tool kiro",
+      "swamp audit record --from-hook --tool kiro",
     );
 
     // Also verify .vscode/settings.local.json was created
@@ -1718,9 +1718,9 @@ Deno.test("RepoService.upgrade with kiro updates hooks", async () => {
     );
     const content = await Deno.readTextFile(hookPath);
     const hook = JSON.parse(content);
-    assertStringIncludes(
+    assertEquals(
       hook.then.command,
-      "audit record --from-hook --tool kiro",
+      "swamp audit record --from-hook --tool kiro",
     );
   });
 });
@@ -1779,9 +1779,9 @@ Deno.test("RepoService.init with kiro creates .kiro/agents/swamp.json", async ()
       JSON.stringify(config.toolsSettings.shell.allowedCommands),
       "swamp .*",
     );
-    assertStringIncludes(
-      JSON.stringify(config.hooks.postToolUse),
-      "audit record --from-hook --tool kiro",
+    assertEquals(
+      config.hooks.postToolUse[0].command,
+      "swamp audit record --from-hook --tool kiro",
     );
     assertStringIncludes(
       JSON.stringify(config.resources),
@@ -1803,9 +1803,9 @@ Deno.test("RepoService.upgrade with kiro updates agent config", async () => {
     const configPath = join(tempDir, ".kiro", "agents", "swamp.json");
     const content = await Deno.readTextFile(configPath);
     const config = JSON.parse(content);
-    assertStringIncludes(
-      JSON.stringify(config.hooks.postToolUse),
-      "audit record --from-hook --tool kiro",
+    assertEquals(
+      config.hooks.postToolUse[0].command,
+      "swamp audit record --from-hook --tool kiro",
     );
   });
 });

@@ -22,7 +22,6 @@ import { ensureDir } from "@std/fs";
 import { getLogger } from "@logtape/logtape";
 import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
 import { migrateRepoTelemetryToGlobal } from "../../infrastructure/persistence/telemetry_spool_migration.ts";
-import { defaultCommandResolver } from "../../infrastructure/process/resolve_command.ts";
 import type { RepoPath } from "./repo_path.ts";
 import {
   homeDirectory,
@@ -1874,13 +1873,7 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
     return true;
   }
 
-  /**
-   * Generates the content for Kiro's .kiro/hooks/swamp-audit.kiro.hook.
-   * Uses the absolute path to the swamp binary because kiro-cli does not
-   * perform PATH resolution when executing hook commands.
-   */
-  private async generateKiroHookContent(): Promise<string> {
-    const swampBin = await this.resolveSwampBinaryPath();
+  private generateKiroHookContent(): string {
     const hook = {
       name: "Swamp Audit",
       description: "Records agent tool usage for swamp audit tracking",
@@ -1888,20 +1881,11 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
       when: { type: "postToolUse", toolTypes: ["*"] },
       then: {
         type: "runCommand",
-        command: `"${swampBin}" audit record --from-hook --tool kiro`,
+        command: "swamp audit record --from-hook --tool kiro",
         timeout: 5,
       },
     };
     return JSON.stringify(hook, null, 2) + "\n";
-  }
-
-  /**
-   * Resolves the absolute path to the swamp binary.
-   * Falls back to bare "swamp" if resolution fails.
-   */
-  private async resolveSwampBinaryPath(): Promise<string> {
-    const path = await defaultCommandResolver().resolve("swamp");
-    return path ?? "swamp";
   }
 
   /**
@@ -1918,7 +1902,7 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
     );
     return await this.createFileIfNotExists(
       hookPath,
-      await this.generateKiroHookContent(),
+      this.generateKiroHookContent(),
     );
   }
 
@@ -1947,7 +1931,7 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
     );
     return this.overwriteIfChanged(
       hookPath,
-      await this.generateKiroHookContent(),
+      this.generateKiroHookContent(),
     );
   }
 
@@ -2063,8 +2047,7 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
    * This provides kiro-cli with trusted commands, audit hooks, and resource
    * references that the IDE gets from .vscode/settings.local.json and .kiro/hooks/.
    */
-  private async generateKiroAgentConfigContent(): Promise<string> {
-    const swampBin = await this.resolveSwampBinaryPath();
+  private generateKiroAgentConfigContent(): string {
     const config = {
       name: "swamp",
       description: "Swamp automation agent with audit tracking",
@@ -2084,7 +2067,7 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
       hooks: {
         postToolUse: [
           {
-            command: `"${swampBin}" audit record --from-hook --tool kiro`,
+            command: "swamp audit record --from-hook --tool kiro",
           },
         ],
       },
@@ -2106,7 +2089,7 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
     );
     return await this.createFileIfNotExists(
       configPath,
-      await this.generateKiroAgentConfigContent(),
+      this.generateKiroAgentConfigContent(),
     );
   }
 
@@ -2122,7 +2105,7 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
     );
     return await this.overwriteIfChanged(
       configPath,
-      await this.generateKiroAgentConfigContent(),
+      this.generateKiroAgentConfigContent(),
     );
   }
 
