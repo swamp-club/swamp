@@ -1561,6 +1561,25 @@ export async function handleWorkflowCreate(
       id: requestId,
       payload: { data: result ?? {} },
     });
+
+    if (ctx.syncService) {
+      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+        ? ctx.datastoreConfig.namespace
+        : undefined;
+      try {
+        await ctx.syncService.markDirty();
+        await ctx.syncService.pushChanged({ namespace });
+      } catch (pushError) {
+        logger.warn(
+          "Failed to push workflow create to remote datastore: {error}",
+          {
+            error: pushError instanceof Error
+              ? pushError.message
+              : String(pushError),
+          },
+        );
+      }
+    }
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "workflow_create_failed", message);
@@ -1621,6 +1640,25 @@ export async function handleWorkflowDelete(
       id: requestId,
       payload: { data: result ?? {} },
     });
+
+    if (ctx.syncService) {
+      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+        ? ctx.datastoreConfig.namespace
+        : undefined;
+      try {
+        await ctx.syncService.markDirty();
+        await ctx.syncService.pushChanged({ namespace });
+      } catch (pushError) {
+        logger.warn(
+          "Failed to push workflow delete to remote datastore: {error}",
+          {
+            error: pushError instanceof Error
+              ? pushError.message
+              : String(pushError),
+          },
+        );
+      }
+    }
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "workflow_delete_failed", message);
@@ -1682,6 +1720,25 @@ export async function handleWorkflowEdit(
       id: requestId,
       payload: { data: result ?? {} },
     });
+
+    if (ctx.syncService) {
+      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+        ? ctx.datastoreConfig.namespace
+        : undefined;
+      try {
+        await ctx.syncService.markDirty();
+        await ctx.syncService.pushChanged({ namespace });
+      } catch (pushError) {
+        logger.warn(
+          "Failed to push workflow edit to remote datastore: {error}",
+          {
+            error: pushError instanceof Error
+              ? pushError.message
+              : String(pushError),
+          },
+        );
+      }
+    }
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "workflow_edit_failed", message);

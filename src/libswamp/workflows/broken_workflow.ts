@@ -34,6 +34,7 @@ import {
   Workflow,
   type WorkflowInput,
 } from "../../domain/workflows/workflow.ts";
+import { resolveEffectiveWorkflowsDir } from "../../infrastructure/persistence/paths.ts";
 
 /** A workflow file that failed YAML parsing or schema validation. */
 export interface BrokenWorkflow {
@@ -47,9 +48,9 @@ export interface BrokenWorkflow {
   error: string;
 }
 
-/** Returns the workflows directory for a repo. */
+/** Returns the effective workflows directory for a repo, consulting the managed config registry. */
 export function workflowsDirFor(repoDir: string): string {
-  return join(repoDir, "workflows");
+  return resolveEffectiveWorkflowsDir(repoDir);
 }
 
 /**
