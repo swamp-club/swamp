@@ -125,7 +125,6 @@ const PINNED_DOMAIN_INFRA_EDGES: readonly string[] = [
   "src/domain/repo/repo_service.ts -> src/infrastructure/persistence/repo_marker_repository.ts",
   "src/domain/repo/repo_service.ts -> src/infrastructure/persistence/telemetry_spool_migration.ts",
   "src/domain/repo/repo_service.ts -> src/infrastructure/persistence/upstream_extensions.ts",
-  "src/domain/repo/repo_service.ts -> src/infrastructure/process/resolve_command.ts",
   "src/domain/repo/skill_dirs.ts -> src/infrastructure/persistence/paths.ts",
   "src/domain/vaults/local_encryption_vault_provider.ts -> src/infrastructure/persistence/atomic_write.ts",
   "src/domain/vaults/local_encryption_vault_provider.ts -> src/infrastructure/persistence/paths.ts",

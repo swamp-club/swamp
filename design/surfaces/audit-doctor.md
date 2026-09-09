@@ -31,12 +31,9 @@ Run in fixed order so output is stable:
 
 1. **`binary-on-path`** — the AI tool's own binary (`claude`, `cursor`,
    `kiro-cli`, `opencode`, `copilot`) is resolvable on PATH.
-2. **`swamp-binary-on-path`** — swamp is on PATH (all five tools invoke
-   `swamp audit record --from-hook` from their hook configs). For Kiro
-   only, also verifies the absolute swamp path baked into
-   `.kiro/hooks/swamp-audit.kiro.hook` at init time still resolves —
-   catches the "user ran `brew upgrade` and orphaned the baked path"
-   case.
+2. **`swamp-binary-on-path`** — swamp is on PATH (all tools invoke
+   `swamp audit record --from-hook` from their hook configs and rely on
+   PATH lookup at hook-fire time).
 3. **`agent-config-loadable`** — per-tool parser checks the config
    `swamp init` wrote is present, parses, and has the expected shape
    (e.g. Kiro's `.kiro/agents/swamp.json` must not contain `tools: ["*"]`
@@ -59,7 +56,7 @@ src/domain/audit/doctor/
 └── checks/
     ├── resolve_binary.ts          — ResolveBinary port + binaryNameFor(); CLI wires defaultCommandResolver()
     ├── binary_on_path.ts
-    ├── swamp_binary_on_path.ts    — includes Kiro baked-path sub-check
+    ├── swamp_binary_on_path.ts    — PATH lookup for swamp binary
     ├── agent_config_loadable.ts   — tool-dispatched parser
     ├── default_agent_set.ts       — Kiro-only
     └── recording_smoke.ts         — uses ctx.spawnSwamp + reads today's JSONL
