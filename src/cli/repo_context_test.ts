@@ -2268,80 +2268,50 @@ Deno.test("resolveManagedConfigPaths: managedConfig=false returns default paths"
   );
 });
 
-Deno.test("resolveManagedConfigPaths: managedConfig=true returns managed pulled-extensions root", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  try {
-    const configDir = `${tmpDir}/.swamp/config`;
-    await Deno.mkdir(configDir, { recursive: true });
-    await Deno.writeTextFile(
-      `${configDir}/managed-config-migrated.json`,
-      "{}",
-    );
-    const marker: RepoMarkerData = {
-      swampVersion: "1.0.0",
-      initializedAt: "2026-01-01T00:00:00.000Z",
-      datastore: { type: "@swamp/s3-datastore", managedConfig: true },
-    };
-    const { pulledExtensionsRoot } = resolveManagedConfigPaths(tmpDir, marker);
-    assertPathEquals(
-      pulledExtensionsRoot,
-      `${tmpDir}/.swamp/config/pulled-extensions`,
-    );
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
-  }
+Deno.test("resolveManagedConfigPaths: managedConfig=true returns managed pulled-extensions root", () => {
+  const repo = resolve("/repo");
+  const marker: RepoMarkerData = {
+    swampVersion: "1.0.0",
+    initializedAt: "2026-01-01T00:00:00.000Z",
+    datastore: { type: "@swamp/s3-datastore", managedConfig: true },
+  };
+  const { pulledExtensionsRoot } = resolveManagedConfigPaths(repo, marker);
+  assertPathEquals(
+    pulledExtensionsRoot,
+    join(repo, ".swamp", "config", "pulled-extensions"),
+  );
 });
 
-Deno.test("resolveManagedConfigPaths: managedConfig=true returns managed lockfile path", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  try {
-    const configDir = `${tmpDir}/.swamp/config`;
-    await Deno.mkdir(configDir, { recursive: true });
-    await Deno.writeTextFile(
-      `${configDir}/managed-config-migrated.json`,
-      "{}",
-    );
-    const marker: RepoMarkerData = {
-      swampVersion: "1.0.0",
-      initializedAt: "2026-01-01T00:00:00.000Z",
-      datastore: { type: "@swamp/s3-datastore", managedConfig: true },
-    };
-    const { lockfilePath } = resolveManagedConfigPaths(tmpDir, marker);
-    assertPathEquals(
-      lockfilePath,
-      `${tmpDir}/.swamp/config/upstream_extensions.json`,
-    );
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
-  }
+Deno.test("resolveManagedConfigPaths: managedConfig=true returns managed lockfile path", () => {
+  const repo = resolve("/repo");
+  const marker: RepoMarkerData = {
+    swampVersion: "1.0.0",
+    initializedAt: "2026-01-01T00:00:00.000Z",
+    datastore: { type: "@swamp/s3-datastore", managedConfig: true },
+  };
+  const { lockfilePath } = resolveManagedConfigPaths(repo, marker);
+  assertPathEquals(
+    lockfilePath,
+    join(repo, ".swamp", "config", "upstream_extensions.json"),
+  );
 });
 
-Deno.test("resolveManagedConfigPaths: managedConfig=true with custom modelsDir still uses managed path", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  try {
-    const configDir = `${tmpDir}/.swamp/config`;
-    await Deno.mkdir(configDir, { recursive: true });
-    await Deno.writeTextFile(
-      `${configDir}/managed-config-migrated.json`,
-      "{}",
-    );
-    const marker: RepoMarkerData = {
-      swampVersion: "1.0.0",
-      initializedAt: "2026-01-01T00:00:00.000Z",
-      modelsDir: "custom/models",
-      datastore: { type: "@swamp/s3-datastore", managedConfig: true },
-    };
-    const { lockfilePath } = resolveManagedConfigPaths(tmpDir, marker);
-    assertPathEquals(
-      lockfilePath,
-      `${tmpDir}/.swamp/config/upstream_extensions.json`,
-    );
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
-  }
+Deno.test("resolveManagedConfigPaths: managedConfig=true with custom modelsDir still uses managed path", () => {
+  const repo = resolve("/repo");
+  const marker: RepoMarkerData = {
+    swampVersion: "1.0.0",
+    initializedAt: "2026-01-01T00:00:00.000Z",
+    modelsDir: "custom/models",
+    datastore: { type: "@swamp/s3-datastore", managedConfig: true },
+  };
+  const { lockfilePath } = resolveManagedConfigPaths(repo, marker);
+  assertPathEquals(
+    lockfilePath,
+    join(repo, ".swamp", "config", "upstream_extensions.json"),
+  );
 });
 
-Deno.test("resolveManagedConfigPaths: managedConfig=true without sentinel falls back to default paths", () => {
+Deno.test("resolveManagedConfigPaths: managedConfig=true uses managed paths regardless of sentinel file", () => {
   const repo = resolve("/nonexistent-repo");
   const marker: RepoMarkerData = {
     swampVersion: "1.0.0",
@@ -2354,11 +2324,11 @@ Deno.test("resolveManagedConfigPaths: managedConfig=true without sentinel falls 
   );
   assertPathEquals(
     pulledExtensionsRoot,
-    join(repo, ".swamp", "pulled-extensions"),
+    join(repo, ".swamp", "config", "pulled-extensions"),
   );
   assertPathEquals(
     lockfilePath,
-    join(repo, "extensions", "models", "upstream_extensions.json"),
+    join(repo, ".swamp", "config", "upstream_extensions.json"),
   );
 });
 
@@ -2466,17 +2436,7 @@ Deno.test("ensureManagedConfigBase: explicit configBasePath still takes preceden
   const tmpDir = await Deno.makeTempDir();
   try {
     const explicitBase = join(tmpDir, "explicit-config");
-    await Deno.mkdir(
-      join(explicitBase, "managed-config-migrated.json").replace(
-        "managed-config-migrated.json",
-        "",
-      ),
-      { recursive: true },
-    );
-    await Deno.writeTextFile(
-      join(explicitBase, "managed-config-migrated.json"),
-      "{}",
-    );
+    await Deno.mkdir(explicitBase, { recursive: true });
     const cachePath = join(tmpDir, "cache");
     await Deno.mkdir(cachePath, { recursive: true });
     const marker: RepoMarkerData = {

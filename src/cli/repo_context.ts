@@ -242,8 +242,9 @@ export interface RequireRepoOptions {
  * Pre-populates the module-level managed config registry by resolving the
  * datastore config. Call this before {@link resolveManagedConfigPaths} in
  * commands that use {@link requireRepoMarker} (lightweight, no datastore
- * resolution) so the registry-based fallback in resolveManagedConfigPaths
- * returns the correct cache-relative paths for custom datastores (S3, GCS).
+ * resolution) so resolveManagedConfigPaths resolves the correct
+ * cache-relative base path for custom datastores (S3, GCS) when no
+ * explicit `configBasePath` argument is provided.
  *
  * Commands that go through {@link requireInitializedRepo} /
  * {@link requireInitializedRepoReadOnly} / {@link requireInitializedRepoUnlocked}
@@ -282,10 +283,10 @@ export async function ensureManagedConfigBase(
     logger.debug`Failed to resolve datastore for managedConfig base: ${
       error instanceof Error ? error.message : String(error)
     }`;
-    // Datastore extension not loadable — fall back to sentinel-based
-    // detection in resolveManagedConfigPaths. This can happen when
-    // pulling the datastore extension itself, but managedConfig is
-    // only true after config migrate which requires a working
+    // Datastore extension not loadable — resolveManagedConfigPaths
+    // will use the default .swamp/config/ base path. This can happen
+    // when pulling the datastore extension itself, but managedConfig
+    // is only true after config migrate which requires a working
     // datastore, so this is an edge case.
   }
 }
@@ -296,42 +297,27 @@ export async function ensureManagedConfigBase(
  * these paths point into .swamp/config/ (the datastore interface
  * layer). When false, they use the traditional locations.
  *
- * When the sentinel check fails but managedConfig is set in the marker,
- * checks the module-level registry for a base path populated by a prior
- * {@link ensureManagedConfigBase} call. This handles custom datastores
- * (S3, GCS) where the sentinel lives at the cache path, not the
- * repo-local `.swamp/config/`.
+ * The marker flag (`managedConfig: true` in `.swamp.yaml`) is the sole
+ * authority for activation. When no explicit `configBasePath` is provided,
+ * the module-level registry (populated by {@link ensureManagedConfigBase})
+ * supplies the correct base for custom datastores (S3, GCS) whose config
+ * tier lives at the cache path rather than repo-local `.swamp/config/`.
  */
 export function resolveManagedConfigPaths(
   repoDir: string,
   marker: RepoMarkerData | null,
   configBasePath?: string,
-  options?: { skipSentinelCheck?: boolean },
 ): { pulledExtensionsRoot: string; lockfilePath: string; active: boolean } {
   const managedConfig = marker?.datastore?.managedConfig === true;
   let effectiveBase = configBasePath ?? swampPath(repoDir, "config");
 
   let active = false;
   if (managedConfig) {
-    if (options?.skipSentinelCheck) {
-      active = true;
-    } else {
-      try {
-        Deno.statSync(join(effectiveBase, "managed-config-migrated.json"));
-        active = true;
-      } catch {
-        // Sentinel not found at the default path — check the registry
-        // for a base path populated by ensureManagedConfigBase (which
-        // resolves the datastore to find the cache-relative path).
-        // Only fall back to the registry when no explicit configBasePath
-        // was provided — an explicit argument takes precedence.
-        if (!configBasePath) {
-          const registeredBase = getManagedConfigBase(repoDir);
-          if (registeredBase) {
-            effectiveBase = registeredBase;
-            active = true;
-          }
-        }
+    active = true;
+    if (!configBasePath) {
+      const registeredBase = getManagedConfigBase(repoDir);
+      if (registeredBase) {
+        effectiveBase = registeredBase;
       }
     }
   }
@@ -951,7 +937,6 @@ export async function requireInitializedRepoUnlocked(
     repoPath.value,
     marker,
     configBase,
-    { skipSentinelCheck: true },
   );
   const definitionsDir = managedActive
     ? join(configBase, "models")
