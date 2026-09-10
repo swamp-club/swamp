@@ -128,12 +128,12 @@ import { WalSink } from "../../serve/audit_sinks/wal_sink.ts";
 import { WebSocketSink } from "../../serve/audit_sinks/websocket_sink.ts";
 import { WebhookSink } from "../../serve/audit_sinks/webhook_sink.ts";
 import { SyslogSink } from "../../serve/audit_sinks/syslog_sink.ts";
-import { parseSinkFilter } from "../../domain/serve_audit/sink_filter.ts";
 import {
   generateHmacKeyBytes,
   type HmacContext,
   importHmacKey,
-} from "../../domain/serve_audit/audit_hmac.ts";
+  parseSinkFilter,
+} from "../../domain/serve_audit/mod.ts";
 import { RemoteAuditStore } from "../../infrastructure/persistence/remote_audit_store.ts";
 import { resolveDatastoreExpressions } from "../datastore_expression_resolver.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";

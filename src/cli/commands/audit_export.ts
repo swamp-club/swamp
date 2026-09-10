@@ -72,7 +72,8 @@ export const auditExportCommand = withRemoteOptions(
     .option(
       "--outcome <outcome:string>",
       "Filter by outcome (success, failure, denied)",
-    ),
+    )
+    .option("--resource <name:string>", "Filter by resource name"),
 ).action(async function (options: AnyOptions) {
   const ctx = createContext(options as GlobalOptions, ["audit", "export"]);
 
@@ -107,6 +108,7 @@ export const auditExportCommand = withRemoteOptions(
         category: options.category,
         action: options.action,
         outcome: options.outcome,
+        resource: options.resource,
       },
     },
   );
