@@ -474,6 +474,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: write
     # Mandatory merge gate. Validates that local verification ran on this commit
     # and that config integrity checksums match.
     if: github.event.pull_request.draft == false
@@ -690,6 +691,22 @@ jobs:
             echo "### ✅ Validation Passed" >> "$GITHUB_STEP_SUMMARY"
             echo "All checks passed — commit, gate, freshness, and config integrity verified." >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: Approve PR
+        if: steps.find.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          head_sha="${{ github.event.pull_request.head.sha }}"
+          steps_completed=$(jq -r '.gate.stepsCompleted // 0' attestation.json)
+          steps_total=$(jq -r '.gate.stepsTotal // 0' attestation.json)
+
+          gh pr review "${{ github.event.pull_request.number }}" --approve --body "$(cat <<EOF
+          ## Attestation Approved
+
+          Verified commit \`${head_sha:0:8}\` — attestation gate passed (${steps_completed}/${steps_total} steps).
+          EOF
+          )"
 
   auto-merge:
     name: Auto-merge PR
