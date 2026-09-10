@@ -112,6 +112,7 @@ export class SyslogSink implements AuditSink {
   #reconnectAttempts = 0;
   #closed = false;
   #connectionFailed = false;
+  #circuitBreakerUntil = 0;
 
   constructor(options: SyslogSinkOptions) {
     this.#host = options.host;
@@ -134,6 +135,7 @@ export class SyslogSink implements AuditSink {
   }
 
   async write(events: readonly AuditEvent[]): Promise<void> {
+    if (Date.now() < this.#circuitBreakerUntil) return;
     this.#connectionFailed = false;
     this.#reconnectAttempts = 0;
     for (const event of events) {
@@ -190,7 +192,10 @@ export class SyslogSink implements AuditSink {
   async #sendUdp(message: string): Promise<void> {
     try {
       const socket = this.#getUdpSocket();
-      const data = encoder.encode(message);
+      let data = encoder.encode(message);
+      if (data.byteLength > 2048) {
+        data = data.subarray(0, 2048);
+      }
       await new Promise<void>((resolve, reject) => {
         socket.send(data, this.#port, this.#host, (err) => {
           if (err) reject(err);
@@ -281,8 +286,9 @@ export class SyslogSink implements AuditSink {
     }
 
     this.#connectionFailed = true;
+    this.#circuitBreakerUntil = Date.now() + 60_000;
     logger.warn(
-      "Syslog {target} connection failed after {max} attempts, dropping events",
+      "Syslog {target} connection failed after {max} attempts, circuit breaker open for 60s",
       { target: `${this.#host}:${this.#port}`, max: maxAttempts },
     );
     return null;
