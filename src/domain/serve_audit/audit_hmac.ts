@@ -24,6 +24,66 @@ export interface HmacContext {
   readonly keyVersion: number;
 }
 
+export interface HmacKeyVersion {
+  readonly version: number;
+  readonly key: CryptoKey;
+}
+
+export class HmacKeyRegistry {
+  readonly #versions: Map<number, CryptoKey> = new Map();
+  #currentVersion: number;
+
+  constructor(versions: HmacKeyVersion[]) {
+    if (versions.length === 0) {
+      throw new Error("HmacKeyRegistry requires at least one key version");
+    }
+    let maxVersion = 0;
+    for (const v of versions) {
+      this.#versions.set(v.version, v.key);
+      if (v.version > maxVersion) maxVersion = v.version;
+    }
+    this.#currentVersion = maxVersion;
+  }
+
+  currentContext(): HmacContext {
+    const key = this.#versions.get(this.#currentVersion);
+    if (!key) {
+      throw new Error(
+        `Current key version ${this.#currentVersion} not found in registry`,
+      );
+    }
+    return { key, keyVersion: this.#currentVersion };
+  }
+
+  contextForVersion(version: number): HmacContext | undefined {
+    const key = this.#versions.get(version);
+    if (!key) return undefined;
+    return { key, keyVersion: version };
+  }
+
+  addVersion(version: number, key: CryptoKey): void {
+    if (version <= this.#currentVersion) {
+      throw new Error(
+        `New key version ${version} must be greater than current version ${this.#currentVersion}`,
+      );
+    }
+    this.#versions.set(version, key);
+    this.#currentVersion = version;
+  }
+
+  get currentVersion(): number {
+    return this.#currentVersion;
+  }
+
+  get versionCount(): number {
+    return this.#versions.size;
+  }
+
+  versions(): number[] {
+    return [...this.#versions.keys()].sort((a, b) => a - b);
+  }
+}
+
 export interface HmacKeyProvider {
   getOrCreate(
     vaultName: string,

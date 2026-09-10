@@ -17,12 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertNotEquals } from "@std/assert";
+import { assertEquals, assertNotEquals, assertThrows } from "@std/assert";
 import {
   applyHmac,
   generateHmacKeyBytes,
   type HmacContext,
   hmacField,
+  HmacKeyRegistry,
   importHmacKey,
 } from "./audit_hmac.ts";
 import { createAuditEvent } from "./audit_event.ts";
@@ -158,4 +159,100 @@ Deno.test("applyHmac: verification round-trip works", async () => {
   const hashed = await applyHmac(ctx, event);
   const expectedHash = await hmacField(ctx.key, "api-keys");
   assertEquals(hashed.resourceName, expectedHash);
+});
+
+// HmacKeyRegistry tests
+
+async function makeKeyVersion(version: number) {
+  const raw = await generateHmacKeyBytes();
+  const key = await importHmacKey(raw);
+  return { version, key };
+}
+
+Deno.test("HmacKeyRegistry: constructor requires at least one version", () => {
+  assertThrows(
+    () => new HmacKeyRegistry([]),
+    Error,
+    "at least one key version",
+  );
+});
+
+Deno.test("HmacKeyRegistry: currentContext returns highest version", async () => {
+  const v1 = await makeKeyVersion(1);
+  const v2 = await makeKeyVersion(2);
+  const registry = new HmacKeyRegistry([v1, v2]);
+  const ctx = registry.currentContext();
+  assertEquals(ctx.keyVersion, 2);
+});
+
+Deno.test("HmacKeyRegistry: contextForVersion returns correct key", async () => {
+  const v1 = await makeKeyVersion(1);
+  const v2 = await makeKeyVersion(2);
+  const registry = new HmacKeyRegistry([v1, v2]);
+
+  const ctx1 = registry.contextForVersion(1);
+  assertEquals(ctx1?.keyVersion, 1);
+
+  const ctx2 = registry.contextForVersion(2);
+  assertEquals(ctx2?.keyVersion, 2);
+});
+
+Deno.test("HmacKeyRegistry: contextForVersion returns undefined for unknown version", async () => {
+  const v1 = await makeKeyVersion(1);
+  const registry = new HmacKeyRegistry([v1]);
+  assertEquals(registry.contextForVersion(99), undefined);
+});
+
+Deno.test("HmacKeyRegistry: addVersion increments current version", async () => {
+  const v1 = await makeKeyVersion(1);
+  const registry = new HmacKeyRegistry([v1]);
+  assertEquals(registry.currentVersion, 1);
+
+  const v2 = await makeKeyVersion(2);
+  registry.addVersion(2, v2.key);
+  assertEquals(registry.currentVersion, 2);
+  assertEquals(registry.versionCount, 2);
+});
+
+Deno.test("HmacKeyRegistry: addVersion rejects non-increasing version", async () => {
+  const v1 = await makeKeyVersion(1);
+  const v2 = await makeKeyVersion(2);
+  const registry = new HmacKeyRegistry([v1, v2]);
+
+  const v1b = await makeKeyVersion(1);
+  assertThrows(
+    () => registry.addVersion(1, v1b.key),
+    Error,
+    "must be greater than current version",
+  );
+});
+
+Deno.test("HmacKeyRegistry: versions returns sorted list", async () => {
+  const v3 = await makeKeyVersion(3);
+  const v1 = await makeKeyVersion(1);
+  const v2 = await makeKeyVersion(2);
+  const registry = new HmacKeyRegistry([v3, v1, v2]);
+  assertEquals(registry.versions(), [1, 2, 3]);
+});
+
+Deno.test("HmacKeyRegistry: single version bootstrap works", async () => {
+  const v1 = await makeKeyVersion(1);
+  const registry = new HmacKeyRegistry([v1]);
+  assertEquals(registry.currentVersion, 1);
+  assertEquals(registry.versionCount, 1);
+  const ctx = registry.currentContext();
+  assertEquals(ctx.keyVersion, 1);
+});
+
+Deno.test("HmacKeyRegistry: different versions produce different hashes", async () => {
+  const v1 = await makeKeyVersion(1);
+  const v2 = await makeKeyVersion(2);
+  const registry = new HmacKeyRegistry([v1, v2]);
+
+  const ctx1 = registry.contextForVersion(1)!;
+  const ctx2 = registry.contextForVersion(2)!;
+
+  const hash1 = await hmacField(ctx1.key, "test-value");
+  const hash2 = await hmacField(ctx2.key, "test-value");
+  assertNotEquals(hash1, hash2);
 });

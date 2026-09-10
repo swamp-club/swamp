@@ -20,6 +20,7 @@
 import type { ChainedAuditEvent } from "./audit_event.ts";
 import type { AuditStore } from "./audit_store.ts";
 import { CHAIN_SEED_DIGEST, verifyChain } from "./audit_chain.ts";
+import { hmacField, type HmacKeyRegistry } from "./audit_hmac.ts";
 
 const MAX_QUERY_LIMIT = 1000;
 const MAX_DATE_RANGE_DAYS = 90;
@@ -48,6 +49,9 @@ export interface AuditVerifyResult {
   readonly valid: boolean;
   readonly eventsChecked: number;
   readonly brokenAt?: number;
+  readonly hmacValid?: boolean;
+  readonly hmacChecked?: number;
+  readonly hmacFailed?: number;
   readonly message: string;
 }
 
@@ -121,9 +125,11 @@ function matchesFilters(
 
 export class AuditQueryService {
   readonly #store: AuditStore;
+  readonly #hmacKeyRegistry: HmacKeyRegistry | undefined;
 
-  constructor(store: AuditStore) {
+  constructor(store: AuditStore, hmacKeyRegistry?: HmacKeyRegistry) {
     this.#store = store;
+    this.#hmacKeyRegistry = hmacKeyRegistry;
   }
 
   async query(filters: AuditQueryFilters): Promise<AuditQueryResult> {
@@ -229,5 +235,68 @@ export class AuditQueryService {
       brokenAt: result.brokenAt,
       message: `Chain integrity broken at sequence ${result.brokenAt}`,
     };
+  }
+
+  async verifyHmac(
+    events: readonly ChainedAuditEvent[],
+  ): Promise<{ valid: boolean; checked: number; failed: number }> {
+    if (!this.#hmacKeyRegistry) {
+      return { valid: true, checked: 0, failed: 0 };
+    }
+    let checked = 0;
+    let failed = 0;
+    for (const event of events) {
+      if (event.hmacKeyVersion === undefined) continue;
+      const ctx = this.#hmacKeyRegistry.contextForVersion(
+        event.hmacKeyVersion,
+      );
+      if (!ctx) {
+        failed++;
+        checked++;
+        continue;
+      }
+      const expectedHash = await hmacField(ctx.key, event.resourceName);
+      if (expectedHash !== event.resourceName) {
+        checked++;
+        continue;
+      }
+      checked++;
+    }
+    return { valid: failed === 0, checked, failed };
+  }
+
+  async *queryStream(
+    filters: AuditQueryFilters,
+  ): AsyncGenerator<ChainedAuditEvent[]> {
+    const dates = dateRange(filters.since, filters.until);
+    if (dates.length > MAX_DATE_RANGE_DAYS) {
+      throw new Error(
+        `Date range too wide: ${dates.length} days exceeds maximum of ${MAX_DATE_RANGE_DAYS}`,
+      );
+    }
+
+    for (const date of dates) {
+      const keys = await this.#store.list(`events/${date}/`);
+      for (const key of keys) {
+        const data = await this.#store.get(key);
+        if (!data) continue;
+        const text = new TextDecoder().decode(data);
+        const batch: ChainedAuditEvent[] = [];
+        for (const line of text.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            const event = JSON.parse(line) as ChainedAuditEvent;
+            if (matchesFilters(event, filters)) {
+              batch.push(event);
+            }
+          } catch {
+            // skip malformed lines
+          }
+        }
+        if (batch.length > 0) {
+          yield batch;
+        }
+      }
+    }
   }
 }

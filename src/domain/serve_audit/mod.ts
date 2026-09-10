@@ -70,6 +70,8 @@ export {
   type HmacContext,
   hmacField,
   type HmacKeyProvider,
+  HmacKeyRegistry,
+  type HmacKeyVersion,
   importHmacKey,
 } from "./audit_hmac.ts";
 
@@ -82,3 +84,29 @@ export {
 } from "./sink_filter.ts";
 
 export { RingBuffer } from "./ring_buffer.ts";
+
+export {
+  type AlertAction,
+  type AlertFiredEvent,
+  type AlertRuleConfig,
+  AlertRuleEngine,
+  type AlertRuleMatch,
+  type AlertRuleState,
+  type AlertRuleStatus,
+  type AlertThreshold,
+} from "./audit_alerts.ts";
+
+export {
+  type AuditSinkFactory,
+  type AuditSinkTypeInfo,
+  AuditSinkTypeRegistry,
+} from "./audit_sink_type_registry.ts";
+
+export { AuditSinkHotReloader } from "./audit_sink_hot_reloader.ts";
+
+export {
+  COMPLIANCE_REPORTS,
+  type ComplianceReportDefinition,
+  type ComplianceReportResult,
+  getComplianceReport,
+} from "./audit_compliance_reports.ts";

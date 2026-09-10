@@ -28,6 +28,11 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { Principal } from "../domain/access/principal.ts";
 import { audited, type AuditedOptions } from "./audited.ts";
 import { AuditQueryService } from "../domain/serve_audit/audit_query_service.ts";
+import type { ChainedAuditEvent } from "../domain/serve_audit/audit_event.ts";
+import {
+  generateHmacKeyBytes,
+  importHmacKey,
+} from "../domain/serve_audit/audit_hmac.ts";
 import type { AuditSubscriptionFilter } from "./audit_sinks/websocket_sink.ts";
 import { formatCefLine } from "./audit_sinks/cef_formatter.ts";
 import {
@@ -507,6 +512,16 @@ const AuditExportRequestSchema = z.object({
     outcome: z.string().optional(),
     resource: z.string().optional(),
   }),
+});
+
+const AuditRotateKeyRequestSchema = z.object({
+  type: z.literal("audit.rotate-key"),
+  id: z.string().min(1).max(256),
+});
+
+const AuditAlertsRequestSchema = z.object({
+  type: z.literal("audit.alerts"),
+  id: z.string().min(1).max(256),
 });
 
 const SummariseRequestSchema = z.object({
@@ -1247,6 +1262,8 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   AuditSubscribeRequestSchema,
   AuditUnsubscribeRequestSchema,
   AuditExportRequestSchema,
+  AuditRotateKeyRequestSchema,
+  AuditAlertsRequestSchema,
   SummariseRequestSchema,
   ReportGetRequestSchema,
   ReportSearchRequestSchema,
@@ -2022,7 +2039,7 @@ export function handleMessage(
             return;
           }
           const exportService = new AuditQueryService(ctx.auditStores[0]);
-          const result = await exportService.query({
+          const filters = {
             since: request.payload.from,
             until: request.payload.to,
             principal: request.payload.principal,
@@ -2030,12 +2047,21 @@ export function handleMessage(
             action: request.payload.action,
             outcome: request.payload.outcome,
             resource: request.payload.resource,
-            limit: 50_000,
-            export: true,
-          });
-          const events = result.events;
-          const truncated = result.total !== undefined &&
-            result.total > events.length;
+          };
+          const maxExportEvents = 50_000;
+          const events: ChainedAuditEvent[] = [];
+          let truncated = false;
+          for await (const batch of exportService.queryStream(filters)) {
+            for (const event of batch) {
+              if (events.length >= maxExportEvents) {
+                truncated = true;
+                break;
+              }
+              events.push(event);
+            }
+            if (truncated) break;
+          }
+          events.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 
           if (format === "json") {
             send(socket, {
@@ -2217,6 +2243,94 @@ export function handleMessage(
       activeRequests.delete(request.id);
       break;
     }
+    case "audit.rotate-key":
+      if (
+        !authorizeOrReject(
+          socket,
+          request.id,
+          principal,
+          "admin",
+          { kind: "access", name: "audit", fields: {} },
+          ctx,
+        ).allowed
+      ) {
+        task = Promise.resolve();
+        activeRequests.delete(request.id);
+        break;
+      }
+      task = audited(
+        (async () => {
+          if (!ctx.auditEmitter?.hmacKeyRegistry) {
+            send(socket, {
+              type: "audit.rotate-key",
+              id: request.id,
+              payload: {
+                previousVersion: 0,
+                newVersion: 0,
+                message: "HMAC is not enabled for this instance",
+              },
+            });
+            return;
+          }
+          const registry = ctx.auditEmitter.hmacKeyRegistry;
+          const previousVersion = registry.currentVersion;
+          const rawKey = await generateHmacKeyBytes();
+          const newVersion = previousVersion + 1;
+          if (ctx.auditVaultService && ctx.auditHmacConfig) {
+            const hex = Array.from(rawKey)
+              .map((b) => b.toString(16).padStart(2, "0"))
+              .join("");
+            await ctx.auditVaultService.put(
+              ctx.auditHmacConfig.vaultName,
+              `${ctx.auditHmacConfig.keyName}-v${newVersion}`,
+              hex,
+            );
+          }
+          const cryptoKey = await importHmacKey(rawKey);
+          registry.addVersion(newVersion, cryptoKey);
+          send(socket, {
+            type: "audit.rotate-key",
+            id: request.id,
+            payload: {
+              previousVersion,
+              newVersion,
+              message:
+                `HMAC key rotated from version ${previousVersion} to ${newVersion}`,
+            },
+          });
+        })(),
+        auditOpts("admin", "audit", "hmac-key"),
+      );
+      break;
+    case "audit.alerts":
+      if (
+        !authorizeOrReject(
+          socket,
+          request.id,
+          principal,
+          "admin",
+          { kind: "access", name: "audit", fields: {} },
+          ctx,
+        ).allowed
+      ) {
+        task = Promise.resolve();
+        activeRequests.delete(request.id);
+        break;
+      }
+      task = audited(
+        (() => {
+          const engine = ctx.auditEmitter?.alertEngine;
+          const rules = engine ? engine.status() : [];
+          send(socket, {
+            type: "audit.alerts",
+            id: request.id,
+            payload: { rules },
+          });
+          return Promise.resolve();
+        })(),
+        auditOpts("admin", "audit", "alerts"),
+      );
+      break;
     case "summarise":
       task = audited(
         handleSummarise(

@@ -187,6 +187,15 @@ export interface ConnectionContext {
   /** WebSocket audit sink — broadcasts events to subscribed connections. */
   auditWebSocketSink?: import("../audit_sinks/websocket_sink.ts").WebSocketSink;
   auditNamespace?: string;
+  /** Rebuilds external audit sinks from current config during hot-reload. */
+  auditSinkRebuilder?: () => Promise<
+    import("../../domain/serve_audit/audit_sink.ts").AuditSink[]
+  >;
+  /** Vault service for HMAC key rotation — present when audit HMAC is enabled. */
+  auditVaultService?:
+    import("../../domain/vaults/vault_service.ts").VaultService;
+  /** HMAC vault and key names from config — used by key rotation. */
+  auditHmacConfig?: { vaultName: string; keyName: string };
 }
 
 // SECURITY: Authorization must operate on canonical (normalized) model types,

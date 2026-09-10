@@ -27,11 +27,17 @@ import type { AuditSink } from "./audit_sink.ts";
 import { AuditChainState } from "./audit_chain.ts";
 import type { AuditPolicy } from "./audit_policy.ts";
 import { RingBuffer } from "./ring_buffer.ts";
-import { applyHmac, type HmacContext } from "./audit_hmac.ts";
+import {
+  applyHmac,
+  type HmacContext,
+  type HmacKeyRegistry,
+} from "./audit_hmac.ts";
+import type { AlertRuleEngine } from "./audit_alerts.ts";
 
 const logger = getSwampLogger(["serve", "audit", "emitter"]);
 
 const DEFAULT_BUFFER_CAPACITY = 10_000;
+const DEFAULT_SINK_TIMEOUT_MS = 30_000;
 
 export interface AuditEmitterOptions {
   readonly sinks: AuditSink[];
@@ -39,16 +45,22 @@ export interface AuditEmitterOptions {
   readonly chainState?: AuditChainState;
   readonly policy?: AuditPolicy;
   readonly hmacContext?: HmacContext;
+  readonly hmacKeyRegistry?: HmacKeyRegistry;
+  readonly alertEngine?: AlertRuleEngine;
+  readonly sinkTimeoutMs?: number;
 }
 
 export class AuditEmitter {
   readonly #buffer: RingBuffer<AuditEvent>;
-  readonly #sinks: AuditSink[];
+  #sinks: AuditSink[];
   readonly #cursors: Map<string, number> = new Map();
   readonly #deniedRequests = new Set<string>();
   readonly #chainState: AuditChainState;
   readonly #policy: AuditPolicy | undefined;
   readonly #hmacContext: HmacContext | undefined;
+  readonly #hmacKeyRegistry: HmacKeyRegistry | undefined;
+  #alertEngine: AlertRuleEngine | undefined;
+  readonly #sinkTimeoutMs: number;
   #drainPending = false;
   #drainPromise: Promise<void> | null = null;
 
@@ -60,6 +72,7 @@ export class AuditEmitter {
       this.#buffer = new RingBuffer(capacity ?? DEFAULT_BUFFER_CAPACITY);
       this.#sinks = sinksOrOptions;
       this.#chainState = new AuditChainState();
+      this.#sinkTimeoutMs = DEFAULT_SINK_TIMEOUT_MS;
     } else {
       this.#buffer = new RingBuffer(
         sinksOrOptions.capacity ?? DEFAULT_BUFFER_CAPACITY,
@@ -68,6 +81,10 @@ export class AuditEmitter {
       this.#chainState = sinksOrOptions.chainState ?? new AuditChainState();
       this.#policy = sinksOrOptions.policy;
       this.#hmacContext = sinksOrOptions.hmacContext;
+      this.#hmacKeyRegistry = sinksOrOptions.hmacKeyRegistry;
+      this.#alertEngine = sinksOrOptions.alertEngine;
+      this.#sinkTimeoutMs = sinksOrOptions.sinkTimeoutMs ??
+        DEFAULT_SINK_TIMEOUT_MS;
     }
     for (const sink of this.#sinks) {
       this.#cursors.set(sink.name, 0);
@@ -76,6 +93,33 @@ export class AuditEmitter {
 
   get chainState(): AuditChainState {
     return this.#chainState;
+  }
+
+  get hmacKeyRegistry(): HmacKeyRegistry | undefined {
+    return this.#hmacKeyRegistry;
+  }
+
+  get alertEngine(): AlertRuleEngine | undefined {
+    return this.#alertEngine;
+  }
+
+  set alertEngine(engine: AlertRuleEngine | undefined) {
+    this.#alertEngine = engine;
+  }
+
+  replaceSinks(newSinks: AuditSink[]): void {
+    const oldNames = new Set(this.#sinks.map((s) => s.name));
+    this.#sinks = newSinks;
+    for (const sink of newSinks) {
+      if (!this.#cursors.has(sink.name)) {
+        this.#cursors.set(sink.name, this.#buffer.highSeq);
+      }
+    }
+    for (const name of oldNames) {
+      if (!newSinks.some((s) => s.name === name)) {
+        this.#cursors.delete(name);
+      }
+    }
   }
 
   emit(event: AuditEvent): void {
@@ -136,15 +180,24 @@ export class AuditEmitter {
     return min;
   }
 
+  #resolveHmacContext(): HmacContext | undefined {
+    if (this.#hmacKeyRegistry) {
+      return this.#hmacKeyRegistry.currentContext();
+    }
+    return this.#hmacContext;
+  }
+
   async #drain(): Promise<void> {
     const minCursor = this.#minCursor();
     const { items, throughSeq } = this.#buffer.readFrom(minCursor);
     if (items.length === 0) return;
 
+    const hmacCtx = this.#resolveHmacContext();
+
     const processed: AuditEvent[] = [];
     for (const event of items) {
-      if (this.#hmacContext && this.#shouldHmac(event)) {
-        processed.push(await applyHmac(this.#hmacContext, event));
+      if (hmacCtx && this.#shouldHmac(event)) {
+        processed.push(await applyHmac(hmacCtx, event));
       } else {
         processed.push(event);
       }
@@ -156,14 +209,66 @@ export class AuditEmitter {
       chained.push(await this.#chainState.chain(event));
     }
 
+    if (this.#alertEngine) {
+      for (const event of chained) {
+        const fired = this.#alertEngine.evaluate(event);
+        for (const alert of fired) {
+          if (alert.action.type === "log") {
+            this.emit({
+              id: crypto.randomUUID(),
+              timestamp: new Date().toISOString(),
+              instanceId: event.instanceId,
+              category: "system",
+              stage: "response",
+              outcome: "success",
+              action: "alert.fired",
+              resourceKind: "alert-rule",
+              resourceName: alert.ruleName,
+              principalKind: "system",
+              principalId: "audit-engine",
+              initiatedBy: "audit-engine",
+              sourceIp: "127.0.0.1",
+              requestId: crypto.randomUUID(),
+              detail:
+                `Alert "${alert.ruleName}" fired: ${alert.windowCount} events in window (matched event ${alert.matchedEventId})`,
+            });
+          } else if (alert.action.type === "webhook") {
+            const body = JSON.stringify({
+              type: "alert.fired",
+              rule: alert.ruleName,
+              description: alert.ruleDescription,
+              matchedEventId: alert.matchedEventId,
+              windowCount: alert.windowCount,
+              timestamp: new Date().toISOString(),
+            });
+            fetch(alert.action.url, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body,
+              signal: AbortSignal.timeout(5000),
+            }).catch((err: unknown) => {
+              logger.warn(
+                "Alert webhook delivery failed for rule {rule}: {error}",
+                {
+                  rule: alert.ruleName,
+                  error: err instanceof Error ? err.message : String(err),
+                },
+              );
+            });
+          }
+        }
+      }
+    }
+
     let anyDurableWriteSucceeded = false;
-    for (const sink of this.#sinks) {
+    const sinks = this.#sinks;
+    for (const sink of sinks) {
       const sinkCursor = this.#cursors.get(sink.name) ?? 0;
       const offset = sinkCursor - minCursor;
       const sinkEvents = offset > 0 ? chained.slice(offset) : chained;
       if (sinkEvents.length === 0) continue;
       try {
-        await sink.write(sinkEvents);
+        await this.#writeSinkWithTimeout(sink, sinkEvents);
         this.#cursors.set(sink.name, throughSeq);
         if (sink.durable) anyDurableWriteSucceeded = true;
       } catch (error: unknown) {
@@ -179,6 +284,37 @@ export class AuditEmitter {
 
     if (!anyDurableWriteSucceeded) {
       this.#chainState.restore(chainSnapshot);
+    }
+  }
+
+  async #writeSinkWithTimeout(
+    sink: AuditSink,
+    events: readonly ChainedAuditEvent[],
+  ): Promise<void> {
+    if (this.#sinkTimeoutMs <= 0) {
+      await sink.write(events);
+      return;
+    }
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      this.#sinkTimeoutMs,
+    );
+    try {
+      await Promise.race([
+        sink.write(events),
+        new Promise<never>((_, reject) => {
+          controller.signal.addEventListener("abort", () => {
+            reject(
+              new Error(
+                `Audit sink "${sink.name}" timed out after ${this.#sinkTimeoutMs}ms`,
+              ),
+            );
+          });
+        }),
+      ]);
+    } finally {
+      clearTimeout(timeout);
     }
   }
 

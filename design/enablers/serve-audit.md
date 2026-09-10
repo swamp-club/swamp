@@ -197,8 +197,25 @@ System events are always at `metadata` audit level (management tier).
 | SinkFilterConfig        | Value Object       | `src/domain/serve_audit/`         |
 | HmacContext             | Value Object       | `src/domain/serve_audit/`         |
 
+## Phase 5 (completed)
+
+Extension sink API, alert rules, compliance reports, HMAC key rotation,
+streaming bulk export, and hot-reload of external sinks.
+
+| Concept                 | DDD Building Block | Location                          |
+| ----------------------- | ------------------ | --------------------------------- |
+| HmacKeyRegistry         | Aggregate          | `src/domain/serve_audit/`         |
+| HmacKeyVersion          | Value Object       | `src/domain/serve_audit/`         |
+| AlertRuleEngine         | Aggregate          | `src/domain/serve_audit/`         |
+| AlertRule               | Entity             | `src/domain/serve_audit/`         |
+| AlertRuleMatch          | Value Object       | `src/domain/serve_audit/`         |
+| AlertThreshold          | Value Object       | `src/domain/serve_audit/`         |
+| AlertAction             | Value Object       | `src/domain/serve_audit/`         |
+| AuditSinkTypeRegistry   | Domain Service     | `src/domain/serve_audit/`         |
+| ExtensionSinkLoader     | Domain Service     | `src/domain/serve_audit/`         |
+| AuditSinkHotReloader    | Domain Service     | `src/domain/serve_audit/`         |
+| ExtractedAuditSink      | Value Object       | `src/domain/extensions/`          |
+
 ## Future phases
 
-- **Phase 5**: Extension sink API, alert rules (pattern triggers), compliance
-  templates, HMAC key rotation, streaming bulk export, hot-reload of external
-  sinks
+No additional phases planned. The audit system is feature-complete.

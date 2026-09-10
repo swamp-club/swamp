@@ -138,6 +138,7 @@ export async function extractContentMetadata(
     vaults,
     datastores,
     reports,
+    auditSinks: [],
     skills: [],
   };
 }

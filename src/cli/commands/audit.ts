@@ -53,8 +53,10 @@ import {
   createLibSwampContext,
 } from "../../libswamp/mod.ts";
 import { createAuditTimelineRenderer } from "../../presentation/renderers/audit_timeline.ts";
+import { auditAlertsCommand } from "./audit_alerts.ts";
 import { auditExportCommand } from "./audit_export.ts";
 import { auditLogCommand } from "./audit_log.ts";
+import { auditRotateKeyCommand } from "./audit_rotate_key.ts";
 import { auditVerifyCommand } from "./audit_verify.ts";
 
 /**
@@ -249,6 +251,8 @@ export const auditCommand = withRemoteOptions(
 
   ctx.logger.debug("Audit command completed");
 }).command("record", auditRecordCommand)
+  .command("alerts", auditAlertsCommand)
   .command("export", auditExportCommand)
   .command("log", auditLogCommand)
+  .command("rotate-key", auditRotateKeyCommand)
   .command("verify", auditVerifyCommand);

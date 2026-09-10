@@ -788,6 +788,8 @@ export type ServerRequest =
   | { type: "audit.subscribe"; id: string; payload?: AuditSubscribePayload }
   | { type: "audit.unsubscribe"; id: string }
   | { type: "audit.export"; id: string; payload: AuditExportPayload }
+  | { type: "audit.rotate-key"; id: string }
+  | { type: "audit.alerts"; id: string }
   | { type: "summarise"; id: string; payload?: SummarisePayload }
   | { type: "report.get"; id: string; payload: ReportGetPayload }
   | { type: "report.search"; id: string; payload?: ReportSearchPayload }
@@ -1214,6 +1216,22 @@ export interface AuditVerifyResponse {
   message: string;
 }
 
+export interface AuditRotateKeyResponse {
+  previousVersion: number;
+  newVersion: number;
+  message: string;
+}
+
+export interface AuditAlertsResponse {
+  rules: readonly {
+    name: string;
+    description?: string;
+    state: "armed" | "triggered" | "cooldown";
+    windowCount: number;
+    lastFiredAt?: string;
+  }[];
+}
+
 export interface SummariseResponse {
   data: Record<string, unknown>;
 }
@@ -1595,6 +1613,8 @@ export type ServerMessage =
   | { type: "audit.unsubscribe"; id: string }
   | { type: "audit.event"; id: string; payload: AuditEventPayload }
   | { type: "audit.export"; id: string; payload: AuditExportResponse }
+  | { type: "audit.rotate-key"; id: string; payload: AuditRotateKeyResponse }
+  | { type: "audit.alerts"; id: string; payload: AuditAlertsResponse }
   | { type: "summarise"; id: string; payload: SummariseResponse }
   | { type: "report.get"; id: string; payload: ReportGetResponse }
   | { type: "report.search"; id: string; payload: ReportSearchResponse }

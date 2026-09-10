@@ -191,6 +191,16 @@ export type {
   MockCommandResult,
 } from "./mock_command.ts";
 
+// --- Audit Sinks ---
+
+export { assertAuditSinkConformance } from "./audit_sink_conformance.ts";
+
+export type {
+  AuditSinkConformanceOptions,
+  ConformanceAuditEvent,
+  ConformanceAuditSink,
+} from "./audit_sink_conformance.ts";
+
 // --- Timing ---
 
 export { waitFor } from "./wait_for.ts";

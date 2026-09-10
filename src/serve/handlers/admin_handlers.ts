@@ -1879,6 +1879,24 @@ export async function handleServeReload(
           { count: result.triggerOverridesChanged, who },
         );
       }
+
+      if (ctx.auditEmitter && ctx.auditSinkRebuilder) {
+        try {
+          const newSinks = await ctx.auditSinkRebuilder();
+          ctx.auditEmitter.replaceSinks(newSinks);
+          logger.info(
+            "Audit sinks reloaded: {count} sink(s) (requested by {who})",
+            { count: newSinks.length, who },
+          );
+        } catch (error: unknown) {
+          logger.warn(
+            "Audit sink hot-reload failed, keeping existing sinks: {error}",
+            {
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+        }
+      }
     }
 
     send(socket, {
