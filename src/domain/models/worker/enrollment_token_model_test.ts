@@ -74,13 +74,39 @@ Deno.test("enrollmentTokenModel: mint writes the secret to the vault, never to d
   assertEquals(JSON.stringify(token).includes(plaintext), false);
 });
 
-Deno.test("enrollmentTokenModel: mint twice with the same name fails", async () => {
+Deno.test("enrollmentTokenModel: mint twice with the same name fails when active", async () => {
   const { context } = await mintToken();
   await assertRejects(
     () => enrollmentTokenModel.methods.mint.execute(mintArgs, context),
     Error,
     "already exists",
   );
+});
+
+Deno.test("enrollmentTokenModel: mint after revoke succeeds with fresh credentials", async () => {
+  const { context, store, vault, plaintext: oldPlaintext } = await mintToken();
+  await enrollmentTokenModel.methods.revoke.execute({}, context);
+  assertEquals(store.get("token-main")!.state, "revoked");
+  await enrollmentTokenModel.methods.mint.execute(mintArgs, context);
+  const token = store.get("token-main")!;
+  assertEquals(token.state, "unused");
+  const newPlaintext = vault.get(
+    `local/${tokenSecretKey("ci-runner-3")}`,
+  )!;
+  assertNotEquals(newPlaintext, oldPlaintext);
+});
+
+Deno.test("enrollmentTokenModel: mint after expire succeeds with fresh credentials", async () => {
+  const { context, store, vault, plaintext: oldPlaintext } = await mintToken();
+  await enrollmentTokenModel.methods.expire.execute({}, context);
+  assertEquals(store.get("token-main")!.state, "expired");
+  await enrollmentTokenModel.methods.mint.execute(mintArgs, context);
+  const token = store.get("token-main")!;
+  assertEquals(token.state, "unused");
+  const newPlaintext = vault.get(
+    `local/${tokenSecretKey("ci-runner-3")}`,
+  )!;
+  assertNotEquals(newPlaintext, oldPlaintext);
 });
 
 Deno.test("enrollmentTokenModel: redeem transitions unused → enrolled and binds the machine", async () => {

@@ -145,9 +145,12 @@ async function mint(
   }
   const existing = await context.readResource!(TOKEN_DATA_NAME);
   if (existing !== null) {
-    throw new Error(
-      `Enrollment token '${context.definition.name}' already exists — revoke it and mint a new name, or pick another name`,
-    );
+    const parsed = EnrollmentTokenSchema.parse(existing);
+    if (parsed.state !== "revoked" && parsed.state !== "expired") {
+      throw new Error(
+        `Enrollment token '${context.definition.name}' already exists — revoke it or wait for expiry before re-minting`,
+      );
+    }
   }
 
   const name = context.definition.name;
