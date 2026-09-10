@@ -36,14 +36,17 @@ export function createAuditExportRenderer(outputMode: OutputMode) {
           const { data } = event;
 
           if (outputMode === "json") {
-            writeOutput(
-              JSON.stringify({
-                format: data.format,
-                count: data.count,
-                truncated: data.truncated ?? false,
-                outputPath: data.outputPath,
-              }),
-            );
+            const jsonOutput: Record<string, unknown> = {
+              format: data.format,
+              count: data.count,
+              truncated: data.truncated ?? false,
+            };
+            if (data.outputPath) {
+              jsonOutput.outputPath = data.outputPath;
+            } else {
+              jsonOutput.data = data.data;
+            }
+            writeOutput(JSON.stringify(jsonOutput));
             return;
           }
 
