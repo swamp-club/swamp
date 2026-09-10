@@ -1036,6 +1036,7 @@ export interface ServeReloadResponse {
   success: boolean;
   reloadedCount: number;
   triggerOverridesChanged?: number;
+  workflowsReloaded?: number;
   errors: string[];
 }
 

@@ -155,6 +155,7 @@ import {
 import {
   performServeReload,
   resolveLockfilePath,
+  type ServeReloadOptions,
 } from "../extension_reload.ts";
 import { isReservedVaultName } from "./vault_handlers.ts";
 
@@ -1847,13 +1848,13 @@ export async function handleServeReload(
       ctx.repoDir,
       ctx.datastoreResolver,
     );
-    const reloadOptions = ctx.scheduledExecution
-      ? {
-        triggerOverrideUpdater: (
-          overrides: ReadonlyMap<string, TriggerOverride>,
-        ) => ctx.scheduledExecution!.updateTriggerOverrides(overrides),
-      }
-      : undefined;
+    const reloadOptions: ServeReloadOptions = {
+      triggerOverrideUpdater: ctx.scheduledExecution
+        ? (overrides: ReadonlyMap<string, TriggerOverride>) =>
+          ctx.scheduledExecution!.updateTriggerOverrides(overrides)
+        : undefined,
+      workflowReloader: ctx.workflowReloader,
+    };
     const result = await performServeReload(
       ctx.repoDir,
       lockfilePath,
@@ -1863,6 +1864,12 @@ export async function handleServeReload(
     if (result.success) {
       logger
         .info`Extension reload completed: ${result.reloadedCount} type(s) reloaded (requested by ${who})`;
+      if (result.workflowsReloaded && result.workflowsReloaded > 0) {
+        logger.info(
+          "Refreshed {count} extension workflow dir(s) (requested by {who})",
+          { count: result.workflowsReloaded, who },
+        );
+      }
       if (
         result.triggerOverridesChanged &&
         result.triggerOverridesChanged > 0

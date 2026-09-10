@@ -150,6 +150,53 @@ Deno.test("performServeReload: passes empty map when serve.yaml has no triggers"
   }
 });
 
+Deno.test("performServeReload: calls workflowReloader and includes count in response", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
+
+    let reloaderCalled = false;
+    const result = await performServeReload(
+      tmpDir,
+      join(tmpDir, "nonexistent_lockfile.json"),
+      {
+        workflowReloader: () => {
+          reloaderCalled = true;
+          return Promise.resolve(4);
+        },
+      },
+    );
+
+    assertEquals(result.success, true);
+    assertEquals(reloaderCalled, true);
+    assertEquals(result.workflowsReloaded, 4);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("performServeReload: workflowReloader error is soft failure", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
+
+    const result = await performServeReload(
+      tmpDir,
+      join(tmpDir, "nonexistent_lockfile.json"),
+      {
+        workflowReloader: () =>
+          Promise.reject(new Error("workflow scan failed")),
+      },
+    );
+
+    assertEquals(result.success, true);
+    assertStringIncludes(result.errors[0], "Failed to reload workflows");
+    assertStringIncludes(result.errors[0], "workflow scan failed");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
 Deno.test("performServeReload: trigger override updater error is soft failure", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {

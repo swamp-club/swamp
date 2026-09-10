@@ -127,7 +127,9 @@ import { resolveGitMainWorktreeRoot } from "../infrastructure/persistence/git_wo
  * Returns an empty array if no sources are configured or file doesn't exist.
  */
 const sourceWorkflowDirCache = new Map<string, string[]>();
-async function getSourceWorkflowDirs(repoDir: string): Promise<string[]> {
+export async function getSourceWorkflowDirs(
+  repoDir: string,
+): Promise<string[]> {
   const cached = sourceWorkflowDirCache.get(repoDir);
   if (cached) return cached;
   const sourcesConfig = await readSwampSources(repoDir);

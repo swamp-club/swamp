@@ -394,6 +394,7 @@ export interface RepositoryContext {
   unifiedDataRepo: FileSystemUnifiedDataRepository;
   outputRepo: YamlOutputRepository;
   workflowRepo: WorkflowRepository;
+  extensionWorkflowRepo: ExtensionWorkflowRepository | null;
   workflowRunRepo: YamlWorkflowRunRepository;
   vaultConfigRepo: YamlVaultConfigRepository;
   catalogStore: CatalogStore;
@@ -529,6 +530,7 @@ export function createRepositoryContext(
     unifiedDataRepo,
     outputRepo,
     workflowRepo,
+    extensionWorkflowRepo,
     workflowRunRepo,
     vaultConfigRepo,
     catalogStore,

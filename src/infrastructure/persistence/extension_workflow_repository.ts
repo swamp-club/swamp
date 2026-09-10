@@ -46,13 +46,19 @@ const MANIFEST_FILENAMES = new Set(["manifest.yaml", "manifest.yml"]);
  * definition; `manifest.yaml` and `manifest.yml` are skipped.
  */
 export class ExtensionWorkflowRepository implements WorkflowRepository {
-  private readonly workflowsDirs: string[];
+  private readonly baseDir: string;
+  private workflowsDirs: string[];
 
   constructor(
     workflowsDir: string,
     additionalDirs?: string[],
   ) {
+    this.baseDir = workflowsDir;
     this.workflowsDirs = [workflowsDir, ...(additionalDirs ?? [])];
+  }
+
+  updateAdditionalDirs(additionalDirs: string[]): void {
+    this.workflowsDirs = [this.baseDir, ...additionalDirs];
   }
 
   async findById(id: WorkflowId): Promise<Workflow | null> {
