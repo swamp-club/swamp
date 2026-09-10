@@ -118,16 +118,18 @@ export function createModelDeleteDeps(
   datastoreResolver?: DatastorePathResolver,
   injectedDataRepo?: FileSystemUnifiedDataRepository,
   markDirty?: MarkDirtyHook,
+  injectedDefinitionRepo?: YamlDefinitionRepository,
 ): ModelDeleteDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
-  const definitionRepo = new YamlDefinitionRepository(
-    repoDir,
-    undefined,
-    undefined,
-    undefined,
-    markDirty,
-  );
+  const definitionRepo = injectedDefinitionRepo ??
+    new YamlDefinitionRepository(
+      repoDir,
+      undefined,
+      undefined,
+      undefined,
+      markDirty,
+    );
   const evaluatedDefinitionRepo = new YamlEvaluatedDefinitionRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.definitionsEvaluated),

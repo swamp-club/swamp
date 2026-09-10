@@ -1535,7 +1535,10 @@ export async function handleWorkflowCreate(
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = createWorkflowCreateDeps(ctx.repoDir);
+    const deps = createWorkflowCreateDeps(
+      ctx.repoDir,
+      ctx.repoContext.workflowRepo,
+    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -1612,6 +1615,7 @@ export async function handleWorkflowDelete(
       ctx.repoDir,
       ctx.datastoreResolver,
       ctx.repoContext.markDirty,
+      ctx.repoContext.workflowRepo,
     );
 
     let result: Record<string, unknown> | undefined;
@@ -1831,6 +1835,7 @@ export async function handleWorkflowEvaluate(
       ctx.repoDir,
       ctx.repoContext.workflowRepo,
       ctx.datastoreResolver,
+      ctx.repoContext.definitionRepo,
     );
 
     let result: Record<string, unknown> | undefined;

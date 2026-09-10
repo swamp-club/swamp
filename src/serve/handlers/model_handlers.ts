@@ -701,7 +701,10 @@ export async function handleModelMethodDescribe(
   try {
     await modelRegistry.ensureLoaded();
     const libCtx = createLibSwampContext();
-    const deps = createModelMethodDescribeDeps(ctx.repoDir);
+    const deps = createModelMethodDescribeDeps(
+      ctx.repoDir,
+      ctx.repoContext.definitionRepo,
+    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -761,7 +764,10 @@ export async function handleModelGet(
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = await createModelGetDeps(ctx.repoDir);
+    const deps = await createModelGetDeps(
+      ctx.repoDir,
+      ctx.repoContext.definitionRepo,
+    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -835,6 +841,7 @@ export async function handleModelCreate(
     const deps = await createModelCreateDeps(
       ctx.repoDir,
       ctx.managedDefinitionsDir,
+      ctx.repoContext.definitionRepo,
     );
 
     let result: Record<string, unknown> | undefined;
@@ -920,6 +927,7 @@ export async function handleModelDelete(
       ctx.datastoreResolver,
       ctx.repoContext.unifiedDataRepo,
       ctx.repoContext.markDirty,
+      ctx.repoContext.definitionRepo,
     );
 
     const preview = await modelDeletePreview(
@@ -1017,7 +1025,11 @@ export async function handleModelOutputGet(
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = await createModelOutputGetDeps(ctx.repoDir);
+    const deps = await createModelOutputGetDeps(
+      ctx.repoDir,
+      undefined,
+      ctx.repoContext.definitionRepo,
+    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -1076,6 +1088,7 @@ export async function handleModelOutputData(
       ctx.repoDir,
       ctx.datastoreResolver,
       ctx.repoContext.unifiedDataRepo,
+      ctx.repoContext.definitionRepo,
     );
 
     let result: Record<string, unknown> | undefined;
@@ -1277,7 +1290,11 @@ export async function handleModelMethodHistoryGet(
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = await createModelOutputGetDeps(ctx.repoDir);
+    const deps = await createModelOutputGetDeps(
+      ctx.repoDir,
+      undefined,
+      ctx.repoContext.definitionRepo,
+    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -1337,7 +1354,11 @@ export async function handleModelMethodHistoryLogs(
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = await createModelMethodHistoryLogsDeps(ctx.repoDir);
+    const deps = await createModelMethodHistoryLogsDeps(
+      ctx.repoDir,
+      undefined,
+      ctx.repoContext.definitionRepo,
+    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -1499,6 +1520,7 @@ export async function handleModelValidate(
       ctx.datastoreResolver,
       ctx.repoContext.unifiedDataRepo,
       ctx.repoContext.catalogStore,
+      ctx.repoContext.definitionRepo,
     );
 
     let result: Record<string, unknown> | undefined;
@@ -1556,6 +1578,7 @@ export async function handleModelEvaluate(
       ctx.datastoreResolver,
       ctx.repoContext.unifiedDataRepo,
       ctx.repoContext.catalogStore,
+      ctx.repoContext.definitionRepo,
     );
 
     let result: Record<string, unknown> | undefined;
@@ -1608,7 +1631,10 @@ export async function handleModelEdit(
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = createModelEditDeps(ctx.repoDir);
+    const deps = createModelEditDeps(
+      ctx.repoDir,
+      ctx.repoContext.definitionRepo,
+    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(

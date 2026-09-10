@@ -63,8 +63,10 @@ export interface ModelMethodDescribeDeps {
 /** Wires real infrastructure into ModelMethodDescribeDeps. */
 export function createModelMethodDescribeDeps(
   repoDir: string,
+  injectedDefinitionRepo?: YamlDefinitionRepository,
 ): ModelMethodDescribeDeps {
-  const definitionRepo = new YamlDefinitionRepository(repoDir);
+  const definitionRepo = injectedDefinitionRepo ??
+    new YamlDefinitionRepository(repoDir);
   return {
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),

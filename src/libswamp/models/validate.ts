@@ -127,10 +127,12 @@ export function createModelValidateDeps(
   datastoreResolver?: DatastorePathResolver,
   injectedDataRepo?: FileSystemUnifiedDataRepository,
   injectedCatalogStore?: CatalogStore,
+  injectedDefinitionRepo?: YamlDefinitionRepository,
 ): ModelValidateDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
-  const definitionRepo = new YamlDefinitionRepository(repoDir);
+  const definitionRepo = injectedDefinitionRepo ??
+    new YamlDefinitionRepository(repoDir);
   // When a shared catalog store / data repo is injected (e.g. by serve
   // handlers passing the process-scoped RepositoryContext), reuse it and skip
   // createCatalogStore so we don't open a new file-based SQLite store — and
