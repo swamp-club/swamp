@@ -75,9 +75,11 @@ export interface ModelGetDeps {
 /** Wires real infrastructure into ModelGetDeps. */
 export async function createModelGetDeps(
   repoDir: string,
+  injectedDefinitionRepo?: YamlDefinitionRepository,
 ): Promise<ModelGetDeps> {
   await modelRegistry.ensureLoaded();
-  const definitionRepo = new YamlDefinitionRepository(repoDir);
+  const definitionRepo = injectedDefinitionRepo ??
+    new YamlDefinitionRepository(repoDir);
   return {
     lookupDefinition: async (idOrName) => {
       const result = await findDefinitionByIdOrName(definitionRepo, idOrName);

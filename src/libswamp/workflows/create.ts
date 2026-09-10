@@ -22,6 +22,7 @@ import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
+import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -70,8 +71,9 @@ export interface WorkflowCreateDeps {
 /** Wires real infrastructure into WorkflowCreateDeps. */
 export function createWorkflowCreateDeps(
   repoDir: string,
+  injectedWorkflowRepo?: WorkflowRepository,
 ): WorkflowCreateDeps {
-  const repo = new YamlWorkflowRepository(repoDir);
+  const repo = injectedWorkflowRepo ?? new YamlWorkflowRepository(repoDir);
   return {
     findByName: (name) => repo.findByName(name),
     save: (workflow) => repo.save(workflow),

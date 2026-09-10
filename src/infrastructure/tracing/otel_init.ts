@@ -151,8 +151,9 @@ export async function shutdownTracing(): Promise<void> {
     }
     providerRef = undefined;
 
-    // Disable global context manager and propagator
+    // Disable global context manager, propagator, and tracer provider
     const contextApi = await import("@opentelemetry/api");
+    contextApi.trace.disable();
     contextApi.context.disable();
     contextApi.propagation.disable();
   }

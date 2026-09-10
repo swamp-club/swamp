@@ -106,8 +106,14 @@ Deno.test("getOutputModeFromArgs returns json when --json is present", () => {
 // ============================================================================
 
 Deno.test("getRepoDirFromArgs returns cwd when no --repo-dir flag", () => {
-  assertEquals(getRepoDirFromArgs([]), Deno.cwd());
-  assertEquals(getRepoDirFromArgs(["model", "create"]), Deno.cwd());
+  const saved = Deno.env.get("SWAMP_REPO_DIR");
+  Deno.env.delete("SWAMP_REPO_DIR");
+  try {
+    assertEquals(getRepoDirFromArgs([]), Deno.cwd());
+    assertEquals(getRepoDirFromArgs(["model", "create"]), Deno.cwd());
+  } finally {
+    if (saved !== undefined) Deno.env.set("SWAMP_REPO_DIR", saved);
+  }
 });
 
 Deno.test("getRepoDirFromArgs parses --repo-dir with space separator", () => {
@@ -138,7 +144,16 @@ Deno.test("getRepoDirFromArgs resolves relative paths to absolute", () => {
 });
 
 Deno.test("getRepoDirFromArgs returns cwd when --repo-dir is last arg with no value", () => {
-  assertEquals(getRepoDirFromArgs(["model", "run", "--repo-dir"]), Deno.cwd());
+  const saved = Deno.env.get("SWAMP_REPO_DIR");
+  Deno.env.delete("SWAMP_REPO_DIR");
+  try {
+    assertEquals(
+      getRepoDirFromArgs(["model", "run", "--repo-dir"]),
+      Deno.cwd(),
+    );
+  } finally {
+    if (saved !== undefined) Deno.env.set("SWAMP_REPO_DIR", saved);
+  }
 });
 
 Deno.test("getRepoDirFromArgs finds flag among other args", () => {

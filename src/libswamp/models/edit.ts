@@ -80,8 +80,12 @@ export interface ModelEditDeps {
 }
 
 /** Wires real infrastructure into ModelEditDeps. */
-export function createModelEditDeps(repoDir: string): ModelEditDeps {
-  const definitionRepo = new YamlDefinitionRepository(repoDir);
+export function createModelEditDeps(
+  repoDir: string,
+  injectedDefinitionRepo?: YamlDefinitionRepository,
+): ModelEditDeps {
+  const definitionRepo = injectedDefinitionRepo ??
+    new YamlDefinitionRepository(repoDir);
   const editorService = new EditorService();
   return {
     lookupDefinition: (idOrName) =>

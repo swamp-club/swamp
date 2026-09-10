@@ -119,10 +119,12 @@ export function createWorkflowEvaluateDeps(
   repoDir: string,
   workflowRepo: WorkflowRepository,
   datastoreResolver?: DatastorePathResolver,
+  injectedDefinitionRepo?: YamlDefinitionRepository,
 ): WorkflowEvaluateDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
-  const definitionRepo = new YamlDefinitionRepository(repoDir);
+  const definitionRepo = injectedDefinitionRepo ??
+    new YamlDefinitionRepository(repoDir);
   const catalogStore = createCatalogStore(repoDir, datastoreResolver);
   const dataRepo = new FileSystemUnifiedDataRepository(
     repoDir,

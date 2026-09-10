@@ -90,13 +90,15 @@ export interface ModelCreateDeps {
 export async function createModelCreateDeps(
   repoDir: string,
   definitionsDir?: string,
+  injectedDefinitionRepo?: YamlDefinitionRepository,
 ): Promise<ModelCreateDeps> {
   await modelRegistry.ensureLoaded();
-  const definitionRepo = new YamlDefinitionRepository(
-    repoDir,
-    undefined,
-    definitionsDir,
-  );
+  const definitionRepo = injectedDefinitionRepo ??
+    new YamlDefinitionRepository(
+      repoDir,
+      undefined,
+      definitionsDir,
+    );
   return {
     resolveModelType: (typeArg) => {
       const modelType = ModelType.create(typeArg);

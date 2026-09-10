@@ -149,11 +149,13 @@ export interface ModelOutputGetDeps {
 export async function createModelOutputGetDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
+  injectedDefinitionRepo?: YamlDefinitionRepository,
 ): Promise<ModelOutputGetDeps> {
   await modelRegistry.ensureLoaded();
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
-  const definitionRepo = new YamlDefinitionRepository(repoDir);
+  const definitionRepo = injectedDefinitionRepo ??
+    new YamlDefinitionRepository(repoDir);
   const outputRepo = new YamlOutputRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.outputs),

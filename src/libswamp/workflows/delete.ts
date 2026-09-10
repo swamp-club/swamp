@@ -22,6 +22,7 @@ import {
   createWorkflowId,
   type WorkflowId,
 } from "../../domain/workflows/workflow_id.ts";
+import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
@@ -83,15 +84,17 @@ export function createWorkflowDeleteDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
   markDirty?: MarkDirtyHook,
+  injectedWorkflowRepo?: WorkflowRepository,
 ): WorkflowDeleteDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
-  const workflowRepo = new YamlWorkflowRepository(
-    repoDir,
-    undefined,
-    undefined,
-    markDirty,
-  );
+  const workflowRepo = injectedWorkflowRepo ??
+    new YamlWorkflowRepository(
+      repoDir,
+      undefined,
+      undefined,
+      markDirty,
+    );
   const workflowRunRepo = new YamlWorkflowRunRepository(
     repoDir,
     undefined,

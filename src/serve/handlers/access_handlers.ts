@@ -705,11 +705,10 @@ export async function handleAccessReload(
       }
     }
 
-    const autoDefDir = join(ctx.repoDir, ".swamp", "auto-definitions");
     const autoDefRepo = new YamlDefinitionRepository(
       ctx.repoDir,
       ctx.repoContext.eventBus,
-      autoDefDir,
+      ctx.repoContext.autoDefinitionsDir,
       false,
     );
     const fileGrantStore = createFileGrantStore(
