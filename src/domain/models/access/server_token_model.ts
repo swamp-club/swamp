@@ -104,9 +104,9 @@ async function mint(
   const existing = await context.readResource!(TOKEN_DATA_NAME);
   if (existing !== null) {
     const parsed = ServerTokenSchema.parse(existing);
-    if (parsed.state !== "revoked") {
+    if (parsed.state !== "revoked" && parsed.state !== "expired") {
       throw new Error(
-        `Server token '${context.definition.name}' already exists — revoke it first`,
+        `Server token '${context.definition.name}' already exists — revoke it or wait for expiry before re-minting`,
       );
     }
   }
