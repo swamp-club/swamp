@@ -226,6 +226,20 @@ Deno.test("createModelTestContext: logger captures log entries", () => {
   assertEquals(getLogsByLevel("warning").length, 1);
 });
 
+Deno.test("createModelTestContext: logger.warning() captures with warning level", () => {
+  const { context, getLogs, getLogsByLevel } = createModelTestContext();
+
+  context.logger.warning("warning msg");
+
+  assertEquals(getLogs().length, 1);
+  assertEquals(getLogs()[0], {
+    level: "warning",
+    message: "warning msg",
+    args: [],
+  });
+  assertEquals(getLogsByLevel("warning").length, 1);
+});
+
 Deno.test("createModelTestContext: logger captures extra args", () => {
   const { context, getLogs } = createModelTestContext();
 

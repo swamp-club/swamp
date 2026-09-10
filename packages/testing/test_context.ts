@@ -285,6 +285,9 @@ export function createModelTestContext(
     warn(message: string, ...args: unknown[]) {
       captureLog("warning", message, args);
     },
+    warning(message: string, ...args: unknown[]) {
+      captureLog("warning", message, args);
+    },
     error(message: string, ...args: unknown[]) {
       captureLog("error", message, args);
     },
