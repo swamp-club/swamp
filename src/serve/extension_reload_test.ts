@@ -160,9 +160,9 @@ Deno.test("performServeReload: calls workflowReloader and includes count in resp
       tmpDir,
       join(tmpDir, "nonexistent_lockfile.json"),
       {
-        workflowReloader: async () => {
+        workflowReloader: () => {
           reloaderCalled = true;
-          return 4;
+          return Promise.resolve(4);
         },
       },
     );
