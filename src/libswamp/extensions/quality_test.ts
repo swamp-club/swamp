@@ -181,6 +181,7 @@ function makePushPrepareDeps(
         vaults: [],
         datastores: [],
         reports: [],
+        auditSinks: [],
         skills: [],
       }),
     analyzeExtensionSafety: () => Promise.resolve({ errors: [], warnings: [] }),

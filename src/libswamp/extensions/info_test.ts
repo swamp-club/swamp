@@ -92,6 +92,7 @@ function makeVersionDetail(
       vaults: [],
       datastores: [],
       reports: [],
+      auditSinks: [],
       skills: [],
     },
     ...overrides,
