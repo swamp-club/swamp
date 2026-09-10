@@ -46,5 +46,5 @@ class InMemoryAuditSink implements ConformanceAuditSink {
 }
 
 assertAuditSinkConformance({
-  factory: async () => new InMemoryAuditSink(),
+  factory: () => Promise.resolve(new InMemoryAuditSink()),
 });

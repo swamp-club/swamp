@@ -34,16 +34,19 @@ function createMockSink(
   return {
     name,
     durable: false,
-    write: async (_events) => {
+    write: (_events) => {
       log.push({ action: "write", sink: name });
+      return Promise.resolve();
     },
-    flush: async () => {
+    flush: () => {
       log.push({ action: "flush", sink: name });
-      if (opts?.flushError) throw opts.flushError;
+      if (opts?.flushError) return Promise.reject(opts.flushError);
+      return Promise.resolve();
     },
-    close: async () => {
+    close: () => {
       log.push({ action: "close", sink: name });
-      if (opts?.closeError) throw opts.closeError;
+      if (opts?.closeError) return Promise.reject(opts.closeError);
+      return Promise.resolve();
     },
   };
 }
@@ -56,7 +59,7 @@ Deno.test("AuditSinkHotReloader: successful reload returns new sinks and closes 
   const reloader = new AuditSinkHotReloader();
   const result = await reloader.reload(
     [oldSink],
-    async () => [newSink],
+    () => Promise.resolve([newSink]),
   );
 
   assertEquals(result.length, 1);
@@ -74,9 +77,7 @@ Deno.test("AuditSinkHotReloader: failed rebuild returns old sinks unchanged", as
   const reloader = new AuditSinkHotReloader();
   const result = await reloader.reload(
     [oldSink],
-    async () => {
-      throw new Error("config invalid");
-    },
+    () => Promise.reject(new Error("config invalid")),
   );
 
   assertEquals(result.length, 1);
@@ -94,7 +95,7 @@ Deno.test("AuditSinkHotReloader: old sink flush error does not block close", asy
   const reloader = new AuditSinkHotReloader();
   const result = await reloader.reload(
     [oldSink],
-    async () => [newSink],
+    () => Promise.resolve([newSink]),
   );
 
   assertEquals(result[0].name, "new-sink");
@@ -114,7 +115,7 @@ Deno.test("AuditSinkHotReloader: old sink close error does not prevent returning
   const reloader = new AuditSinkHotReloader();
   const result = await reloader.reload(
     [oldSink],
-    async () => [newSink],
+    () => Promise.resolve([newSink]),
   );
 
   assertEquals(result[0].name, "new-sink");
@@ -133,7 +134,7 @@ Deno.test("AuditSinkHotReloader: multiple old sinks are all flushed then closed 
   const reloader = new AuditSinkHotReloader();
   const result = await reloader.reload(
     [old1, old2],
-    async () => [newSink],
+    () => Promise.resolve([newSink]),
   );
 
   assertEquals(result.length, 1);

@@ -80,6 +80,7 @@ function makePrepareDeps(
         vaults: [],
         datastores: [],
         reports: [],
+        auditSinks: [],
         skills: [],
       }),
     analyzeExtensionSafety: () => Promise.resolve({ errors: [], warnings: [] }),

@@ -25,16 +25,16 @@ function makeMockSink(name = "test"): AuditSink {
   return {
     name,
     durable: false,
-    write: async () => {},
-    flush: async () => {},
-    close: async () => {},
+    write: () => Promise.resolve(),
+    flush: () => Promise.resolve(),
+    close: () => Promise.resolve(),
   };
 }
 
 Deno.test("AuditSinkTypeRegistry: register and create a sink", async () => {
   const registry = new AuditSinkTypeRegistry();
   const mockSink = makeMockSink();
-  registry.register("test-sink", async () => mockSink);
+  registry.register("test-sink", () => Promise.resolve(mockSink));
 
   const sink = await registry.createSink("test-sink", {});
   assertEquals(sink.name, "test");
@@ -55,9 +55,10 @@ Deno.test("AuditSinkTypeRegistry: setLoader is called by ensureLoaded", async ()
   const registry = new AuditSinkTypeRegistry();
   let loaderCalled = false;
 
-  registry.setLoader(async () => {
+  registry.setLoader(() => {
     loaderCalled = true;
-    registry.register("lazy-sink", async () => makeMockSink("lazy"));
+    registry.register("lazy-sink", () => Promise.resolve(makeMockSink("lazy")));
+    return Promise.resolve();
   });
 
   assertEquals(loaderCalled, false);
@@ -72,8 +73,9 @@ Deno.test("AuditSinkTypeRegistry: ensureLoaded only calls loader once", async ()
   const registry = new AuditSinkTypeRegistry();
   let callCount = 0;
 
-  registry.setLoader(async () => {
+  registry.setLoader(() => {
     callCount++;
+    return Promise.resolve();
   });
 
   await registry.ensureLoaded();
@@ -84,7 +86,7 @@ Deno.test("AuditSinkTypeRegistry: ensureLoaded only calls loader once", async ()
 
 Deno.test("AuditSinkTypeRegistry: has returns true for registered types", () => {
   const registry = new AuditSinkTypeRegistry();
-  registry.register("present", async () => makeMockSink());
+  registry.register("present", () => Promise.resolve(makeMockSink()));
 
   assert(registry.has("present"));
   assert(!registry.has("absent"));
@@ -92,8 +94,8 @@ Deno.test("AuditSinkTypeRegistry: has returns true for registered types", () => 
 
 Deno.test("AuditSinkTypeRegistry: names returns registered type names", () => {
   const registry = new AuditSinkTypeRegistry();
-  registry.register("alpha", async () => makeMockSink());
-  registry.register("beta", async () => makeMockSink());
+  registry.register("alpha", () => Promise.resolve(makeMockSink()));
+  registry.register("beta", () => Promise.resolve(makeMockSink()));
 
   const result = registry.names();
   assertEquals(result.length, 2);
@@ -105,9 +107,9 @@ Deno.test("AuditSinkTypeRegistry: factory receives config", async () => {
   const registry = new AuditSinkTypeRegistry();
   let receivedConfig: Record<string, unknown> = {};
 
-  registry.register("configurable", async (config) => {
+  registry.register("configurable", (config) => {
     receivedConfig = config;
-    return makeMockSink();
+    return Promise.resolve(makeMockSink());
   });
 
   await registry.createSink("configurable", { brokers: ["kafka:9092"] });
@@ -118,14 +120,16 @@ Deno.test("AuditSinkTypeRegistry: setLoader resets loaded state", async () => {
   const registry = new AuditSinkTypeRegistry();
   let callCount = 0;
 
-  registry.setLoader(async () => {
+  registry.setLoader(() => {
     callCount++;
+    return Promise.resolve();
   });
   await registry.ensureLoaded();
   assertEquals(callCount, 1);
 
-  registry.setLoader(async () => {
+  registry.setLoader(() => {
     callCount++;
+    return Promise.resolve();
   });
   await registry.ensureLoaded();
   assertEquals(callCount, 2);
