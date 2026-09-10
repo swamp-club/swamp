@@ -2030,6 +2030,8 @@ export function handleMessage(
             action: request.payload.action,
             outcome: request.payload.outcome,
             resource: request.payload.resource,
+            limit: 50_000,
+            export: true,
           });
           const events = result.events;
           const truncated = result.total !== undefined &&
