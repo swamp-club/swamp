@@ -284,6 +284,93 @@ Deno.test("ExtensionWorkflowRepository findPath skips manifest.yaml", async () =
   });
 });
 
+Deno.test("ExtensionWorkflowRepository updateAdditionalDirs: discovers workflows from newly added dirs", async () => {
+  await withTempDir(async (baseDir) => {
+    await withTempDir(async (additionalDir) => {
+      // Base dir has one workflow
+      const baseWorkflow = createWorkflowYaml("base-workflow");
+      await Deno.writeTextFile(
+        join(baseDir, "base.yaml"),
+        stringifyYaml(baseWorkflow),
+      );
+
+      const repo = new ExtensionWorkflowRepository(baseDir);
+      let workflows = await repo.findAll();
+      assertEquals(workflows.length, 1);
+      assertEquals(workflows[0].name, "base-workflow");
+
+      // Additional dir has another workflow
+      const additionalWorkflow = createWorkflowYaml("additional-workflow");
+      await Deno.writeTextFile(
+        join(additionalDir, "additional.yaml"),
+        stringifyYaml(additionalWorkflow),
+      );
+
+      // Update dirs to include the additional directory
+      repo.updateAdditionalDirs([additionalDir]);
+      workflows = await repo.findAll();
+      assertEquals(workflows.length, 2);
+
+      const names = workflows.map((w) => w.name).sort();
+      assertEquals(names, ["additional-workflow", "base-workflow"]);
+    });
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository updateAdditionalDirs: preserves base dir", async () => {
+  await withTempDir(async (baseDir) => {
+    const baseWorkflow = createWorkflowYaml("base-workflow");
+    await Deno.writeTextFile(
+      join(baseDir, "base.yaml"),
+      stringifyYaml(baseWorkflow),
+    );
+
+    const repo = new ExtensionWorkflowRepository(baseDir, ["/nonexistent"]);
+
+    // Replace additional dirs with empty list
+    repo.updateAdditionalDirs([]);
+    const workflows = await repo.findAll();
+
+    // Base dir workflow is still found
+    assertEquals(workflows.length, 1);
+    assertEquals(workflows[0].name, "base-workflow");
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository updateAdditionalDirs: replaces previous additional dirs", async () => {
+  await withTempDir(async (baseDir) => {
+    await withTempDir(async (dirA) => {
+      await withTempDir(async (dirB) => {
+        const workflowA = createWorkflowYaml("workflow-a");
+        await Deno.writeTextFile(
+          join(dirA, "a.yaml"),
+          stringifyYaml(workflowA),
+        );
+        const workflowB = createWorkflowYaml("workflow-b");
+        await Deno.writeTextFile(
+          join(dirB, "b.yaml"),
+          stringifyYaml(workflowB),
+        );
+
+        const repo = new ExtensionWorkflowRepository(baseDir, [dirA]);
+        let workflows = await repo.findAll();
+        assertEquals(
+          workflows.map((w) => w.name),
+          ["workflow-a"],
+        );
+
+        // Replace dirA with dirB
+        repo.updateAdditionalDirs([dirB]);
+        workflows = await repo.findAll();
+        assertEquals(
+          workflows.map((w) => w.name),
+          ["workflow-b"],
+        );
+      });
+    });
+  });
+});
+
 Deno.test("ExtensionWorkflowRepository delete throws UserError", async () => {
   await withTempDir(async (dir) => {
     const repo = new ExtensionWorkflowRepository(dir);

@@ -251,6 +251,7 @@ export interface ServeReloadOptions {
   triggerOverrideUpdater?: (
     overrides: ReadonlyMap<string, TriggerOverride>,
   ) => Promise<number>;
+  workflowReloader?: () => Promise<number>;
 }
 
 export async function performServeReload(
@@ -271,6 +272,7 @@ export async function performServeReload(
   const errors: string[] = [];
   let reloadedCount = 0;
   let triggerOverridesChanged = 0;
+  let workflowsReloaded = 0;
 
   try {
     reloadedCount = await reloadPulledExtensions(
@@ -286,6 +288,17 @@ export async function performServeReload(
         "Failed to refresh trust list: " +
           (err instanceof Error ? err.message : String(err)),
       );
+    }
+
+    if (options?.workflowReloader) {
+      try {
+        workflowsReloaded = await options.workflowReloader();
+      } catch (err) {
+        errors.push(
+          "Failed to reload workflows: " +
+            (err instanceof Error ? err.message : String(err)),
+        );
+      }
     }
 
     if (options?.triggerOverrideUpdater) {
@@ -305,7 +318,13 @@ export async function performServeReload(
       }
     }
 
-    return { success: true, reloadedCount, triggerOverridesChanged, errors };
+    return {
+      success: true,
+      reloadedCount,
+      triggerOverridesChanged,
+      workflowsReloaded,
+      errors,
+    };
   } catch (err) {
     return {
       success: false,

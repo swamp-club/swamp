@@ -71,6 +71,7 @@ import {
   extensionRm,
   extensionSearch,
   type ExtensionSearchDeps,
+  enumeratePulledExtensionDirs,
   extensionUpdate,
   LockfileRepository,
   parseExtensionRef,
@@ -155,7 +156,9 @@ import {
 import {
   performServeReload,
   resolveLockfilePath,
+  type ServeReloadOptions,
 } from "../extension_reload.ts";
+import { getSourceWorkflowDirs } from "../../cli/repo_context.ts";
 import { isReservedVaultName } from "./vault_handlers.ts";
 
 /**
@@ -1847,13 +1850,31 @@ export async function handleServeReload(
       ctx.repoDir,
       ctx.datastoreResolver,
     );
-    const reloadOptions = ctx.scheduledExecution
-      ? {
-        triggerOverrideUpdater: (
-          overrides: ReadonlyMap<string, TriggerOverride>,
-        ) => ctx.scheduledExecution!.updateTriggerOverrides(overrides),
-      }
-      : undefined;
+    const extWorkflowRepo = ctx.repoContext.extensionWorkflowRepo;
+    const reloadOptions: ServeReloadOptions = {
+      triggerOverrideUpdater: ctx.scheduledExecution
+        ? (overrides: ReadonlyMap<string, TriggerOverride>) =>
+          ctx.scheduledExecution!.updateTriggerOverrides(overrides)
+        : undefined,
+      workflowReloader: extWorkflowRepo
+        ? async () => {
+          const sourceWfDirs = await getSourceWorkflowDirs(ctx.repoDir);
+          const pulledWfDirs = await enumeratePulledExtensionDirs(
+            lockfilePath,
+            ctx.repoDir,
+            "workflows",
+          );
+          extWorkflowRepo.updateAdditionalDirs([
+            ...sourceWfDirs,
+            ...pulledWfDirs,
+          ]);
+          if (ctx.scheduledExecution) {
+            await ctx.scheduledExecution.rescanWorkflows();
+          }
+          return pulledWfDirs.length;
+        }
+        : undefined,
+    };
     const result = await performServeReload(
       ctx.repoDir,
       lockfilePath,
@@ -1863,6 +1884,12 @@ export async function handleServeReload(
     if (result.success) {
       logger
         .info`Extension reload completed: ${result.reloadedCount} type(s) reloaded (requested by ${who})`;
+      if (result.workflowsReloaded && result.workflowsReloaded > 0) {
+        logger.info(
+          "Refreshed {count} extension workflow dir(s) (requested by {who})",
+          { count: result.workflowsReloaded, who },
+        );
+      }
       if (
         result.triggerOverridesChanged &&
         result.triggerOverridesChanged > 0

@@ -23,7 +23,10 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import {
+  getSourceWorkflowDirs,
+  requireInitializedRepoUnlocked,
+} from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { parseTimeout } from "../duration_parser.ts";
 import { buildServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
@@ -94,6 +97,7 @@ import {
 } from "../../presentation/output/serve_daemon_output.ts";
 import { groupCommandAction } from "../group_action.ts";
 import {
+  enumeratePulledExtensionDirs,
   normalizeFireTime,
   ScheduledExecutionService,
   type TriggerOverride,
@@ -4323,13 +4327,34 @@ export const serveCommand = new Command()
           return;
         }
         logger.info("SIGHUP received, reloading pulled extensions...");
-        const reloadOptions = scheduledExecution
-          ? {
-            triggerOverrideUpdater: (
-              overrides: ReadonlyMap<string, TriggerOverride>,
-            ) => scheduledExecution!.updateTriggerOverrides(overrides),
-          }
-          : undefined;
+        const extWorkflowRepo = repoContext.extensionWorkflowRepo;
+        const reloadOptions: import("../../serve/extension_reload.ts").ServeReloadOptions =
+          {
+            triggerOverrideUpdater: scheduledExecution
+              ? (overrides: ReadonlyMap<string, TriggerOverride>) =>
+                scheduledExecution!.updateTriggerOverrides(overrides)
+              : undefined,
+            workflowReloader: extWorkflowRepo
+              ? async () => {
+                const sourceWfDirs = await getSourceWorkflowDirs(
+                  resolvedRepoDir,
+                );
+                const pulledWfDirs = await enumeratePulledExtensionDirs(
+                  extensionLockfilePath,
+                  resolvedRepoDir,
+                  "workflows",
+                );
+                extWorkflowRepo.updateAdditionalDirs([
+                  ...sourceWfDirs,
+                  ...pulledWfDirs,
+                ]);
+                if (scheduledExecution) {
+                  await scheduledExecution.rescanWorkflows();
+                }
+                return pulledWfDirs.length;
+              }
+              : undefined,
+          };
         performServeReload(
           resolvedRepoDir,
           extensionLockfilePath,
@@ -4338,6 +4363,12 @@ export const serveCommand = new Command()
           .then((result) => {
             if (result.success) {
               logger.info`Hot-reloaded ${result.reloadedCount} type(s)`;
+              if (result.workflowsReloaded && result.workflowsReloaded > 0) {
+                logger.info(
+                  "Refreshed {count} extension workflow dir(s)",
+                  { count: result.workflowsReloaded },
+                );
+              }
               if (
                 result.triggerOverridesChanged &&
                 result.triggerOverridesChanged > 0

@@ -238,6 +238,14 @@ export class ScheduledExecutionService {
   }
 
   /**
+   * Re-scans all workflows and registers any new schedules.
+   * Called during hot reload after extension workflow directories are updated.
+   */
+  async rescanWorkflows(): Promise<void> {
+    await this.watcher.scanExisting();
+  }
+
+  /**
    * Returns all registered schedules and their next fire times.
    */
   listSchedules(): Array<ScheduleEntry & { workflowName: string }> {

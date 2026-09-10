@@ -758,6 +758,37 @@ Deno.test("updateTriggerOverrides: override for unknown workflow is skipped", as
   await service.stop();
 });
 
+Deno.test("ScheduledExecutionService: rescanWorkflows registers new workflows added after start", async () => {
+  const wf1 = createTestWorkflow("existing-wf", "0 * * * *");
+  const workflows = [wf1];
+
+  const mockRepo = createMockWorkflowRepo(workflows);
+  const service = new ScheduledExecutionService({
+    workflowRepo: mockRepo,
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => Promise.resolve(),
+  });
+
+  await service.start();
+
+  let schedules = service.listSchedules();
+  assertEquals(schedules.length, 1);
+  assertEquals(schedules[0].workflowName, "existing-wf");
+
+  // Simulate a new workflow being added to the repo (e.g., via extension pull + reload)
+  const wf2 = createTestWorkflow("new-wf", "30 * * * *");
+  workflows.push(wf2);
+
+  await service.rescanWorkflows();
+
+  schedules = service.listSchedules();
+  assertEquals(schedules.length, 2);
+  const names = schedules.map((s) => s.workflowName).sort();
+  assertEquals(names, ["existing-wf", "new-wf"]);
+
+  await service.stop();
+});
+
 Deno.test("normalizeFireTime: truncates milliseconds and replaces colons for Windows compat", () => {
   assertEquals(
     normalizeFireTime(new Date("2026-08-01T12:30:45.123Z")),
