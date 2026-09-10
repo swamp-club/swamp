@@ -32,6 +32,7 @@ Deno.test("extractContentMetadata returns empty for no inputs", async () => {
     vaults: [],
     datastores: [],
     reports: [],
+    auditSinks: [],
     skills: [],
   });
 });

@@ -210,6 +210,7 @@ export class AuditEmitter {
     }
 
     if (this.#alertEngine) {
+      const webhookPromises: Promise<void>[] = [];
       for (const event of chained) {
         const fired = this.#alertEngine.evaluate(event);
         for (const alert of fired) {
@@ -241,22 +242,27 @@ export class AuditEmitter {
               windowCount: alert.windowCount,
               timestamp: new Date().toISOString(),
             });
-            fetch(alert.action.url, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body,
-              signal: AbortSignal.timeout(5000),
-            }).catch((err: unknown) => {
-              logger.warn(
-                "Alert webhook delivery failed for rule {rule}: {error}",
-                {
-                  rule: alert.ruleName,
-                  error: err instanceof Error ? err.message : String(err),
-                },
-              );
-            });
+            webhookPromises.push(
+              fetch(alert.action.url, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body,
+                signal: AbortSignal.timeout(5000),
+              }).then(() => {}).catch((err: unknown) => {
+                logger.warn(
+                  "Alert webhook delivery failed for rule {rule}: {error}",
+                  {
+                    rule: alert.ruleName,
+                    error: err instanceof Error ? err.message : String(err),
+                  },
+                );
+              }),
+            );
           }
         }
+      }
+      if (webhookPromises.length > 0) {
+        await Promise.allSettled(webhookPromises);
       }
     }
 
@@ -269,7 +275,9 @@ export class AuditEmitter {
       if (sinkEvents.length === 0) continue;
       try {
         await this.#writeSinkWithTimeout(sink, sinkEvents);
-        this.#cursors.set(sink.name, throughSeq);
+        if (this.#sinks.includes(sink)) {
+          this.#cursors.set(sink.name, throughSeq);
+        }
         if (sink.durable) anyDurableWriteSucceeded = true;
       } catch (error: unknown) {
         logger.warn(

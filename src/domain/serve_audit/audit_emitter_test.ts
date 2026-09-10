@@ -17,12 +17,18 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { AuditEmitter } from "./audit_emitter.ts";
 import type { AuditEvent } from "./audit_event.ts";
 import { createAuditEvent } from "./audit_event.ts";
 import type { AuditSink } from "./audit_sink.ts";
+import { type AlertRuleConfig, AlertRuleEngine } from "./audit_alerts.ts";
+import {
+  generateHmacKeyBytes,
+  HmacKeyRegistry,
+  importHmacKey,
+} from "./audit_hmac.ts";
 
 await initializeLogging({});
 
@@ -279,4 +285,148 @@ Deno.test("AuditEmitter: allows success for non-denied request", async () => {
 
   const allEvents = sink.written.flat();
   assertEquals(allEvents.length, 2);
+});
+
+// ── Integration tests for Phase 5 features ──────────────────────────
+
+Deno.test("AuditEmitter: uses HmacKeyRegistry for HMAC when provided", async () => {
+  const sink = createMockSink("test");
+  const rawKey = await generateHmacKeyBytes();
+  const cryptoKey = await importHmacKey(rawKey);
+  const registry = new HmacKeyRegistry([{ version: 1, key: cryptoKey }]);
+  const emitter = new AuditEmitter({
+    sinks: [sink],
+    hmacKeyRegistry: registry,
+  });
+
+  emitter.emit(makeEvent("access.check"));
+  await emitter.flush();
+
+  assertEquals(sink.written.length, 1);
+  const event = sink.written[0][0];
+  assertEquals(event.hmacKeyVersion, 1);
+});
+
+Deno.test("AuditEmitter: alert engine fires on matching events", async () => {
+  const sink = createMockSink("test");
+  const rule: AlertRuleConfig = {
+    name: "test-rule",
+    match: { category: "auth", outcome: "denied" },
+    threshold: { count: 1, windowSeconds: 60 },
+    action: { type: "log" },
+  };
+  const engine = new AlertRuleEngine([rule]);
+  const emitter = new AuditEmitter({
+    sinks: [sink],
+    alertEngine: engine,
+  });
+
+  const deniedEvent = createAuditEvent({
+    instanceId: "inst-1",
+    category: "auth",
+    stage: "response",
+    outcome: "denied",
+    action: "login",
+    resourceKind: "access",
+    resourceName: "*",
+    principalKind: "user",
+    principalId: "attacker",
+    initiatedBy: "user:attacker",
+    sourceIp: "10.0.0.1",
+    requestId: crypto.randomUUID(),
+  });
+
+  emitter.emit(deniedEvent);
+  await emitter.flush();
+  await emitter.flush();
+
+  const allEvents = sink.written.flat();
+  assert(
+    allEvents.length >= 2,
+    `Expected at least 2 events, got ${allEvents.length}`,
+  );
+
+  const alertEvent = allEvents.find((e) => e.action === "alert.fired");
+  assert(alertEvent, "Expected an alert.fired event");
+  assertEquals(alertEvent.category, "system");
+  assertEquals(alertEvent.resourceKind, "alert-rule");
+  assertEquals(alertEvent.resourceName, "test-rule");
+});
+
+Deno.test("AuditEmitter: alert engine recursion guard prevents alert-on-alert", async () => {
+  const sink = createMockSink("test");
+  const rule: AlertRuleConfig = {
+    name: "catch-system",
+    match: { category: "system" },
+    threshold: { count: 1, windowSeconds: 60 },
+    action: { type: "log" },
+  };
+  const engine = new AlertRuleEngine([rule]);
+  const emitter = new AuditEmitter({
+    sinks: [sink],
+    alertEngine: engine,
+  });
+
+  const systemEvent = createAuditEvent({
+    instanceId: "inst-1",
+    category: "system",
+    stage: "response",
+    outcome: "success",
+    action: "alert.fired",
+    resourceKind: "alert-rule",
+    resourceName: "other-rule",
+    principalKind: "system",
+    principalId: "audit-engine",
+    initiatedBy: "audit-engine",
+    sourceIp: "127.0.0.1",
+    requestId: crypto.randomUUID(),
+  });
+
+  emitter.emit(systemEvent);
+  await emitter.flush();
+
+  const allEvents = sink.written.flat();
+  assertEquals(allEvents.length, 1);
+});
+
+Deno.test("AuditEmitter: replaceSinks swaps sinks and new sink receives events", async () => {
+  const sink1 = createMockSink("sink1");
+  const emitter = new AuditEmitter([sink1]);
+
+  emitter.emit(makeEvent("first"));
+  await emitter.flush();
+  assertEquals(sink1.written.flat().length, 1);
+
+  const sink2 = createMockSink("sink2");
+  emitter.replaceSinks([sink2]);
+
+  emitter.emit(makeEvent("second"));
+  await emitter.flush();
+
+  assertEquals(sink1.written.flat().length, 1);
+  assertEquals(sink2.written.flat().length, 1);
+  assertEquals(sink2.written.flat()[0].action, "second");
+});
+
+Deno.test("AuditEmitter: sink timeout prevents drain loop blocking", async () => {
+  const hangingSink: AuditSink = {
+    name: "hanging",
+    durable: true,
+    write(): Promise<void> {
+      return new Promise(() => {});
+    },
+    flush(): Promise<void> {
+      return Promise.resolve();
+    },
+    close(): Promise<void> {
+      return Promise.resolve();
+    },
+  };
+  const emitter = new AuditEmitter({
+    sinks: [hangingSink],
+    sinkTimeoutMs: 100,
+  });
+
+  emitter.emit(makeEvent("test"));
+  await emitter.flush();
 });

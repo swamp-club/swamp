@@ -31,6 +31,7 @@ function makeMetadata(
     vaults: [],
     datastores: [],
     reports: [],
+    auditSinks: [],
     skills: [],
     ...overrides,
   };

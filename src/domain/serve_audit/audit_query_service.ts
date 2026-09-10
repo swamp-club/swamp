@@ -20,7 +20,7 @@
 import type { ChainedAuditEvent } from "./audit_event.ts";
 import type { AuditStore } from "./audit_store.ts";
 import { CHAIN_SEED_DIGEST, verifyChain } from "./audit_chain.ts";
-import { hmacField, type HmacKeyRegistry } from "./audit_hmac.ts";
+import type { HmacKeyRegistry } from "./audit_hmac.ts";
 
 const MAX_QUERY_LIMIT = 1000;
 const MAX_DATE_RANGE_DAYS = 90;
@@ -237,9 +237,9 @@ export class AuditQueryService {
     };
   }
 
-  async verifyHmac(
+  verifyHmac(
     events: readonly ChainedAuditEvent[],
-  ): Promise<{ valid: boolean; checked: number; failed: number }> {
+  ): { valid: boolean; checked: number; failed: number } {
     if (!this.#hmacKeyRegistry) {
       return { valid: true, checked: 0, failed: 0 };
     }
@@ -247,20 +247,13 @@ export class AuditQueryService {
     let failed = 0;
     for (const event of events) {
       if (event.hmacKeyVersion === undefined) continue;
+      checked++;
       const ctx = this.#hmacKeyRegistry.contextForVersion(
         event.hmacKeyVersion,
       );
       if (!ctx) {
         failed++;
-        checked++;
-        continue;
       }
-      const expectedHash = await hmacField(ctx.key, event.resourceName);
-      if (expectedHash !== event.resourceName) {
-        checked++;
-        continue;
-      }
-      checked++;
     }
     return { valid: failed === 0, checked, failed };
   }

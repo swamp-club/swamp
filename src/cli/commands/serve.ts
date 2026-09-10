@@ -3108,30 +3108,42 @@ export const serveCommand = new Command()
               key: cryptoKey,
             }];
             let versionNum = 2;
-            while (true) {
+            const maxVersionScan = 1000;
+            while (versionNum <= maxVersionScan) {
+              let versionedHex: string;
               try {
-                const versionedHex = await auditVaultService.get(
+                versionedHex = await auditVaultService.get(
                   vaultName,
                   `${keyName}-v${versionNum}`,
                 );
-                if (
-                  !/^[0-9a-f]+$/i.test(versionedHex) ||
-                  versionedHex.length % 2 !== 0
-                ) {
-                  break;
-                }
-                const versionedBytes = new Uint8Array(
-                  versionedHex.match(/.{2}/g)!.map((h) => parseInt(h, 16)),
-                );
-                const versionedKey = await importHmacKey(versionedBytes);
-                hmacKeyVersions.push({ version: versionNum, key: versionedKey });
-                versionNum++;
               } catch {
                 break;
               }
+              if (
+                !/^[0-9a-f]+$/i.test(versionedHex) ||
+                versionedHex.length % 2 !== 0
+              ) {
+                logger.warn(
+                  "HMAC key version {version} in vault has invalid hex, stopping version scan",
+                  { version: versionNum },
+                );
+                break;
+              }
+              const versionedBytes = new Uint8Array(
+                versionedHex.match(/.{2}/g)!.map((h) => parseInt(h, 16)),
+              );
+              const versionedKey = await importHmacKey(versionedBytes);
+              hmacKeyVersions.push({
+                version: versionNum,
+                key: versionedKey,
+              });
+              versionNum++;
             }
             const currentVersion = hmacKeyVersions.length;
-            hmacContext = { key: hmacKeyVersions[currentVersion - 1].key, keyVersion: currentVersion };
+            hmacContext = {
+              key: hmacKeyVersions[currentVersion - 1].key,
+              keyVersion: currentVersion,
+            };
             hmacKeyRegistry = new HmacKeyRegistry(hmacKeyVersions);
             if (currentVersion > 1) {
               logger.info(

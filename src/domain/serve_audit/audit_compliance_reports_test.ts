@@ -30,8 +30,6 @@ import {
 import type { AuditStore } from "./audit_store.ts";
 import { AuditQueryService } from "./audit_query_service.ts";
 import type { ChainedAuditEvent } from "./audit_event.ts";
-import { AuditChainState } from "./audit_chain.ts";
-
 function makeChainedEvent(
   overrides: Partial<ChainedAuditEvent>,
 ): ChainedAuditEvent {
@@ -62,18 +60,24 @@ function makeStore(events: ChainedAuditEvent[]): AuditStore {
   const data = events.map((e) => JSON.stringify(e)).join("\n");
   const encoded = new TextEncoder().encode(data);
   return {
-    async put(_key: string, _data: Uint8Array): Promise<void> {},
-    async get(key: string): Promise<Uint8Array | null> {
-      if (key === `events/${today}/batch-0.jsonl`) return encoded;
-      return null;
+    put(_key: string, _data: Uint8Array): Promise<void> {
+      return Promise.resolve();
     },
-    async list(prefix: string): Promise<string[]> {
-      if (prefix === `events/${today}/`) {
-        return [`events/${today}/batch-0.jsonl`];
+    get(key: string): Promise<Uint8Array | null> {
+      if (key === `events/${today}/batch-0.jsonl`) {
+        return Promise.resolve(encoded);
       }
-      return [];
+      return Promise.resolve(null);
     },
-    async delete(_key: string): Promise<void> {},
+    list(prefix: string): Promise<string[]> {
+      if (prefix === `events/${today}/`) {
+        return Promise.resolve([`events/${today}/batch-0.jsonl`]);
+      }
+      return Promise.resolve([]);
+    },
+    delete(_key: string): Promise<void> {
+      return Promise.resolve();
+    },
   };
 }
 
