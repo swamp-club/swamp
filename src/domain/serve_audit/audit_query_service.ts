@@ -25,6 +25,7 @@ import type { HmacKeyRegistry } from "./audit_hmac.ts";
 const MAX_QUERY_LIMIT = 1000;
 const MAX_DATE_RANGE_DAYS = 90;
 const MAX_LOADED_EVENTS = 50_000;
+const HMAC_HEX_PATTERN = /^[0-9a-f]{64}$/;
 
 export interface AuditQueryFilters {
   readonly since?: string;
@@ -237,6 +238,10 @@ export class AuditQueryService {
     };
   }
 
+  // Structural HMAC verification: checks that each event's hmacKeyVersion
+  // references a known key and that hashed fields match the expected format.
+  // Full cryptographic re-verification is not possible because the original
+  // plaintext is not stored alongside the hash.
   verifyHmac(
     events: readonly ChainedAuditEvent[],
   ): { valid: boolean; checked: number; failed: number } {
@@ -252,6 +257,10 @@ export class AuditQueryService {
         event.hmacKeyVersion,
       );
       if (!ctx) {
+        failed++;
+        continue;
+      }
+      if (!HMAC_HEX_PATTERN.test(event.resourceName)) {
         failed++;
       }
     }

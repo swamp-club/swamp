@@ -209,8 +209,8 @@ export class AuditEmitter {
       chained.push(await this.#chainState.chain(event));
     }
 
+    const webhookPromises: Promise<void>[] = [];
     if (this.#alertEngine) {
-      const webhookPromises: Promise<void>[] = [];
       for (const event of chained) {
         const fired = this.#alertEngine.evaluate(event);
         for (const alert of fired) {
@@ -261,9 +261,6 @@ export class AuditEmitter {
           }
         }
       }
-      if (webhookPromises.length > 0) {
-        await Promise.allSettled(webhookPromises);
-      }
     }
 
     let anyDurableWriteSucceeded = false;
@@ -292,6 +289,10 @@ export class AuditEmitter {
 
     if (!anyDurableWriteSucceeded) {
       this.#chainState.restore(chainSnapshot);
+    }
+
+    if (webhookPromises.length > 0) {
+      await Promise.allSettled(webhookPromises);
     }
   }
 

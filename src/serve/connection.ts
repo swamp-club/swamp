@@ -1385,6 +1385,8 @@ const logger = getSwampLogger(["serve", "connection"]);
 const MAX_SUBSCRIPTIONS_PER_CONNECTION = 2;
 const SUBSCRIPTION_REAUTH_INTERVAL_MS = 60_000;
 
+let hmacRotationLock: Promise<void> = Promise.resolve();
+
 export function handleConnection(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -2272,31 +2274,40 @@ export function handleMessage(
             });
             return;
           }
-          const registry = ctx.auditEmitter.hmacKeyRegistry;
-          const previousVersion = registry.currentVersion;
-          const rawKey = await generateHmacKeyBytes();
-          const newVersion = previousVersion + 1;
-          if (ctx.auditVaultService && ctx.auditHmacConfig) {
-            const hex = Array.from(rawKey)
-              .map((b) => b.toString(16).padStart(2, "0"))
-              .join("");
-            await ctx.auditVaultService.put(
-              ctx.auditHmacConfig.vaultName,
-              `${ctx.auditHmacConfig.keyName}-v${newVersion}`,
-              hex,
-            );
-          }
-          const cryptoKey = await importHmacKey(rawKey);
-          registry.addVersion(newVersion, cryptoKey);
+          const rotationResult = await new Promise<{
+            previousVersion: number;
+            newVersion: number;
+            message: string;
+          }>((resolve, reject) => {
+            hmacRotationLock = hmacRotationLock.then(async () => {
+              const registry = ctx.auditEmitter!.hmacKeyRegistry!;
+              const previousVersion = registry.currentVersion;
+              const rawKey = await generateHmacKeyBytes();
+              const newVersion = previousVersion + 1;
+              if (ctx.auditVaultService && ctx.auditHmacConfig) {
+                const hex = Array.from(rawKey)
+                  .map((b) => b.toString(16).padStart(2, "0"))
+                  .join("");
+                await ctx.auditVaultService.put(
+                  ctx.auditHmacConfig.vaultName,
+                  `${ctx.auditHmacConfig.keyName}-v${newVersion}`,
+                  hex,
+                );
+              }
+              const cryptoKey = await importHmacKey(rawKey);
+              registry.addVersion(newVersion, cryptoKey);
+              resolve({
+                previousVersion,
+                newVersion,
+                message:
+                  `HMAC key rotated from version ${previousVersion} to ${newVersion}`,
+              });
+            }).catch(reject);
+          });
           send(socket, {
             type: "audit.rotate-key",
             id: request.id,
-            payload: {
-              previousVersion,
-              newVersion,
-              message:
-                `HMAC key rotated from version ${previousVersion} to ${newVersion}`,
-            },
+            payload: rotationResult,
           });
         })(),
         auditOpts("admin", "audit", "hmac-key"),
