@@ -3295,6 +3295,29 @@ export const serveCommand = new Command()
       connectionCtx.scheduledExecution = scheduledExecution;
     }
 
+    // Wire workflow reloader for hot-reload: re-enumerates pulled extension
+    // workflow dirs and rescans schedules. Built here (cli layer) so the
+    // serve handlers never import from src/cli/.
+    const extWorkflowRepo = repoContext.extensionWorkflowRepo;
+    if (extWorkflowRepo) {
+      connectionCtx.workflowReloader = async () => {
+        const sourceWfDirs = await getSourceWorkflowDirs(resolvedRepoDir);
+        const pulledWfDirs = await enumeratePulledExtensionDirs(
+          extensionLockfilePath,
+          resolvedRepoDir,
+          "workflows",
+        );
+        extWorkflowRepo.updateAdditionalDirs([
+          ...sourceWfDirs,
+          ...pulledWfDirs,
+        ]);
+        if (connectionCtx.scheduledExecution) {
+          await connectionCtx.scheduledExecution.rescanWorkflows();
+        }
+        return pulledWfDirs.length;
+      };
+    }
+
     // Parse group refresh interval and construct service
     let collectiveRefreshService:
       | import("../../serve/collective_refresh_service.ts").CollectiveRefreshService
@@ -4327,33 +4350,13 @@ export const serveCommand = new Command()
           return;
         }
         logger.info("SIGHUP received, reloading pulled extensions...");
-        const extWorkflowRepo = repoContext.extensionWorkflowRepo;
-        const reloadOptions: import("../../serve/extension_reload.ts").ServeReloadOptions =
-          {
+        const reloadOptions:
+          import("../../serve/extension_reload.ts").ServeReloadOptions = {
             triggerOverrideUpdater: scheduledExecution
               ? (overrides: ReadonlyMap<string, TriggerOverride>) =>
                 scheduledExecution!.updateTriggerOverrides(overrides)
               : undefined,
-            workflowReloader: extWorkflowRepo
-              ? async () => {
-                const sourceWfDirs = await getSourceWorkflowDirs(
-                  resolvedRepoDir,
-                );
-                const pulledWfDirs = await enumeratePulledExtensionDirs(
-                  extensionLockfilePath,
-                  resolvedRepoDir,
-                  "workflows",
-                );
-                extWorkflowRepo.updateAdditionalDirs([
-                  ...sourceWfDirs,
-                  ...pulledWfDirs,
-                ]);
-                if (scheduledExecution) {
-                  await scheduledExecution.rescanWorkflows();
-                }
-                return pulledWfDirs.length;
-              }
-              : undefined,
+            workflowReloader: connectionCtx.workflowReloader,
           };
         performServeReload(
           resolvedRepoDir,
