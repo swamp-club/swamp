@@ -693,7 +693,7 @@ jobs:
           fi
 
       - name: Approve PR
-        if: steps.find.outputs.found == 'true'
+        if: success() && steps.find.outputs.found == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
