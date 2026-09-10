@@ -89,6 +89,8 @@ export interface WorkerProvider {
   workers(): WorkerSnapshot[];
 }
 
+export type HealthStatus = "healthy" | "degraded" | "unhealthy";
+
 export interface HealthCollectorDeps {
   readonly instanceId: string;
   readonly deploymentMode: string;
@@ -102,11 +104,27 @@ export interface HealthCollectorDeps {
   readonly scheduleEnabled: boolean;
   readonly webhookProvider: WebhookProvider | null;
   readonly remoteOnly: boolean;
+  readonly onHealthTransition?: (
+    previous: HealthStatus,
+    current: HealthStatus,
+  ) => void;
+}
+
+export function classifyHealthStatus(
+  ready: boolean,
+  components: readonly { healthy: boolean }[],
+): HealthStatus {
+  if (!ready) return "unhealthy";
+  if (components.length === 0) return "healthy";
+  const allHealthy = components.every((c) => c.healthy);
+  if (allHealthy) return "healthy";
+  return "degraded";
 }
 
 export class HealthCollector {
   readonly #deps: HealthCollectorDeps;
   #inflight: Promise<HealthSnapshot> | null = null;
+  #previousStatus: HealthStatus | null = null;
 
   constructor(deps: HealthCollectorDeps) {
     this.#deps = deps;
@@ -161,12 +179,24 @@ export class HealthCollector {
 
     const components = await this.#deps.componentChecker.checkAll(signal);
 
+    const ready = this.#deps.isReady();
+    const currentStatus = classifyHealthStatus(ready, components);
+
+    if (
+      this.#previousStatus !== null &&
+      currentStatus !== this.#previousStatus &&
+      this.#deps.onHealthTransition
+    ) {
+      this.#deps.onHealthTransition(this.#previousStatus, currentStatus);
+    }
+    this.#previousStatus = currentStatus;
+
     return {
       instanceId: this.#deps.instanceId,
       deploymentMode: this.#deps.deploymentMode,
       remoteOnly: this.#deps.remoteOnly,
       uptimeMs: now - this.#deps.startedAt,
-      ready: this.#deps.isReady(),
+      ready,
       activeRuns,
       metrics,
       workers,

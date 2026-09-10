@@ -19,8 +19,10 @@
 
 import { assertEquals, assertGreater } from "@std/assert";
 import {
+  classifyHealthStatus,
   HealthCollector,
   type HealthCollectorDeps,
+  type HealthStatus,
 } from "./health_collector.ts";
 import { RunMetricsTracker } from "./run_metrics_tracker.ts";
 import { ComponentHealthChecker } from "./component_health_checker.ts";
@@ -178,4 +180,68 @@ Deno.test("HealthCollector: reports not ready", async () => {
   const snapshot = await collector.collect();
 
   assertEquals(snapshot.ready, false);
+});
+
+Deno.test("classifyHealthStatus: healthy when ready and all components healthy", () => {
+  assertEquals(classifyHealthStatus(true, [{ healthy: true }]), "healthy");
+});
+
+Deno.test("classifyHealthStatus: healthy when ready and no components", () => {
+  assertEquals(classifyHealthStatus(true, []), "healthy");
+});
+
+Deno.test("classifyHealthStatus: degraded when ready but some unhealthy", () => {
+  assertEquals(
+    classifyHealthStatus(true, [{ healthy: true }, { healthy: false }]),
+    "degraded",
+  );
+});
+
+Deno.test("classifyHealthStatus: unhealthy when not ready", () => {
+  assertEquals(classifyHealthStatus(false, [{ healthy: true }]), "unhealthy");
+});
+
+Deno.test("HealthCollector: emits health transition on state change", async () => {
+  const transitions: { previous: HealthStatus; current: HealthStatus }[] = [];
+  let ready = true;
+
+  const deps = makeDeps({
+    isReady: () => ready,
+    onHealthTransition: (previous, current) => {
+      transitions.push({ previous, current });
+    },
+  });
+  const collector = new HealthCollector(deps);
+
+  await collector.collect();
+  assertEquals(transitions.length, 0);
+
+  ready = false;
+  await collector.collect();
+  assertEquals(transitions.length, 1);
+  assertEquals(transitions[0].previous, "healthy");
+  assertEquals(transitions[0].current, "unhealthy");
+
+  ready = true;
+  await collector.collect();
+  assertEquals(transitions.length, 2);
+  assertEquals(transitions[1].previous, "unhealthy");
+  assertEquals(transitions[1].current, "healthy");
+});
+
+Deno.test("HealthCollector: no transition when status unchanged", async () => {
+  const transitions: { previous: HealthStatus; current: HealthStatus }[] = [];
+
+  const deps = makeDeps({
+    isReady: () => true,
+    onHealthTransition: (previous, current) => {
+      transitions.push({ previous, current });
+    },
+  });
+  const collector = new HealthCollector(deps);
+
+  await collector.collect();
+  await collector.collect();
+  await collector.collect();
+  assertEquals(transitions.length, 0);
 });

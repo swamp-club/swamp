@@ -101,6 +101,7 @@ import {
 import {
   isSensitiveHeader,
   parseWebhookFlag,
+  resolveSecret,
   type WebhookEndpoint,
   WebhookService,
 } from "../../serve/webhook.ts";
@@ -118,12 +119,21 @@ import {
   type AuditLevel,
   AuditPolicy,
   type AuditPolicyRule,
+  type AuditSink,
   type AuditStore,
   AuditWal,
 } from "../../domain/serve_audit/mod.ts";
 import { StoreSink } from "../../serve/audit_sinks/store_sink.ts";
 import { WalSink } from "../../serve/audit_sinks/wal_sink.ts";
 import { WebSocketSink } from "../../serve/audit_sinks/websocket_sink.ts";
+import { WebhookSink } from "../../serve/audit_sinks/webhook_sink.ts";
+import { SyslogSink } from "../../serve/audit_sinks/syslog_sink.ts";
+import {
+  generateHmacKeyBytes,
+  type HmacContext,
+  importHmacKey,
+  parseSinkFilter,
+} from "../../domain/serve_audit/mod.ts";
 import { RemoteAuditStore } from "../../infrastructure/persistence/remote_audit_store.ts";
 import { resolveDatastoreExpressions } from "../datastore_expression_resolver.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
@@ -2944,20 +2954,166 @@ export const serveCommand = new Command()
         }
 
         const webSocketSink = new WebSocketSink();
+        const auditSinks: AuditSink[] = [walSink, webSocketSink];
+
+        let auditVaultService: VaultService | null = null;
+        const needsVault = auditConfig.sinks.length > 0 ||
+          auditConfig.hmacEnabled;
+        if (needsVault) {
+          try {
+            auditVaultService = await VaultService.fromRepository(
+              resolvedRepoDir,
+              { defaultVaultName: repoMarker?.defaultVault },
+            );
+          } catch {
+            logger.warn("Could not initialize vault for audit sinks/HMAC");
+          }
+        }
+
+        for (const sinkEntry of auditConfig.sinks) {
+          try {
+            if (sinkEntry.type === "webhook") {
+              const cfg = sinkEntry.config;
+              let auth: {
+                type: "bearer" | "basic" | "header";
+                value: string;
+                headerName?: string;
+              } | undefined;
+              const authCfg = cfg.auth as Record<string, unknown> | undefined;
+              if (authCfg) {
+                const authType = authCfg.type as string;
+                const rawValue =
+                  (authCfg.token ?? authCfg.value ?? authCfg.password ??
+                    "") as string;
+                const resolvedValue = await resolveSecret(
+                  rawValue,
+                  auditVaultService ?? undefined,
+                );
+                auth = {
+                  type: authType as "bearer" | "basic" | "header",
+                  value: resolvedValue,
+                  headerName: authCfg["header-name"] as string | undefined,
+                };
+              }
+              const batchCfg = cfg.batch as Record<string, unknown> | undefined;
+              const retryCfg = cfg.retry as Record<string, unknown> | undefined;
+              auditSinks.push(
+                new WebhookSink({
+                  url: cfg.url as string,
+                  format: (cfg.format as "json" | "cef") ?? "json",
+                  auth,
+                  filter: parseSinkFilter(cfg),
+                  batchSize: batchCfg?.size as number | undefined,
+                  batchIntervalMs: batchCfg?.["interval-ms"] as
+                    | number
+                    | undefined,
+                  maxAttempts: retryCfg?.["max-attempts"] as number | undefined,
+                  backoffMs: retryCfg?.["backoff-ms"] as number | undefined,
+                  maxPending: cfg["max-pending"] as number | undefined,
+                  signal: ac.signal,
+                  namespace: serveNamespace,
+                }),
+              );
+              logger.info("Audit webhook sink enabled: {url}", {
+                url: cfg.url,
+              });
+            } else if (sinkEntry.type === "syslog") {
+              const cfg = sinkEntry.config;
+              let caCert: string | undefined;
+              const transport = (cfg.transport as string | undefined) ?? "tcp";
+              if (transport === "tcp+tls" && cfg["ca-cert"]) {
+                caCert = await resolveSecret(
+                  cfg["ca-cert"] as string,
+                  auditVaultService ?? undefined,
+                );
+              }
+              auditSinks.push(
+                new SyslogSink({
+                  host: cfg.host as string,
+                  port: cfg.port as number,
+                  transport: transport as "tcp" | "tcp+tls" | "udp",
+                  filter: parseSinkFilter(cfg),
+                  caCert,
+                  signal: ac.signal,
+                }),
+              );
+              logger.info("Audit syslog sink enabled: {host}:{port}", {
+                host: cfg.host,
+                port: cfg.port,
+              });
+            }
+          } catch (error: unknown) {
+            const msg = error instanceof Error ? error.message : String(error);
+            if (auditConfig.failOpen) {
+              logger.warn("Failed to create audit sink, skipping: {error}", {
+                error: msg,
+              });
+            } else {
+              throw error;
+            }
+          }
+        }
+
+        let hmacContext: HmacContext | undefined;
+        if (auditConfig.hmacEnabled && auditVaultService) {
+          try {
+            const vaultName = auditConfig.hmacVault;
+            const keyName = auditConfig.hmacKey;
+            let rawKey: string | null = null;
+            try {
+              rawKey = await auditVaultService.get(vaultName, keyName);
+            } catch {
+              // key doesn't exist yet
+            }
+            if (!rawKey) {
+              const newKey = await generateHmacKeyBytes();
+              const hex = Array.from(newKey).map((b) =>
+                b.toString(16).padStart(2, "0")
+              ).join("");
+              await auditVaultService.put(vaultName, keyName, hex);
+              rawKey = hex;
+              logger.info("Generated HMAC key in vault {vault}:{key}", {
+                vault: vaultName,
+                key: keyName,
+              });
+            }
+            if (!/^[0-9a-f]+$/i.test(rawKey) || rawKey.length % 2 !== 0) {
+              throw new Error(
+                `HMAC key in vault ${vaultName}:${keyName} is not valid hex (must be even-length hex string)`,
+              );
+            }
+            const keyBytes = new Uint8Array(
+              rawKey.match(/.{2}/g)!.map((h) => parseInt(h, 16)),
+            );
+            const cryptoKey = await importHmacKey(keyBytes);
+            hmacContext = { key: cryptoKey, keyVersion: 1 };
+            logger.info("HMAC enabled for audit events");
+          } catch (error: unknown) {
+            logger.warn(
+              "Failed to initialize HMAC, continuing without: {error}",
+              {
+                error: error instanceof Error ? error.message : String(error),
+              },
+            );
+          }
+        }
+
         connectionCtx.auditEmitter = new AuditEmitter({
-          sinks: [walSink, webSocketSink],
+          sinks: auditSinks,
           policy,
           chainState,
+          hmacContext,
         });
         connectionCtx.auditStores = auditStores;
         connectionCtx.auditPolicy = policy;
         connectionCtx.auditFailOpen = auditConfig.failOpen;
         connectionCtx.auditWal = wal;
         connectionCtx.auditWebSocketSink = webSocketSink;
+        connectionCtx.auditNamespace = serveNamespace;
 
         logger.info(
-          "Audit pipeline enabled with {count} store target(s), WAL at {walDir}",
-          { count: auditStores.length, walDir },
+          "Audit pipeline enabled with {count} store target(s), {sinkCount} sink(s), WAL at {walDir}",
+          { count: auditStores.length, sinkCount: auditSinks.length, walDir },
         );
 
         emitSystemAuditEvent(
@@ -3470,6 +3626,13 @@ export const serveCommand = new Command()
       scheduleEnabled: enableSchedule,
       webhookProvider: webhookService ?? null,
       remoteOnly: merged.remoteOnly,
+      onHealthTransition: (previous, current) => {
+        emitSystemAuditEvent(
+          connectionCtx,
+          "health.transition",
+          `${previous}->${current}`,
+        );
+      },
     });
 
     connectionCtx.healthCollector = healthCollector;
@@ -4436,6 +4599,7 @@ export const serveCommand = new Command()
 
       const RECONCILIATION_INTERVAL_MS = reconciliationIntervalMs ?? 60_000;
       const RECONCILIATION_JITTER_MS = 500;
+      let knownPeerIds: Set<string> | null = null;
       const runReconciliationTick = async () => {
         try {
           const reaped = await reconcileRemoteInterruptedRuns({
@@ -4461,6 +4625,40 @@ export const serveCommand = new Command()
         } catch (err: unknown) {
           logger.warn(
             "Reconciliation claim cleanup failed: {error}",
+            { error: err instanceof Error ? err.message : String(err) },
+          );
+        }
+        try {
+          const keys = await controlPlaneStore.list("heartbeats/");
+          const currentPeerIds = new Set<string>();
+          for (const key of keys) {
+            const parts = key.split("/");
+            if (parts.length >= 2) currentPeerIds.add(parts[1]);
+          }
+          if (knownPeerIds !== null) {
+            for (const id of currentPeerIds) {
+              if (!knownPeerIds.has(id)) {
+                emitSystemAuditEvent(
+                  connectionCtx,
+                  "instance.join",
+                  `instanceId=${id}`,
+                );
+              }
+            }
+            for (const id of knownPeerIds) {
+              if (!currentPeerIds.has(id)) {
+                emitSystemAuditEvent(
+                  connectionCtx,
+                  "instance.leave",
+                  `instanceId=${id}`,
+                );
+              }
+            }
+          }
+          knownPeerIds = currentPeerIds;
+        } catch (err: unknown) {
+          logger.warn(
+            "Peer delta check failed: {error}",
             { error: err instanceof Error ? err.message : String(err) },
           );
         }

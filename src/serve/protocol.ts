@@ -173,6 +173,25 @@ export interface AuditVerifyPayload {
   until?: string;
 }
 
+export interface AuditExportPayload {
+  from: string;
+  to: string;
+  format?: "json" | "cef" | "csv";
+  principal?: string;
+  category?: string;
+  action?: string;
+  outcome?: string;
+  resource?: string;
+}
+
+export interface AuditExportResponse {
+  events?: readonly Record<string, unknown>[];
+  data?: string;
+  format: string;
+  count: number;
+  truncated?: boolean;
+}
+
 export interface AuditSubscribePayload {
   categories?: string[];
   principals?: string[];
@@ -768,6 +787,7 @@ export type ServerRequest =
   | { type: "audit.verify"; id: string; payload: AuditVerifyPayload }
   | { type: "audit.subscribe"; id: string; payload?: AuditSubscribePayload }
   | { type: "audit.unsubscribe"; id: string }
+  | { type: "audit.export"; id: string; payload: AuditExportPayload }
   | { type: "summarise"; id: string; payload?: SummarisePayload }
   | { type: "report.get"; id: string; payload: ReportGetPayload }
   | { type: "report.search"; id: string; payload?: ReportSearchPayload }
@@ -1573,6 +1593,7 @@ export type ServerMessage =
   | { type: "audit.subscribe"; id: string; payload: AuditSubscribeResponse }
   | { type: "audit.unsubscribe"; id: string }
   | { type: "audit.event"; id: string; payload: AuditEventPayload }
+  | { type: "audit.export"; id: string; payload: AuditExportResponse }
   | { type: "summarise"; id: string; payload: SummariseResponse }
   | { type: "report.get"; id: string; payload: ReportGetResponse }
   | { type: "report.search"; id: string; payload: ReportSearchResponse }

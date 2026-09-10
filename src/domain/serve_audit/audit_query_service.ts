@@ -35,6 +35,7 @@ export interface AuditQueryFilters {
   readonly resource?: string;
   readonly limit?: number;
   readonly cursor?: string;
+  readonly export?: boolean;
 }
 
 export interface AuditQueryResult {
@@ -147,7 +148,8 @@ export class AuditQueryService {
       cursorIndex = idx + 1;
     }
 
-    const limit = Math.min(filters.limit ?? 100, MAX_QUERY_LIMIT);
+    const maxLimit = filters.export ? MAX_LOADED_EVENTS : MAX_QUERY_LIMIT;
+    const limit = Math.min(filters.limit ?? 100, maxLimit);
     const page = filtered.slice(cursorIndex, cursorIndex + limit);
     const nextCursor = cursorIndex + limit < filtered.length
       ? filtered[cursorIndex + limit - 1]?.id

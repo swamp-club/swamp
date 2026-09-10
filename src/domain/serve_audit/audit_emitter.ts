@@ -27,6 +27,7 @@ import type { AuditSink } from "./audit_sink.ts";
 import { AuditChainState } from "./audit_chain.ts";
 import type { AuditPolicy } from "./audit_policy.ts";
 import { RingBuffer } from "./ring_buffer.ts";
+import { applyHmac, type HmacContext } from "./audit_hmac.ts";
 
 const logger = getSwampLogger(["serve", "audit", "emitter"]);
 
@@ -37,6 +38,7 @@ export interface AuditEmitterOptions {
   readonly capacity?: number;
   readonly chainState?: AuditChainState;
   readonly policy?: AuditPolicy;
+  readonly hmacContext?: HmacContext;
 }
 
 export class AuditEmitter {
@@ -46,6 +48,7 @@ export class AuditEmitter {
   readonly #deniedRequests = new Set<string>();
   readonly #chainState: AuditChainState;
   readonly #policy: AuditPolicy | undefined;
+  readonly #hmacContext: HmacContext | undefined;
   #drainPending = false;
   #drainPromise: Promise<void> | null = null;
 
@@ -64,6 +67,7 @@ export class AuditEmitter {
       this.#sinks = sinksOrOptions.sinks;
       this.#chainState = sinksOrOptions.chainState ?? new AuditChainState();
       this.#policy = sinksOrOptions.policy;
+      this.#hmacContext = sinksOrOptions.hmacContext;
     }
     for (const sink of this.#sinks) {
       this.#cursors.set(sink.name, 0);
@@ -104,6 +108,14 @@ export class AuditEmitter {
     }
   }
 
+  #shouldHmac(event: AuditEvent): boolean {
+    if (!this.#policy) return true;
+    return this.#policy.shouldHmac(
+      event.category as AuditCategory,
+      event.action,
+    );
+  }
+
   #drainSerialized(): void {
     if (this.#drainPromise) return;
     this.#drainPromise = this.#drain().then(() => {
@@ -129,9 +141,18 @@ export class AuditEmitter {
     const { items, throughSeq } = this.#buffer.readFrom(minCursor);
     if (items.length === 0) return;
 
+    const processed: AuditEvent[] = [];
+    for (const event of items) {
+      if (this.#hmacContext && this.#shouldHmac(event)) {
+        processed.push(await applyHmac(this.#hmacContext, event));
+      } else {
+        processed.push(event);
+      }
+    }
+
     const chainSnapshot = this.#chainState.snapshot();
     const chained: ChainedAuditEvent[] = [];
-    for (const event of items) {
+    for (const event of processed) {
       chained.push(await this.#chainState.chain(event));
     }
 

@@ -60,6 +60,7 @@ export interface AuditEvent {
   readonly sequence?: number;
   readonly digest?: string;
   readonly decision?: AuditDecision;
+  readonly hmacKeyVersion?: number;
 }
 
 export type ChainedAuditEvent = AuditEvent & {

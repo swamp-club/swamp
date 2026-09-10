@@ -157,6 +157,10 @@ The `system` audit category captures infrastructure lifecycle events with
 
 - `instance.start` — emitted when the serve instance starts (with version)
 - `instance.stop` — emitted on graceful shutdown
+- `instance.join` — emitted when a new peer instance appears in the cluster
+- `instance.leave` — emitted when a peer instance disappears from the cluster
+- `health.transition` — emitted when the instance health status changes
+  (healthy/degraded/unhealthy)
 
 System events are always at `metadata` audit level (management tier).
 
@@ -186,9 +190,15 @@ System events are always at `metadata` audit level (management tier).
 | StoreSink               | Adapter            | `src/serve/audit_sinks/`          |
 | WalSink                 | Adapter            | `src/serve/audit_sinks/`          |
 | WebSocketSink           | Adapter            | `src/serve/audit_sinks/`          |
+| WebhookSink             | Adapter            | `src/serve/audit_sinks/`          |
+| SyslogSink              | Adapter            | `src/serve/audit_sinks/`          |
+| CefFormatter            | Domain Service     | `src/serve/audit_sinks/`          |
+| AuditHmac               | Domain Service     | `src/domain/serve_audit/`         |
+| SinkFilterConfig        | Value Object       | `src/domain/serve_audit/`         |
+| HmacContext             | Value Object       | `src/domain/serve_audit/`         |
 
 ## Future phases
 
-- **Phase 4**: Webhook and syslog sinks, bulk export, HMAC, HA join/leave
-  system events, health state transition events
-- **Phase 5**: Extension sinks, alerting, compliance templates
+- **Phase 5**: Extension sink API, alert rules (pattern triggers), compliance
+  templates, HMAC key rotation, streaming bulk export, hot-reload of external
+  sinks
