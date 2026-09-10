@@ -45,18 +45,22 @@ export const auditExportCommand = withRemoteOptions(
     .description("Bulk export audit events for compliance")
     .example(
       "Export as JSON",
-      "swamp audit export --server http://localhost:7443 --from 2026-09-01 --to 2026-09-08",
+      "swamp audit export --server http://localhost:7443 --since 2026-09-01 --until 2026-09-08",
     )
     .example(
       "Export as CEF",
-      "swamp audit export --server http://localhost:7443 --from 2026-09-01 --to 2026-09-08 --format cef",
+      "swamp audit export --server http://localhost:7443 --since 2026-09-01 --until 2026-09-08 --format cef",
     )
     .example(
       "Export to file",
-      "swamp audit export --server http://localhost:7443 --from 2026-09-01 --to 2026-09-08 --output audit.csv --format csv",
+      "swamp audit export --server http://localhost:7443 --since 2026-09-01 --until 2026-09-08 --output audit.csv --format csv",
     )
-    .option("--from <date:string>", "Start time (ISO 8601)", { required: true })
-    .option("--to <date:string>", "End time (ISO 8601)", { required: true })
+    .option("--since <date:string>", "Start time (ISO 8601)", {
+      required: true,
+    })
+    .option("--until <date:string>", "End time (ISO 8601)", {
+      required: true,
+    })
     .option(
       "--format <fmt:string>",
       "Output format: json, cef, csv [default: json]",
@@ -101,8 +105,8 @@ export const auditExportCommand = withRemoteOptions(
     {
       type: "audit.export",
       payload: {
-        from: options.from,
-        to: options.to,
+        from: options.since,
+        to: options.until,
         format,
         principal: options.principal,
         category: options.category,
