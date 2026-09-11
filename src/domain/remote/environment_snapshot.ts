@@ -107,6 +107,43 @@ export function stripWorkerCredentials(
   return cleaned;
 }
 
+const SWAMP_PREFIX = "SWAMP_";
+
+/**
+ * True when an environment variable is a SWAMP_* runtime variable.
+ * Used by {@link createSafeMethodEnv} to strip swamp auth and config
+ * vars from the environment inherited by method-spawned child processes.
+ */
+export function isSwampEnvVar(name: string): boolean {
+  return name.toUpperCase().startsWith(SWAMP_PREFIX);
+}
+
+/**
+ * Build a safe environment for child processes spawned by method code
+ * (the shell model, or extension code using Deno.Command directly).
+ *
+ * Strips all SWAMP_* variables — auth tokens, server URLs, worker
+ * credentials, and config overrides — so external tools never inherit
+ * swamp's own credentials. Process-identity vars (HOME, PATH, SHELL, …)
+ * are preserved because the child runs on the same host.
+ *
+ * Pass `allow` to opt specific SWAMP_* names back in when a child
+ * genuinely needs one (exact, case-sensitive match).
+ */
+export function createSafeMethodEnv(
+  env: Record<string, string>,
+  allow?: readonly string[],
+): Record<string, string> {
+  const allowSet = allow ? new Set(allow) : undefined;
+  const safe: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (!isSwampEnvVar(name) || allowSet?.has(name)) {
+      safe[name] = value;
+    }
+  }
+  return safe;
+}
+
 /**
  * Overlay a shipped snapshot onto a worker's base environment. The snapshot
  * wins for every variable it carries; denylisted names are dropped even if a

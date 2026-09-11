@@ -533,6 +533,62 @@ posixOnlyTest("shellModel.methods.execute respects env variables", async () => {
   assertStringIncludes(logContent, "test_value");
 });
 
+posixOnlyTest(
+  "shellModel.methods.execute strips SWAMP_* vars from child env",
+  async () => {
+    const original = Deno.env.get("SWAMP_SERVER_TOKEN");
+    Deno.env.set("SWAMP_SERVER_TOKEN", "test.leaked-secret");
+    try {
+      const args: ShellInputAttributes = {
+        run: "echo SWAMP_SERVER_TOKEN=$SWAMP_SERVER_TOKEN",
+      };
+
+      const { context, getResults } = createTestContext();
+      await shellModel.methods.execute.execute(args, context);
+
+      const logContent = getOutputLogContent(getResults());
+      assertStringIncludes(logContent, "SWAMP_SERVER_TOKEN=");
+      assertEquals(logContent.includes("leaked-secret"), false);
+    } finally {
+      if (original !== undefined) {
+        Deno.env.set("SWAMP_SERVER_TOKEN", original);
+      } else {
+        Deno.env.delete("SWAMP_SERVER_TOKEN");
+      }
+    }
+  },
+);
+
+posixOnlyTest(
+  "shellModel.methods.execute preserves PATH in child env",
+  async () => {
+    const args: ShellInputAttributes = { run: "echo PATH=$PATH" };
+
+    const { context, getResults } = createTestContext();
+    await shellModel.methods.execute.execute(args, context);
+
+    const logContent = getOutputLogContent(getResults());
+    assertStringIncludes(logContent, "PATH=/");
+  },
+);
+
+posixOnlyTest(
+  "shellModel.methods.execute merges user env on top of safe base",
+  async () => {
+    const args: ShellInputAttributes = {
+      run: "echo MY_VAR=$MY_VAR && echo PATH=$PATH",
+      env: { MY_VAR: "user-value" },
+    };
+
+    const { context, getResults } = createTestContext();
+    await shellModel.methods.execute.execute(args, context);
+
+    const logContent = getOutputLogContent(getResults());
+    assertStringIncludes(logContent, "MY_VAR=user-value");
+    assertStringIncludes(logContent, "PATH=/");
+  },
+);
+
 posixOnlyTest("shellModel.methods.execute handles pipes", async () => {
   const args: ShellInputAttributes = { run: "echo 'hello world' | tr 'h' 'H'" };
 

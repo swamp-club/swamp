@@ -666,6 +666,33 @@ running on the orchestrator host would. Scoping the snapshot (allowlists per
 token or per label) is a later refinement; v1 chooses single-host fidelity over
 introducing a new partial-environment failure mode.
 
+### Method-to-child env scrubbing (third boundary)
+
+The two layers above protect the orchestrator→worker and worker→dispatch-runner
+boundaries. A third layer protects the **method→child** boundary: when the shell
+model (`command/shell`) or extension code spawns an external subprocess, the
+child must not inherit swamp's own auth tokens (`SWAMP_SERVER_TOKEN`,
+`SWAMP_API_KEY`, etc.) from the host process. An external tool (an LLM CLI, a
+cloud SDK, kubectl) holding these tokens in its `/proc/<pid>/environ` is a
+credential-leakage vector.
+
+The shell model builds the child's environment via `createSafeMethodEnv`
+(`src/domain/remote/environment_snapshot.ts`), which copies the host env and
+strips every `SWAMP_*` variable (case-insensitive prefix match). Process-identity
+vars (`HOME`, `PATH`, `SHELL`, …) are preserved because the child runs on the
+same host. The resulting env is passed with `clearEnv: true` so Deno does not
+re-inherit the parent's `SWAMP_*` vars behind the filter. A per-variable
+allowlist on `createSafeMethodEnv` lets a method opt specific vars back in when
+a child genuinely needs one.
+
+The three boundaries form a defense-in-depth chain:
+
+| Boundary                | Mechanism                             | What is stripped                                |
+| ----------------------- | ------------------------------------- | ----------------------------------------------- |
+| orchestrator → worker   | `captureEnvironmentSnapshot` denylist | `HOME`, `PATH`, `SWAMP_*`, `DENO_*`, `XDG_*`, … |
+| worker → dispatch runner| `stripWorkerCredentials`              | `SWAMP_WORKER_TOKEN`, `SWAMP_SERVER_TOKEN`, `SWAMP_ORCHESTRATOR_URL` |
+| method → child process  | `createSafeMethodEnv` + `clearEnv`    | all `SWAMP_*` variables                         |
+
 Workers accept up to `capacity` concurrent dispatches (configured via
 `--concurrency N` on `worker connect`, default 1). When all slots are full, an
 overlapping dispatch is rejected with `worker_busy` and re-queued by the
