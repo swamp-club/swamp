@@ -449,6 +449,32 @@ immediately (same directory). On S3 datastores, reads see whatever was last
 synced to the local cache by a write command; users can run
 `swamp datastore sync --pull` to refresh manually.
 
+### Serve Runtime Data Refresh
+
+In a multi-instance `swamp serve` deployment sharing a remote datastore, an idle
+server does not automatically see runtime output written by a peer. Write
+commands sync on execution, but `data.query` reads the local cache without
+triggering a remote pull.
+
+Three background pollers address this for serve:
+
+- **ConfigPoller** (`subdirs: ["config"]`) — refreshes managed configuration.
+- **AccessDataPoller** (`subdirs: ["data/swamp/grant", ...]`) — refreshes
+  access-control grants and groups, then reloads the policy snapshot.
+- **RuntimeDataPoller** (`subdirs: ["data"]`) — refreshes the `data/` subtree
+  (runtime model output), then invalidates the query catalog so the next
+  `data.query` rebuilds from the updated local files.
+
+All three run at 30-second intervals by default and start when a
+`DatastoreSyncService` is available. Each poller is independent — a
+configuration-only pull does not satisfy the runtime refresh, and vice versa.
+
+The RuntimeDataPoller provides **eventual visibility**, not immediate
+consistency. An idle peer discovers a peer's committed output within one
+polling interval after the data reaches the remote datastore. The query
+catalog is invalidated only after a successful pull that reports changes,
+preserving fast cached reads on quiet cycles.
+
 ### SyncContext and SyncCapabilities
 
 Extensions can advertise capabilities by implementing the optional
