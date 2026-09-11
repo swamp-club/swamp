@@ -33,6 +33,10 @@ export interface ProcessExecutorOptions {
   cwd?: string;
   /** Environment variables. */
   env?: Record<string, string>;
+  /** When true, the child starts with an empty environment and gets only
+   *  the variables from `env`. Without this, `env` augments the inherited
+   *  parent environment (Deno default). */
+  clearEnv?: boolean;
   /** Timeout in milliseconds. */
   timeoutMs?: number;
   /** Logger for streaming stdout (info) and stderr (warning). */
@@ -159,6 +163,10 @@ export async function executeProcess(
 
   if (options.env) {
     commandOptions.env = options.env;
+  }
+
+  if (options.clearEnv) {
+    commandOptions.clearEnv = true;
   }
 
   const command = new Deno.Command(options.command, commandOptions);

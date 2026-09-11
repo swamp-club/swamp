@@ -20,7 +20,9 @@
 import { assertEquals } from "@std/assert";
 import {
   captureEnvironmentSnapshot,
+  createSafeMethodEnv,
   isDeniedEnvVar,
+  isSwampEnvVar,
   overlayEnvironment,
   stripWorkerCredentials,
 } from "./environment_snapshot.ts";
@@ -116,6 +118,86 @@ Deno.test("stripWorkerCredentials: removes worker control-plane credentials", ()
     DEPLOY_ENV: "prod",
     AWS_ACCESS_KEY_ID: "AKIA123",
   });
+});
+
+Deno.test("isSwampEnvVar: matches SWAMP_ prefix case-insensitively", () => {
+  assertEquals(isSwampEnvVar("SWAMP_SERVER_TOKEN"), true);
+  assertEquals(isSwampEnvVar("SWAMP_API_KEY"), true);
+  assertEquals(isSwampEnvVar("SWAMP_HOME"), true);
+  assertEquals(isSwampEnvVar("swamp_log_level"), true);
+  assertEquals(isSwampEnvVar("Swamp_Foo"), true);
+});
+
+Deno.test("isSwampEnvVar: rejects non-SWAMP variables", () => {
+  assertEquals(isSwampEnvVar("HOME"), false);
+  assertEquals(isSwampEnvVar("PATH"), false);
+  assertEquals(isSwampEnvVar("AWS_ACCESS_KEY_ID"), false);
+  assertEquals(isSwampEnvVar("DENO_DIR"), false);
+});
+
+Deno.test("createSafeMethodEnv: strips all SWAMP_* variables", () => {
+  const env = {
+    HOME: "/home/user",
+    PATH: "/usr/bin",
+    SHELL: "/bin/bash",
+    SWAMP_SERVER_TOKEN: "srv.secret",
+    SWAMP_API_KEY: "api-key-123",
+    SWAMP_SERVER_URL: "wss://orch:9090",
+    SWAMP_SERVE_URL: "wss://demo.swamp-club.ai",
+    SWAMP_SERVE_EXTRA_HEADERS: "Tunnel-Token: abc",
+    SWAMP_HOME: "/custom/swamp",
+    SWAMP_LOG_LEVEL: "debug",
+    AWS_ACCESS_KEY_ID: "AKIA123",
+    DEPLOY_ENV: "prod",
+  };
+  assertEquals(createSafeMethodEnv(env), {
+    HOME: "/home/user",
+    PATH: "/usr/bin",
+    SHELL: "/bin/bash",
+    AWS_ACCESS_KEY_ID: "AKIA123",
+    DEPLOY_ENV: "prod",
+  });
+});
+
+Deno.test("createSafeMethodEnv: case-insensitive matching", () => {
+  const env = {
+    swamp_server_token: "secret",
+    Swamp_Api_Key: "key",
+    PATH: "/usr/bin",
+  };
+  assertEquals(createSafeMethodEnv(env), {
+    PATH: "/usr/bin",
+  });
+});
+
+Deno.test("createSafeMethodEnv: allowlist opts specific vars back in", () => {
+  const env = {
+    SWAMP_SERVER_TOKEN: "secret",
+    SWAMP_HOME: "/custom",
+    SWAMP_LOG_LEVEL: "debug",
+    PATH: "/usr/bin",
+  };
+  assertEquals(createSafeMethodEnv(env, ["SWAMP_HOME", "SWAMP_LOG_LEVEL"]), {
+    SWAMP_HOME: "/custom",
+    SWAMP_LOG_LEVEL: "debug",
+    PATH: "/usr/bin",
+  });
+});
+
+Deno.test("createSafeMethodEnv: allowlist is case-sensitive", () => {
+  const env = {
+    SWAMP_HOME: "/custom",
+    swamp_home: "/other",
+    PATH: "/usr/bin",
+  };
+  assertEquals(createSafeMethodEnv(env, ["SWAMP_HOME"]), {
+    SWAMP_HOME: "/custom",
+    PATH: "/usr/bin",
+  });
+});
+
+Deno.test("createSafeMethodEnv: empty env returns empty", () => {
+  assertEquals(createSafeMethodEnv({}), {});
 });
 
 Deno.test("stripWorkerCredentials: preserves SWAMP_SERVE_EXTRA_HEADERS and worker config vars", () => {

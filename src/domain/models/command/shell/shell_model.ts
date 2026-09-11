@@ -26,6 +26,7 @@ import {
   type ModelDefinition,
 } from "../../model.ts";
 import { executeProcess } from "../../../../infrastructure/process/process_executor.ts";
+import { createSafeMethodEnv } from "../../../remote/environment_snapshot.ts";
 import { selectShellStrategy } from "./shell_strategy.ts";
 
 const shellStrategy = selectShellStrategy();
@@ -127,11 +128,16 @@ async function executeCommand(
     }
 
     const invocation = shellStrategy.buildInvocation(shellCommand);
+    const safeBaseEnv = createSafeMethodEnv(Deno.env.toObject());
+    const processEnv = Object.keys(shellEnv).length > 0
+      ? { ...safeBaseEnv, ...shellEnv }
+      : safeBaseEnv;
     const result = await executeProcess({
       command: invocation.command,
       args: invocation.args,
       cwd: args.workingDir,
-      env: Object.keys(shellEnv).length > 0 ? shellEnv : undefined,
+      env: processEnv,
+      clearEnv: true,
       timeoutMs: args.timeout,
       signal: context.signal,
       logger: context.logger,
