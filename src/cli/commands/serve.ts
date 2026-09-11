@@ -3050,13 +3050,6 @@ export const serveCommand = new Command()
                 host: cfg.host,
                 port: cfg.port,
               });
-            } else if (
-              sinkEntry.type === "extension" && sinkEntry.extension
-            ) {
-              logger.info(
-                "Extension audit sink configured: {extension} (loaded at runtime via registry)",
-                { extension: sinkEntry.extension },
-              );
             }
           } catch (error: unknown) {
             const msg = error instanceof Error ? error.message : String(error);

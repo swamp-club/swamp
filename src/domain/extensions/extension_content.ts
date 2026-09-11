@@ -111,16 +111,6 @@ export interface ExtractedReport {
   labels: string[];
 }
 
-/** Metadata extracted from a single audit sink TypeScript file. */
-export interface ExtractedAuditSink {
-  fileName: string;
-  type: string;
-  name: string;
-  description: string;
-  hasConfigSchema: boolean;
-  configFields: ExtractedArgument[];
-}
-
 /** Metadata extracted from an extension file that grafts methods onto a foreign type. */
 export interface ExtractedExtension {
   fileName: string;
@@ -146,6 +136,5 @@ export interface ExtensionContentMetadata {
   vaults: ExtractedVault[];
   datastores: ExtractedDatastore[];
   reports: ExtractedReport[];
-  auditSinks: ExtractedAuditSink[];
   skills: ExtractedSkill[];
 }

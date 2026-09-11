@@ -96,12 +96,6 @@ export {
   type AlertThreshold,
 } from "./audit_alerts.ts";
 
-export {
-  type AuditSinkFactory,
-  type AuditSinkTypeInfo,
-  AuditSinkTypeRegistry,
-} from "./audit_sink_type_registry.ts";
-
 export { AuditSinkHotReloader } from "./audit_sink_hot_reloader.ts";
 
 export {

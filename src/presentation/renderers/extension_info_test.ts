@@ -120,7 +120,6 @@ const sampleContentMetadata: ExtensionContentMetadata = {
   vaults: [],
   datastores: [],
   reports: [],
-  auditSinks: [],
   skills: [],
 };
 

@@ -199,8 +199,8 @@ System events are always at `metadata` audit level (management tier).
 
 ## Phase 5 (completed)
 
-Extension sink API, alert rules, compliance reports, HMAC key rotation,
-streaming bulk export, and hot-reload of external sinks.
+Alert rules, compliance reports, HMAC key rotation, streaming bulk export,
+and hot-reload of external sinks.
 
 | Concept                 | DDD Building Block | Location                          |
 | ----------------------- | ------------------ | --------------------------------- |
@@ -211,11 +211,10 @@ streaming bulk export, and hot-reload of external sinks.
 | AlertRuleMatch          | Value Object       | `src/domain/serve_audit/`         |
 | AlertThreshold          | Value Object       | `src/domain/serve_audit/`         |
 | AlertAction             | Value Object       | `src/domain/serve_audit/`         |
-| AuditSinkTypeRegistry   | Domain Service     | `src/domain/serve_audit/`         |
-| ExtensionSinkLoader     | Domain Service     | `src/domain/serve_audit/`         |
 | AuditSinkHotReloader    | Domain Service     | `src/domain/serve_audit/`         |
-| ExtractedAuditSink      | Value Object       | `src/domain/extensions/`          |
 
 ## Future phases
 
-No additional phases planned. The audit system is feature-complete.
+- **Phase 6**: Extension sink API — let extension authors register custom audit
+  sinks (Kafka, Elasticsearch, etc.) via the AuditSink interface. Requires design
+  work on trust model, discovery/packaging, sandbox, and lifecycle.

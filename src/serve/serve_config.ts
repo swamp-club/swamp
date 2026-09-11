@@ -181,10 +181,8 @@ export interface AuditConfig {
 }
 
 export interface AuditSinkConfigEntry {
-  readonly type: "webhook" | "syslog" | "extension";
+  readonly type: "webhook" | "syslog";
   readonly config: Record<string, unknown>;
-  readonly extension?: string;
-  readonly filter?: Record<string, unknown>;
 }
 
 export interface AlertRuleConfigEntry {
@@ -1477,7 +1475,7 @@ function validateAuditConfig(audit: unknown, path: string): void {
         `Invalid audit.sinks in ${path}: expected array`,
       );
     }
-    const validSinkTypes = new Set(["webhook", "syslog", "extension"]);
+    const validSinkTypes = new Set(["webhook", "syslog"]);
     const knownWebhookKeys = new Set([
       "type",
       "url",
@@ -1497,12 +1495,6 @@ function validateAuditConfig(audit: unknown, path: string): void {
       "ca-cert",
       "hostname",
     ]);
-    const knownExtensionKeys = new Set([
-      "type",
-      "extension",
-      "config",
-      "filter",
-    ]);
     for (let i = 0; i < obj.sinks.length; i++) {
       const sink = obj.sinks[i];
       if (typeof sink !== "object" || sink === null || Array.isArray(sink)) {
@@ -1513,15 +1505,13 @@ function validateAuditConfig(audit: unknown, path: string): void {
       const s = sink as Record<string, unknown>;
       if (typeof s.type !== "string" || !validSinkTypes.has(s.type)) {
         throw new UserError(
-          `Invalid audit.sinks[${i}].type in ${path}: expected one of webhook, syslog, extension`,
+          `Invalid audit.sinks[${i}].type in ${path}: expected one of webhook, syslog`,
         );
       }
       if (s.type === "webhook") {
         warnUnknownKeys(s, knownWebhookKeys, path, `audit.sinks[${i}].`);
       } else if (s.type === "syslog") {
         warnUnknownKeys(s, knownSyslogKeys, path, `audit.sinks[${i}].`);
-      } else if (s.type === "extension") {
-        warnUnknownKeys(s, knownExtensionKeys, path, `audit.sinks[${i}].`);
       }
       if (s.type === "webhook") {
         if (typeof s.url !== "string") {
@@ -1546,22 +1536,6 @@ function validateAuditConfig(audit: unknown, path: string): void {
         if (typeof s.port !== "number" || !Number.isInteger(s.port)) {
           throw new UserError(
             `Invalid audit.sinks[${i}].port in ${path}: syslog sink requires an integer port`,
-          );
-        }
-      }
-      if (s.type === "extension") {
-        if (typeof s.extension !== "string" || s.extension.length === 0) {
-          throw new UserError(
-            `Invalid audit.sinks[${i}].extension in ${path}: extension sink requires an extension name`,
-          );
-        }
-        if (
-          s.config !== undefined &&
-          (typeof s.config !== "object" || s.config === null ||
-            Array.isArray(s.config))
-        ) {
-          throw new UserError(
-            `Invalid audit.sinks[${i}].config in ${path}: expected object`,
           );
         }
       }
@@ -1659,13 +1633,6 @@ export function parseAuditConfig(
       const type = raw.type as string;
       if (type === "webhook" || type === "syslog") {
         sinks.push({ type, config: raw });
-      } else if (type === "extension") {
-        sinks.push({
-          type,
-          config: (raw.config as Record<string, unknown>) ?? {},
-          extension: raw.extension as string,
-          filter: raw.filter as Record<string, unknown> | undefined,
-        });
       }
     }
   }
