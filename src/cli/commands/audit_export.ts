@@ -119,7 +119,6 @@ export const auditExportCommand = withRemoteOptions(
   const renderer = createAuditExportRenderer(ctx.outputMode);
   let totalCount = 0;
   let allData = "";
-  let allEvents: unknown[] = [];
   let isFirstChunk = true;
   let outputFile: Deno.FsFile | undefined;
 
@@ -143,17 +142,15 @@ export const auditExportCommand = withRemoteOptions(
         break;
       }
 
-      const chunkData = chunk.data ??
-        (chunk.events ? JSON.stringify(chunk.events, null, 2) : "");
+      const chunkData = chunk.data ?? "";
 
       if (outputFile) {
-        const prefix = !isFirstChunk && format !== "json" ? "\n" : "";
+        const prefix = !isFirstChunk ? "\n" : "";
         await outputFile.write(
           new TextEncoder().encode(prefix + chunkData),
         );
       } else {
         allData += (isFirstChunk ? "" : "\n") + chunkData;
-        if (chunk.events) allEvents = allEvents.concat(chunk.events);
       }
       isFirstChunk = false;
     }

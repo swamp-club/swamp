@@ -3133,15 +3133,16 @@ export const serveCommand = new Command()
               });
               versionNum++;
             }
-            const currentVersion = hmacKeyVersions.length;
+            const currentVersion =
+              hmacKeyVersions[hmacKeyVersions.length - 1].version;
             hmacContext = {
-              key: hmacKeyVersions[currentVersion - 1].key,
+              key: hmacKeyVersions[hmacKeyVersions.length - 1].key,
               keyVersion: currentVersion,
             };
             hmacKeyRegistry = new HmacKeyRegistry(hmacKeyVersions);
             logger.info(
               "HMAC enabled for audit events with {count} key version(s) (current: v{version})",
-              { count: currentVersion, version: currentVersion },
+              { count: hmacKeyVersions.length, version: currentVersion },
             );
           } catch (error: unknown) {
             logger.error(

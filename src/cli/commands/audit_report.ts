@@ -41,7 +41,7 @@ export const auditReportCommand = withRemoteOptions(
     .description("Run an audit compliance report")
     .example(
       "Run access review",
-      "swamp audit report access-review --server http://localhost:7443 --from 2026-09-01 --to 2026-09-10",
+      "swamp audit report access-review --server http://localhost:7443 --since 2026-09-01 --until 2026-09-10",
     )
     .example(
       "List available reports",
@@ -50,11 +50,11 @@ export const auditReportCommand = withRemoteOptions(
     .arguments("[name:string]")
     .option("--list", "List available compliance reports")
     .option(
-      "--from <date:string>",
+      "--since <date:string>",
       "Start date, e.g. 2026-09-01T00:00:00Z",
     )
     .option(
-      "--to <date:string>",
+      "--until <date:string>",
       "End date, e.g. 2026-09-10T00:00:00Z",
     ),
 ).action(async function (options: AnyOptions, name?: string) {
@@ -92,9 +92,9 @@ export const auditReportCommand = withRemoteOptions(
     );
   }
 
-  if (!options.from || !options.to) {
+  if (!options.since || !options.until) {
     throw new UserError(
-      "Both --from and --to are required for compliance reports.",
+      "Both --since and --until are required for compliance reports.",
     );
   }
 
@@ -116,8 +116,8 @@ export const auditReportCommand = withRemoteOptions(
       type: "audit.report",
       payload: {
         name,
-        from: options.from,
-        to: options.to,
+        from: options.since,
+        to: options.until,
       },
     },
   );

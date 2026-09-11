@@ -2076,11 +2076,14 @@ export function handleMessage(
             );
             totalCount += sorted.length;
             if (format === "json") {
+              const ndjson = sorted
+                .map((e) => JSON.stringify(e))
+                .join("\n");
               send(socket, {
                 type: "audit.export",
                 id: request.id,
                 payload: {
-                  events: sorted as unknown as Record<string, unknown>[],
+                  data: ndjson,
                   format,
                   count: sorted.length,
                   streaming: true,
