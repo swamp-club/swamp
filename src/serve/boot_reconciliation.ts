@@ -663,6 +663,10 @@ export interface TokenConsistencyDeps {
     list(): Promise<string[]>;
   };
   knownUndecryptable?: Set<string>;
+  probeVaultSecret?: (
+    vaultName: string,
+    secretKey: string,
+  ) => Promise<boolean>;
 }
 
 export interface TokenInconsistency {
@@ -752,15 +756,34 @@ async function sweepTokenConsistencyInner(
     }
   }
 
+  const dataAttrsByName = new Map(
+    dataItems
+      .filter((item) => item.modelName && item.data.name === "token-main")
+      .map((item) => [
+        item.modelName,
+        item.attrs as { vaultName?: string; secretKey?: string },
+      ]),
+  );
   for (const tokenName of definitionNames) {
-    if (!secretTokenNames.has(tokenName)) {
-      inconsistencies.push({
-        mode: "missing-secret",
-        tokenName,
-        detail:
-          "Definition and data exist but no secret found in _token-secrets — token will fail authentication",
-      });
+    if (secretTokenNames.has(tokenName)) continue;
+    const attrs = dataAttrsByName.get(tokenName);
+    if (attrs?.vaultName && attrs?.secretKey && deps.probeVaultSecret) {
+      try {
+        const found = await deps.probeVaultSecret(
+          attrs.vaultName,
+          attrs.secretKey,
+        );
+        if (found) continue;
+      } catch {
+        // Vault probe failed — fall through to report missing-secret
+      }
     }
+    inconsistencies.push({
+      mode: "missing-secret",
+      tokenName,
+      detail:
+        "Definition and data exist but no secret found — token will fail authentication",
+    });
   }
 
   const knownUndecryptable = deps.knownUndecryptable ?? new Set();

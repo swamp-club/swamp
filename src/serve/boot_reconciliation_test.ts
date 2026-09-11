@@ -1436,6 +1436,11 @@ function createMockConsistencyDeps(opts: {
   dataTokenNames?: string[];
   definitionNames?: string[];
   undecryptableKeys?: Set<string>;
+  tokenVaultNames?: Record<string, string>;
+  probeVaultSecret?: (
+    vaultName: string,
+    secretKey: string,
+  ) => Promise<boolean>;
 }): TokenConsistencyDeps {
   const provider = createMockTokenSecretsProvider({
     keys: (opts.secretKeys ?? []).map((n) => `server-token-${n}`),
@@ -1445,6 +1450,7 @@ function createMockConsistencyDeps(opts: {
   });
 
   const definitionSet = new Set(opts.definitionNames ?? []);
+  const vaultNames = opts.tokenVaultNames ?? {};
 
   const dataItems = (opts.dataTokenNames ?? []).map((name) => ({
     data: Data.create({
@@ -1462,6 +1468,17 @@ function createMockConsistencyDeps(opts: {
     modelId: `def-${name}`,
   }));
 
+  const tokenAttrs = Object.fromEntries(
+    (opts.dataTokenNames ?? []).map((name) => [
+      name,
+      {
+        state: "active",
+        vaultName: vaultNames[name] ?? "_token-secrets",
+        secretKey: `server-token-${name}`,
+      },
+    ]),
+  );
+
   return {
     repoContext: {
       definitionRepo: {
@@ -1474,13 +1491,17 @@ function createMockConsistencyDeps(opts: {
       },
       unifiedDataRepo: {
         findAllForType: () => Promise.resolve(dataItems),
-        getContent: (_mt: ModelType, _id: string, _name: string) =>
-          Promise.resolve(
-            encoder.encode(JSON.stringify({ state: "active" })),
-          ),
+        getContent: (_mt: ModelType, _id: string, name: string) => {
+          const modelName =
+            dataItems.find((d) => d.modelId === _id && d.data.name === name)
+              ?.data.tags["modelName"] ?? "";
+          const attrs = tokenAttrs[modelName] ?? { state: "active" };
+          return Promise.resolve(encoder.encode(JSON.stringify(attrs)));
+        },
       },
     } as unknown as RepositoryContext,
     tokenSecretsProvider: provider,
+    probeVaultSecret: opts.probeVaultSecret,
   };
 }
 
@@ -1554,6 +1575,56 @@ Deno.test("sweepTokenConsistency: orders by severity", async () => {
   assertEquals(modes[0], "undecryptable-secret");
   assertEquals(modes[1], "missing-secret");
   assertEquals(modes[2], "orphaned-secret");
+});
+
+Deno.test("sweepTokenConsistency: vault-backed token passes when probe finds secret", async () => {
+  const deps = createMockConsistencyDeps({
+    secretKeys: [],
+    dataTokenNames: ["vault-token"],
+    definitionNames: ["vault-token"],
+    tokenVaultNames: { "vault-token": "my-vault" },
+    probeVaultSecret: (_vaultName, _secretKey) => Promise.resolve(true),
+  });
+  const result = await sweepTokenConsistency(deps);
+  assertEquals(result.inconsistencies.length, 0);
+});
+
+Deno.test("sweepTokenConsistency: vault-backed token fails when probe returns false", async () => {
+  const deps = createMockConsistencyDeps({
+    secretKeys: [],
+    dataTokenNames: ["vault-token"],
+    definitionNames: ["vault-token"],
+    tokenVaultNames: { "vault-token": "my-vault" },
+    probeVaultSecret: (_vaultName, _secretKey) => Promise.resolve(false),
+  });
+  const result = await sweepTokenConsistency(deps);
+  assertEquals(result.inconsistencies.length, 1);
+  assertEquals(result.inconsistencies[0].mode, "missing-secret");
+});
+
+Deno.test("sweepTokenConsistency: vault-backed token fails when probe throws", async () => {
+  const deps = createMockConsistencyDeps({
+    secretKeys: [],
+    dataTokenNames: ["vault-token"],
+    definitionNames: ["vault-token"],
+    tokenVaultNames: { "vault-token": "my-vault" },
+    probeVaultSecret: () => Promise.reject(new Error("vault unreachable")),
+  });
+  const result = await sweepTokenConsistency(deps);
+  assertEquals(result.inconsistencies.length, 1);
+  assertEquals(result.inconsistencies[0].mode, "missing-secret");
+});
+
+Deno.test("sweepTokenConsistency: missing-secret reported when no probe provided", async () => {
+  const deps = createMockConsistencyDeps({
+    secretKeys: [],
+    dataTokenNames: ["vault-token"],
+    definitionNames: ["vault-token"],
+    tokenVaultNames: { "vault-token": "my-vault" },
+  });
+  const result = await sweepTokenConsistency(deps);
+  assertEquals(result.inconsistencies.length, 1);
+  assertEquals(result.inconsistencies[0].mode, "missing-secret");
 });
 
 // ── Root control-plane isolation regression test ────────────────────

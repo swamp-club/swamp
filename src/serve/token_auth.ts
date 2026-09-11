@@ -87,6 +87,15 @@ export function extractWebSocketToken(
   return null;
 }
 
+export type TokenAuthRejectionReason =
+  | "expired"
+  | "revoked"
+  | "secret-mismatch"
+  | "no-definition"
+  | "invalid-format"
+  | "vault-error"
+  | "unknown";
+
 export type ServerTokenAuthResult =
   | {
     ok: true;
@@ -94,7 +103,22 @@ export type ServerTokenAuthResult =
     collectives: readonly string[];
     groups: readonly string[];
   }
-  | { ok: false; error: string };
+  | { ok: false; error: string; reason: TokenAuthRejectionReason };
+
+export function classifyRedeemError(message: string): TokenAuthRejectionReason {
+  if (message.includes("has expired")) return "expired";
+  if (message.includes("has been revoked")) return "revoked";
+  if (message.includes("does not match")) return "secret-mismatch";
+  if (message.includes("does not exist")) return "no-definition";
+  if (message.includes("Invalid token format")) return "invalid-format";
+  if (
+    message.includes("not found") || message.includes("Vault") ||
+    message.includes("vault")
+  ) {
+    return "vault-error";
+  }
+  return "unknown";
+}
 
 /**
  * Validates a presented `<name>.<secret>` server token by running the
@@ -109,7 +133,11 @@ export async function authenticateServerToken(
   repoContext: RepositoryContext,
 ): Promise<ServerTokenAuthResult> {
   if (presented.length > MAX_TOKEN_LENGTH) {
-    return { ok: false, error: "Token exceeds maximum length" };
+    return {
+      ok: false,
+      error: "Token exceeds maximum length",
+      reason: "invalid-format",
+    };
   }
 
   const split = splitServerToken(presented);
@@ -117,6 +145,7 @@ export async function authenticateServerToken(
     return {
       ok: false,
       error: "Invalid token format: expected <name>.<secret>",
+      reason: "invalid-format",
     };
   }
 
@@ -136,11 +165,16 @@ export async function authenticateServerToken(
     })
   ) {
     if (event.kind === "error") {
-      logger.debug("Token authentication failed for {name}: {error}", {
-        name: split.name,
-        error: event.error.message,
-      });
-      return { ok: false, error: "Authentication failed" };
+      const reason = classifyRedeemError(event.error.message);
+      logger.warn(
+        "Token authentication failed for {name} ({reason}): {error}",
+        {
+          name: split.name,
+          reason,
+          error: event.error.message,
+        },
+      );
+      return { ok: false, error: "Authentication failed", reason };
     }
     if (event.kind === "completed") {
       const tokenRecord = event.run.dataArtifacts.find(
@@ -162,6 +196,7 @@ export async function authenticateServerToken(
     return {
       ok: false,
       error: "Token validation completed but principal could not be resolved",
+      reason: "unknown",
     };
   }
 

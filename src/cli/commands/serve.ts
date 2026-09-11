@@ -1926,6 +1926,17 @@ export const serveCommand = new Command()
       repoContext,
       tokenSecretsProvider,
       knownUndecryptable: new Set(healthResult.undecryptable),
+      probeVaultSecret: async (vaultName, secretKey) => {
+        try {
+          const vs = await VaultService.fromRepository(resolvedRepoDir, {
+            defaultVaultName: repoMarker?.defaultVault,
+          });
+          await vs.get(vaultName, secretKey, "serve:token-consistency-probe");
+          return true;
+        } catch {
+          return false;
+        }
+      },
     });
 
     const clubApiKey = Deno.env.get("SWAMP_API_KEY") ?? null;
@@ -3843,10 +3854,18 @@ export const serveCommand = new Command()
             );
             if (!result.ok) {
               logger.warn(
-                "WebSocket auth rejected for {key} from {ip}: {error}",
-                { key: rlKey, ip: remoteAddr, error: result.error },
+                "WebSocket auth rejected for {key} from {ip} ({reason}): {error}",
+                {
+                  key: rlKey,
+                  ip: remoteAddr,
+                  reason: result.reason,
+                  error: result.error,
+                },
               );
-              return new Response("Unauthorized", { status: 401 });
+              return new Response(
+                `Unauthorized: ${result.reason}`,
+                { status: 401 },
+              );
             }
             clearRateLimit(rlKey);
             const principal = parsePrincipal(result.principalId);
@@ -3938,7 +3957,10 @@ export const serveCommand = new Command()
                 repoContext,
               );
               if (!authResult.ok) {
-                return new Response("Unauthorized", { status: 401 });
+                return new Response(
+                  `Unauthorized: ${authResult.reason}`,
+                  { status: 401 },
+                );
               }
               clearRateLimit(cancelRlKey);
 
