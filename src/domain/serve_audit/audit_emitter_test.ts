@@ -408,6 +408,53 @@ Deno.test("AuditEmitter: replaceSinks swaps sinks and new sink receives events",
   assertEquals(sink2.written.flat()[0].action, "second");
 });
 
+Deno.test("AuditEmitter: hot-reload preserves chain state across sink swap", async () => {
+  const sink1 = createMockSink("sink1");
+  const emitter = new AuditEmitter([sink1]);
+
+  emitter.emit(makeEvent("before-swap"));
+  await emitter.flush();
+
+  const seqAfterFirst = emitter.chainState.sequence;
+  assert(seqAfterFirst >= 1, "chain should have advanced");
+
+  const sink2 = createMockSink("sink2");
+  emitter.replaceSinks([sink2]);
+
+  emitter.emit(makeEvent("after-swap"));
+  await emitter.flush();
+
+  const seqAfterSecond = emitter.chainState.sequence;
+  assertEquals(
+    seqAfterSecond,
+    seqAfterFirst + 1,
+    "chain sequence should be continuous across sink swap (no gap, no reset)",
+  );
+
+  const event2 = sink2.written.flat()[0];
+  assertEquals(event2.sequence, seqAfterFirst + 1);
+});
+
+Deno.test("AuditEmitter: replaceSinks with empty list stops event delivery without crash", async () => {
+  const sink = createMockSink("original");
+  const emitter = new AuditEmitter([sink]);
+
+  emitter.emit(makeEvent("before-empty"));
+  await emitter.flush();
+  assertEquals(sink.written.flat().length, 1);
+
+  emitter.replaceSinks([]);
+
+  emitter.emit(makeEvent("after-empty"));
+  await emitter.flush();
+
+  assertEquals(
+    sink.written.flat().length,
+    1,
+    "original sink should not receive events after replacement",
+  );
+});
+
 Deno.test("AuditEmitter: sink timeout prevents drain loop blocking", async () => {
   const hangingSink: AuditSink = {
     name: "hanging",

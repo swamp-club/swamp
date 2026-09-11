@@ -3117,10 +3117,11 @@ export const serveCommand = new Command()
                 versionedHex.length % 2 !== 0
               ) {
                 logger.warn(
-                  "HMAC key version {version} in vault has invalid hex, stopping version scan",
+                  "HMAC key version {version} in vault has invalid hex, skipping",
                   { version: versionNum },
                 );
-                break;
+                versionNum++;
+                continue;
               }
               const versionedBytes = new Uint8Array(
                 versionedHex.match(/.{2}/g)!.map((h) => parseInt(h, 16)),
@@ -3138,17 +3139,13 @@ export const serveCommand = new Command()
               keyVersion: currentVersion,
             };
             hmacKeyRegistry = new HmacKeyRegistry(hmacKeyVersions);
-            if (currentVersion > 1) {
-              logger.info(
-                "HMAC enabled for audit events with {count} key versions (current: v{version})",
-                { count: currentVersion, version: currentVersion },
-              );
-            } else {
-              logger.info("HMAC enabled for audit events");
-            }
+            logger.info(
+              "HMAC enabled for audit events with {count} key version(s) (current: v{version})",
+              { count: currentVersion, version: currentVersion },
+            );
           } catch (error: unknown) {
-            logger.warn(
-              "Failed to initialize HMAC, continuing without: {error}",
+            logger.error(
+              "Failed to initialize HMAC for audit — events will NOT be HMAC-signed: {error}",
               {
                 error: error instanceof Error ? error.message : String(error),
               },

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { AuditQueryService } from "./audit_query_service.ts";
 import { AuditChainState } from "./audit_chain.ts";
 import { createAuditEvent } from "./audit_event.ts";
@@ -294,6 +294,204 @@ Deno.test("AuditQueryService.queryStream: applies filters", async () => {
   assertEquals(batches.length, 1);
   assertEquals(batches[0].length, 1);
   assertEquals(batches[0][0].action, "vault.get");
+});
+
+Deno.test("AuditQueryService.queryStream: events span multiple date partitions and are yielded per-partition", async () => {
+  const chain = new AuditChainState();
+  const date1 = "2026-08-10";
+  const date2 = "2026-08-11";
+  const date3 = "2026-08-12";
+  const e1 = await makeChainedEvent("a", chain, {
+    timestamp: `${date1}T08:00:00.000Z`,
+  });
+  const e2 = await makeChainedEvent("b", chain, {
+    timestamp: `${date2}T09:00:00.000Z`,
+  });
+  const e3 = await makeChainedEvent("c", chain, {
+    timestamp: `${date2}T10:00:00.000Z`,
+  });
+  const e4 = await makeChainedEvent("d", chain, {
+    timestamp: `${date3}T11:00:00.000Z`,
+  });
+  const eventsByDate = new Map<string, ChainedAuditEvent[]>([
+    [date1, [e1]],
+    [date2, [e2, e3]],
+    [date3, [e4]],
+  ]);
+  const store = createMultiDateStore(eventsByDate);
+  const service = new AuditQueryService(store);
+
+  const batches: ChainedAuditEvent[][] = [];
+  for await (
+    const batch of service.queryStream({
+      since: `${date1}T00:00:00.000Z`,
+      until: `${date3}T23:59:59.999Z`,
+    })
+  ) {
+    batches.push(batch);
+  }
+  assertEquals(batches.length, 3);
+  assertEquals(batches[0].length, 1);
+  assertEquals(batches[0][0].action, "a");
+  assertEquals(batches[1].length, 2);
+  assertEquals(batches[2].length, 1);
+  assertEquals(batches[2][0].action, "d");
+});
+
+Deno.test("AuditQueryService.queryStream: handles empty partitions gracefully", async () => {
+  const chain = new AuditChainState();
+  const date1 = "2026-08-10";
+  const date3 = "2026-08-12";
+  const e1 = await makeChainedEvent("a", chain, {
+    timestamp: `${date1}T08:00:00.000Z`,
+  });
+  const e2 = await makeChainedEvent("b", chain, {
+    timestamp: `${date3}T11:00:00.000Z`,
+  });
+  const eventsByDate = new Map<string, ChainedAuditEvent[]>([
+    [date1, [e1]],
+    [date3, [e2]],
+  ]);
+  const store = createMultiDateStore(eventsByDate);
+  const service = new AuditQueryService(store);
+
+  const batches: ChainedAuditEvent[][] = [];
+  for await (
+    const batch of service.queryStream({
+      since: `${date1}T00:00:00.000Z`,
+      until: `${date3}T23:59:59.999Z`,
+    })
+  ) {
+    batches.push(batch);
+  }
+  assertEquals(batches.length, 2);
+  assertEquals(batches[0][0].action, "a");
+  assertEquals(batches[1][0].action, "b");
+});
+
+Deno.test("AuditQueryService.queryStream: filters across partition boundaries", async () => {
+  const chain = new AuditChainState();
+  const date1 = "2026-08-10";
+  const date2 = "2026-08-11";
+  const e1 = await makeChainedEvent("vault.get", chain, {
+    category: "secrets",
+    timestamp: `${date1}T08:00:00.000Z`,
+  });
+  const e2 = await makeChainedEvent("model.run", chain, {
+    category: "execution",
+    timestamp: `${date1}T09:00:00.000Z`,
+  });
+  const e3 = await makeChainedEvent("vault.put", chain, {
+    category: "secrets",
+    timestamp: `${date2}T10:00:00.000Z`,
+  });
+  const e4 = await makeChainedEvent("workflow.run", chain, {
+    category: "execution",
+    timestamp: `${date2}T11:00:00.000Z`,
+  });
+  const eventsByDate = new Map<string, ChainedAuditEvent[]>([
+    [date1, [e1, e2]],
+    [date2, [e3, e4]],
+  ]);
+  const store = createMultiDateStore(eventsByDate);
+  const service = new AuditQueryService(store);
+
+  const batches: ChainedAuditEvent[][] = [];
+  for await (
+    const batch of service.queryStream({
+      since: `${date1}T00:00:00.000Z`,
+      until: `${date2}T23:59:59.999Z`,
+      category: "secrets",
+    })
+  ) {
+    batches.push(batch);
+  }
+  assertEquals(batches.length, 2);
+  assertEquals(batches[0].length, 1);
+  assertEquals(batches[0][0].action, "vault.get");
+  assertEquals(batches[1].length, 1);
+  assertEquals(batches[1][0].action, "vault.put");
+});
+
+Deno.test("AuditQueryService.queryStream: rejects date range exceeding maximum", async () => {
+  const store = createInMemoryStore([]);
+  const service = new AuditQueryService(store);
+
+  await assertRejects(
+    async () => {
+      for await (
+        const _batch of service.queryStream({
+          since: "2026-01-01T00:00:00.000Z",
+          until: "2026-06-01T00:00:00.000Z",
+        })
+      ) {
+        // consume stream
+      }
+    },
+    Error,
+    "Date range too wide",
+  );
+});
+
+Deno.test("AuditQueryService.queryStream: handles malformed JSONL lines", async () => {
+  const date = "2026-08-10";
+  const chain = new AuditChainState();
+  const validEvent = await makeChainedEvent("good", chain, {
+    timestamp: `${date}T08:00:00.000Z`,
+  });
+  const jsonl = JSON.stringify(validEvent) + "\n" +
+    "this is not valid json\n" +
+    "{also broken\n";
+  const storage = new Map<string, Uint8Array>();
+  storage.set(`events/${date}/batch.jsonl`, encoder.encode(jsonl));
+  const store: AuditStore = {
+    put(key: string, data: Uint8Array): Promise<void> {
+      storage.set(key, data);
+      return Promise.resolve();
+    },
+    get(key: string): Promise<Uint8Array | null> {
+      return Promise.resolve(storage.get(key) ?? null);
+    },
+    list(prefix: string): Promise<string[]> {
+      return Promise.resolve(
+        [...storage.keys()].filter((k) => k.startsWith(prefix)),
+      );
+    },
+    delete(key: string): Promise<void> {
+      storage.delete(key);
+      return Promise.resolve();
+    },
+  };
+  const service = new AuditQueryService(store);
+
+  const batches: ChainedAuditEvent[][] = [];
+  for await (
+    const batch of service.queryStream({
+      since: `${date}T00:00:00.000Z`,
+      until: `${date}T23:59:59.999Z`,
+    })
+  ) {
+    batches.push(batch);
+  }
+  assertEquals(batches.length, 1);
+  assertEquals(batches[0].length, 1);
+  assertEquals(batches[0][0].action, "good");
+});
+
+Deno.test("AuditQueryService.queryStream: yields nothing for empty store", async () => {
+  const store = createInMemoryStore([]);
+  const service = new AuditQueryService(store);
+
+  const batches: ChainedAuditEvent[][] = [];
+  for await (
+    const batch of service.queryStream({
+      since: "2026-08-10T00:00:00.000Z",
+      until: "2026-08-10T23:59:59.999Z",
+    })
+  ) {
+    batches.push(batch);
+  }
+  assertEquals(batches.length, 0);
 });
 
 // verifyHmac tests
