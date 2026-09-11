@@ -106,7 +106,10 @@ export async function authenticateAdmin(
   if (!authResult.ok) {
     return {
       ok: false,
-      response: new Response("Unauthorized", { status: 401 }),
+      response: new Response(
+        `Unauthorized: ${authResult.reason}`,
+        { status: 401 },
+      ),
     };
   }
 

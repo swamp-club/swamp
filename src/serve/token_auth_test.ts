@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import {
   authenticateServerToken,
+  classifyRedeemError,
   extractWebSocketToken,
   splitServerToken,
 } from "./token_auth.ts";
@@ -177,6 +178,63 @@ Deno.test("extractWebSocketToken: ignores empty query param", () => {
   assertEquals(extractWebSocketToken(req), null);
 });
 
+// ── classifyRedeemError ────────────────────────────────────────────────
+
+Deno.test("classifyRedeemError: classifies expired token", () => {
+  assertEquals(
+    classifyRedeemError("Server token 'bot' has expired"),
+    "expired",
+  );
+});
+
+Deno.test("classifyRedeemError: classifies revoked token", () => {
+  assertEquals(
+    classifyRedeemError("Server token 'bot' has been revoked"),
+    "revoked",
+  );
+});
+
+Deno.test("classifyRedeemError: classifies secret mismatch", () => {
+  assertEquals(
+    classifyRedeemError("Server token 'bot' does not match"),
+    "secret-mismatch",
+  );
+});
+
+Deno.test("classifyRedeemError: classifies no definition", () => {
+  assertEquals(
+    classifyRedeemError("Server token 'bot' does not exist — mint it first"),
+    "no-definition",
+  );
+});
+
+Deno.test("classifyRedeemError: classifies invalid format", () => {
+  assertEquals(
+    classifyRedeemError("Invalid token format: expected <name>.<secret>"),
+    "invalid-format",
+  );
+});
+
+Deno.test("classifyRedeemError: classifies vault error", () => {
+  assertEquals(
+    classifyRedeemError(
+      "Secret 'server-token-bot' not found in _token-secrets",
+    ),
+    "vault-error",
+  );
+  assertEquals(
+    classifyRedeemError("Vault 'my-vault' not found"),
+    "vault-error",
+  );
+});
+
+Deno.test("classifyRedeemError: returns unknown for unrecognized errors", () => {
+  assertEquals(
+    classifyRedeemError("Something completely unexpected"),
+    "unknown",
+  );
+});
+
 // ── authenticateServerToken ─────────────────────────────────────────────
 
 Deno.test("authenticateServerToken: rejects token exceeding MAX_TOKEN_LENGTH", async () => {
@@ -189,5 +247,6 @@ Deno.test("authenticateServerToken: rejects token exceeding MAX_TOKEN_LENGTH", a
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertEquals(result.error, "Token exceeds maximum length");
+    assertEquals(result.reason, "invalid-format");
   }
 });
