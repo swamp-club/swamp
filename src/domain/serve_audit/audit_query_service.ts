@@ -55,6 +55,9 @@ export interface AuditVerifyResult {
   readonly valid: boolean;
   readonly eventsChecked: number;
   readonly brokenAt?: number;
+  readonly hmacValid?: boolean;
+  readonly hmacChecked?: number;
+  readonly hmacFailed?: number;
   readonly message: string;
 }
 
@@ -196,6 +199,7 @@ export class AuditQueryService {
       return {
         valid: true,
         eventsChecked: 0,
+        ...this.#hmacResult(allEvents),
         message: "No chained events found in the specified time range",
       };
     }
@@ -221,10 +225,13 @@ export class AuditQueryService {
 
     const result = await verifyChain(eventsToVerify, verifyStartDigest);
 
+    const hmac = this.#hmacResult(chainedEvents);
+
     if (result.valid) {
       return {
         valid: true,
         eventsChecked: eventsToVerify.length,
+        ...hmac,
         message:
           `Chain integrity verified: ${eventsToVerify.length} events, sequences ${
             chainedEvents[0].sequence
@@ -236,7 +243,20 @@ export class AuditQueryService {
       valid: false,
       eventsChecked: eventsToVerify.length,
       brokenAt: result.brokenAt,
+      ...hmac,
       message: `Chain integrity broken at sequence ${result.brokenAt}`,
+    };
+  }
+
+  #hmacResult(
+    events: readonly ChainedAuditEvent[],
+  ): { hmacValid?: boolean; hmacChecked?: number; hmacFailed?: number } {
+    if (!this.#hmacKeyRegistry) return {};
+    const result = this.verifyHmac(events);
+    return {
+      hmacValid: result.valid,
+      hmacChecked: result.checked,
+      hmacFailed: result.failed,
     };
   }
 

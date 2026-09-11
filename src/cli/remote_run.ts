@@ -371,6 +371,124 @@ export function requestServerResponse<T>(
   });
 }
 
+export async function* streamServerResponse<T extends { done?: boolean }>(
+  options: RequestResponseOptions,
+  request: { type: string; id?: string; payload?: unknown },
+): AsyncGenerator<T> {
+  writeRemoteIndicator(options.server);
+  const baseUrl = normalizeServerUrl(options.server);
+  const extraHeaders = options.headers ?? resolveExtraHeaders();
+  const headers: Record<string, string> = { ...extraHeaders };
+  if (options.token) {
+    headers["Authorization"] = `Bearer ${options.token}`;
+  }
+  const requestId = request.id ?? crypto.randomUUID();
+  const socket = options.createSocket
+    ? options.createSocket(baseUrl, headers)
+    : createSocket(baseUrl, headers, options.caCerts);
+  const timeoutMs = options.timeoutMs ?? resolveRequestTimeoutMs();
+
+  type QueueItem =
+    | { kind: "message"; data: T }
+    | { kind: "error"; error: Error }
+    | { kind: "close" };
+
+  const queue: QueueItem[] = [];
+  let resolve: (() => void) | null = null;
+
+  function enqueue(item: QueueItem) {
+    queue.push(item);
+    if (resolve) {
+      resolve();
+      resolve = null;
+    }
+  }
+
+  function waitForItem(): Promise<void> {
+    if (queue.length > 0) return Promise.resolve();
+    return new Promise<void>((r) => {
+      resolve = r;
+    });
+  }
+
+  const timer = setTimeout(() => {
+    try {
+      socket.close();
+    } catch { /* already closed */ }
+    enqueue({
+      kind: "error",
+      error: new UserError(
+        `Request timed out after ${timeoutMs}ms — if the server needs more time, set SWAMP_SERVE_TIMEOUT_MS to a higher value`,
+      ),
+    });
+  }, timeoutMs);
+
+  const onAbort = () => {
+    clearTimeout(timer);
+    try {
+      socket.close();
+    } catch { /* already closed */ }
+    enqueue({ kind: "close" });
+  };
+
+  options.signal?.addEventListener("abort", onAbort, { once: true });
+
+  socket.onerror = (event) => {
+    const msg = event instanceof ErrorEvent ? event.message : "unknown";
+    enqueue({ kind: "error", error: new UserError(`WebSocket error: ${msg}`) });
+  };
+
+  socket.onclose = () => {
+    enqueue({ kind: "close" });
+  };
+
+  socket.onopen = () => {
+    socket.send(JSON.stringify({ ...request, id: requestId }));
+  };
+
+  socket.onmessage = (event) => {
+    if (typeof event.data !== "string") return;
+    try {
+      const message = JSON.parse(event.data) as Record<string, unknown>;
+      if (typeof message !== "object" || message === null) return;
+      if (message.id !== requestId) return;
+      if (message.type === "error") {
+        enqueue({
+          kind: "error",
+          error: new UserError(
+            formatServerError(
+              message.error as { code: string; message: string },
+            ),
+          ),
+        });
+        return;
+      }
+      if ("payload" in message) {
+        enqueue({ kind: "message", data: message.payload as T });
+      }
+    } catch { /* not a protocol frame */ }
+  };
+
+  try {
+    while (true) {
+      await waitForItem();
+      while (queue.length > 0) {
+        const item = queue.shift()!;
+        if (item.kind === "close") return;
+        if (item.kind === "error") throw item.error;
+        yield item.data;
+        if (item.data.done) return;
+      }
+    }
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", onAbort);
+    try {
+      socket.close();
+    } catch { /* already closed */ }
+  }
+}
+
 export interface SubscribeServerOptions {
   readonly server: string;
   readonly token: string | undefined;

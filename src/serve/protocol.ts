@@ -173,6 +173,22 @@ export interface AuditVerifyPayload {
   until?: string;
 }
 
+export interface AuditReportPayload {
+  name: string;
+  from: string;
+  to: string;
+}
+
+export interface AuditReportResponse {
+  name: string;
+  description: string;
+  from: string;
+  to: string;
+  generatedAt: string;
+  markdown: string;
+  data: Record<string, unknown>;
+}
+
 export interface AuditExportPayload {
   from: string;
   to: string;
@@ -190,6 +206,8 @@ export interface AuditExportResponse {
   format: string;
   count: number;
   truncated?: boolean;
+  streaming?: boolean;
+  done?: boolean;
 }
 
 export interface AuditSubscribePayload {
@@ -790,6 +808,7 @@ export type ServerRequest =
   | { type: "audit.export"; id: string; payload: AuditExportPayload }
   | { type: "audit.rotate-key"; id: string }
   | { type: "audit.alerts"; id: string }
+  | { type: "audit.report"; id: string; payload: AuditReportPayload }
   | { type: "summarise"; id: string; payload?: SummarisePayload }
   | { type: "report.get"; id: string; payload: ReportGetPayload }
   | { type: "report.search"; id: string; payload?: ReportSearchPayload }
@@ -1213,6 +1232,9 @@ export interface AuditVerifyResponse {
   valid: boolean;
   eventsChecked: number;
   brokenAt?: number;
+  hmacValid?: boolean;
+  hmacChecked?: number;
+  hmacFailed?: number;
   message: string;
 }
 
@@ -1615,6 +1637,7 @@ export type ServerMessage =
   | { type: "audit.export"; id: string; payload: AuditExportResponse }
   | { type: "audit.rotate-key"; id: string; payload: AuditRotateKeyResponse }
   | { type: "audit.alerts"; id: string; payload: AuditAlertsResponse }
+  | { type: "audit.report"; id: string; payload: AuditReportResponse }
   | { type: "summarise"; id: string; payload: SummariseResponse }
   | { type: "report.get"; id: string; payload: ReportGetResponse }
   | { type: "report.search"; id: string; payload: ReportSearchResponse }

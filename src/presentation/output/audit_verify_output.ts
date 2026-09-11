@@ -46,4 +46,20 @@ export function renderAuditVerify(
     );
     if (data.message) writeOutput(dim(data.message));
   }
+
+  if (data.hmacChecked !== undefined) {
+    if (data.hmacValid) {
+      writeOutput(
+        `${green("✓")} ${
+          bold("HMAC integrity verified")
+        }: ${data.hmacChecked} events checked`,
+      );
+    } else {
+      writeOutput(
+        `${red("✗")} ${bold("HMAC integrity failed")}: ${
+          data.hmacFailed ?? 0
+        } of ${data.hmacChecked} events failed verification`,
+      );
+    }
+  }
 }

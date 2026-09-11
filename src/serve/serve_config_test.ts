@@ -1896,6 +1896,39 @@ Deno.test("loadServeConfig: rejects webhook alert action without url", () => {
   }
 });
 
+Deno.test("loadServeConfig: rejects alert webhook with invalid URL", () => {
+  const dir = Deno.makeTempDirSync();
+  try {
+    const path = join(dir, ".swamp", "serve.yaml");
+    Deno.mkdirSync(join(dir, ".swamp"), { recursive: true });
+    Deno.writeTextFileSync(
+      path,
+      stringifyYaml({
+        audit: {
+          stores: [{ target: "default" }],
+          alerts: [
+            {
+              name: "bad-url",
+              match: { category: "auth" },
+              threshold: { count: 5, "window-seconds": 60 },
+              action: { type: "webhook", url: "not-a-url" },
+            },
+          ],
+        },
+      }),
+    );
+    assertThrows(
+      () => loadServeConfig(path, dir),
+      Error,
+      "is not a valid URL",
+    );
+  } finally {
+    try {
+      Deno.removeSync(dir, { recursive: true });
+    } catch { /* Windows EBUSY */ }
+  }
+});
+
 Deno.test("loadServeConfig: rejects invalid alert action type", () => {
   const dir = Deno.makeTempDirSync();
   try {

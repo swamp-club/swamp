@@ -56,6 +56,7 @@ import { createAuditTimelineRenderer } from "../../presentation/renderers/audit_
 import { auditAlertsCommand } from "./audit_alerts.ts";
 import { auditExportCommand } from "./audit_export.ts";
 import { auditLogCommand } from "./audit_log.ts";
+import { auditReportCommand } from "./audit_report.ts";
 import { auditRotateKeyCommand } from "./audit_rotate_key.ts";
 import { auditVerifyCommand } from "./audit_verify.ts";
 
@@ -254,5 +255,6 @@ export const auditCommand = withRemoteOptions(
   .command("alerts", auditAlertsCommand)
   .command("export", auditExportCommand)
   .command("log", auditLogCommand)
+  .command("report", auditReportCommand)
   .command("rotate-key", auditRotateKeyCommand)
   .command("verify", auditVerifyCommand);

@@ -72,3 +72,46 @@ Deno.test("renderAuditVerify: log mode shows cross for broken chain", () => {
   assertStringIncludes(output, "Chain integrity broken");
   assertStringIncludes(output, "sequence 17");
 });
+
+const hmacPassData: AuditVerifyResponse = {
+  valid: true,
+  eventsChecked: 42,
+  hmacValid: true,
+  hmacChecked: 30,
+  hmacFailed: 0,
+  message: "Chain integrity verified",
+};
+
+const hmacFailData: AuditVerifyResponse = {
+  valid: true,
+  eventsChecked: 42,
+  hmacValid: false,
+  hmacChecked: 30,
+  hmacFailed: 3,
+  message: "Chain integrity verified",
+};
+
+Deno.test("renderAuditVerify: log mode shows HMAC pass", () => {
+  const output = captureLogs(() => renderAuditVerify(hmacPassData, "log"));
+  assertStringIncludes(output, "HMAC integrity verified");
+  assertStringIncludes(output, "30 events");
+});
+
+Deno.test("renderAuditVerify: log mode shows HMAC failure count", () => {
+  const output = captureLogs(() => renderAuditVerify(hmacFailData, "log"));
+  assertStringIncludes(output, "HMAC integrity failed");
+  assertStringIncludes(output, "3 of 30");
+});
+
+Deno.test("renderAuditVerify: json mode includes HMAC fields", () => {
+  const output = captureLogs(() => renderAuditVerify(hmacPassData, "json"));
+  const parsed = JSON.parse(output);
+  assertEquals(parsed.hmacValid, true);
+  assertEquals(parsed.hmacChecked, 30);
+  assertEquals(parsed.hmacFailed, 0);
+});
+
+Deno.test("renderAuditVerify: log mode omits HMAC when not checked", () => {
+  const output = captureLogs(() => renderAuditVerify(validData, "log"));
+  assertEquals(output.includes("HMAC"), false);
+});

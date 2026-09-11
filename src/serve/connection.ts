@@ -28,7 +28,6 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { Principal } from "../domain/access/principal.ts";
 import { audited, type AuditedOptions } from "./audited.ts";
 import { AuditQueryService } from "../domain/serve_audit/audit_query_service.ts";
-import type { ChainedAuditEvent } from "../domain/serve_audit/audit_event.ts";
 import {
   generateHmacKeyBytes,
   importHmacKey,
@@ -522,6 +521,16 @@ const AuditRotateKeyRequestSchema = z.object({
 const AuditAlertsRequestSchema = z.object({
   type: z.literal("audit.alerts"),
   id: z.string().min(1).max(256),
+});
+
+const AuditReportRequestSchema = z.object({
+  type: z.literal("audit.report"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    name: z.string().min(1).max(256),
+    from: z.string(),
+    to: z.string(),
+  }),
 });
 
 const SummariseRequestSchema = z.object({
@@ -1264,6 +1273,7 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   AuditExportRequestSchema,
   AuditRotateKeyRequestSchema,
   AuditAlertsRequestSchema,
+  AuditReportRequestSchema,
   SummariseRequestSchema,
   ReportGetRequestSchema,
   ReportSearchRequestSchema,
@@ -1998,7 +2008,10 @@ export function handleMessage(
             });
             return;
           }
-          const verifyService = new AuditQueryService(ctx.auditStores[0]);
+          const verifyService = new AuditQueryService(
+            ctx.auditStores[0],
+            ctx.auditEmitter?.hmacKeyRegistry,
+          );
           const verifyResult = await verifyService.verify(
             request.payload.since,
             request.payload.until,
@@ -2050,94 +2063,104 @@ export function handleMessage(
             outcome: request.payload.outcome,
             resource: request.payload.resource,
           };
-          const maxExportEvents = 50_000;
-          const events: ChainedAuditEvent[] = [];
-          let truncated = false;
+          const csvHeader =
+            "id,timestamp,instanceId,category,action,stage,outcome,principalKind,principalId,initiatedBy,sourceIp,requestId,resourceKind,resourceName,decision.effect,decision.grantId,detail";
+          const cefOpts = ctx.auditNamespace
+            ? { namespace: ctx.auditNamespace }
+            : undefined;
+          let totalCount = 0;
           for await (const batch of exportService.queryStream(filters)) {
-            for (const event of batch) {
-              if (events.length >= maxExportEvents) {
-                truncated = true;
-                break;
-              }
-              events.push(event);
-            }
-            if (truncated) break;
-          }
-          events.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-
-          if (format === "json") {
-            send(socket, {
-              type: "audit.export",
-              id: request.id,
-              payload: {
-                events: events as unknown as Record<string, unknown>[],
-                format,
-                count: events.length,
-                truncated,
-              },
-            });
-          } else if (format === "cef") {
-            const cefOpts = ctx.auditNamespace
-              ? { namespace: ctx.auditNamespace }
-              : undefined;
-            const lines = events.map((e) => formatCefLine(e, cefOpts)).join(
-              "\n",
+            if (batch.length === 0) continue;
+            const sorted = [...batch].sort((a, b) =>
+              a.timestamp.localeCompare(b.timestamp)
             );
-            send(socket, {
-              type: "audit.export",
-              id: request.id,
-              payload: {
-                data: lines,
-                format,
-                count: events.length,
-                truncated,
-              },
-            });
-          } else {
-            const csvHeader =
-              "id,timestamp,instanceId,category,action,stage,outcome,principalKind,principalId,initiatedBy,sourceIp,requestId,resourceKind,resourceName,decision.effect,decision.grantId,detail";
-            const csvRows = events.map((e) => {
-              const fields = [
-                e.id,
-                e.timestamp,
-                e.instanceId,
-                e.category,
-                e.action,
-                e.stage,
-                e.outcome,
-                e.principalKind,
-                e.principalId,
-                e.initiatedBy,
-                e.sourceIp,
-                e.requestId,
-                e.resourceKind,
-                e.resourceName,
-                e.decision?.effect ?? "",
-                e.decision?.grantId ?? "",
-                e.detail ?? "",
-              ];
-              return fields.map((f) => {
-                let s = String(f);
-                if (/^[=+\-@\t\r]/.test(s)) {
-                  s = `\t${s}`;
-                }
-                if (s.includes(",") || s.includes('"') || s.includes("\n")) {
-                  return `"${s.replace(/"/g, '""')}"`;
-                }
-                return s;
-              }).join(",");
-            });
-            send(socket, {
-              type: "audit.export",
-              id: request.id,
-              payload: {
-                data: [csvHeader, ...csvRows].join("\n"),
-                format,
-                count: events.length,
-                truncated,
-              },
-            });
+            totalCount += sorted.length;
+            if (format === "json") {
+              send(socket, {
+                type: "audit.export",
+                id: request.id,
+                payload: {
+                  events: sorted as unknown as Record<string, unknown>[],
+                  format,
+                  count: sorted.length,
+                  streaming: true,
+                  done: false,
+                },
+              });
+            } else if (format === "cef") {
+              const lines = sorted.map((e) => formatCefLine(e, cefOpts))
+                .join("\n");
+              send(socket, {
+                type: "audit.export",
+                id: request.id,
+                payload: {
+                  data: lines,
+                  format,
+                  count: sorted.length,
+                  streaming: true,
+                  done: false,
+                },
+              });
+            } else {
+              const csvRows = sorted.map((e) => {
+                const fields = [
+                  e.id,
+                  e.timestamp,
+                  e.instanceId,
+                  e.category,
+                  e.action,
+                  e.stage,
+                  e.outcome,
+                  e.principalKind,
+                  e.principalId,
+                  e.initiatedBy,
+                  e.sourceIp,
+                  e.requestId,
+                  e.resourceKind,
+                  e.resourceName,
+                  e.decision?.effect ?? "",
+                  e.decision?.grantId ?? "",
+                  e.detail ?? "",
+                ];
+                return fields.map((f) => {
+                  let s = String(f);
+                  if (/^[=+\-@\t\r]/.test(s)) {
+                    s = `\t${s}`;
+                  }
+                  if (
+                    s.includes(",") || s.includes('"') || s.includes("\n")
+                  ) {
+                    return `"${s.replace(/"/g, '""')}"`;
+                  }
+                  return s;
+                }).join(",");
+              });
+              const csvData = totalCount === sorted.length
+                ? [csvHeader, ...csvRows].join("\n")
+                : csvRows.join("\n");
+              send(socket, {
+                type: "audit.export",
+                id: request.id,
+                payload: {
+                  data: csvData,
+                  format,
+                  count: sorted.length,
+                  streaming: true,
+                  done: false,
+                },
+              });
+            }
           }
+          send(socket, {
+            type: "audit.export",
+            id: request.id,
+            payload: {
+              format,
+              count: totalCount,
+              streaming: true,
+              done: true,
+            },
+          });
         })(),
         auditOpts("admin", "access", "audit"),
       );
@@ -2340,6 +2363,81 @@ export function handleMessage(
           return Promise.resolve();
         })(),
         auditOpts("admin", "audit", "alerts"),
+      );
+      break;
+    case "audit.report":
+      if (
+        !authorizeOrReject(
+          socket,
+          request.id,
+          principal,
+          "admin",
+          { kind: "access", name: "audit", fields: {} },
+          ctx,
+        ).allowed
+      ) {
+        task = Promise.resolve();
+        activeRequests.delete(request.id);
+        break;
+      }
+      task = audited(
+        (async () => {
+          if (!ctx.auditStores || ctx.auditStores.length === 0) {
+            send(socket, {
+              type: "audit.report",
+              id: request.id,
+              payload: {
+                name: request.payload.name,
+                description: "",
+                from: request.payload.from,
+                to: request.payload.to,
+                generatedAt: new Date().toISOString(),
+                markdown: "No audit stores configured",
+                data: {},
+              },
+            });
+            return;
+          }
+          const { getComplianceReport } = await import(
+            "../domain/serve_audit/audit_compliance_reports.ts"
+          );
+          const report = getComplianceReport(request.payload.name);
+          if (!report) {
+            send(socket, {
+              type: "audit.report",
+              id: request.id,
+              payload: {
+                name: request.payload.name,
+                description: "",
+                from: request.payload.from,
+                to: request.payload.to,
+                generatedAt: new Date().toISOString(),
+                markdown: `Unknown report: "${request.payload.name}"`,
+                data: { error: `Unknown report: "${request.payload.name}"` },
+              },
+            });
+            return;
+          }
+          const reportService = new AuditQueryService(ctx.auditStores[0]);
+          const result = await report.execute(reportService, {
+            from: request.payload.from,
+            to: request.payload.to,
+          });
+          send(socket, {
+            type: "audit.report",
+            id: request.id,
+            payload: {
+              name: result.name,
+              description: result.description,
+              from: result.from,
+              to: result.to,
+              generatedAt: result.generatedAt,
+              markdown: result.markdown,
+              data: result.json,
+            },
+          });
+        })(),
+        auditOpts("admin", "audit", "report"),
       );
       break;
     case "summarise":

@@ -20,9 +20,9 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import {
-  requestServerResponse,
   resolveServerToken,
   resolveServeUrl,
+  streamServerResponse,
   withRemoteOptions,
 } from "../remote_run.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -35,8 +35,10 @@ interface AuditExportResponse {
   readonly format: string;
   readonly count: number;
   readonly truncated?: boolean;
-  readonly data: string;
+  readonly data?: string;
   readonly events?: unknown[];
+  readonly streaming?: boolean;
+  readonly done?: boolean;
 }
 
 export const auditExportCommand = withRemoteOptions(
@@ -100,38 +102,73 @@ export const auditExportCommand = withRemoteOptions(
     );
   }
 
-  const response = await requestServerResponse<AuditExportResponse>(
-    { server, token },
-    {
-      type: "audit.export",
-      payload: {
-        from: options.since,
-        to: options.until,
-        format,
-        principal: options.principal,
-        category: options.category,
-        action: options.action,
-        outcome: options.outcome,
-        resource: options.resource,
-      },
+  const requestPayload = {
+    type: "audit.export",
+    payload: {
+      from: options.since,
+      to: options.until,
+      format,
+      principal: options.principal,
+      category: options.category,
+      action: options.action,
+      outcome: options.outcome,
+      resource: options.resource,
     },
-  );
-
-  const outputData = response.data ??
-    (response.events ? JSON.stringify(response.events, null, 2) : "");
-
-  if (options.output) {
-    await Deno.writeTextFile(options.output, outputData);
-  }
+  };
 
   const renderer = createAuditExportRenderer(ctx.outputMode);
+  let totalCount = 0;
+  let allData = "";
+  let allEvents: unknown[] = [];
+  let isFirstChunk = true;
+  let outputFile: Deno.FsFile | undefined;
+
+  try {
+    if (options.output) {
+      outputFile = await Deno.open(options.output, {
+        write: true,
+        create: true,
+        truncate: true,
+      });
+    }
+
+    const stream = streamServerResponse<AuditExportResponse>(
+      { server, token },
+      requestPayload,
+    );
+
+    for await (const chunk of stream) {
+      if (chunk.done) {
+        totalCount = chunk.count;
+        break;
+      }
+
+      const chunkData = chunk.data ??
+        (chunk.events ? JSON.stringify(chunk.events, null, 2) : "");
+
+      if (outputFile) {
+        const prefix = !isFirstChunk && format !== "json" ? "\n" : "";
+        await outputFile.write(
+          new TextEncoder().encode(prefix + chunkData),
+        );
+      } else {
+        allData += (isFirstChunk ? "" : "\n") + chunkData;
+        if (chunk.events) allEvents = allEvents.concat(chunk.events);
+      }
+      isFirstChunk = false;
+    }
+  } finally {
+    if (outputFile) {
+      outputFile.close();
+    }
+  }
+
   renderer.handlers().completed({
     kind: "completed",
     data: {
-      format: response.format,
-      count: response.count,
-      truncated: response.truncated,
-      data: outputData,
+      format,
+      count: totalCount,
+      data: outputFile ? "" : allData,
       outputPath: options.output,
     },
   });

@@ -1599,10 +1599,19 @@ function validateAuditConfig(audit: unknown, path: string): void {
           `Invalid audit.alerts[${i}].action.type in ${path}: expected one of webhook, log`,
         );
       }
-      if (action.type === "webhook" && typeof action.url !== "string") {
-        throw new UserError(
-          `Invalid audit.alerts[${i}].action.url in ${path}: webhook action requires a url`,
-        );
+      if (action.type === "webhook") {
+        if (typeof action.url !== "string") {
+          throw new UserError(
+            `Invalid audit.alerts[${i}].action.url in ${path}: webhook action requires a url`,
+          );
+        }
+        try {
+          new URL(action.url);
+        } catch {
+          throw new UserError(
+            `Invalid audit.alerts[${i}].action.url in ${path}: "${action.url}" is not a valid URL`,
+          );
+        }
       }
     }
   }
