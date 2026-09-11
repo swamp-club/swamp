@@ -1699,3 +1699,232 @@ Deno.test("readServeConfigFile: returns null when file does not exist", async ()
     } catch { /* Windows EBUSY */ }
   }
 });
+
+// ── Alert Rule Config ─────────────────────────────────────────────────
+
+Deno.test("parseAuditConfig: parses valid alert rules", () => {
+  const result = parseAuditConfig({
+    audit: {
+      stores: [{ target: "default" }],
+      alerts: [
+        {
+          name: "brute-force",
+          description: "Multiple denied auth attempts",
+          match: { category: "auth", outcome: "denied" },
+          threshold: { count: 5, "window-seconds": 60 },
+          action: { type: "log" },
+        },
+      ],
+    },
+  });
+  assertEquals(result?.alerts.length, 1);
+  assertEquals(result?.alerts[0].name, "brute-force");
+  assertEquals(result?.alerts[0].threshold.count, 5);
+  assertEquals(result?.alerts[0].threshold["window-seconds"], 60);
+  assertEquals(result?.alerts[0].action.type, "log");
+});
+
+Deno.test("parseAuditConfig: parses webhook alert action with url", () => {
+  const result = parseAuditConfig({
+    audit: {
+      stores: [{ target: "default" }],
+      alerts: [
+        {
+          name: "secret-spike",
+          match: { category: "secrets" },
+          threshold: { count: 10, "window-seconds": 300 },
+          action: {
+            type: "webhook",
+            url: "https://pagerduty.example.com/alert",
+          },
+        },
+      ],
+    },
+  });
+  assertEquals(result?.alerts[0].action.type, "webhook");
+  assertEquals(
+    result?.alerts[0].action.url,
+    "https://pagerduty.example.com/alert",
+  );
+});
+
+Deno.test("parseAuditConfig: empty alerts array parses to empty", () => {
+  const result = parseAuditConfig({
+    audit: {
+      stores: [{ target: "default" }],
+      alerts: [],
+    },
+  });
+  assertEquals(result?.alerts.length, 0);
+});
+
+Deno.test("parseAuditConfig: no alerts key defaults to empty", () => {
+  const result = parseAuditConfig({
+    audit: { stores: [{ target: "default" }] },
+  });
+  assertEquals(result?.alerts.length, 0);
+});
+
+Deno.test("loadServeConfig: rejects alert rule without name", () => {
+  const dir = Deno.makeTempDirSync();
+  try {
+    const path = join(dir, ".swamp", "serve.yaml");
+    Deno.mkdirSync(join(dir, ".swamp"), { recursive: true });
+    Deno.writeTextFileSync(
+      path,
+      stringifyYaml({
+        audit: {
+          stores: [{ target: "default" }],
+          alerts: [
+            {
+              match: { category: "auth" },
+              threshold: { count: 5, "window-seconds": 60 },
+              action: { type: "log" },
+            },
+          ],
+        },
+      }),
+    );
+    assertThrows(
+      () => loadServeConfig(path, dir),
+      Error,
+      "name",
+    );
+  } finally {
+    try {
+      Deno.removeSync(dir, { recursive: true });
+    } catch { /* Windows EBUSY */ }
+  }
+});
+
+Deno.test("loadServeConfig: rejects alert rule with invalid threshold count", () => {
+  const dir = Deno.makeTempDirSync();
+  try {
+    const path = join(dir, ".swamp", "serve.yaml");
+    Deno.mkdirSync(join(dir, ".swamp"), { recursive: true });
+    Deno.writeTextFileSync(
+      path,
+      stringifyYaml({
+        audit: {
+          stores: [{ target: "default" }],
+          alerts: [
+            {
+              name: "bad-threshold",
+              match: { category: "auth" },
+              threshold: { count: 0, "window-seconds": 60 },
+              action: { type: "log" },
+            },
+          ],
+        },
+      }),
+    );
+    assertThrows(
+      () => loadServeConfig(path, dir),
+      Error,
+      "threshold.count",
+    );
+  } finally {
+    try {
+      Deno.removeSync(dir, { recursive: true });
+    } catch { /* Windows EBUSY */ }
+  }
+});
+
+Deno.test("loadServeConfig: rejects alert without window-seconds", () => {
+  const dir = Deno.makeTempDirSync();
+  try {
+    const path = join(dir, ".swamp", "serve.yaml");
+    Deno.mkdirSync(join(dir, ".swamp"), { recursive: true });
+    Deno.writeTextFileSync(
+      path,
+      stringifyYaml({
+        audit: {
+          stores: [{ target: "default" }],
+          alerts: [
+            {
+              name: "no-window",
+              match: { category: "auth" },
+              threshold: { count: 5 },
+              action: { type: "log" },
+            },
+          ],
+        },
+      }),
+    );
+    assertThrows(
+      () => loadServeConfig(path, dir),
+      Error,
+      "window-seconds",
+    );
+  } finally {
+    try {
+      Deno.removeSync(dir, { recursive: true });
+    } catch { /* Windows EBUSY */ }
+  }
+});
+
+Deno.test("loadServeConfig: rejects webhook alert action without url", () => {
+  const dir = Deno.makeTempDirSync();
+  try {
+    const path = join(dir, ".swamp", "serve.yaml");
+    Deno.mkdirSync(join(dir, ".swamp"), { recursive: true });
+    Deno.writeTextFileSync(
+      path,
+      stringifyYaml({
+        audit: {
+          stores: [{ target: "default" }],
+          alerts: [
+            {
+              name: "no-url",
+              match: { category: "auth" },
+              threshold: { count: 5, "window-seconds": 60 },
+              action: { type: "webhook" },
+            },
+          ],
+        },
+      }),
+    );
+    assertThrows(
+      () => loadServeConfig(path, dir),
+      Error,
+      "url",
+    );
+  } finally {
+    try {
+      Deno.removeSync(dir, { recursive: true });
+    } catch { /* Windows EBUSY */ }
+  }
+});
+
+Deno.test("loadServeConfig: rejects invalid alert action type", () => {
+  const dir = Deno.makeTempDirSync();
+  try {
+    const path = join(dir, ".swamp", "serve.yaml");
+    Deno.mkdirSync(join(dir, ".swamp"), { recursive: true });
+    Deno.writeTextFileSync(
+      path,
+      stringifyYaml({
+        audit: {
+          stores: [{ target: "default" }],
+          alerts: [
+            {
+              name: "bad-action",
+              match: { category: "auth" },
+              threshold: { count: 5, "window-seconds": 60 },
+              action: { type: "email" },
+            },
+          ],
+        },
+      }),
+    );
+    assertThrows(
+      () => loadServeConfig(path, dir),
+      Error,
+      "action.type",
+    );
+  } finally {
+    try {
+      Deno.removeSync(dir, { recursive: true });
+    } catch { /* Windows EBUSY */ }
+  }
+});

@@ -55,9 +55,6 @@ export interface AuditVerifyResult {
   readonly valid: boolean;
   readonly eventsChecked: number;
   readonly brokenAt?: number;
-  readonly hmacValid?: boolean;
-  readonly hmacChecked?: number;
-  readonly hmacFailed?: number;
   readonly message: string;
 }
 
