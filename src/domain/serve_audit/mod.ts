@@ -59,6 +59,7 @@ export {
   type AuditQueryFilters,
   type AuditQueryResult,
   AuditQueryService,
+  type AuditStreamFilters,
   type AuditVerifyResult,
 } from "./audit_query_service.ts";
 

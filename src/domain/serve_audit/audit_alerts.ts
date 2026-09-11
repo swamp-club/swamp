@@ -47,6 +47,7 @@ export type AlertRuleState = "armed" | "triggered" | "cooldown";
 
 export interface AlertRuleStatus {
   readonly name: string;
+  readonly description?: string;
   readonly state: AlertRuleState;
   readonly windowCount: number;
   readonly lastFiredAt?: string;
@@ -146,6 +147,7 @@ export class AlertRuleEngine {
   status(): AlertRuleStatus[] {
     return this.#rules.map((rule) => ({
       name: rule.config.name,
+      description: rule.config.description,
       state: rule.state,
       windowCount: rule.windowTimestamps.length,
       lastFiredAt: rule.lastFiredAt !== undefined

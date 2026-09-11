@@ -40,6 +40,11 @@ export interface AuditQueryFilters {
   readonly export?: boolean;
 }
 
+export type AuditStreamFilters = Omit<
+  AuditQueryFilters,
+  "limit" | "cursor" | "export"
+>;
+
 export interface AuditQueryResult {
   readonly events: readonly ChainedAuditEvent[];
   readonly cursor?: string;
@@ -239,7 +244,8 @@ export class AuditQueryService {
   }
 
   // Structural HMAC verification: checks that each event's hmacKeyVersion
-  // references a known key and that hashed fields match the expected format.
+  // references a known key and that all hashed fields (resourceName, detail,
+  // methodName, decision.resourceName) match the expected 64-char hex format.
   // Full cryptographic re-verification is not possible because the original
   // plaintext is not stored alongside the hash.
   verifyHmac(
@@ -260,7 +266,26 @@ export class AuditQueryService {
         failed++;
         continue;
       }
+      let fieldValid = true;
       if (!HMAC_HEX_PATTERN.test(event.resourceName)) {
+        fieldValid = false;
+      }
+      if (event.detail !== undefined && !HMAC_HEX_PATTERN.test(event.detail)) {
+        fieldValid = false;
+      }
+      if (
+        event.methodName !== undefined &&
+        !HMAC_HEX_PATTERN.test(event.methodName)
+      ) {
+        fieldValid = false;
+      }
+      if (
+        event.decision?.resourceName !== undefined &&
+        !HMAC_HEX_PATTERN.test(event.decision.resourceName)
+      ) {
+        fieldValid = false;
+      }
+      if (!fieldValid) {
         failed++;
       }
     }
@@ -268,7 +293,7 @@ export class AuditQueryService {
   }
 
   async *queryStream(
-    filters: AuditQueryFilters,
+    filters: AuditStreamFilters,
   ): AsyncGenerator<ChainedAuditEvent[]> {
     const dates = dateRange(filters.since, filters.until);
     if (dates.length > MAX_DATE_RANGE_DAYS) {
