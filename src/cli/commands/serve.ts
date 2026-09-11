@@ -237,6 +237,7 @@ import {
 } from "../../serve/boot_reconciliation.ts";
 import { AccessDataPoller } from "../../serve/access_data_poller.ts";
 import { ConfigPoller } from "../../serve/config_poller.ts";
+import { RuntimeDataPoller } from "../../serve/runtime_data_poller.ts";
 
 import {
   DEFAULT_HEARTBEAT_INTERVAL_MS,
@@ -1510,6 +1511,7 @@ export const serveCommand = new Command()
 
     let configPoller: ConfigPoller | null = null;
     let accessDataPoller: AccessDataPoller | null = null;
+    let runtimeDataPoller: RuntimeDataPoller | null = null;
     let repoMarker = null;
     try {
       const markerRepo = new RepoMarkerRepository();
@@ -2539,6 +2541,13 @@ export const serveCommand = new Command()
         namespace: serveNamespace,
       });
       accessDataPoller.start();
+
+      runtimeDataPoller = new RuntimeDataPoller({
+        syncService,
+        catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+        namespace: serveNamespace,
+      });
+      runtimeDataPoller.start();
     }
 
     const cancelRegistry = new RunCancelRegistry();
@@ -4514,6 +4523,9 @@ export const serveCommand = new Command()
       }
       if (accessDataPoller) {
         await accessDataPoller.stop();
+      }
+      if (runtimeDataPoller) {
+        await runtimeDataPoller.stop();
       }
       if (configPoller) {
         await configPoller.stop();
