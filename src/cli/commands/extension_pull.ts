@@ -36,6 +36,7 @@ import {
   requireRepoMarker,
   resolveManagedConfigPaths,
 } from "../repo_context.ts";
+import { pushManagedConfigChangesDeferred } from "../managed_config_sync.ts";
 import { UserError } from "../../domain/errors.ts";
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { loadIdentity } from "../load_identity.ts";
@@ -336,4 +337,6 @@ export const extensionPullCommand = withRemoteOptions(
   } finally {
     catalog.close();
   }
+
+  await pushManagedConfigChangesDeferred(repoDir, marker);
 });

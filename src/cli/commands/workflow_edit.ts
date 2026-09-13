@@ -35,6 +35,9 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import { pushManagedConfigChanges } from "../managed_config_sync.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { UserError } from "../../domain/errors.ts";
 import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
 import {
@@ -91,10 +94,14 @@ export const workflowEditCommand = withRemoteOptions(
       return;
     }
 
-    const { repoContext, repoDir } = await requireInitializedRepoUnlocked({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
+    const { repoContext, repoDir, syncService, datastoreConfig } =
+      await requireInitializedRepoUnlocked({
+        repoDir: resolveRepoDir(options.repoDir),
+        outputMode: cliCtx.outputMode,
+      });
+
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(RepoPath.create(repoDir));
 
     const libCtx = createLibSwampContext({ logger: cliCtx.logger });
 
@@ -138,6 +145,8 @@ export const workflowEditCommand = withRemoteOptions(
       }),
       renderer.handlers(),
     );
+
+    await pushManagedConfigChanges(syncService, datastoreConfig, marker);
 
     cliCtx.logger.debug("Workflow edit command completed");
   },

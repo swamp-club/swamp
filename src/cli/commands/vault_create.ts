@@ -32,6 +32,9 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import { pushManagedConfigChanges } from "../managed_config_sync.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { UserError } from "../../domain/errors.ts";
 import { requireAuthenticated, requireScope } from "../auth_context.ts";
 import { RENAMED_VAULT_TYPES } from "../../domain/vaults/vault_types.ts";
@@ -137,10 +140,14 @@ export const vaultCreateCommand = withRemoteOptions(
       return;
     }
 
-    const { repoDir } = await requireInitializedRepoUnlocked({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
+    const { repoDir, syncService, datastoreConfig } =
+      await requireInitializedRepoUnlocked({
+        repoDir: resolveRepoDir(options.repoDir),
+        outputMode: cliCtx.outputMode,
+      });
+
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(RepoPath.create(repoDir));
 
     // Get vault name - prompt if not provided (stays in CLI)
     let vaultName = vaultNameArg;
@@ -199,6 +206,8 @@ export const vaultCreateCommand = withRemoteOptions(
       }),
       renderer.handlers(),
     );
+
+    await pushManagedConfigChanges(syncService, datastoreConfig, marker);
 
     cliCtx.logger.debug("Vault create command completed");
   },

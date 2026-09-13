@@ -24,6 +24,9 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import { pushManagedConfigChangesDeferred } from "../managed_config_sync.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import {
   consumeStream,
   createLibSwampContext,
@@ -113,6 +116,10 @@ export const extensionInstallCommand = withRemoteOptions(
     extensionInstall(ctx, deps),
     renderer.handlers(),
   );
+
+  const markerRepo = new RepoMarkerRepository();
+  const marker = await markerRepo.read(RepoPath.create(repoDir));
+  await pushManagedConfigChangesDeferred(repoDir, marker);
 
   cliCtx.logger.debug("Extension install command completed");
 });

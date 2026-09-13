@@ -32,6 +32,9 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import { pushManagedConfigChanges } from "../managed_config_sync.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import {
   requestServerResponse,
   resolveServerToken,
@@ -77,10 +80,14 @@ export const workflowCreateCommand = withRemoteOptions(
     return;
   }
 
-  const { repoDir } = await requireInitializedRepoUnlocked({
-    repoDir: resolveRepoDir(options.repoDir),
-    outputMode: cliCtx.outputMode,
-  });
+  const { repoDir, syncService, datastoreConfig } =
+    await requireInitializedRepoUnlocked({
+      repoDir: resolveRepoDir(options.repoDir),
+      outputMode: cliCtx.outputMode,
+    });
+
+  const markerRepo = new RepoMarkerRepository();
+  const marker = await markerRepo.read(RepoPath.create(repoDir));
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
   const deps = createWorkflowCreateDeps(repoDir);
@@ -89,6 +96,8 @@ export const workflowCreateCommand = withRemoteOptions(
     workflowCreate(ctx, deps, { name }),
     renderer.handlers(),
   );
+
+  await pushManagedConfigChanges(syncService, datastoreConfig, marker);
 
   cliCtx.logger.debug("Workflow create command completed");
 });

@@ -322,6 +322,15 @@ reconciliation loop after `--stale-ttl`.
   (`src/infrastructure/persistence/paths.ts`). Concurrent SIGHUPs are ignored while a
   reload is in progress. The mechanism and its catalog constraint are detailed
   in [remote-execution §Hot-Reload](../enablers/remote-execution.md#hot-reload-for-pulled-extension-bundles).
+  For `managedConfig` deployments where pods must be recoverable from
+  datastore-only state without `kubectl exec`, `--hot-reload` is recommended.
+  Without it, `swamp serve reload --server` fails and the only way to pick up
+  newly installed extensions is a full pod restart. The `ConfigPoller` refreshes
+  definitions (models, workflows, vaults) every 30 s, but extension type
+  registries are not reloaded by the poller — that requires the SIGHUP-based
+  hot-reload path. See
+  [datastores §Managed Config](../enablers/datastores.md#managed-config-deployment-architecture)
+  for the full deployment guide.
 - **Graceful shutdown.** SIGINT/SIGTERM run the sequence above, then stop the
   heartbeat, worker gateway, pollers and telemetry, remove the PID file and
   abort the listener. In `--json` mode each phase is emitted as a

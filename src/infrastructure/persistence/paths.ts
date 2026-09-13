@@ -134,12 +134,13 @@ export function registerManagedConfig(
     );
   }
   const key = resolve(repoDir);
-  const existing = managedConfigRegistry.get(key);
-  if (typeof existing === "string") return;
   if (active && configBasePath) {
     managedConfigRegistry.set(key, configBasePath);
-  } else if (existing === undefined) {
-    managedConfigRegistry.set(key, false);
+  } else {
+    const existing = managedConfigRegistry.get(key);
+    if (existing === undefined) {
+      managedConfigRegistry.set(key, false);
+    }
   }
 }
 

@@ -29,6 +29,7 @@ import {
   requireRepoMarker,
   resolveManagedConfigPaths,
 } from "../repo_context.ts";
+import { pushManagedConfigChangesDeferred } from "../managed_config_sync.ts";
 import { createInstallContext, parseExtensionRef } from "./extension_pull.ts";
 import {
   consumeStream,
@@ -216,5 +217,9 @@ export const extensionUpdateCommand = withRemoteOptions(
     );
   } finally {
     catalog.close();
+  }
+
+  if (!options.check) {
+    await pushManagedConfigChangesDeferred(repoDir, marker);
   }
 });

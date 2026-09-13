@@ -1615,3 +1615,90 @@ directories, and exclude patterns.
 | `src/presentation/renderers/datastore_namespace_unset.ts` | `swamp datastore namespace unset` rendering |
 | `src/presentation/renderers/datastore_namespace_migrate.ts` | `swamp datastore namespace migrate` rendering |
 | `src/presentation/renderers/datastore_namespace_list.ts` | `swamp datastore namespace list` rendering |
+
+## Managed Config Deployment Architecture
+
+When `managedConfig: true` is set in `.swamp.yaml`, model definitions, workflow
+definitions, vault configs, the extension lockfile, and pulled extension sources
+are stored in the datastore's `config/` tier instead of the repository's
+top-level directories. This enables stateless pod deployments where the
+datastore (e.g. S3) is the sole source of truth for configuration.
+
+### Where mutations write
+
+Every CLI command and serve handler that mutates config-tier files writes to the
+`config/` subdirectory resolved by `DatastorePathResolver` and then pushes the
+changes to the remote datastore via `pushManagedConfigChanges`
+(`src/cli/managed_config_sync.ts`):
+
+| Mutation type | Config-tier path | CLI push | Serve push |
+|---------------|-----------------|----------|------------|
+| Model definition create/edit | `config/models/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` |
+| Workflow definition create/edit | `config/workflows/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` |
+| Vault config create/edit/migrate | `config/vaults/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` |
+| Extension pull/install/rm/update | `config/pulled-extensions/`, `config/upstream_extensions.json` | `pushManagedConfigChangesDeferred` | `ctx.syncService.pushChanged` |
+| Auto-definitions (direct type execution) | `.swamp/auto-definitions/` (datastore subdir, not config tier) | Via flush coordinator | Via per-model lock flush |
+
+Auto-definitions are a regular datastore subdirectory (`DEFAULT_DATASTORE_SUBDIRS`
+includes `auto-definitions`). They are synced through the normal write-command
+lifecycle (pull on lock acquire, push on flush), not through the config-tier push.
+
+### Extension commands and the chicken-and-egg
+
+Extension commands (`pull`, `install`, `rm`, `update`) use lightweight
+`requireRepoMarker` initialization instead of `requireInitializedRepoUnlocked`
+to avoid circular failure when the datastore extension itself is being
+pulled/updated (see #445). After the mutation completes,
+`pushManagedConfigChangesDeferred` resolves the datastore and creates a sync
+service for the push. This is safe because `managedConfig: true` implies the
+datastore extension is already installed — `config migrate` requires a working
+datastore.
+
+### Pod boot sequence under managed config
+
+The recommended init container sequence for a stateless pod:
+
+1. **Create `.swamp.yaml`** — copy the marker file with the datastore config and
+   `managedConfig: true`.
+2. **`swamp datastore setup extension`** — configure the datastore backend.
+3. **`swamp datastore sync --pull`** — hydrate the local cache from the remote
+   datastore, including `config/` (definitions, pulled extensions, lockfile).
+4. **`swamp datastore config migrate`** — idempotent; on first boot it copies
+   local config into the datastore tier and pushes. On subsequent boots the
+   sentinel skips the copy.
+5. **`swamp extension install`** — restore any pulled extensions whose source
+   files are missing from the hydrated cache. This writes to the config tier
+   and pushes to the remote datastore.
+
+**Critical:** `extension install` (step 5) must run to ensure pulled extension
+source files are complete. The `config/pulled-extensions/` tree in the remote
+datastore may be incomplete if the initial `config migrate` ran before extensions
+were installed.
+
+### Recovery from missing-extensions state
+
+When a pod boots and logs "N pulled extension(s) have missing source files":
+
+1. **From an operator machine with datastore access:**
+   ```bash
+   swamp extension install --repo-dir /path/to/repo
+   ```
+   This restores source files and pushes to the remote datastore. The next pod
+   boot pulls the complete tree.
+
+2. **Via the serve API (with `--hot-reload` enabled):**
+   ```bash
+   swamp extension install --server https://pod-url
+   swamp serve reload --server https://pod-url
+   ```
+   The serve handler installs and pushes to the remote datastore. `serve reload`
+   re-bundles the updated extensions. Without `--hot-reload`, the reload step
+   fails and a pod restart is required.
+
+### Hot reload recommendation
+
+For `managedConfig` deployments where pods must be recoverable from
+datastore-only state without `kubectl exec`, enable `--hot-reload` on the serve
+process. This allows `swamp serve reload --server` to re-bundle extensions after
+`extension install --server`, avoiding a full pod restart. See
+[serve.md](../primitives/serve.md) for hot-reload details.

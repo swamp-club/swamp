@@ -36,6 +36,9 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import { pushManagedConfigChanges } from "../managed_config_sync.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { UserError } from "../../domain/errors.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import {
@@ -150,10 +153,14 @@ Both the source and target vaults must be different types.`,
     return;
   }
 
-  const { repoDir } = await requireInitializedRepoUnlocked({
-    repoDir: resolveRepoDir(options.repoDir),
-    outputMode: cliCtx.outputMode,
-  });
+  const { repoDir, syncService, datastoreConfig } =
+    await requireInitializedRepoUnlocked({
+      repoDir: resolveRepoDir(options.repoDir),
+      outputMode: cliCtx.outputMode,
+    });
+
+  const markerRepo = new RepoMarkerRepository();
+  const marker = await markerRepo.read(RepoPath.create(repoDir));
 
   // Parse --config JSON if provided
   let targetConfig: Record<string, unknown> | undefined;
@@ -370,6 +377,8 @@ Both the source and target vaults must be different types.`,
     }),
     renderer.handlers(),
   );
+
+  await pushManagedConfigChanges(syncService, datastoreConfig, marker);
 
   cliCtx.logger.debug("Vault migrate command completed");
 });
