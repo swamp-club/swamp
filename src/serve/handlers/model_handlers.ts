@@ -1664,6 +1664,25 @@ export async function handleModelEdit(
       id: requestId,
       payload: { data: result ?? {} },
     });
+
+    if (ctx.syncService) {
+      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+        ? ctx.datastoreConfig.namespace
+        : undefined;
+      try {
+        await ctx.syncService.markDirty();
+        await ctx.syncService.pushChanged({ namespace });
+      } catch (pushError) {
+        logger.warn(
+          "Failed to push model edit to remote datastore: {error}",
+          {
+            error: pushError instanceof Error
+              ? pushError.message
+              : String(pushError),
+          },
+        );
+      }
+    }
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "model_edit_failed", message);
