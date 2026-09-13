@@ -559,7 +559,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
 
         // Data changed — merge onto existing document to preserve comments
         if (normalizedExisting) {
-          const doc = parseDocument(existingRaw);
+          const doc = parseDocument(existingRaw, { version: "1.1" });
           mergeIntoDocument(doc, cleanData);
           await atomicWriteTextFile(targetPath, doc.toString());
         }

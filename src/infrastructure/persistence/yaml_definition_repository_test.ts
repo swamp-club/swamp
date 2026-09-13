@@ -25,7 +25,7 @@ import {
 } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
-import { stringify as stringifyYaml } from "@std/yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { z } from "zod";
 import { YamlDefinitionRepository } from "./yaml_definition_repository.ts";
 import { Definition } from "../../domain/definitions/definition.ts";
@@ -1070,5 +1070,98 @@ Deno.test("YamlDefinitionRepository.save: new definitions always write", async (
     const filePath = join(typeDir, "brand-new.yaml");
     const content = await Deno.readTextFile(filePath);
     assertStringIncludes(content, "brand-new");
+  });
+});
+
+// --- Regression: YAML 1.1/1.2 schema mismatch (issue #2120) ---
+
+Deno.test("YamlDefinitionRepository.save: preserves quotes on timestamp strings in sequences and retains comments", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const definition = Definition.create({
+      name: "timestamp-enums",
+      globalArguments: {
+        stages: [
+          {
+            artifacts: [
+              {
+                schema: {
+                  properties: {
+                    rolloutStartedAt: {
+                      enum: ["2026-09-03T01:02:03Z"],
+                    },
+                    rolloutDate: {
+                      enum: ["2026-09-03"],
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    await repo.save(testType, definition);
+
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    const filePath = join(typeDir, "timestamp-enums.yaml");
+
+    // Add a comment so we verify comment preservation alongside quoting
+    const original = await Deno.readTextFile(filePath);
+    const withComment = "# Regression test — do not remove\n" + original;
+    await Deno.writeTextFile(filePath, withComment);
+
+    // Mutate a different field to force a changed save through the merge path
+    definition.setTag("env", "prod");
+    await repo.save(testType, definition);
+
+    const saved = await Deno.readTextFile(filePath);
+
+    // Comment must survive
+    assertStringIncludes(
+      saved,
+      "# Regression test — do not remove",
+      "Comment was lost during merge",
+    );
+
+    // Timestamp strings must remain quoted in raw output
+    assertStringIncludes(saved, "env: prod");
+    const rfc3339Unquoted = /- 2026-09-03T01:02:03Z\s/;
+    const dateOnlyUnquoted = /- 2026-09-03\s/;
+    assertEquals(
+      rfc3339Unquoted.test(saved),
+      false,
+      "RFC 3339 timestamp lost its quotes in raw YAML output",
+    );
+    assertEquals(
+      dateOnlyUnquoted.test(saved),
+      false,
+      "Date-only timestamp lost its quotes in raw YAML output",
+    );
+
+    // @std/yaml reload must return strings, not Date objects
+    const reloaded = parseYaml(saved) as Record<string, unknown>;
+    const globalArgs = reloaded.globalArguments as Record<string, unknown>;
+    const stages = globalArgs.stages as Array<Record<string, unknown>>;
+    const artifacts = stages[0].artifacts as Array<Record<string, unknown>>;
+    const schema = artifacts[0].schema as Record<string, unknown>;
+    const properties = schema.properties as Record<string, unknown>;
+    const rolloutStartedAt = properties.rolloutStartedAt as Record<
+      string,
+      unknown
+    >;
+    const rolloutDate = properties.rolloutDate as Record<string, unknown>;
+
+    assertEquals(
+      typeof (rolloutStartedAt.enum as unknown[])[0],
+      "string",
+      "RFC 3339 timestamp was parsed as Date by @std/yaml after save",
+    );
+    assertEquals(
+      typeof (rolloutDate.enum as unknown[])[0],
+      "string",
+      "Date-only value was parsed as Date by @std/yaml after save",
+    );
   });
 });
