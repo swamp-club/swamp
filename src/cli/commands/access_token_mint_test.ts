@@ -37,10 +37,11 @@ Deno.test("accessTokenMintCommand: description does not mention vault storage", 
   assertEquals(desc.includes("stored in a vault"), false);
 });
 
-Deno.test("accessTokenMintCommand: --vault option help text mentions local repos", async () => {
+Deno.test("accessTokenMintCommand: --vault option help text mentions local repos and not supported", async () => {
   const { accessTokenMintCommand } = await import("./access_token_mint.ts");
   const options = accessTokenMintCommand.getOptions();
   const vaultOpt = options.find((o) => o.name === "vault");
   assertEquals(vaultOpt !== undefined, true);
   assertEquals(vaultOpt!.description.includes("local repos only"), true);
+  assertEquals(vaultOpt!.description.includes("not supported"), true);
 });

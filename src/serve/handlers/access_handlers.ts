@@ -921,7 +921,6 @@ export async function handleAccessTokenRotate(
       serverTokenRotate(libCtx, deps, {
         name: payload.name,
         durationMs: payload.durationMs,
-        vaultName: payload.vaultName,
       }),
       withDefaults({
         completed: (e) => {

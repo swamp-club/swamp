@@ -33,12 +33,13 @@ Deno.test("accessTokenRotateCommand: module loads", async () => {
   assertEquals(accessTokenRotateCommand.getName(), "rotate");
 });
 
-Deno.test("accessTokenRotateCommand: --vault option help text mentions local repos", async () => {
+Deno.test("accessTokenRotateCommand: --vault option help text mentions local repos and not supported", async () => {
   const { accessTokenRotateCommand } = await import("./access_token_rotate.ts");
   const options = accessTokenRotateCommand.getOptions();
   const vaultOpt = options.find((o) => o.name === "vault");
   assertEquals(vaultOpt !== undefined, true);
   assertEquals(vaultOpt!.description.includes("local repos only"), true);
+  assertEquals(vaultOpt!.description.includes("not supported"), true);
 });
 
 Deno.test("accessTokenRotateCommand: --vault rejected when --server is set", async () => {
