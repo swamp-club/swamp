@@ -200,7 +200,7 @@ function createMockSyncService(): {
   const pushCalls: DatastoreSyncOptions[] = [];
   const markDirtyCalls: DatastoreSyncOptions[] = [];
   const service: DatastoreSyncService = {
-    pullChanged(options?: DatastoreSyncOptions): Promise<number | void> {
+    pullChanged(_options?: DatastoreSyncOptions): Promise<number | void> {
       return Promise.resolve(0);
     },
     pushChanged(options?: DatastoreSyncOptions): Promise<number | void> {
