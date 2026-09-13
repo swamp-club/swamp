@@ -18,9 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { resolveWorkflowFields } from "./workflow_handlers.ts";
+import {
+  applyTriggerOverrides,
+  resolveWorkflowFields,
+} from "./workflow_handlers.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
+import type { ConnectionContext } from "./shared.ts";
+import type { ServeConfigFile } from "../serve_config.ts";
+import type { TriggerOverride } from "../../libswamp/mod.ts";
 
 function makeWorkflowRepo(
   workflows: Map<string, Workflow>,
@@ -100,4 +106,77 @@ Deno.test("resolveWorkflowFields: falls back to name-only when repo throws", asy
 
   assertEquals(fields.name, "erroring-workflow");
   assertEquals(fields.tags, undefined);
+});
+
+// ── applyTriggerOverrides ────────────────────────────────────────────
+
+Deno.test("applyTriggerOverrides: calls updateTriggerOverrides with overrides from config", async () => {
+  let capturedOverrides: ReadonlyMap<string, TriggerOverride> | undefined;
+  const ctx = {
+    scheduledExecution: {
+      updateTriggerOverrides: (
+        overrides: ReadonlyMap<string, TriggerOverride>,
+      ) => {
+        capturedOverrides = overrides;
+        return Promise.resolve(1);
+      },
+    },
+  } as unknown as ConnectionContext;
+
+  const config: ServeConfigFile = {
+    triggers: {
+      "daily-report": { schedule: "0 8 * * 1-5" },
+      "scan-cves": { schedule: "0 3 * * *", inputs: { channel: "#sec" } },
+    },
+  };
+
+  await applyTriggerOverrides(ctx, config);
+
+  assertEquals(capturedOverrides?.size, 2);
+  assertEquals(capturedOverrides?.get("daily-report"), {
+    schedule: "0 8 * * 1-5",
+  });
+  assertEquals(capturedOverrides?.get("scan-cves"), {
+    schedule: "0 3 * * *",
+    inputs: { channel: "#sec" },
+  });
+});
+
+Deno.test("applyTriggerOverrides: passes empty map when config has no triggers", async () => {
+  let capturedOverrides: ReadonlyMap<string, TriggerOverride> | undefined;
+  const ctx = {
+    scheduledExecution: {
+      updateTriggerOverrides: (
+        overrides: ReadonlyMap<string, TriggerOverride>,
+      ) => {
+        capturedOverrides = overrides;
+        return Promise.resolve(0);
+      },
+    },
+  } as unknown as ConnectionContext;
+
+  await applyTriggerOverrides(ctx, {});
+
+  assertEquals(capturedOverrides?.size, 0);
+});
+
+Deno.test("applyTriggerOverrides: skips when scheduledExecution is undefined", async () => {
+  const ctx = {} as unknown as ConnectionContext;
+  await applyTriggerOverrides(ctx, {
+    triggers: { w: { schedule: "* * * * *" } },
+  });
+});
+
+Deno.test("applyTriggerOverrides: catches and logs errors from updateTriggerOverrides", async () => {
+  const ctx = {
+    scheduledExecution: {
+      updateTriggerOverrides: () => {
+        return Promise.reject(new Error("scheduler boom"));
+      },
+    },
+  } as unknown as ConnectionContext;
+
+  await applyTriggerOverrides(ctx, {
+    triggers: { w: { schedule: "* * * * *" } },
+  });
 });

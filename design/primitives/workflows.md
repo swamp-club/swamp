@@ -614,10 +614,10 @@ entry are warned about and ignored (`src/serve/serve_config.ts`).
   live-reloaded workflows respect overrides
 - Overrides for unknown workflow names are logged as warnings and skipped
 - Overrides are read at startup and re-read on `swamp serve reload` (SIGHUP or
-  WebSocket `serve.reload`). Both reload triggers require the server to have
-  been started with `--hot-reload` — without it the SIGHUP handler is not
-  installed (`src/cli/commands/serve.ts`) and `serve.reload` is refused with
-  `hot_reload_disabled` (`src/serve/handlers/admin_handlers.ts`)
+  WebSocket `serve.reload`), which requires `--hot-reload`. The WebSocket
+  `workflow.trigger.set` and `workflow.trigger.remove` handlers also trigger a
+  reload of trigger overrides after writing to `serve.yaml`
+  (`src/serve/handlers/workflow_handlers.ts`)
 - Works with both extension and local workflows — but the primary use case is
   extension workflows that cannot be edited directly
 

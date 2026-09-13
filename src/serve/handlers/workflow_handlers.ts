@@ -136,10 +136,12 @@ import { join } from "@std/path";
 import {
   readServeConfigFile,
   SERVE_CONFIG_PATH,
+  type ServeConfigFile,
   type TriggerOverrideEntry,
   validateTriggerOverrideEntry,
   writeServeConfigFile,
 } from "../serve_config.ts";
+import type { TriggerOverride } from "../../libswamp/mod.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 
 const logger = getSwampLogger(["serve", "connection"]);
@@ -1910,6 +1912,8 @@ export async function handleWorkflowTriggerSet(
     config.triggers = triggers;
     await writeServeConfigFile(ctx.repoDir, config);
 
+    await applyTriggerOverrides(ctx, config);
+
     send(socket, {
       type: "workflow.trigger.set",
       id: requestId,
@@ -2025,6 +2029,8 @@ export async function handleWorkflowTriggerRemove(
     }
     await writeServeConfigFile(ctx.repoDir, config);
 
+    await applyTriggerOverrides(ctx, config);
+
     send(socket, {
       type: "workflow.trigger.remove",
       id: requestId,
@@ -2035,5 +2041,23 @@ export async function handleWorkflowTriggerRemove(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "workflow_trigger_remove_failed", message);
+  }
+}
+
+export async function applyTriggerOverrides(
+  ctx: ConnectionContext,
+  config: ServeConfigFile,
+): Promise<void> {
+  if (!ctx.scheduledExecution) return;
+  try {
+    const overrides = new Map<string, TriggerOverride>(
+      config.triggers ? Object.entries(config.triggers) : [],
+    );
+    await ctx.scheduledExecution.updateTriggerOverrides(overrides);
+  } catch (err: unknown) {
+    logger.warn(
+      "Failed to apply trigger overrides to running scheduler: {error}",
+      { error: err instanceof Error ? err.message : String(err) },
+    );
   }
 }
