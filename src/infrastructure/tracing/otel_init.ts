@@ -33,6 +33,7 @@ export interface InitTracingConfig {
   bspUse?: boolean;
   traceparent?: string;
   tracestate?: string;
+  envGet?: (key: string) => string | undefined;
 }
 
 /**
@@ -45,11 +46,12 @@ export interface InitTracingConfig {
 export async function initTracing(
   config?: InitTracingConfig,
 ): Promise<Context | undefined> {
+  const envGet = config?.envGet ?? Deno.env.get.bind(Deno.env);
   const endpoint = config?.endpoint !== undefined
     ? resolveOtlpEndpoint("traces", { genericEndpoint: config.endpoint })
     : resolveOtlpEndpoint("traces");
   const exporterKind = config?.exporterKind ??
-    Deno.env.get("OTEL_TRACES_EXPORTER") ?? "otlp";
+    envGet("OTEL_TRACES_EXPORTER") ?? "otlp";
 
   if (!endpoint && exporterKind !== "console") {
     // No endpoint configured and not console mode — tracing stays disabled.
@@ -80,7 +82,7 @@ export async function initTracing(
   // window completes (Deno.exit short-circuits finally blocks). Default to
   // SimpleSpanProcessor for predictable per-span flush; allow opting back into
   // BatchSpanProcessor via OTEL_BSP_USE=1 for long-running modes (`swamp serve`).
-  const useBatch = config?.bspUse ?? Deno.env.get("OTEL_BSP_USE") === "1";
+  const useBatch = config?.bspUse ?? envGet("OTEL_BSP_USE") === "1";
 
   // Register AsyncLocalStorage-based context manager
   const contextManager = new AsyncLocalStorageContextManager();
@@ -125,10 +127,10 @@ export async function initTracing(
   providerRef = provider;
 
   // Extract inbound TRACEPARENT from the parent process, if present.
-  const traceparent = config?.traceparent ?? Deno.env.get("TRACEPARENT");
+  const traceparent = config?.traceparent ?? envGet("TRACEPARENT");
   if (traceparent) {
     const headers: Record<string, string> = { traceparent };
-    const tracestate = config?.tracestate ?? Deno.env.get("TRACESTATE");
+    const tracestate = config?.tracestate ?? envGet("TRACESTATE");
     if (tracestate) headers.tracestate = tracestate;
     return contextApi.propagation.extract(
       contextApi.context.active(),

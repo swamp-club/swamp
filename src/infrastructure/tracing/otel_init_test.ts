@@ -104,7 +104,11 @@ Deno.test("initTracing: extracts inbound traceparent from config", async () => {
 
 Deno.test("initTracing: returns undefined when no traceparent is set", async () => {
   try {
-    const parentCtx = await initTracing({ exporterKind: "console" });
+    const noEnv = () => undefined;
+    const parentCtx = await initTracing({
+      exporterKind: "console",
+      envGet: noEnv,
+    });
     assertEquals(parentCtx, undefined);
 
     await shutdownTracing();
