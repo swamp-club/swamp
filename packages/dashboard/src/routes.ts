@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { View } from "./components/Sidebar";
+import type { View } from "./types.ts";
 
 const BASE = "/dashboard";
 

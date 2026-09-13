@@ -18,13 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { useCallback, useSyncExternalStore } from "react";
-import type { View } from "../components/Sidebar";
+import type { View } from "../types.ts";
 import {
   buildPath,
   type DetailView,
   parseRoute,
   type RouteState,
-} from "../routes";
+} from "../routes.ts";
 
 let currentState: RouteState = parseRoute(location.pathname);
 const listeners = new Set<() => void>();

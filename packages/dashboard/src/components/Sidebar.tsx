@@ -18,22 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { HealthSnapshot } from "../client/useHealthStream";
+import type { View } from "../types.ts";
 import { Logo } from "./Logo";
 import { ThemeToggle } from "./ThemeToggle";
 
-export type View =
-  | "overview"
-  | "workflows"
-  | "executions"
-  | "models"
-  | "schedules"
-  | "webhooks"
-  | "approvals"
-  | "activity"
-  | "data"
-  | "vaults"
-  | "extensions"
-  | "system";
+export type { View };
 
 const ICONS: Record<string, string> = {
   overview:
