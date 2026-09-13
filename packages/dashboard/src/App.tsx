@@ -17,13 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { SwampProvider, useSwamp } from "./client/SwampProvider";
 import { useAuditStream } from "./client/useAuditStream";
 import { useHealthStream } from "./client/useHealthStream";
 import { useRequest } from "./client/useRequest";
 import { extractArray } from "./client/extract";
-import { Sidebar, type View } from "./components/Sidebar";
+import { Sidebar } from "./components/Sidebar";
+import { useRouter } from "./hooks/useRouter";
 import { Login } from "./views/Login";
 import { Overview } from "./views/Overview";
 import { Workflows } from "./views/Workflows";
@@ -67,34 +68,21 @@ function AppShell() {
   return <Dashboard onLogout={logout} />;
 }
 
-type DetailView =
-  | { kind: "run"; workflowName: string; runId?: string }
-  | { kind: "workflow"; workflowName: string }
-  | { kind: "model"; modelName: string }
-  | null;
-
 function Dashboard({ onLogout }: { onLogout: () => void }) {
-  const [view, setView] = useState<View>("overview");
-  const [detail, setDetail] = useState<DetailView>(null);
+  const {
+    view,
+    detail,
+    navigate,
+    openModel,
+    openWorkflow,
+    openRun,
+    closeDetail,
+  } = useRouter();
   const health = useHealthStream();
   const auditStream = useAuditStream();
 
   const { data: approvalsData } = useRequest("workflow.approvals");
   const approvalCount = extractArray(approvalsData).length;
-
-  const openRun = (workflowName: string, runId?: string) => {
-    setDetail({ kind: "run", workflowName, runId });
-  };
-
-  const openWorkflow = (workflowName: string) => {
-    setDetail({ kind: "workflow", workflowName });
-  };
-
-  const openModel = (modelName: string) => {
-    setDetail({ kind: "model", modelName });
-  };
-
-  const closeDetail = () => setDetail(null);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -105,12 +93,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [detail]);
-
-  const navigate = (v: View) => {
-    setDetail(null);
-    setView(v);
-  };
+  }, [detail, closeDetail]);
 
   return (
     <div className="app">

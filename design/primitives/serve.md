@@ -348,7 +348,11 @@ reconciliation loop after `--stale-ttl`.
   extensions, schedules, webhooks and system) from `packages/dashboard/dist`,
   which `scripts/compile.ts` embeds only when it was pre-built before compile;
   the SPA talks to the same WebSocket protocol and logs in through
-  `/auth/info` + device auth.
+  `/auth/info` + device auth. Navigation state is reflected in the URL path
+  (`/dashboard/models/<name>`, `/dashboard/workflows/<name>/runs/<runId>`,
+  etc.) so views are directly addressable and shareable; the server falls back
+  to `index.html` for any sub-path under `/dashboard/` to support client-side
+  routing.
 - **Club heartbeat.** In OAuth mode — only when an OAuth client id is
   resolved, `--allowed-collectives` is non-empty and `SWAMP_API_KEY` is set;
   otherwise registration is silently skipped — serve registers itself with
