@@ -59,7 +59,7 @@ const DEFAULT_DURATION = "30d";
 export const accessTokenMintCommand = new Command()
   .name("mint")
   .description(
-    "Mint a server token for user authentication; the plaintext is stored in a vault",
+    "Mint a server token for user authentication",
   )
   .example(
     "Mint a token for a user",
@@ -90,7 +90,7 @@ export const accessTokenMintCommand = new Command()
   )
   .option(
     "--vault <vault:string>",
-    "Vault that stores the token plaintext (defaults to the sole configured vault)",
+    "Vault for the token secret (local repos only; ignored when a datastore is configured)",
   )
   .action(async function (options: AnyOptions, name: string) {
     const cliCtx = createContext(options as GlobalOptions, [
@@ -139,9 +139,9 @@ export const accessTokenMintCommand = new Command()
     let effectiveVault = options.vault as string | undefined;
     if (controlPlaneResult) {
       if (effectiveVault !== undefined) {
-        cliCtx.logger.warn(
-          "Ignoring --vault {vault} — token secrets are stored in the {controlPlane} control-plane vault when a datastore is configured",
-          { vault: effectiveVault, controlPlane: TOKEN_SECRETS_VAULT_NAME },
+        throw new UserError(
+          `--vault is not supported when a datastore is configured — token secrets are stored in the control-plane vault. ` +
+            `Use 'swamp access token reveal <name>' to retrieve the token after minting.`,
         );
       }
       effectiveVault = TOKEN_SECRETS_VAULT_NAME;

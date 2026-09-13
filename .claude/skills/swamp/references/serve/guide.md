@@ -199,11 +199,11 @@ WebSocket auth rejected … "Invalid token format: expected <name>.<secret>"
 ### Server access token commands
 
 ```bash
-swamp access token mint <name> --principal user:<id>   # plaintext stored in vault
+swamp access token mint <name> --principal user:<id>   # secret stored in control-plane vault
+swamp access token reveal <name> --yes                 # retrieve the full credential
 swamp access token list
 swamp access token revoke <name>
 swamp access token rotate <name>                       # revoke + mint replacement
-swamp access token rotate <name> --vault <vault>       # rotate into a different vault
 ```
 
 ### Wiring a token into an external secret store
@@ -221,9 +221,12 @@ swamp access token reveal <name> --repo-dir /repo -y --json \
 
 ### Minting for a remote serve
 
-`swamp access token mint` runs against a local repo and vault. For headless
-deployments targeting a remote serve, mint inside the serve process's own
-environment — e.g. via `kubectl exec` — not on the operator's laptop.
+`swamp access token mint` runs against a local repo. When a datastore is
+configured, the token secret is stored in the control-plane vault (not a
+user-configured vault). Use `swamp access token reveal <name>` on the serve host
+to retrieve the credential. For headless deployments, mint inside the serve
+process's own environment — e.g. via `kubectl exec` — not on the operator's
+laptop.
 
 ## OAuth Login
 

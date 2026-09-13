@@ -89,7 +89,7 @@ export const accessTokenRotateCommand = withRemoteOptions(
     )
     .option(
       "--vault <vault:string>",
-      "Vault that stores the token plaintext (defaults to the vault from the existing token)",
+      "Vault for the token secret (local repos only; ignored when a datastore is configured)",
     ),
 ).action(async function (options: AnyOptions, name: string) {
   const cliCtx = createContext(options as GlobalOptions, [
@@ -107,6 +107,12 @@ export const accessTokenRotateCommand = withRemoteOptions(
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
+    if (options.vault !== undefined) {
+      throw new UserError(
+        `--vault is not supported when targeting a remote server — token secrets are stored in the control-plane vault. ` +
+          `Use 'swamp access token reveal <name>' on the serve host to retrieve the token.`,
+      );
+    }
     const token = await resolveServerToken(
       server,
       options.token as string | undefined,
@@ -118,7 +124,6 @@ export const accessTokenRotateCommand = withRemoteOptions(
         payload: {
           name,
           durationMs,
-          vaultName: options.vault as string | undefined,
         },
       },
     );
@@ -153,9 +158,9 @@ export const accessTokenRotateCommand = withRemoteOptions(
   let effectiveVault = options.vault as string | undefined;
   if (controlPlaneResult) {
     if (effectiveVault !== undefined) {
-      cliCtx.logger.warn(
-        "Ignoring --vault {vault} — token secrets are stored in the {controlPlane} control-plane vault when a datastore is configured",
-        { vault: effectiveVault, controlPlane: TOKEN_SECRETS_VAULT_NAME },
+      throw new UserError(
+        `--vault is not supported when a datastore is configured — token secrets are stored in the control-plane vault. ` +
+          `Use 'swamp access token reveal <name>' to retrieve the token after rotating.`,
       );
     }
     effectiveVault = TOKEN_SECRETS_VAULT_NAME;
