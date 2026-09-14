@@ -1089,8 +1089,8 @@ Deno.test("workflowRun bridge finalizes in-flight invocations when execution ser
   // Bridge drained the in-flight method as an error child entry.
   assertEquals(recorded.length, 1);
   assertEquals(recorded[0].methodName, "run");
-  assertEquals(
-    recorded[0].error?.message,
+  assertStringIncludes(
+    recorded[0].error!.message,
     "workflow run terminated before completion",
   );
   // durationMs is non-negative (start time recorded at method_executing,

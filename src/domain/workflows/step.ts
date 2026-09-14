@@ -85,9 +85,7 @@ function rejectStringStepDependsOn(data: unknown): unknown {
     if (Array.isArray(deps)) {
       const hasStrings = deps.some((item) => typeof item === "string");
       if (hasStrings) {
-        const name = typeof raw.name === "string"
-          ? raw.name
-          : "<unnamed step>";
+        const name = typeof raw.name === "string" ? raw.name : "<unnamed step>";
         const example = typeof deps[0] === "string" ? deps[0] : "step-name";
         throw new Error(
           `Step "${name}": dependsOn entries must be objects, not strings.\n\n` +
