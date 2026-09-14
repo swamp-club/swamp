@@ -30,6 +30,7 @@ import { createContext, type GlobalOptions, isStdinTty } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 import { loadIdentity } from "../load_identity.ts";
+import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 
 /** Resolve server URL: env var > default */
 function resolveServerUrl(): string {
@@ -87,6 +88,9 @@ export const authLoginCommand = new Command()
 
     const showSpinner = cliCtx.outputMode !== "json" && !useStdinFlow;
 
+    const existingCredentials = await new AuthRepository().load();
+    const isFirstLogin = existingCredentials === null;
+
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const identity = await loadIdentity();
     const deps = createAuthLoginDeps(identity);
@@ -96,7 +100,10 @@ export const authLoginCommand = new Command()
       username: options.username,
       password: options.password,
     };
-    const renderer = createAuthLoginRenderer(cliCtx.outputMode, showSpinner);
+    const renderer = createAuthLoginRenderer(cliCtx.outputMode, showSpinner, {
+      isFirstLogin,
+      isInteractive: !useStdinFlow,
+    });
     await consumeStream(authLogin(ctx, deps, input), renderer.handlers());
 
     cliCtx.logger.debug("Auth login command completed");

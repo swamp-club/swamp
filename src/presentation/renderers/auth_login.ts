@@ -160,13 +160,43 @@ function renderAuthLoginSuccess(data: AuthLoginData): void {
   writeOutput(lines.join("\n"));
 }
 
+// ─── Next-steps rendering ─────────────────────────────────────────────
+
+export interface AuthLoginNextStepsOptions {
+  isFirstLogin: boolean;
+  isInteractive: boolean;
+}
+
+interface NextStep {
+  command: string;
+  description: string;
+}
+
+const FIRST_LOGIN_NEXT_STEPS: NextStep[] = [
+  { command: "swamp repo init", description: "Set up your first project" },
+  { command: "swamp quest", description: "See your progress pass" },
+];
+
+function renderNextSteps(): void {
+  const lines: string[] = [""];
+  lines.push(`  ${bold("Next steps")}`);
+  lines.push("");
+  for (const step of FIRST_LOGIN_NEXT_STEPS) {
+    lines.push(`    ${cyan(step.command)}  ${dim(step.description)}`);
+  }
+  writeOutput(lines.join("\n"));
+}
+
 // ─── Renderers ────────────────────────────────────────────────────────
 
 class LogAuthLoginRenderer implements Renderer<AuthLoginEvent> {
   private spinner: Spinner | null = null;
   private pollingSpinnerStarted = false;
 
-  constructor(private showSpinner: boolean) {}
+  constructor(
+    private showSpinner: boolean,
+    private nextStepsOptions: AuthLoginNextStepsOptions,
+  ) {}
 
   handlers(): EventHandlers<AuthLoginEvent> {
     return {
@@ -198,6 +228,12 @@ class LogAuthLoginRenderer implements Renderer<AuthLoginEvent> {
       completed: (e) => {
         this.spinner?.stop();
         renderAuthLoginSuccess(e.data);
+        if (
+          this.nextStepsOptions.isFirstLogin &&
+          this.nextStepsOptions.isInteractive
+        ) {
+          renderNextSteps();
+        }
       },
       error: (e) => {
         this.spinner?.stop();
@@ -208,6 +244,8 @@ class LogAuthLoginRenderer implements Renderer<AuthLoginEvent> {
 }
 
 class JsonAuthLoginRenderer implements Renderer<AuthLoginEvent> {
+  constructor(private nextStepsOptions: AuthLoginNextStepsOptions) {}
+
   handlers(): EventHandlers<AuthLoginEvent> {
     return {
       opening_browser: () => {},
@@ -223,15 +261,15 @@ class JsonAuthLoginRenderer implements Renderer<AuthLoginEvent> {
       polling: () => {},
       securing_session: () => {},
       completed: (e) => {
-        console.log(JSON.stringify(
-          {
-            authenticated: true,
-            serverUrl: e.data.serverUrl,
-            username: e.data.username,
-          },
-          null,
-          2,
-        ));
+        const output: Record<string, unknown> = {
+          authenticated: true,
+          serverUrl: e.data.serverUrl,
+          username: e.data.username,
+        };
+        if (this.nextStepsOptions.isFirstLogin) {
+          output.nextSteps = FIRST_LOGIN_NEXT_STEPS;
+        }
+        console.log(JSON.stringify(output, null, 2));
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -244,11 +282,12 @@ class JsonAuthLoginRenderer implements Renderer<AuthLoginEvent> {
 export function createAuthLoginRenderer(
   mode: OutputMode,
   showSpinner: boolean,
+  nextStepsOptions: AuthLoginNextStepsOptions,
 ): Renderer<AuthLoginEvent> {
   switch (mode) {
     case "json":
-      return new JsonAuthLoginRenderer();
+      return new JsonAuthLoginRenderer(nextStepsOptions);
     case "log":
-      return new LogAuthLoginRenderer(showSpinner);
+      return new LogAuthLoginRenderer(showSpinner, nextStepsOptions);
   }
 }
