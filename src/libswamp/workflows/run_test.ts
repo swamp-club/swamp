@@ -609,7 +609,7 @@ Deno.test("toRunData: includes step outputs from model method resource attribute
   assertEquals(stepView.outputs?.status, "Building");
 });
 
-Deno.test("toRunData: includes workflow child step outputs", () => {
+Deno.test("toRunData: includes workflow child step outputs namespaced by step", () => {
   const workflow = createTestWorkflow();
   const run = WorkflowRun.create(workflow);
   run.start();
@@ -623,8 +623,10 @@ Deno.test("toRunData: includes workflow child step outputs", () => {
     runId: "child-run-123",
     status: "succeeded",
     outputs: {
-      audienceId: "aud_456",
-      name: "test-audience",
+      "create-audience": {
+        audienceId: "aud_456",
+        name: "test-audience",
+      },
     },
   });
   job.succeed();
@@ -632,8 +634,12 @@ Deno.test("toRunData: includes workflow child step outputs", () => {
 
   const data = toRunData(run);
   const stepView = data.jobs[0].steps[0];
-  assertEquals(stepView.outputs?.audienceId, "aud_456");
-  assertEquals(stepView.outputs?.name, "test-audience");
+  const childOutputs = stepView.outputs as Record<
+    string,
+    Record<string, unknown>
+  >;
+  assertEquals(childOutputs["create-audience"].audienceId, "aud_456");
+  assertEquals(childOutputs["create-audience"].name, "test-audience");
 });
 
 Deno.test("toRunData: includes references on run", () => {

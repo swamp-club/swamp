@@ -2239,6 +2239,19 @@ export class WorkflowExecutionService {
       inputs: existingRun.inputs,
     };
     expressionContext.steps = {};
+    for (const job of existingRun.jobs) {
+      for (const step of job.steps) {
+        if (
+          step.status === "succeeded" || step.status === "failed" ||
+          step.status === "skipped"
+        ) {
+          expressionContext.steps[step.stepName] = {
+            status: step.status,
+            outputs: this.extractStepOutputsForContext(step),
+          };
+        }
+      }
+    }
 
     const evaluator = new WorkflowExpressionEvaluator(
       new CelEvaluator(),
@@ -3625,8 +3638,8 @@ export class WorkflowExecutionService {
 
   private extractChildWorkflowOutputs(
     childRun: WorkflowRun,
-  ): Record<string, unknown> | undefined {
-    const outputs: Record<string, unknown> = {};
+  ): Record<string, Record<string, unknown>> | undefined {
+    const outputs: Record<string, Record<string, unknown>> = {};
     for (const job of childRun.jobs) {
       for (const step of job.steps) {
         if (step.status !== "succeeded") continue;
@@ -3637,9 +3650,7 @@ export class WorkflowExecutionService {
             | Record<string, unknown>
             | undefined;
           if (attrs && Object.keys(attrs).length > 0) {
-            for (const [key, value] of Object.entries(attrs)) {
-              outputs[key] = value;
-            }
+            outputs[step.stepName] = attrs;
           }
         }
       }
