@@ -1,7 +1,7 @@
 ---
 audience: operator, maintainer
 enables: [serve]
-last-verified: 2026-08-31 @ 8e14ae13
+last-verified: 2026-09-14 @ 626d7507
 ---
 
 # Access Control
@@ -130,6 +130,25 @@ grants:
     resource: "model:@acme/my-model"
     methods: [read, list]
 ```
+
+Each entry must specify exactly one of `resource` (single string) or `resources`
+(array of strings). The `resources` form is syntactic sugar — it expands into one
+grant per resource string, identical in all other fields:
+
+```yaml
+grants:
+  - subject: "idp-group:my-team"
+    effect: allow
+    actions: [run]
+    resources:
+      - "workflow:@acme/create-thing"
+      - "workflow:@acme/connect-thing"
+```
+
+This is equivalent to two separate entries with `resource:` each. The expansion
+happens at parse time — the domain model, reconciler, and evaluation engine all
+operate on single-resource grants. Specifying both `resource` and `resources` on
+the same entry is an error. The `resources` array accepts up to 100 entries.
 
 The `GrantFileReconciler` syncs file-based grants into model data, creating,
 updating, or revoking grants as files change. File-sourced grants carry the

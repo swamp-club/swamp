@@ -31,13 +31,32 @@ import {
   type ResourceSelector,
 } from "./resource_selector.ts";
 
+const MAX_RESOURCES_PER_ENTRY = 100;
+
 const GrantFileEntryRawSchema = z.object({
   subject: z.string().min(1),
   effect: EffectSchema,
   actions: z.array(ActionSchema).min(1),
-  resource: z.string().min(1),
+  resource: z.string().min(1).optional(),
+  resources: z.array(z.string().min(1)).min(1).max(MAX_RESOURCES_PER_ENTRY)
+    .optional(),
   condition: z.string().optional(),
   methods: z.array(z.string().min(1)).optional(),
+}).superRefine((data, ctx) => {
+  if (data.resource !== undefined && data.resources !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "Cannot specify both 'resource' and 'resources' — use one or the other",
+      path: ["resources"],
+    });
+  } else if (data.resource === undefined && data.resources === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Must specify either 'resource' (single) or 'resources' (array)",
+      path: ["resource"],
+    });
+  }
 });
 
 const GrantFileRawSchema = z.object({
@@ -124,52 +143,77 @@ export function parseGrantFile(
       continue;
     }
 
-    let resource: ResourceSelector;
-    try {
-      resource = parseResourceSelector(raw.resource);
-    } catch (e) {
-      errors.push({
-        filename,
-        entryIndex: i,
-        message: (e as Error).message,
-      });
-      continue;
+    const resourceStrings: string[] = raw.resource
+      ? [raw.resource]
+      : raw.resources!;
+
+    if (raw.resources) {
+      const seen = new Set<string>();
+      let hasDuplicate = false;
+      for (const r of raw.resources) {
+        if (seen.has(r)) {
+          errors.push({
+            filename,
+            entryIndex: i,
+            message: `Duplicate resource in resources array: "${r}"`,
+          });
+          hasDuplicate = true;
+          break;
+        }
+        seen.add(r);
+      }
+      if (hasDuplicate) continue;
     }
 
-    if (raw.condition && validateCondition) {
-      const validation = validateCondition(raw.condition, resource.kind);
-      if (!validation.valid) {
+    for (const resourceStr of resourceStrings) {
+      let resource: ResourceSelector;
+      try {
+        resource = parseResourceSelector(resourceStr);
+      } catch (e) {
         errors.push({
           filename,
           entryIndex: i,
-          message: `CEL condition invalid: ${validation.error}`,
+          message: (e as Error).message,
         });
         continue;
       }
+
+      if (raw.condition && validateCondition) {
+        const validation = validateCondition(raw.condition, resource.kind);
+        if (!validation.valid) {
+          errors.push({
+            filename,
+            entryIndex: i,
+            message:
+              `CEL condition invalid for resource "${resourceStr}": ${validation.error}`,
+          });
+          continue;
+        }
+      }
+
+      const entry: GrantFileEntry = {
+        subject,
+        effect: raw.effect,
+        actions: raw.actions,
+        resource,
+        condition: raw.condition,
+        methods: raw.methods,
+      };
+
+      const key = entryIdentityKey(entry);
+      const existingIndex = seenKeys.get(key);
+      if (existingIndex !== undefined) {
+        errors.push({
+          filename,
+          entryIndex: i,
+          message: `Duplicate grant entry (same as entry ${existingIndex + 1})`,
+        });
+        continue;
+      }
+
+      seenKeys.set(key, i);
+      entries.push(entry);
     }
-
-    const entry: GrantFileEntry = {
-      subject,
-      effect: raw.effect,
-      actions: raw.actions,
-      resource,
-      condition: raw.condition,
-      methods: raw.methods,
-    };
-
-    const key = entryIdentityKey(entry);
-    const existingIndex = seenKeys.get(key);
-    if (existingIndex !== undefined) {
-      errors.push({
-        filename,
-        entryIndex: i,
-        message: `Duplicate grant entry (same as entry ${existingIndex + 1})`,
-      });
-      continue;
-    }
-
-    seenKeys.set(key, i);
-    entries.push(entry);
   }
 
   return { entries, errors };

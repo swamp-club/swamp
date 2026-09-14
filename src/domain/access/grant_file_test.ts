@@ -508,3 +508,210 @@ grants:
   assertEquals(result.errors.length, 0);
   assertEquals(result.entries[0].methods, undefined);
 });
+
+Deno.test("parseGrantFile: resources array expands to multiple entries", () => {
+  const content = `
+grants:
+  - subject: "idp-group:my-team"
+    effect: allow
+    actions: [run]
+    resources:
+      - "workflow:@acme/create-thing"
+      - "workflow:@acme/connect-thing"
+`;
+  const result = parseGrantFile("team.yaml", content);
+  assertEquals(result.errors.length, 0);
+  assertEquals(result.entries.length, 2);
+  assertEquals(result.entries[0].resource, {
+    kind: "workflow",
+    pattern: "@acme/create-thing",
+  });
+  assertEquals(result.entries[1].resource, {
+    kind: "workflow",
+    pattern: "@acme/connect-thing",
+  });
+  assertEquals(result.entries[0].subject, result.entries[1].subject);
+  assertEquals(result.entries[0].effect, result.entries[1].effect);
+  assertEquals(result.entries[0].actions, result.entries[1].actions);
+});
+
+Deno.test("parseGrantFile: resources array with mixed resource kinds", () => {
+  const content = `
+grants:
+  - subject: "user:adam"
+    effect: allow
+    actions: [run, read]
+    resources:
+      - "workflow:@acme/deploy"
+      - "model:@acme/build"
+`;
+  const result = parseGrantFile("mixed.yaml", content);
+  assertEquals(result.errors.length, 0);
+  assertEquals(result.entries.length, 2);
+  assertEquals(result.entries[0].resource.kind, "workflow");
+  assertEquals(result.entries[1].resource.kind, "model");
+});
+
+Deno.test("parseGrantFile: resources array preserves methods and condition", () => {
+  const content = `
+grants:
+  - subject: "user:monitor"
+    effect: allow
+    actions: [run]
+    resources:
+      - "model:@acme/model-a"
+      - "model:@acme/model-b"
+    methods: [read, list]
+`;
+  const result = parseGrantFile("monitor.yaml", content);
+  assertEquals(result.errors.length, 0);
+  assertEquals(result.entries.length, 2);
+  assertEquals(result.entries[0].methods, ["read", "list"]);
+  assertEquals(result.entries[1].methods, ["read", "list"]);
+});
+
+Deno.test("parseGrantFile: rejects both resource and resources specified", () => {
+  const content = `
+grants:
+  - subject: "user:adam"
+    effect: allow
+    actions: [run]
+    resource: "workflow:@acme/*"
+    resources:
+      - "workflow:@acme/deploy"
+`;
+  const result = parseGrantFile("bad.yaml", content);
+  assertEquals(result.entries.length, 0);
+  assertEquals(result.errors.length >= 1, true);
+  assertStringIncludes(result.errors[0].message, "resource");
+});
+
+Deno.test("parseGrantFile: rejects neither resource nor resources specified", () => {
+  const content = `
+grants:
+  - subject: "user:adam"
+    effect: allow
+    actions: [run]
+`;
+  const result = parseGrantFile("bad.yaml", content);
+  assertEquals(result.entries.length, 0);
+  assertEquals(result.errors.length >= 1, true);
+  assertStringIncludes(result.errors[0].message, "resource");
+});
+
+Deno.test("parseGrantFile: rejects empty resources array", () => {
+  const content = `
+grants:
+  - subject: "user:adam"
+    effect: allow
+    actions: [run]
+    resources: []
+`;
+  const result = parseGrantFile("bad.yaml", content);
+  assertEquals(result.entries.length, 0);
+  assertEquals(result.errors.length >= 1, true);
+});
+
+Deno.test("parseGrantFile: rejects duplicate resource strings within resources array", () => {
+  const content = `
+grants:
+  - subject: "user:adam"
+    effect: allow
+    actions: [run]
+    resources:
+      - "workflow:@acme/deploy"
+      - "workflow:@acme/deploy"
+`;
+  const result = parseGrantFile("dups.yaml", content);
+  assertEquals(result.entries.length, 0);
+  assertEquals(result.errors.length, 1);
+  assertStringIncludes(result.errors[0].message, "Duplicate resource");
+  assertEquals(result.errors[0].entryIndex, 0);
+});
+
+Deno.test("parseGrantFile: resources array with one invalid resource continues others", () => {
+  const content = `
+grants:
+  - subject: "user:adam"
+    effect: allow
+    actions: [run]
+    resources:
+      - "workflow:@acme/deploy"
+      - "badkind:@acme/other"
+`;
+  const result = parseGrantFile("partial.yaml", content);
+  assertEquals(result.entries.length, 1);
+  assertEquals(result.entries[0].resource, {
+    kind: "workflow",
+    pattern: "@acme/deploy",
+  });
+  assertEquals(result.errors.length, 1);
+  assertStringIncludes(result.errors[0].message, "resource kind");
+});
+
+Deno.test("parseGrantFile: resources array detects cross-entry duplicates", () => {
+  const content = `
+grants:
+  - subject: "user:adam"
+    effect: allow
+    actions: [run]
+    resource: "workflow:@acme/deploy"
+  - subject: "user:adam"
+    effect: allow
+    actions: [run]
+    resources:
+      - "workflow:@acme/deploy"
+      - "workflow:@acme/build"
+`;
+  const result = parseGrantFile("cross-dup.yaml", content);
+  assertEquals(result.entries.length, 2);
+  assertEquals(result.errors.length, 1);
+  assertStringIncludes(result.errors[0].message, "Duplicate grant entry");
+  assertEquals(result.entries[0].resource.pattern, "@acme/deploy");
+  assertEquals(result.entries[1].resource.pattern, "@acme/build");
+});
+
+Deno.test("parseGrantFile: resources array with condition validated per resource kind", () => {
+  const validForWorkflow = (
+    _condition: string,
+    kind: string,
+  ): { valid: boolean; error?: string } => {
+    if (kind === "workflow") return { valid: true };
+    return { valid: false, error: `condition not valid for ${kind}` };
+  };
+
+  const content = `
+grants:
+  - subject: "user:adam"
+    effect: allow
+    actions: [run]
+    resources:
+      - "workflow:@acme/deploy"
+      - "model:@acme/build"
+    condition: 'tags.env == "prod"'
+`;
+  const result = parseGrantFile("cond.yaml", content, validForWorkflow);
+  assertEquals(result.entries.length, 1);
+  assertEquals(result.entries[0].resource.kind, "workflow");
+  assertEquals(result.errors.length, 1);
+  assertStringIncludes(result.errors[0].message, "CEL condition invalid");
+  assertStringIncludes(result.errors[0].message, "model:@acme/build");
+});
+
+Deno.test("parseGrantFile: single-element resources array works", () => {
+  const content = `
+grants:
+  - subject: "user:adam"
+    effect: allow
+    actions: [run]
+    resources:
+      - "workflow:@acme/deploy"
+`;
+  const result = parseGrantFile("single.yaml", content);
+  assertEquals(result.errors.length, 0);
+  assertEquals(result.entries.length, 1);
+  assertEquals(result.entries[0].resource, {
+    kind: "workflow",
+    pattern: "@acme/deploy",
+  });
+});
