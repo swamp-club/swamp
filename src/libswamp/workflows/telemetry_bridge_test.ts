@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import type { CommandInvocationData } from "../../domain/telemetry/command_invocation.ts";
 import type { WorkflowContextData } from "../../domain/telemetry/workflow_context.ts";
 import type { WorkflowRunEvent, WorkflowTelemetrySink } from "./run.ts";
@@ -199,10 +199,14 @@ Deno.test("bridge finalize() drains in-flight invocations as error entries", asy
 
   assertEquals(sink.calls.length, 1);
   const call = sink.calls[0];
-  assertEquals(
-    call.error?.message,
+  assertStringIncludes(
+    call.error!.message,
     "workflow run terminated before completion",
   );
+  assertStringIncludes(call.error!.message, 'step "long"');
+  assertStringIncludes(call.error!.message, 'job "build"');
+  assertStringIncludes(call.error!.message, "method process");
+  assertStringIncludes(call.error!.message, "slow");
   assertEquals(call.workflowContext.stepName, "long");
 });
 
@@ -220,7 +224,8 @@ Deno.test("bridge finalize() with custom reason propagates to drained entries", 
   });
   await bridge.finalize("aborted by user");
 
-  assertEquals(sink.calls[0].error?.message, "aborted by user");
+  assertStringIncludes(sink.calls[0].error!.message, "aborted by user");
+  assertStringIncludes(sink.calls[0].error!.message, 'step "long"');
 });
 
 Deno.test("bridge finalize() is idempotent", async () => {

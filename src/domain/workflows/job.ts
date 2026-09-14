@@ -41,26 +41,7 @@ export const JobDependencySchema = z.object({
  */
 export type JobDependencyData = z.infer<typeof JobDependencySchema>;
 
-const JobDependencyFieldSchema = z.preprocess((data) => {
-  if (Array.isArray(data)) {
-    const hasStrings = data.some((item) => typeof item === "string");
-    if (hasStrings) {
-      const example = typeof data[0] === "string" ? data[0] : "job-name";
-      throw new Error(
-        `dependsOn entries must be objects, not strings.\n\n` +
-          `Replace:\n` +
-          `  dependsOn:\n` +
-          `    - ${example}\n\n` +
-          `With:\n` +
-          `  dependsOn:\n` +
-          `    - job: ${example}\n` +
-          `      condition:\n` +
-          `        type: succeeded`,
-      );
-    }
-  }
-  return data;
-}, z.array(JobDependencySchema).default([]));
+const JobDependencyFieldSchema = z.array(JobDependencySchema).default([]);
 
 const JobObjectSchema = z.object({
   name: z.string().min(1),
@@ -74,6 +55,32 @@ const JobObjectSchema = z.object({
   ...PlacementFieldsSchema.shape,
 });
 
+function rejectStringJobDependsOn(data: unknown): unknown {
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    const raw = data as Record<string, unknown>;
+    const deps = raw.dependsOn;
+    if (Array.isArray(deps)) {
+      const hasStrings = deps.some((item) => typeof item === "string");
+      if (hasStrings) {
+        const name = typeof raw.name === "string" ? raw.name : "<unnamed job>";
+        const example = typeof deps[0] === "string" ? deps[0] : "job-name";
+        throw new Error(
+          `Job "${name}": dependsOn entries must be objects, not strings.\n\n` +
+            `Replace:\n` +
+            `  dependsOn:\n` +
+            `    - ${example}\n\n` +
+            `With:\n` +
+            `  dependsOn:\n` +
+            `    - job: ${example}\n` +
+            `      condition:\n` +
+            `        type: succeeded`,
+        );
+      }
+    }
+  }
+  return data;
+}
+
 /**
  * Zod schema for Job entity. Rejects the removed `driver`/`driverConfig`
  * fields with an actionable error (see design/enablers/remote-execution.md), and
@@ -83,7 +90,7 @@ export const JobSchema = z.preprocess(
   rejectRemovedDriverFields,
   z.preprocess(
     rejectUnknownKeys("job", Object.keys(JobObjectSchema.shape)),
-    JobObjectSchema,
+    z.preprocess(rejectStringJobDependsOn, JobObjectSchema),
   ),
 );
 

@@ -61,26 +61,7 @@ export type StepDependencyData = z.infer<typeof StepDependencySchema>;
  */
 export type ForEachData = z.infer<typeof ForEachSchema>;
 
-const StepDependencyFieldSchema = z.preprocess((data) => {
-  if (Array.isArray(data)) {
-    const hasStrings = data.some((item) => typeof item === "string");
-    if (hasStrings) {
-      const example = typeof data[0] === "string" ? data[0] : "step-name";
-      throw new Error(
-        `dependsOn entries must be objects, not strings.\n\n` +
-          `Replace:\n` +
-          `  dependsOn:\n` +
-          `    - ${example}\n\n` +
-          `With:\n` +
-          `  dependsOn:\n` +
-          `    - step: ${example}\n` +
-          `      condition:\n` +
-          `        type: succeeded`,
-      );
-    }
-  }
-  return data;
-}, z.array(StepDependencySchema).default([]));
+const StepDependencyFieldSchema = z.array(StepDependencySchema).default([]);
 
 const StepObjectSchema = z.object({
   name: z.string().min(1),
@@ -97,6 +78,34 @@ const StepObjectSchema = z.object({
   writes: z.boolean().optional(),
 });
 
+function rejectStringStepDependsOn(data: unknown): unknown {
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    const raw = data as Record<string, unknown>;
+    const deps = raw.dependsOn;
+    if (Array.isArray(deps)) {
+      const hasStrings = deps.some((item) => typeof item === "string");
+      if (hasStrings) {
+        const name = typeof raw.name === "string"
+          ? raw.name
+          : "<unnamed step>";
+        const example = typeof deps[0] === "string" ? deps[0] : "step-name";
+        throw new Error(
+          `Step "${name}": dependsOn entries must be objects, not strings.\n\n` +
+            `Replace:\n` +
+            `  dependsOn:\n` +
+            `    - ${example}\n\n` +
+            `With:\n` +
+            `  dependsOn:\n` +
+            `    - step: ${example}\n` +
+            `      condition:\n` +
+            `        type: succeeded`,
+        );
+      }
+    }
+  }
+  return data;
+}
+
 /**
  * Zod schema for Step entity. Rejects the removed `driver`/`driverConfig`
  * fields with an actionable error (see design/enablers/remote-execution.md), and
@@ -108,7 +117,7 @@ export const StepSchema = z.preprocess(
   rejectRemovedDriverFields,
   z.preprocess(
     rejectUnknownKeys("step", Object.keys(StepObjectSchema.shape)),
-    StepObjectSchema,
+    z.preprocess(rejectStringStepDependsOn, StepObjectSchema),
   ),
 );
 

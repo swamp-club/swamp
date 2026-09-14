@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { Definition } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { collect } from "../testing.ts";
@@ -161,6 +161,51 @@ Deno.test("dataGet yields resolving then completed for workflow-scoped happy pat
   assertEquals(events[1].kind, "completed");
   const completed = events[1] as Extract<DataGetEvent, { kind: "completed" }>;
   assertEquals(completed.data.name, "output");
+});
+
+Deno.test("dataGet yields data_pending when workflow run is active and data not found", async () => {
+  const deps = makeDeps({
+    findWorkflowRun: () => Promise.resolve({ id: "run-1", status: "running" }),
+    findDataInWorkflowRun: () => Promise.resolve(null),
+  });
+  const events = await collect<DataGetEvent>(
+    dataGet(createLibSwampContext(), deps, {
+      workflowName: "wf",
+      dataName: "result",
+      includeContent: false,
+      repoDir: ".",
+    }),
+  );
+
+  assertEquals(events.length, 2);
+  assertEquals(events[0], { kind: "resolving" });
+  const last = events[1] as Extract<DataGetEvent, { kind: "error" }>;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "data_pending");
+  assertStringIncludes(last.error.message, "not yet available");
+  assertStringIncludes(last.error.message, "running");
+  assertStringIncludes(last.error.message, "swamp workflow history wf");
+});
+
+Deno.test("dataGet yields not_found when workflow run is completed and data not found", async () => {
+  const deps = makeDeps({
+    findWorkflowRun: () =>
+      Promise.resolve({ id: "run-1", status: "completed" }),
+    findDataInWorkflowRun: () => Promise.resolve(null),
+  });
+  const events = await collect<DataGetEvent>(
+    dataGet(createLibSwampContext(), deps, {
+      workflowName: "wf",
+      dataName: "result",
+      includeContent: false,
+      repoDir: ".",
+    }),
+  );
+
+  assertEquals(events.length, 2);
+  const last = events[1] as Extract<DataGetEvent, { kind: "error" }>;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "not_found");
 });
 
 Deno.test(

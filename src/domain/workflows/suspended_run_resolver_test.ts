@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   resolveResumableRun,
   resolveSuspendedRun,
@@ -98,18 +102,37 @@ Deno.test("resolveSuspendedRun: throws when workflow not found", async () => {
   );
 });
 
-Deno.test("resolveSuspendedRun: throws when no suspended runs", async () => {
+Deno.test("resolveSuspendedRun: throws when no suspended runs with latest run state", async () => {
   const wf = createWorkflow("test-wf");
   const run = WorkflowRun.create(wf);
   run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.jobs[0].steps[0].succeed();
+  run.jobs[0].succeed();
   run.complete();
   const { workflowRepo, runRepo } = stubRepos(wf, [run]);
 
-  await assertRejects(
+  const error = await assertRejects(
     () => resolveSuspendedRun(workflowRepo, runRepo, "test-wf"),
     Error,
     "No suspended runs found",
   );
+  assertStringIncludes(error.message, "The latest run is succeeded");
+  assertStringIncludes(error.message, "swamp workflow history test-wf");
+});
+
+Deno.test("resolveSuspendedRun: throws with run command when no runs exist", async () => {
+  const wf = createWorkflow("test-wf");
+  const { workflowRepo, runRepo } = stubRepos(wf, []);
+
+  const error = await assertRejects(
+    () => resolveSuspendedRun(workflowRepo, runRepo, "test-wf"),
+    Error,
+    "No suspended runs found",
+  );
+  assertStringIncludes(error.message, "No runs exist");
+  assertStringIncludes(error.message, "swamp workflow run test-wf");
 });
 
 Deno.test("resolveSuspendedRun: throws when multiple suspended runs", async () => {
@@ -178,16 +201,18 @@ Deno.test("resolveResumableRun: returns single failed run by name", async () => 
   assertEquals(result.run.status, "failed");
 });
 
-Deno.test("resolveResumableRun: throws when no failed runs", async () => {
+Deno.test("resolveResumableRun: throws when no failed runs with latest run state", async () => {
   const wf = createWorkflow("test-wf");
   const run = createSuspendedRun(wf);
   const { workflowRepo, runRepo } = stubRepos(wf, [run]);
 
-  await assertRejects(
+  const error = await assertRejects(
     () => resolveResumableRun(workflowRepo, runRepo, "test-wf"),
     Error,
     "No failed runs found",
   );
+  assertStringIncludes(error.message, "The latest run is suspended");
+  assertStringIncludes(error.message, "swamp workflow approve test-wf");
 });
 
 Deno.test("resolveResumableRun: throws when multiple failed runs", async () => {

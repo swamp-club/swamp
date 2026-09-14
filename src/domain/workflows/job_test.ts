@@ -424,6 +424,29 @@ Deno.test("Job: writes field roundtrips through toData", () => {
   assertEquals(restored.writes, true);
 });
 
+Deno.test("JobSchema throws clear error for string dependsOn entries with job name", () => {
+  const error = assertThrows(
+    () => {
+      JobSchema.parse({
+        name: "build-job",
+        steps: [{
+          name: "step1",
+          task: {
+            type: "model_method",
+            modelIdOrName: "test-model",
+            methodName: "run",
+          },
+        }],
+        dependsOn: ["setup-job"],
+      });
+    },
+    Error,
+    "dependsOn entries must be objects, not strings",
+  );
+  assertStringIncludes(error.message, 'Job "build-job"');
+  assertStringIncludes(error.message, "setup-job");
+});
+
 Deno.test("Job: writes field is undefined when absent", () => {
   const step = Step.create({
     name: "deploy",

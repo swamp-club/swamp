@@ -191,12 +191,20 @@ export class WorkflowTelemetryBridge {
     this.finalized = true;
 
     const now = new Date();
-    const errorMessage = reason ?? "workflow run terminated before completion";
+    const baseReason = reason ?? "workflow run terminated before completion";
     const drained = Array.from(this.inFlight.entries());
     this.inFlight.clear();
 
     for (const [key, tracked] of drained) {
       const [jobId, stepId] = key.split(":");
+      const elapsed = now.getTime() - tracked.startedAt.getTime();
+      const elapsedStr = elapsed >= 1000
+        ? `${(elapsed / 1000).toFixed(1)}s`
+        : `${elapsed}ms`;
+      const errorMessage =
+        `${baseReason}: step "${stepId}" in job "${jobId}" ` +
+        `(method ${tracked.methodName} on ${tracked.modelName}, ` +
+        `running for ${elapsedStr})`;
       await this.sink.recordChildInvocation(
         buildChildInvocation(tracked.methodName),
         tracked.startedAt,

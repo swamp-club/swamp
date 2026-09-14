@@ -71,7 +71,7 @@ export async function resolveSuspendedRun(
 
   if (suspendedRuns.length === 0) {
     throw new UserError(
-      `No suspended runs found for workflow "${workflow.name}"`,
+      noRunsInStateMessage(workflow.name, "suspended", allRuns),
     );
   }
   if (suspendedRuns.length > 1) {
@@ -134,7 +134,7 @@ export async function resolveResumableRun(
 
   if (failedRuns.length === 0) {
     throw new UserError(
-      `No failed runs found for workflow "${workflow.name}"`,
+      noRunsInStateMessage(workflow.name, "failed", allRuns),
     );
   }
   if (failedRuns.length > 1) {
@@ -151,4 +151,36 @@ export async function resolveResumableRun(
     workflow,
     run: failedRuns[0],
   };
+}
+
+function noRunsInStateMessage(
+  workflowName: string,
+  expectedStatus: string,
+  allRuns: readonly WorkflowRun[],
+): string {
+  const base = `No ${expectedStatus} runs found for workflow "${workflowName}"`;
+  if (allRuns.length === 0) {
+    return `${base}. No runs exist — run the workflow first with 'swamp workflow run ${workflowName}'.`;
+  }
+  const latest = allRuns[0];
+  const suggestion = nextActionForStatus(latest.status, workflowName);
+  return `${base}. The latest run is ${latest.status} (${latest.id}).${suggestion}`;
+}
+
+function nextActionForStatus(
+  status: string,
+  workflowName: string,
+): string {
+  switch (status) {
+    case "running":
+      return ` Wait for it to complete, or check progress with 'swamp workflow history ${workflowName}'.`;
+    case "completed":
+      return ` The workflow has already completed — inspect results with 'swamp workflow history ${workflowName}'.`;
+    case "failed":
+      return ` Resume the failed run with 'swamp workflow run ${workflowName} --from <run-id>'.`;
+    case "suspended":
+      return ` Approve or resume the suspended run with 'swamp workflow approve ${workflowName}'.`;
+    default:
+      return ` Check the run status with 'swamp workflow history ${workflowName}'.`;
+  }
 }

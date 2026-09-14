@@ -368,13 +368,22 @@ export interface DatastoreResolutionResult {
   marker: RepoMarkerData | null;
 }
 
+function redactHomePath(path: string): string {
+  const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE");
+  if (home && path.startsWith(home)) {
+    return "~" + path.slice(home.length);
+  }
+  return path;
+}
+
 async function throwRepoNotInitialized(
   service: RepoService,
   repoPath: RepoPath,
 ): Promise<never> {
+  const displayPath = redactHomePath(repoPath.value);
   if (await service.hasOrphanedSwampDir(repoPath)) {
     throw new UserError(
-      `Found a .swamp/ directory at ${repoPath.value} but no .swamp.yaml marker — ` +
+      `Found a .swamp/ directory at ${displayPath} but no .swamp.yaml marker — ` +
         "the repository appears partially initialized or corrupted. " +
         "If you previously used a remote datastore, re-initializing with " +
         "'swamp repo init' will not reconnect to it. Restore .swamp.yaml " +
@@ -382,7 +391,7 @@ async function throwRepoNotInitialized(
     );
   }
   throw new UserError(
-    `Not a swamp repository: ${repoPath.value}. To initialize a new repository, run 'swamp repo init', or specify an existing repository with 'swamp <command> --repo-dir /path/to/repo'.`,
+    `Not a swamp repository: ${displayPath}. To initialize a new repository, run 'swamp repo init', or specify an existing repository with 'swamp <command> --repo-dir /path/to/repo'.`,
   );
 }
 

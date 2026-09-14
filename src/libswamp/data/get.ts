@@ -128,6 +128,7 @@ export interface WorkflowInfo {
 /** Minimal workflow run shape. */
 export interface WorkflowRunInfo {
   id: string;
+  status?: string;
 }
 
 export type DataGetEvent =
@@ -346,6 +347,20 @@ async function* workflowScopedGet(
   const item = await deps.findDataInWorkflowRun(run, actualDataName, version);
   if (!item) {
     const versionInfo = version ? ` (version ${version})` : "";
+    const activeStatuses = new Set(["running", "pending", "suspended"]);
+    if (run.status && activeStatuses.has(run.status)) {
+      yield {
+        kind: "error",
+        error: {
+          code: "data_pending",
+          message:
+            `Data "${actualDataName}" not yet available in workflow "${workflow.name}"${versionInfo}. ` +
+            `The latest run (${run.id}) is ${run.status} — the producing step may not have completed yet. ` +
+            `Check progress with 'swamp workflow history ${workflow.name}'.`,
+        },
+      };
+      return;
+    }
     yield {
       kind: "error",
       error: notFound(
