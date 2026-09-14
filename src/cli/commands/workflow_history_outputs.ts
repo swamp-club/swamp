@@ -38,6 +38,7 @@ import {
 } from "../remote_run.ts";
 import type { WorkflowHistoryGetResponse } from "../../serve/protocol.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -87,7 +88,7 @@ export async function workflowHistoryOutputsAction(
   }
 
   if (!runView) {
-    throw new Error(`Run not found: ${runIdOrWorkflow}`);
+    throw new UserError(`Run not found: ${runIdOrWorkflow}`);
   }
 
   const outputs: Record<string, Record<string, unknown>> = {};
