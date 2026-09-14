@@ -25,14 +25,20 @@ import {
   createResourceReader,
   createResourceWriter,
   modelRequiresVault,
+  parseSensitiveFieldsFromRowTags,
+  parseSensitiveFieldsTag,
   processSensitiveResourceData,
+  resolveSensitiveVaultRefs,
   resolveVaultRefsInData,
   sanitizeVaultKey,
+  SENSITIVE_FIELDS_ALL,
+  SENSITIVE_FIELDS_TAG,
 } from "./data_writer.ts";
 import { ModelType } from "./model_type.ts";
 import type { ResourceOutputSpec } from "./model.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import { SOLO_NAMESPACE } from "../data/namespace.ts";
+import { Data } from "../data/data.ts";
 import { generateDataId } from "../data/data_id.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 
@@ -102,6 +108,19 @@ function createMockRepo(): UnifiedDataRepository {
 
 const modelType = ModelType.create("swamp/test");
 const modelId = "test-model-id";
+
+function createMockDataEntity(
+  tags: Record<string, string> = {},
+): Data {
+  return Data.create({
+    name: "test",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "resource", ...tags },
+    ownerDefinition: { ownerType: "model-method", ownerRef: "test/model:test" },
+  });
+}
 
 const testResources: Record<string, ResourceOutputSpec> = {
   item: {
@@ -1313,9 +1332,13 @@ Deno.test("createResourceReader: resolves vault references when VaultService pro
     secret: "${{ vault.get('test-vault', 'my-key') }}",
   };
   const encoded = new TextEncoder().encode(JSON.stringify(data));
+  const mockData = createMockDataEntity({
+    [SENSITIVE_FIELDS_TAG]: JSON.stringify(["secret"]),
+  });
   const repo = {
     ...createMockRepo(),
     getContent: () => Promise.resolve(encoded),
+    findByName: () => Promise.resolve(mockData),
   };
 
   const readResource = createResourceReader(
@@ -1340,9 +1363,13 @@ Deno.test("createResourceReader: resolves vault references in nested objects", a
     },
   };
   const encoded = new TextEncoder().encode(JSON.stringify(data));
+  const mockData = createMockDataEntity({
+    [SENSITIVE_FIELDS_TAG]: JSON.stringify(["config.token"]),
+  });
   const repo = {
     ...createMockRepo(),
     getContent: () => Promise.resolve(encoded),
+    findByName: () => Promise.resolve(mockData),
   };
 
   const readResource = createResourceReader(
@@ -1368,9 +1395,13 @@ Deno.test("createResourceReader: mixed vault and non-vault strings work correctl
     nested: { flag: true },
   };
   const encoded = new TextEncoder().encode(JSON.stringify(data));
+  const mockData = createMockDataEntity({
+    [SENSITIVE_FIELDS_TAG]: JSON.stringify(["secret"]),
+  });
   const repo = {
     ...createMockRepo(),
     getContent: () => Promise.resolve(encoded),
+    findByName: () => Promise.resolve(mockData),
   };
 
   const readResource = createResourceReader(
@@ -1999,4 +2030,236 @@ Deno.test("createResourceWriter: attributes is a shallow copy of the data", asyn
   const handle = await writeResource("item", "test-item", data);
   data.value = "mutated";
   assertEquals(handle.attributes, { value: "hello" });
+});
+
+// --- resolveSensitiveVaultRefs tests ---
+
+Deno.test("resolveSensitiveVaultRefs: resolves only specified field paths", async () => {
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "k1", "secret-value");
+
+  const data: Record<string, unknown> = {
+    sensitive: "${{ vault.get('test-vault', 'k1') }}",
+    untrusted: "${{ vault.get('test-vault', 'k1') }}",
+    plain: "hello",
+  };
+
+  await resolveSensitiveVaultRefs(data, ["sensitive"], vaultService);
+  assertEquals(data.sensitive, "secret-value");
+  assertEquals(data.untrusted, "${{ vault.get('test-vault', 'k1') }}");
+  assertEquals(data.plain, "hello");
+});
+
+Deno.test("resolveSensitiveVaultRefs: resolves nested dot-paths", async () => {
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "k1", "nested-secret");
+
+  const data: Record<string, unknown> = {
+    config: {
+      apiKey: "${{ vault.get('test-vault', 'k1') }}",
+      region: "us-east-1",
+    },
+  };
+
+  await resolveSensitiveVaultRefs(data, ["config.apiKey"], vaultService);
+  const config = data.config as Record<string, unknown>;
+  assertEquals(config.apiKey, "nested-secret");
+  assertEquals(config.region, "us-east-1");
+});
+
+Deno.test("resolveSensitiveVaultRefs: star mode resolves all strings", async () => {
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "k1", "s1");
+  await vaultService.put("test-vault", "k2", "s2");
+
+  const data: Record<string, unknown> = {
+    a: "${{ vault.get('test-vault', 'k1') }}",
+    b: "${{ vault.get('test-vault', 'k2') }}",
+    c: "plain",
+  };
+
+  await resolveSensitiveVaultRefs(data, "*", vaultService);
+  assertEquals(data.a, "s1");
+  assertEquals(data.b, "s2");
+  assertEquals(data.c, "plain");
+});
+
+Deno.test("resolveSensitiveVaultRefs: empty paths array resolves nothing", async () => {
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "k1", "secret");
+
+  const data: Record<string, unknown> = {
+    field: "${{ vault.get('test-vault', 'k1') }}",
+  };
+
+  await resolveSensitiveVaultRefs(data, [], vaultService);
+  assertEquals(data.field, "${{ vault.get('test-vault', 'k1') }}");
+});
+
+Deno.test("resolveSensitiveVaultRefs: attacker-controlled text in non-sensitive field stays literal", async () => {
+  const vaultService = createTestVaultService("production");
+  await vaultService.put("production", "database-password", "p@ssw0rd!");
+
+  const data: Record<string, unknown> = {
+    apiKey: "${{ vault.get('production', 'database-password') }}",
+    prTitle: "${{ vault.get('production', 'database-password') }}",
+    status: "open",
+  };
+
+  await resolveSensitiveVaultRefs(data, ["apiKey"], vaultService);
+  assertEquals(data.apiKey, "p@ssw0rd!");
+  assertEquals(
+    data.prTitle,
+    "${{ vault.get('production', 'database-password') }}",
+  );
+  assertEquals(data.status, "open");
+});
+
+Deno.test("resolveSensitiveVaultRefs: registers resolved secrets with redactor", async () => {
+  const { SecretRedactor } = await import("../secrets/mod.ts");
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "k1", "super-secret");
+
+  const redactor = new SecretRedactor();
+  const data: Record<string, unknown> = {
+    secret: "${{ vault.get('test-vault', 'k1') }}",
+  };
+
+  await resolveSensitiveVaultRefs(data, ["secret"], vaultService, redactor);
+  assertEquals(data.secret, "super-secret");
+  assertEquals(redactor.hasSecrets, true);
+  assertEquals(
+    redactor.redact("the value is super-secret here"),
+    "the value is *** here",
+  );
+});
+
+// --- parseSensitiveFieldsTag tests ---
+
+Deno.test("parseSensitiveFieldsTag: parses JSON array of paths", () => {
+  const tags = { [SENSITIVE_FIELDS_TAG]: '["apiKey","config.token"]' };
+  assertEquals(parseSensitiveFieldsTag(tags), ["apiKey", "config.token"]);
+});
+
+Deno.test("parseSensitiveFieldsTag: returns star for sensitiveOutput", () => {
+  const tags = { [SENSITIVE_FIELDS_TAG]: SENSITIVE_FIELDS_ALL };
+  assertEquals(parseSensitiveFieldsTag(tags), "*");
+});
+
+Deno.test("parseSensitiveFieldsTag: returns null when tag absent", () => {
+  assertEquals(parseSensitiveFieldsTag({}), null);
+});
+
+Deno.test("parseSensitiveFieldsTag: returns null for invalid JSON", () => {
+  const tags = { [SENSITIVE_FIELDS_TAG]: "not-json" };
+  assertEquals(parseSensitiveFieldsTag(tags), null);
+});
+
+Deno.test("parseSensitiveFieldsFromRowTags: parses from CatalogRow tags JSON", () => {
+  const tagsJson = JSON.stringify({
+    specName: "item",
+    [SENSITIVE_FIELDS_TAG]: '["secret"]',
+  });
+  assertEquals(parseSensitiveFieldsFromRowTags(tagsJson), ["secret"]);
+});
+
+Deno.test("parseSensitiveFieldsFromRowTags: returns null for missing tag", () => {
+  const tagsJson = JSON.stringify({ specName: "item" });
+  assertEquals(parseSensitiveFieldsFromRowTags(tagsJson), null);
+});
+
+// --- createResourceReader: non-sensitive fields NOT resolved ---
+
+Deno.test("createResourceReader: does NOT resolve vault refs in non-sensitive fields", async () => {
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "k1", "secret-value");
+
+  const data = {
+    sensitive: "${{ vault.get('test-vault', 'k1') }}",
+    untrusted: "${{ vault.get('test-vault', 'k1') }}",
+  };
+  const encoded = new TextEncoder().encode(JSON.stringify(data));
+  const mockData = createMockDataEntity({
+    [SENSITIVE_FIELDS_TAG]: JSON.stringify(["sensitive"]),
+  });
+  const repo = {
+    ...createMockRepo(),
+    getContent: () => Promise.resolve(encoded),
+    findByName: () => Promise.resolve(mockData),
+  };
+
+  const readResource = createResourceReader(
+    repo,
+    modelType,
+    modelId,
+    vaultService,
+  );
+  const result = await readResource("my-instance");
+  assertEquals(result?.sensitive, "secret-value");
+  assertEquals(result?.untrusted, "${{ vault.get('test-vault', 'k1') }}");
+});
+
+Deno.test("createResourceReader: legacy data without tag uses schema fallback", async () => {
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "k1", "secret-value");
+
+  const data = {
+    name: "public",
+    secret: "${{ vault.get('test-vault', 'k1') }}",
+  };
+  const encoded = new TextEncoder().encode(JSON.stringify(data));
+  const mockData = createMockDataEntity({ specName: "creds" });
+  const repo = {
+    ...createMockRepo(),
+    getContent: () => Promise.resolve(encoded),
+    findByName: () => Promise.resolve(mockData),
+  };
+
+  const resourceSpecs: Record<string, ResourceOutputSpec> = {
+    creds: {
+      schema: z.object({
+        name: z.string(),
+        secret: z.string().meta({ sensitive: true }),
+      }),
+      lifetime: "infinite",
+      garbageCollection: 10,
+    },
+  };
+
+  const readResource = createResourceReader(
+    repo,
+    modelType,
+    modelId,
+    vaultService,
+    undefined,
+    resourceSpecs,
+  );
+  const result = await readResource("my-instance");
+  assertEquals(result?.secret, "secret-value");
+  assertEquals(result?.name, "public");
+});
+
+Deno.test("createResourceReader: legacy data without tag or specs skips resolution", async () => {
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "k1", "secret-value");
+
+  const data = {
+    secret: "${{ vault.get('test-vault', 'k1') }}",
+  };
+  const encoded = new TextEncoder().encode(JSON.stringify(data));
+  const mockData = createMockDataEntity({});
+  const repo = {
+    ...createMockRepo(),
+    getContent: () => Promise.resolve(encoded),
+    findByName: () => Promise.resolve(mockData),
+  };
+
+  const readResource = createResourceReader(
+    repo,
+    modelType,
+    modelId,
+    vaultService,
+  );
+  const result = await readResource("my-instance");
+  assertEquals(result?.secret, "${{ vault.get('test-vault', 'k1') }}");
 });

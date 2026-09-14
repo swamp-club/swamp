@@ -330,6 +330,7 @@ export interface GetDataResult {
   /** Data-plane path for the content bytes (`/data/{type}/{id}/...`). */
   contentPath?: string;
   attributes?: Record<string, unknown>;
+  tags?: Record<string, string>;
 }
 
 export const QueryDataParamsSchema = z.object({

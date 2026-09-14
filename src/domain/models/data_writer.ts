@@ -388,7 +388,7 @@ export async function processSensitiveResourceData(
   specName: string,
   instanceName: string,
   callbacks?: DataWriterCallbacks,
-): Promise<void> {
+): Promise<string[]> {
   const sensitiveFields = extractSensitiveFields(spec.schema);
 
   // If sensitiveOutput is true, add all top-level data keys not already marked
@@ -415,7 +415,7 @@ export async function processSensitiveResourceData(
   }
 
   if (fieldsWithValues.length === 0) {
-    return;
+    return [];
   }
 
   // Validate vault availability
@@ -471,6 +471,8 @@ export async function processSensitiveResourceData(
       data[field.path] = vaultRef;
     }
   }
+
+  return fieldsWithValues.map((f) => f.field.path);
 }
 
 /**
@@ -653,7 +655,7 @@ export function createResourceWriter(
       );
     }
     if (vaultService && methodName && hasSensitiveFields) {
-      await processSensitiveResourceData(
+      const vaultedPaths = await processSensitiveResourceData(
         data,
         effectiveSpec,
         vaultService,
@@ -664,6 +666,11 @@ export function createResourceWriter(
         name,
         { onEvent },
       );
+      if (vaultedPaths.length > 0) {
+        resolvedTags[SENSITIVE_FIELDS_TAG] = effectiveSpec.sensitiveOutput
+          ? SENSITIVE_FIELDS_ALL
+          : JSON.stringify(vaultedPaths);
+      }
     }
 
     const resolvedOptions: ResolvedDataWriterOptions = {
@@ -719,6 +726,63 @@ export function createResourceWriter(
     getHandles: () => [...handles],
     getDeferredReceipts: () => [...deferredReceipts],
   };
+}
+
+/**
+ * Tag key used to record which field paths were vaulted on write.
+ * Read sites use this tag to limit vault reference resolution to only
+ * those paths, preventing untrusted data in non-sensitive fields from
+ * being resolved as vault references.
+ */
+export const SENSITIVE_FIELDS_TAG = "_swamp.sensitiveFields";
+
+/**
+ * Sentinel value for the {@link SENSITIVE_FIELDS_TAG} tag when all fields
+ * are sensitive (`sensitiveOutput: true` on the resource spec).
+ */
+export const SENSITIVE_FIELDS_ALL = "*";
+
+/**
+ * Parses the `_swamp.sensitiveFields` tag from a data record's tags.
+ *
+ * @returns A string array of dot-paths, `"*"` when all fields are sensitive,
+ *          or `null` when the tag is absent (legacy data).
+ */
+export function parseSensitiveFieldsTag(
+  tags: Record<string, string>,
+): string[] | "*" | null {
+  const raw = tags[SENSITIVE_FIELDS_TAG];
+  if (raw === undefined) return null;
+  if (raw === SENSITIVE_FIELDS_ALL) return SENSITIVE_FIELDS_ALL;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      Array.isArray(parsed) &&
+      parsed.every((v) => typeof v === "string")
+    ) {
+      return parsed as string[];
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parses the `_swamp.sensitiveFields` tag from a CatalogRow's JSON tags string.
+ */
+export function parseSensitiveFieldsFromRowTags(
+  tagsJson: string,
+): string[] | "*" | null {
+  try {
+    const tags: unknown = JSON.parse(tagsJson);
+    if (tags !== null && typeof tags === "object" && !Array.isArray(tags)) {
+      return parseSensitiveFieldsTag(tags as Record<string, string>);
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -786,18 +850,94 @@ async function walkAndResolve(
 }
 
 /**
+ * Resolves vault references only at the specified field paths (or all fields
+ * when `sensitiveFields` is `"*"`). Unlike {@link resolveVaultRefsInData} which
+ * walks the entire object tree, this function targets only the paths that were
+ * written by {@link processSensitiveResourceData}, preventing untrusted data in
+ * non-sensitive fields from being resolved as vault references.
+ */
+export async function resolveSensitiveVaultRefs(
+  data: Record<string, unknown>,
+  sensitiveFields: string[] | "*",
+  vaultService: VaultService,
+  redactor?: SecretRedactor,
+): Promise<void> {
+  if (sensitiveFields === SENSITIVE_FIELDS_ALL) {
+    await walkAndResolve(data, vaultService, redactor);
+    return;
+  }
+
+  for (const fieldPath of sensitiveFields) {
+    const value = getNestedValue(data, fieldPath);
+    const resolved = await resolveValueAtPath(value, vaultService, redactor);
+    if (resolved !== value) {
+      if (fieldPath.includes(".")) {
+        setNestedValue(data, fieldPath, resolved);
+      } else {
+        data[fieldPath] = resolved;
+      }
+    }
+  }
+}
+
+async function resolveValueAtPath(
+  value: unknown,
+  vaultService: VaultService,
+  redactor?: SecretRedactor,
+): Promise<unknown> {
+  if (typeof value === "string") {
+    const match = VAULT_REF_REGEX.exec(value);
+    if (match) {
+      const [, vaultName, key] = match;
+      const resolved = await vaultService.get(
+        vaultName,
+        key,
+        "data-writer:vault-ref-resolve",
+      );
+      redactor?.addSecret(resolved);
+      return resolved;
+    }
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      value[i] = await resolveValueAtPath(value[i], vaultService, redactor);
+    }
+    return value;
+  }
+
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    for (const key of Object.keys(record)) {
+      record[key] = await resolveValueAtPath(
+        record[key],
+        vaultService,
+        redactor,
+      );
+    }
+    return record;
+  }
+
+  return value;
+}
+
+/**
  * Creates a readResource function bound to a specific execution context.
  *
  * The returned function reads previously stored resource data by instance name,
  * returning the parsed JSON object or null if no data exists.
- * When a VaultService is provided, vault reference expressions are automatically
- * resolved to their original secret values.
+ * When a VaultService is provided, vault reference expressions are resolved
+ * only in fields marked as sensitive — determined by the `_swamp.sensitiveFields`
+ * tag on the data record (for new data) or by the resource spec schema (for
+ * legacy data without the tag).
  *
  * @param repo - The unified data repository
  * @param modelType - The model type
  * @param modelId - The model ID (definition ID)
  * @param vaultService - Optional vault service for resolving vault references
  * @param redactor - Optional secret redactor to register resolved secrets
+ * @param resourceSpecs - Optional resource specs for legacy data schema fallback
  * @returns A readResource function
  */
 export function createResourceReader(
@@ -806,6 +946,7 @@ export function createResourceReader(
   modelId: string,
   vaultService?: VaultService,
   redactor?: SecretRedactor,
+  resourceSpecs?: Record<string, ResourceOutputSpec>,
 ): (
   instanceName: string,
   version?: number,
@@ -814,11 +955,19 @@ export function createResourceReader(
     instanceName: string,
     version?: number,
   ): Promise<Record<string, unknown> | null> => {
-    const content = await repo.getContent(
+    const dataRecord = await repo.findByName(
       modelType,
       modelId,
       instanceName,
       version,
+    );
+    const resolvedVersion = dataRecord?.version;
+
+    const content = await repo.getContent(
+      modelType,
+      modelId,
+      instanceName,
+      resolvedVersion ?? version,
     );
     if (!content || content.length === 0) return null;
     let parsed: unknown;
@@ -838,10 +987,47 @@ export function createResourceReader(
     }
     const data = parsed as Record<string, unknown>;
     if (vaultService) {
-      await resolveVaultRefsInData(data, vaultService, redactor);
+      const sensitiveFields = dataRecord
+        ? getSensitiveFieldsForResolution(
+          dataRecord.tags,
+          resourceSpecs,
+        )
+        : null;
+      if (sensitiveFields) {
+        await resolveSensitiveVaultRefs(
+          data,
+          sensitiveFields,
+          vaultService,
+          redactor,
+        );
+      }
     }
     return data;
   };
+}
+
+/**
+ * Determines which fields to resolve vault references in. Prefers the
+ * `_swamp.sensitiveFields` tag (new data). Falls back to schema-based
+ * extraction (legacy data). Returns null when neither is available (skip
+ * resolution, secure default).
+ */
+function getSensitiveFieldsForResolution(
+  tags: Record<string, string>,
+  resourceSpecs?: Record<string, ResourceOutputSpec>,
+): string[] | "*" | null {
+  const fromTag = parseSensitiveFieldsTag(tags);
+  if (fromTag !== null) return fromTag;
+
+  if (!resourceSpecs) return null;
+  const specName = tags["specName"];
+  if (!specName) return null;
+  const spec = resourceSpecs[specName];
+  if (!spec) return null;
+
+  if (spec.sensitiveOutput) return SENSITIVE_FIELDS_ALL;
+  const fields = extractSensitiveFields(spec.schema);
+  return fields.length > 0 ? fields.map((f) => f.path) : null;
 }
 
 /**

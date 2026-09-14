@@ -41,7 +41,11 @@ import type { Data } from "./data.ts";
 import { fromRow } from "./data_record_mapper.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
-import { resolveVaultRefsInData } from "../models/data_writer.ts";
+import {
+  parseSensitiveFieldsFromRowTags,
+  parseSensitiveFieldsTag,
+  resolveSensitiveVaultRefs,
+} from "../models/data_writer.ts";
 
 const logger = getLogger(["swamp", "domain", "data", "query"]);
 
@@ -281,14 +285,18 @@ export class DataQueryService {
     if (!r) return null;
     const record = fromRow(r, this.dataRepo, true, false);
     if (this.vaultService && Object.keys(record.attributes).length > 0) {
-      try {
-        await resolveVaultRefsInData(
-          record.attributes,
-          this.vaultService,
-          this.redactor,
-        );
-      } catch {
-        // Leave unresolved
+      const sensitiveFields = parseSensitiveFieldsFromRowTags(r.tags);
+      if (sensitiveFields) {
+        try {
+          await resolveSensitiveVaultRefs(
+            record.attributes,
+            sensitiveFields,
+            this.vaultService,
+            this.redactor,
+          );
+        } catch {
+          // Leave unresolved
+        }
       }
     }
     return record;
@@ -387,7 +395,7 @@ export class DataQueryService {
       }
     }
 
-    // Resolve vault references in result attributes
+    // Resolve vault references in result attributes (sensitive fields only)
     if (this.vaultService && Array.isArray(results)) {
       for (const item of results) {
         if (
@@ -395,14 +403,18 @@ export class DataQueryService {
         ) {
           const record = item as DataRecord;
           if (Object.keys(record.attributes).length > 0) {
-            try {
-              await resolveVaultRefsInData(
-                record.attributes,
-                this.vaultService,
-                this.redactor,
-              );
-            } catch {
-              // Leave unresolved — vault unavailable or key missing
+            const sensitiveFields = parseSensitiveFieldsTag(record.tags);
+            if (sensitiveFields) {
+              try {
+                await resolveSensitiveVaultRefs(
+                  record.attributes,
+                  sensitiveFields,
+                  this.vaultService,
+                  this.redactor,
+                );
+              } catch {
+                // Leave unresolved — vault unavailable or key missing
+              }
             }
           }
         }

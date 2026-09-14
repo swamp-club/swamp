@@ -27,7 +27,10 @@ import type { Data } from "../data/data.ts";
 import type { DataRecord } from "../data/data_record.ts";
 import type { DataQueryService } from "../data/data_query_service.ts";
 import { isTextContentType } from "../data/content_type.ts";
-import { resolveVaultRefsInData } from "../models/data_writer.ts";
+import {
+  parseSensitiveFieldsTag,
+  resolveSensitiveVaultRefs,
+} from "../models/data_writer.ts";
 import { ModelNotFoundError } from "./errors.ts";
 import { parseNamespacedModelName } from "../data/namespace.ts";
 import type { Namespace } from "../data/namespace.ts";
@@ -849,11 +852,18 @@ export class ModelResolver {
                   ns.modelName,
                 );
                 if (record && Object.keys(record.attributes).length > 0) {
-                  try {
-                    const vs = await this.getVaultService();
-                    await resolveVaultRefsInData(record.attributes, vs);
-                  } catch {
-                    // Vault unavailable — leave refs unresolved
+                  const sensitiveFields = parseSensitiveFieldsTag(data.tags);
+                  if (sensitiveFields) {
+                    try {
+                      const vs = await this.getVaultService();
+                      await resolveSensitiveVaultRefs(
+                        record.attributes,
+                        sensitiveFields,
+                        vs,
+                      );
+                    } catch {
+                      // Vault unavailable — leave refs unresolved
+                    }
                   }
                 }
                 return record;

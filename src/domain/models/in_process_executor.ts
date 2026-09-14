@@ -202,6 +202,7 @@ export class InProcessExecutor {
       this.context.modelId,
       this.context.vaultService,
       this.context.redactor,
+      this.modelDef.resources,
     );
 
     const deleteResource = createResourceDeleter(

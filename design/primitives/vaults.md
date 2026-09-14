@@ -616,6 +616,25 @@ identical to the behaviour before this feature.
 - Processing is injected inside `createResourceWriter()` before JSON
   serialization, so it applies transparently to all resource writes
 
+### Read-Side Resolution
+
+When resource data is read back (via `readResource`, `data get`, or CEL
+expressions), vault reference strings in sensitive fields are resolved back to
+their original secret values. Resolution is scoped to sensitive fields only —
+non-sensitive fields containing vault-ref-shaped strings are left as literal
+text.
+
+The scoping mechanism uses a `_swamp.sensitiveFields` tag written at persist
+time. This tag records the dot-paths of fields that were vaulted (or `*` when
+`sensitiveOutput: true`). Read sites parse this tag to determine which fields to
+resolve. For legacy data written before this tag existed, call sites with schema
+access fall back to `extractSensitiveFields()` on the resource spec; call sites
+without schema access skip resolution (secure default).
+
+Resolution is performed by `resolveSensitiveVaultRefs()` in
+`src/domain/models/data_writer.ts`. The tag is parsed by
+`parseSensitiveFieldsTag()` in the same file.
+
 ### Implementation
 
 Processing is handled by `processSensitiveResourceData()` in

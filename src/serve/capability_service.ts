@@ -274,6 +274,7 @@ export class CapabilityService {
         data.name,
         data.version,
       ),
+      tags: data.tags,
     };
   }
 

@@ -26,7 +26,10 @@ import type { VaultService } from "../vaults/vault_service.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
 import type { DataHandle } from "../models/model.ts";
 import { isTextContentType } from "./content_type.ts";
-import { resolveVaultRefsInData } from "../models/data_writer.ts";
+import {
+  parseSensitiveFieldsTag,
+  resolveSensitiveVaultRefs,
+} from "../models/data_writer.ts";
 
 export interface DataRecordMapperOptions {
   vaultService?: VaultService;
@@ -72,6 +75,7 @@ function parseContent(
  */
 async function resolveVaultRefs(
   attributes: Record<string, unknown>,
+  tags: Record<string, string>,
   options: DataRecordMapperOptions,
 ): Promise<void> {
   if (
@@ -79,9 +83,12 @@ async function resolveVaultRefs(
   ) {
     return;
   }
+  const sensitiveFields = parseSensitiveFieldsTag(tags);
+  if (!sensitiveFields) return;
   try {
-    await resolveVaultRefsInData(
+    await resolveSensitiveVaultRefs(
       attributes,
+      sensitiveFields,
       options.vaultService,
       options.redactor,
     );
@@ -204,7 +211,7 @@ export async function fromData(
     true,
   );
 
-  await resolveVaultRefs(attributes, options);
+  await resolveVaultRefs(attributes, data.tags, options);
 
   const resolvedModelName = options.modelName ?? data.tags["modelName"] ?? "";
 
@@ -283,10 +290,18 @@ export async function fromResourceHandle(
     }
   }
   if (vaultService && Object.keys(attributes).length > 0) {
-    try {
-      await resolveVaultRefsInData(attributes, vaultService, redactor);
-    } catch {
-      // Vault unavailable or specific keys failed — leave unresolved
+    const sensitiveFields = parseSensitiveFieldsTag(handle.tags);
+    if (sensitiveFields) {
+      try {
+        await resolveSensitiveVaultRefs(
+          attributes,
+          sensitiveFields,
+          vaultService,
+          redactor,
+        );
+      } catch {
+        // Vault unavailable or specific keys failed — leave unresolved
+      }
     }
   }
 

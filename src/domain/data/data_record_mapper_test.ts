@@ -403,7 +403,11 @@ Deno.test("fromResourceHandle: resolves vault references in attributes when vaul
     dataId: "data-id-1" as DataId,
     version: 1,
     size: 100,
-    tags: { type: "resource", modelName: "test-model" },
+    tags: {
+      type: "resource",
+      modelName: "test-model",
+      "_swamp.sensitiveFields": JSON.stringify(["apiKey"]),
+    },
     metadata: {
       contentType: "application/json",
       lifetime: "infinite",

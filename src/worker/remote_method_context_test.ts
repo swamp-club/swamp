@@ -74,6 +74,7 @@ function harness(
   artifactContent?: Record<string, unknown>,
   overrideDispatch?: DispatchParams,
   onEvent?: (event: Record<string, unknown>) => void,
+  dataTags?: Record<string, string>,
 ) {
   const calls: StubCall[] = [];
   // The orchestrator side of the control socket, with stub verb handlers.
@@ -98,6 +99,7 @@ function harness(
       contentType: "application/json",
       size: 17,
       contentPath: `/data/x/m-1/${p.dataName}/4`,
+      tags: dataTags,
     });
   });
   orchestrator.register(RemoteMethod.queryData, (params) => {
@@ -223,16 +225,27 @@ Deno.test("remote context: readResource resolves metadata then fetches bytes", a
     const h = harness(dir);
     const value = await h.context.readResource!("state-main");
     assertEquals(value, { loaded: true });
-    assertEquals(h.calls.map((c) => c.method), ["getData", "readArtifact"]);
+    assertEquals(h.calls.map((c) => c.method), [
+      "getData",
+      "getData",
+      "readArtifact",
+    ]);
   });
 });
 
 Deno.test("remote context: readResource resolves vault references in sensitive fields", async () => {
   await withScratch(async (dir) => {
-    const h = harness(dir, undefined, {
-      username: "alice",
-      refreshToken: "${{ vault.get('my-vault', 'refresh-tok') }}",
-    });
+    const h = harness(
+      dir,
+      undefined,
+      {
+        username: "alice",
+        refreshToken: "${{ vault.get('my-vault', 'refresh-tok') }}",
+      },
+      undefined,
+      undefined,
+      { "_swamp.sensitiveFields": JSON.stringify(["refreshToken"]) },
+    );
     const value = await h.context.readResource!("state-main");
     assertEquals(value, { username: "alice", refreshToken: "s3cret" });
     const resolveCall = h.calls.find((c) => c.method === "resolveSecret");

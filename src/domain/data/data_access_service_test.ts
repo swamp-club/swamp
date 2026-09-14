@@ -237,6 +237,7 @@ Deno.test("DataAccessService.readModelData: resolves vault references when vault
   const data = await createTestData("secrets-data", {
     type: "resource",
     specName: "config",
+    "_swamp.sensitiveFields": JSON.stringify(["apiKey"]),
   });
   const content = new TextEncoder().encode(
     JSON.stringify({ apiKey: "${{ vault.get('default', 'api-key') }}" }),
