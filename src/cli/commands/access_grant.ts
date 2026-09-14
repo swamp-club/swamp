@@ -61,7 +61,7 @@ import type { ModelMethodRunEvent } from "../../libswamp/mod.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   runModelMethodOverServer,
 } from "../../cli/remote_run.ts";
@@ -173,9 +173,9 @@ const accessGrantCreateCommand = new Command()
         "grant",
         "create",
       ]);
-      const token = await resolveServerToken(
+      const token = await resolveServerTokenFromOptions(
         server,
-        options.token as string | undefined,
+        options,
       );
       const renderer = createModelMethodRunRenderer(ctx.outputMode, {
         modelName: instanceName,
@@ -371,9 +371,9 @@ const accessGrantListCommand = new Command()
         "grant",
         "list",
       ]);
-      const token = await resolveServerToken(
+      const token = await resolveServerTokenFromOptions(
         server,
-        options.token as string | undefined,
+        options,
       );
       const response = await requestServerResponse<AccessGrantListResponse>(
         { server, ...(token ? { token } : {}) },
@@ -472,9 +472,9 @@ const accessGrantRevokeCommand = new Command()
         "grant",
         "revoke",
       ]);
-      const token = await resolveServerToken(
+      const token = await resolveServerTokenFromOptions(
         server,
-        options.token as string | undefined,
+        options,
       );
       const response = await requestServerResponse<AccessGrantListResponse>(
         { server, ...(token ? { token } : {}) },

@@ -37,7 +37,7 @@ import {
 import { renderWorkerList } from "../../presentation/output/worker_output.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
@@ -67,9 +67,9 @@ export const workerListCommand = withRemoteOptions(
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
-    const token = await resolveServerToken(
+    const token = await resolveServerTokenFromOptions(
       server,
-      options.token as string | undefined,
+      options,
     );
     const showAll = options.all ?? false;
     const response = await requestServerResponse<WorkerListResponse>(

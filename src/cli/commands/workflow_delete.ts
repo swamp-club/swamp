@@ -40,7 +40,7 @@ import { UserError } from "../../domain/errors.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
@@ -73,9 +73,9 @@ export const workflowDeleteCommand = withRemoteOptions(
 
     const server = resolveServeUrl(options.server as string | undefined);
     if (server) {
-      const token = await resolveServerToken(
+      const token = await resolveServerTokenFromOptions(
         server,
-        options.token as string | undefined,
+        options,
       );
       const response = await requestServerResponse<WorkflowDeleteResponse>(
         { server, token },

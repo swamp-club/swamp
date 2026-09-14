@@ -43,7 +43,7 @@ import {
 import { renderServerTokenRotate } from "../../presentation/output/access_token_output.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
@@ -113,9 +113,9 @@ export const accessTokenRotateCommand = withRemoteOptions(
           `Use 'swamp access token reveal <name>' on the serve host to retrieve the token.`,
       );
     }
-    const token = await resolveServerToken(
+    const token = await resolveServerTokenFromOptions(
       server,
-      options.token as string | undefined,
+      options,
     );
     const response = await requestServerResponse<AccessTokenRotateResponse>(
       { server, token },

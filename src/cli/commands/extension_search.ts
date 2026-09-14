@@ -53,7 +53,7 @@ import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 import { loadIdentity } from "../load_identity.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
@@ -174,9 +174,9 @@ export const extensionSearchCommand = withRemoteOptions(
     options.server as string | undefined,
   );
   if (remoteServer) {
-    const token = await resolveServerToken(
+    const token = await resolveServerTokenFromOptions(
       remoteServer,
-      options.token as string | undefined,
+      options,
     );
     const response = await requestServerResponse<ExtensionSearchResponse>(
       { server: remoteServer, token },

@@ -41,7 +41,7 @@ import { groupCommandAction } from "../group_action.ts";
 import { runGcCommand } from "./run_gc.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
@@ -106,9 +106,9 @@ const runHistoryCommand = withRemoteOptions(
 
       const server = resolveServeUrl(options.server as string | undefined);
       if (server) {
-        const token = await resolveServerToken(
+        const token = await resolveServerTokenFromOptions(
           server,
-          options.token as string | undefined,
+          options,
         );
         const response = await requestServerResponse<RunHistoryResponse>(
           { server, token },
@@ -171,9 +171,9 @@ const runDoctorCommand = withRemoteOptions(
 
       const server = resolveServeUrl(options.server as string | undefined);
       if (server) {
-        const token = await resolveServerToken(
+        const token = await resolveServerTokenFromOptions(
           server,
-          options.token as string | undefined,
+          options,
         );
         const response = await requestServerResponse<RunDoctorResponse>(
           { server, token },

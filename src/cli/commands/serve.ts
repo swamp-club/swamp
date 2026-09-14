@@ -172,7 +172,7 @@ import {
 } from "../../serve/extension_reload.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
 } from "../remote_run.ts";
 import { validateServerRepoExclusivity } from "./access_helpers.ts";
@@ -1007,9 +1007,9 @@ const reloadCommand = new Command()
     const renderer = createServeReloadRenderer(ctx.outputMode);
 
     if (server) {
-      const token = await resolveServerToken(
+      const token = await resolveServerTokenFromOptions(
         server,
-        options.token as string | undefined,
+        options,
       );
 
       const response = await requestServerResponse<ServeReloadResponse>(

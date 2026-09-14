@@ -37,7 +37,7 @@ import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
@@ -64,9 +64,9 @@ export const workflowCreateCommand = withRemoteOptions(
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
-    const token = await resolveServerToken(
+    const token = await resolveServerTokenFromOptions(
       server,
-      options.token as string | undefined,
+      options,
     );
     const response = await requestServerResponse<WorkflowCreateResponse>(
       { server, token },

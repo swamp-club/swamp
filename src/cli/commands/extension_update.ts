@@ -50,7 +50,7 @@ import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 import { loadIdentity } from "../load_identity.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   warnServerReloadNeeded,
   withRemoteOptions,
@@ -86,9 +86,9 @@ export const extensionUpdateCommand = withRemoteOptions(
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
-    const token = await resolveServerToken(
+    const token = await resolveServerTokenFromOptions(
       server,
-      options.token as string | undefined,
+      options,
     );
     const response = await requestServerResponse<ExtensionUpdateResponse>(
       { server, token, timeoutMs: 300_000 },

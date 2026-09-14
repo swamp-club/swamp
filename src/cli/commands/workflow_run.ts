@@ -87,7 +87,7 @@ import { JUnitWorkflowRunRenderer } from "../../presentation/renderers/workflow_
 import { isAuthenticated, resolveCliInitiatedBy } from "../auth_context.ts";
 import { getActiveTelemetryService } from "../telemetry_integration.ts";
 import {
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   runWorkflowOverServer,
 } from "../remote_run.ts";
@@ -646,9 +646,9 @@ async function runWorkflowViaServer(
     )
     : [cliInputs];
 
-  const token = await resolveServerToken(
+  const token = await resolveServerTokenFromOptions(
     options.server as string,
-    options.token as string | undefined,
+    options,
   );
 
   try {

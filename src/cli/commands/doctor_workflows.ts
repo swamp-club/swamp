@@ -46,7 +46,7 @@ import {
 import { resolveGitMainWorktreeRoot } from "../../infrastructure/persistence/git_worktree.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
@@ -88,9 +88,9 @@ export const doctorWorkflowsCommand = withRemoteOptions(
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
-    const token = await resolveServerToken(
+    const token = await resolveServerTokenFromOptions(
       server,
-      options.token as string | undefined,
+      options,
     );
     const response = await requestServerResponse<DoctorWorkflowsResponse>(
       { server, token },

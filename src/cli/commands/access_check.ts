@@ -39,7 +39,7 @@ import {
 import { createAccessCheckRenderer } from "../../presentation/renderers/access_check.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
 } from "../../cli/remote_run.ts";
 import type { AccessCheckResponse } from "../../serve/protocol.ts";
@@ -139,9 +139,9 @@ export const accessCheckCommand = new Command()
         "check",
       ]);
 
-      const token = await resolveServerToken(
+      const token = await resolveServerTokenFromOptions(
         server,
-        options.token as string | undefined,
+        options,
       );
 
       const response = await requestServerResponse<AccessCheckResponse>(

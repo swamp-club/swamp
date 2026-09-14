@@ -21,7 +21,7 @@ import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
@@ -50,9 +50,9 @@ export const auditAlertsCommand = withRemoteOptions(
     );
   }
 
-  const token = await resolveServerToken(
+  const token = await resolveServerTokenFromOptions(
     server,
-    options.token as string | undefined,
+    options,
   );
 
   const response = await requestServerResponse<AuditAlertsResponse>(

@@ -23,7 +23,7 @@ import { UserError } from "../../domain/errors.ts";
 import { parseLabels } from "./worker_shared.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
@@ -67,9 +67,9 @@ export const workerVerifyCommand = withRemoteOptions(
     );
   }
 
-  const token = await resolveServerToken(
+  const token = await resolveServerTokenFromOptions(
     server,
-    options.token as string | undefined,
+    options,
   );
   const labels = parseLabels(options.label);
   const response = await requestServerResponse<WorkerVerifyResponse>(

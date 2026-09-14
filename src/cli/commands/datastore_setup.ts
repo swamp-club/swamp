@@ -52,7 +52,7 @@ import { parseTimeoutFlag } from "./datastore_sync.ts";
 import { requireAuthenticated, requireScope } from "../auth_context.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
@@ -254,9 +254,9 @@ const datastoreSetupExtensionCommand = withRemoteOptions(
       );
     }
 
-    const token = await resolveServerToken(
+    const token = await resolveServerTokenFromOptions(
       server,
-      options.token as string | undefined,
+      options,
     );
     const clientTimeoutMs = options.timeout
       ? Math.min(options.timeout, 21600) * 1000

@@ -41,7 +41,7 @@ import { RENAMED_VAULT_TYPES } from "../../domain/vaults/vault_types.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
@@ -106,9 +106,9 @@ export const vaultCreateCommand = withRemoteOptions(
 
     const server = resolveServeUrl(options.server as string | undefined);
     if (server) {
-      const token = await resolveServerToken(
+      const token = await resolveServerTokenFromOptions(
         server,
-        options.token as string | undefined,
+        options,
       );
       let config: Record<string, unknown> | undefined;
       if (options.config) {

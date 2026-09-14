@@ -32,6 +32,7 @@ import {
   requestServerResponse,
   resetMarkerServerAddress,
   resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   runModelMethodOverServer,
   runWorkflowOverServer,
@@ -914,6 +915,85 @@ Deno.test("resolveServerToken: falls back to credential repo when no token file 
   } finally {
     if (prev !== undefined) Deno.env.set("SWAMP_SERVER_TOKEN_FILE", prev);
     else Deno.env.delete("SWAMP_SERVER_TOKEN_FILE");
+  }
+});
+
+// ── resolveServerTokenFromOptions tests ──────────────────────────────
+
+Deno.test("resolveServerTokenFromOptions: reads token from options.tokenFile", async () => {
+  const tmpFile = await Deno.makeTempFile({ prefix: "swamp-token-test-" });
+  const prev = Deno.env.get("SWAMP_SERVER_TOKEN_FILE");
+  try {
+    Deno.env.delete("SWAMP_SERVER_TOKEN_FILE");
+    await Deno.writeTextFile(tmpFile, "file.token-value\n");
+    const emptyRepo: ServerCredentialRepository = {
+      get: () => Promise.resolve(null),
+      save: () => Promise.resolve(),
+      remove: () => Promise.resolve(),
+      list: () => Promise.resolve([]),
+    };
+    const result = await resolveServerTokenFromOptions(
+      "http://localhost:9090",
+      { tokenFile: tmpFile },
+      emptyRepo,
+    );
+    assertEquals(result, "file.token-value");
+  } finally {
+    if (prev !== undefined) Deno.env.set("SWAMP_SERVER_TOKEN_FILE", prev);
+    else Deno.env.delete("SWAMP_SERVER_TOKEN_FILE");
+    await Deno.remove(tmpFile).catch(() => {});
+  }
+});
+
+Deno.test("resolveServerTokenFromOptions: throws when both token and tokenFile provided", async () => {
+  const err = await assertRejects(
+    () =>
+      resolveServerTokenFromOptions(
+        "http://localhost:9090",
+        { token: "explicit.token", tokenFile: "/some/file" },
+      ),
+    UserError,
+  );
+  assertStringIncludes(err.message, "mutually exclusive");
+});
+
+Deno.test("resolveServerTokenFromOptions: passes token through when no tokenFile", async () => {
+  const prev = Deno.env.get("SWAMP_SERVER_TOKEN_FILE");
+  try {
+    Deno.env.delete("SWAMP_SERVER_TOKEN_FILE");
+    const result = await resolveServerTokenFromOptions(
+      "http://localhost:9090",
+      { token: "explicit.token" },
+    );
+    assertEquals(result, "explicit.token");
+  } finally {
+    if (prev !== undefined) Deno.env.set("SWAMP_SERVER_TOKEN_FILE", prev);
+    else Deno.env.delete("SWAMP_SERVER_TOKEN_FILE");
+  }
+});
+
+Deno.test("resolveServerTokenFromOptions: falls back to env var when no options", async () => {
+  const tmpFile = await Deno.makeTempFile({ prefix: "swamp-token-test-" });
+  const prev = Deno.env.get("SWAMP_SERVER_TOKEN_FILE");
+  try {
+    await Deno.writeTextFile(tmpFile, "env-file.token\n");
+    Deno.env.set("SWAMP_SERVER_TOKEN_FILE", tmpFile);
+    const emptyRepo: ServerCredentialRepository = {
+      get: () => Promise.resolve(null),
+      save: () => Promise.resolve(),
+      remove: () => Promise.resolve(),
+      list: () => Promise.resolve([]),
+    };
+    const result = await resolveServerTokenFromOptions(
+      "http://localhost:9090",
+      {},
+      emptyRepo,
+    );
+    assertEquals(result, "env-file.token");
+  } finally {
+    if (prev !== undefined) Deno.env.set("SWAMP_SERVER_TOKEN_FILE", prev);
+    else Deno.env.delete("SWAMP_SERVER_TOKEN_FILE");
+    await Deno.remove(tmpFile).catch(() => {});
   }
 });
 

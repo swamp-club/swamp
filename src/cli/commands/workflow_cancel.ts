@@ -37,7 +37,7 @@ import type {
 } from "../../domain/workflows/repositories.ts";
 import { killProcessTree } from "../../infrastructure/process/process_kill.ts";
 import {
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
@@ -147,9 +147,9 @@ export const workflowCancelCommand = withRemoteOptions(
         cliCtx.logger
           .warn`--reason is ignored with --server (the cancel endpoint does not accept a reason)`;
       }
-      const token = await resolveServerToken(
+      const token = await resolveServerTokenFromOptions(
         server,
-        options.token as string | undefined,
+        options,
       );
       const httpUrl = server.replace(/^ws(s?):/, "http$1:");
       const cancelUrl = `${httpUrl}/api/v1/cancel/workflow-run/${

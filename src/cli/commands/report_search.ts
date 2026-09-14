@@ -42,7 +42,7 @@ import type { RepositoryContext } from "../../infrastructure/persistence/reposit
 import { createReportSearchRenderer } from "../../presentation/renderers/report_search.tsx";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
@@ -152,9 +152,9 @@ export async function reportSearchAction(
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
-    const token = await resolveServerToken(
+    const token = await resolveServerTokenFromOptions(
       server,
-      options.token as string | undefined,
+      options,
     );
     const response = await requestServerResponse<ReportSearchResponse>(
       { server, token },

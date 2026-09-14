@@ -49,7 +49,7 @@ import {
 } from "../../presentation/renderers/extension_rm.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   warnServerReloadNeeded,
   withRemoteOptions,
@@ -85,9 +85,9 @@ export const extensionRemoveCommand = withRemoteOptions(
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
-    const token = await resolveServerToken(
+    const token = await resolveServerTokenFromOptions(
       server,
-      options.token as string | undefined,
+      options,
     );
     const response = await requestServerResponse<ExtensionRmResponse>(
       { server, token },

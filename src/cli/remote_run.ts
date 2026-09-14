@@ -159,41 +159,23 @@ export async function readTokenFile(
   return value;
 }
 
-function resolveTokenFileFlag(): string | undefined {
-  for (let i = 0; i < Deno.args.length; i++) {
-    if (Deno.args[i] === "--token-file" && i + 1 < Deno.args.length) {
-      return Deno.args[i + 1];
-    }
-    if (Deno.args[i].startsWith("--token-file=")) {
-      return Deno.args[i].slice("--token-file=".length);
-    }
-  }
-  return undefined;
-}
-
 /**
  * Resolves the server token for authentication. Precedence:
- * 1. Explicit `--token` flag value
- * 2. `--token-file` flag (read from file)
- * 3. `SWAMP_SERVER_TOKEN_FILE` env var (read from file)
- * 4. `SWAMP_SERVER_TOKEN` env var (via ServerCredentialRepository)
- * 5. Stored credential in `~/.config/swamp/servers.json`
+ * 1. Explicit token value (from `--token` flag or `--token-file` read)
+ * 2. `SWAMP_SERVER_TOKEN_FILE` env var (read from file)
+ * 3. `SWAMP_SERVER_TOKEN` env var (via ServerCredentialRepository)
+ * 4. Stored credential in `~/.config/swamp/servers.json`
+ *
+ * Callers that have Cliffy `options` should use
+ * `resolveServerTokenFromOptions()` which handles `--token` / `--token-file`
+ * mutual exclusivity and file reading before delegating here.
  */
 export async function resolveServerToken(
   serverUrl: string,
   explicitToken?: string,
   credentialRepo?: ServerCredentialRepository,
 ): Promise<string | undefined> {
-  const tokenFileFlag = resolveTokenFileFlag();
-  if (explicitToken && tokenFileFlag) {
-    throw new UserError(
-      "--token and --token-file are mutually exclusive",
-    );
-  }
   if (explicitToken) return explicitToken;
-  if (tokenFileFlag) {
-    return readTokenFile(tokenFileFlag, "--token-file");
-  }
   const envTokenFile = Deno.env.get("SWAMP_SERVER_TOKEN_FILE");
   if (envTokenFile) {
     return readTokenFile(envTokenFile, "SWAMP_SERVER_TOKEN_FILE");
@@ -201,6 +183,30 @@ export async function resolveServerToken(
   const repo = credentialRepo ?? new FileServerCredentialRepository();
   const credential = await repo.get(toHttpUrl(serverUrl));
   return credential?.token;
+}
+
+/**
+ * Resolves the server token from Cliffy command options.
+ * Handles `--token` / `--token-file` mutual exclusivity and reads the
+ * token from file when `--token-file` is provided, then delegates to
+ * `resolveServerToken()` for env var and stored credential fallbacks.
+ */
+export async function resolveServerTokenFromOptions(
+  serverUrl: string,
+  options: { token?: unknown; tokenFile?: unknown },
+  credentialRepo?: ServerCredentialRepository,
+): Promise<string | undefined> {
+  const token = options.token as string | undefined;
+  const tokenFile = options.tokenFile as string | undefined;
+  if (token && tokenFile) {
+    throw new UserError(
+      "--token and --token-file are mutually exclusive",
+    );
+  }
+  const explicitToken = tokenFile
+    ? await readTokenFile(tokenFile, "--token-file")
+    : token;
+  return resolveServerToken(serverUrl, explicitToken, credentialRepo);
 }
 
 /** Normalizes http(s) URLs to ws(s) so `--server http://host:4000` works. */

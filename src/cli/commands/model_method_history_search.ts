@@ -40,7 +40,7 @@ import { ModelType } from "../../domain/models/model_type.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
@@ -62,9 +62,9 @@ export async function modelMethodHistorySearchAction(
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
-    const token = await resolveServerToken(
+    const token = await resolveServerTokenFromOptions(
       server,
-      options.token as string | undefined,
+      options,
     );
     const response = await requestServerResponse<
       ModelMethodHistorySearchResponse

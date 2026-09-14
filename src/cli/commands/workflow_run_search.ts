@@ -47,7 +47,7 @@ import {
 } from "../../domain/workflows/workflow_id.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
@@ -134,9 +134,9 @@ export async function workflowRunSearchAction(
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
-    const token = await resolveServerToken(
+    const token = await resolveServerTokenFromOptions(
       server,
-      options.token as string | undefined,
+      options,
     );
     const parsedTags = options.tag
       ? parseTags(options.tag as string[])

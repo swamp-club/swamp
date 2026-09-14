@@ -35,7 +35,7 @@ import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
@@ -96,9 +96,9 @@ export const vaultAuditTrailCommand = withRemoteOptions(
   if (server) {
     const since = options.since ? parseDate(options.since) : undefined;
     const until = options.until ? parseDate(options.until) : undefined;
-    const token = await resolveServerToken(
+    const token = await resolveServerTokenFromOptions(
       server,
-      options.token as string | undefined,
+      options,
     );
     const response = await requestServerResponse<VaultAuditTrailResponse>(
       { server, token },

@@ -76,7 +76,7 @@ import {
 } from "../../libswamp/mod.ts";
 import { createModelMethodRunRenderer } from "../../presentation/renderers/model_method_run.ts";
 import {
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   runModelMethodOverServer,
 } from "../remote_run.ts";
@@ -611,9 +611,9 @@ async function runMethodViaServer(
     )
     : [cliInputs];
 
-  const token = await resolveServerToken(
+  const token = await resolveServerTokenFromOptions(
     options.server as string,
-    options.token as string | undefined,
+    options,
   );
 
   try {

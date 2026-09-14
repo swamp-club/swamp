@@ -38,7 +38,7 @@ import { createExtensionInstallRenderer } from "../../presentation/renderers/ext
 import { createExtensionInstallDeps } from "../create_extension_install_deps.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   warnServerReloadNeeded,
   withRemoteOptions,
@@ -76,9 +76,9 @@ export const extensionInstallCommand = withRemoteOptions(
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
-    const token = await resolveServerToken(
+    const token = await resolveServerTokenFromOptions(
       server,
-      options.token as string | undefined,
+      options,
     );
     const response = await requestServerResponse<ExtensionInstallResponse>(
       { server, token },

@@ -41,7 +41,7 @@ import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_mark
 import { UserError } from "../../domain/errors.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
@@ -76,9 +76,9 @@ export const vaultEditCommand = withRemoteOptions(
         "Vault name or ID is required with --server (interactive search is not supported remotely)",
       );
     }
-    const token = await resolveServerToken(
+    const token = await resolveServerTokenFromOptions(
       server,
-      options.token as string | undefined,
+      options,
     );
     const response = await requestServerResponse<VaultEditResponse>(
       { server, token },

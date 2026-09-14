@@ -48,7 +48,7 @@ import {
 } from "../prompt_helpers.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
@@ -125,9 +125,9 @@ Both the source and target vaults must be different types.`,
       }
     }
 
-    const token = await resolveServerToken(
+    const token = await resolveServerTokenFromOptions(
       server,
-      options.token as string | undefined,
+      options,
     );
     const response = await requestServerResponse<VaultMigrateResponse>(
       { server, token, timeoutMs: 300_000 },

@@ -35,7 +35,7 @@ import { getVaultTypes } from "../../domain/vaults/vault_types.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
@@ -58,9 +58,9 @@ export async function vaultTypeSearchAction(
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
-    const token = await resolveServerToken(
+    const token = await resolveServerTokenFromOptions(
       server,
-      options.token as string | undefined,
+      options,
     );
     const response = await requestServerResponse<VaultTypeSearchResponse>(
       { server, token },

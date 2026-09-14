@@ -31,7 +31,7 @@ import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { renderWorkflowTriggerGet } from "../../presentation/renderers/workflow_trigger_get.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
@@ -67,9 +67,9 @@ export const workflowTriggerGetCommand = withRemoteOptions(
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
-    const token = await resolveServerToken(
+    const token = await resolveServerTokenFromOptions(
       server,
-      options.token as string | undefined,
+      options,
     );
     const response = await requestServerResponse<WorkflowTriggerGetResponse>(
       { server, token },

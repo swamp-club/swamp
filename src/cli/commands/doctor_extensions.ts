@@ -77,7 +77,7 @@ import {
 import { resolveDatastoreForRepo } from "../repo_context.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
@@ -147,9 +147,9 @@ export const doctorExtensionsCommand = withRemoteOptions(
     options.server as string | undefined,
   );
   if (remoteServer) {
-    const token = await resolveServerToken(
+    const token = await resolveServerTokenFromOptions(
       remoteServer,
-      options.token as string | undefined,
+      options,
     );
     const response = await requestServerResponse<DoctorExtensionsResponse>(
       { server: remoteServer, token },

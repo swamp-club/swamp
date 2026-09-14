@@ -45,7 +45,7 @@ import {
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
@@ -178,9 +178,9 @@ export const dataDeleteCommand = withRemoteOptions(
           "Batch delete (--prefix, --all) is not supported with --server. Use single-item delete instead.",
         );
       }
-      const token = await resolveServerToken(
+      const token = await resolveServerTokenFromOptions(
         server,
-        options.token as string | undefined,
+        options,
       );
       const response = await requestServerResponse<DataDeleteResponse>(
         { server, token },

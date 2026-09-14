@@ -39,7 +39,7 @@ import { createModelValidateRenderer } from "../../presentation/renderers/model_
 import { modelRegistry } from "../../domain/models/model.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
@@ -83,9 +83,9 @@ export const modelValidateCommand = withRemoteOptions(
     if (server) {
       const labels = options.label as string[] | undefined;
       const method = options.method as string | undefined;
-      const token = await resolveServerToken(
+      const token = await resolveServerTokenFromOptions(
         server,
-        options.token as string | undefined,
+        options,
       );
       const response = await requestServerResponse<ModelValidateResponse>(
         { server, token },

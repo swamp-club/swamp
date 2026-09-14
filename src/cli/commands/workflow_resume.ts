@@ -76,7 +76,7 @@ import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import {
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   resumeWorkflowOverServer,
   withRemoteOptions,
@@ -154,9 +154,9 @@ export const workflowResumeCommand = withRemoteOptions(
 
     const server = resolveServeUrl(options.server as string | undefined);
     if (server) {
-      const token = await resolveServerToken(
+      const token = await resolveServerTokenFromOptions(
         server,
-        options.token as string | undefined,
+        options,
       );
 
       // Parse override inputs for the remote path (mirrors local logic).

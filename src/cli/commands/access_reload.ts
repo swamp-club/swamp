@@ -31,7 +31,7 @@ import { EventBus } from "../../domain/events/event_bus.ts";
 import { validateServerRepoExclusivity } from "./access_helpers.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
 } from "../../cli/remote_run.ts";
 import type { AccessReloadResponse } from "../../serve/protocol.ts";
@@ -82,9 +82,9 @@ export const accessReloadCommand = new Command()
     const renderer = createAccessReloadRenderer(ctx.outputMode);
 
     if (server) {
-      const token = await resolveServerToken(
+      const token = await resolveServerTokenFromOptions(
         server,
-        options.token as string | undefined,
+        options,
       );
 
       const response = await requestServerResponse<AccessReloadResponse>(

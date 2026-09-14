@@ -22,7 +22,7 @@ import { createContext, type GlobalOptions } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
 } from "../../cli/remote_run.ts";
 import type { AccessCanIResponse } from "../../serve/protocol.ts";
@@ -99,9 +99,9 @@ export const accessCanICommand = new Command()
         .filter((c: string) => c.length > 0)
       : undefined;
 
-    const token = await resolveServerToken(
+    const token = await resolveServerTokenFromOptions(
       server,
-      options.token as string | undefined,
+      options,
     );
 
     const response = await requestServerResponse<AccessCanIResponse>(

@@ -62,7 +62,7 @@ import type { ModelMethodRunEvent } from "../../libswamp/mod.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import {
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   runModelMethodOverServer,
 } from "../../cli/remote_run.ts";
@@ -251,9 +251,9 @@ const accessGroupCreateCommand = new Command()
         "group",
         "create",
       ]);
-      const token = await resolveServerToken(
+      const token = await resolveServerTokenFromOptions(
         server,
-        options.token as string | undefined,
+        options,
       );
       const renderer = createModelMethodRunRenderer(ctx.outputMode, {
         modelName: name,
@@ -332,9 +332,9 @@ const accessGroupAddMemberCommand = new Command()
         "group",
         "add-member",
       ]);
-      const token = await resolveServerToken(
+      const token = await resolveServerTokenFromOptions(
         server,
-        options.token as string | undefined,
+        options,
       );
       const renderer = createModelMethodRunRenderer(ctx.outputMode, {
         modelName: group,
@@ -411,9 +411,9 @@ const accessGroupRemoveMemberCommand = new Command()
         "group",
         "remove-member",
       ]);
-      const token = await resolveServerToken(
+      const token = await resolveServerTokenFromOptions(
         server,
-        options.token as string | undefined,
+        options,
       );
       const renderer = createModelMethodRunRenderer(ctx.outputMode, {
         modelName: group,
@@ -482,9 +482,9 @@ const accessGroupListCommand = new Command()
         "group",
         "list",
       ]);
-      const token = await resolveServerToken(
+      const token = await resolveServerTokenFromOptions(
         server,
-        options.token as string | undefined,
+        options,
       );
       const response = await requestServerResponse<AccessGroupListResponse>(
         { server, ...(token ? { token } : {}) },
@@ -555,9 +555,9 @@ const accessGroupMembersCommand = new Command()
         "group",
         "members",
       ]);
-      const token = await resolveServerToken(
+      const token = await resolveServerTokenFromOptions(
         server,
-        options.token as string | undefined,
+        options,
       );
       const response = await requestServerResponse<AccessGroupListResponse>(
         { server, ...(token ? { token } : {}) },
@@ -635,9 +635,9 @@ const accessGroupListIdpCommand = new Command()
       "group",
       "list-idp",
     ]);
-    const token = await resolveServerToken(
+    const token = await resolveServerTokenFromOptions(
       server,
-      options.token as string | undefined,
+      options,
     );
     const response = await requestServerResponse<AccessGroupListIdpResponse>(
       { server, ...(token ? { token } : {}) },

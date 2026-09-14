@@ -43,7 +43,7 @@ import { UserError } from "../../domain/errors.ts";
 import {
   normalizeServerUrl,
   requestServerResponse,
-  resolveServerToken,
+  resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
@@ -100,9 +100,9 @@ When using --server, the confirmation prompt is not available — use --force to
       }
     } catch { /* invalid URL handled by normalizeServerUrl */ }
 
-    const token = await resolveServerToken(
+    const token = await resolveServerTokenFromOptions(
       server,
-      options.token as string | undefined,
+      options,
     );
     const response = await requestServerResponse<VaultDeleteResponse>(
       { server, token },
