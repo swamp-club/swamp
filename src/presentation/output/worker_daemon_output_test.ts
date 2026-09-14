@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertFalse } from "@std/assert/false";
 import { stripAnsiCode } from "@std/fmt/colors";
 import type { WorkerDaemonStatus } from "../../domain/worker/worker_daemon_scheduler.ts";
 import {
@@ -50,10 +51,22 @@ Deno.test("renderWorkerDaemonEnabled: json mode system service", () => {
   assertEquals(parsed, { enabled: true, serviceMode: "system" });
 });
 
-Deno.test("renderWorkerDaemonEnabled: log mode mentions worker daemon", () => {
+Deno.test("renderWorkerDaemonEnabled: log mode user service says runs while logged in", () => {
   const output = captureLogs(() => renderWorkerDaemonEnabled("log", "user"));
-  assertStringIncludes(stripAnsiCode(output), "Worker daemon enabled");
-  assertStringIncludes(stripAnsiCode(output), "user service");
+  const stripped = stripAnsiCode(output);
+  assertStringIncludes(stripped, "Worker daemon enabled");
+  assertStringIncludes(stripped, "user service");
+  assertStringIncludes(stripped, "runs while you are logged in");
+  assertStringIncludes(stripped, "loginctl enable-linger");
+});
+
+Deno.test("renderWorkerDaemonEnabled: log mode system service says starts at boot", () => {
+  const output = captureLogs(() => renderWorkerDaemonEnabled("log", "system"));
+  const stripped = stripAnsiCode(output);
+  assertStringIncludes(stripped, "Worker daemon enabled");
+  assertStringIncludes(stripped, "system service");
+  assertStringIncludes(stripped, "starts automatically at boot");
+  assertFalse(stripped.includes("runs while you are logged in"));
 });
 
 Deno.test("renderWorkerDaemonDisabled: json mode outputs enabled false with service mode", () => {
@@ -115,4 +128,22 @@ Deno.test("renderWorkerDaemonStatus: log mode shows stopped when enabled but not
   );
   const stripped = stripAnsiCode(output);
   assertStringIncludes(stripped, "stopped");
+});
+
+Deno.test("renderWorkerDaemonStatus: log mode user service shows startup on login", () => {
+  const status: WorkerDaemonStatus = { enabled: true, running: true, pid: 42 };
+  const output = captureLogs(() =>
+    renderWorkerDaemonStatus(status, "log", "user")
+  );
+  const stripped = stripAnsiCode(output);
+  assertStringIncludes(stripped, "Startup: on login");
+});
+
+Deno.test("renderWorkerDaemonStatus: log mode system service shows startup at boot", () => {
+  const status: WorkerDaemonStatus = { enabled: true, running: true, pid: 42 };
+  const output = captureLogs(() =>
+    renderWorkerDaemonStatus(status, "log", "system")
+  );
+  const stripped = stripAnsiCode(output);
+  assertStringIncludes(stripped, "Startup: at boot");
 });

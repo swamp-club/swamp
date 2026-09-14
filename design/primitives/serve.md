@@ -357,6 +357,10 @@ reconciliation loop after `--stale-ttl`.
   enable time (`src/infrastructure/daemon/*_service_scheduler.ts`,
   `service_scheduler_factory.ts`). Linux without `systemctl` is refused with a
   pointer to file a feature request. Worker daemons have parallel schedulers.
+  **User vs system scope:** system services (`multi-user.target`) start at boot;
+  user services (`default.target`, launchd agents) run only while the user is
+  logged in. Users who need boot-time auto-start for a user service must enable
+  systemd lingering (`loginctl enable-linger $USER`) or install system-wide.
 - **Dashboard.** `--dashboard` serves the Vite SPA in `packages/dashboard`
   (views for overview, models, workflows, executions, approvals, data, vaults,
   extensions, schedules, webhooks and system) from `packages/dashboard/dist`,

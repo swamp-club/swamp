@@ -38,11 +38,24 @@ export function renderWorkerDaemonEnabled(
     );
   } else {
     const label = serviceModeLabel(serviceMode);
-    writeOutput(
-      `${
-        green("✓")
-      } Worker daemon enabled as ${label} — swamp worker connect will start automatically`,
-    );
+    if (serviceMode === "system") {
+      writeOutput(
+        `${
+          green("✓")
+        } Worker daemon enabled as ${label} — starts automatically at boot`,
+      );
+    } else {
+      writeOutput(
+        `${
+          green("✓")
+        } Worker daemon enabled as ${label} — runs while you are logged in`,
+      );
+      writeOutput(
+        dim(
+          "  To start at boot: loginctl enable-linger $USER (Linux) or re-run with sudo (macOS)",
+        ),
+      );
+    }
   }
 }
 
@@ -96,6 +109,11 @@ export function renderWorkerDaemonStatus(
 
   writeOutput(`${dim(`Status (${label}):`)}  ${stateLabel}`);
   writeOutput(`${dim("Enabled:")} ${green("yes")}`);
+  if (serviceMode === "user") {
+    writeOutput(`${dim("Startup:")} on login`);
+  } else {
+    writeOutput(`${dim("Startup:")} at boot`);
+  }
   if (status.pid !== undefined) {
     writeOutput(`${dim("PID:")}     ${String(status.pid)}`);
   }
