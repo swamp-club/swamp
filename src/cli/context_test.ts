@@ -101,6 +101,30 @@ Deno.test("getOutputModeFromArgs returns json when --json is present", () => {
   assertEquals(getOutputModeFromArgs(["--json", "model", "create"]), "json");
 });
 
+Deno.test("getOutputModeFromArgs enables JSON for a truthy output environment", () => {
+  assertEquals(getOutputModeFromArgs(["model", "list"], "1"), "json");
+  assertEquals(getOutputModeFromArgs(["model", "list"], "true"), "json");
+  assertEquals(getOutputModeFromArgs(["model", "list"], "yes"), "json");
+});
+
+Deno.test("getOutputModeFromArgs preserves log output for false output environment values", () => {
+  assertEquals(getOutputModeFromArgs(["model", "list"], undefined), "log");
+  assertEquals(getOutputModeFromArgs(["model", "list"], ""), "log");
+  assertEquals(getOutputModeFromArgs(["model", "list"], "0"), "log");
+  assertEquals(getOutputModeFromArgs(["model", "list"], "false"), "log");
+});
+
+Deno.test("createContext enables JSON for a truthy output environment", () => {
+  assertEquals(createContext({}, ["test"], "1").outputMode, "json");
+});
+
+Deno.test("createContext lets --json override a false output environment", () => {
+  assertEquals(
+    createContext({ json: true }, ["test"], "false").outputMode,
+    "json",
+  );
+});
+
 // ============================================================================
 // getRepoDirFromArgs Tests
 // ============================================================================

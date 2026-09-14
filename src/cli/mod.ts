@@ -1529,7 +1529,10 @@ export async function runCli(args: string[]): Promise<void> {
     .globalType("model_type", new ModelTypeType())
     .globalType("workflow_name", new WorkflowNameType())
     .globalOption("--json", "Output in JSON format (non-interactive)")
-    .globalOption("--log", "Force non-interactive log output")
+    .globalOption(
+      "--log",
+      "Show model and workflow run logs in terminal output",
+    )
     .globalOption(
       "--log-level <level:string>",
       "Set log level (trace, debug, info, warning, error, fatal)",
@@ -1543,7 +1546,8 @@ export async function runCli(args: string[]): Promise<void> {
     )
     .globalOption("--no-color", "Disable colored output")
     .globalAction(async function (options: GlobalOptions) {
-      setConsoleGuardJsonMode(options.json ?? false);
+      const outputMode = getOutputModeFromArgs(args);
+      setConsoleGuardJsonMode(outputMode === "json");
 
       const noColor = options.color === false ||
         Deno.env.get("NO_COLOR") !== undefined;
@@ -1575,7 +1579,7 @@ export async function runCli(args: string[]): Promise<void> {
         prettyOutput,
         showProperties: options.showProperties ?? false,
         logLevel,
-        jsonMode: options.json ?? false,
+        jsonMode: outputMode === "json",
         noColor,
         forceLog: forceLog || verbose,
         quiet: options.quiet ?? false,

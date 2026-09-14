@@ -64,8 +64,9 @@ export function isStdinTty(): boolean {
 export function createContext(
   options: GlobalOptions,
   loggerCategory: string[] = ["cli"],
+  jsonOutputEnv = Deno.env.get("SWAMP_CLI_OUTPUT_JSON"),
 ): CommandContext {
-  const outputMode: OutputMode = options.json ? "json" : "log";
+  const outputMode = resolveOutputMode(options.json ?? false, jsonOutputEnv);
 
   return {
     outputMode,
@@ -89,14 +90,33 @@ export function interactiveOutputMode(ctx: CommandContext): OutputMode {
 }
 
 /**
- * Determines the output mode from raw CLI arguments.
+ * Determines the output mode from raw CLI arguments and the JSON output default.
  * Used for error handling before the CLI has fully parsed options.
  */
-export function getOutputModeFromArgs(args: string[]): OutputMode {
-  if (args.includes("--json")) {
+export function getOutputModeFromArgs(
+  args: string[],
+  jsonOutputEnv = Deno.env.get("SWAMP_CLI_OUTPUT_JSON"),
+): OutputMode {
+  return resolveOutputMode(args.includes("--json"), jsonOutputEnv);
+}
+
+/**
+ * Resolves the CLI's two output modes without reading process state, so callers
+ * that run before command parsing and unit tests share identical behavior.
+ */
+export function resolveOutputMode(
+  jsonRequested: boolean,
+  jsonOutputEnv: string | undefined,
+): OutputMode {
+  if (jsonRequested || isTruthyOutputEnv(jsonOutputEnv)) {
     return "json";
   }
   return "log";
+}
+
+function isTruthyOutputEnv(value: string | undefined): boolean {
+  return value !== undefined && value !== "" && value !== "0" &&
+    value !== "false";
 }
 
 /**
