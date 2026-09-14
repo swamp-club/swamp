@@ -87,12 +87,19 @@ Deno.test(
 Deno.test(
   "createDataDeleteDeps: uses injectedDefinitionRepo",
   async () => {
-    await withTempDir(async (dir) => {
+    const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+    try {
       const injected = new YamlDefinitionRepository(dir);
       const deps = createDataDeleteDeps(dir, undefined, undefined, injected);
       assertEquals(typeof deps.delete, "function");
       assertEquals(typeof deps.preview, "function");
-    });
+    } finally {
+      if (Deno.build.os === "windows") {
+        await Deno.remove(dir, { recursive: true }).catch(() => {});
+      } else {
+        await Deno.remove(dir, { recursive: true });
+      }
+    }
   },
 );
 
