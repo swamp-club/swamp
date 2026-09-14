@@ -202,8 +202,11 @@ Only completed steps are visible — pending or running steps are not accessible
 The outputs field contains model method resource attributes when available;
 steps that produce no resource attributes have no outputs.
 
-Cross-workflow output passing (child workflow outputs visible to parent
-workflow steps) is not yet supported.
+Cross-workflow output passing is supported at one level of nesting: when a
+parent step invokes a child workflow, the child's model method resource
+attributes are collected and accessible as
+`steps.<parent-step>.outputs.<child-step>.<attr>`. Multi-level nesting
+(grandchild workflows) does not propagate outputs.
 
 ## Webhook Payload Context
 

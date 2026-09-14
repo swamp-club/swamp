@@ -22,6 +22,7 @@ import {
   createLibSwampContext,
   createWorkflowHistoryGetDeps,
   workflowHistoryGet,
+  type WorkflowRunView,
 } from "../../libswamp/mod.ts";
 import {
   createContext,
@@ -51,7 +52,7 @@ export async function workflowHistoryOutputsAction(
     "outputs",
   ]);
 
-  let runView;
+  let runView: WorkflowRunView | undefined;
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
@@ -63,7 +64,7 @@ export async function workflowHistoryOutputsAction(
         payload: { workflowIdOrName: runIdOrWorkflow },
       },
     );
-    runView = response.data;
+    runView = response.data as unknown as WorkflowRunView;
   } else {
     const { repoDir, repoContext, datastoreResolver } =
       await requireInitializedRepoReadOnly({
@@ -90,13 +91,7 @@ export async function workflowHistoryOutputsAction(
   }
 
   const outputs: Record<string, Record<string, unknown>> = {};
-  for (
-    const job of (runView as {
-      jobs: Array<
-        { steps: Array<{ name: string; outputs?: Record<string, unknown> }> }
-      >;
-    }).jobs
-  ) {
+  for (const job of runView.jobs) {
     for (const step of job.steps) {
       if (step.outputs && Object.keys(step.outputs).length > 0) {
         outputs[step.name] = step.outputs;
