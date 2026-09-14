@@ -302,6 +302,13 @@ export interface RunContext {
   workflowName: string;
   startedAt: string;
   tags: Record<string, string>;
+  initiatedBy?: string;
+  inputs?: Record<string, unknown>;
+}
+
+export interface StepContext {
+  status: string;
+  outputs?: Record<string, unknown>;
 }
 
 /**
@@ -372,6 +379,8 @@ export interface ExpressionContext {
   workflowRunId?: string;
   /** Structured workflow run context, available as `run.*` in CEL expressions. */
   run?: RunContext;
+  /** Completed step results, available as `steps.<name>.status` and `steps.<name>.outputs` in CEL expressions. */
+  steps?: Record<string, StepContext>;
   /**
    * Verified inbound webhook payload, available as `webhook.*` in a workflow's
    * `trigger.inputs` CEL expressions. Set only for webhook-triggered runs.

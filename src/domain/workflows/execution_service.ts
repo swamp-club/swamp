@@ -1793,7 +1793,10 @@ export class WorkflowExecutionService {
             workflowName: workflow.name,
             startedAt: run.startedAt!.toISOString(),
             tags: { ...run.tags },
+            initiatedBy: run.initiatedBy,
+            inputs: run.inputs,
           };
+          expressionContext.steps = {};
         }
       } finally {
         wfSetupSpan.end();
@@ -2227,7 +2230,10 @@ export class WorkflowExecutionService {
       workflowName: workflow.name,
       startedAt: existingRun.startedAt!.toISOString(),
       tags: { ...existingRun.tags },
+      initiatedBy: existingRun.initiatedBy,
+      inputs: existingRun.inputs,
     };
+    expressionContext.steps = {};
 
     const evaluator = new WorkflowExpressionEvaluator(
       new CelEvaluator(),
@@ -3299,6 +3305,17 @@ export class WorkflowExecutionService {
       // Do not re-throw: merge() continues draining all step generators
       // (allSettled semantics). The job generator tracks failure via step_failed events.
     } finally {
+      if (
+        stepExprContext?.steps &&
+        (stepRun.status === "succeeded" || stepRun.status === "failed" ||
+          stepRun.status === "skipped")
+      ) {
+        const stepOutputs = this.extractStepOutputsForContext(stepRun);
+        stepExprContext.steps[stepName] = {
+          status: stepRun.status,
+          outputs: stepOutputs,
+        };
+      }
       stepSpan.end();
     }
   }
@@ -3571,6 +3588,20 @@ export class WorkflowExecutionService {
         return result;
       },
     };
+  }
+
+  private extractStepOutputsForContext(
+    stepRun: import("./workflow_run.ts").StepRun,
+  ): Record<string, unknown> | undefined {
+    const output = stepRun.output as Record<string, unknown> | undefined;
+    if (!output || typeof output !== "object") return undefined;
+    if (output.type === "model_method") {
+      const attrs = output.resourceAttributes as
+        | Record<string, unknown>
+        | undefined;
+      return attrs && Object.keys(attrs).length > 0 ? attrs : undefined;
+    }
+    return undefined;
   }
 
   private shouldJobRun(job: Job, run: WorkflowRun): boolean {

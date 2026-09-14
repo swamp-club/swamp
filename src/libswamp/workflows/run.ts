@@ -26,10 +26,14 @@ import type {
 import type { MethodExecutionEvent } from "../../domain/models/method_events.ts";
 import type { EnvVarUsageDetail } from "../../domain/models/validation_service.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
-import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import type {
+  ApprovalDecisionData,
+  WorkflowRun,
+} from "../../domain/workflows/workflow_run.ts";
 import type { StepRun } from "../../domain/workflows/workflow_run.ts";
 import type { WebhookPayload } from "../../domain/expressions/model_resolver.ts";
 import type {
+  ApprovalView,
   StepArtifactsData,
   StepRunView,
   WorkflowRunView,
@@ -372,6 +376,44 @@ export function extractStepArtifacts(
   return undefined;
 }
 
+function mapApprovalDecision(
+  decision: ApprovalDecisionData,
+  stepStartedAt: Date | undefined,
+): ApprovalView {
+  if (decision.approved) {
+    const view: ApprovalView = {
+      status: "approved",
+      approvedBy: decision.decidedBy,
+      approvedAt: decision.decidedAt,
+    };
+    if (stepStartedAt) {
+      const decidedMs = new Date(decision.decidedAt).getTime();
+      view.approvalDuration = decidedMs - stepStartedAt.getTime();
+    }
+    return view;
+  }
+  return {
+    status: "rejected",
+    rejectedBy: decision.decidedBy,
+    rejectedAt: decision.decidedAt,
+    reason: decision.reason,
+  };
+}
+
+function extractStepOutputs(
+  step: StepRun,
+): Record<string, unknown> | undefined {
+  const output = step.output as Record<string, unknown> | undefined;
+  if (!output) return undefined;
+  if (output.type === "model_method") {
+    const attrs = output.resourceAttributes as
+      | Record<string, unknown>
+      | undefined;
+    return attrs && Object.keys(attrs).length > 0 ? attrs : undefined;
+  }
+  return undefined;
+}
+
 /**
  * Converts a WorkflowRun to WorkflowRunData for presentation.
  */
@@ -408,6 +450,8 @@ export function toRunData(
             name: step.stepName,
             status: step.status,
             error: step.error,
+            startedAt: step.startedAt?.toISOString(),
+            completedAt: step.completedAt?.toISOString(),
             duration: stepStart && stepEnd ? stepEnd - stepStart : undefined,
           };
 
@@ -445,11 +489,27 @@ export function toRunData(
             stepData.assertResult = { ...step.assertResult };
           }
 
+          if (step.approvalDecision) {
+            stepData.approval = mapApprovalDecision(
+              step.approvalDecision,
+              step.startedAt,
+            );
+          }
+
+          const outputs = extractStepOutputs(step);
+          if (outputs) {
+            stepData.outputs = outputs;
+          }
+
           return stepData;
         }),
+        startedAt: job.startedAt?.toISOString(),
+        completedAt: job.completedAt?.toISOString(),
         duration: jobStart && jobEnd ? jobEnd - jobStart : undefined,
       };
     }),
+    startedAt: run.startedAt?.toISOString(),
+    completedAt: run.completedAt?.toISOString(),
     duration: startTime && endTime ? endTime - startTime : undefined,
     path,
     workflowDataArtifacts: run.workflowDataArtifacts &&

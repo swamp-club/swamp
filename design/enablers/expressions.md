@@ -176,14 +176,34 @@ in workflow-level fields like `description`).
 
 | Field              | Type                    | Description                    |
 | ------------------ | ----------------------- | ------------------------------ |
-| `run.id`           | string (UUID)           | Unique ID of this workflow run |
-| `run.workflowId`   | string (UUID)           | Workflow definition ID         |
-| `run.workflowName` | string                  | Workflow name                  |
-| `run.startedAt`    | string (ISO 8601)       | Timestamp when the run started |
-| `run.tags`         | `Record<string,string>` | Merged workflow + runtime tags |
+| `run.id`           | string (UUID)             | Unique ID of this workflow run      |
+| `run.workflowId`   | string (UUID)             | Workflow definition ID              |
+| `run.workflowName` | string                    | Workflow name                       |
+| `run.startedAt`    | string (ISO 8601)         | Timestamp when the run started      |
+| `run.tags`         | `Record<string,string>`   | Merged workflow + runtime tags      |
+| `run.initiatedBy`  | string (optional)         | Identity that triggered the run     |
+| `run.inputs`       | `Record<string,unknown>`  | Input values provided to the run    |
 
 The flat `workflowRunId` variable is also available (equivalent to `run.id`)
 for backward compatibility with `data.query()` predicates.
+
+## Step Output Context
+
+Inside workflow step inputs, the `steps` namespace exposes results from
+completed upstream steps. This allows downstream steps to consume outputs from
+earlier steps in the same workflow.
+
+| Field                      | Type                    | Description                         |
+| -------------------------- | ----------------------- | ----------------------------------- |
+| `steps.<name>.status`      | string                  | Step status (`succeeded`, `failed`, `skipped`) |
+| `steps.<name>.outputs`     | `Record<string,unknown>` | Resource attributes from model method steps |
+
+Only completed steps are visible — pending or running steps are not accessible.
+The outputs field contains model method resource attributes when available;
+steps that produce no resource attributes have no outputs.
+
+Cross-workflow output passing (child workflow outputs visible to parent
+workflow steps) is not yet supported.
 
 ## Webhook Payload Context
 

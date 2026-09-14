@@ -477,6 +477,154 @@ Deno.test("toRunData converts WorkflowRun to data shape", () => {
   assertEquals(data.jobs[0].name, "job1");
 });
 
+Deno.test("toRunData: includes startedAt and completedAt timestamps", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const job = run.getJob("job1")!;
+  job.start();
+  const step = job.getStep("step1")!;
+  step.start();
+  step.succeed();
+  job.succeed();
+  run.complete();
+
+  const data = toRunData(run, "/some/path", false);
+  assertEquals(typeof data.startedAt, "string");
+  assertEquals(typeof data.completedAt, "string");
+  assertEquals(typeof data.jobs[0].startedAt, "string");
+  assertEquals(typeof data.jobs[0].completedAt, "string");
+  assertEquals(typeof data.jobs[0].steps[0].startedAt, "string");
+  assertEquals(typeof data.jobs[0].steps[0].completedAt, "string");
+  assertEquals(typeof data.jobs[0].steps[0].duration, "number");
+});
+
+Deno.test("toRunData: maps approved approval decision", () => {
+  const workflow = Workflow.create({
+    name: "approval-wf",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "gate",
+            task: StepTask.manualApproval("Please approve"),
+          }),
+        ],
+      }),
+    ],
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const job = run.getJob("job1")!;
+  job.start();
+  const step = job.getStep("gate")!;
+  step.start();
+  step.recordApprovalDecision({
+    approved: true,
+    decidedBy: "user:abc123",
+    decidedAt: "2026-09-10T02:18:20.696Z",
+  });
+  step.succeed();
+  job.succeed();
+  run.complete();
+
+  const data = toRunData(run);
+  const stepView = data.jobs[0].steps[0];
+  assertEquals(stepView.approval?.status, "approved");
+  assertEquals(stepView.approval?.approvedBy, "user:abc123");
+  assertEquals(stepView.approval?.approvedAt, "2026-09-10T02:18:20.696Z");
+  assertEquals(typeof stepView.approval?.approvalDuration, "number");
+});
+
+Deno.test("toRunData: maps rejected approval decision", () => {
+  const workflow = Workflow.create({
+    name: "reject-wf",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "gate",
+            task: StepTask.manualApproval("Please approve"),
+          }),
+        ],
+      }),
+    ],
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const job = run.getJob("job1")!;
+  job.start();
+  const step = job.getStep("gate")!;
+  step.start();
+  step.recordApprovalDecision({
+    approved: false,
+    reason: "Needs review",
+    decidedBy: "user:xyz789",
+    decidedAt: "2026-09-10T02:20:00.000Z",
+  });
+  step.fail("Approval rejected");
+  job.fail();
+  run.complete();
+
+  const data = toRunData(run);
+  const stepView = data.jobs[0].steps[0];
+  assertEquals(stepView.approval?.status, "rejected");
+  assertEquals(stepView.approval?.rejectedBy, "user:xyz789");
+  assertEquals(stepView.approval?.reason, "Needs review");
+});
+
+Deno.test("toRunData: step without approval has no approval field", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.complete();
+
+  const data = toRunData(run);
+  assertEquals(data.jobs[0].steps[0].approval, undefined);
+});
+
+Deno.test("toRunData: includes step outputs from model method resource attributes", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const job = run.getJob("job1")!;
+  job.start();
+  const step = job.getStep("step1")!;
+  step.start();
+  step.succeed({
+    type: "model_method",
+    resourceAttributes: {
+      audienceId: "aud_123",
+      status: "Building",
+    },
+  });
+  job.succeed();
+  run.complete();
+
+  const data = toRunData(run);
+  const stepView = data.jobs[0].steps[0];
+  assertEquals(stepView.outputs?.audienceId, "aud_123");
+  assertEquals(stepView.outputs?.status, "Building");
+});
+
+Deno.test("toRunData: step without model method output has no outputs", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const job = run.getJob("job1")!;
+  job.start();
+  const step = job.getStep("step1")!;
+  step.start();
+  step.succeed();
+  job.succeed();
+  run.complete();
+
+  const data = toRunData(run);
+  assertEquals(data.jobs[0].steps[0].outputs, undefined);
+});
+
 Deno.test("extractStepArtifacts returns undefined for no output", () => {
   const workflow = createTestWorkflow();
   const run = WorkflowRun.create(workflow);

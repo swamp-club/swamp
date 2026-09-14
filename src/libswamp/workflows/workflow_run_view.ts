@@ -55,6 +55,17 @@ export interface AssertResultView {
   error?: string;
 }
 
+export interface ApprovalView {
+  status: "approved" | "rejected" | "timed_out";
+  approvedBy?: string;
+  approvedAt?: string;
+  rejectedBy?: string;
+  rejectedAt?: string;
+  timeoutAt?: string;
+  reason?: string;
+  approvalDuration?: number;
+}
+
 export interface StepRunView {
   name: string;
   status:
@@ -65,6 +76,8 @@ export interface StepRunView {
     | "failed"
     | "skipped";
   error?: string;
+  startedAt?: string;
+  completedAt?: string;
   duration?: number;
   /** Output ID if this step produced an output (for model methods) */
   outputId?: string;
@@ -76,6 +89,10 @@ export interface StepRunView {
   allowedFailure?: boolean;
   /** Assert result if this step is an assert task */
   assertResult?: AssertResultView;
+  /** Approval decision metadata for manual_approval steps */
+  approval?: ApprovalView;
+  /** Step outputs (resource attributes from model methods) */
+  outputs?: Record<string, unknown>;
 }
 
 export interface JobRunView {
@@ -88,6 +105,8 @@ export interface JobRunView {
     | "failed"
     | "skipped";
   steps: StepRunView[];
+  startedAt?: string;
+  completedAt?: string;
   duration?: number;
 }
 
@@ -104,6 +123,8 @@ export interface WorkflowRunView {
     | "failed"
     | "cancelled";
   jobs: JobRunView[];
+  startedAt?: string;
+  completedAt?: string;
   duration?: number;
   path?: string;
   reports?: ReportResultView[];

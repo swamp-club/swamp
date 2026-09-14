@@ -21,9 +21,8 @@ import { Command } from "@cliffy/command";
 import {
   consumeStream,
   createLibSwampContext,
-  type JobRunView,
   parseTags,
-  type StepRunView,
+  toRunData,
   workflowHistorySearch,
   type WorkflowHistorySearchData,
   type WorkflowHistorySearchDeps,
@@ -41,7 +40,6 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { checkUnmigratedNamespaceData } from "../resolve_datastore.ts";
-import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import {
   createWorkflowId,
   createWorkflowRunId,
@@ -56,48 +54,6 @@ import type { WorkflowHistorySearchResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
-
-/**
- * Converts a WorkflowRun to WorkflowRunData for presentation.
- */
-function toRunData(run: WorkflowRun, path?: string): WorkflowRunView {
-  const startTime = run.startedAt?.getTime();
-  const endTime = run.completedAt?.getTime();
-
-  return {
-    id: run.id,
-    workflowId: run.workflowId,
-    workflowName: run.workflowName,
-    status: run.status,
-    jobs: run.jobs.map((job): JobRunView => {
-      const jobStart = job.startedAt?.getTime();
-      const jobEnd = job.completedAt?.getTime();
-
-      return {
-        name: job.jobName,
-        status: job.status,
-        steps: job.steps.map((step): StepRunView => {
-          const stepStart = step.startedAt?.getTime();
-          const stepEnd = step.completedAt?.getTime();
-
-          const stepData: StepRunView = {
-            name: step.stepName,
-            status: step.status,
-            error: step.error,
-            duration: stepStart && stepEnd ? stepEnd - stepStart : undefined,
-          };
-          if (step.allowedFailure) {
-            stepData.allowedFailure = true;
-          }
-          return stepData;
-        }),
-        duration: jobStart && jobEnd ? jobEnd - jobStart : undefined,
-      };
-    }),
-    duration: startTime && endTime ? endTime - startTime : undefined,
-    path,
-  };
-}
 
 /**
  * Creates a fetchPreview closure that fetches full workflow run detail data.

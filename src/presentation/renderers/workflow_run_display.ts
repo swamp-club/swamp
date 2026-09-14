@@ -33,8 +33,20 @@ export function renderWorkflowRunDisplay(
   }
 }
 
+function formatTimestamp(iso: string | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return d.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC");
+}
+
 function renderLogWorkflowRun(data: WorkflowRunView): void {
   writeOutput(`Workflow: ${data.workflowName} (Run ID: ${data.id})`);
+  if (data.startedAt) {
+    writeOutput(`Started:  ${formatTimestamp(data.startedAt)}`);
+  }
+  if (data.completedAt) {
+    writeOutput(`Ended:    ${formatTimestamp(data.completedAt)}`);
+  }
 
   for (const job of data.jobs) {
     const durationSuffix = job.duration !== undefined
@@ -53,6 +65,30 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
 
       if (step.error) {
         writeOutput(`      -> ${red(step.error)}`);
+      }
+
+      if (step.approval) {
+        const a = step.approval;
+        if (a.status === "approved") {
+          writeOutput(
+            `      ${green("Approved")} by ${a.approvedBy ?? "unknown"} at ${
+              formatTimestamp(a.approvedAt)
+            }`,
+          );
+        } else if (a.status === "rejected") {
+          writeOutput(
+            `      ${red("Rejected")} by ${a.rejectedBy ?? "unknown"} at ${
+              formatTimestamp(a.rejectedAt)
+            }`,
+          );
+          if (a.reason) {
+            writeOutput(`      Reason: ${a.reason}`);
+          }
+        } else if (a.status === "timed_out") {
+          writeOutput(
+            `      ${yellow("Timed out")} at ${formatTimestamp(a.timeoutAt)}`,
+          );
+        }
       }
     }
   }

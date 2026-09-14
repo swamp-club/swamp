@@ -142,7 +142,12 @@ export function Executions({ onOpenRun }: ExecutionsProps) {
                       ? `${run.stepProgress.completed}/${run.stepProgress.total}`
                       : "—"}
                   </td>
-                  <td style={{ fontSize: "0.78rem", color: "var(--text-3)" }}>
+                  <td
+                    style={{ fontSize: "0.78rem", color: "var(--text-3)" }}
+                    title={new Date(run.startedAt).toISOString()}
+                  >
+                    {formatAbsoluteTime(run.startedAt)}
+                    {" · "}
                     {formatRelativeTime(run.startedAt)}
                   </td>
                 </tr>
@@ -245,6 +250,11 @@ function formatDuration(ms: number | undefined): string {
   const mins = Math.floor(secs / 60);
   const rem = secs % 60;
   return `${mins}m ${rem.toString().padStart(2, "0")}s`;
+}
+
+function formatAbsoluteTime(iso: string): string {
+  const d = new Date(iso);
+  return d.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC");
 }
 
 function formatRelativeTime(iso: string): string {

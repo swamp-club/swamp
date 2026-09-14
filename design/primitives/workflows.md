@@ -214,6 +214,13 @@ and re-captured when the run suspends, so every run's `inputs` block is on
 disk and steps after a gate can resolve `inputs.*` on resume. Only the *key
 names* of resume-time inputs are recorded, never their values.
 
+**Execution report:** The approval decision (who approved/rejected, when, and
+the reason for rejection) is surfaced in the workflow execution report via
+`swamp workflow history get --json`. The step view includes an `approval`
+block with `status` (`approved` | `rejected` | `timed_out`), actor identity,
+timestamp, and optional reason. See `ApprovalView` in
+`src/libswamp/workflows/workflow_run_view.ts`.
+
 **Persistence:** The run record survives process restarts. The approval and
 resume can happen from any machine with access to the repo (or synced
 datastore).

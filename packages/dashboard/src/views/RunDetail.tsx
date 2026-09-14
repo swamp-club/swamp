@@ -28,14 +28,29 @@ interface LogsData {
   lineCount?: number;
 }
 
+interface ApprovalInfo {
+  status: "approved" | "rejected" | "timed_out";
+  approvedBy?: string;
+  approvedAt?: string;
+  rejectedBy?: string;
+  rejectedAt?: string;
+  timeoutAt?: string;
+  reason?: string;
+  approvalDuration?: number;
+}
+
 interface StepRun {
   name: string;
   status: string;
   error?: string;
+  startedAt?: string;
+  completedAt?: string;
   duration?: number;
   modelName?: string;
   methodName?: string;
   allowedFailure?: boolean;
+  approval?: ApprovalInfo;
+  outputs?: Record<string, unknown>;
   dataArtifacts?: Array<{
     dataId: string;
     name: string;
@@ -47,6 +62,8 @@ interface JobRun {
   name: string;
   status: string;
   steps: StepRun[];
+  startedAt?: string;
+  completedAt?: string;
   duration?: number;
 }
 
@@ -110,6 +127,14 @@ export function RunDetail({ workflowName, runId, onBack }: RunDetailProps) {
               style={{ fontSize: "0.75rem", color: "var(--text-3)" }}
             >
               {runId.slice(0, 8)}
+            </span>
+          )}
+          {run?.startedAt && (
+            <span
+              className="mono"
+              style={{ fontSize: "0.72rem", color: "var(--text-3)" }}
+            >
+              {formatAbsoluteTime(run.startedAt)}
             </span>
           )}
           {run?.duration !== undefined && (
@@ -251,6 +276,53 @@ export function RunDetail({ workflowName, runId, onBack }: RunDetailProps) {
                           {step.error}
                         </div>
                       )}
+                      {step.approval && (
+                        <div
+                          style={{
+                            marginTop: 6,
+                            padding: "6px 10px",
+                            borderRadius: 4,
+                            background: step.approval.status === "approved"
+                              ? "var(--success-bg)"
+                              : step.approval.status === "rejected"
+                              ? "var(--danger-bg)"
+                              : "var(--warning-bg)",
+                            fontSize: "0.78rem",
+                          }}
+                        >
+                          {step.approval.status === "approved" && (
+                            <span>
+                              Approved by{" "}
+                              {step.approval.approvedBy ?? "unknown"}
+                              {step.approval.approvedAt &&
+                                ` at ${
+                                  formatAbsoluteTime(step.approval.approvedAt)
+                                }`}
+                            </span>
+                          )}
+                          {step.approval.status === "rejected" && (
+                            <span>
+                              Rejected by{" "}
+                              {step.approval.rejectedBy ?? "unknown"}
+                              {step.approval.rejectedAt &&
+                                ` at ${
+                                  formatAbsoluteTime(step.approval.rejectedAt)
+                                }`}
+                              {step.approval.reason &&
+                                `: ${step.approval.reason}`}
+                            </span>
+                          )}
+                          {step.approval.status === "timed_out" && (
+                            <span>
+                              Timed out
+                              {step.approval.timeoutAt &&
+                                ` at ${
+                                  formatAbsoluteTime(step.approval.timeoutAt)
+                                }`}
+                            </span>
+                          )}
+                        </div>
+                      )}
                       {step.dataArtifacts && step.dataArtifacts.length > 0 && (
                         <div
                           style={{
@@ -365,6 +437,11 @@ function extractLogs(payload: unknown): LogsData | null {
   }
 
   return null;
+}
+
+function formatAbsoluteTime(iso: string): string {
+  const d = new Date(iso);
+  return d.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC");
 }
 
 function formatDuration(ms: number | undefined): string {
