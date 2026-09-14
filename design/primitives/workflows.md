@@ -613,11 +613,14 @@ entry are warned about and ignored (`src/serve/serve_config.ts`).
 - The `handleScheduleChange` callback also consults the override map, so
   live-reloaded workflows respect overrides
 - Overrides for unknown workflow names are logged as warnings and skipped
-- Overrides are read at startup and re-read on `swamp serve reload` (SIGHUP or
-  WebSocket `serve.reload`), which requires `--hot-reload`. The WebSocket
-  `workflow.trigger.set` and `workflow.trigger.remove` handlers also trigger a
-  reload of trigger overrides after writing to `serve.yaml`
-  (`src/serve/handlers/workflow_handlers.ts`)
+- Overrides are read at startup. Two paths apply changes to a running instance:
+  1. `swamp workflow trigger set/remove --server` calls
+     `updateTriggerOverrides` directly on the `ScheduledExecutionService` after
+     writing to `serve.yaml` — no `--hot-reload` flag required
+     (`src/serve/handlers/workflow_handlers.ts`)
+  2. `swamp serve reload` (SIGHUP or WebSocket `serve.reload`) re-reads all
+     overrides from `serve.yaml` as part of a full reload — requires
+     `--hot-reload`
 - Works with both extension and local workflows — but the primary use case is
   extension workflows that cannot be edited directly
 

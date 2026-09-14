@@ -317,9 +317,12 @@ reconciliation loop after `--stale-ttl`.
   `src/serve/extension_reload.ts`; the loader appends `?fp=…&gen=<n>` to
   bundle imports, `src/domain/extensions/extension_loader.ts`) so in-flight
   runs keep their old bundles, and re-reads `triggers.*` overrides from
-  `serve.yaml`. The WebSocket `workflow.trigger.set` and
-  `workflow.trigger.remove` handlers also reload trigger overrides after
-  writing (`src/serve/handlers/workflow_handlers.ts`). Pulled extensions live under `.swamp/pulled-extensions/`, or
+  `serve.yaml`. Trigger overrides are also applied directly (without a full
+  reload) when `workflow.trigger.set` or `workflow.trigger.remove` is called
+  over WebSocket — the handlers call `updateTriggerOverrides` on the
+  `ScheduledExecutionService` after writing, so no `--hot-reload` flag is
+  needed for that path (`src/serve/handlers/workflow_handlers.ts`).
+  Pulled extensions live under `.swamp/pulled-extensions/`, or
   `.swamp/config/pulled-extensions/` when the datastore manages config
   (`src/infrastructure/persistence/paths.ts`). Concurrent SIGHUPs are ignored while a
   reload is in progress. The mechanism and its catalog constraint are detailed
