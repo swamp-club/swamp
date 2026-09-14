@@ -23,12 +23,14 @@ import { ModelType } from "../../domain/models/model_type.ts";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
+  createDataGetDeps,
   dataGet,
   type DataGetDeps,
   type DataGetEvent,
   type DataItem,
   type WorkflowDataItemInfo,
 } from "./get.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 
 function makeModelType(): ModelType {
   return ModelType.create("model/type");
@@ -160,3 +162,28 @@ Deno.test("dataGet yields resolving then completed for workflow-scoped happy pat
   const completed = events[1] as Extract<DataGetEvent, { kind: "completed" }>;
   assertEquals(completed.data.name, "output");
 });
+
+Deno.test(
+  "createDataGetDeps: uses injectedDefinitionRepo for lookups",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+    try {
+      const injected = new YamlDefinitionRepository(dir);
+      const deps = createDataGetDeps(
+        dir,
+        undefined,
+        undefined,
+        undefined,
+        injected,
+      );
+      const result = await deps.lookupDefinition("nonexistent");
+      assertEquals(result, null);
+    } finally {
+      if (Deno.build.os === "windows") {
+        await Deno.remove(dir, { recursive: true }).catch(() => {});
+      } else {
+        await Deno.remove(dir, { recursive: true });
+      }
+    }
+  },
+);

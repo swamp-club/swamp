@@ -23,10 +23,12 @@ import { ModelType } from "../../domain/models/model_type.ts";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
+  createDataVersionsDeps,
   dataVersions,
   type DataVersionsDeps,
   type DataVersionsEvent,
 } from "./versions.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 
 function makeDeps(overrides?: Partial<DataVersionsDeps>): DataVersionsDeps {
   const definition = Definition.create({
@@ -101,3 +103,22 @@ Deno.test("dataVersions yields error when no versions exist", async () => {
   assertEquals(events.length, 2);
   assertEquals(events[1].kind, "error");
 });
+
+Deno.test(
+  "createDataVersionsDeps: uses injectedDefinitionRepo for lookups",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+    try {
+      const injected = new YamlDefinitionRepository(dir);
+      const deps = createDataVersionsDeps(dir, undefined, undefined, injected);
+      const result = await deps.lookupDefinition("nonexistent");
+      assertEquals(result, null);
+    } finally {
+      if (Deno.build.os === "windows") {
+        await Deno.remove(dir, { recursive: true }).catch(() => {});
+      } else {
+        await Deno.remove(dir, { recursive: true });
+      }
+    }
+  },
+);

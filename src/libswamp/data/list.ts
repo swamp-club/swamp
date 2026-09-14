@@ -170,16 +170,18 @@ export function createDataListDeps(
   injectedDataRepo?: FileSystemUnifiedDataRepository,
   namespace?: string,
   injectedWorkflowRepo?: WorkflowRepository,
+  injectedDefinitionRepo?: YamlDefinitionRepository,
 ): DataListDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
   const autoDefDir = dsPath(SWAMP_SUBDIRS.autoDefinitions);
-  const definitionRepo = new YamlDefinitionRepository(
-    repoDir,
-    undefined,
-    undefined,
-    autoDefDir ?? undefined,
-  );
+  const definitionRepo = injectedDefinitionRepo ??
+    new YamlDefinitionRepository(
+      repoDir,
+      undefined,
+      undefined,
+      autoDefDir ?? undefined,
+    );
   const dataRepo = injectedDataRepo ?? new FileSystemUnifiedDataRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),

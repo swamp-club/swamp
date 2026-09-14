@@ -70,3 +70,47 @@ Deno.test("serve handlers must not construct fresh definition or workflow repos"
       violations.join("\n"),
   );
 });
+
+const DATA_DEPS_PATTERN =
+  /create(?:DataGet|DataList|DataVersions|DataDelete|DataRename|DataPrune)Deps\(/;
+
+Deno.test("serve handlers must pass injected definition repo to createData*Deps", async () => {
+  const violations: string[] = [];
+
+  for await (
+    const entry of walk(SERVE_HANDLERS_DIR, {
+      exts: [".ts"],
+      skip: [/_test\.ts$/],
+    })
+  ) {
+    const content = await Deno.readTextFile(entry.path);
+    const rel = normalise(relative(ROOT, entry.path));
+
+    const lines = content.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (DATA_DEPS_PATTERN.test(line)) {
+        const callStart = i;
+        let callBlock = "";
+        for (let j = i; j < lines.length && j < i + 10; j++) {
+          callBlock += lines[j];
+          if (lines[j].includes(");")) break;
+        }
+        if (!callBlock.includes("definitionRepo")) {
+          violations.push(`${rel}:${callStart + 1}: ${line.trim()}`);
+        }
+      }
+    }
+  }
+
+  assertEquals(
+    violations,
+    [],
+    "Serve handlers calling createData*Deps must pass " +
+      "ctx.repoContext.definitionRepo as the injectedDefinitionRepo " +
+      "parameter. Without it, the function constructs a fresh " +
+      "YamlDefinitionRepository that misses managed-config definitions " +
+      "(swamp-club#2109).\n\nViolations:\n" +
+      violations.join("\n"),
+  );
+});

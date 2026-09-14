@@ -119,6 +119,7 @@ export function createDataPruneDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
   injectedDataRepo?: FileSystemUnifiedDataRepository,
+  injectedDefinitionRepo?: YamlDefinitionRepository,
 ): DataPruneDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -148,12 +149,13 @@ export function createDataPruneDeps(
   // NOT model search / findAllGlobal, which skip auto-definitions and would
   // falsely flag every auto-definition-backed model as orphaned.
   const autoDefDir = dsPath(SWAMP_SUBDIRS.autoDefinitions);
-  const definitionRepo = new YamlDefinitionRepository(
-    repoDir,
-    undefined,
-    undefined,
-    autoDefDir ?? undefined,
-  );
+  const definitionRepo = injectedDefinitionRepo ??
+    new YamlDefinitionRepository(
+      repoDir,
+      undefined,
+      undefined,
+      autoDefDir ?? undefined,
+    );
 
   // Workflow report data is stored under ModelType "workflow" with the
   // workflow UUID as modelId. Workflow definitions live in workflows/, not

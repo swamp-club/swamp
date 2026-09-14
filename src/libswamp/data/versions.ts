@@ -92,10 +92,12 @@ export function createDataVersionsDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
   injectedDataRepo?: FileSystemUnifiedDataRepository,
+  injectedDefinitionRepo?: YamlDefinitionRepository,
 ): DataVersionsDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
-  const definitionRepo = new YamlDefinitionRepository(repoDir);
+  const definitionRepo = injectedDefinitionRepo ??
+    new YamlDefinitionRepository(repoDir);
   const dataRepo = injectedDataRepo ?? new FileSystemUnifiedDataRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),

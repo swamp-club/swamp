@@ -23,12 +23,14 @@ import { ModelType } from "../../domain/models/model_type.ts";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
+  createDataListDeps,
   dataList,
   type DataListData,
   type DataListDeps,
   type DataListEvent,
   type WorkflowDataListData,
 } from "./list.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 
 function makeDeps(overrides?: Partial<DataListDeps>): DataListDeps {
   const definition = Definition.create({
@@ -159,3 +161,29 @@ Deno.test("dataList yields error when model not found", async () => {
 
   assertEquals(events[1].kind, "error");
 });
+
+Deno.test(
+  "createDataListDeps: uses injectedDefinitionRepo for lookups",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+    try {
+      const injected = new YamlDefinitionRepository(dir);
+      const deps = createDataListDeps(
+        dir,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        injected,
+      );
+      const result = await deps.lookupDefinition("nonexistent");
+      assertEquals(result, null);
+    } finally {
+      if (Deno.build.os === "windows") {
+        await Deno.remove(dir, { recursive: true }).catch(() => {});
+      } else {
+        await Deno.remove(dir, { recursive: true });
+      }
+    }
+  },
+);

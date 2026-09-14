@@ -95,6 +95,7 @@ export function createDataDeleteDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
   injectedDataRepo?: FileSystemUnifiedDataRepository,
+  injectedDefinitionRepo?: YamlDefinitionRepository,
 ): DataDeleteDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -110,12 +111,13 @@ export function createDataDeleteDeps(
     namespaceFromResolver(datastoreResolver),
   );
   const autoDefDir = dsPath(SWAMP_SUBDIRS.autoDefinitions);
-  const definitionRepo = new YamlDefinitionRepository(
-    repoDir,
-    undefined,
-    undefined,
-    autoDefDir ?? undefined,
-  );
+  const definitionRepo = injectedDefinitionRepo ??
+    new YamlDefinitionRepository(
+      repoDir,
+      undefined,
+      undefined,
+      autoDefDir ?? undefined,
+    );
   const service = new DataDeleteService(dataRepo, definitionRepo);
   return {
     delete: (modelIdOrName, dataName, version) =>

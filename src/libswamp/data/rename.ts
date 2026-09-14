@@ -74,6 +74,7 @@ export function createDataRenameDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
   injectedDataRepo?: FileSystemUnifiedDataRepository,
+  injectedDefinitionRepo?: YamlDefinitionRepository,
 ): DataRenameDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -88,7 +89,8 @@ export function createDataRenameDeps(
     undefined,
     namespaceFromResolver(datastoreResolver),
   );
-  const definitionRepo = new YamlDefinitionRepository(repoDir);
+  const definitionRepo = injectedDefinitionRepo ??
+    new YamlDefinitionRepository(repoDir);
   const service = new DataRenameService(dataRepo, definitionRepo);
   return {
     rename: (modelIdOrName, oldName, newName) =>

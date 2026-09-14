@@ -30,6 +30,7 @@ import {
 import type { OrphanReclamationResult } from "../../domain/data/data_lifecycle_service.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 
 function emptyResult(
   overrides: Partial<OrphanReclamationResult> = {},
@@ -178,6 +179,25 @@ Deno.test(
         new CatalogStore(":memory:"),
       );
       const deps = createDataPruneDeps(dir, undefined, injected);
+      assertEquals(typeof deps.findOrphanedData, "function");
+      assertEquals(typeof deps.deleteOrphanedData, "function");
+    } finally {
+      if (Deno.build.os === "windows") {
+        await Deno.remove(dir, { recursive: true }).catch(() => {});
+      } else {
+        await Deno.remove(dir, { recursive: true });
+      }
+    }
+  },
+);
+
+Deno.test(
+  "createDataPruneDeps: uses injectedDefinitionRepo",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+    try {
+      const injected = new YamlDefinitionRepository(dir);
+      const deps = createDataPruneDeps(dir, undefined, undefined, injected);
       assertEquals(typeof deps.findOrphanedData, "function");
       assertEquals(typeof deps.deleteOrphanedData, "function");
     } finally {

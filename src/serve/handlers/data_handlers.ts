@@ -149,9 +149,10 @@ export async function handleDataGet(
     const libCtx = createLibSwampContext();
     const deps = createDataGetDeps(
       ctx.repoDir,
-      undefined,
+      ctx.datastoreResolver,
       ctx.repoContext.unifiedDataRepo,
       ctx.repoContext.workflowRepo,
+      ctx.repoContext.definitionRepo,
     );
 
     let result: Record<string, unknown> | undefined;
@@ -330,10 +331,11 @@ export async function handleDataList(
     const libCtx = createLibSwampContext();
     const deps = createDataListDeps(
       ctx.repoDir,
-      undefined,
+      ctx.datastoreResolver,
       ctx.repoContext.unifiedDataRepo,
       undefined,
       ctx.repoContext.workflowRepo,
+      ctx.repoContext.definitionRepo,
     );
 
     let result: Record<string, unknown> | undefined;
@@ -546,8 +548,9 @@ export async function handleDataVersions(
     const libCtx = createLibSwampContext();
     const deps = createDataVersionsDeps(
       ctx.repoDir,
-      undefined,
+      ctx.datastoreResolver,
       ctx.repoContext.unifiedDataRepo,
+      ctx.repoContext.definitionRepo,
     );
 
     let result: Record<string, unknown> | undefined;
@@ -614,6 +617,7 @@ export async function handleDataDelete(
       ctx.repoDir,
       ctx.datastoreResolver,
       ctx.repoContext.unifiedDataRepo,
+      ctx.repoContext.definitionRepo,
     );
 
     let result: Record<string, unknown> | undefined;
@@ -681,6 +685,7 @@ export async function handleDataRename(
       ctx.repoDir,
       ctx.datastoreResolver,
       ctx.repoContext.unifiedDataRepo,
+      ctx.repoContext.definitionRepo,
     );
 
     let result: Record<string, unknown> | undefined;
@@ -861,6 +866,7 @@ export async function handleDataPrune(
       ctx.repoDir,
       ctx.datastoreResolver,
       ctx.repoContext.unifiedDataRepo,
+      ctx.repoContext.definitionRepo,
     );
 
     let result: Record<string, unknown> | undefined;
