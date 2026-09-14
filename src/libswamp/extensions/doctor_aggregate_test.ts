@@ -34,7 +34,9 @@ import type { Extension } from "../../domain/extensions/extension.ts";
 
 function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   return (async () => {
-    const dir = await Deno.makeTempDir({ prefix: "swamp-agg-test-" });
+    const dir = await Deno.realPath(
+      await Deno.makeTempDir({ prefix: "swamp-agg-test-" }),
+    );
     try {
       await fn(dir);
     } finally {
