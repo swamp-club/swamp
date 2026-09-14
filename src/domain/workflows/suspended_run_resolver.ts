@@ -174,7 +174,7 @@ function nextActionForStatus(
   switch (status) {
     case "running":
       return ` Wait for it to complete, or check progress with 'swamp workflow history ${workflowName}'.`;
-    case "completed":
+    case "succeeded":
       return ` The workflow has already completed — inspect results with 'swamp workflow history ${workflowName}'.`;
     case "failed":
       return ` Resume the failed run with 'swamp workflow run ${workflowName} --from <run-id>'.`;

@@ -187,10 +187,10 @@ Deno.test("dataGet yields data_pending when workflow run is active and data not 
   assertStringIncludes(last.error.message, "swamp workflow history wf");
 });
 
-Deno.test("dataGet yields not_found when workflow run is completed and data not found", async () => {
+Deno.test("dataGet yields not_found when workflow run is succeeded and data not found", async () => {
   const deps = makeDeps({
     findWorkflowRun: () =>
-      Promise.resolve({ id: "run-1", status: "completed" }),
+      Promise.resolve({ id: "run-1", status: "succeeded" }),
     findDataInWorkflowRun: () => Promise.resolve(null),
   });
   const events = await collect<DataGetEvent>(

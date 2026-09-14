@@ -114,7 +114,7 @@ Deno.test("resolveSuspendedRun: throws when no suspended runs with latest run st
     Error,
     "No suspended runs found",
   );
-  assertStringIncludes(error.message, "The latest run is succeeded");
+  assertStringIncludes(error.message, "already completed");
   assertStringIncludes(error.message, "swamp workflow history test-wf");
 });
 

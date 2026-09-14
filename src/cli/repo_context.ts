@@ -370,8 +370,11 @@ export interface DatastoreResolutionResult {
 
 function redactHomePath(path: string): string {
   const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE");
-  if (home && path.startsWith(home)) {
-    return "~" + path.slice(home.length);
+  if (!home) return path;
+  const prefix = home.endsWith(SEPARATOR) ? home : home + SEPARATOR;
+  if (path === home) return "~";
+  if (path.startsWith(prefix)) {
+    return "~" + SEPARATOR + path.slice(prefix.length);
   }
   return path;
 }
