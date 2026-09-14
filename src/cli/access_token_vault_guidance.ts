@@ -28,12 +28,13 @@ export function tokenVaultRejectedMessage(
   opts: { remote?: boolean } = {},
 ): string {
   const action = operation === "mint" ? "minting" : "rotating";
+  const requestedAction = operation === "mint" ? "minting" : "rotation";
   const location = opts.remote ? " on the serve host" : "";
   const rejection = opts.remote
     ? "--vault is not supported when targeting a remote server"
     : "--vault is not supported when a datastore is configured";
   const retry = opts.remote
-    ? `The requested rotation was not performed. Rerun without --vault, then${location} copy the credential without printing it:`
+    ? `The requested ${requestedAction} was not performed. Rerun without --vault, then${location} copy the credential without printing it:`
     : `Rerun without --vault. After ${action}, copy the credential without printing it:`;
   const credentialKey = `server-token-${name}`;
 

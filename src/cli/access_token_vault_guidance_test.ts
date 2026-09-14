@@ -43,6 +43,14 @@ Deno.test("tokenVaultRejectedMessage: directs remote rotate handoff to the serve
   assertStringIncludes(message, "on the serve host");
 });
 
+Deno.test("tokenVaultRejectedMessage: describes a remote mint accurately", () => {
+  const message = tokenVaultRejectedMessage("mint", "alice-01", "tokens", {
+    remote: true,
+  });
+
+  assertStringIncludes(message, "The requested minting was not performed.");
+});
+
 Deno.test("tokenVaultRejectedMessage: shell-quotes user-provided names", () => {
   const message = tokenVaultRejectedMessage("mint", "alice's", "team vault");
 
