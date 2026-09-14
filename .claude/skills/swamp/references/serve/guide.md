@@ -217,7 +217,9 @@ swamp access token reveal <name> --repo-dir /repo -y --json \
   | <store-command>   # e.g. kubectl create secret generic …
 ```
 
-To deliver a credential to a shared Swamp vault, use `vault put` as the target:
+To deliver a credential to a shared Swamp vault, first mint or rotate without
+`--vault`. Then, on the serve host, use `vault put` as the `reveal` pipeline's
+target. This keeps the full credential out of terminal output:
 
 ```bash
 swamp access token reveal <name> --repo-dir /repo -y --json \
@@ -226,8 +228,8 @@ swamp access token reveal <name> --repo-dir /repo -y --json \
 ```
 
 `reveal --json` outputs `{ "name": "…", "token": "…", "expired": false }`. The
-pipeline copies the full credential to the destination vault; it does not change
-the token secret's control-plane storage.
+pipeline stores the credential under `server-token-<name>` in the destination
+vault. It is a copy: the token secret remains in its control-plane vault.
 
 ### Minting for a remote serve
 
