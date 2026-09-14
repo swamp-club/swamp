@@ -85,9 +85,10 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
             writeOutput(`      Reason: ${a.reason}`);
           }
         } else if (a.status === "timed_out") {
-          writeOutput(
-            `      ${yellow("Timed out")} at ${formatTimestamp(a.timeoutAt)}`,
-          );
+          const timeoutSuffix = a.timeoutAt
+            ? ` at ${formatTimestamp(a.timeoutAt)}`
+            : "";
+          writeOutput(`      ${yellow("Timed out")}${timeoutSuffix}`);
         }
       }
     }

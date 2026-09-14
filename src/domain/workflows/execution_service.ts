@@ -2794,6 +2794,12 @@ export class WorkflowExecutionService {
           error: stepRun.assertResult.error,
         };
       }
+      if (expressionContext?.steps) {
+        expressionContext.steps[stepName] = {
+          status: stepRun.status,
+          outputs: this.extractStepOutputsForContext(stepRun),
+        };
+      }
       stepSpan.end();
       return;
     }
