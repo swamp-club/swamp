@@ -5719,3 +5719,287 @@ Deno.test({
     });
   },
 });
+
+Deno.test("steps context: downstream step sees upstream step outputs", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    const capturedContexts: Map<string, StepExecutionContext> = new Map();
+    const executor: StepExecutor = {
+      execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        capturedContexts.set(ctx.stepName, ctx);
+        if (step.name === "create") {
+          return Promise.resolve({
+            type: "model_method",
+            method: "create",
+            model: "test-model",
+            resourceAttributes: {
+              audienceId: "aud_123",
+              status: "Building",
+            },
+          });
+        }
+        return Promise.resolve({ executed: true });
+      },
+    };
+
+    const workflow = Workflow.create({
+      name: "steps-context-test",
+      jobs: [
+        Job.create({
+          name: "j",
+          steps: [
+            Step.create({
+              name: "create",
+              task: StepTask.model("test-model", "create"),
+            }),
+            Step.create({
+              name: "use-output",
+              task: StepTask.model("test-model", "check"),
+              dependsOn: [
+                { step: "create", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+
+    await workflowRepo.save(workflow);
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const run = await service.execute(workflow.name);
+    assertEquals(run.status, "succeeded");
+
+    const useOutputCtx = capturedContexts.get("use-output");
+    assertExists(useOutputCtx?.expressionContext?.steps);
+    const createStep = useOutputCtx!.expressionContext!.steps!["create"];
+    assertExists(createStep);
+    assertEquals(createStep.status, "succeeded");
+    assertExists(createStep.outputs);
+    assertEquals(createStep.outputs!.audienceId, "aud_123");
+    assertEquals(createStep.outputs!.status, "Building");
+  });
+});
+
+Deno.test("steps context: first step sees empty steps map", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    const stepsSnapshots: Map<string, Record<string, unknown>> = new Map();
+    const executor: StepExecutor = {
+      execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        if (ctx.expressionContext?.steps) {
+          stepsSnapshots.set(
+            ctx.stepName,
+            JSON.parse(JSON.stringify(ctx.expressionContext.steps)),
+          );
+        }
+        return Promise.resolve({ executed: true });
+      },
+    };
+
+    const workflow = Workflow.create({
+      name: "no-pending-steps-test",
+      jobs: [
+        Job.create({
+          name: "j",
+          steps: [
+            Step.create({
+              name: "first",
+              task: StepTask.model("m", "run"),
+            }),
+          ],
+        }),
+      ],
+    });
+
+    await workflowRepo.save(workflow);
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    await service.execute(workflow.name);
+
+    const firstSnapshot = stepsSnapshots.get("first");
+    assertExists(firstSnapshot);
+    assertEquals(Object.keys(firstSnapshot!).length, 0);
+  });
+});
+
+Deno.test("steps context: pre-populated from completed jobs on resume", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    let callCount = 0;
+    const capturedContexts: Map<string, StepExecutionContext> = new Map();
+    const executor: StepExecutor = {
+      execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        callCount++;
+        capturedContexts.set(ctx.stepName, ctx);
+        if (step.name === "compile") {
+          return Promise.resolve({
+            type: "model_method",
+            method: "build",
+            model: "build-model",
+            resourceAttributes: { artifactId: "art_abc" },
+          });
+        }
+        return Promise.resolve({ executed: true });
+      },
+    };
+
+    const workflow = Workflow.create({
+      name: "cross-job-resume-test",
+      jobs: [
+        Job.create({
+          name: "build",
+          steps: [
+            Step.create({
+              name: "compile",
+              task: StepTask.model("build-model", "build"),
+            }),
+          ],
+        }),
+        Job.create({
+          name: "deploy",
+          dependsOn: [
+            { job: "build", condition: TriggerCondition.succeeded() },
+          ],
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("Approve deploy"),
+            }),
+            Step.create({
+              name: "push",
+              task: StepTask.model("deploy-model", "push"),
+              dependsOn: [
+                { step: "gate", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+
+    await workflowRepo.save(workflow);
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const suspended = await service.execute(workflow.name);
+    assertEquals(suspended.status, "suspended");
+    assertEquals(callCount, 1);
+
+    const toApprove = await runRepo.findById(workflow.id, suspended.id);
+    const waiting = toApprove!.findWaitingApprovalStep()!;
+    toApprove!.getJob(waiting.jobName)!.getStep(waiting.stepName)!
+      .recordApprovalDecision({
+        approved: true,
+        decidedBy: "user:test",
+        decidedAt: new Date().toISOString(),
+      });
+    toApprove!.getJob(waiting.jobName)!.getStep(waiting.stepName)!.succeed();
+    await runRepo.save(workflow.id, toApprove!);
+
+    let resumedRun: WorkflowRun | undefined;
+    for await (const event of service.resume(workflow.name, suspended.id)) {
+      if (event.kind === "completed") resumedRun = event.run;
+    }
+
+    assertEquals(resumedRun?.status, "succeeded");
+
+    const pushCtx = capturedContexts.get("push");
+    assertExists(pushCtx?.expressionContext?.steps);
+    const compileStep = pushCtx!.expressionContext!.steps!["compile"];
+    assertExists(compileStep);
+    assertEquals(compileStep.status, "succeeded");
+    assertExists(compileStep.outputs);
+    assertEquals(compileStep.outputs!.artifactId, "art_abc");
+  });
+});
+
+Deno.test("run context: includes initiatedBy and inputs", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    const capturedContexts: StepExecutionContext[] = [];
+    const executor: StepExecutor = {
+      execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        capturedContexts.push(ctx);
+        return Promise.resolve({ executed: true });
+      },
+    };
+
+    const workflow = Workflow.create({
+      name: "run-context-test",
+      jobs: [
+        Job.create({
+          name: "j",
+          steps: [
+            Step.create({
+              name: "s",
+              task: StepTask.model("m", "run"),
+            }),
+          ],
+        }),
+      ],
+    });
+
+    await workflowRepo.save(workflow);
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    let completedRun: WorkflowRun | undefined;
+    for await (
+      const event of service.run(workflow.name, {
+        initiatedBy: "user:paul",
+        inputs: { env: "production", count: 5 },
+      })
+    ) {
+      if (event.kind === "completed") completedRun = event.run;
+    }
+
+    assertExists(completedRun);
+    assertEquals(completedRun!.status, "succeeded");
+    assertEquals(capturedContexts.length, 1);
+
+    const ctx = capturedContexts[0];
+    assertEquals(ctx.expressionContext?.run?.initiatedBy, "user:paul");
+    assertExists(ctx.expressionContext?.run?.inputs);
+    assertEquals(ctx.expressionContext!.run!.inputs!.env, "production");
+    assertEquals(ctx.expressionContext!.run!.inputs!.count, 5);
+  });
+});
