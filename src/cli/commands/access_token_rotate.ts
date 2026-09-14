@@ -57,6 +57,7 @@ import {
 import { migrateTokenSecrets } from "../../serve/token_secret_migration.ts";
 import { createResourceWriter } from "../../domain/models/data_writer.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
+import { tokenVaultRejectedMessage } from "../access_token_vault_guidance.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -109,8 +110,9 @@ export const accessTokenRotateCommand = withRemoteOptions(
   if (server) {
     if (options.vault !== undefined) {
       throw new UserError(
-        `--vault is not supported when targeting a remote server — token secrets are stored in the control-plane vault. ` +
-          `Use 'swamp access token reveal <name>' on the serve host to retrieve the token.`,
+        tokenVaultRejectedMessage("rotate", name, options.vault as string, {
+          remote: true,
+        }),
       );
     }
     const token = await resolveServerToken(
@@ -159,8 +161,7 @@ export const accessTokenRotateCommand = withRemoteOptions(
   if (controlPlaneResult) {
     if (effectiveVault !== undefined) {
       throw new UserError(
-        `--vault is not supported when a datastore is configured — token secrets are stored in the control-plane vault. ` +
-          `Use 'swamp access token reveal <name>' to retrieve the token after rotating.`,
+        tokenVaultRejectedMessage("rotate", name, effectiveVault),
       );
     }
     effectiveVault = TOKEN_SECRETS_VAULT_NAME;

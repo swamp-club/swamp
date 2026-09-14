@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { Command } from "@cliffy/command";
 import { UserError } from "../../domain/errors.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
@@ -48,7 +48,7 @@ Deno.test("accessTokenRotateCommand: --vault rejected when --server is set", asy
     .globalOption("--json", "JSON output")
     .command("rotate", accessTokenRotateCommand);
 
-  await assertRejects(
+  const error = await assertRejects(
     () =>
       root.parse([
         "rotate",
@@ -62,5 +62,9 @@ Deno.test("accessTokenRotateCommand: --vault rejected when --server is set", asy
       ]),
     UserError,
     "--vault is not supported when targeting a remote server",
+  );
+  assertStringIncludes(
+    error.message,
+    "swamp vault put 'my-vault' 'server-token-test-token' --yes",
   );
 });
