@@ -56,6 +56,10 @@ export const accessCanICommand = new Command()
     "Server token; only applies with --server (falls back to stored credential or SWAMP_SERVER_TOKEN)",
   )
   .option(
+    "--token-file <path:string>",
+    "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
+  )
+  .option(
     "--action <action:string>",
     "Action to check (run, read, write, approve, admin)",
   )

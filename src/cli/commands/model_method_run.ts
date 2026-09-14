@@ -214,6 +214,10 @@ Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — 
     "Server token in <name>.<secret> format; only applies with --server (overrides stored credentials and SWAMP_SERVER_TOKEN)",
   )
   .option(
+    "--token-file <path:string>",
+    "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
+  )
+  .option(
     "--traceparent <value:string>",
     "W3C traceparent for per-invocation trace context (env: TRACEPARENT)",
   )

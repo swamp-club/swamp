@@ -105,6 +105,10 @@ export const accessCheckCommand = new Command()
     "--token <token:string>",
     "Server token; only applies with --server (falls back to stored credential or SWAMP_SERVER_TOKEN)",
   )
+  .option(
+    "--token-file <path:string>",
+    "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
+  )
   .action(async function (options: AnyOptions) {
     const server = resolveServeUrl(options.server as string | undefined);
 

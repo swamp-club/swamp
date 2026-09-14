@@ -136,18 +136,68 @@ function toHttpUrl(serverUrl: string): string {
   }
 }
 
+export async function readTokenFile(
+  path: string,
+  flagName: string,
+): Promise<string> {
+  let raw: string;
+  try {
+    raw = await Deno.readTextFile(path);
+  } catch (err) {
+    if (err instanceof Deno.errors.NotFound) {
+      throw new UserError(`${flagName} file not found: ${path}`);
+    }
+    if (err instanceof Deno.errors.PermissionDenied) {
+      throw new UserError(`${flagName} file not readable: ${path}`);
+    }
+    throw err;
+  }
+  const value = raw.replace(/\r?\n$/, "");
+  if (value === "") {
+    throw new UserError(`${flagName} file is empty: ${path}`);
+  }
+  return value;
+}
+
+function resolveTokenFileFlag(): string | undefined {
+  for (let i = 0; i < Deno.args.length; i++) {
+    if (Deno.args[i] === "--token-file" && i + 1 < Deno.args.length) {
+      return Deno.args[i + 1];
+    }
+    if (Deno.args[i].startsWith("--token-file=")) {
+      return Deno.args[i].slice("--token-file=".length);
+    }
+  }
+  return undefined;
+}
+
 /**
  * Resolves the server token for authentication. Precedence:
  * 1. Explicit `--token` flag value
- * 2. `SWAMP_SERVER_TOKEN` env var (via ServerCredentialRepository)
- * 3. Stored credential in `~/.config/swamp/servers.json`
+ * 2. `--token-file` flag (read from file)
+ * 3. `SWAMP_SERVER_TOKEN_FILE` env var (read from file)
+ * 4. `SWAMP_SERVER_TOKEN` env var (via ServerCredentialRepository)
+ * 5. Stored credential in `~/.config/swamp/servers.json`
  */
 export async function resolveServerToken(
   serverUrl: string,
   explicitToken?: string,
   credentialRepo?: ServerCredentialRepository,
 ): Promise<string | undefined> {
+  const tokenFileFlag = resolveTokenFileFlag();
+  if (explicitToken && tokenFileFlag) {
+    throw new UserError(
+      "--token and --token-file are mutually exclusive",
+    );
+  }
   if (explicitToken) return explicitToken;
+  if (tokenFileFlag) {
+    return readTokenFile(tokenFileFlag, "--token-file");
+  }
+  const envTokenFile = Deno.env.get("SWAMP_SERVER_TOKEN_FILE");
+  if (envTokenFile) {
+    return readTokenFile(envTokenFile, "SWAMP_SERVER_TOKEN_FILE");
+  }
   const repo = credentialRepo ?? new FileServerCredentialRepository();
   const credential = await repo.get(toHttpUrl(serverUrl));
   return credential?.token;
@@ -633,6 +683,10 @@ export function withRemoteOptions<T extends AnyCommand>(command: T): T {
     .option(
       "--token <token:string>",
       "Server token in <name>.<secret> format; only applies with --server (overrides stored credentials and SWAMP_SERVER_TOKEN)",
+    )
+    .option(
+      "--token-file <path:string>",
+      "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
     )
     .option(
       "--ca-cert <path:string>",

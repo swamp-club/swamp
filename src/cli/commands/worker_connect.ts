@@ -34,7 +34,7 @@ import { VERSION } from "./version.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { parseTimeout } from "../duration_parser.ts";
 import { resolveExtraHeaders } from "../../domain/auth/extra_headers.ts";
-import { getEnvCaCerts } from "../remote_run.ts";
+import { getEnvCaCerts, readTokenFile } from "../remote_run.ts";
 
 // Import models barrel so built-in models resolve from the worker's own
 // registry when a `builtin:` bundle fingerprint is dispatched.
@@ -42,29 +42,6 @@ import "../../domain/models/models.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
-
-export async function readTokenFile(
-  path: string,
-  flagName: string,
-): Promise<string> {
-  let raw: string;
-  try {
-    raw = await Deno.readTextFile(path);
-  } catch (err) {
-    if (err instanceof Deno.errors.NotFound) {
-      throw new UserError(`${flagName} file not found: ${path}`);
-    }
-    if (err instanceof Deno.errors.PermissionDenied) {
-      throw new UserError(`${flagName} file not readable: ${path}`);
-    }
-    throw err;
-  }
-  const value = raw.replace(/\r?\n$/, "");
-  if (value === "") {
-    throw new UserError(`${flagName} file is empty: ${path}`);
-  }
-  return value;
-}
 
 function parseCommaSeparatedLabels(envValue: string): Record<string, string> {
   const labels: Record<string, string> = {};

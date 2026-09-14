@@ -211,10 +211,15 @@ WebSocket upgrade time via the `swamp/server-token` model's `redeem` method
 Bearer`, the `Sec-WebSocket-Protocol` subprotocol, or a `?token=` query
 parameter (in that priority order). The CLI sends it via the `Authorization`
 header. Unauthenticated connections receive HTTP 401. The client resolves the
-token from (in precedence order) the `--token` flag, the `SWAMP_SERVER_TOKEN` +
-`SWAMP_SERVER_URL` env vars, or stored credentials in
-`~/.config/swamp/servers.json` (managed by `swamp auth server-login`). Token
-management is through `swamp access token mint/list/revoke`.
+token from (in precedence order) the `--token` flag, the `--token-file` flag
+(read from a file at the given path), the `SWAMP_SERVER_TOKEN_FILE` env var
+(read from a file), the `SWAMP_SERVER_TOKEN` + `SWAMP_SERVER_URL` env vars, or
+stored credentials in `~/.config/swamp/servers.json` (managed by
+`swamp auth server-login`). `--token` and `--token-file` are mutually exclusive.
+The file-based options (`--token-file`, `SWAMP_SERVER_TOKEN_FILE`) let operators
+avoid putting tokens in environment variables, reducing the window where tokens
+exist in process memory. Token management is through
+`swamp access token mint/list/revoke`.
 
 When `--auth-mode oauth` is active, users authenticate via the OAuth device
 grant flow (RFC 8628) against swamp-club. The server acts as an OAuth client

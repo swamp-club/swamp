@@ -233,6 +233,10 @@ const accessGroupCreateCommand = new Command()
     "--token <token:string>",
     "Server token; only applies with --server (falls back to stored credential or SWAMP_SERVER_TOKEN)",
   )
+  .option(
+    "--token-file <path:string>",
+    "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
+  )
   .action(async function (options: AnyOptions, name: string) {
     const server = resolveServeUrl(options.server as string | undefined);
 
@@ -305,6 +309,10 @@ const accessGroupAddMemberCommand = new Command()
   .option(
     "--token <token:string>",
     "Server token; only applies with --server (falls back to stored credential or SWAMP_SERVER_TOKEN)",
+  )
+  .option(
+    "--token-file <path:string>",
+    "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
   )
   .action(async function (
     options: AnyOptions,
@@ -381,6 +389,10 @@ const accessGroupRemoveMemberCommand = new Command()
     "--token <token:string>",
     "Server token; only applies with --server (falls back to stored credential or SWAMP_SERVER_TOKEN)",
   )
+  .option(
+    "--token-file <path:string>",
+    "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
+  )
   .action(async function (
     options: AnyOptions,
     group: string,
@@ -452,6 +464,10 @@ const accessGroupListCommand = new Command()
     "--token <token:string>",
     "Server token; only applies with --server (falls back to stored credential or SWAMP_SERVER_TOKEN)",
   )
+  .option(
+    "--token-file <path:string>",
+    "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
+  )
   .action(async function (options: AnyOptions) {
     const server = resolveServeUrl(options.server as string | undefined);
 
@@ -520,6 +536,10 @@ const accessGroupMembersCommand = new Command()
   .option(
     "--token <token:string>",
     "Server token; only applies with --server (falls back to stored credential or SWAMP_SERVER_TOKEN)",
+  )
+  .option(
+    "--token-file <path:string>",
+    "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
   )
   .action(async function (options: AnyOptions, name: string) {
     const server = resolveServeUrl(options.server as string | undefined);
@@ -597,6 +617,10 @@ const accessGroupListIdpCommand = new Command()
   .option(
     "--token <token:string>",
     "Server token (falls back to stored credential or SWAMP_SERVER_TOKEN)",
+  )
+  .option(
+    "--token-file <path:string>",
+    "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
   )
   .action(async function (options: AnyOptions) {
     const server = resolveServeUrl(options.server as string | undefined);

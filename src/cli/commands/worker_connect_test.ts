@@ -19,7 +19,7 @@
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
-import { readTokenFile } from "./worker_connect.ts";
+import { readTokenFile } from "../remote_run.ts";
 import { UserError } from "../../domain/errors.ts";
 
 // Import models barrel to trigger self-registration

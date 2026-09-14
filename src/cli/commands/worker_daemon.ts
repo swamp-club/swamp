@@ -22,7 +22,7 @@ import { isAbsolute, resolve } from "@std/path";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { groupCommandAction } from "../group_action.ts";
 import { UserError } from "../../domain/errors.ts";
-import { readTokenFile } from "./worker_connect.ts";
+import { readTokenFile } from "../remote_run.ts";
 import { resolveServiceMode } from "../../infrastructure/daemon/service_scheduler_factory.ts";
 import { createWorkerDaemonScheduler } from "../../infrastructure/daemon/worker_daemon_scheduler_factory.ts";
 import {
