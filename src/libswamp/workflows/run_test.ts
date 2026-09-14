@@ -609,6 +609,58 @@ Deno.test("toRunData: includes step outputs from model method resource attribute
   assertEquals(stepView.outputs?.status, "Building");
 });
 
+Deno.test("toRunData: includes workflow child step outputs", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const job = run.getJob("job1")!;
+  job.start();
+  const step = job.getStep("step1")!;
+  step.start();
+  step.succeed({
+    type: "workflow",
+    workflow: "child-wf",
+    runId: "child-run-123",
+    status: "succeeded",
+    outputs: {
+      audienceId: "aud_456",
+      name: "test-audience",
+    },
+  });
+  job.succeed();
+  run.complete();
+
+  const data = toRunData(run);
+  const stepView = data.jobs[0].steps[0];
+  assertEquals(stepView.outputs?.audienceId, "aud_456");
+  assertEquals(stepView.outputs?.name, "test-audience");
+});
+
+Deno.test("toRunData: includes references on run", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.setReferences({
+    jiraTicket: "DNA-5570",
+    prUrl: "https://github.com/example/pull/21",
+  });
+  run.start();
+  run.complete();
+
+  const data = toRunData(run);
+  assertEquals(data.references?.jiraTicket, "DNA-5570");
+  assertEquals(data.references?.prUrl, "https://github.com/example/pull/21");
+});
+
+Deno.test("toRunData: run without references has no references field", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.complete();
+
+  const data = toRunData(run);
+  assertEquals(data.references, undefined);
+});
+
 Deno.test("toRunData: step without model method output has no outputs", () => {
   const workflow = createTestWorkflow();
   const run = WorkflowRun.create(workflow);

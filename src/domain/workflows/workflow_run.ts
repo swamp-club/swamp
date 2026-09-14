@@ -125,6 +125,7 @@ export const WorkflowRunSchema = z.object({
   logFile: z.string().optional(),
   pid: z.number().int().positive().optional(),
   tags: z.record(z.string(), z.string()).default({}),
+  references: z.record(z.string(), z.string()).optional(),
   // Effective workflow inputs captured when a run suspends, so post-resume
   // steps can resolve `inputs.*`. Optional for backward compatibility with
   // runs persisted before this field existed.
@@ -621,6 +622,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
     private _initiatedBy: string | undefined = undefined,
     private _instanceId: string | undefined = undefined,
     private _triggerSource: string | undefined = undefined,
+    private _references: Record<string, string> | undefined = undefined,
   ) {}
 
   /**
@@ -684,6 +686,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
       validated.initiatedBy,
       validated.instanceId,
       validated.triggerSource,
+      validated.references,
     );
   }
 
@@ -715,6 +718,14 @@ export class WorkflowRun implements TriggerEvaluationContext {
 
   get triggerSource(): string | undefined {
     return this._triggerSource;
+  }
+
+  get references(): Record<string, string> | undefined {
+    return this._references;
+  }
+
+  setReferences(refs: Record<string, string>): void {
+    this._references = refs;
   }
 
   get pid(): number | undefined {
@@ -975,6 +986,12 @@ export class WorkflowRun implements TriggerEvaluationContext {
     }
     if (this._triggerSource !== undefined) {
       data.triggerSource = this._triggerSource;
+    }
+    if (
+      this._references !== undefined &&
+      Object.keys(this._references).length > 0
+    ) {
+      data.references = { ...this._references };
     }
 
     const { failedStep, failureReason } = this.computeFailureInfo();

@@ -411,6 +411,12 @@ function extractStepOutputs(
       | undefined;
     return attrs && Object.keys(attrs).length > 0 ? attrs : undefined;
   }
+  if (output.type === "workflow") {
+    const outputs = output.outputs as
+      | Record<string, unknown>
+      | undefined;
+    return outputs && Object.keys(outputs).length > 0 ? outputs : undefined;
+  }
   return undefined;
 }
 
@@ -522,6 +528,7 @@ export function toRunData(
       }))
       : undefined,
     initiatedBy: run.initiatedBy,
+    references: run.references,
   };
 }
 

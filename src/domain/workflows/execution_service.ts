@@ -1653,6 +1653,8 @@ export class WorkflowExecutionService {
       instanceId?: string;
       /** How this run was triggered (schedule, webhook, api) */
       triggerSource?: string;
+      /** Optional metadata linking the run to external systems */
+      references?: Record<string, string>;
     },
   ): AsyncGenerator<WorkflowExecutionEvent> {
     const tracer = getTracer();
@@ -1738,6 +1740,9 @@ export class WorkflowExecutionService {
         );
         if (options?.inputs) {
           run.captureInputs(options.inputs);
+        }
+        if (options?.references) {
+          run.setReferences(options.references);
         }
         workflowRun = run;
         if (workflow.affinity) {
@@ -3517,11 +3522,13 @@ export class WorkflowExecutionService {
       return;
     }
 
+    const childOutputs = this.extractChildWorkflowOutputs(childRun);
     stepRun.succeed({
       type: "workflow",
       workflow: task.workflowIdOrName,
       runId: childRun.id,
       status: childRun.status,
+      outputs: childOutputs,
     });
     yield { kind: "step_completed", jobId: job.name, stepId: stepName };
   }
@@ -3607,7 +3614,37 @@ export class WorkflowExecutionService {
         | undefined;
       return attrs && Object.keys(attrs).length > 0 ? attrs : undefined;
     }
+    if (output.type === "workflow") {
+      const outputs = output.outputs as
+        | Record<string, unknown>
+        | undefined;
+      return outputs && Object.keys(outputs).length > 0 ? outputs : undefined;
+    }
     return undefined;
+  }
+
+  private extractChildWorkflowOutputs(
+    childRun: WorkflowRun,
+  ): Record<string, unknown> | undefined {
+    const outputs: Record<string, unknown> = {};
+    for (const job of childRun.jobs) {
+      for (const step of job.steps) {
+        if (step.status !== "succeeded") continue;
+        const stepOutput = step.output as Record<string, unknown> | undefined;
+        if (!stepOutput || typeof stepOutput !== "object") continue;
+        if (stepOutput.type === "model_method") {
+          const attrs = stepOutput.resourceAttributes as
+            | Record<string, unknown>
+            | undefined;
+          if (attrs && Object.keys(attrs).length > 0) {
+            for (const [key, value] of Object.entries(attrs)) {
+              outputs[key] = value;
+            }
+          }
+        }
+      }
+    }
+    return Object.keys(outputs).length > 0 ? outputs : undefined;
   }
 
   private shouldJobRun(job: Job, run: WorkflowRun): boolean {

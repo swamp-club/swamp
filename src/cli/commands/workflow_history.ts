@@ -25,6 +25,7 @@ import {
 } from "./workflow_history_get.ts";
 import { workflowHistorySearchCommand } from "./workflow_history_search.ts";
 import { workflowHistoryLogsCommand } from "./workflow_history_logs.ts";
+import { workflowHistoryOutputsCommand } from "./workflow_history_outputs.ts";
 
 export const workflowHistoryCommand = new Command()
   .name("history")
@@ -43,4 +44,5 @@ export const workflowHistoryCommand = new Command()
   .action(workflowHistoryGetAction)
   .command("get", workflowHistoryGetCommand)
   .command("search", workflowHistorySearchCommand)
-  .command("logs", workflowHistoryLogsCommand);
+  .command("logs", workflowHistoryLogsCommand)
+  .command("outputs", workflowHistoryOutputsCommand);

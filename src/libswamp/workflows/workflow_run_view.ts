@@ -131,6 +131,8 @@ export interface WorkflowRunView {
   /** Data artifacts produced at workflow scope (e.g. workflow-scope reports). */
   workflowDataArtifacts?: DataArtifactRefData[];
   initiatedBy?: string;
+  /** Optional metadata linking the run to external systems. */
+  references?: Record<string, string>;
 }
 
 export function extractFirstStepError(run: WorkflowRunView): string {
