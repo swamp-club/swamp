@@ -867,7 +867,7 @@ windowsOnlyTest(
     );
 
     const attrs = getResultAttributes(getResults(), "result");
-    assertEquals(attrs?.stdout, "scanning dev\r\n");
+    assertEquals(attrs?.stdout, "scanning dev\r");
   },
 );
 
@@ -881,7 +881,7 @@ windowsOnlyTest(
     );
 
     const attrs = getResultAttributes(getResults(), "result");
-    assertEquals(attrs?.stdout, "value\\@thing\r\n");
+    assertEquals(attrs?.stdout, "value\\@thing\r");
   },
 );
 
@@ -926,7 +926,7 @@ windowsOnlyTest(
     );
 
     const attrs = getResultAttributes(getResults(), "result");
-    assertEquals(attrs?.stdout, `${secret}\r\n`);
+    assertEquals(attrs?.stdout, `${secret}\r`);
   },
 );
 
