@@ -1572,7 +1572,6 @@ export async function handleWorkflowCreate(
         ? ctx.datastoreConfig.namespace
         : undefined;
       try {
-        await ctx.syncService.markDirty();
         await ctx.syncService.pushChanged({ namespace });
       } catch (pushError) {
         logger.warn(
@@ -1652,7 +1651,6 @@ export async function handleWorkflowDelete(
         ? ctx.datastoreConfig.namespace
         : undefined;
       try {
-        await ctx.syncService.markDirty();
         await ctx.syncService.pushChanged({ namespace });
       } catch (pushError) {
         logger.warn(
@@ -1732,7 +1730,6 @@ export async function handleWorkflowEdit(
         ? ctx.datastoreConfig.namespace
         : undefined;
       try {
-        await ctx.syncService.markDirty();
         await ctx.syncService.pushChanged({ namespace });
       } catch (pushError) {
         logger.warn(

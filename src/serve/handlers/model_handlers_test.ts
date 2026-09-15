@@ -262,16 +262,25 @@ function createEditCtx(
   } as ConnectionContext;
 }
 
-Deno.test("handleModelEdit: calls markDirty and pushChanged on syncService after successful edit", async () => {
+Deno.test("handleModelEdit: pushChanged called after edit, per-path markDirty from repo (no bare override)", async () => {
   await withTempDir(async (dir) => {
-    const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
+    const { service, pushCalls, markDirtyCalls } = createMockSyncService();
+    const markDirtyHook = (relPath?: string) =>
+      service.markDirty(relPath ? { relPath } : undefined);
+    const repo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      undefined,
+      false,
+      markDirtyHook,
+    );
     const definition = Definition.create({
       name: "sync-test-model",
       globalArguments: {},
     });
     await repo.save(EDIT_TEST_TYPE, definition);
+    markDirtyCalls.length = 0;
 
-    const { service, pushCalls, markDirtyCalls } = createMockSyncService();
     const ctx = createEditCtx(dir, repo, service);
     const socket = createMockSocket();
 
@@ -298,9 +307,12 @@ Deno.test("handleModelEdit: calls markDirty and pushChanged on syncService after
     assertEquals(response.type, "model.edit");
     assertEquals(response.payload.data.status, "updated");
 
-    assertGreater(markDirtyCalls.length, 0);
     assertGreater(pushCalls.length, 0);
     assertEquals(pushCalls[0].namespace, "shared");
+    const bareCalls = markDirtyCalls.filter((c) => !c.relPath);
+    assertEquals(bareCalls.length, 0, "bare markDirty() must not be called");
+    const perPathCalls = markDirtyCalls.filter((c) => !!c.relPath);
+    assertGreater(perPathCalls.length, 0, "repo must send per-path markDirty");
   });
 });
 

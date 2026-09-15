@@ -1009,6 +1009,18 @@ signal their `saveDeferred` / `finalizeVersionDeferred` already sent
 Filesystem datastores have no fast path and wire no sync service, so the
 markDirty plumbing is a no-op for them.
 
+**Serve handler obligation.** Serve mutation handlers that route through
+repositories with per-path `markDirty` wired (model, workflow, data, output
+repos) must NOT call bare `syncService.markDirty()` before `pushChanged()`.
+The per-path signals from the repositories are sufficient and drive the
+extension's scoped-walk optimization, which correctly detects deletions via
+absence-on-disk (rule 2). A bare `markDirty()` call sets `bulkInvalidated`
+in the extension, forcing a full walk that skips deletion detection unless
+the per-path set overflowed — overriding the per-path signal and silently
+dropping remote object deletions. Handlers whose mutations do NOT flow
+through per-path-wired repos (vault, access, admin) still need bare
+`markDirty()` because it is their only dirty signal.
+
 **Sync is not a content-integrity tool.** The fingerprint detects index-level
 changes, not per-file corruption — a silently damaged cache file (bit rot,
 truncated write after a crash) can slip through the fast path if the index

@@ -288,7 +288,6 @@ export async function handleModelMethodRun(
           ? ctx.datastoreConfig.namespace
           : undefined;
         try {
-          await ctx.syncService.markDirty();
           await ctx.syncService.pushChanged({ namespace });
         } catch (pushError) {
           logger.warn("Failed to push changes to remote datastore: {error}", {
@@ -523,7 +522,6 @@ export async function handleModelMethodRun(
           ? ctx.datastoreConfig.namespace
           : undefined;
         try {
-          await ctx.syncService.markDirty();
           await ctx.syncService.pushChanged({ namespace });
         } catch (pushError) {
           logger.warn("Failed to push changes to remote datastore: {error}", {
@@ -888,7 +886,6 @@ export async function handleModelCreate(
         ? ctx.datastoreConfig.namespace
         : undefined;
       try {
-        await ctx.syncService.markDirty();
         await ctx.syncService.pushChanged({ namespace });
       } catch (pushError) {
         logger.warn("Failed to push changes to remote datastore: {error}", {
@@ -991,7 +988,6 @@ export async function handleModelDelete(
         ? ctx.datastoreConfig.namespace
         : undefined;
       try {
-        await ctx.syncService.markDirty();
         await ctx.syncService.pushChanged({ namespace });
       } catch (pushError) {
         logger.warn("Failed to push changes to remote datastore: {error}", {
@@ -1670,7 +1666,6 @@ export async function handleModelEdit(
         ? ctx.datastoreConfig.namespace
         : undefined;
       try {
-        await ctx.syncService.markDirty();
         await ctx.syncService.pushChanged({ namespace });
       } catch (pushError) {
         logger.warn(
