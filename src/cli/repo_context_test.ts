@@ -35,6 +35,7 @@ import {
   flushSinglePhasePush,
   flushTwoPhasePush,
   type LockProgressWriter,
+  MODEL_LOCK_RETRY_INTERVAL_MS,
   requireInitializedRepo,
   requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,
@@ -44,6 +45,7 @@ import {
   waitForPerModelLocks,
 } from "./repo_context.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
+import type { FileLock } from "../infrastructure/persistence/file_lock.ts";
 import { assertPathEquals } from "../infrastructure/persistence/path_test_helpers.ts";
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 import {
@@ -643,6 +645,23 @@ Deno.test("createModelLock - creates lock with correct path for filesystem", asy
     // Verify we can inspect (no lock held)
     const info = await lock.inspect();
     assertEquals(info, null);
+  });
+});
+
+Deno.test("createModelLock - retries promptly on brief contention", async () => {
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+
+    const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+    const lock = await createModelLock(datastoreConfig, "aws-ec2", "my-server");
+
+    // Per-model locks are brief, so the first retry must not sleep through
+    // a release. Asserted on configuration, not elapsed time — wall-clock
+    // assertions are banned by the repo's flakiness rules.
+    assertEquals(
+      (lock as FileLock).retryIntervalMs,
+      MODEL_LOCK_RETRY_INTERVAL_MS,
+    );
   });
 });
 

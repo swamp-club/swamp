@@ -1053,6 +1053,16 @@ export async function requireInitializedRepoUnlocked(
 }
 
 /**
+ * Initial retry interval for per-model locks.
+ *
+ * Per-model locks are held for brief local writes, so `FileLock`'s 1s
+ * default meant a waiter slept through a release that happened milliseconds
+ * later. Backoff still doubles from here, so sustained contention converges
+ * on the same cadence as before.
+ */
+export const MODEL_LOCK_RETRY_INTERVAL_MS = 25;
+
+/**
  * Creates a per-model distributed lock.
  *
  * Lock key: `data/{modelType}/{modelId}/.lock`
@@ -1068,7 +1078,11 @@ export async function createModelLock(
     const provider = await resolveCustomProvider(config);
     return provider.createLock(config.datastorePath, { lockKey, maxWaitMs });
   }
-  return new FileLock(config.path, { lockKey, maxWaitMs });
+  return new FileLock(config.path, {
+    lockKey,
+    maxWaitMs,
+    retryIntervalMs: MODEL_LOCK_RETRY_INTERVAL_MS,
+  });
 }
 
 /**

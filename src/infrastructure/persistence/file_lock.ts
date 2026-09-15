@@ -69,7 +69,9 @@ function buildLockInfo(ttlMs: number, nonce: string): LockInfo {
 export class FileLock implements DistributedLock {
   private readonly lockPath: string;
   private readonly ttlMs: number;
-  private readonly retryIntervalMs: number;
+  /** Initial backoff before the first retry. Readable so callers' lock
+   * policy can be asserted without timing the acquire loop. */
+  readonly retryIntervalMs: number;
   private readonly maxWaitMs: number;
   private heartbeatId: ReturnType<typeof setInterval> | undefined;
   private held = false;

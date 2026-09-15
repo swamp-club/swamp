@@ -1285,6 +1285,10 @@ they honor it depends on their implementation.
 starting at `retryIntervalMs` (default 1 second), doubling each attempt,
 capped at 8 seconds, with ±25% random jitter. Each sleep is also clamped to
 the remaining timeout budget so the loop never overshoots `maxWaitMs`.
+Per-model locks (`createModelLock`) start at 25 ms instead, because they
+guard brief local writes and the 1 second default made a waiter sleep
+through a release that happened milliseconds later. Backoff still doubles
+from there, so sustained contention converges on the same cadence.
 
 **Contention logging.** When a lock is acquired after one or more retries,
 an info-level log line reports the retry count and total wait time:
