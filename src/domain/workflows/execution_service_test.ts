@@ -6003,3 +6003,131 @@ Deno.test("run context: includes initiatedBy and inputs", async () => {
     assertEquals(ctx.expressionContext!.run!.inputs!.count, 5);
   });
 });
+
+// --- Report assembly resolves definitions within the step's own model type ---
+//
+// `model_resolved` carries the resolved definition's own name AND type, so
+// report assembly can scope its lookup to that type instead of walking every
+// definition in the repository once per step.
+//
+// The discriminator here is deterministic rather than walk-order dependent:
+// findByNameGlobal always searches the primary models dir before the secondary
+// auto-definitions dir, so a same-named definition in each means the global
+// walk necessarily returns the PRIMARY one. A type-scoped lookup for the
+// secondary definition's type necessarily returns the SECONDARY one. This is
+// also the real shape of the auto-created-model case.
+Deno.test("report assembly resolves step definitions within the step's own model type", async () => {
+  const { ModelType } = await import("../models/model_type.ts");
+  const { Definition } = await import("../definitions/definition.ts");
+  const { YamlDefinitionRepository } = await import(
+    "../../infrastructure/persistence/yaml_definition_repository.ts"
+  );
+  const { swampPath, SWAMP_SUBDIRS } = await import(
+    "../../infrastructure/persistence/paths.ts"
+  );
+
+  await withTempDir(async (tempDir) => {
+    const primaryType = ModelType.create("command/shell");
+    const secondaryType = ModelType.create("swamp/echo");
+    const sharedName = "shared-model-name";
+
+    const primaryRepo = new YamlDefinitionRepository(tempDir);
+    const primaryDef = Definition.create({
+      name: sharedName,
+      globalArguments: { origin: "primary" },
+    });
+    await primaryRepo.save(primaryType, primaryDef);
+
+    const secondaryRepo = new YamlDefinitionRepository(
+      tempDir,
+      undefined,
+      swampPath(tempDir, SWAMP_SUBDIRS.autoDefinitions),
+      false,
+    );
+    const secondaryDef = Definition.create({
+      name: sharedName,
+      globalArguments: { origin: "secondary" },
+    });
+    await secondaryRepo.save(secondaryType, secondaryDef);
+
+    // The global walk returns the primary definition — this is what report
+    // assembly used to get, regardless of which type the step actually ran.
+    const globalLookup = await primaryRepo.findByNameGlobal(sharedName);
+    assertEquals(globalLookup?.definition.id, primaryDef.id);
+
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new MockStepExecutor(),
+      undefined,
+      catalogStore,
+    );
+    const run = await service.execute(workflow.name);
+
+    // Capture what report assembly hands to the report runner.
+    let captured: { modelId: string; globalArgs: Record<string, unknown> }[] =
+      [];
+    (service as unknown as {
+      workflowReportRunner: {
+        runFor: (args: {
+          stepExecutions: {
+            modelId: string;
+            globalArgs: Record<string, unknown>;
+          }[];
+        }) => Promise<unknown[]>;
+      };
+    }).workflowReportRunner = {
+      runFor: (args) => {
+        captured = args.stepExecutions;
+        return Promise.resolve([]);
+      },
+    };
+
+    const modelInfoByStep = new Map([[
+      "job1:step1",
+      {
+        modelName: sharedName,
+        modelType: secondaryType.normalized,
+        modelId: secondaryDef.id,
+        methodName: "run",
+      },
+    ]]);
+    const stepStatuses = new Map<
+      string,
+      "succeeded" | "failed" | "skipped"
+    >([["job1:step1", "succeeded"]]);
+
+    const reports = (service as unknown as {
+      runWorkflowReports: (
+        workflow: Workflow,
+        run: WorkflowRun,
+        infoByStep: typeof modelInfoByStep,
+        statuses: typeof stepStatuses,
+        dataHandlesByStep: Map<string, unknown[]>,
+        reportFilterOptions: undefined,
+      ) => AsyncGenerator<unknown>;
+    }).runWorkflowReports(
+      workflow,
+      run,
+      modelInfoByStep,
+      stepStatuses,
+      new Map(),
+      undefined,
+    );
+    for await (const _ of reports) { /* drain */ }
+
+    assertEquals(captured.length, 1);
+    // The step ran a model of the SECONDARY type, so its args must come from
+    // that definition — not from the same-named primary one the global walk
+    // would have returned.
+    assertEquals(captured[0].globalArgs, { origin: "secondary" });
+    // And the modelId still comes from step execution time, never the lookup.
+    assertEquals(captured[0].modelId, secondaryDef.id);
+  });
+});

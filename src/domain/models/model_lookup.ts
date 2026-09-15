@@ -138,6 +138,12 @@ export async function findDefinitionByIdOrName(
     return { definition: byName.definition, type: byName.type };
   }
 
-  // Fall back to ID lookup
+  // Fall back to ID lookup. findDefinitionByIdGlobal compares IDs with strict
+  // equality, so a non-UUID string can never match — and reaching it parses
+  // every definition in the repo once per registered type to prove that.
+  // Partial/prefix ID matching lives in matchByPartialId(), not here.
+  if (!isUuid(idOrName)) {
+    return null;
+  }
   return findDefinitionByIdGlobal(definitionRepo, idOrName);
 }

@@ -32,6 +32,7 @@ import {
   resolveSensitiveVaultRefs,
 } from "../models/data_writer.ts";
 import { ModelNotFoundError } from "./errors.ts";
+import { isUuid } from "../models/model_lookup.ts";
 import { parseNamespacedModelName } from "../data/namespace.ts";
 import type { Namespace } from "../data/namespace.ts";
 import { UserError } from "../errors.ts";
@@ -998,11 +999,15 @@ export class ModelResolver {
       };
     }
 
-    // Try by UUID - search across all types
-    const allDefinitions = await this.definitionRepo.findAllGlobal();
-    for (const { definition, type } of allDefinitions) {
-      if (definition.id === modelRef) {
-        return { definition, type };
+    // Try by UUID - search across all types. The comparison below is strict
+    // equality, so a non-UUID ref can never match; skipping the walk avoids
+    // parsing every definition in the repo to prove a miss.
+    if (isUuid(modelRef)) {
+      const allDefinitions = await this.definitionRepo.findAllGlobal();
+      for (const { definition, type } of allDefinitions) {
+        if (definition.id === modelRef) {
+          return { definition, type };
+        }
       }
     }
 

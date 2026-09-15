@@ -1165,3 +1165,230 @@ Deno.test("YamlDefinitionRepository.save: preserves quotes on timestamp strings 
     );
   });
 });
+
+// --- Name → path hint tests ---
+//
+// These pin the efficiency claim by COUNTING filesystem reads, never by timing
+// (AGENTS.md forbids wall-clock assertions). The counter wraps and delegates to
+// the real Deno.readTextFile and is restored in a finally block, installed only
+// across the call being measured.
+async function countingReads<T>(fn: () => Promise<T>): Promise<[T, number]> {
+  const original = Deno.readTextFile;
+  let count = 0;
+  Deno.readTextFile = ((...args: Parameters<typeof original>) => {
+    count++;
+    return original(...args);
+  }) as typeof original;
+  try {
+    return [await fn(), count];
+  } finally {
+    Deno.readTextFile = original;
+  }
+}
+
+/** Writes a definition under a legacy `{uuid}.yaml` filename. */
+async function writeLegacyNamedFile(
+  baseDir: string,
+  definition: Definition,
+): Promise<string> {
+  const typeDir = join(baseDir, testType.toDirectoryPath());
+  await ensureDir(typeDir);
+  const path = join(typeDir, `${definition.id}.yaml`);
+  const data = definition.toData();
+  data.type = testType.normalized;
+  await Deno.writeTextFile(path, toCleanYaml(data));
+  return path;
+}
+
+Deno.test("YamlDefinitionRepository.findByName reuses a hint for legacy-filename definitions", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const target = createTestDefinition("hinted-def");
+    await writeLegacyNamedFile(join(dir, "models"), target);
+    // Noise the discovery walk has to parse before reaching the target.
+    for (let i = 0; i < 5; i++) {
+      await writeLegacyNamedFile(
+        join(dir, "models"),
+        createTestDefinition(`noise-${i}`),
+      );
+    }
+
+    const [first, firstReads] = await countingReads(() =>
+      repo.findByName(testType, "hinted-def")
+    );
+    assertEquals(first?.name, "hinted-def");
+
+    const [second, secondReads] = await countingReads(() =>
+      repo.findByName(testType, "hinted-def")
+    );
+    assertEquals(second?.name, "hinted-def");
+    assertEquals(second?.id, target.id);
+    // Two reads: the name-derived fast path's ENOENT probe (this name is
+    // filename-safe, so it is still attempted) plus the hinted file itself.
+    // Constant regardless of repository size, where discovery parsed every file.
+    assertEquals(secondReads, 2);
+    assertEquals(firstReads > secondReads, true);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findByName hints names that are not filename-safe", async () => {
+  await withTempDir(async (dir) => {
+    // A scoped @collective/name is a legal definition name but can never be a
+    // name-derived filename, so it never takes the isFilenameSafeDefinitionName
+    // fast path. It only resolves in constant time if the hint check sits
+    // OUTSIDE that guard.
+    const repo = new YamlDefinitionRepository(dir);
+    const scoped = "@acme/scoped-model";
+    const target = createTestDefinition(scoped);
+    await writeLegacyNamedFile(join(dir, "models"), target);
+    for (let i = 0; i < 3; i++) {
+      await writeLegacyNamedFile(
+        join(dir, "models"),
+        createTestDefinition(`filler-${i}`),
+      );
+    }
+
+    assertEquals((await repo.findByName(testType, scoped))?.id, target.id);
+
+    const [second, secondReads] = await countingReads(() =>
+      repo.findByName(testType, scoped)
+    );
+    assertEquals(second?.id, target.id);
+    // No ENOENT probe here — the fast path is skipped for this name entirely.
+    assertEquals(secondReads, 1);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findByName hints definitions in the secondary auto-definitions dir", async () => {
+  await withTempDir(async (dir) => {
+    // The dominant real-world slow path: auto-created definitions are written
+    // as `{uuid}.yaml` into .swamp/auto-definitions, so every name lookup misses
+    // the filename fast path, walks the primary dir, then walks the secondary.
+    const repo = new YamlDefinitionRepository(dir);
+    const target = createTestDefinition("auto-created");
+    await writeLegacyNamedFile(
+      join(dir, ".swamp", "auto-definitions"),
+      target,
+    );
+    await repo.save(testType, createTestDefinition("primary-noise"));
+
+    assertEquals(
+      (await repo.findByName(testType, "auto-created"))?.id,
+      target.id,
+    );
+
+    const [second, secondReads] = await countingReads(() =>
+      repo.findByName(testType, "auto-created")
+    );
+    assertEquals(second?.id, target.id);
+    // Two reads: the primary dir's ENOENT probe plus the hinted file in the
+    // secondary dir — no walk of either directory.
+    assertEquals(secondReads, 2);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findByNameGlobal reuses a hint across calls", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const target = createTestDefinition("global-hinted");
+    await writeLegacyNamedFile(join(dir, "models"), target);
+    for (let i = 0; i < 4; i++) {
+      await writeLegacyNamedFile(
+        join(dir, "models"),
+        createTestDefinition(`other-${i}`),
+      );
+    }
+
+    const first = await repo.findByNameGlobal("global-hinted");
+    assertEquals(first?.definition.id, target.id);
+    assertEquals(first?.type.normalized, testType.normalized);
+
+    const [second, secondReads] = await countingReads(() =>
+      repo.findByNameGlobal("global-hinted")
+    );
+    assertEquals(second?.definition.id, target.id);
+    // Type resolution must survive the hint path, not just the identity.
+    assertEquals(second?.type.normalized, testType.normalized);
+    assertEquals(secondReads, 1);
+  });
+});
+
+Deno.test("YamlDefinitionRepository hints do not hide an external rename", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const target = createTestDefinition("before-rename");
+    const path = await writeLegacyNamedFile(join(dir, "models"), target);
+
+    // Warm the hint for both lookups.
+    assertEquals(
+      (await repo.findByName(testType, "before-rename"))?.id,
+      target.id,
+    );
+    assertEquals(
+      (await repo.findByNameGlobal("before-rename"))?.definition.id,
+      target.id,
+    );
+
+    // Someone edits the name field in place, outside the repository.
+    const data = target.toData();
+    data.name = "after-rename";
+    data.type = testType.normalized;
+    await Deno.writeTextFile(path, toCleanYaml(data));
+
+    // The stale hint must not serve the old name, and the new name must resolve.
+    assertEquals(await repo.findByName(testType, "before-rename"), null);
+    assertEquals(await repo.findByNameGlobal("before-rename"), null);
+    assertEquals(
+      (await repo.findByName(testType, "after-rename"))?.id,
+      target.id,
+    );
+    assertEquals(
+      (await repo.findByNameGlobal("after-rename"))?.definition.id,
+      target.id,
+    );
+  });
+});
+
+Deno.test("YamlDefinitionRepository hints do not hide an external delete", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const target = createTestDefinition("doomed-def");
+    const path = await writeLegacyNamedFile(join(dir, "models"), target);
+
+    assertEquals(
+      (await repo.findByName(testType, "doomed-def"))?.id,
+      target.id,
+    );
+    assertEquals(
+      (await repo.findByNameGlobal("doomed-def"))?.definition.id,
+      target.id,
+    );
+
+    await Deno.remove(path);
+
+    assertEquals(await repo.findByName(testType, "doomed-def"), null);
+    assertEquals(await repo.findByNameGlobal("doomed-def"), null);
+  });
+});
+
+Deno.test("YamlDefinitionRepository hints do not hide an externally added definition", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const first = createTestDefinition("resident");
+    await writeLegacyNamedFile(join(dir, "models"), first);
+
+    // Warm hints, and confirm a miss is never cached as a negative result.
+    assertEquals((await repo.findByName(testType, "resident"))?.id, first.id);
+    assertEquals(await repo.findByName(testType, "newcomer"), null);
+    assertEquals(await repo.findByNameGlobal("newcomer"), null);
+
+    const added = createTestDefinition("newcomer");
+    await writeLegacyNamedFile(join(dir, "models"), added);
+
+    assertEquals((await repo.findByName(testType, "newcomer"))?.id, added.id);
+    assertEquals(
+      (await repo.findByNameGlobal("newcomer"))?.definition.id,
+      added.id,
+    );
+  });
+});

@@ -92,7 +92,7 @@ import { findDefinitionByIdOrName } from "../models/model_lookup.ts";
 import type { MethodExecutionEvent } from "../models/method_events.ts";
 import { ModelOutput } from "../models/model_output.ts";
 import type { Definition } from "../definitions/definition.ts";
-import type { ModelType } from "../models/model_type.ts";
+import { ModelType } from "../models/model_type.ts";
 import type { MethodResult, ModelDefinition } from "../models/model.ts";
 import { ExpressionEvaluationService } from "../expressions/expression_evaluation_service.ts";
 import { resolveAvailableExpressions } from "../expressions/available_expression_resolver.ts";
@@ -3769,14 +3769,19 @@ export class WorkflowExecutionService {
         // The modelId comes from step execution time (info.modelId),
         // NOT from this lookup — the lookup can return a stale or
         // different definition for auto-created models.
-        let lookupResult = await this.evaluatedDefRepo.findByNameGlobal(
-          info.modelName,
-        );
-        if (!lookupResult) {
-          lookupResult = await findDefinitionByIdOrName(
-            this.definitionRepo,
-            info.modelName,
-          );
+        //
+        // The step already knows its model's type: `model_resolved` carries the
+        // resolved definition's own name and type together. Scoping by that type
+        // keeps each lookup inside one type directory instead of recursively
+        // parsing every definition in the repo once per step, and it cannot
+        // match a same-named definition of another type the way a global name
+        // search can.
+        const modelType = tryCreateModelType(info.modelType);
+        let definition: Definition | null = null;
+        if (modelType) {
+          definition =
+            await this.evaluatedDefRepo.findByName(modelType, info.modelName) ??
+              await this.definitionRepo.findByName(modelType, info.modelName);
         }
 
         stepExecutions.push({
@@ -3788,13 +3793,11 @@ export class WorkflowExecutionService {
           methodName: info.methodName,
           status,
           dataHandles: dataHandlesByStep.get(key) ?? [],
-          methodArgs: lookupResult
-            ? lookupResult.definition.getMethodArguments(info.methodName)
+          methodArgs: definition
+            ? definition.getMethodArguments(info.methodName)
             : {},
           modelId: info.modelId,
-          globalArgs: lookupResult
-            ? lookupResult.definition.globalArguments
-            : {},
+          globalArgs: definition ? definition.globalArguments : {},
           errorMessage: status === "failed"
             ? run.getJob(jobName)?.getStep(stepName)?.error
             : undefined,
@@ -3932,6 +3935,22 @@ function stripResourceContent(
   }
 
   return result;
+}
+
+/**
+ * Builds a ModelType from a step's recorded type string, or null if it cannot.
+ *
+ * `model_resolved` always carries `modelType.normalized`, so this should always
+ * succeed. It exists so a step with an unexpected type string degrades to empty
+ * method/global args — the same result a lookup miss already produces — instead
+ * of throwing and failing report assembly for the whole run.
+ */
+function tryCreateModelType(rawType: string): ModelType | null {
+  try {
+    return ModelType.create(rawType);
+  } catch {
+    return null;
+  }
 }
 
 function readGlobalConcurrencyLimit(): number | undefined {

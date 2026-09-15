@@ -1831,3 +1831,66 @@ Deno.test("resolveVaultExpressions: without celOptions bare tokens used verbatim
   assertEquals(result.startsWith('"__SWAMP_VSEC_'), true);
   assertEquals(secretBag.resolveRaw(result.slice(1, -1)), "plain-secret");
 });
+
+// --- resolveModel gates its exact-ID fallback on UUID syntax ---
+//
+// After a name miss, the fallback walked every definition in the repository
+// (findAllGlobal) and compared IDs with strict equality — work a non-UUID ref
+// can never benefit from. The outcome must be identical either way.
+Deno.test("ModelResolver.resolveModel resolves a model by name", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const type = ModelType.create("command/shell");
+    const definition = Definition.create({ name: "by-name" });
+    await repo.save(type, definition);
+
+    const resolved = await new ModelResolver(repo).resolveModel("by-name");
+
+    assertEquals(resolved.definition.id, definition.id);
+    assertEquals(resolved.type.normalized, type.normalized);
+  });
+});
+
+Deno.test("ModelResolver.resolveModel resolves a model by UUID", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const type = ModelType.create("command/shell");
+    const definition = Definition.create({ name: "by-uuid" });
+    await repo.save(type, definition);
+
+    const resolved = await new ModelResolver(repo).resolveModel(definition.id);
+
+    assertEquals(resolved.definition.id, definition.id);
+    assertEquals(resolved.type.normalized, type.normalized);
+  });
+});
+
+Deno.test("ModelResolver.resolveModel throws ModelNotFoundError for a non-UUID miss", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const type = ModelType.create("command/shell");
+    await repo.save(type, Definition.create({ name: "resident" }));
+
+    // Gating the ID fallback must not change the failure the caller sees.
+    await assertRejects(
+      () => new ModelResolver(repo).resolveModel("missing-model-name"),
+      Error,
+      "missing-model-name",
+    );
+  });
+});
+
+Deno.test("ModelResolver.resolveModel throws ModelNotFoundError for a UUID miss", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const type = ModelType.create("command/shell");
+    await repo.save(type, Definition.create({ name: "resident" }));
+
+    const absent = "550e8400-e29b-41d4-a716-446655440000";
+    await assertRejects(
+      () => new ModelResolver(repo).resolveModel(absent),
+      Error,
+      absent,
+    );
+  });
+});

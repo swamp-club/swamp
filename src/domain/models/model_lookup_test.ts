@@ -278,3 +278,75 @@ Deno.test("findDefinitionByIdOrName prefers name match over ID", async () => {
     assertEquals(result?.definition.name, "abc123");
   });
 });
+
+// --- UUID-gated ID fallback ---
+//
+// After a name miss, findDefinitionByIdGlobal compares IDs with strict
+// equality, so a non-UUID string can never match it — but reaching it parses
+// every definition in the repository once per registered model type. These
+// tests pin both halves: the outcome is unchanged, and the pointless work is
+// gone. Reads are counted, never timed (AGENTS.md forbids wall-clock asserts).
+async function countingReads<T>(fn: () => Promise<T>): Promise<[T, number]> {
+  const original = Deno.readTextFile;
+  let count = 0;
+  Deno.readTextFile = ((...args: Parameters<typeof original>) => {
+    count++;
+    return original(...args);
+  }) as typeof original;
+  try {
+    return [await fn(), count];
+  } finally {
+    Deno.readTextFile = original;
+  }
+}
+
+Deno.test("findDefinitionByIdOrName skips the ID scan for a non-UUID miss", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const type = ModelType.create("command/shell");
+    for (let i = 0; i < 5; i++) {
+      await repo.save(type, Definition.create({ name: `resident-${i}` }));
+    }
+
+    const [result, reads] = await countingReads(() =>
+      findDefinitionByIdOrName(repo, "missing-model-name")
+    );
+
+    // Outcome unchanged: still a miss.
+    assertEquals(result, null);
+    // The name walk parses each definition once. Without the gate the ID
+    // fallback would then re-parse all of them again, once per registered type.
+    assertEquals(reads <= 5, true);
+  });
+});
+
+Deno.test("findDefinitionByIdOrName still scans by ID for a UUID miss", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const type = ModelType.create("command/shell");
+    await repo.save(type, Definition.create({ name: "resident" }));
+
+    // A well-formed UUID that matches nothing must still be searched for, and
+    // must still report a miss.
+    const result = await findDefinitionByIdOrName(
+      repo,
+      "550e8400-e29b-41d4-a716-446655440000",
+    );
+
+    assertEquals(result, null);
+  });
+});
+
+Deno.test("findDefinitionByIdOrName still resolves a definition by its UUID", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const type = ModelType.create("command/shell");
+    const definition = Definition.create({ name: "findable" });
+    await repo.save(type, definition);
+
+    const result = await findDefinitionByIdOrName(repo, definition.id);
+
+    assertEquals(result?.definition.id, definition.id);
+    assertEquals(result?.type.normalized, type.normalized);
+  });
+});

@@ -76,6 +76,25 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   private readonly baseDir: string;
   private readonly secondaryBaseDir: string | undefined;
   private readonly idToActualPath = new Map<DefinitionId, string>();
+  /**
+   * Name → file path hints, so a repeated lookup for a definition whose file is
+   * not at its name-derived path (a legacy `{uuid}.yaml`, or a name that is not
+   * filename-safe) skips re-walking and re-parsing the repository every time.
+   *
+   * These store a PATH ONLY — never a parsed definition, never a negative
+   * result. The file is re-read and its declared name re-checked on every hit,
+   * so a stale hint is self-correcting and external edits, renames, additions
+   * and deletions stay visible. That is why `save()` and `delete()` need no
+   * invalidation bookkeeping.
+   *
+   * If a cache-reset hook is ever added to this class, it must clear these
+   * alongside `idToActualPath`.
+   */
+  private readonly nameToActualPath = new Map<string, string>();
+  private readonly globalNameToActualPath = new Map<
+    string,
+    { path: string; pathSegments: string[] }
+  >();
 
   constructor(
     private readonly repoDir: string,
@@ -256,20 +275,69 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       }
     }
 
+    // Hinted path: deliberately OUTSIDE the isFilenameSafeDefinitionName guard
+    // above. The definitions that reach the slow path are exactly the ones that
+    // guard rejects, or whose name-derived file does not exist, so a hint check
+    // nested inside it would never fire for the cases that need it.
+    const hintKey = nameHintKey(type, name);
+    const hintedPath = this.nameToActualPath.get(hintKey);
+    if (hintedPath) {
+      const hinted = await this.readDefinitionIfNamed(hintedPath, name);
+      if (hinted) return hinted;
+      this.nameToActualPath.delete(hintKey);
+    }
+
     // Slow path: scan all definition files
     const definitions = await this.findAll(type);
     const found = definitions.find((def) => def.name === name);
-    if (found) return found;
+    if (found) {
+      // findAll records every file it parsed, so the path is already known.
+      const foundPath = this.idToActualPath.get(found.id as DefinitionId);
+      if (foundPath) this.nameToActualPath.set(hintKey, foundPath);
+      return found;
+    }
     if (this.secondaryBaseDir) {
       const secondaryDir = join(this.secondaryBaseDir, type.toDirectoryPath());
       const secondaryDefs = await this.findAllInDir(secondaryDir);
-      return secondaryDefs.find((def) => def.name === name) ?? null;
+      const secondaryMatch = secondaryDefs.find((d) =>
+        d.definition.name === name
+      );
+      if (secondaryMatch) {
+        this.nameToActualPath.set(hintKey, secondaryMatch.path);
+        return secondaryMatch.definition;
+      }
     }
     return null;
   }
 
-  private async findAllInDir(dir: string): Promise<Definition[]> {
-    const definitions: Definition[] = [];
+  /**
+   * Reads a hinted file and returns its definition only if the file still
+   * declares the expected name.
+   *
+   * Returns null on any failure — missing, unreadable, unparseable or renamed —
+   * so the caller falls back to its normal discovery walk and the outcome is
+   * exactly what it would have been without a hint. In particular a corrupt
+   * file must not throw from here, because discovery warns and skips it.
+   */
+  private async readDefinitionIfNamed(
+    path: string,
+    name: string,
+  ): Promise<Definition | null> {
+    try {
+      const content = await Deno.readTextFile(path);
+      const data = parseYaml(content) as DefinitionData | null;
+      if (!data) return null;
+      const definition = Definition.fromData(data);
+      return definition.name === name ? definition : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async findAllInDir(
+    dir: string,
+  ): Promise<{ definition: Definition; path: string }[]> {
+    const definitions: { definition: Definition; path: string }[] = [];
     try {
       for await (const entry of Deno.readDir(dir)) {
         if (
@@ -283,7 +351,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             const content = await Deno.readTextFile(path);
             const data = parseYaml(content) as DefinitionData | null;
             if (!data) continue;
-            definitions.push(Definition.fromData(data));
+            definitions.push({ definition: Definition.fromData(data), path });
           } catch (error) {
             if (isIoError(error)) {
               throw new UserError(
@@ -309,6 +377,23 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   async findByNameGlobal(
     name: string,
   ): Promise<{ definition: Definition; type: ModelType } | null> {
+    // This method has no name-derived fast path at all — without a hint every
+    // call re-walks and re-parses every definition in the repository until it
+    // hits a match.
+    const hint = this.globalNameToActualPath.get(name);
+    if (hint) {
+      const hinted = await this.readDefinitionIfNamed(hint.path, name);
+      if (hinted) {
+        return {
+          definition: hinted,
+          type: ModelType.create(
+            hinted.type ?? hint.pathSegments.join("/"),
+          ),
+        };
+      }
+      this.globalNameToActualPath.delete(name);
+    }
+
     const result = await this.searchDefinitionByName(this.baseDir, [], name);
     if (result) return result;
     if (this.secondaryBaseDir) {
@@ -351,6 +436,10 @@ export class YamlDefinitionRepository implements DefinitionRepository {
                 definition.id as DefinitionId,
                 fullPath,
               );
+              this.globalNameToActualPath.set(name, {
+                path: fullPath,
+                pathSegments: [...pathSegments],
+              });
               // Prefer the type from the YAML, fall back to path-based type
               const typeStr = definition.type ?? pathSegments.join("/");
               return { definition, type: ModelType.create(typeStr) };
@@ -744,6 +833,14 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   private getTypeDir(type: ModelType): string {
     return join(this.baseDir, type.toDirectoryPath());
   }
+}
+
+/**
+ * Key for the per-type name hint map. NUL cannot appear in a type or a
+ * definition name, so it cannot collide across the two parts.
+ */
+function nameHintKey(type: ModelType, name: string): string {
+  return `${type.toDirectoryPath()} ${name}`;
 }
 
 function canonicalJson(data: Record<string, unknown>): string {

@@ -58,6 +58,21 @@ export class YamlWorkflowRepository implements WorkflowRepository {
   // Tracks the actual on-disk path for each workflow ID, so getPath()
   // returns the real location rather than guessing.
   private readonly idToActualPath = new Map<WorkflowId, string>();
+  /**
+   * Name → file path hints, so a repeated lookup for a workflow whose file is
+   * not at its name-derived path (a legacy `{uuid}.yaml`, or a name that is not
+   * filename-safe) skips re-reading and re-parsing every workflow each time.
+   *
+   * Stores a PATH ONLY — never a parsed workflow, never a negative result. The
+   * file is re-read and its declared name re-checked on every hit, so a stale
+   * hint is self-correcting and external edits, renames, additions and
+   * deletions stay visible. That is why `save()` and `delete()` need no
+   * invalidation bookkeeping.
+   *
+   * If a cache-reset hook is ever added to this class, it must clear this
+   * alongside `idToActualPath`.
+   */
+  private readonly nameToActualPath = new Map<string, string>();
 
   constructor(
     private readonly repoDir: string,
@@ -133,9 +148,49 @@ export class YamlWorkflowRepository implements WorkflowRepository {
       }
     }
 
+    // Hinted path: deliberately OUTSIDE the isFilenameSafeName guard above.
+    // The workflows that reach the slow path are exactly the ones that guard
+    // rejects, or whose name-derived file does not exist, so a hint check
+    // nested inside it would never fire for the cases that need it.
+    const hintedPath = this.nameToActualPath.get(name);
+    if (hintedPath) {
+      const hinted = await this.readWorkflowIfNamed(hintedPath, name);
+      if (hinted) return hinted;
+      this.nameToActualPath.delete(name);
+    }
+
     // Slow path: scan all workflow files
     const workflows = await this.findAll();
-    return workflows.find((w) => w.name === name) ?? null;
+    const found = workflows.find((w) => w.name === name);
+    if (!found) return null;
+    // findAll records every file it parsed, so the path is already known.
+    const foundPath = this.idToActualPath.get(found.id as WorkflowId);
+    if (foundPath) this.nameToActualPath.set(name, foundPath);
+    return found;
+  }
+
+  /**
+   * Reads a hinted file and returns its workflow only if the file still
+   * declares the expected name.
+   *
+   * Returns null on any failure — missing, unreadable, unparseable or renamed —
+   * so the caller falls back to its normal scan and the outcome is exactly what
+   * it would have been without a hint. In particular a broken workflow file
+   * must not throw from here, because `findAll` warns and skips it.
+   */
+  private async readWorkflowIfNamed(
+    path: string,
+    name: string,
+  ): Promise<Workflow | null> {
+    try {
+      const content = await Deno.readTextFile(path);
+      const data = parseYaml(content) as WorkflowData | null;
+      if (!data) return null;
+      const workflow = Workflow.fromData(data);
+      return workflow.name === name ? workflow : null;
+    } catch {
+      return null;
+    }
   }
 
   async findAll(): Promise<Workflow[]> {

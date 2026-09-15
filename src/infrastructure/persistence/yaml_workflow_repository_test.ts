@@ -457,3 +457,104 @@ Deno.test("YamlWorkflowRepository.getPath returns UUID path for legacy files", a
     assertEquals(stat.isFile, true);
   });
 });
+
+// --- Name → path hint tests ---
+//
+// These pin the efficiency claim by COUNTING filesystem reads, never by timing
+// (AGENTS.md forbids wall-clock assertions). The counter wraps and delegates to
+// the real Deno.readTextFile and is restored in a finally block, installed only
+// across the call being measured.
+async function countingReads<T>(fn: () => Promise<T>): Promise<[T, number]> {
+  const original = Deno.readTextFile;
+  let count = 0;
+  Deno.readTextFile = ((...args: Parameters<typeof original>) => {
+    count++;
+    return original(...args);
+  }) as typeof original;
+  try {
+    return [await fn(), count];
+  } finally {
+    Deno.readTextFile = original;
+  }
+}
+
+/** Writes a workflow under a legacy `workflow-{uuid}.yaml` filename. */
+async function writeLegacyWorkflowFile(
+  dir: string,
+  workflow: Workflow,
+): Promise<string> {
+  const workflowsDir = join(dir, "workflows");
+  await Deno.mkdir(workflowsDir, { recursive: true });
+  const path = join(workflowsDir, `workflow-${workflow.id}.yaml`);
+  await Deno.writeTextFile(
+    path,
+    stringifyYaml(JSON.parse(JSON.stringify(workflow.toData()))),
+  );
+  return path;
+}
+
+Deno.test("YamlWorkflowRepository.findByName reuses a hint for legacy-filename workflows", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    const target = createTestWorkflow("hinted-workflow");
+    await writeLegacyWorkflowFile(dir, target);
+    // Noise the scan has to parse before reaching the target.
+    for (let i = 0; i < 5; i++) {
+      await writeLegacyWorkflowFile(dir, createTestWorkflow(`noise-${i}`));
+    }
+
+    const [first, firstReads] = await countingReads(() =>
+      repo.findByName("hinted-workflow")
+    );
+    assertEquals(first?.id, target.id);
+
+    const [second, secondReads] = await countingReads(() =>
+      repo.findByName("hinted-workflow")
+    );
+    assertEquals(second?.id, target.id);
+    // Two reads: the name-derived fast path's ENOENT probe plus the hinted file.
+    // Constant regardless of how many workflows exist, where the scan parsed all.
+    assertEquals(secondReads, 2);
+    assertEquals(firstReads > secondReads, true);
+  });
+});
+
+Deno.test("YamlWorkflowRepository hints do not hide an external rename", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    const target = createTestWorkflow("before-rename");
+    const path = await writeLegacyWorkflowFile(dir, target);
+
+    assertEquals((await repo.findByName("before-rename"))?.id, target.id);
+
+    // Someone edits the name field in place, outside the repository.
+    const data = target.toData();
+    data.name = "after-rename";
+    await Deno.writeTextFile(
+      path,
+      stringifyYaml(JSON.parse(JSON.stringify(data))),
+    );
+
+    assertEquals(await repo.findByName("before-rename"), null);
+    assertEquals((await repo.findByName("after-rename"))?.id, target.id);
+  });
+});
+
+Deno.test("YamlWorkflowRepository hints do not hide external delete or addition", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    const target = createTestWorkflow("doomed-workflow");
+    const path = await writeLegacyWorkflowFile(dir, target);
+
+    // Warm the hint, and confirm a miss is never cached as a negative result.
+    assertEquals((await repo.findByName("doomed-workflow"))?.id, target.id);
+    assertEquals(await repo.findByName("newcomer-workflow"), null);
+
+    await Deno.remove(path);
+    assertEquals(await repo.findByName("doomed-workflow"), null);
+
+    const added = createTestWorkflow("newcomer-workflow");
+    await writeLegacyWorkflowFile(dir, added);
+    assertEquals((await repo.findByName("newcomer-workflow"))?.id, added.id);
+  });
+});
