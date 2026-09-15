@@ -21,10 +21,8 @@ import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
-import {
-  isPartialId,
-  matchByPartialId,
-} from "../../domain/models/model_lookup.ts";
+import { isPartialId } from "../../domain/models/model_lookup.ts";
+import { createRunMatcher, type PartialMatchResult } from "./run_lookup.ts";
 import { readLogFile } from "../../presentation/output/log_file_reader.ts";
 import { toRelativePath } from "../../infrastructure/persistence/paths.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
@@ -70,13 +68,6 @@ export interface WorkflowHistoryLogsInput {
   repoDir: string;
 }
 
-/** Partial ID match result. */
-interface PartialMatchResult {
-  status: "found" | "not_found" | "ambiguous";
-  match?: WorkflowRun;
-  matches?: Array<{ id: string }>;
-}
-
 /** Dependencies for the workflow history logs operation. */
 export interface WorkflowHistoryLogsDeps {
   isPartialId: (value: string) => boolean;
@@ -109,23 +100,7 @@ export function createWorkflowHistoryLogsDeps(
     new YamlWorkflowRepository(repoDir);
   return {
     isPartialId,
-    matchRunByPartialId: async (idPrefix: string) => {
-      const allRuns = await runRepo.findAllGlobal();
-      const result = matchByPartialId(
-        allRuns.map((r) => ({ id: r.run.id, item: r.run })),
-        idPrefix,
-      );
-      if (result.status === "found") {
-        return { status: "found" as const, match: result.match };
-      }
-      if (result.status === "ambiguous") {
-        return {
-          status: "ambiguous" as const,
-          matches: result.matches.map((m) => ({ id: m.id })),
-        };
-      }
-      return { status: "not_found" as const };
-    },
+    matchRunByPartialId: createRunMatcher(runRepo),
     findWorkflow: async (nameOrId: string) =>
       await workflowRepo.findByName(nameOrId) ??
         await workflowRepo.findById(createWorkflowId(nameOrId)),

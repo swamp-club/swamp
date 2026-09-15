@@ -288,6 +288,56 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   /**
+   * Finds a single run by ID without knowing its owning workflow, by probing
+   * the deterministic run path in each workflow directory.
+   *
+   * `save()` always writes to `getPath(workflowId, runId)`, so the owner can be
+   * located with one `stat` per workflow directory — no directory enumeration,
+   * and only the winning run file is read and parsed. Callers that already know
+   * the workflow should use {@link findById}; this exists for identity lookups
+   * that would otherwise go through {@link findAllGlobal} and parse every
+   * retained run to return one.
+   *
+   * This is an identity-lookup method on the concrete repository, deliberately
+   * NOT on the `WorkflowRunRepository` port — the same reasoning as
+   * {@link findAllSummariesByWorkflowId}: only the history command paths (which
+   * reference the concrete class) need it, so keeping it here avoids forcing
+   * every implementer and test double to grow.
+   */
+  async findGlobalById(
+    runId: WorkflowRunId,
+  ): Promise<{ run: WorkflowRun; workflowId: WorkflowId } | null> {
+    try {
+      for await (const entry of Deno.readDir(this.baseDir)) {
+        if (!entry.isDirectory) continue;
+        const workflowId = entry.name as WorkflowId;
+
+        try {
+          await Deno.stat(this.getPath(workflowId, runId));
+        } catch (error) {
+          // The ordinary miss: this workflow doesn't own the run.
+          if (error instanceof Deno.errors.NotFound) continue;
+          throw error;
+        }
+
+        // A concurrent delete (GC, deleteOlderThan, deleteAllByWorkflowId) can
+        // remove the file between the stat and the read. A null here means
+        // "skip it" — never "abandon the rest of the search" — matching the
+        // per-file NotFound handling in findAllByWorkflowId.
+        const run = await this.findById(workflowId, runId);
+        if (run) return { run, workflowId };
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        return null;
+      }
+      throw error;
+    }
+
+    return null;
+  }
+
+  /**
    * Finds all workflow runs across all workflows.
    */
   async findAllGlobal(): Promise<

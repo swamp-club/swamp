@@ -19,7 +19,7 @@
 
 import { assert, assertEquals, assertNotEquals } from "@std/assert";
 import { ensureDir } from "@std/fs";
-import { dirname, join } from "@std/path";
+import { dirname, isAbsolute, join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
 import { getIndexPath, readRunIndex } from "./workflow_run_index.ts";
@@ -1210,5 +1210,141 @@ Deno.test("save: index is written to local path, not cache baseDir", async () =>
     } finally {
       await Deno.remove(cacheDir, { recursive: true });
     }
+  });
+});
+
+const WORKFLOW_A_ID = "11111111-1111-4111-8111-111111111111";
+const WORKFLOW_B_ID = "22222222-2222-4222-8222-222222222222";
+
+function createWorkflowWithId(id: string, name: string): Workflow {
+  return Workflow.create({
+    id,
+    name,
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("test-model", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+Deno.test("YamlWorkflowRunRepository.findGlobalById: finds a run owned by another workflow directory", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflowA = createWorkflowWithId(WORKFLOW_A_ID, "workflow-a");
+    const workflowB = createWorkflowWithId(WORKFLOW_B_ID, "workflow-b");
+
+    for (let i = 0; i < 3; i++) {
+      const other = WorkflowRun.create(workflowA);
+      other.start();
+      await repo.save(workflowA.id, other);
+    }
+    const target = WorkflowRun.create(workflowB);
+    target.start();
+    await repo.save(workflowB.id, target);
+
+    const found = await repo.findGlobalById(target.id);
+
+    assertNotEquals(found, null);
+    assertEquals(found!.run.id, target.id);
+    assertEquals(found!.workflowId, workflowB.id);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.findGlobalById: returns the same aggregate as findById", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    run.setLogFile(join(dir, ".swamp", "logs", "run.log"));
+    await repo.save(workflow.id, run);
+
+    const viaGlobal = await repo.findGlobalById(run.id);
+    const viaDirect = await repo.findById(workflow.id, run.id);
+
+    assertNotEquals(viaGlobal, null);
+    assertEquals(viaGlobal!.run.id, viaDirect!.id);
+    assertEquals(viaGlobal!.run.status, viaDirect!.status);
+    // logFile must come back absolute, exactly as the scan path returns it —
+    // `workflow history logs` reads run.logFile directly.
+    assertEquals(viaGlobal!.run.logFile, viaDirect!.logFile);
+    assert(isAbsolute(viaGlobal!.run.logFile!));
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.findGlobalById: returns null for an unknown run id", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+
+    assertEquals(await repo.findGlobalById(repo.nextId()), null);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.findGlobalById: returns null when the base directory is absent", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    assertEquals(await repo.findGlobalById(repo.nextId()), null);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.findGlobalById: keeps scanning when a directory's file holds a different run", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflowA = createWorkflowWithId(WORKFLOW_A_ID, "workflow-a");
+    const workflowB = createWorkflowWithId(WORKFLOW_B_ID, "workflow-b");
+
+    const target = WorkflowRun.create(workflowB);
+    target.start();
+    await repo.save(workflowB.id, target);
+
+    // A file at the target's exact path in another workflow directory, holding
+    // a different run. findById returns null for it, so the scan must continue
+    // to the directory that really owns the run rather than give up — the same
+    // branch a run deleted between stat and read takes.
+    const decoyRun = WorkflowRun.create(workflowA);
+    const decoyPath = repo.getPath(workflowA.id, target.id);
+    await ensureDir(dirname(decoyPath));
+    await Deno.writeTextFile(
+      decoyPath,
+      stringifyYaml(JSON.parse(JSON.stringify(decoyRun.toData()))),
+    );
+
+    const found = await repo.findGlobalById(target.id);
+
+    assertNotEquals(found, null);
+    assertEquals(found!.run.id, target.id);
+    assertEquals(found!.workflowId, workflowB.id);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.findGlobalById: returns null when the discovered file no longer holds the run", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+
+    // The single-directory form of the concurrent-delete race: the stat finds
+    // a file, the read does not find the run in it, and nothing else owns it.
+    await Deno.writeTextFile(
+      repo.getPath(workflow.id, run.id),
+      stringifyYaml(
+        JSON.parse(JSON.stringify(WorkflowRun.create(workflow).toData())),
+      ),
+    );
+
+    assertEquals(await repo.findGlobalById(run.id), null);
   });
 });

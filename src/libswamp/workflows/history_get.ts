@@ -25,10 +25,8 @@ import {
   type WorkflowId,
 } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
-import {
-  isPartialId,
-  matchByPartialId,
-} from "../../domain/models/model_lookup.ts";
+import { isPartialId } from "../../domain/models/model_lookup.ts";
+import { createRunMatcher, type PartialMatchResult } from "./run_lookup.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
@@ -44,13 +42,6 @@ export type WorkflowHistoryGetEvent =
   | { kind: "resolving" }
   | { kind: "completed"; data: WorkflowRunView }
   | { kind: "error"; error: SwampError };
-
-/** Partial ID match result. */
-interface PartialMatchResult {
-  status: "found" | "not_found" | "ambiguous";
-  match?: WorkflowRun;
-  matches?: Array<{ id: string }>;
-}
 
 /** Dependencies for the workflow history get operation. */
 export interface WorkflowHistoryGetDeps {
@@ -78,23 +69,7 @@ export function createWorkflowHistoryGetDeps(
   );
   return {
     isPartialId,
-    matchRunByPartialId: async (idPrefix: string) => {
-      const allRuns = await runRepo.findAllGlobal();
-      const result = matchByPartialId(
-        allRuns.map((r) => ({ id: r.run.id, item: r.run })),
-        idPrefix,
-      );
-      if (result.status === "found") {
-        return { status: "found" as const, match: result.match };
-      }
-      if (result.status === "ambiguous") {
-        return {
-          status: "ambiguous" as const,
-          matches: result.matches.map((m) => ({ id: m.id })),
-        };
-      }
-      return { status: "not_found" as const };
-    },
+    matchRunByPartialId: createRunMatcher(runRepo),
     findWorkflow: async (idOrName) =>
       await workflowRepo.findByName(idOrName) ??
         await workflowRepo.findById(createWorkflowId(idOrName)),
