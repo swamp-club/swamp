@@ -19,6 +19,7 @@
 
 import { walk } from "@std/fs";
 import { join, normalize, relative } from "@std/path";
+import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import type {
   Extension,
   ExtensionOrigin,
@@ -173,7 +174,11 @@ async function fileExists(path: string): Promise<boolean> {
 async function toDisplayPath(path: string): Promise<string> {
   if (Deno.build.os !== "windows") return path;
   try {
-    return await Deno.realPath(path);
+    const real = await Deno.realPath(path);
+    if (canonicalizePath(real) !== canonicalizePath(path)) {
+      return normalize(path);
+    }
+    return real;
   } catch {
     return normalize(path);
   }

@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { dirname, join } from "@std/path";
+import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import {
   buildAggregateState,
   enumerateBundleFiles,
@@ -105,8 +106,14 @@ Deno.test("buildAggregateState: counts each RowState tag correctly", async () =>
     assertEquals(report.aggregates.length, 1);
     assertEquals(report.aggregates[0].stateDistribution.Indexed, 1);
     assertEquals(report.aggregates[0].stateDistribution.Tombstoned, 0);
-    assertEquals(report.sourceDetails[0].sourcePath, srcPath);
-    assertEquals(report.sourceDetails[0].bundlePath, bundlePath);
+    assertEquals(
+      canonicalizePath(report.sourceDetails[0].sourcePath),
+      canonicalizePath(srcPath),
+    );
+    assertEquals(
+      canonicalizePath(report.sourceDetails[0].bundlePath),
+      canonicalizePath(bundlePath),
+    );
   });
 });
 
