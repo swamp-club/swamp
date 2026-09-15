@@ -1392,3 +1392,34 @@ Deno.test("YamlDefinitionRepository hints do not hide an externally added defini
     );
   });
 });
+
+Deno.test("YamlDefinitionRepository hint rejects a path swapped for an escaping symlink", async () => {
+  await withTempDir(async (dir) => {
+    await withTempDir(async (outside) => {
+      const repo = new YamlDefinitionRepository(dir);
+      const target = createTestDefinition("swap-target");
+      const path = await writeLegacyNamedFile(join(dir, "models"), target);
+
+      // Warm the hint while the path is a plain file.
+      assertEquals(
+        (await repo.findByName(testType, "swap-target"))?.id,
+        target.id,
+      );
+
+      // Replace it with a symlink to an identical definition outside the repo.
+      // Discovery validates every symlink it follows, so the hinted read must
+      // not quietly bypass that check.
+      const escaped = join(outside, "escaped.yaml");
+      const data = target.toData();
+      data.type = testType.normalized;
+      await Deno.writeTextFile(escaped, toCleanYaml(data));
+      await Deno.remove(path);
+      await Deno.symlink(escaped, path, { type: "file" });
+
+      // The hint must not serve it. Discovery then warns and skips the
+      // traversing symlink too, so the definition is simply not found — the
+      // same outcome as if the hint had never existed.
+      assertEquals(await repo.findByName(testType, "swap-target"), null);
+    });
+  });
+});

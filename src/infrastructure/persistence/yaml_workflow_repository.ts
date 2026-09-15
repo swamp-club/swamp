@@ -177,12 +177,18 @@ export class YamlWorkflowRepository implements WorkflowRepository {
    * so the caller falls back to its normal scan and the outcome is exactly what
    * it would have been without a hint. In particular a broken workflow file
    * must not throw from here, because `findAll` warns and skips it.
+   *
+   * A hinted path is rejected unless it is still a regular file. `findAll`
+   * discovers regular files only, so a hint can never legitimately point at a
+   * symlink; without this check, a file replaced by a symlink after discovery
+   * would be read through the hint when the scan would have ignored it.
    */
   private async readWorkflowIfNamed(
     path: string,
     name: string,
   ): Promise<Workflow | null> {
     try {
+      if (!(await Deno.lstat(path)).isFile) return null;
       const content = await Deno.readTextFile(path);
       const data = parseYaml(content) as WorkflowData | null;
       if (!data) return null;

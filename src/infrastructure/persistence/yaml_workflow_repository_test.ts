@@ -558,3 +558,28 @@ Deno.test("YamlWorkflowRepository hints do not hide external delete or addition"
     assertEquals((await repo.findByName("newcomer-workflow"))?.id, added.id);
   });
 });
+
+Deno.test("YamlWorkflowRepository hint rejects a path swapped for a symlink", async () => {
+  await withTempDir(async (dir) => {
+    await withTempDir(async (outside) => {
+      const repo = new YamlWorkflowRepository(dir);
+      const target = createTestWorkflow("swap-target");
+      const path = await writeLegacyWorkflowFile(dir, target);
+
+      // Warm the hint while the path is a plain file.
+      assertEquals((await repo.findByName("swap-target"))?.id, target.id);
+
+      // Replace it with a symlink. findAll discovers regular files only, so the
+      // hinted read must not resolve something the scan would have ignored.
+      const escaped = join(outside, "escaped.yaml");
+      await Deno.writeTextFile(
+        escaped,
+        stringifyYaml(JSON.parse(JSON.stringify(target.toData()))),
+      );
+      await Deno.remove(path);
+      await Deno.symlink(escaped, path, { type: "file" });
+
+      assertEquals(await repo.findByName("swap-target"), null);
+    });
+  });
+});

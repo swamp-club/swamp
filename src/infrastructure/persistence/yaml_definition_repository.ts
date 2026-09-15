@@ -318,12 +318,21 @@ export class YamlDefinitionRepository implements DefinitionRepository {
    * so the caller falls back to its normal discovery walk and the outcome is
    * exactly what it would have been without a hint. In particular a corrupt
    * file must not throw from here, because discovery warns and skips it.
+   *
+   * A hinted path is re-checked for symlink escape before it is read. Discovery
+   * validates every symlink it follows, so without this a file replaced by an
+   * escaping symlink after discovery would be read unchecked. Falling back to
+   * discovery on failure means the same containment error still surfaces, it
+   * just comes from the walk instead of from here.
    */
   private async readDefinitionIfNamed(
     path: string,
     name: string,
   ): Promise<Definition | null> {
     try {
+      if ((await Deno.lstat(path)).isSymlink) {
+        await assertSafePath(path, this.repoDir);
+      }
       const content = await Deno.readTextFile(path);
       const data = parseYaml(content) as DefinitionData | null;
       if (!data) return null;
@@ -836,11 +845,15 @@ export class YamlDefinitionRepository implements DefinitionRepository {
 }
 
 /**
- * Key for the per-type name hint map. NUL cannot appear in a type or a
- * definition name, so it cannot collide across the two parts.
+ * Key for the per-type name hint map.
+ *
+ * JSON-encodes the two parts rather than joining them with a separator
+ * character: it is unambiguous for any input without relying on assumptions
+ * about which characters a type or definition name can contain, and it keeps
+ * the source plain ASCII.
  */
 function nameHintKey(type: ModelType, name: string): string {
-  return `${type.toDirectoryPath()} ${name}`;
+  return JSON.stringify([type.toDirectoryPath(), name]);
 }
 
 function canonicalJson(data: Record<string, unknown>): string {
