@@ -36,7 +36,10 @@ import {
 } from "../../domain/expressions/expression_parser.ts";
 import { containsRuntimeExpression } from "../../domain/expressions/expression_evaluation_service.ts";
 import { resolveAvailableExpressions } from "../../domain/expressions/available_expression_resolver.ts";
-import { hasStepOutputDependency } from "../../domain/expressions/dependency_extractor.ts";
+import {
+  hasStepOutputDependency,
+  requiresModelNamespace,
+} from "../../domain/expressions/dependency_extractor.ts";
 import type { ExpressionContext } from "../../domain/expressions/model_resolver.ts";
 import { ModelResolver } from "../../domain/expressions/model_resolver.ts";
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
@@ -97,7 +100,13 @@ export interface WorkflowEvaluateDeps {
   findWorkflowById: (id: WorkflowId) => Promise<Workflow | null>;
   findWorkflowByName: (name: string) => Promise<Workflow | null>;
   findAllWorkflows: () => Promise<Workflow[]>;
-  buildExpressionContext: () => Promise<ExpressionContext>;
+  /**
+   * Builds the evaluation context. Loading every model definition is only
+   * needed when the workflow reads the model or file namespaces.
+   */
+  buildExpressionContext: (
+    needsModelNamespace: boolean,
+  ) => Promise<ExpressionContext>;
   evaluateCel: (
     expression: string,
     context: Record<string, unknown>,
@@ -150,7 +159,10 @@ export function createWorkflowEvaluateDeps(
     findWorkflowById: (id) => workflowRepo.findById(id),
     findWorkflowByName: (name) => workflowRepo.findByName(name),
     findAllWorkflows: () => workflowRepo.findAll(),
-    buildExpressionContext: () => modelResolver.buildContext(),
+    buildExpressionContext: (needsModelNamespace) =>
+      needsModelNamespace
+        ? modelResolver.buildContext()
+        : Promise.resolve(modelResolver.buildLightContext()),
     evaluateCel: (expression, context) =>
       celEvaluator.evaluate(expression, context),
     evaluateCelAsync: (expression, context) =>
@@ -190,7 +202,9 @@ async function evaluateWorkflowInternal(
   const coercedInputs = coerceInputTypes(inputs, workflow.inputs);
 
   // Build expression context with inputs
-  const context = await deps.buildExpressionContext();
+  const context = await deps.buildExpressionContext(
+    requiresModelNamespace(workflowData),
+  );
   context.inputs = coercedInputs;
 
   // Collect forEach.in expressions to skip during evaluation

@@ -619,3 +619,136 @@ Deno.test("evaluateDefinition: resolves expressions in nested globalArguments ob
     assertEquals(nested.deep_value, "resolved-us-east-1");
   });
 });
+
+// ============================================================================
+// evaluateDefinition — definition scanning (swamp-club#2123)
+// ============================================================================
+
+/**
+ * Counts full-repository walks so tests can assert on work avoided rather
+ * than on elapsed time.
+ */
+class CountingDefinitionRepository extends YamlDefinitionRepository {
+  findAllGlobalCalls = 0;
+
+  override findAllGlobal(): Promise<
+    { definition: Definition; type: ModelType }[]
+  > {
+    this.findAllGlobalCalls++;
+    return super.findAllGlobal();
+  }
+}
+
+Deno.test("evaluateDefinition: inputs-only expressions load no definitions", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new CountingDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const type = ModelType.create("command/shell");
+
+    const definition = Definition.create({
+      name: "inputs-only",
+      inputs: { properties: { msg: { type: "string" } } },
+      methods: { execute: { arguments: { run: "echo ${{ inputs.msg }}" } } },
+    });
+    await definitionRepo.save(type, definition);
+
+    const result = await service.evaluateDefinition(definition, type, {
+      msg: "hello",
+    });
+
+    assertEquals(
+      result.definition.getMethodArguments("execute").run,
+      "echo hello",
+    );
+    assertEquals(definitionRepo.findAllGlobalCalls, 0);
+  });
+});
+
+Deno.test("evaluateDefinition: data expressions load no definitions", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new CountingDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const type = ModelType.create("command/shell");
+
+    const definition = Definition.create({
+      name: "data-only",
+      methods: {
+        execute: {
+          arguments: {
+            run: 'echo ${{ data.latest("other", "state").attributes.id }}',
+          },
+        },
+      },
+    });
+    await definitionRepo.save(type, definition);
+
+    await service.evaluateDefinition(definition, type);
+
+    assertEquals(definitionRepo.findAllGlobalCalls, 0);
+  });
+});
+
+Deno.test("evaluateDefinition: model references load definitions once", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new CountingDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const type = ModelType.create("command/shell");
+
+    const source = Definition.create({
+      name: "source",
+      globalArguments: { region: "us-east-1" },
+    });
+    await definitionRepo.save(type, source);
+
+    const definition = Definition.create({
+      name: "consumer",
+      methods: {
+        execute: {
+          arguments: {
+            run: "echo ${{ model.source.definition.globalArguments.region }}",
+          },
+        },
+      },
+    });
+    await definitionRepo.save(type, definition);
+
+    const result = await service.evaluateDefinition(definition, type);
+
+    assertEquals(
+      result.definition.getMethodArguments("execute").run,
+      "echo us-east-1",
+    );
+    assertEquals(definitionRepo.findAllGlobalCalls, 1);
+  });
+});
+
+Deno.test("evaluateAllDefinitions: walks the repository once", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new CountingDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const type = ModelType.create("command/shell");
+
+    const source = Definition.create({
+      name: "source",
+      globalArguments: { region: "us-east-1" },
+    });
+    await definitionRepo.save(type, source);
+
+    const consumer = Definition.create({
+      name: "consumer",
+      methods: {
+        execute: {
+          arguments: {
+            run: "echo ${{ model.source.definition.globalArguments.region }}",
+          },
+        },
+      },
+    });
+    await definitionRepo.save(type, consumer);
+
+    const results = await service.evaluateAllDefinitions();
+
+    assertEquals(results.length, 2);
+    assertEquals(definitionRepo.findAllGlobalCalls, 1);
+  });
+});

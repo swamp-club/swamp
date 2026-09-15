@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { parseNamespacedModelName } from "../data/namespace.ts";
+import { extractExpressions } from "./expression_parser.ts";
 
 /**
  * Type of model reference in an expression.
@@ -330,4 +331,30 @@ export function hasStepOutputDependency(expression: string): boolean {
     hasExecutionDependency(expression) ||
     hasDataFunctionDependency(expression) ||
     hasFileContentsDependency(expression);
+}
+
+/**
+ * Pattern to match any read of the model or file namespace, covering dotted
+ * access (`model.name.resource`), bracket access (`model["name"].file`),
+ * and the namespace functions (`file.contents(...)`, `model.method(...)`).
+ */
+const MODEL_NAMESPACE_PATTERN = /\b(?:model|file)\s*[.[]/;
+
+/**
+ * Checks whether any expression in the given data reads the model or file
+ * namespace, and therefore needs a full expression context built from every
+ * model definition. Expressions that only touch inputs, env, self, steps or
+ * data can be evaluated against a lightweight context instead.
+ *
+ * Deliberately broad: a false positive only costs the definition scan that
+ * would have happened anyway, while a false negative would evaluate a model
+ * reference against an empty namespace.
+ *
+ * @param data - Arbitrary data (a definition or workflow) to inspect
+ * @returns True if a full model context is required
+ */
+export function requiresModelNamespace(data: unknown): boolean {
+  return extractExpressions(data).some((expression) =>
+    MODEL_NAMESPACE_PATTERN.test(expression.celExpression)
+  );
 }

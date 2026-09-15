@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { extractModelReferencesFromWorkflow } from "./model_reference_extractor.ts";
+import {
+  extractModelReferencesFromWorkflow,
+  extractStepDefinitionReferences,
+} from "./model_reference_extractor.ts";
 import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";
@@ -151,5 +154,53 @@ Deno.test("extractModelReferencesFromWorkflow - returns null for CEL in nested w
   const repo = new FakeWorkflowRepo();
 
   const refs = await extractModelReferencesFromWorkflow(workflow, repo);
+  assertEquals(refs, null);
+});
+
+// ============================================================================
+// extractStepDefinitionReferences (swamp-club#2123)
+// ============================================================================
+
+function workflowWithSteps(tasks: StepTask[]): Workflow {
+  return Workflow.create({
+    name: "context-decision",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: tasks.map((task, index) =>
+          Step.create({ name: `step${index + 1}`, task })
+        ),
+      }),
+    ],
+  });
+}
+
+Deno.test("extractStepDefinitionReferences collects stored definition references", () => {
+  const refs = extractStepDefinitionReferences(workflowWithSteps([
+    StepTask.model("scanner", "execute"),
+    StepTask.model("reporter", "execute"),
+  ]));
+  assertEquals(refs, ["scanner", "reporter"]);
+});
+
+Deno.test("extractStepDefinitionReferences skips direct-type steps", () => {
+  const refs = extractStepDefinitionReferences(workflowWithSteps([
+    StepTask.directExecution("command/shell", "auto-model", "execute"),
+  ]));
+  assertEquals(refs, []);
+});
+
+Deno.test("extractStepDefinitionReferences skips nested workflow steps", () => {
+  const refs = extractStepDefinitionReferences(workflowWithSteps([
+    StepTask.workflow("child-workflow"),
+    StepTask.model("scanner", "execute"),
+  ]));
+  assertEquals(refs, ["scanner"]);
+});
+
+Deno.test("extractStepDefinitionReferences returns null for a dynamic reference", () => {
+  const refs = extractStepDefinitionReferences(workflowWithSteps([
+    StepTask.model("${{ inputs.modelName }}", "execute"),
+  ]));
   assertEquals(refs, null);
 });

@@ -1894,3 +1894,113 @@ Deno.test("ModelResolver.resolveModel throws ModelNotFoundError for a UUID miss"
     );
   });
 });
+
+// ============================================================================
+// buildContext / buildLightContext — definition scanning (swamp-club#2123)
+// ============================================================================
+
+Deno.test("buildContext reuses definitions supplied by the caller", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const type = ModelType.create("test/model");
+
+    const model = Definition.create({
+      name: "supplied-model",
+      globalArguments: { region: "us-east-1" },
+    });
+    await defRepo.save(type, model);
+    const definitions = await defRepo.findAllGlobal();
+
+    let walks = 0;
+    const countingRepo = {
+      findAllGlobal: () => {
+        walks++;
+        return Promise.resolve(definitions);
+      },
+    } as unknown as YamlDefinitionRepository;
+
+    const resolver = new ModelResolver(countingRepo, { repoDir });
+    const ctx = await resolver.buildContext(
+      undefined,
+      undefined,
+      undefined,
+      definitions,
+    );
+
+    assertEquals(walks, 0);
+    assertEquals(
+      ctx.model["supplied-model"].definition?.globalArguments.region,
+      "us-east-1",
+    );
+  });
+});
+
+Deno.test("buildLightContext resolves data.latest sensitive vault refs like buildContext", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const type = ModelType.create("test/model");
+
+    const model = Definition.create({ name: "secret-holder" });
+    await defRepo.save(type, model);
+
+    const data = Data.create({
+      name: "creds",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: {
+        type: "resource",
+        modelName: "secret-holder",
+        "_swamp.sensitiveFields": JSON.stringify(["apiKey"]),
+      },
+      ownerDefinition: owner,
+    });
+    await dataRepo.save(
+      type,
+      model.id,
+      data,
+      new TextEncoder().encode(JSON.stringify({
+        apiKey: "${{ vault.get('my-vault', 'api-key') }}",
+        plain: "${{ vault.get('my-vault', 'api-key') }}",
+      })),
+    );
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const vaultService = {
+      get: (_vaultName: string, _secretKey: string) =>
+        Promise.resolve("secret-123"),
+    } as unknown as VaultService;
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+      vaultService,
+    });
+
+    const lightCtx = resolver.buildLightContext();
+    const lightRecord = await lightCtx.data!.latest("secret-holder", "creds");
+    assertExists(lightRecord);
+    assertEquals(lightRecord.attributes.apiKey, "secret-123");
+    // Fields the schema did not mark sensitive stay unresolved.
+    assertEquals(
+      lightRecord.attributes.plain,
+      "${{ vault.get('my-vault', 'api-key') }}",
+    );
+
+    const fullCtx = await resolver.buildContext();
+    const fullRecord = await fullCtx.data!.latest("secret-holder", "creds");
+    assertExists(fullRecord);
+    assertEquals(fullRecord.attributes.apiKey, lightRecord.attributes.apiKey);
+    assertEquals(fullRecord.attributes.plain, lightRecord.attributes.plain);
+  });
+});

@@ -101,3 +101,38 @@ export async function extractModelReferencesFromWorkflow(
 
   return references;
 }
+
+/**
+ * Collects the stored-definition references of a workflow's own model-method
+ * steps — the definitions that will be evaluated against the run's expression
+ * context.
+ *
+ * Direct-type steps are skipped: their auto-created definitions carry only
+ * what the workflow YAML supplied. Nested workflow steps are skipped too,
+ * because they build their own context when they run.
+ *
+ * @param workflow - The workflow whose steps to inspect
+ * @returns The referenced definition names or ids, or null when a reference is
+ * a CEL expression and cannot be resolved before the run
+ */
+export function extractStepDefinitionReferences(
+  workflow: Workflow,
+): string[] | null {
+  const references: string[] = [];
+
+  for (const job of workflow.jobs) {
+    for (const step of job.steps) {
+      const task = step.task;
+      if (!task || task.isDirectExecution()) continue;
+
+      const taskData = task.data;
+      if (taskData.type !== "model_method") continue;
+      if (!taskData.modelIdOrName) continue;
+      if (taskData.modelIdOrName.includes("${{")) return null;
+
+      references.push(taskData.modelIdOrName);
+    }
+  }
+
+  return references;
+}

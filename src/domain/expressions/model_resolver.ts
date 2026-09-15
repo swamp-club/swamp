@@ -556,12 +556,14 @@ export class ModelResolver {
    * @param selfDefinition - The definition currently being evaluated (for self reference)
    * @param selfType - The model type of the self definition
    * @param typeResolver - Optional function to resolve model IDs to their types for data loading
+   * @param definitions - Definitions the caller already loaded, to avoid a second repository walk
    * @returns The expression context
    */
   async buildContext(
     selfDefinition?: Definition,
     selfType?: ModelType,
     typeResolver?: (modelId: string) => ModelType | undefined,
+    definitions?: { definition: Definition; type: ModelType }[],
   ): Promise<ExpressionContext> {
     const context: ExpressionContext = {
       model: {},
@@ -572,7 +574,8 @@ export class ModelResolver {
     this.typeResolver = typeResolver;
 
     // Load all definitions and build a map of ID -> type
-    const allDefinitions = await this.definitionRepo.findAllGlobal();
+    const allDefinitions = definitions ??
+      await this.definitionRepo.findAllGlobal();
     const idToType = new Map<string, ModelType>();
     const idToName = new Map<string, string>();
 
@@ -768,8 +771,10 @@ export class ModelResolver {
   /**
    * Builds a lightweight expression context with only the data and env
    * namespaces — no definition loading, no model data, no file namespace.
-   * Used by --last-evaluated where definitions are already cached and only
-   * deferred data.* expressions need resolution at step execution time.
+   * Used whenever the expressions being evaluated read none of the model or
+   * file namespaces (see `requiresModelNamespace`), and by --last-evaluated
+   * where definitions are already cached and only deferred data.*
+   * expressions need resolution at step execution time.
    */
   buildLightContext(): ExpressionContext {
     const ownNamespace = this.dataRepo?.namespace ?? ("" as Namespace);
@@ -780,6 +785,31 @@ export class ModelResolver {
     context.data = this.buildDataNamespace(ownNamespace, new Map());
     context.workers = this.buildWorkersNamespace();
     return context;
+  }
+
+  /**
+   * Resolves vault references in a data record's attributes, limited to the
+   * fields the record's schema marked sensitive. Leaves refs unresolved when
+   * no vault is available.
+   */
+  private async resolveRecordVaultRefs(
+    record: DataRecord | null,
+    tags: Record<string, string> | undefined,
+  ): Promise<void> {
+    if (!record || !tags) return;
+    if (Object.keys(record.attributes).length === 0) return;
+    const sensitiveFields = parseSensitiveFieldsTag(tags);
+    if (!sensitiveFields) return;
+    try {
+      const vaultService = await this.getVaultService();
+      await resolveSensitiveVaultRefs(
+        record.attributes,
+        sensitiveFields,
+        vaultService,
+      );
+    } catch {
+      // Vault unavailable — leave refs unresolved
+    }
   }
 
   private buildWorkersNamespace(): WorkersNamespace {
@@ -861,21 +891,7 @@ export class ModelResolver {
                   undefined,
                   ns.modelName,
                 );
-                if (record && Object.keys(record.attributes).length > 0) {
-                  const sensitiveFields = parseSensitiveFieldsTag(data.tags);
-                  if (sensitiveFields) {
-                    try {
-                      const vs = await this.getVaultService();
-                      await resolveSensitiveVaultRefs(
-                        record.attributes,
-                        sensitiveFields,
-                        vs,
-                      );
-                    } catch {
-                      // Vault unavailable — leave refs unresolved
-                    }
-                  }
-                }
+                await this.resolveRecordVaultRefs(record, data.tags);
                 return record;
               }
             }
@@ -887,11 +903,16 @@ export class ModelResolver {
                 /ns == "([^"]*)"/,
               )?.[1]
               : (ownNamespace || undefined);
-            return await this.dataQueryService.getLatestRecord(
+            const record = await this.dataQueryService.getLatestRecord(
               ns.modelName,
               dataName,
               targetNs,
             );
+            // The coordinates path above resolves sensitive vault references
+            // through this resolver's own vault service; do the same here so
+            // both paths return the same attributes.
+            await this.resolveRecordVaultRefs(record, record?.tags);
+            return record;
           }
 
           return null;

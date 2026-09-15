@@ -36,6 +36,9 @@ import {
   WorkflowExecutionService,
 } from "./execution_service.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { Definition } from "../definitions/definition.ts";
+import { ModelType } from "../models/model_type.ts";
 import { runFileSink } from "../../infrastructure/logging/logger.ts";
 import { reportRegistry } from "../reports/report_registry.ts";
 import { Workflow } from "./workflow.ts";
@@ -6228,5 +6231,249 @@ Deno.test("report assembly finds a step definition stored outside its type direc
 
     assertEquals(captured.length, 1);
     assertEquals(captured[0].globalArgs, { origin: "noncanonical" });
+  });
+});
+
+// ============================================================================
+// Run context selection (swamp-club#2123)
+// ============================================================================
+
+/** Captures the expression context each step was given. */
+class RunContextCapturingExecutor implements StepExecutor {
+  contexts: (Record<string, unknown> | undefined)[] = [];
+
+  execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+    this.contexts.push(
+      ctx.expressionContext as unknown as Record<string, unknown> | undefined,
+    );
+    return Promise.resolve({ executed: true });
+  }
+}
+
+function modelNamespaceKeys(
+  context: Record<string, unknown> | undefined,
+): string[] {
+  const models = context?.["model"] as Record<string, unknown> | undefined;
+  return models ? Object.keys(models) : [];
+}
+
+async function runWithCapturedContext(
+  tempDir: string,
+  workflow: Workflow,
+  definitions: Definition[],
+): Promise<RunContextCapturingExecutor> {
+  const definitionRepo = new YamlDefinitionRepository(tempDir);
+  const type = ModelType.create("command/shell");
+  for (const definition of definitions) {
+    await definitionRepo.save(type, definition);
+  }
+
+  const workflowRepo = new InMemoryWorkflowRepository();
+  await workflowRepo.save(workflow);
+  const executor = new RunContextCapturingExecutor();
+  const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+  const service = new WorkflowExecutionService(
+    workflowRepo,
+    new InMemoryWorkflowRunRepository(),
+    tempDir,
+    executor,
+    undefined,
+    catalogStore,
+  );
+
+  const run = await service.execute(workflow.name);
+  assertEquals(run.status, "succeeded");
+  return executor;
+}
+
+Deno.test("run builds a light context when no expression needs the model namespace", async () => {
+  await withTempDir(async (tempDir) => {
+    const definition = Definition.create({
+      name: "inputs-only",
+      methods: { execute: { arguments: { run: "echo ${{ inputs.msg }}" } } },
+    });
+    const workflow = Workflow.create({
+      name: "light-context",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "step1",
+              task: StepTask.model("inputs-only", "execute"),
+            }),
+          ],
+        }),
+      ],
+    });
+
+    const executor = await runWithCapturedContext(tempDir, workflow, [
+      definition,
+    ]);
+
+    assertEquals(modelNamespaceKeys(executor.contexts[0]), []);
+  });
+});
+
+Deno.test("run builds a full context when a step definition reads the model namespace", async () => {
+  await withTempDir(async (tempDir) => {
+    const source = Definition.create({
+      name: "source",
+      globalArguments: { region: "us-east-1" },
+    });
+    const consumer = Definition.create({
+      name: "consumer",
+      methods: {
+        execute: {
+          arguments: {
+            run: "echo ${{ model.source.definition.globalArguments.region }}",
+          },
+        },
+      },
+    });
+    const workflow = Workflow.create({
+      name: "full-context",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "step1",
+              task: StepTask.model("consumer", "execute"),
+            }),
+          ],
+        }),
+      ],
+    });
+
+    const executor = await runWithCapturedContext(tempDir, workflow, [
+      source,
+      consumer,
+    ]);
+
+    const keys = modelNamespaceKeys(executor.contexts[0]);
+    assert(keys.includes("source"));
+    assert(keys.includes("consumer"));
+  });
+});
+
+Deno.test("run builds a full context when the workflow itself reads the model namespace", async () => {
+  await withTempDir(async (tempDir) => {
+    const definition = Definition.create({
+      name: "plain",
+      globalArguments: { region: "us-east-1" },
+    });
+    const workflow = Workflow.create({
+      name: "yaml-model-ref",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "step1",
+              task: StepTask.model("plain", "execute", {
+                region: "${{ model.plain.definition.globalArguments.region }}",
+              }),
+            }),
+          ],
+        }),
+      ],
+    });
+
+    const executor = await runWithCapturedContext(tempDir, workflow, [
+      definition,
+    ]);
+
+    assert(modelNamespaceKeys(executor.contexts[0]).includes("plain"));
+  });
+});
+
+Deno.test("resume builds a full context when a step definition reads the model namespace", async () => {
+  await withTempDir(async (tempDir) => {
+    const definitionRepo = new YamlDefinitionRepository(tempDir);
+    const type = ModelType.create("command/shell");
+    await definitionRepo.save(
+      type,
+      Definition.create({
+        name: "source",
+        globalArguments: { region: "us-east-1" },
+      }),
+    );
+    await definitionRepo.save(
+      type,
+      Definition.create({
+        name: "consumer",
+        methods: {
+          execute: {
+            arguments: {
+              run: "echo ${{ model.source.definition.globalArguments.region }}",
+            },
+          },
+        },
+      }),
+    );
+
+    const workflow = Workflow.create({
+      name: "resume-context",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("Approve"),
+            }),
+            Step.create({
+              name: "step1",
+              task: StepTask.model("consumer", "execute"),
+              dependsOn: [
+                { step: "gate", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+
+    const workflowRepo = new InMemoryWorkflowRepository();
+    await workflowRepo.save(workflow);
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new RunContextCapturingExecutor();
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const suspended = await service.execute(workflow.name);
+    assertEquals(suspended.status, "suspended");
+
+    const toApprove = await runRepo.findById(workflow.id, suspended.id);
+    const waiting = toApprove!.findWaitingApprovalStep()!;
+    const gate = toApprove!.getJob(waiting.jobName)!.getStep(waiting.stepName)!;
+    gate.recordApprovalDecision({
+      approved: true,
+      decidedBy: "user:test",
+      decidedAt: new Date().toISOString(),
+    });
+    gate.succeed();
+    await runRepo.save(workflow.id, toApprove!);
+
+    let resumedRun: WorkflowRun | undefined;
+    for await (const event of service.resume(workflow.name, suspended.id)) {
+      if (event.kind === "completed") resumedRun = event.run;
+    }
+    assertEquals(resumedRun?.status, "succeeded");
+
+    // Only step1 ran, and it ran under resume() — the gate suspended before
+    // any step reached the executor, so this is resume's own context.
+    assertEquals(executor.contexts.length, 1);
+    // The resumed step's definition reads model.source, so resume must have
+    // taken the same full-context decision that run() takes.
+    assert(modelNamespaceKeys(executor.contexts[0]).includes("source"));
   });
 });

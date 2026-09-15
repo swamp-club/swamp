@@ -32,6 +32,7 @@ import type { ExpressionLocation } from "./expression.ts";
 import {
   extractDependencies,
   extractModelRefs,
+  requiresModelNamespace,
 } from "./dependency_extractor.ts";
 import {
   buildEnvContext,
@@ -199,8 +200,15 @@ export class ExpressionEvaluationService {
     inputValues?: Record<string, unknown>,
     context?: ExpressionContext,
   ): Promise<EvaluatedDefinition> {
-    // Build context if not provided
-    const ctx = context ?? await this.modelResolver.buildContext();
+    const definitionData = definition.toData();
+
+    // Build context if not provided. Only definitions that read the model or
+    // file namespaces need every model definition loaded; everything else
+    // evaluates against the lightweight context.
+    const ctx = context ??
+      (requiresModelNamespace(definitionData)
+        ? await this.modelResolver.buildContext()
+        : this.modelResolver.buildLightContext());
 
     // Add inputs to context if provided
     if (inputValues) {
@@ -217,7 +225,6 @@ export class ExpressionEvaluationService {
     };
 
     // Extract expressions from definition data
-    const definitionData = definition.toData();
     const expressions = extractExpressions(definitionData);
 
     if (expressions.length === 0) {
@@ -308,8 +315,14 @@ export class ExpressionEvaluationService {
       throw error;
     }
 
-    // Build initial context
-    const context = await this.modelResolver.buildContext();
+    // Build initial context from the definitions already loaded above, so the
+    // repository is not walked a second time.
+    const context = await this.modelResolver.buildContext(
+      undefined,
+      undefined,
+      undefined,
+      allDefinitions,
+    );
 
     // Map of definition name to definition data
     const definitionMap = new Map<

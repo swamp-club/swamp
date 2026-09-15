@@ -97,6 +97,8 @@ import type { MethodResult, ModelDefinition } from "../models/model.ts";
 import { ExpressionEvaluationService } from "../expressions/expression_evaluation_service.ts";
 import { resolveAvailableExpressions } from "../expressions/available_expression_resolver.ts";
 import { extractCelExpression } from "../expressions/expression_parser.ts";
+import { requiresModelNamespace } from "../expressions/dependency_extractor.ts";
+import { extractStepDefinitionReferences } from "./model_reference_extractor.ts";
 import {
   type DataRecord,
   type ExpressionContext,
@@ -1712,7 +1714,7 @@ export class WorkflowExecutionService {
           const buildCtxSpan = tracer.startSpan(
             "swamp.workflow.build_context",
           );
-          expressionContext = await this.modelResolver.buildContext();
+          expressionContext = await this.buildRunContext(workflow);
           buildCtxSpan.end();
 
           // Add workflow inputs to context
@@ -2218,7 +2220,7 @@ export class WorkflowExecutionService {
     }
     await this.saveRun(workflow.id, existingRun);
 
-    const expressionContext = await this.modelResolver.buildContext();
+    const expressionContext = await this.buildRunContext(workflow);
 
     // Merge resume-time inputs over the inputs captured when the run suspended.
     // Resume overrides win on key collision; new keys are additive. Set before
@@ -3698,6 +3700,54 @@ export class WorkflowExecutionService {
     // Try by ID
     const id = createWorkflowId(idOrName);
     return await this.workflowRepo.findById(id);
+  }
+
+  /**
+   * Builds the expression context for a workflow run or resume.
+   *
+   * Only expressions reading the model or file namespaces need every model
+   * definition loaded. The workflow YAML is checked first, then the stored
+   * definitions of the steps that will be evaluated against this context.
+   * Direct-type steps are skipped — their auto-created definitions carry only
+   * what the workflow YAML supplied — and so are nested workflow steps, which
+   * build their own context when they run.
+   */
+  private async buildRunContext(
+    workflow: Workflow,
+  ): Promise<ExpressionContext> {
+    if (requiresModelNamespace(workflow.toData())) {
+      return await this.modelResolver.buildContext();
+    }
+
+    // A dynamic reference names an unknown definition until the step runs, so
+    // keep the full context rather than guess.
+    const references = extractStepDefinitionReferences(workflow);
+    if (references === null) {
+      return await this.modelResolver.buildContext();
+    }
+
+    if (references.length === 0) {
+      return this.modelResolver.buildLightContext();
+    }
+
+    const definitions = await this.definitionRepo.findAllGlobal();
+    const needsModelNamespace = references.some((reference: string) => {
+      const found = definitions.find(({ definition }) =>
+        definition.name === reference || definition.id === reference
+      );
+      // An unresolved reference fails at step execution; until then, stay
+      // conservative.
+      return !found || requiresModelNamespace(found.definition.toData());
+    });
+
+    return needsModelNamespace
+      ? await this.modelResolver.buildContext(
+        undefined,
+        undefined,
+        undefined,
+        definitions,
+      )
+      : this.modelResolver.buildLightContext();
   }
 
   private async saveRun(
