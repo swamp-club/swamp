@@ -52,6 +52,10 @@ export const vaultListKeysCommand = withRemoteOptions(
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option(
+      "--pull",
+      "Pull config from the remote datastore before reading (for managedConfig deployments)",
     ),
 ).action(async function (options: AnyOptions, vaultName: string) {
   const cliCtx = createContext(options as GlobalOptions, [
@@ -89,6 +93,7 @@ export const vaultListKeysCommand = withRemoteOptions(
   const { repoDir } = await requireInitializedRepoReadOnly({
     repoDir: resolveRepoDir(options.repoDir),
     outputMode: cliCtx.outputMode,
+    pull: !!(options.pull as boolean | undefined),
   });
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });

@@ -24,6 +24,7 @@ import {
   createVaultGetDeps,
   vaultGet,
   type VaultGetData,
+  type VaultGetEvent,
 } from "../../libswamp/mod.ts";
 import { createVaultGetRenderer } from "../../presentation/renderers/vault_get.ts";
 import {
@@ -57,6 +58,10 @@ export const vaultGetCommand = withRemoteOptions(
     .option(
       "-t, --type <type:string>",
       "Vault type (optional, narrows search)",
+    )
+    .option(
+      "--pull",
+      "Pull config from the remote datastore before reading (for managedConfig deployments)",
     ),
 ).action(
   async function (
@@ -99,9 +104,11 @@ export const vaultGetCommand = withRemoteOptions(
       return;
     }
 
-    const { repoDir } = await requireInitializedRepoReadOnly({
+    const pull = !!(options.pull as boolean | undefined);
+    const { repoDir, managedConfig } = await requireInitializedRepoReadOnly({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
+      pull,
     });
     const vaultType = options.type as string | undefined;
 
@@ -109,9 +116,28 @@ export const vaultGetCommand = withRemoteOptions(
     const deps = createVaultGetDeps(repoDir);
 
     const renderer = createVaultGetRenderer(cliCtx.outputMode);
+    const handlers = renderer.handlers();
+    const wrappedHandlers: {
+      [K in keyof typeof handlers]: (typeof handlers)[K];
+    } = {
+      ...handlers,
+      error: (e: VaultGetEvent & { kind: "error" }) => {
+        if (
+          managedConfig && !pull &&
+          e.error.code === "not_found"
+        ) {
+          handlers.error(e);
+          cliCtx.logger.info(
+            "Tip: run with --pull to fetch the latest remote state",
+          );
+          return;
+        }
+        handlers.error(e);
+      },
+    };
     await consumeStream(
       vaultGet(ctx, deps, vaultNameOrId, vaultType),
-      renderer.handlers(),
+      wrappedHandlers,
     );
 
     cliCtx.logger.debug("Vault get command completed");

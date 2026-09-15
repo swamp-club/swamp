@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertNotEquals } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -27,6 +27,7 @@ import {
   type VaultGetDeps,
   type VaultGetEvent,
 } from "./get.ts";
+import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 
 const testCreatedAt = new Date("2026-01-01T00:00:00.000Z");
 
@@ -137,4 +138,20 @@ Deno.test("createVaultGetDeps: storagePath uses vaults/ not .swamp/vault/", () =
     deps.storagePath(config),
     "vaults/local_encryption/abc-123.yaml",
   );
+});
+
+Deno.test("createVaultGetDeps: uses injected repo when provided", async () => {
+  const injectedRepo = new YamlVaultConfigRepository(
+    "/tmp/injected-repo",
+    undefined,
+    "/tmp/injected-repo/vaults",
+  );
+  const deps = createVaultGetDeps("/tmp/other-repo", injectedRepo);
+  const result = await deps.findByName("nonexistent");
+  assertEquals(result, null);
+});
+
+Deno.test("createVaultGetDeps: falls back to fresh repo without injection", () => {
+  const deps = createVaultGetDeps("/tmp/fake-repo");
+  assertNotEquals(deps.findByName, undefined);
 });

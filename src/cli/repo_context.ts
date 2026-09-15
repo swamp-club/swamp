@@ -238,6 +238,13 @@ export interface RequireRepoOptions {
    * data was hydrated. See lab #220.
    */
   skipImplicitSync?: boolean;
+  /**
+   * Pull the config tier from the remote datastore before reading.
+   * Only effective under managedConfig with a custom datastore — a no-op
+   * for filesystem datastores. Used by read-only commands that need
+   * fresh remote state (e.g. `vault get --pull` from a fresh container).
+   */
+  pull?: boolean;
 }
 
 /**
@@ -354,6 +361,7 @@ export interface RepoValidationContext {
   datastoreResolver: DatastorePathResolver;
   pulledExtensionsRoot: string;
   lockfilePath: string;
+  managedConfig?: boolean;
 }
 
 /**
@@ -567,6 +575,34 @@ export async function requireInitializedRepoReadOnly(
     marker,
     configBase,
   );
+
+  if (options.pull && managedActive && readOnlySyncService?.pullChanged) {
+    const logger = getSwampLogger(["datastore", "sync"]);
+    const timeoutMs = isCustomDatastoreConfig(datastoreConfig)
+      ? resolveSyncTimeoutMs(datastoreConfig)
+      : 30_000;
+    logger.info("Pulling config tier from remote datastore...");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      await readOnlySyncService.pullChanged({
+        subdirs: ["config"],
+        signal: controller.signal,
+        namespace: isCustomDatastoreConfig(datastoreConfig)
+          ? datastoreConfig.namespace
+          : undefined,
+      });
+    } catch (error) {
+      throw new UserError(
+        `Failed to pull config from remote datastore: ${
+          error instanceof Error ? error.message : String(error)
+        }. Check datastore connectivity and credentials.`,
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   const definitionsDir = managedActive
     ? join(configBase, "models")
     : join(repoPath.value, "models");
@@ -617,6 +653,7 @@ export async function requireInitializedRepoReadOnly(
     datastoreResolver,
     pulledExtensionsRoot,
     lockfilePath,
+    managedConfig: managedActive,
   };
 }
 
@@ -1720,10 +1757,13 @@ export interface VaultSyncResult {
 /**
  * Lifecycle hook for vault commands.
  *
- * Vault data lives entirely in `.swamp/secrets/` which is always-local
- * (ALWAYS_LOCAL_SUBDIRS) — it never enters the datastore. There is nothing
- * to pull or push, so the returned flush is a no-op. The function and its
- * interface are preserved to keep callers stable.
+ * Vault **secrets** (encrypted blobs) live in `.swamp/secrets/` which is
+ * always-local (ALWAYS_LOCAL_SUBDIRS) — they never enter the datastore.
+ * Vault **configs** (YAML definitions in `vaults/`) do live in the
+ * datastore's config tier when managedConfig is active, but config-tier
+ * sync is handled separately by `pushManagedConfigChanges` (writes) and
+ * `requireInitializedRepoReadOnly` with `pull: true` (reads). This hook
+ * covers neither, so the returned flush is a no-op.
  */
 export function acquireVaultSync(
   _config: DatastoreConfig,

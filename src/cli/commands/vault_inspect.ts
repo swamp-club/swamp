@@ -65,6 +65,10 @@ and refresh-hook fields are omitted when not supported.`,
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option(
+      "--pull",
+      "Pull config from the remote datastore before reading (for managedConfig deployments)",
     ),
 ).action(async function (
   options: AnyOptions,
@@ -107,6 +111,7 @@ and refresh-hook fields are omitted when not supported.`,
   const { repoDir } = await requireInitializedRepoReadOnly({
     repoDir: resolveRepoDir(options.repoDir),
     outputMode: cliCtx.outputMode,
+    pull: !!(options.pull as boolean | undefined),
   });
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });

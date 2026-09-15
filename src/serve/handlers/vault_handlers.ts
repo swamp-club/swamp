@@ -123,7 +123,10 @@ export async function handleVaultGet(
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = createVaultGetDeps(ctx.repoDir);
+    const deps = createVaultGetDeps(
+      ctx.repoDir,
+      ctx.repoContext.vaultConfigRepo,
+    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(

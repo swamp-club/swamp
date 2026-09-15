@@ -58,8 +58,12 @@ export interface VaultGetDeps {
 }
 
 /** Wires real infrastructure into VaultGetDeps. */
-export function createVaultGetDeps(repoDir: string): VaultGetDeps {
-  const repo = new YamlVaultConfigRepository(repoDir);
+export function createVaultGetDeps(
+  repoDir: string,
+  injectedVaultConfigRepo?: YamlVaultConfigRepository,
+): VaultGetDeps {
+  const repo = injectedVaultConfigRepo ??
+    new YamlVaultConfigRepository(repoDir);
   return {
     findByName: (name) => repo.findByName(name),
     findById: (type, id) => repo.findById(type, id),
