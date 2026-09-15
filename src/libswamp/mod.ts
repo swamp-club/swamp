@@ -340,6 +340,7 @@ export {
 export {
   createVaultGetDeps,
   type VaultConfigInfo,
+  type VaultConfigRepository,
   vaultGet,
   type VaultGetData,
   type VaultGetDeps,

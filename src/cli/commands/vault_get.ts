@@ -117,9 +117,7 @@ export const vaultGetCommand = withRemoteOptions(
 
     const renderer = createVaultGetRenderer(cliCtx.outputMode);
     const handlers = renderer.handlers();
-    const wrappedHandlers: {
-      [K in keyof typeof handlers]: (typeof handlers)[K];
-    } = {
+    const wrappedHandlers: typeof handlers = {
       ...handlers,
       error: (e: VaultGetEvent & { kind: "error" }) => {
         if (

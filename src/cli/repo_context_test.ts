@@ -353,6 +353,188 @@ Deno.test("requireInitializedRepoReadOnly - passes factory config", async () => 
 });
 
 // ============================================================================
+// requireInitializedRepoReadOnly pull Tests (swamp-club#2151)
+// ============================================================================
+
+async function configureManagedConfigDatastore(
+  dir: string,
+  type: string,
+): Promise<void> {
+  const markerPath = join(dir, ".swamp.yaml");
+  const existing = await Deno.readTextFile(markerPath);
+  const datastoreYaml = [
+    "datastore:",
+    `  type: '${type}'`,
+    "  config:",
+    "    bucket: test-bucket",
+    "  managedConfig: true",
+  ].join("\n");
+  await Deno.writeTextFile(
+    markerPath,
+    existing.trimEnd() + "\n" + datastoreYaml + "\n",
+  );
+}
+
+Deno.test("requireInitializedRepoReadOnly - pull calls pullChanged when managedConfig is active", async () => {
+  const { datastoreTypeRegistry } = await import(
+    "../domain/datastore/datastore_type_registry.ts"
+  );
+
+  let pullCount = 0;
+  let pullSubdirs: readonly string[] | undefined;
+  const typeName = "test-readonly-pull";
+
+  if (!datastoreTypeRegistry.has(typeName)) {
+    datastoreTypeRegistry.register({
+      type: typeName,
+      name: "Test readonly pull",
+      description: "Test extension for readonly pull wiring",
+      isBuiltIn: false,
+      createProvider: () => ({
+        createLock: () => ({
+          acquire: () => Promise.resolve(),
+          release: () => Promise.resolve(),
+          withLock: <T>(fn: () => Promise<T>) => fn(),
+          inspect: () => Promise.resolve(null),
+          forceRelease: () => Promise.resolve(true),
+        }),
+        createVerifier: () => ({
+          verify: () =>
+            Promise.resolve({
+              healthy: true,
+              message: "ok",
+              latencyMs: 1,
+              datastoreType: typeName,
+            }),
+        }),
+        resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+        resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+        createSyncService: () => ({
+          pullChanged: (opts?: { subdirs?: readonly string[] }) => {
+            pullCount++;
+            pullSubdirs = opts?.subdirs;
+            return Promise.resolve(0);
+          },
+          pushChanged: () => Promise.resolve(0),
+          markDirty: () => Promise.resolve(),
+        }),
+      }),
+    });
+  }
+
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+    await configureManagedConfigDatastore(dir, typeName);
+
+    pullCount = 0;
+    pullSubdirs = undefined;
+
+    await requireInitializedRepoReadOnly({
+      repoDir: dir,
+      outputMode: "json",
+      pull: true,
+    });
+
+    assertEquals(pullCount, 1, "pull: true must call pullChanged once");
+    assertEquals(
+      pullSubdirs,
+      ["config"],
+      "pull must restrict to config subdirectory",
+    );
+  });
+});
+
+Deno.test("requireInitializedRepoReadOnly - pull is no-op without managedConfig", async () => {
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+
+    const result = await requireInitializedRepoReadOnly({
+      repoDir: dir,
+      outputMode: "json",
+      pull: true,
+    });
+
+    assertEquals(result.repoDir, dir);
+    assertEquals(result.managedConfig, false);
+  });
+});
+
+Deno.test("requireInitializedRepoReadOnly - pullChanged failure throws UserError", async () => {
+  const { datastoreTypeRegistry } = await import(
+    "../domain/datastore/datastore_type_registry.ts"
+  );
+
+  const typeName = "test-readonly-pull-fail";
+
+  if (!datastoreTypeRegistry.has(typeName)) {
+    datastoreTypeRegistry.register({
+      type: typeName,
+      name: "Test readonly pull fail",
+      description: "Test extension for readonly pull failure",
+      isBuiltIn: false,
+      createProvider: () => ({
+        createLock: () => ({
+          acquire: () => Promise.resolve(),
+          release: () => Promise.resolve(),
+          withLock: <T>(fn: () => Promise<T>) => fn(),
+          inspect: () => Promise.resolve(null),
+          forceRelease: () => Promise.resolve(true),
+        }),
+        createVerifier: () => ({
+          verify: () =>
+            Promise.resolve({
+              healthy: true,
+              message: "ok",
+              latencyMs: 1,
+              datastoreType: typeName,
+            }),
+        }),
+        resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+        resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+        createSyncService: () => ({
+          pullChanged: () => {
+            throw new Error("network unreachable");
+          },
+          pushChanged: () => Promise.resolve(0),
+          markDirty: () => Promise.resolve(),
+        }),
+      }),
+    });
+  }
+
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+    await configureManagedConfigDatastore(dir, typeName);
+
+    const error = await assertRejects(
+      () =>
+        requireInitializedRepoReadOnly({
+          repoDir: dir,
+          outputMode: "json",
+          pull: true,
+        }),
+      UserError,
+    );
+
+    assertStringIncludes(error.message, "Failed to pull config");
+    assertStringIncludes(error.message, "network unreachable");
+  });
+});
+
+Deno.test("requireInitializedRepoReadOnly - returns managedConfig state", async () => {
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+
+    const result = await requireInitializedRepoReadOnly({
+      repoDir: dir,
+      outputMode: "json",
+    });
+
+    assertEquals(result.managedConfig, false);
+  });
+});
+
+// ============================================================================
 // Marker File Edge Cases
 // ============================================================================
 
