@@ -21,29 +21,40 @@ import { assertEquals } from "@std/assert";
 import { PowerShellStrategy } from "./powershell_strategy.ts";
 import { VaultSecretBag } from "../../../vaults/vault_secret_bag.ts";
 
-const UTF8_PREFIX =
+const POWERSHELL_COMPATIBILITY_PREFIX =
   "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " +
-  "$OutputEncoding = [System.Text.Encoding]::UTF8; ";
+  "$OutputEncoding = [System.Text.Encoding]::UTF8; " +
+  "$PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'; " +
+  "Remove-Item Alias:echo -Force; " +
+  "function echo { Write-Output ($args -join ' ') }; ";
 
-Deno.test("PowerShellStrategy.buildInvocation: wraps command in powershell.exe -NoProfile -Command with UTF-8 prefix", () => {
+Deno.test("PowerShellStrategy.buildInvocation: wraps command in a PowerShell compatibility prelude", () => {
   const strategy = new PowerShellStrategy();
   assertEquals(
     strategy.buildInvocation("Get-ChildItem"),
     {
       command: "powershell.exe",
-      args: ["-NoProfile", "-Command", UTF8_PREFIX + "Get-ChildItem"],
+      args: [
+        "-NoProfile",
+        "-Command",
+        POWERSHELL_COMPATIBILITY_PREFIX + "Get-ChildItem",
+      ],
     },
   );
 });
 
-Deno.test("PowerShellStrategy.buildInvocation: passes command through verbatim after UTF-8 prefix", () => {
+Deno.test("PowerShellStrategy.buildInvocation: passes command through verbatim after the compatibility prelude", () => {
   const strategy = new PowerShellStrategy();
   const cmd = `Write-Output "hello $env:USERNAME"; exit 0`;
   assertEquals(
     strategy.buildInvocation(cmd),
     {
       command: "powershell.exe",
-      args: ["-NoProfile", "-Command", UTF8_PREFIX + cmd],
+      args: [
+        "-NoProfile",
+        "-Command",
+        POWERSHELL_COMPATIBILITY_PREFIX + cmd,
+      ],
     },
   );
 });

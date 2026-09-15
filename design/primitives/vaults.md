@@ -1,6 +1,6 @@
 ---
 audience: maintainer, operator
-last-verified: 2026-08-28 @ 3d5955a9
+last-verified: 2026-09-15 @ uncommitted
 ---
 
 # swamp vaults
@@ -543,18 +543,23 @@ ${{ vault.get('vault-name', 'vault-key') }}
 
 ### Shell Quoting
 
-In `command/shell` model `run:` fields, vault expressions compile to shell
-environment-variable references (`${__SWAMP_VAULT_N}`). Single quotes prevent
-shell variable expansion, so wrapping a vault expression in single quotes
-silently produces the literal placeholder instead of the secret value. Always use
-double quotes:
+In `command/shell` model `run:` fields, vault expressions compile to
+shell-specific environment-variable references: `${__SWAMP_VAULT_N}` on POSIX
+and `$env:__SWAMP_VAULT_N` on native Windows PowerShell. Single quotes prevent
+variable expansion in both shells, so wrapping a vault expression in single
+quotes silently produces the literal placeholder instead of the secret value.
+Always use double quotes:
 
 ```yaml
-# correct — double quotes allow expansion
+# correct on POSIX — double quotes allow expansion
 run: |
   PASSWORD="${{ vault.get(my-vault, DB_PASS) }}"
 
-# WRONG — single quotes prevent expansion
+# correct on native Windows PowerShell
+run: |
+  Write-Output "${{ vault.get(my-vault, DB_PASS) }}"
+
+# WRONG — single quotes prevent expansion in both shells
 run: |
   PASSWORD='${{ vault.get(my-vault, DB_PASS) }}'
 ```

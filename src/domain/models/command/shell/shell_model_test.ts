@@ -19,6 +19,7 @@
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { assertNotEquals } from "@std/assert/not-equals";
+import { join } from "@std/path";
 import { createExtensionCelEnvironment } from "../../../../infrastructure/cel/cel_evaluator.ts";
 import { createDefinitionId } from "../../../definitions/definition.ts";
 import {
@@ -36,6 +37,7 @@ import type { DefinitionRepository } from "../../../definitions/repositories.ts"
 import { type DataId, generateDataId } from "../../../data/data_id.ts";
 import { getLogger } from "@logtape/logtape";
 import { SecretRedactor } from "../../../secrets/mod.ts";
+import { VaultSecretBag } from "../../../vaults/vault_secret_bag.ts";
 
 /**
  * Skip on Windows. The matching `windowsOnlyTest` below covers the
@@ -852,6 +854,79 @@ windowsOnlyTest(
 
     const logContent = getOutputLogContent(getResults());
     assertStringIncludes(logContent, "hello");
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): joins echo arguments with spaces",
+  async () => {
+    const { context, getResults } = createTestContext();
+    await shellModel.methods.execute.execute(
+      { run: "echo scanning dev" },
+      context,
+    );
+
+    const attrs = getResultAttributes(getResults(), "result");
+    assertEquals(attrs?.stdout, "scanning dev\r\n");
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): preserves backslash-at arguments",
+  async () => {
+    const { context, getResults } = createTestContext();
+    await shellModel.methods.execute.execute(
+      { run: "echo value\\@thing" },
+      context,
+    );
+
+    const attrs = getResultAttributes(getResults(), "result");
+    assertEquals(attrs?.stdout, "value\\@thing\r\n");
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): writes redirected non-ASCII output as UTF-8",
+  async () => {
+    const tmpDir = await Deno.makeTempDir();
+    const outputPath = join(tmpDir, "output.txt");
+    try {
+      const { context } = createTestContext();
+      await shellModel.methods.execute.execute(
+        { run: `"café résumé naïve" > "${outputPath}"` },
+        context,
+      );
+
+      const output = await Deno.readFile(outputPath);
+      assertEquals(output.includes(0), false);
+      assertEquals(
+        new TextDecoder().decode(output),
+        "café résumé naïve\r\n",
+      );
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    }
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): preserves vault metacharacters",
+  async () => {
+    const secret = "pass;rm -rf /|cat /etc/passwd&whoami";
+    const vaultSecrets = new VaultSecretBag();
+    const sentinel = vaultSecrets.addSecret(secret);
+    const { context, getResults } = createTestContext({
+      vaultSecrets,
+      unresolvedMethodArgs: { run: `Write-Output ${sentinel}` },
+    });
+
+    await shellModel.methods.execute.execute(
+      { run: "placeholder" },
+      context,
+    );
+
+    const attrs = getResultAttributes(getResults(), "result");
+    assertEquals(attrs?.stdout, `${secret}\r\n`);
   },
 );
 

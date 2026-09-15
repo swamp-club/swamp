@@ -1,7 +1,7 @@
 ---
 audience: maintainer, operator
 enables: [models, workflows]
-last-verified: 2026-08-28 @ 3d5955a9
+last-verified: 2026-09-15 @ uncommitted
 ---
 
 # Expressions
@@ -565,14 +565,17 @@ injection — the shell never parses secret content as syntax.
 
 Internally, vault secrets are replaced with unique sentinel tokens during CEL
 evaluation. At the shell model boundary, sentinels are replaced with
-double-quoted environment variable references (`"${__SWAMP_VAULT_N}"`), and the
-raw secret values are passed through the process environment. Shell variable
-expansion happens after command parsing, so metacharacters in the secret value
-are always treated as literal data.
+double-quoted environment variable references (`"${__SWAMP_VAULT_N}"` on POSIX
+and `"$env:__SWAMP_VAULT_N"` on native Windows PowerShell), and the raw secret
+values are passed through the process environment. Shell variable expansion
+happens after command parsing, so metacharacters in the secret value are always
+treated as literal data.
 
 ```yaml
 # Secret value: pass;rm -rf /
-# Shell receives: echo "${__SWAMP_VAULT_0}"  (with env __SWAMP_VAULT_0="pass;rm -rf /")
+# POSIX shell receives: echo "${__SWAMP_VAULT_0}"
+# Windows PowerShell receives: Write-Output "$env:__SWAMP_VAULT_0"
+# Both receive env __SWAMP_VAULT_0="pass;rm -rf /"
 # Output: pass;rm -rf /  (literal, no injection)
 globalArguments:
   run: "echo ${{ vault.get('my-vault', 'SECRET') }}"

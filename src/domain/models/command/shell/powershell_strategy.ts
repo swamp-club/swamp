@@ -35,15 +35,22 @@ import type { ShellStrategy } from "./shell_strategy.ts";
  * Inside WSL the host OS is `linux` and `PosixShellStrategy` is
  * selected automatically.
  */
-const UTF8_ENCODING_PREFIX =
+const POWERSHELL_COMPATIBILITY_PREFIX =
   "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " +
-  "$OutputEncoding = [System.Text.Encoding]::UTF8; ";
+  "$OutputEncoding = [System.Text.Encoding]::UTF8; " +
+  "$PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'; " +
+  "Remove-Item Alias:echo -Force; " +
+  "function echo { Write-Output ($args -join ' ') }; ";
 
 export class PowerShellStrategy implements ShellStrategy {
   buildInvocation(command: string): { command: string; args: string[] } {
     return {
       command: "powershell.exe",
-      args: ["-NoProfile", "-Command", UTF8_ENCODING_PREFIX + command],
+      args: [
+        "-NoProfile",
+        "-Command",
+        POWERSHELL_COMPATIBILITY_PREFIX + command,
+      ],
     };
   }
 
