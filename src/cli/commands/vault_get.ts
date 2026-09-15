@@ -124,11 +124,14 @@ export const vaultGetCommand = withRemoteOptions(
           managedConfig && !pull &&
           e.error.code === "not_found"
         ) {
-          handlers.error(e);
-          cliCtx.logger.info(
-            "Tip: run with --pull to fetch the latest remote state",
-          );
-          return;
+          e = {
+            ...e,
+            error: {
+              ...e.error,
+              message: e.error.message +
+                "\n\nTip: run with --pull to fetch the latest remote state",
+            },
+          };
         }
         handlers.error(e);
       },
