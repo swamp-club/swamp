@@ -82,7 +82,15 @@ export async function findInterruptedRun(
   const allRuns = await runRepo.findAllByWorkflowId(workflow.id);
   const interruptedRuns = allRuns.filter((r) => r.status === "interrupted");
   if (interruptedRuns.length === 0) return null;
-  return targetRunId
-    ? interruptedRuns.find((r) => r.id === targetRunId) ?? null
-    : interruptedRuns[0];
+  if (targetRunId) {
+    return interruptedRuns.find((r) => r.id === targetRunId) ?? null;
+  }
+  if (interruptedRuns.length > 1) {
+    interruptedRuns.sort((a, b) => {
+      const aTime = a.startedAt?.getTime() ?? 0;
+      const bTime = b.startedAt?.getTime() ?? 0;
+      return bTime - aTime;
+    });
+  }
+  return interruptedRuns[0];
 }
