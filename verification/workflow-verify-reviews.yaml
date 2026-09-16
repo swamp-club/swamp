@@ -44,6 +44,9 @@ jobs:
               git worktree prune
               git worktree add --detach "$CHECKOUT_DIR" "${{ inputs.commit }}"
               swamp repo init "$CHECKOUT_DIR"
+              # init prepends a managed section to CLAUDE.md and .gitignore;
+              # restore them so only the branch's own changes reach the diff.
+              git -C "$CHECKOUT_DIR" checkout -- .
 
   # ── Detect Changed Files ──────────────────────────────────────
   - name: detect-changes
