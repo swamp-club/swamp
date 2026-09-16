@@ -71,8 +71,12 @@ export function resolveAvailableExpressions(
   context: Record<string, unknown>,
   evaluate: SyncCelEvaluator,
   authored: AuthoredExpressions,
+  skipPath?: (path: string) => boolean,
 ): unknown {
-  const locations = partitionAuthored(extractExpressions(data), authored);
+  const locations = partitionAuthored(
+    extractExpressions(data, "", skipPath),
+    authored,
+  );
   if (locations.length === 0) return data;
 
   const values = new Map<string, unknown>();
@@ -91,5 +95,5 @@ export function resolveAvailableExpressions(
   }
 
   if (values.size === 0) return data;
-  return replaceExpressions(data, values);
+  return replaceExpressions(data, values, skipPath);
 }

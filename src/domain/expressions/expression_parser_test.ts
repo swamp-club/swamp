@@ -25,6 +25,7 @@ import {
   extractInputReferences,
   extractInputReferencesFromCel,
   extractWholeFieldInputRef,
+  isAssertExprPath,
   isAssertMessagePath,
   isTaskGlobalArgsPath,
   isTaskInputsPath,
@@ -57,6 +58,37 @@ Deno.test("extractExpressions finds expressions in string values", () => {
   assertEquals(
     locations[0].celExpression,
     "model.source.input.attributes.text",
+  );
+});
+
+Deno.test("extractExpressions and replaceExpressions: preserve excluded fields independently of identical templates", () => {
+  const task = { expr: 'size("${{ value }}") > 0', message: "${{ value }}" };
+  for (const data of [{ task }, { jobs: [{ steps: [{ task }] }] }]) {
+    const expressions = extractExpressions(data, "", isAssertExprPath);
+    assertEquals(expressions.length, 1);
+    assertEquals(expressions[0].raw, "${{ value }}");
+    const values = new Map([["${{ value }}", "resolved"]]);
+    const replaced = replaceExpressions(data, values, isAssertExprPath);
+    assertEquals(
+      extractExpressions(replaced).map(({ path, raw }) => ({ path, raw })),
+      extractExpressions(data).filter(({ path }) => isAssertExprPath(path))
+        .map(({ path, raw }) => ({ path, raw })),
+    );
+  }
+  // Arbitrary input records with similarly named keys still interpolate.
+  const data = { task: { inputs: { task } } };
+  assertEquals(extractExpressions(data, "", isAssertExprPath).length, 2);
+  assertEquals(
+    replaceExpressions(
+      data,
+      new Map([["${{ value }}", "resolved"]]),
+      isAssertExprPath,
+    ),
+    {
+      task: {
+        inputs: { task: { expr: 'size("resolved") > 0', message: "resolved" } },
+      },
+    },
   );
 });
 

@@ -22,6 +22,7 @@ import type { Workflow, WorkflowInput } from "./workflow.ts";
 import { Workflow as WorkflowClass } from "./workflow.ts";
 import {
   extractExpressions,
+  isAssertExprPath,
   isAssertMessagePath,
   isGuardPath,
   isTaskInputsPath,
@@ -30,7 +31,6 @@ import {
 } from "../expressions/expression_parser.ts";
 import {
   type AuthoredExpressions,
-  collectAuthoredExpressions,
   containsRuntimeExpression,
   partitionAuthored,
 } from "../expressions/expression_evaluation_service.ts";
@@ -46,7 +46,11 @@ export function collectWorkflowAuthoredExpressions(
   workflow: Workflow,
   into: Set<string> = new Set(),
 ): Set<string> {
-  collectAuthoredExpressions(workflow.toData(), into);
+  for (
+    const expr of extractExpressions(workflow.toData(), "", isAssertExprPath)
+  ) {
+    into.add(expr.raw);
+  }
   for (const job of workflow.jobs) {
     for (const step of job.steps) {
       const task = step.task.data;
@@ -89,7 +93,7 @@ export class WorkflowExpressionEvaluator {
   ): Promise<WorkflowEvaluationResult> {
     const workflowData = workflow.toData();
     const expressions = partitionAuthored(
-      extractExpressions(workflowData),
+      extractExpressions(workflowData, "", isAssertExprPath),
       authored,
     );
 
@@ -164,7 +168,11 @@ export class WorkflowExpressionEvaluator {
       evaluatedValues.set(expr.raw, value);
     }
 
-    const evaluatedData = replaceExpressions(workflowData, evaluatedValues);
+    const evaluatedData = replaceExpressions(
+      workflowData,
+      evaluatedValues,
+      isAssertExprPath,
+    );
     return {
       workflow: WorkflowClass.fromData(evaluatedData as WorkflowInput),
       expressionsEvaluated: evaluatedValues.size,

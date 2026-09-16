@@ -19,6 +19,7 @@
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
+  collectWorkflowAuthoredExpressions,
   DefinitionExpressionEvaluator,
   WorkflowExpressionEvaluator,
 } from "./expression_evaluators.ts";
@@ -285,6 +286,54 @@ Deno.test("WorkflowExpressionEvaluator: skips assert task.message that depends o
   const assertStep = result.workflow.jobs[0].steps[1];
   const task = assertStep.task.data as { message: string };
   assertStringIncludes(task.message, "${{ data.latest");
+});
+
+Deno.test("WorkflowExpressionEvaluator: preserves raw assert CEL even when its literals also appear in messages", async () => {
+  const predicate = 'size("${{ inputs.value }}") > 0';
+  const workflow = Workflow.create({
+    name: "assert-literals",
+    jobs: [Job.create({
+      name: "main",
+      steps: [Step.create({
+        name: "verify",
+        task: StepTask.assert(predicate, "Value: ${{ inputs.value }}"),
+      })],
+    })],
+  });
+  const result = await new WorkflowExpressionEvaluator(new CelEvaluator())
+    .evaluate(
+      workflow,
+      { ...emptyContext(), inputs: { value: "resolved" } },
+      "unrestricted",
+    );
+  assertEquals(result.workflow.jobs[0].steps[0].task.data, {
+    type: "assert",
+    expr: predicate,
+    message: "Value: resolved",
+    severity: "high",
+  });
+});
+
+Deno.test("WorkflowExpressionEvaluator: does not evaluate interpolation inside raw assert CEL", async () => {
+  const predicate = 'size("${{ missing.value }}") > 0';
+  const workflow = Workflow.create({
+    name: "assert-literal-only",
+    jobs: [Job.create({
+      name: "main",
+      steps: [Step.create({
+        name: "verify",
+        task: StepTask.assert(predicate, "literal"),
+      })],
+    })],
+  });
+  const result = await new WorkflowExpressionEvaluator(new ThrowingEvaluator())
+    .evaluate(workflow, emptyContext(), "unrestricted");
+  assertEquals(result.expressionsEvaluated, 0);
+  assertEquals(result.workflow.toData(), workflow.toData());
+  assertEquals(
+    collectWorkflowAuthoredExpressions(workflow),
+    new Set([predicate]),
+  );
 });
 
 Deno.test("WorkflowExpressionEvaluator: STRICT — per-expression eval error propagates", async () => {

@@ -29,6 +29,7 @@ import {
 } from "../../domain/workflows/workflow_id.ts";
 import {
   extractExpressions,
+  isAssertExprPath,
   isAssertMessagePath,
   isGuardPath,
   isTaskGlobalArgsPath,
@@ -189,7 +190,7 @@ async function evaluateWorkflowInternal(
   inputs: Record<string, unknown>,
 ): Promise<WorkflowEvaluateItemData> {
   const workflowData = workflow.toData();
-  const expressions = extractExpressions(workflowData);
+  const expressions = extractExpressions(workflowData, "", isAssertExprPath);
   const authoredExpressions = collectWorkflowAuthoredExpressions(workflow);
 
   if (expressions.length === 0 && Object.keys(inputs).length === 0) {
@@ -266,7 +267,11 @@ async function evaluateWorkflowInternal(
   }
 
   // Replace only CEL-only expressions with evaluated values
-  const evaluatedData = replaceExpressions(workflowData, evaluatedValues);
+  const evaluatedData = replaceExpressions(
+    workflowData,
+    evaluatedValues,
+    isAssertExprPath,
+  );
 
   // Create new Workflow from evaluated data
   const evaluatedWorkflow = Workflow.fromData(evaluatedData as WorkflowData);
@@ -318,6 +323,7 @@ async function evaluateWorkflowInternal(
           stepContext,
           deps.evaluateCel,
           authoredExpressions,
+          isAssertExprPath,
         ) as {
           name: string;
           task: typeof stepData.task;

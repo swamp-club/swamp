@@ -106,14 +106,16 @@ export function stripExpressionFields<T extends Record<string, unknown>>(
  *
  * @param data - The data structure to search (object, array, or primitive)
  * @param basePath - The base path for nested locations (default: "")
+ * @param skipPath - Fields containing literal source rather than templates
  * @returns Array of expression locations found in the data
  */
 export function extractExpressions(
   data: unknown,
   basePath = "",
+  skipPath?: (path: string) => boolean,
 ): ExpressionLocation[] {
   const locations: ExpressionLocation[] = [];
-  extractExpressionsRecursive(data, basePath, locations);
+  extractExpressionsRecursive(data, basePath, locations, skipPath);
   return locations;
 }
 
@@ -121,7 +123,9 @@ function extractExpressionsRecursive(
   data: unknown,
   path: string,
   locations: ExpressionLocation[],
+  skipPath?: (path: string) => boolean,
 ): void {
+  if (skipPath?.(path)) return;
   if (typeof data === "string") {
     // Check for expressions in string values
     const matches = data.matchAll(EXPRESSION_PATTERN);
@@ -136,13 +140,13 @@ function extractExpressionsRecursive(
     // Recursively process array elements
     for (let i = 0; i < data.length; i++) {
       const itemPath = path ? `${path}[${i}]` : `[${i}]`;
-      extractExpressionsRecursive(data[i], itemPath, locations);
+      extractExpressionsRecursive(data[i], itemPath, locations, skipPath);
     }
   } else if (data !== null && typeof data === "object") {
     // Recursively process object properties
     for (const [key, value] of Object.entries(data)) {
       const propPath = path ? `${path}.${key}` : key;
-      extractExpressionsRecursive(value, propPath, locations);
+      extractExpressionsRecursive(value, propPath, locations, skipPath);
     }
   }
   // Primitives other than strings are ignored
@@ -153,19 +157,24 @@ function extractExpressionsRecursive(
  *
  * @param data - The data structure to process
  * @param values - Map of expression raw strings to their evaluated values
+ * @param skipPath - Fields to preserve even if the same template occurs elsewhere
  * @returns A new data structure with expressions replaced
  */
 export function replaceExpressions(
   data: unknown,
   values: Map<string, unknown>,
+  skipPath?: (path: string) => boolean,
 ): unknown {
-  return replaceExpressionsRecursive(data, values);
+  return replaceExpressionsRecursive(data, values, "", skipPath);
 }
 
 function replaceExpressionsRecursive(
   data: unknown,
   values: Map<string, unknown>,
+  path: string,
+  skipPath?: (path: string) => boolean,
 ): unknown {
+  if (skipPath?.(path)) return data;
   if (typeof data === "string") {
     // Check if the entire string is a single expression
     const singleMatch = data.match(SINGLE_EXPRESSION_PATTERN);
@@ -198,11 +207,19 @@ function replaceExpressionsRecursive(
 
     return data;
   } else if (Array.isArray(data)) {
-    return data.map((item) => replaceExpressionsRecursive(item, values));
+    return data.map((item, index) =>
+      replaceExpressionsRecursive(item, values, `${path}[${index}]`, skipPath)
+    );
   } else if (data !== null && typeof data === "object") {
     const result: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(data)) {
-      result[key] = replaceExpressionsRecursive(value, values);
+      const propPath = path ? `${path}.${key}` : key;
+      result[key] = replaceExpressionsRecursive(
+        value,
+        values,
+        propPath,
+        skipPath,
+      );
     }
     return result;
   }
@@ -256,6 +273,11 @@ export function isTaskGlobalArgsPath(path: string): boolean {
  */
 export function isAssertMessagePath(path: string): boolean {
   return path.endsWith(".task.message");
+}
+
+/** Raw assert CEL is never interpolated, whether in a workflow or one step. */
+export function isAssertExprPath(path: string): boolean {
+  return /^(?:jobs\[\d+\]\.steps\[\d+\]\.)?task\.expr$/.test(path);
 }
 
 /**
