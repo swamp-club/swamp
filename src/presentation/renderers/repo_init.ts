@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { AUTH_ENFORCEMENT_DEADLINE } from "../../domain/auth/auth_nudge.ts";
 import type {
   EventHandlers,
   ExtensionInstallData,
@@ -261,7 +262,7 @@ class JsonRepoInitRenderer implements Renderer<RepoInitEvent> {
         }
         if (!this.isAuthenticated) {
           steps.push(
-            "Join & participate in the community: swamp auth login",
+            `Sign in to swamp-club.com (required from ${AUTH_ENFORCEMENT_DEADLINE}): swamp auth login`,
           );
         }
         console.log(JSON.stringify({ ...e.data, nextSteps: steps }, null, 2));
@@ -375,7 +376,7 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
         }
         if (!this.isAuthenticated) {
           writeOutput(
-            "  → Join & participate in the community: swamp auth login",
+            `  → Sign in to swamp-club.com (required from ${AUTH_ENFORCEMENT_DEADLINE}): swamp auth login`,
           );
         }
       },

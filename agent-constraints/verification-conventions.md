@@ -467,6 +467,10 @@ Repeat steps 1–4 until all build steps pass, all reviews pass, and all skill
 checks pass or are skipped. Present the full verification checklist to the user
 after each run.
 
+A review step fails immediately if `claude -p` exits non-zero or if the output
+contains a provider error (usage-limit, rate-limit, auth, or overload messages).
+These errors mean no review ran — the step must not reach the verdict inference.
+
 A review passes when it outputs an explicit `VERDICT: pass` marker. If the
 marker is missing, the workflow infers the verdict: reviews with blocking
 findings (`CRITICAL`, `HIGH`, or `Blocking` severity labels) infer fail; reviews

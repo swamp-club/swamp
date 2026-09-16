@@ -17,27 +17,35 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { bold, cyan, dim } from "@std/fmt/colors";
+import { bold, dim, yellow } from "@std/fmt/colors";
 import {
-  AUTH_FIRST_RUN_MESSAGE_LINES,
-  AUTH_NUDGE_MESSAGE,
+  AUTH_WARNING_FIRST_RUN_LINES,
+  AUTH_WARNING_MESSAGE,
 } from "../../domain/auth/auth_nudge.ts";
 
-export function renderAuthNudge(): void {
+export function renderAuthWarning(): void {
   console.error("");
   console.error(
-    cyan(
-      AUTH_NUDGE_MESSAGE.replace(
-        "swamp auth login",
-        bold("`swamp auth login`"),
-      ),
+    yellow(
+      `⚠ ${
+        AUTH_WARNING_MESSAGE.replace(
+          "`swamp auth login`",
+          bold("`swamp auth login`"),
+        )
+      }`,
     ),
   );
 }
 
-export function renderFirstRunNudge(): void {
-  const maxLen = AUTH_FIRST_RUN_MESSAGE_LINES.reduce(
-    (max, line) => Math.max(max, line.length),
+export function renderFirstRunWarning(): void {
+  const headerPrefix = "⚠ ";
+  const maxLen = AUTH_WARNING_FIRST_RUN_LINES.reduce(
+    (max, line) => {
+      const visual = line.startsWith("Authentication required")
+        ? headerPrefix.length + line.length
+        : line.length;
+      return Math.max(max, visual);
+    },
     0,
   );
   const top = dim(`  ┌${"─".repeat(maxLen + 2)}┐`);
@@ -45,12 +53,16 @@ export function renderFirstRunNudge(): void {
 
   console.error("");
   console.error(top);
-  for (const line of AUTH_FIRST_RUN_MESSAGE_LINES) {
-    const padded = line.padEnd(maxLen);
-    const content = line.includes("swamp auth login")
+  for (const line of AUTH_WARNING_FIRST_RUN_LINES) {
+    const isHeader = line.startsWith("Authentication required");
+    const raw = isHeader ? `${headerPrefix}${line}` : line;
+    const padded = raw.padEnd(maxLen);
+    const content = padded.includes("swamp auth login")
       ? padded.replace("swamp auth login", bold("swamp auth login"))
       : padded;
-    console.error(`  ${dim("│")} ${cyan(content)} ${dim("│")}`);
+    console.error(
+      `  ${dim("│")} ${yellow(content)} ${dim("│")}`,
+    );
   }
   console.error(bottom);
 }

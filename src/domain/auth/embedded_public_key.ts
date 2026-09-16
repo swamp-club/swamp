@@ -17,24 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-export const AUTH_ENFORCEMENT_DEADLINE = "October 1st, 2026";
-
-export const AUTH_WARNING_MESSAGE =
-  `swamp will require authentication from ${AUTH_ENFORCEMENT_DEADLINE}. Run \`swamp auth login\` to authenticate.`;
-
-export const AUTH_WARNING_FIRST_RUN_LINES = [
-  `Authentication required from ${AUTH_ENFORCEMENT_DEADLINE}`,
-  "",
-  `Starting ${AUTH_ENFORCEMENT_DEADLINE}, swamp will require authentication.`,
-  "",
-  "Sign in now: swamp auth login",
-] as const;
-
-export interface AuthNudgeState {
-  lastShown?: string;
-  firstRunShown?: boolean;
-}
-
-export function isFirstRunNudge(state: AuthNudgeState): boolean {
-  return !state.firstRunShown && !state.lastShown;
-}
+// Fallback Ed25519 public key for first-ever offline proof verification.
+// Updated by scripts/update_embedded_key.ts during key rotation.
+// When undefined, proof verification requires cached public keys from
+// a prior /api/whoami call.
+export const EMBEDDED_PUBLIC_KEY: string | undefined = undefined;

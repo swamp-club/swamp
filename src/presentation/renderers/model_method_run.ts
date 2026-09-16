@@ -24,7 +24,7 @@ import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 import { getTerminalColumns } from "../output/terminal_size.ts";
-import { AUTH_NUDGE_MESSAGE } from "../../domain/auth/auth_nudge.ts";
+import { AUTH_WARNING_MESSAGE } from "../../domain/auth/auth_nudge.ts";
 import { dim } from "@std/fmt/colors";
 import {
   type DataArtifact,
@@ -206,7 +206,7 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
           });
           if (!this.isAuthenticated) {
             writeBlankLine();
-            writeOutput(dim(AUTH_NUDGE_MESSAGE));
+            writeOutput(dim(`⚠ ${AUTH_WARNING_MESSAGE}`));
           }
         }
       },

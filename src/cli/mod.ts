@@ -159,13 +159,10 @@ import { HttpUpdateChecker } from "../infrastructure/update/http_update_checker.
 import { Platform } from "../domain/update/platform.ts";
 import { renderUpdateNotification } from "../presentation/renderers/update_notification.ts";
 import {
-  renderAuthNudge,
-  renderFirstRunNudge,
+  renderAuthWarning,
+  renderFirstRunWarning,
 } from "../presentation/renderers/auth_nudge.ts";
-import {
-  isFirstRunNudge,
-  shouldShowAuthNudge,
-} from "../domain/auth/auth_nudge.ts";
+import { isFirstRunNudge } from "../domain/auth/auth_nudge.ts";
 import { AuthNudgeRepository } from "../infrastructure/persistence/auth_nudge_repository.ts";
 import { UpdatePreferencesFileRepository } from "../infrastructure/update/update_preferences_file_repository.ts";
 import { AutoupdateLogFileRepository } from "../infrastructure/update/autoupdate_log_file_repository.ts";
@@ -1810,11 +1807,11 @@ export async function runCli(args: string[]): Promise<void> {
         }
       }
 
-      // Auth nudge banner (throttled to once per day, suppressed once logged in).
+      // Auth warning banner (shown on every unauthenticated command run).
       // Skip for commands whose renderers already include their own inline
-      // nudge to avoid showing it twice, and for auth commands (which handle
-      // authentication directly — showing "please log in" after a successful
-      // login is confusing).
+      // warning to avoid showing it twice, and for auth commands (which
+      // handle authentication directly — showing "please log in" after a
+      // successful login is confusing).
       //   - repo init/upgrade: src/presentation/renderers/repo_init.ts
       //   - model method run: src/presentation/renderers/model_method_run.ts
       //   - workflow run/resume: src/presentation/renderers/workflow_run.ts
@@ -1822,7 +1819,7 @@ export async function runCli(args: string[]): Promise<void> {
       //   - auth *: authentication commands manage login state directly
       {
         const outputMode = getOutputModeFromArgs(args);
-        const skipNudge = (commandInfo.command === "repo" &&
+        const skipWarning = (commandInfo.command === "repo" &&
           (commandInfo.subcommand === "init" ||
             commandInfo.subcommand === "upgrade")) ||
           (commandInfo.command === "model" &&
@@ -1832,20 +1829,18 @@ export async function runCli(args: string[]): Promise<void> {
               commandInfo.subcommand === "resume")) ||
           commandInfo.command === "access" ||
           commandInfo.command === "auth";
-        if (outputMode === "log" && !isAuthenticated() && !skipNudge) {
+        if (outputMode === "log" && !isAuthenticated() && !skipWarning) {
           try {
             const nudgeRepo = new AuthNudgeRepository();
             const nudgeState = await nudgeRepo.read();
-            if (shouldShowAuthNudge(nudgeState)) {
-              if (isFirstRunNudge(nudgeState)) {
-                renderFirstRunNudge();
-              } else {
-                renderAuthNudge();
-              }
-              await nudgeRepo.markShown();
+            if (isFirstRunNudge(nudgeState)) {
+              renderFirstRunWarning();
+            } else {
+              renderAuthWarning();
             }
+            await nudgeRepo.markShown();
           } catch {
-            // Best effort — never break the CLI for nudge state
+            // Best effort — never break the CLI for warning state
           }
         }
       }

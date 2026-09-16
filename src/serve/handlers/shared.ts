@@ -36,6 +36,8 @@ import type { ServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
 import { GRANT_MODEL_TYPE } from "../../domain/models/access/grant_model.ts";
 import { GROUP_MODEL_TYPE } from "../../domain/models/access/group_model.ts";
 import { SERVER_TOKEN_MODEL_TYPE } from "../../domain/models/access/server_token_model.ts";
+import { ENROLLMENT_TOKEN_MODEL_TYPE } from "../../domain/models/worker/enrollment_token_model.ts";
+import { WORKER_MODEL_TYPE } from "../../domain/models/worker/worker_model.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import {
   type Principal,
@@ -201,27 +203,27 @@ export interface ConnectionContext {
 // SECURITY: Authorization must operate on canonical (normalized) model types,
 // never raw client input. ModelType.normalize() applies lowercasing, separator
 // canonicalization (:: . whitespace → /), and deduplication. Any raw typeArg
-// that normalizes to an access-control model type must require admin authority.
+// that normalizes to an admin-only built-in model type must require admin
+// authority. This covers access-control types (grant, group, server-token)
+// and control-plane types (enrollment-token, worker).
 export function isAccessModelType(
   typeArg: string | undefined,
   resolvedType: string | undefined,
 ): boolean {
-  const grantType = GRANT_MODEL_TYPE.normalized;
-  const groupType = GROUP_MODEL_TYPE.normalized;
-  const serverTokenType = SERVER_TOKEN_MODEL_TYPE.normalized;
+  const adminOnlyTypes = [
+    GRANT_MODEL_TYPE.normalized,
+    GROUP_MODEL_TYPE.normalized,
+    SERVER_TOKEN_MODEL_TYPE.normalized,
+    ENROLLMENT_TOKEN_MODEL_TYPE.normalized,
+    WORKER_MODEL_TYPE.normalized,
+  ];
   if (typeArg) {
     const stripped = typeArg.startsWith("@") ? typeArg.slice(1) : typeArg;
     const normalized = ModelType.create(stripped).normalized;
-    if (
-      normalized === grantType || normalized === groupType ||
-      normalized === serverTokenType
-    ) return true;
+    if (adminOnlyTypes.includes(normalized)) return true;
   }
   if (resolvedType) {
-    if (
-      resolvedType === grantType || resolvedType === groupType ||
-      resolvedType === serverTokenType
-    ) return true;
+    if (adminOnlyTypes.includes(resolvedType)) return true;
   }
   return false;
 }

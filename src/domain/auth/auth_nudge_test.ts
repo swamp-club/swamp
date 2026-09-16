@@ -17,44 +17,19 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
-import { isFirstRunNudge, shouldShowAuthNudge } from "./auth_nudge.ts";
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  AUTH_ENFORCEMENT_DEADLINE,
+  AUTH_WARNING_MESSAGE,
+  isFirstRunNudge,
+} from "./auth_nudge.ts";
 
-Deno.test("shouldShowAuthNudge: returns true when no lastShown", () => {
-  assertEquals(shouldShowAuthNudge({}), true);
+Deno.test("AUTH_WARNING_MESSAGE: includes enforcement deadline", () => {
+  assertStringIncludes(AUTH_WARNING_MESSAGE, AUTH_ENFORCEMENT_DEADLINE);
 });
 
-Deno.test("shouldShowAuthNudge: returns true when firstRunShown is false and no lastShown", () => {
-  assertEquals(shouldShowAuthNudge({ firstRunShown: false }), true);
-});
-
-Deno.test("shouldShowAuthNudge: returns false for existing user within 24 hours missing firstRunShown", () => {
-  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-  assertEquals(shouldShowAuthNudge({ lastShown: oneHourAgo }), false);
-});
-
-Deno.test("shouldShowAuthNudge: returns true when lastShown is over 24 hours ago", () => {
-  const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
-  assertEquals(
-    shouldShowAuthNudge({ lastShown: twoDaysAgo, firstRunShown: true }),
-    true,
-  );
-});
-
-Deno.test("shouldShowAuthNudge: returns false when lastShown is within 24 hours", () => {
-  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-  assertEquals(
-    shouldShowAuthNudge({ lastShown: oneHourAgo, firstRunShown: true }),
-    false,
-  );
-});
-
-Deno.test("shouldShowAuthNudge: returns true when lastShown is exactly 24 hours ago", () => {
-  const exactly24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  assertEquals(
-    shouldShowAuthNudge({ lastShown: exactly24h, firstRunShown: true }),
-    true,
-  );
+Deno.test("AUTH_WARNING_MESSAGE: includes swamp auth login", () => {
+  assertStringIncludes(AUTH_WARNING_MESSAGE, "swamp auth login");
 });
 
 Deno.test("isFirstRunNudge: returns true when firstRunShown is undefined", () => {
