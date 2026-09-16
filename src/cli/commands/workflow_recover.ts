@@ -25,8 +25,10 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
-import type { RecoveryAssessment } from "../../domain/workflows/execution_service.ts";
-import { computeWorkflowFingerprint } from "../../domain/workflows/workflow_fingerprint.ts";
+import {
+  assessRecoveryForRun,
+  findInterruptedRun,
+} from "../../domain/workflows/recovery_assessment.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -89,64 +91,20 @@ export const workflowRecoverCommand = new Command()
         throw new UserError(`Workflow not found: ${workflowIdOrName}`);
       }
 
-      const allRuns = await repoContext.workflowRunRepo.findAllByWorkflowId(
-        workflow.id,
+      const run = await findInterruptedRun(
+        workflow,
+        repoContext.workflowRunRepo,
+        options.run as string | undefined,
       );
-      const interruptedRuns = allRuns.filter((r) => r.status === "interrupted");
-      if (interruptedRuns.length === 0) {
-        throw new UserError(
-          `No interrupted runs found for workflow "${workflow.name}"`,
-        );
-      }
-
-      const targetRunId = options.run as string | undefined;
-      const run = targetRunId
-        ? interruptedRuns.find((r) => r.id === targetRunId)
-        : interruptedRuns[0];
       if (!run) {
         throw new UserError(
-          `Interrupted run ${targetRunId} not found`,
+          options.run
+            ? `Interrupted run ${options.run} not found`
+            : `No interrupted runs found for workflow "${workflow.name}"`,
         );
       }
 
-      // Check fingerprint drift
-      let fingerprintMismatch = false;
-      if (run.runPlan?.fingerprint) {
-        const currentFingerprint = await computeWorkflowFingerprint(workflow);
-        if (currentFingerprint !== run.runPlan.fingerprint) {
-          fingerprintMismatch = true;
-        }
-      }
-
-      // Classify unknown steps by guard presence
-      const unknownStepNames = run.unknownSteps();
-      const guardedSteps: string[] = [];
-      const unguardedSteps: string[] = [];
-
-      for (const stepName of unknownStepNames) {
-        const step = workflow.jobs
-          .flatMap((j) => j.steps)
-          .find((s) => s.name === stepName);
-        if (step?.guard) {
-          guardedSteps.push(stepName);
-        } else {
-          unguardedSteps.push(stepName);
-        }
-      }
-
-      const assessment: RecoveryAssessment = {
-        canAutoRecover: !fingerprintMismatch && unguardedSteps.length === 0,
-        reason: fingerprintMismatch
-          ? "Workflow definition changed since the run started — use 'swamp workflow resume --from <step>' instead"
-          : unguardedSteps.length > 0
-          ? `${unguardedSteps.length} unknown step(s) lack guard expressions — operator acknowledgement required`
-          : undefined,
-        guardedSteps,
-        unguardedSteps,
-        runId: run.id,
-        workflowId: workflow.id,
-        fingerprintMismatch,
-      };
+      const assessment = await assessRecoveryForRun(workflow, run);
 
       if (cliCtx.outputMode === "json") {
         writeOutput(JSON.stringify(assessment, null, 2));
@@ -160,19 +118,21 @@ export const workflowRecoverCommand = new Command()
         if (assessment.reason) {
           writeOutput(`  Reason: ${assessment.reason}`);
         }
-        if (guardedSteps.length > 0) {
+        if (assessment.guardedSteps.length > 0) {
           writeOutput(
-            `  Guarded steps (auto-recoverable): ${guardedSteps.join(", ")}`,
-          );
-        }
-        if (unguardedSteps.length > 0) {
-          writeOutput(
-            `  Unguarded steps (require --acknowledge-unknown): ${
-              unguardedSteps.join(", ")
+            `  Guarded steps (auto-recoverable): ${
+              assessment.guardedSteps.join(", ")
             }`,
           );
         }
-        if (fingerprintMismatch) {
+        if (assessment.unguardedSteps.length > 0) {
+          writeOutput(
+            `  Unguarded steps (require --acknowledge-unknown): ${
+              assessment.unguardedSteps.join(", ")
+            }`,
+          );
+        }
+        if (assessment.fingerprintMismatch) {
           writeOutput(
             `  Fingerprint mismatch — use 'swamp workflow resume --from <step>' instead`,
           );
@@ -180,14 +140,14 @@ export const workflowRecoverCommand = new Command()
         return;
       }
 
-      if (fingerprintMismatch) {
+      if (assessment.fingerprintMismatch) {
         throw new UserError(assessment.reason!);
       }
 
       if (!assessment.canAutoRecover && !options.acknowledgeUnknown) {
         throw new UserError(
           `Cannot auto-recover: ${assessment.reason}\n` +
-            `Unguarded steps: ${unguardedSteps.join(", ")}\n` +
+            `Unguarded steps: ${assessment.unguardedSteps.join(", ")}\n` +
             `Use --acknowledge-unknown to accept re-execution risk.`,
         );
       }

@@ -1513,17 +1513,13 @@ export class DefaultStepExecutor implements StepExecutor {
 
 // Re-export from dedicated file for backward compatibility
 export type { WorkflowExecutionEvent } from "./execution_events.ts";
-
-export interface RecoveryAssessment {
-  canAutoRecover: boolean;
-  reason?: string;
-  guardedSteps: string[];
-  unguardedSteps: string[];
-  runId?: string;
-  workflowId?: string;
-  fingerprintMismatch?: boolean;
-}
+export type { RecoveryAssessment } from "./recovery_assessment.ts";
 import type { WorkflowExecutionEvent } from "./execution_events.ts";
+import {
+  assessRecoveryForRun,
+  findInterruptedRun,
+  type RecoveryAssessment,
+} from "./recovery_assessment.ts";
 
 /**
  * Internal options bundle passed through runJob/runStep to reduce parameter count.
@@ -3799,70 +3795,19 @@ export class WorkflowExecutionService {
       };
     }
 
-    const allRuns = await this.runRepo.findAllByWorkflowId(workflow.id);
-    const interruptedRuns = allRuns.filter((r) =>
-      r.status === "interrupted"
-    );
-    if (interruptedRuns.length === 0) {
-      return {
-        canAutoRecover: false,
-        reason: `No interrupted runs found for workflow "${workflow.name}"`,
-        guardedSteps: [],
-        unguardedSteps: [],
-      };
-    }
-
-    const run = runId
-      ? interruptedRuns.find((r) => r.id === runId)
-      : interruptedRuns[0];
+    const run = await findInterruptedRun(workflow, this.runRepo, runId);
     if (!run) {
       return {
         canAutoRecover: false,
-        reason: `Interrupted run ${runId} not found`,
+        reason: runId
+          ? `Interrupted run ${runId} not found`
+          : `No interrupted runs found for workflow "${workflow.name}"`,
         guardedSteps: [],
         unguardedSteps: [],
       };
     }
 
-    if (run.runPlan?.fingerprint) {
-      const currentFingerprint = await computeWorkflowFingerprint(workflow);
-      if (currentFingerprint !== run.runPlan.fingerprint) {
-        return {
-          canAutoRecover: false,
-          reason:
-            "Workflow definition changed since the run started — use 'swamp workflow resume --from <step>' instead",
-          guardedSteps: [],
-          unguardedSteps: [],
-          fingerprintMismatch: true,
-        };
-      }
-    }
-
-    const unknownStepNames = run.unknownSteps();
-    const guardedSteps: string[] = [];
-    const unguardedSteps: string[] = [];
-
-    for (const stepName of unknownStepNames) {
-      const step = workflow.jobs
-        .flatMap((j) => j.steps)
-        .find((s) => s.name === stepName);
-      if (step?.guard) {
-        guardedSteps.push(stepName);
-      } else {
-        unguardedSteps.push(stepName);
-      }
-    }
-
-    return {
-      canAutoRecover: unguardedSteps.length === 0,
-      reason: unguardedSteps.length > 0
-        ? `${unguardedSteps.length} unknown step(s) lack guard expressions — operator acknowledgement required`
-        : undefined,
-      guardedSteps,
-      unguardedSteps,
-      runId: run.id,
-      workflowId: workflow.id,
-    };
+    return assessRecoveryForRun(workflow, run);
   }
 
   /**
