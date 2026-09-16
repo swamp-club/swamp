@@ -868,7 +868,10 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   interrupt(reason: string): void {
-    if (this._status === "succeeded" || this._status === "failed") {
+    if (
+      this._status === "succeeded" || this._status === "failed" ||
+      this._status === "interrupted"
+    ) {
       return;
     }
     for (const job of this._jobs) {
