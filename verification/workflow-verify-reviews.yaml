@@ -106,7 +106,19 @@ jobs:
               claude -p - \
                 --model claude-opus-4-6 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
+              CLAUDE_EXIT=$?
               rm -f "$PROMPT_FILE" "$DIFF_FILE"
+              if [ $CLAUDE_EXIT -ne 0 ]; then
+                echo "::error::claude exited with status $CLAUDE_EXIT"
+                rm -f "$RESULT_FILE"
+                exit 1
+              fi
+              if grep -qiE 'hit your (weekly|daily|monthly) limit|rate_limit_error|overloaded_error|authentication_error|invalid_api_key|credit balance is too low|exceeded your.*quota' "$RESULT_FILE"; then
+                echo "::error::Provider error detected in review output — no review was performed"
+                cat "$RESULT_FILE" >&2
+                rm -f "$RESULT_FILE"
+                exit 1
+              fi
               VERDICT=$(grep -oi 'VERDICT: *\**pass\**\|VERDICT: *\**fail\**' "$RESULT_FILE" | head -1 | grep -oi 'pass\|fail')
               if [ -z "$VERDICT" ]; then
                 if [ "$(wc -c < "$RESULT_FILE")" -lt 50 ]; then
@@ -146,7 +158,19 @@ jobs:
               claude -p - \
                 --model claude-opus-4-6 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
+              CLAUDE_EXIT=$?
               rm -f "$PROMPT_FILE" "$DIFF_FILE"
+              if [ $CLAUDE_EXIT -ne 0 ]; then
+                echo "::error::claude exited with status $CLAUDE_EXIT"
+                rm -f "$RESULT_FILE"
+                exit 1
+              fi
+              if grep -qiE 'hit your (weekly|daily|monthly) limit|rate_limit_error|overloaded_error|authentication_error|invalid_api_key|credit balance is too low|exceeded your.*quota' "$RESULT_FILE"; then
+                echo "::error::Provider error detected in review output — no review was performed"
+                cat "$RESULT_FILE" >&2
+                rm -f "$RESULT_FILE"
+                exit 1
+              fi
               VERDICT=$(grep -oi 'VERDICT: *\**pass\**\|VERDICT: *\**fail\**' "$RESULT_FILE" | head -1 | grep -oi 'pass\|fail')
               if [ -z "$VERDICT" ]; then
                 if [ "$(wc -c < "$RESULT_FILE")" -lt 50 ]; then
@@ -186,7 +210,19 @@ jobs:
               claude -p - \
                 --model claude-sonnet-4-6 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
+              CLAUDE_EXIT=$?
               rm -f "$PROMPT_FILE" "$DIFF_FILE"
+              if [ $CLAUDE_EXIT -ne 0 ]; then
+                echo "::error::claude exited with status $CLAUDE_EXIT"
+                rm -f "$RESULT_FILE"
+                exit 1
+              fi
+              if grep -qiE 'hit your (weekly|daily|monthly) limit|rate_limit_error|overloaded_error|authentication_error|invalid_api_key|credit balance is too low|exceeded your.*quota' "$RESULT_FILE"; then
+                echo "::error::Provider error detected in review output — no review was performed"
+                cat "$RESULT_FILE" >&2
+                rm -f "$RESULT_FILE"
+                exit 1
+              fi
               VERDICT=$(grep -oi 'VERDICT: *\**pass\**\|VERDICT: *\**fail\**' "$RESULT_FILE" | head -1 | grep -oi 'pass\|fail')
               if [ -z "$VERDICT" ]; then
                 if [ "$(wc -c < "$RESULT_FILE")" -lt 50 ]; then
@@ -226,7 +262,19 @@ jobs:
               claude -p - \
                 --model claude-opus-4-6 \
                 --allowedTools "Read,Glob,Grep" < "$PROMPT_FILE" | tee "$RESULT_FILE"
+              CLAUDE_EXIT=$?
               rm -f "$PROMPT_FILE" "$DIFF_FILE"
+              if [ $CLAUDE_EXIT -ne 0 ]; then
+                echo "::error::claude exited with status $CLAUDE_EXIT"
+                rm -f "$RESULT_FILE"
+                exit 1
+              fi
+              if grep -qiE 'hit your (weekly|daily|monthly) limit|rate_limit_error|overloaded_error|authentication_error|invalid_api_key|credit balance is too low|exceeded your.*quota' "$RESULT_FILE"; then
+                echo "::error::Provider error detected in review output — no review was performed"
+                cat "$RESULT_FILE" >&2
+                rm -f "$RESULT_FILE"
+                exit 1
+              fi
               VERDICT=$(grep -oi 'VERDICT: *\**pass\**\|VERDICT: *\**fail\**' "$RESULT_FILE" | head -1 | grep -oi 'pass\|fail')
               if [ -z "$VERDICT" ]; then
                 if [ "$(wc -c < "$RESULT_FILE")" -lt 50 ]; then
