@@ -129,6 +129,8 @@ function createFakeDefinitionRepo(): any {
 function createFakeEvaluationService(): any {
   return {
     hasDefinitionExpressions: () => false,
+    buildRuntimeContext: (_def: Definition, inputs?: Record<string, unknown>) =>
+      Promise.resolve({ model: {}, env: {}, inputs }),
     evaluateDefinition: (def: Definition) =>
       Promise.resolve({
         definition: def,

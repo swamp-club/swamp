@@ -122,10 +122,81 @@ Deno.test("containsEnvExpression returns false for non-env expressions", () => {
   assertEquals(containsEnvExpression("inputs.param"), false);
 });
 
-Deno.test("containsEnvExpression returns false for env-like but not env.*", () => {
+Deno.test("containsEnvExpression returns false for env-like but not env", () => {
   // "environment" should not match because \b word boundary prevents it
   assertEquals(containsEnvExpression("environment.X"), false);
   assertEquals(containsEnvExpression("myenv.FOO"), false);
+  // Member access on another namespace is not the env map.
+  assertEquals(containsEnvExpression("inputs.env"), false);
+  assertEquals(containsEnvExpression("self.env + '-suffix'"), false);
+  // Dotted continuation too: the old `\benv\.` regex wrongly deferred this to runtime.
+  assertEquals(containsEnvExpression("self.env.region"), false);
+});
+
+Deno.test("containsEnvExpression ignores env inside string literals", () => {
+  assertEquals(containsEnvExpression('self.tags["env"]'), false);
+  assertEquals(containsEnvExpression("self.tags['env']"), false);
+  assertEquals(containsEnvExpression('"env" + self.name'), false);
+  assertEquals(containsEnvExpression('"a\\"env" + self.name'), false);
+  // A real reference next to a literal is still runtime.
+  assertEquals(containsEnvExpression('env["env"]'), true);
+  assertEquals(containsEnvExpression('"prefix" + env.FOO'), true);
+  assertEquals(containsVaultExpression('"vault.get(" + self.name'), false);
+});
+
+Deno.test("containsEnvExpression returns true for every form of env access", () => {
+  // The persist-phase context carries the process environment, so any form
+  // that is not classified as runtime would be evaluated there. The
+  // bracket-index form was the confirmed bypass of the first fix.
+  assertEquals(containsEnvExpression("env['SECRET']"), true);
+  assertEquals(containsEnvExpression('env["SECRET"]'), true);
+  assertEquals(containsEnvExpression("[env][0].SECRET"), true);
+  assertEquals(containsEnvExpression("[env].map(e, e.SECRET)[0]"), true);
+  assertEquals(containsEnvExpression("string(env['A'])"), true);
+  assertEquals(containsEnvExpression("has(env.A) ? env.A : ''"), true);
+});
+
+Deno.test("containsEnvExpression ignores a macro-bound variable named env", () => {
+  // `env` bound by a comprehension macro shadows the root identifier, so the
+  // expression never touches the process environment and must stay in the
+  // persist phase (where `self` is available) rather than defer to runtime.
+  assertEquals(
+    containsEnvExpression("self.globalArguments.environments.map(env, env)"),
+    false,
+  );
+  assertEquals(containsEnvExpression("self.a.filter(env, env.on)"), false);
+  assertEquals(containsEnvExpression("self.a.exists_one(env, env)"), false);
+  // The bound name only shadows inside the macro's own arguments.
+  assertEquals(containsEnvExpression("env.list.map(env, env)"), true);
+  assertEquals(
+    containsEnvExpression("self.a.filter(env, env.on).map(e, env)"),
+    true,
+  );
+  assertEquals(containsEnvExpression("self.a.map(e, env[e])"), true);
+});
+
+Deno.test("containsEnvExpression handles triple-quoted, raw and bytes string literals", () => {
+  // A naive single-quote regex pairs the quotes of `"""..."""` wrongly and
+  // can swallow a real env reference as string content.
+  assertEquals(
+    containsEnvExpression('"""prefix " suffix""" + env.DEMO + "suffix"'),
+    true,
+  );
+  assertEquals(containsEnvExpression("'''a ' b''' + env.X"), true);
+  assertEquals(containsEnvExpression('r"a\\" + env.X + "b"'), true);
+  assertEquals(containsEnvExpression('"""env""" + self.name'), false);
+  assertEquals(containsEnvExpression("'''env.X''' + self.name"), false);
+  assertEquals(containsEnvExpression('r"env" + b"env" + self.name'), false);
+});
+
+Deno.test("containsEnvExpression ignores `env` as an optional or spaced member name", () => {
+  assertEquals(containsEnvExpression("self.tags.?env"), false);
+  assertEquals(containsEnvExpression("self.tags . env"), false);
+  assertEquals(containsEnvExpression("self.tags.? env"), false);
+  assertEquals(
+    containsEnvExpression("self.tags.?env == 'x' ? env.A : ''"),
+    true,
+  );
 });
 
 // ============================================================================
@@ -750,5 +821,186 @@ Deno.test("evaluateAllDefinitions: walks the repository once", async () => {
 
     assertEquals(results.length, 2);
     assertEquals(definitionRepo.findAllGlobalCalls, 1);
+  });
+});
+
+Deno.test("containsEnvExpression: cel.bind scopes its body but not its initializer", () => {
+  for (
+    const expression of [
+      'cel.bind(env, {"HOME": "local"}, env.HOME)',
+      "cel.bind(env, {}, cel.bind(value, env, value))",
+      "cel.bind(value, {}, cel.bind(env, value, env))",
+      "cel.bind(env, {}, cel.bind(env, env, env))",
+    ]
+  ) {
+    assertEquals(containsEnvExpression(expression), false, expression);
+  }
+  for (
+    const expression of [
+      'cel.bind(env, env["HOME"], env)',
+      "cel.bind(value, env, value.HOME)",
+      "cel.bind(value, {}, cel.bind(env, env.HOME, env))",
+      "cel.bind(env, {}, env) == env",
+      "other.bind(env, {}, env)",
+    ]
+  ) {
+    assertEquals(containsEnvExpression(expression), true, expression);
+  }
+});
+
+Deno.test("runtime resolvers: preserve supplied namespaces and refresh env", async () => {
+  await withTempDir(async (repoDir) => {
+    const service = new ExpressionEvaluationService(
+      new YamlDefinitionRepository(repoDir),
+      repoDir,
+    );
+    const originalToObject = Deno.env.toObject;
+    Deno.env.toObject = () => ({ HOME: "runtime-home" });
+    try {
+      let queries = 0;
+      const context: ExpressionContext = {
+        env: { HOME: "stale-home" },
+        model: {
+          source: {
+            input: {
+              id: "source",
+              name: "upstream",
+              version: 1,
+              tags: {},
+              globalArguments: {},
+            },
+          },
+        },
+        self: {
+          id: "iteration",
+          name: "supplied-self",
+          version: 2,
+          tags: {},
+          globalArguments: {},
+          item: "iteration-value",
+        },
+        inputs: { suffix: "input-value" },
+        workflow: { name: "workflow-value" },
+        steps: { previous: { status: "succeeded" } },
+        file: { contents: () => "file-value" },
+        data: {
+          version: () => Promise.resolve(null),
+          latest: () => Promise.resolve(null),
+          listVersions: () => [],
+          findByTag: () => Promise.resolve([]),
+          findBySpec: () => Promise.resolve([]),
+          query: () => {
+            queries++;
+            return Promise.resolve(["data-value"]);
+          },
+        },
+      };
+      const args = {
+        value:
+          '${{ env["HOME"] + ":" + self.name + ":" + self.item + ":" + inputs.suffix + ":" + model.source.input.name + ":" + workflow.name + ":" + steps.previous.status + ":" + file.contents("source", "file") + ":" + data.query("true")[0] }}',
+      };
+      const definition = Definition.create({
+        name: "runtime-context",
+        globalArguments: args,
+      });
+      const evaluated = await service.evaluateDefinition(
+        definition,
+        ModelType.create("test/model"),
+        undefined,
+        { ...context },
+      );
+      assertEquals(evaluated.definition.globalArguments, args);
+      const resolved = await service.resolveRuntimeExpressionsInDefinition(
+        evaluated.definition,
+        undefined,
+        context,
+      );
+      const expected = {
+        value:
+          "runtime-home:supplied-self:iteration-value:input-value:upstream:workflow-value:succeeded:file-value:data-value",
+      };
+      assertEquals(resolved.definition.globalArguments, expected);
+      assertEquals(
+        await service.resolveRuntimeExpressionsInData(
+          args,
+          undefined,
+          context,
+        ),
+        expected,
+      );
+      assertEquals(queries, 2);
+      assertEquals(context.env.HOME, "stale-home");
+      assertEquals(evaluated.definition.globalArguments, args);
+    } finally {
+      Deno.env.toObject = originalToObject;
+    }
+  });
+});
+
+Deno.test("resolveRuntimeExpressionsInDefinition: supplies missing model self fields", async () => {
+  await withTempDir(async (repoDir) => {
+    const service = new ExpressionEvaluationService(
+      new YamlDefinitionRepository(repoDir),
+      repoDir,
+    );
+    const originalToObject = Deno.env.toObject;
+    Deno.env.toObject = () => ({ HOME: "runtime-home" });
+    try {
+      const definition = Definition.create({
+        name: "default-self",
+        globalArguments: {
+          value:
+            '${{ env["HOME"] + ":" + self.name + ":" + string(self.version) }}',
+        },
+      });
+      for (const context of [undefined, { model: {}, env: {} }]) {
+        const result = await service.resolveRuntimeExpressionsInDefinition(
+          definition,
+          undefined,
+          context,
+        );
+        assertEquals(
+          result.definition.globalArguments.value,
+          "runtime-home:default-self:1",
+        );
+      }
+    } finally {
+      Deno.env.toObject = originalToObject;
+    }
+  });
+});
+
+// ============================================================================
+// buildRuntimeContext
+
+Deno.test("buildRuntimeContext: loads the model namespace only when a remaining expression reads it", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const type = ModelType.create("command/shell");
+    await definitionRepo.save(type, Definition.create({ name: "producer" }));
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+
+    const envOnly = Definition.create({
+      name: "env-only",
+      methods: { exec: { arguments: { run: "${{ env.HOME }}" } } },
+    });
+    const light = await service.buildRuntimeContext(envOnly, { a: 1 });
+    assertEquals(light.model, {});
+    assertEquals(light.inputs, { a: 1 });
+    assertEquals(typeof light.data, "object");
+
+    const mixed = Definition.create({
+      name: "mixed",
+      methods: {
+        exec: {
+          arguments: {
+            run: "${{ env['HOME'] + model.producer.input.name }}",
+          },
+        },
+      },
+    });
+    const full = await service.buildRuntimeContext(mixed);
+    assertEquals(full.model.producer?.input.name, "producer");
+    assertEquals(full.inputs, undefined);
   });
 });

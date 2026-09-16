@@ -28,6 +28,7 @@ import {
   replaceExpressions,
 } from "./expression_parser.ts";
 import { getLogger } from "@logtape/logtape";
+import { type ASTNode, parse as parseCel } from "cel-js";
 import type { ExpressionLocation } from "./expression.ts";
 import {
   extractDependencies,
@@ -39,7 +40,6 @@ import {
   type ExpressionContext,
   ModelResolver,
   type ModelResolverRepositories,
-  type VaultArgCelOptions,
 } from "./model_resolver.ts";
 import { CyclicDependencyError } from "./errors.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
@@ -56,9 +56,101 @@ import {
 const VAULT_GET_PATTERN = /vault\.get\s*\(/;
 
 /**
- * Pattern to detect env.* references inside a CEL expression.
+ * Textual fallback for detecting references to the `env` map, used only when
+ * cel-js cannot parse the expression (see {@link containsEnvExpression}).
+ *
+ * Matches any bare `env` identifier — dotted access, bracket-index access,
+ * and `env` passed around as a value — but not member access such as
+ * `inputs.env` or identifiers that merely contain the word. Every form must
+ * be classified as runtime, or it would be evaluated in the persist phase,
+ * where the context also carries the process environment.
  */
-const ENV_PATTERN = /\benv\./;
+const ENV_PATTERN = /(?<![.\w])env\b/;
+
+/**
+ * CEL macros whose first argument binds a local variable for the remaining
+ * arguments. A variable bound this way shadows the root `env` identifier.
+ */
+const BINDING_MACROS = new Set([
+  "map",
+  "filter",
+  "all",
+  "exists",
+  "exists_one",
+]);
+
+/**
+ * Walks a parsed CEL tree looking for a reference to the root `env`
+ * identifier, skipping identifiers shadowed by a macro-bound variable so that
+ * `list.map(env, env)` is not mistaken for an environment access.
+ */
+function astReferencesEnv(node: ASTNode, bound: ReadonlySet<string>): boolean {
+  switch (node.op) {
+    case "value":
+      return false;
+    case "id":
+      return node.args === "env" && !bound.has("env");
+    case ".":
+    case ".?":
+      return astReferencesEnv(node.args[0], bound);
+    case "!_":
+    case "-_":
+      return astReferencesEnv(node.args, bound);
+    case "list":
+      return node.args.some((a) => astReferencesEnv(a, bound));
+    case "map":
+      return node.args.some(([k, v]) =>
+        astReferencesEnv(k, bound) || astReferencesEnv(v, bound)
+      );
+    case "call":
+      return node.args[1].some((a) => astReferencesEnv(a, bound));
+    case "rcall": {
+      const [name, receiver, args] = node.args;
+      if (astReferencesEnv(receiver, bound)) return true;
+      const first = args[0];
+      if (
+        name === "bind" && receiver.op === "id" && receiver.args === "cel" &&
+        args.length === 3 && first?.op === "id"
+      ) {
+        return astReferencesEnv(args[1], bound) ||
+          astReferencesEnv(args[2], new Set(bound).add(first.args));
+      }
+      if (BINDING_MACROS.has(name) && first?.op === "id") {
+        const inner = new Set(bound).add(first.args);
+        return args.slice(1).some((a) => astReferencesEnv(a, inner));
+      }
+      return args.some((a) => astReferencesEnv(a, bound));
+    }
+    default:
+      return (node.args as ASTNode[]).some((a) => astReferencesEnv(a, bound));
+  }
+}
+
+/**
+ * Pattern matching every CEL string literal form: single- or double-quoted,
+ * triple-quoted, with an optional bytes (`b`) and/or raw (`r`) prefix. Raw
+ * strings have no escapes; the others honour backslash escapes. Triple-quoted
+ * alternatives come first so `"""` is never read as an empty string followed
+ * by an open quote. Stripping literals before classification keeps text such
+ * as `self.tags["env"]` from being mistaken for an identifier reference.
+ */
+const STRING_LITERAL_PATTERN =
+  /[bB]?(?:[rR](?:"""[\s\S]*?"""|'''[\s\S]*?'''|"[^"\n]*"|'[^'\n]*')|"""(?:[^\\]|\\[\s\S])*?"""|'''(?:[^\\]|\\[\s\S])*?'''|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')/g;
+
+/**
+ * Pattern matching a member-access operator (`.` or optional `.?`) together
+ * with any surrounding whitespace, so `self.tags . env` and `self.tags.?env`
+ * normalise to `self.tags.env` and the member name is never taken for the
+ * root `env` identifier.
+ */
+const MEMBER_ACCESS_PATTERN = /\s*\.\s*(?:\?\s*)?/g;
+
+function stripStringLiterals(celExpression: string): string {
+  return celExpression.replace(STRING_LITERAL_PATTERN, '""').replace(
+    MEMBER_ACCESS_PATTERN,
+    ".",
+  );
+}
 
 /**
  * Checks whether a CEL expression references vault.get().
@@ -66,16 +158,22 @@ const ENV_PATTERN = /\benv\./;
  * the persist phase — they are resolved at runtime only.
  */
 export function containsVaultExpression(celExpression: string): boolean {
-  return VAULT_GET_PATTERN.test(celExpression);
+  return VAULT_GET_PATTERN.test(stripStringLiterals(celExpression));
 }
 
 /**
- * Checks whether a CEL expression references env.* variables.
+ * Checks whether a CEL expression references the env map in any form.
  * Expressions containing env references must NOT be evaluated during
  * the persist phase — they are resolved at runtime only.
  */
 export function containsEnvExpression(celExpression: string): boolean {
-  return ENV_PATTERN.test(celExpression);
+  try {
+    return astReferencesEnv(parseCel(celExpression).ast, new Set());
+  } catch {
+    // cel-js rejects some syntax the evaluator accepts (optional `.?` access);
+    // the textual scan is conservative, so an error can only defer to runtime.
+    return ENV_PATTERN.test(stripStringLiterals(celExpression));
+  }
 }
 
 /**
@@ -186,6 +284,27 @@ export class ExpressionEvaluationService {
   }
 
   /**
+   * Builds the context for a pass over a definition. Only definitions that
+   * read the model or file namespaces need every model definition loaded;
+   * everything else evaluates against the lightweight context. Runtime
+   * expressions may read those namespaces too (`env.X + model.y`), so the
+   * runtime pass over an evaluated definition makes the same choice from the
+   * expressions that remain in it.
+   */
+  async buildRuntimeContext(
+    definition: Definition,
+    inputs?: Record<string, unknown>,
+  ): Promise<ExpressionContext> {
+    const ctx = requiresModelNamespace(definition.toData())
+      ? await this.modelResolver.buildContext()
+      : this.modelResolver.buildLightContext();
+    if (inputs) {
+      ctx.inputs = inputs;
+    }
+    return ctx;
+  }
+
+  /**
    * Evaluates expressions in a single definition.
    *
    * @param definition - The definition to evaluate
@@ -202,13 +321,9 @@ export class ExpressionEvaluationService {
   ): Promise<EvaluatedDefinition> {
     const definitionData = definition.toData();
 
-    // Build context if not provided. Only definitions that read the model or
-    // file namespaces need every model definition loaded; everything else
-    // evaluates against the lightweight context.
+    // Build context if not provided.
     const ctx = context ??
-      (requiresModelNamespace(definitionData)
-        ? await this.modelResolver.buildContext()
-        : this.modelResolver.buildLightContext());
+      await this.buildRuntimeContext(definition, inputValues);
 
     // Add inputs to context if provided
     if (inputValues) {
@@ -509,51 +624,22 @@ export class ExpressionEvaluationService {
       return data;
     }
 
-    const celOptions: VaultArgCelOptions | undefined = expressionContext
-      ? { celEvaluator: this.celEvaluator, context: expressionContext }
-      : undefined;
-
+    const celContext: ExpressionContext = {
+      model: {},
+      ...expressionContext,
+      env: buildEnvContext(),
+    };
     const secretBag = new VaultSecretBag();
-    const evaluatedValues = new Map<string, unknown>();
-    for (const expr of runtimeExpressions) {
-      // Resolve vault references first — see resolveRuntimeInExpressions
-      // for rationale (vault names may contain CEL-invalid characters).
-      let resolvedCelExpr = expr.celExpression;
-      if (containsVaultExpression(expr.celExpression)) {
-        resolvedCelExpr = await this.modelResolver.resolveVaultExpressions(
-          expr.celExpression,
-          redactor,
-          secretBag,
-          celOptions,
-        );
-      }
-
-      // Skip syntactically-invalid CEL after vault resolution.
-      const validation = this.celEvaluator.validate(resolvedCelExpr);
-      if (!validation.valid) {
-        if (containsVaultExpression(expr.celExpression)) {
-          getLogger(["swamp", "expressions"]).warn(
-            `Skipped vault expression at ${expr.path} because its CEL is syntactically invalid after vault resolution: ${validation.error}. Raw: ${expr.raw}`,
-          );
-        }
-        continue;
-      }
-
-      const celContext: Record<string, unknown> = {
-        model: {},
-        env: buildEnvContext(),
-      };
-      if (expressionContext?.inputs) {
-        celContext.inputs = expressionContext.inputs;
-      }
-
-      const value = this.celEvaluator.evaluate(resolvedCelExpr, celContext);
-      evaluatedValues.set(expr.raw, value);
-    }
+    const resolved = await this.resolveRuntimeData(
+      data,
+      runtimeExpressions,
+      celContext,
+      redactor,
+      secretBag,
+    );
 
     // For the data path, resolve sentinels to raw values immediately
     // since there's no shell context to worry about.
-    const resolved = replaceExpressions(data, evaluatedValues);
     if (!secretBag.isEmpty) {
       return secretBag.resolveDeep(resolved);
     }
@@ -625,67 +711,61 @@ export class ExpressionEvaluationService {
     secretBag?: VaultSecretBag,
     expressionContext?: ExpressionContext,
   ): Promise<Definition> {
-    const logger = getLogger(["swamp", "expressions"]);
-    const evaluatedValues = new Map<string, unknown>();
+    const celContext: ExpressionContext = {
+      model: {},
+      ...expressionContext,
+      self: {
+        id: definitionData.id,
+        name: definitionData.name,
+        version: definitionData.version,
+        tags: definitionData.tags,
+        globalArguments: definitionData.globalArguments ?? {},
+        ...expressionContext?.self,
+      },
+      env: buildEnvContext(),
+    };
+    const resolvedData = await this.resolveRuntimeData(
+      definitionData,
+      runtimeExpressions,
+      celContext,
+      redactor,
+      secretBag ?? new VaultSecretBag(),
+    );
+    return DefinitionClass.fromData(
+      resolvedData as ReturnType<Definition["toData"]>,
+    );
+  }
 
-    const celOptions: VaultArgCelOptions | undefined = expressionContext
-      ? { celEvaluator: this.celEvaluator, context: expressionContext }
-      : undefined;
-
-    for (const expr of runtimeExpressions) {
-      // Resolve vault references first (if any) — vault.get() arguments
-      // may contain characters that are not valid CEL identifiers (e.g.
-      // hyphens in vault names like "dwh-infra-1password"), so vault
-      // resolution must happen BEFORE CEL validation. resolveVaultExpressions
-      // replaces vault.get(...) calls with sentinel string literals that
-      // are always valid CEL. When celOptions is provided, bare-token
-      // arguments are CEL-evaluated before the vault lookup.
-      let resolvedCelExpr = expr.celExpression;
-      if (containsVaultExpression(expr.celExpression)) {
-        logger.debug`Resolving vault expression at ${expr.path}`;
-        resolvedCelExpr = await this.modelResolver.resolveVaultExpressions(
-          expr.celExpression,
+  /** Resolve runtime expressions with fresh runtime services. */
+  private async resolveRuntimeData(
+    data: unknown,
+    expressions: ExpressionLocation[],
+    context: ExpressionContext,
+    redactor: SecretRedactor | undefined,
+    secretBag: VaultSecretBag,
+  ): Promise<unknown> {
+    const values = new Map<string, unknown>();
+    for (const expr of expressions) {
+      let cel = expr.celExpression;
+      if (containsVaultExpression(cel)) {
+        cel = await this.modelResolver.resolveVaultExpressions(
+          cel,
           redactor,
           secretBag,
-          celOptions,
+          { celEvaluator: this.celEvaluator, context },
         );
-        logger.debug`Resolved vault expression at ${expr.path}`;
       }
-
-      // Skip syntactically-invalid CEL (after vault resolution): the
-      // ${{ ... }} sequence appears inside a prose field (e.g. a method
-      // input documenting env.* / vault.get() syntax). Leaving the raw
-      // text in place preserves prose round-trip; real misconfigurations
-      // still throw at evaluate. Vault resolution runs first because
-      // vault.get() arguments may contain CEL-invalid characters (e.g.
-      // hyphens in "dwh-infra-1password"); resolveVaultExpressions uses
-      // its own regex and replaces matched calls with sentinel string
-      // literals that are always valid CEL.
-      const validation = this.celEvaluator.validate(resolvedCelExpr);
+      const validation = this.celEvaluator.validate(cel);
       if (!validation.valid) {
         if (containsVaultExpression(expr.celExpression)) {
-          logger.warn(
+          getLogger(["swamp", "expressions"]).warn(
             `Skipped vault expression at ${expr.path} because its CEL is syntactically invalid after vault resolution: ${validation.error}. Raw: ${expr.raw}`,
           );
         }
         continue;
       }
-
-      const celContext: Record<string, unknown> = {
-        model: {},
-        env: buildEnvContext(),
-      };
-      if (expressionContext?.inputs) {
-        celContext.inputs = expressionContext.inputs;
-      }
-
-      const value = this.celEvaluator.evaluate(resolvedCelExpr, celContext);
-      evaluatedValues.set(expr.raw, value);
+      values.set(expr.raw, await this.celEvaluator.evaluateAsync(cel, context));
     }
-
-    const resolvedData = replaceExpressions(definitionData, evaluatedValues);
-    return DefinitionClass.fromData(
-      resolvedData as ReturnType<Definition["toData"]>,
-    );
+    return replaceExpressions(data, values);
   }
 }

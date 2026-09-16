@@ -45,10 +45,6 @@ import type { UnifiedDataRepository } from "../../domain/data/repositories.ts";
 import type { OutputRepository } from "../../domain/models/repositories.ts";
 import type { VaultService } from "../../domain/vaults/vault_service.ts";
 import type { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
-import {
-  buildEnvContext,
-  type ExpressionContext,
-} from "../../domain/expressions/model_resolver.ts";
 import type { SecretRedactor } from "../../domain/secrets/mod.ts";
 import type { DataQueryService } from "../../domain/data/data_query_service.ts";
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
@@ -603,11 +599,13 @@ export async function* modelMethodRun(
           const runtimeSpan = getTracer().startSpan(
             "swamp.model.method.resolve_runtime",
           );
-          const runtimeContext: ExpressionContext = {
-            model: {},
+          // Built from the evaluated definition so the full context (a walk
+          // of every definition) is loaded only when a deferred expression
+          // still reads model.* or file.*.
+          const runtimeContext = await evaluationService.buildRuntimeContext(
+            evaluatedDefinition,
             inputs,
-            env: buildEnvContext(),
-          };
+          );
           const runtimeResult = await evaluationService
             .resolveRuntimeExpressionsInDefinition(
               evaluatedDefinition,
