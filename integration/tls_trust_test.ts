@@ -107,6 +107,8 @@ async function generateCertChain(dir: string): Promise<{
     "1",
     "-subj",
     "/CN=Test Private Root CA",
+    "-addext",
+    "basicConstraints=critical,CA:TRUE",
   ]);
   await run([
     "req",

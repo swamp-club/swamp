@@ -58,8 +58,11 @@ async function generateCert(
   }
 }
 
-Deno.test("hasCaTrue: returns true for default openssl req -x509 cert", async () => {
-  const cert = await generateCert();
+Deno.test("hasCaTrue: returns true for CA:TRUE cert", async () => {
+  const cert = await generateCert([
+    "-addext",
+    "basicConstraints=critical,CA:TRUE",
+  ]);
   assertEquals(hasCaTrue(cert), true);
 });
 
@@ -112,7 +115,10 @@ Deno.test("hasCaTrue: returns false for invalid PEM", () => {
 });
 
 Deno.test("validateEndEntityCert: returns ca-true warning for CA:TRUE cert", async () => {
-  const cert = await generateCert();
+  const cert = await generateCert([
+    "-addext",
+    "basicConstraints=critical,CA:TRUE",
+  ]);
   const warnings = validateEndEntityCert(cert);
   assertEquals(warnings.length, 1);
   assertEquals(warnings[0].code, "ca-true");
