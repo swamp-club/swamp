@@ -935,3 +935,108 @@ Deno.test("WhoamiOrganization: key set is pinned at compile time", () => {
   // The real assertion is the type-level constant above, enforced by
   // `deno check`. This body is intentionally trivial.
 });
+
+Deno.test("SwampClubClient - fetchRecruitLink POSTs to /api/v1/recruit-link with the api key", async () => {
+  let seenMethod = "";
+  let seenPath = "";
+  let seenApiKey: string | null = null;
+  const mock = startMockServer((req) => {
+    const url = new URL(req.url);
+    seenMethod = req.method;
+    seenPath = url.pathname;
+    seenApiKey = req.headers.get("x-api-key");
+    return Response.json({
+      code: "abc123",
+      url: "https://swamp.club/r/abc123",
+    });
+  });
+
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const result = await client.fetchRecruitLink("swamp_test_key");
+
+    assertEquals(seenMethod, "POST");
+    assertEquals(seenPath, "/api/v1/recruit-link");
+    assertEquals(seenApiKey, "swamp_test_key");
+    assertEquals(result, {
+      code: "abc123",
+      url: "https://swamp.club/r/abc123",
+    });
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - fetchRecruitLink omits x-api-key when no key is given", async () => {
+  let seenApiKey: string | null = "unset";
+  const mock = startMockServer((req) => {
+    seenApiKey = req.headers.get("x-api-key");
+    return Response.json({ code: "c", url: "https://swamp.club/r/c" });
+  });
+
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    await client.fetchRecruitLink(undefined);
+    assertEquals(seenApiKey, null);
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - fetchRecruitLink nudges both credential sources on 401", async () => {
+  const mock = startMockServer(() =>
+    Response.json({ error: "Unauthorized" }, { status: 401 })
+  );
+
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const err = await assertRejects(
+      () => client.fetchRecruitLink(undefined),
+      UserError,
+    );
+    assertStringIncludes(err.message, "swamp auth login");
+    assertStringIncludes(err.message, "SWAMP_API_KEY");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - fetchRecruitLink surfaces the server error string verbatim behind a status prefix", async () => {
+  const mock = startMockServer(() =>
+    Response.json({ error: "Your account is suspended" }, { status: 403 })
+  );
+
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const err = await assertRejects(
+      () => client.fetchRecruitLink("swamp_test_key"),
+      UserError,
+    );
+    // The server's sentence survives intact, and the JSON envelope does not
+    // leak into the message the way `Failed to ...: ${text}` would.
+    assertEquals(
+      err.message,
+      "Could not get your recruit link (HTTP 403): Your account is suspended",
+    );
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - fetchRecruitLink falls back to raw text when the error body is not JSON", async () => {
+  const mock = startMockServer(() =>
+    new Response("<html>502 Bad Gateway</html>", { status: 502 })
+  );
+
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const err = await assertRejects(
+      () => client.fetchRecruitLink("swamp_test_key"),
+      UserError,
+    );
+    assertStringIncludes(err.message, "HTTP 502");
+    assertStringIncludes(err.message, "502 Bad Gateway");
+  } finally {
+    await mock.shutdown();
+  }
+});

@@ -176,6 +176,19 @@ export interface FetchIssueResponse {
   comments: IssueCommentRecord[];
 }
 
+/**
+ * Response from the recruit-link endpoint.
+ *
+ * Get-or-create is idempotent server-side, so repeated calls by the same
+ * operative return the same `code` — it never changes and never expires. Use
+ * `url` verbatim; the server builds it from its canonical origin, so
+ * reconstructing it from `code` would guess the host wrong.
+ */
+export interface FetchRecruitLinkResponse {
+  code: string;
+  url: string;
+}
+
 /** Filters for the issue search endpoint. */
 export interface SearchIssuesFilter {
   q?: string;
@@ -572,6 +585,57 @@ export class SwampClubClient {
         createdAt: (c.createdAt as string | undefined) ?? "",
       })),
     };
+  }
+
+  /**
+   * Fetch the operative's recruit link, creating it on first use.
+   *
+   * Unlike {@link fetchIssue}, this endpoint is identity-scoped — there is no
+   * anonymous form — so callers are expected to have checked for credentials
+   * before getting here; the 401 branch is the backstop, not the first line of
+   * defence.
+   *
+   * Error messages lift the server's `error` string and place it behind a short
+   * status-carrying prefix, matching {@link createCollectiveToken}. The prefix
+   * keeps the status visible for debugging; lifting the field (rather than
+   * dumping the raw body, as the older methods here do) keeps a JSON envelope
+   * out of a human-facing message.
+   */
+  async fetchRecruitLink(
+    apiKey: string | undefined,
+  ): Promise<FetchRecruitLinkResponse> {
+    const headers: Record<string, string> = {};
+    if (apiKey) {
+      headers["x-api-key"] = apiKey;
+    }
+    const res = await this.fetch("/api/v1/recruit-link", {
+      method: "POST",
+      headers,
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      if (res.status === 401) {
+        throw new UserError(
+          'Not logged in. Run "swamp auth login", or set SWAMP_API_KEY, to get your recruit link.',
+        );
+      }
+      let message = text;
+      try {
+        const parsed = JSON.parse(text);
+        if (typeof parsed?.error === "string") {
+          message = parsed.error;
+        }
+      } catch {
+        // Not JSON — fall back to the raw body.
+      }
+      throw new UserError(
+        `Could not get your recruit link (HTTP ${res.status}): ${message}`,
+      );
+    }
+
+    const data = await res.json();
+    return { code: data.code, url: data.url };
   }
 
   /**

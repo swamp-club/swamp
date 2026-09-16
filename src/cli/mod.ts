@@ -38,6 +38,7 @@ import { completionCommand } from "./commands/completion.ts";
 import { vaultCommand } from "./commands/vault.ts";
 import { dataCommand } from "./commands/data.ts";
 import { issueCommand } from "./commands/issue.ts";
+import { inviteCommand } from "./commands/invite.ts";
 import { telemetryCommand } from "./commands/telemetry_stats.ts";
 import { auditCommand } from "./commands/audit.ts";
 import { updateCommand } from "./commands/update.ts";
@@ -1739,6 +1740,7 @@ export async function runCli(args: string[]): Promise<void> {
     .command("source", sourceCommand)
     .command("completions", completionCommand)
     .command("issue", issueCommand)
+    .command("invite", inviteCommand)
     .command("auth", authCommand)
     .command("extension", extensionCommand)
     .command("summarise", summariseCommand)

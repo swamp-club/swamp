@@ -1466,6 +1466,15 @@ export {
   type IssueSearchItem,
 } from "./issues/search.ts";
 
+// Invite operations
+export {
+  inviteLink,
+  type InviteLinkData,
+  type InviteLinkDeps,
+  type InviteLinkEvent,
+  type InviteLinkInput,
+} from "./invite/link.ts";
+
 // Audit operations
 export {
   auditTimeline,
