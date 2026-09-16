@@ -527,6 +527,13 @@ export interface AccessTokenRotatePayload {
   vaultName?: string;
 }
 
+export interface AccessTokenMintPayload {
+  name: string;
+  principalId: string;
+  principalEmail: string;
+  durationMs: number;
+}
+
 // ── Model edit / type operations ────────────────────────────────────
 
 export interface ModelEditPayload {
@@ -891,6 +898,11 @@ export type ServerRequest =
     type: "access.token.rotate";
     id: string;
     payload: AccessTokenRotatePayload;
+  }
+  | {
+    type: "access.token.mint";
+    id: string;
+    payload: AccessTokenMintPayload;
   }
   | { type: "model.edit"; id: string; payload: ModelEditPayload }
   | {
@@ -1381,6 +1393,10 @@ export interface AccessTokenRotateResponse {
   data: Record<string, unknown>;
 }
 
+export interface AccessTokenMintResponse {
+  data: Record<string, unknown>;
+}
+
 export interface ModelEditResponse {
   data: Record<string, unknown>;
 }
@@ -1721,6 +1737,11 @@ export type ServerMessage =
     type: "access.token.rotate";
     id: string;
     payload: AccessTokenRotateResponse;
+  }
+  | {
+    type: "access.token.mint";
+    id: string;
+    payload: AccessTokenMintResponse;
   }
   | { type: "model.edit"; id: string; payload: ModelEditResponse }
   | {

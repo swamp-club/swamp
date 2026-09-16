@@ -31,6 +31,7 @@ import type {
   AccessGroupIdpEntry,
   AccessGroupListPayload,
   AccessReloadFileResult,
+  AccessTokenMintPayload,
   AccessTokenRevokePayload,
   AccessTokenRotatePayload,
 } from "../protocol.ts";
@@ -78,9 +79,11 @@ import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import {
   consumeStream,
   createLibSwampContext,
+  createServerTokenCreateDeps,
   createServerTokenListDeps,
   createServerTokenRevokeDeps,
   createServerTokenRotateDeps,
+  serverTokenCreate,
   serverTokenList,
   serverTokenRevoke,
   serverTokenRotate,
@@ -945,5 +948,63 @@ export async function handleAccessTokenRotate(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_token_rotate_failed", message);
+  }
+}
+
+export async function handleAccessTokenMint(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: AccessTokenMintPayload,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx).allowed
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = await createServerTokenCreateDeps(
+      libCtx,
+      ctx.repoDir,
+      ctx.repoContext,
+    );
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      serverTokenCreate(libCtx, deps, {
+        name: payload.name,
+        principalId: payload.principalId,
+        principalEmail: payload.principalEmail,
+        durationMs: payload.durationMs,
+      }),
+      withDefaults({
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      }),
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "access.token.mint",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "access_token_mint_failed", message);
   }
 }

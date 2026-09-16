@@ -3037,6 +3037,37 @@ Deno.test("validateServerRequest accepts access.token.rotate without optional fi
   );
 });
 
+Deno.test("validateServerRequest accepts access.token.mint", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "access.token.mint",
+      id: "r1",
+      payload: {
+        name: "my-token",
+        principalId: "user:adam",
+        principalEmail: "adam@example.com",
+        durationMs: 2592000000,
+      },
+    }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest rejects access.token.mint without principalId", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "access.token.mint",
+      id: "r1",
+      payload: {
+        name: "my-token",
+        principalEmail: "adam@example.com",
+        durationMs: 2592000000,
+      },
+    }),
+    "string",
+  );
+});
+
 Deno.test("validateServerRequest accepts model.edit", () => {
   assertEquals(
     typeof validateServerRequest({
@@ -3614,6 +3645,16 @@ Deno.test("authorizeOrReject: admin on access:* allows all new command types", (
       type: "access.token.rotate",
       id: "admin-atro",
       payload: { name: "tok" },
+    },
+    {
+      type: "access.token.mint",
+      id: "admin-atm",
+      payload: {
+        name: "tok",
+        principalId: "user:adam",
+        principalEmail: "adam@example.com",
+        durationMs: 2592000000,
+      },
     },
     {
       type: "model.edit",

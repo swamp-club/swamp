@@ -118,6 +118,7 @@ import {
   handleAccessGroupListIdp,
   handleAccessReload,
   handleAccessTokenList,
+  handleAccessTokenMint,
   handleAccessTokenRevoke,
   handleAccessTokenRotate,
 } from "./handlers/access_handlers.ts";
@@ -1031,6 +1032,17 @@ const AccessTokenRotateRequestSchema = z.object({
   }),
 });
 
+const AccessTokenMintRequestSchema = z.object({
+  type: z.literal("access.token.mint"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    name: z.string().min(1),
+    principalId: z.string().min(1),
+    principalEmail: z.string().min(1),
+    durationMs: z.number().positive(),
+  }),
+});
+
 const ModelEditRequestSchema = z.object({
   type: z.literal("model.edit"),
   id: z.string().min(1).max(256),
@@ -1331,6 +1343,7 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   AccessTokenListRequestSchema,
   AccessTokenRevokeRequestSchema,
   AccessTokenRotateRequestSchema,
+  AccessTokenMintRequestSchema,
   ModelEditRequestSchema,
   ModelTypeDescribeRequestSchema,
   ModelTypeSearchRequestSchema,
@@ -3184,6 +3197,19 @@ export function handleMessage(
     case "access.token.rotate":
       task = audited(
         handleAccessTokenRotate(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("access", "access", "*"),
+      );
+      break;
+    case "access.token.mint":
+      task = audited(
+        handleAccessTokenMint(
           socket,
           ctx,
           request.id,
