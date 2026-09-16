@@ -38,8 +38,14 @@ export function renderAuthWarning(): void {
 }
 
 export function renderFirstRunWarning(): void {
+  const headerPrefix = "⚠ ";
   const maxLen = AUTH_WARNING_FIRST_RUN_LINES.reduce(
-    (max, line) => Math.max(max, line.length),
+    (max, line) => {
+      const visual = line.startsWith("Authentication required")
+        ? headerPrefix.length + line.length
+        : line.length;
+      return Math.max(max, visual);
+    },
     0,
   );
   const top = dim(`  ┌${"─".repeat(maxLen + 2)}┐`);
@@ -48,15 +54,14 @@ export function renderFirstRunWarning(): void {
   console.error("");
   console.error(top);
   for (const line of AUTH_WARNING_FIRST_RUN_LINES) {
-    const padded = line.padEnd(maxLen);
     const isHeader = line.startsWith("Authentication required");
-    const content = line.includes("swamp auth login")
+    const raw = isHeader ? `${headerPrefix}${line}` : line;
+    const padded = raw.padEnd(maxLen);
+    const content = padded.includes("swamp auth login")
       ? padded.replace("swamp auth login", bold("swamp auth login"))
-      : isHeader
-      ? `⚠ ${padded}`
       : padded;
     console.error(
-      `  ${dim("│")} ${yellow(isHeader ? content : content)} ${dim("│")}`,
+      `  ${dim("│")} ${yellow(content)} ${dim("│")}`,
     );
   }
   console.error(bottom);

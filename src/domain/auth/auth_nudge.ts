@@ -30,12 +30,6 @@ export const AUTH_WARNING_FIRST_RUN_LINES = [
   "Sign in now: swamp auth login",
 ] as const;
 
-export const AUTH_HARD_BLOCK_MESSAGE =
-  "swamp requires a swamp-club.com account.";
-
-export const AUTH_HARD_BLOCK_HINT =
-  "Run `swamp auth login` to create an account or sign in.";
-
 export interface AuthNudgeState {
   lastShown?: string;
   firstRunShown?: boolean;
