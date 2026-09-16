@@ -556,7 +556,7 @@ Deno.test("reapOrphanedWorkflowRuns: interrupts run when tracker confirmed stale
   );
   assertEquals(result.reaped, 1);
   assertEquals(result.skipped, 0);
-  assertEquals(run.status, "failed");
+  assertEquals(run.status, "interrupted");
   assertEquals(saved.length, 1);
 });
 
@@ -592,7 +592,7 @@ Deno.test("reapOrphanedWorkflowRuns: legacy run with dead PID is interrupted", a
   );
   assertEquals(result.reaped, 1);
   assertEquals(result.skipped, 0);
-  assertEquals(run.status, "failed");
+  assertEquals(run.status, "interrupted");
   assertEquals(saved.length, 1);
 });
 
@@ -612,7 +612,7 @@ Deno.test("reapOrphanedWorkflowRuns: legacy run with no PID is interrupted", asy
   );
   assertEquals(result.reaped, 1);
   assertEquals(result.skipped, 0);
-  assertEquals(run.status, "failed");
+  assertEquals(run.status, "interrupted");
 });
 
 Deno.test("reapOrphanedWorkflowRuns: skips run in terminal state", async () => {
@@ -664,9 +664,9 @@ Deno.test("reapOrphanedWorkflowRuns: mixed scenario with tracker and legacy runs
   assertEquals(result.reaped, 3); // tracker-stale + legacy dead PID + legacy no PID
   assertEquals(result.skipped, 1); // tracker-live
   assertEquals(trackedLive.status, "running");
-  assertEquals(trackedStale.status, "failed");
-  assertEquals(legacyDeadPid.status, "failed");
-  assertEquals(legacyNoPid.status, "failed");
+  assertEquals(trackedStale.status, "interrupted");
+  assertEquals(legacyDeadPid.status, "interrupted");
+  assertEquals(legacyNoPid.status, "interrupted");
   assertEquals(succeededRun.status, "succeeded");
   assertEquals(saved.length, 3);
 });
@@ -707,7 +707,7 @@ Deno.test("reapOrphanedWorkflowRuns: reaps run with matching instanceId when tra
   );
   assertEquals(result.reaped, 1);
   assertEquals(result.skipped, 0);
-  assertEquals(run.status, "failed");
+  assertEquals(run.status, "interrupted");
   assertEquals(saved.length, 1);
 });
 
@@ -726,7 +726,7 @@ Deno.test("reapOrphanedWorkflowRuns: reaps run with no instanceId when tracker m
   );
   assertEquals(result.reaped, 1);
   assertEquals(result.skipped, 0);
-  assertEquals(run.status, "failed");
+  assertEquals(run.status, "interrupted");
   assertEquals(saved.length, 1);
 });
 
@@ -747,7 +747,7 @@ Deno.test("reapOrphanedWorkflowRuns: reaps run with foreign instanceId when trac
   );
   assertEquals(result.reaped, 1);
   assertEquals(result.skipped, 0);
-  assertEquals(run.status, "failed");
+  assertEquals(run.status, "interrupted");
   assertEquals(saved.length, 1);
 });
 

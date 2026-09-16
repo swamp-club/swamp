@@ -957,7 +957,7 @@ Deno.test("reconcileRemoteInterruptedRuns: reaps runs from stale instances", asy
   assertEquals(reaped, 1);
   assertEquals(h.completed.length, 1);
   assertEquals(h.completed[0].runId, "run-1");
-  assertEquals(h.completed[0].status, "failed");
+  assertEquals(h.completed[0].status, "interrupted");
   assertEquals(h.completed[0].reason, "remote_instance_dead");
 });
 

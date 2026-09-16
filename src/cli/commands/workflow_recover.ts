@@ -135,8 +135,7 @@ export const workflowRecoverCommand = new Command()
       }
 
       const assessment: RecoveryAssessment = {
-        canAutoRecover: !fingerprintMismatch && unguardedSteps.length === 0 &&
-          guardedSteps.length > 0,
+        canAutoRecover: !fingerprintMismatch && unguardedSteps.length === 0,
         reason: fingerprintMismatch
           ? "Workflow definition changed since the run started — use 'swamp workflow resume --from <step>' instead"
           : unguardedSteps.length > 0
