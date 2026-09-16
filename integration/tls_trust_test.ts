@@ -107,6 +107,14 @@ async function generateCertChain(dir: string): Promise<{
     "1",
     "-subj",
     "/CN=Test Private Root CA",
+    // Without an explicit basicConstraints extension LibreSSL (the system
+    // openssl on macOS) emits a v1 certificate, which rustls rejects while
+    // parsing the chain as UnsupportedCertVersion before trust is ever
+    // evaluated. OpenSSL 3.x adds this by default; LibreSSL does not.
+    "-addext",
+    "basicConstraints=critical,CA:TRUE",
+    "-addext",
+    "keyUsage=critical,keyCertSign,cRLSign",
   ]);
   await run([
     "req",
