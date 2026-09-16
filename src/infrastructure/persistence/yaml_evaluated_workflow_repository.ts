@@ -255,12 +255,9 @@ export class YamlEvaluatedWorkflowRepository {
   }
 
   async findByRunId(runId: string): Promise<Workflow | null> {
-    const targetPath = join(
-      this.baseDir,
-      "runs",
-      runId,
-      "evaluated-workflow.yaml",
-    );
+    const dir = join(this.baseDir, "runs", runId);
+    await assertSafePath(dir, this.baseDir);
+    const targetPath = join(dir, "evaluated-workflow.yaml");
     try {
       const content = await Deno.readTextFile(targetPath);
       const data = parseYaml(content) as WorkflowData | null;
@@ -277,6 +274,7 @@ export class YamlEvaluatedWorkflowRepository {
 
   async deleteForRun(runId: string): Promise<void> {
     const dir = join(this.baseDir, "runs", runId);
+    await assertSafePath(dir, this.baseDir);
     try {
       await Deno.remove(dir, { recursive: true });
     } catch (error) {

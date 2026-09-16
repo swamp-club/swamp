@@ -106,36 +106,35 @@ export const workflowRecoverCommand = new Command()
 
       const assessment = await assessRecoveryForRun(workflow, run);
 
-      if (cliCtx.outputMode === "json") {
-        writeOutput(JSON.stringify(assessment, null, 2));
-        if (options.assessOnly) return;
-      }
-
       if (options.assessOnly) {
-        writeOutput(`Recovery assessment for "${workflowIdOrName}":`);
-        writeOutput(`  Run ID: ${run.id}`);
-        writeOutput(`  Can auto-recover: ${assessment.canAutoRecover}`);
-        if (assessment.reason) {
-          writeOutput(`  Reason: ${assessment.reason}`);
-        }
-        if (assessment.guardedSteps.length > 0) {
-          writeOutput(
-            `  Guarded steps (auto-recoverable): ${
-              assessment.guardedSteps.join(", ")
-            }`,
-          );
-        }
-        if (assessment.unguardedSteps.length > 0) {
-          writeOutput(
-            `  Unguarded steps (require --acknowledge-unknown): ${
-              assessment.unguardedSteps.join(", ")
-            }`,
-          );
-        }
-        if (assessment.fingerprintMismatch) {
-          writeOutput(
-            `  Fingerprint mismatch — use 'swamp workflow resume --from <step>' instead`,
-          );
+        if (cliCtx.outputMode === "json") {
+          writeOutput(JSON.stringify(assessment, null, 2));
+        } else {
+          writeOutput(`Recovery assessment for "${workflowIdOrName}":`);
+          writeOutput(`  Run ID: ${run.id}`);
+          writeOutput(`  Can auto-recover: ${assessment.canAutoRecover}`);
+          if (assessment.reason) {
+            writeOutput(`  Reason: ${assessment.reason}`);
+          }
+          if (assessment.guardedSteps.length > 0) {
+            writeOutput(
+              `  Guarded steps (auto-recoverable): ${
+                assessment.guardedSteps.join(", ")
+              }`,
+            );
+          }
+          if (assessment.unguardedSteps.length > 0) {
+            writeOutput(
+              `  Unguarded steps (require --acknowledge-unknown): ${
+                assessment.unguardedSteps.join(", ")
+              }`,
+            );
+          }
+          if (assessment.fingerprintMismatch) {
+            writeOutput(
+              `  Fingerprint mismatch — use 'swamp workflow resume --from <step>' instead`,
+            );
+          }
         }
         return;
       }
@@ -155,11 +154,24 @@ export const workflowRecoverCommand = new Command()
       run.resetUnknownStepsForRecovery();
       await repoContext.workflowRunRepo.save(workflow.id, run);
 
-      writeOutput(
-        `Recovered run ${run.id} — unknown steps reset to pending.`,
-      );
-      writeOutput(
-        `Resume with: swamp workflow resume ${workflowIdOrName} --run ${run.id}`,
-      );
+      if (cliCtx.outputMode === "json") {
+        writeOutput(JSON.stringify(
+          {
+            recovered: true,
+            runId: run.id,
+            resumeCommand:
+              `swamp workflow resume ${workflowIdOrName} --run ${run.id}`,
+          },
+          null,
+          2,
+        ));
+      } else {
+        writeOutput(
+          `Recovered run ${run.id} — unknown steps reset to pending.`,
+        );
+        writeOutput(
+          `Resume with: swamp workflow resume ${workflowIdOrName} --run ${run.id}`,
+        );
+      }
     },
   );

@@ -45,7 +45,12 @@ import {
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
+const TERMINAL_STATUSES = new Set([
+  "succeeded",
+  "failed",
+  "cancelled",
+  "interrupted",
+]);
 
 export function isServeOwnedRun(run: WorkflowRun): boolean {
   return run.instanceId !== undefined;
