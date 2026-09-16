@@ -46,9 +46,67 @@ import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_regist
 import { UserError } from "../domain/errors.ts";
 import { resolveDatastoreType } from "../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../domain/extensions/auto_resolver_context.ts";
-import { resolveDatastoreExpressions } from "./datastore_expression_resolver.ts";
+import {
+  type DatastoreExpressionContext,
+  resolveDatastoreExpressions,
+} from "./datastore_expression_resolver.ts";
 
 const logger = getLogger(["swamp", "datastore", "resolve"]);
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/**
+ * Resolves `managedConfig` when it arrives as a string expression from YAML.
+ * YAML parses `managedConfig: "${{ env.VAR }}"` as a string, not a boolean.
+ * Resolves env-only (no vault gate needed since this value IS the vault gate).
+ * Strict boolean parsing: only "true" and "1" map to true.
+ */
+async function resolveManagedConfig(
+  raw: boolean | string | undefined,
+  repoDir: string,
+): Promise<boolean | undefined> {
+  if (raw === undefined || typeof raw === "boolean") return raw;
+  const resolved = await resolveDatastoreExpressions(
+    { v: raw },
+    { repoDir },
+  );
+  const str = String(resolved.v).toLowerCase();
+  return str === "true" || str === "1";
+}
+
+interface ResolvedDatastoreFields {
+  namespace?: string;
+  directories?: string[];
+  exclude?: string[];
+  hydrationStrategy?: "full" | "lazy";
+}
+
+/**
+ * Resolves expressions in datastore-level fields that sit outside `config`.
+ */
+async function resolveDatastoreFields(
+  ds: {
+    namespace?: string;
+    directories?: string[];
+    exclude?: string[];
+    hydrationStrategy?: "full" | "lazy";
+  },
+  ctx: DatastoreExpressionContext,
+): Promise<ResolvedDatastoreFields> {
+  const toResolve: Record<string, unknown> = {};
+  if (ds.namespace != null) toResolve.namespace = ds.namespace;
+  if (ds.directories != null) toResolve.directories = ds.directories;
+  if (ds.exclude != null) toResolve.exclude = ds.exclude;
+  if (ds.hydrationStrategy != null) {
+    toResolve.hydrationStrategy = ds.hydrationStrategy;
+  }
+
+  if (Object.keys(toResolve).length === 0) return {};
+
+  const resolved = await resolveDatastoreExpressions(toResolve, ctx);
+  return resolved as ResolvedDatastoreFields;
+}
 
 export function datastoreBasePath(config: DatastoreConfig): string {
   return isCustomDatastoreConfig(config) ? config.datastorePath : config.path;
@@ -242,7 +300,21 @@ export async function resolveDatastoreConfig(
   cliArg?: string,
   repoDir?: string,
 ): Promise<DatastoreConfig> {
-  const repoId = marker?.repoId;
+  let repoId = marker?.repoId;
+
+  if (repoId) {
+    const resolved = await resolveDatastoreExpressions(
+      { v: repoId },
+      { repoDir: repoDir ?? Deno.cwd() },
+    );
+    const resolvedRepoId = String(resolved.v);
+    if (resolvedRepoId !== repoId && !UUID_PATTERN.test(resolvedRepoId)) {
+      throw new UserError(
+        `repoId must be a valid UUID, got "${resolvedRepoId}"`,
+      );
+    }
+    repoId = resolvedRepoId;
+  }
 
   // 1. Environment variable takes highest priority
   const envDatastore = Deno.env.get("SWAMP_DATASTORE");
@@ -285,11 +357,16 @@ export async function resolveDatastoreConfig(
           config.forcePathStyle = ds.forcePathStyle;
         }
 
-        const exprCtx = {
+        const resolvedManagedConfig = await resolveManagedConfig(
+          ds.managedConfig,
+          repoDir ?? Deno.cwd(),
+        );
+        const exprCtx: DatastoreExpressionContext = {
           repoDir: repoDir ?? Deno.cwd(),
-          managedConfig: ds.managedConfig,
+          managedConfig: resolvedManagedConfig,
         };
         config = await resolveDatastoreExpressions(config, exprCtx);
+        const dsFields = await resolveDatastoreFields(ds, exprCtx);
 
         if (typeInfo.configSchema) {
           const result = typeInfo.configSchema.safeParse(config);
@@ -310,10 +387,10 @@ export async function resolveDatastoreConfig(
           config,
           datastorePath,
           cachePath,
-          directories: ds.directories,
-          exclude: ds.exclude,
-          hydrationStrategy: ds.hydrationStrategy,
-          namespace: ds.namespace,
+          directories: dsFields.directories ?? ds.directories,
+          exclude: dsFields.exclude ?? ds.exclude,
+          hydrationStrategy: dsFields.hydrationStrategy ?? ds.hydrationStrategy,
+          namespace: dsFields.namespace ?? ds.namespace,
         };
       }
 
@@ -334,12 +411,16 @@ export async function resolveDatastoreConfig(
       const absPath = isAbsolute(expanded)
         ? expanded
         : resolve(repoDir ?? Deno.cwd(), expanded);
+      const fsExprCtx: DatastoreExpressionContext = {
+        repoDir: repoDir ?? Deno.cwd(),
+      };
+      const fsFields = await resolveDatastoreFields(ds, fsExprCtx);
       return {
         type: "filesystem",
         path: absPath,
-        directories: ds.directories,
-        exclude: ds.exclude,
-        namespace: ds.namespace,
+        directories: fsFields.directories ?? ds.directories,
+        exclude: fsFields.exclude ?? ds.exclude,
+        namespace: fsFields.namespace ?? ds.namespace,
       };
     }
 
@@ -373,11 +454,16 @@ export async function resolveDatastoreConfig(
 
     let customConfig = ds.config ?? {};
 
-    const exprCtx = {
+    const resolvedManagedConfig = await resolveManagedConfig(
+      ds.managedConfig,
+      repoDir ?? Deno.cwd(),
+    );
+    const exprCtx: DatastoreExpressionContext = {
       repoDir: repoDir ?? Deno.cwd(),
-      managedConfig: ds.managedConfig,
+      managedConfig: resolvedManagedConfig,
     };
     customConfig = await resolveDatastoreExpressions(customConfig, exprCtx);
+    const dsFields = await resolveDatastoreFields(ds, exprCtx);
 
     if (typeInfo.configSchema) {
       const result = typeInfo.configSchema.safeParse(customConfig);
@@ -398,10 +484,10 @@ export async function resolveDatastoreConfig(
       config: customConfig,
       datastorePath,
       cachePath,
-      directories: ds.directories,
-      exclude: ds.exclude,
-      hydrationStrategy: ds.hydrationStrategy,
-      namespace: ds.namespace,
+      directories: dsFields.directories ?? ds.directories,
+      exclude: dsFields.exclude ?? ds.exclude,
+      hydrationStrategy: dsFields.hydrationStrategy ?? ds.hydrationStrategy,
+      namespace: dsFields.namespace ?? ds.namespace,
     };
   }
 

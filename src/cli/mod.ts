@@ -151,6 +151,7 @@ import {
 import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
 import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
 import { resolveDatastoreConfig } from "./resolve_datastore.ts";
+import { resolveDatastoreExpressions } from "./datastore_expression_resolver.ts";
 import { isDevBuild } from "../domain/update/update_service.ts";
 import { UpdateNotificationService } from "../domain/update/update_notification_service.ts";
 import { UpdateCheckCacheFileRepository } from "../infrastructure/update/update_check_cache_file_repository.ts";
@@ -1184,6 +1185,23 @@ async function initTelemetryService(
         marker.repoId = repoId;
         await markerRepo.write(repoPath, marker);
       }
+
+      // Resolve expressions in repoId (local variable only — marker is not
+      // mutated so the expression text survives future writes).
+      if (repoId) {
+        try {
+          const resolved = await resolveDatastoreExpressions(
+            { v: repoId },
+            { repoDir },
+          );
+          repoId = String(resolved.v);
+        } catch {
+          // Expression resolution failure in telemetry init is non-fatal —
+          // fall back to the raw string so the CLI still starts.
+          logger.warn`Failed to resolve repoId expression, using raw value`;
+        }
+      }
+
       configuredAiTools = marker.tools;
       externalDatastore = isExternalDatastoreConfigured(marker.datastore);
       datastoreType = marker.datastore?.type;
