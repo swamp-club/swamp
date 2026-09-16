@@ -26,7 +26,7 @@ import {
 } from "../../libswamp/mod.ts";
 import { createModelMethodRunRenderer } from "./model_method_run.ts";
 import { UserError } from "../../domain/errors.ts";
-import { AUTH_NUDGE_MESSAGE } from "../../domain/auth/auth_nudge.ts";
+import { AUTH_WARNING_MESSAGE } from "../../domain/auth/auth_nudge.ts";
 
 function makeRunView(
   status: "succeeded" | "failed",
@@ -252,7 +252,7 @@ Deno.test("ConsoleModelMethodRunRenderer: shows auth nudge when not authenticate
     await consumeStream(toStream(events), renderer.handlers());
   });
   const output = lines.join("\n");
-  assertStringIncludes(output, AUTH_NUDGE_MESSAGE);
+  assertStringIncludes(output, AUTH_WARNING_MESSAGE);
 });
 
 Deno.test("ConsoleModelMethodRunRenderer: suppresses auth nudge when authenticated", async () => {
@@ -266,7 +266,7 @@ Deno.test("ConsoleModelMethodRunRenderer: suppresses auth nudge when authenticat
     await consumeStream(toStream(events), renderer.handlers());
   });
   const output = lines.join("\n");
-  assertEquals(output.includes(AUTH_NUDGE_MESSAGE), false);
+  assertEquals(output.includes(AUTH_WARNING_MESSAGE), false);
 });
 
 Deno.test("ConsoleModelMethodRunRenderer: suppresses auth nudge on failure", async () => {
@@ -283,7 +283,7 @@ Deno.test("ConsoleModelMethodRunRenderer: suppresses auth nudge on failure", asy
     await consumeStream(toStream(events), renderer.handlers());
   });
   const output = lines.join("\n");
-  assertEquals(output.includes(AUTH_NUDGE_MESSAGE), false);
+  assertEquals(output.includes(AUTH_WARNING_MESSAGE), false);
 });
 
 Deno.test("ConsoleModelMethodRunRenderer: quiet mode buffers output and discards on success", async () => {
@@ -548,7 +548,7 @@ Deno.test("JsonModelMethodRunRenderer: never shows auth nudge", async () => {
     const events = fullEventStream(makeRunView("succeeded"));
     await consumeStream(toStream(events), renderer.handlers());
     const combined = logs.join("\n");
-    assertEquals(combined.includes(AUTH_NUDGE_MESSAGE), false);
+    assertEquals(combined.includes(AUTH_WARNING_MESSAGE), false);
   } finally {
     console.log = originalLog;
   }

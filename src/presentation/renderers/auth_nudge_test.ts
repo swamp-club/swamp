@@ -18,9 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { renderAuthNudge, renderFirstRunNudge } from "./auth_nudge.ts";
+import { renderAuthWarning, renderFirstRunWarning } from "./auth_nudge.ts";
 
-Deno.test("renderAuthNudge: outputs nudge message to stderr", () => {
+Deno.test("renderAuthWarning: outputs warning message with deadline to stderr", () => {
   const lines: string[] = [];
   const original = console.error;
   console.error = (...args: unknown[]) => {
@@ -29,7 +29,7 @@ Deno.test("renderAuthNudge: outputs nudge message to stderr", () => {
     );
   };
   try {
-    renderAuthNudge();
+    renderAuthWarning();
   } finally {
     console.error = original;
   }
@@ -38,11 +38,12 @@ Deno.test("renderAuthNudge: outputs nudge message to stderr", () => {
   assertEquals(lines[0], "");
   // deno-lint-ignore no-control-regex
   const stripped = lines[1].replace(/\x1b\[[0-9;]*m/g, "");
-  assertStringIncludes(stripped, "Join & participate in the community");
+  assertStringIncludes(stripped, "require authentication");
+  assertStringIncludes(stripped, "October 1st, 2026");
   assertStringIncludes(stripped, "swamp auth login");
 });
 
-Deno.test("renderFirstRunNudge: outputs boxed first-run message to stderr", () => {
+Deno.test("renderFirstRunWarning: outputs boxed warning with deadline to stderr", () => {
   const lines: string[] = [];
   const original = console.error;
   console.error = (...args: unknown[]) => {
@@ -51,7 +52,7 @@ Deno.test("renderFirstRunNudge: outputs boxed first-run message to stderr", () =
     );
   };
   try {
-    renderFirstRunNudge();
+    renderFirstRunWarning();
   } finally {
     console.error = original;
   }
@@ -60,9 +61,9 @@ Deno.test("renderFirstRunNudge: outputs boxed first-run message to stderr", () =
   const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
   const stripped = lines.map(strip);
 
-  assertStringIncludes(stripped.join("\n"), "SWAMP CLUB");
+  assertStringIncludes(stripped.join("\n"), "Authentication required");
+  assertStringIncludes(stripped.join("\n"), "October 1st, 2026");
   assertStringIncludes(stripped.join("\n"), "swamp auth login");
-  assertStringIncludes(stripped.join("\n"), "bug reports and feature requests");
 
   const topBorder = stripped.find((l) => l.includes("┌"));
   const bottomBorder = stripped.find((l) => l.includes("└"));

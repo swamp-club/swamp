@@ -17,26 +17,28 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { bold, cyan, dim } from "@std/fmt/colors";
+import { bold, dim, yellow } from "@std/fmt/colors";
 import {
-  AUTH_FIRST_RUN_MESSAGE_LINES,
-  AUTH_NUDGE_MESSAGE,
+  AUTH_WARNING_FIRST_RUN_LINES,
+  AUTH_WARNING_MESSAGE,
 } from "../../domain/auth/auth_nudge.ts";
 
-export function renderAuthNudge(): void {
+export function renderAuthWarning(): void {
   console.error("");
   console.error(
-    cyan(
-      AUTH_NUDGE_MESSAGE.replace(
-        "swamp auth login",
-        bold("`swamp auth login`"),
-      ),
+    yellow(
+      `⚠ ${
+        AUTH_WARNING_MESSAGE.replace(
+          "`swamp auth login`",
+          bold("`swamp auth login`"),
+        )
+      }`,
     ),
   );
 }
 
-export function renderFirstRunNudge(): void {
-  const maxLen = AUTH_FIRST_RUN_MESSAGE_LINES.reduce(
+export function renderFirstRunWarning(): void {
+  const maxLen = AUTH_WARNING_FIRST_RUN_LINES.reduce(
     (max, line) => Math.max(max, line.length),
     0,
   );
@@ -45,12 +47,17 @@ export function renderFirstRunNudge(): void {
 
   console.error("");
   console.error(top);
-  for (const line of AUTH_FIRST_RUN_MESSAGE_LINES) {
+  for (const line of AUTH_WARNING_FIRST_RUN_LINES) {
     const padded = line.padEnd(maxLen);
+    const isHeader = line.startsWith("Authentication required");
     const content = line.includes("swamp auth login")
       ? padded.replace("swamp auth login", bold("swamp auth login"))
+      : isHeader
+      ? `⚠ ${padded}`
       : padded;
-    console.error(`  ${dim("│")} ${cyan(content)} ${dim("│")}`);
+    console.error(
+      `  ${dim("│")} ${yellow(isHeader ? content : content)} ${dim("│")}`,
+    );
   }
   console.error(bottom);
 }

@@ -26,7 +26,7 @@ import {
 } from "../../libswamp/mod.ts";
 import { createWorkflowRunRenderer } from "./workflow_run.ts";
 import { UserError } from "../../domain/errors.ts";
-import { AUTH_NUDGE_MESSAGE } from "../../domain/auth/auth_nudge.ts";
+import { AUTH_WARNING_MESSAGE } from "../../domain/auth/auth_nudge.ts";
 
 function makeRunView(
   status: "succeeded" | "failed",
@@ -270,7 +270,7 @@ Deno.test("ConsoleWorkflowRunRenderer: shows auth nudge when not authenticated",
   const lines = await captureOutputAsync(async () => {
     await consumeStream(toStream(events), renderer.handlers());
   });
-  assertStringIncludes(lines.join("\n"), AUTH_NUDGE_MESSAGE);
+  assertStringIncludes(lines.join("\n"), AUTH_WARNING_MESSAGE);
 });
 
 Deno.test("ConsoleWorkflowRunRenderer: suppresses auth nudge when authenticated", async () => {
@@ -282,7 +282,7 @@ Deno.test("ConsoleWorkflowRunRenderer: suppresses auth nudge when authenticated"
   const lines = await captureOutputAsync(async () => {
     await consumeStream(toStream(events), renderer.handlers());
   });
-  assertEquals(lines.join("\n").includes(AUTH_NUDGE_MESSAGE), false);
+  assertEquals(lines.join("\n").includes(AUTH_WARNING_MESSAGE), false);
 });
 
 Deno.test("ConsoleWorkflowRunRenderer: quiet mode buffers output and discards on success", async () => {
@@ -682,7 +682,7 @@ Deno.test("JsonWorkflowRunRenderer: never shows auth nudge", async () => {
     const events = simpleEvents(makeRunView("succeeded"));
     await consumeStream(toStream(events), renderer.handlers());
     const combined = logs.join("\n");
-    assertEquals(combined.includes(AUTH_NUDGE_MESSAGE), false);
+    assertEquals(combined.includes(AUTH_WARNING_MESSAGE), false);
   } finally {
     console.log = originalLog;
   }
