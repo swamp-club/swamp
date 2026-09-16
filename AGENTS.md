@@ -128,6 +128,25 @@ in `src/libswamp/`) may import from internal paths.
   round-trips for parsers, serialization, and data lifecycle.
 - **Contract/conformance tests** (`packages/testing/` suites): run first-party
   providers against the same contracts extension authors are held to.
+
+### When to add beyond unit tests
+
+The `ddd` skill maps building blocks to required test types (property tests,
+conformance suites, integration tests). The triggers below cover structural
+changes that aren't tied to a single building block:
+
+- **Architectural fitness test** — add or update a `*_rules_test.ts` in
+  `integration/` when you introduce a new module boundary, allow a new
+  cross-layer import, add a new libswamp public export, or change the
+  json-mode/license-header conventions. Use the pinned-ratchet pattern from
+  `arch_fitness_helpers.ts`.
+- **Conformance suite** — add a suite to `packages/testing/` when you define a
+  new provider interface that extension authors will implement. Follow the
+  `datastore_conformance.ts` pattern.
+- **Integration test** — add to `integration/` when you change cross-component
+  contracts (shared constants, event schemas, repository interfaces) or wire new
+  components together for the first time.
+
 - **Acceptance/UAT tests do NOT live here.** Anything that spawns the swamp CLI
   and asserts user-facing behavior (stdout, exit codes, flags, journeys) belongs
   in the `swamp-uat` repo, which runs against the compiled binary. Do not add

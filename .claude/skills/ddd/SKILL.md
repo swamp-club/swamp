@@ -57,6 +57,28 @@ project documentation.
 - Prefer verbs for domain services: `PricingService`, `ShippingCalculator`
 - Name aggregates by their root: `Order` (not `OrderAggregate`)
 
+## Testing by Building Block
+
+When you create or modify a building block, include the test types below
+alongside the unit test. See [references/testing.md](references/testing.md) for
+templates.
+
+| Building Block          | Required Beyond Unit Tests                                                                                                    |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| **Value Object**        | Property test: round-trip serialization, equality symmetry, `create()` rejects invalid inputs across random inputs            |
+| **Entity**              | Property test: state-transition invariants hold across random mutation sequences                                              |
+| **Aggregate**           | Property test: aggregate invariants hold after random command sequences. Integration test when it wires multiple repositories |
+| **Domain Service**      | Property test when it transforms or computes across value objects. Integration test when it orchestrates multiple aggregates  |
+| **Repository**          | Conformance suite in `packages/testing/` when it defines a new provider interface that extensions implement                   |
+| **Application Service** | Integration test wiring real dependencies (temp filesystem, event bus, port-0 mock servers)                                   |
+
+### When to skip
+
+A property test adds no value when the function under test is a trivial
+delegation (e.g. a repository method that calls a single store method). Use
+judgement — the goal is to cover invariants that unit tests can't exhaust, not
+to hit a ratio.
+
 ## Anti-Patterns to Avoid
 
 - **Anemic domain model**: Entities with only getters/setters, logic in services
