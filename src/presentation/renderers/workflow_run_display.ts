@@ -98,7 +98,7 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
     ? ` (${data.duration}ms)`
     : "";
   const resultText = `Result: ${data.status.toUpperCase()}${durationSuffix}`;
-  const colorize = data.status === "failed"
+  const colorize = data.status === "failed" || data.status === "interrupted"
     ? red
     : data.status === "cancelled"
     ? yellow
@@ -118,7 +118,9 @@ function statusIcon(
     | "succeeded"
     | "failed"
     | "skipped"
-    | "cancelled",
+    | "cancelled"
+    | "unknown"
+    | "interrupted",
 ): string {
   const icons: Record<string, string> = {
     pending: "\u25CB",
@@ -128,6 +130,8 @@ function statusIcon(
     failed: "\u2717",
     skipped: "\u2298",
     cancelled: "\u2716",
+    unknown: "?",
+    interrupted: "\u26A0",
   };
   return icons[status] ?? "?";
 }

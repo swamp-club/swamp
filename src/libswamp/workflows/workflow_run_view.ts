@@ -74,7 +74,8 @@ export interface StepRunView {
     | "waiting_approval"
     | "succeeded"
     | "failed"
-    | "skipped";
+    | "skipped"
+    | "unknown";
   error?: string;
   startedAt?: string;
   completedAt?: string;
@@ -103,7 +104,8 @@ export interface JobRunView {
     | "waiting_approval"
     | "succeeded"
     | "failed"
-    | "skipped";
+    | "skipped"
+    | "unknown";
   steps: StepRunView[];
   startedAt?: string;
   completedAt?: string;
@@ -121,7 +123,8 @@ export interface WorkflowRunView {
     | "suspended"
     | "succeeded"
     | "failed"
-    | "cancelled";
+    | "cancelled"
+    | "interrupted";
   jobs: JobRunView[];
   startedAt?: string;
   completedAt?: string;

@@ -2767,7 +2767,7 @@ export const serveCommand = new Command()
       "running",
       reapCutoff,
     );
-    await reapOrphanedWorkflowRuns(
+    const reapResult = await reapOrphanedWorkflowRuns(
       recentRuns,
       (wid, r) => repoContext.workflowRunRepo.save(wid, r),
       (runId) => {
@@ -2777,6 +2777,12 @@ export const serveCommand = new Command()
       isProcessDead,
       instanceId,
     );
+    if (reapResult.reaped > 0) {
+      logger.warn(
+        "Boot: {reaped} workflow run(s) interrupted by crash — recover with 'swamp workflow recover <workflow>'",
+        { reaped: reapResult.reaped },
+      );
+    }
 
     logger.info("Boot: sweeping stale records");
     const swept = await sweepStaleRecords({

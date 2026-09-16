@@ -3467,15 +3467,17 @@ Deno.test("CONTRACT: run is persisted at start, after each level, and at complet
 
     await service.execute(workflow.name);
 
-    // Persistence contract for two-level workflow: 4 saves —
+    // Persistence contract for two-level workflow: 6 saves —
     //   1. After run.start() (status: running, before any level)
-    //   2. After level 1 completes
-    //   3. After level 2 completes
-    //   4. After run.complete() (status: succeeded)
+    //   2. After step "compile" completes (per-step checkpoint)
+    //   3. After level 1 completes (level backstop)
+    //   4. After step "unit" completes (per-step checkpoint)
+    //   5. After level 2 completes (level backstop)
+    //   6. After run.complete() (status: succeeded)
     assertEquals(
       runRepo.saves.length,
-      4,
-      `expected 4 saves, got ${runRepo.saves.length}: ${
+      6,
+      `expected 6 saves, got ${runRepo.saves.length}: ${
         JSON.stringify(runRepo.saves)
       }`,
     );

@@ -241,6 +241,51 @@ export class YamlEvaluatedWorkflowRepository {
     return this.idToActualPath.get(id) ?? this.getLegacyPath(id);
   }
 
+  async saveForRun(runId: string, workflow: Workflow): Promise<void> {
+    const dir = join(this.baseDir, "runs", runId);
+    await assertSafePath(dir, this.baseDir);
+    await ensureDir(dir);
+
+    const targetPath = join(dir, "evaluated-workflow.yaml");
+    await this.notifyDirty(targetPath);
+    const data = workflow.toData();
+    const cleanData = JSON.parse(JSON.stringify(data));
+    const content = stringifyYaml(cleanData as Record<string, unknown>);
+    await atomicWriteTextFile(targetPath, content);
+  }
+
+  async findByRunId(runId: string): Promise<Workflow | null> {
+    const targetPath = join(
+      this.baseDir,
+      "runs",
+      runId,
+      "evaluated-workflow.yaml",
+    );
+    try {
+      const content = await Deno.readTextFile(targetPath);
+      const data = parseYaml(content) as WorkflowData | null;
+      if (data) {
+        return Workflow.fromData(data);
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+    return null;
+  }
+
+  async deleteForRun(runId: string): Promise<void> {
+    const dir = join(this.baseDir, "runs", runId);
+    try {
+      await Deno.remove(dir, { recursive: true });
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+  }
+
   private resolveWritePath(workflow: Workflow): string {
     if (isFilenameSafeName(workflow.name)) {
       return this.getNamePath(workflow.name);

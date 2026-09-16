@@ -62,6 +62,7 @@ export const StepRunSchema = z.object({
     "succeeded",
     "failed",
     "skipped",
+    "unknown",
   ]),
   startedAt: z.string().datetime().optional(),
   completedAt: z.string().datetime().optional(),
@@ -92,6 +93,7 @@ export const JobRunSchema = z.object({
     "succeeded",
     "failed",
     "skipped",
+    "unknown",
   ]),
   startedAt: z.string().datetime().optional(),
   completedAt: z.string().datetime().optional(),
@@ -117,6 +119,7 @@ export const WorkflowRunSchema = z.object({
     "succeeded",
     "failed",
     "cancelled",
+    "interrupted",
   ]),
   startedAt: z.string().datetime().optional(),
   completedAt: z.string().datetime().optional(),
@@ -142,6 +145,10 @@ export const WorkflowRunSchema = z.object({
   stepProgress: z.object({
     completed: z.number().int().nonnegative(),
     total: z.number().int().nonnegative(),
+  }).optional(),
+  runPlan: z.object({
+    fingerprint: z.string(),
+    evaluatedWorkflowId: z.string().optional(),
   }).optional(),
 });
 
@@ -345,6 +352,18 @@ export class StepRun {
   }
 
   /**
+   * Marks the step as unknown — the step was in-flight when the process
+   * crashed and its outcome is ambiguous.
+   */
+  markUnknown(error?: string): void {
+    this._status = "unknown";
+    this._completedAt = new Date();
+    if (error !== undefined) {
+      this._error = error;
+    }
+  }
+
+  /**
    * Marks the step as skipped.
    */
   skip(): void {
@@ -467,6 +486,7 @@ export class JobRun implements TriggerEvaluationContext {
     ) {
       return "running";
     }
+    if (statuses.some((s) => s === "unknown")) return "unknown";
     if (statuses.some((s) => s === "failed")) return "failed";
     if (statuses.every((s) => s === "succeeded")) return "succeeded";
     if (statuses.every((s) => s === "skipped")) return "skipped";
@@ -568,6 +588,15 @@ export class JobRun implements TriggerEvaluationContext {
   }
 
   /**
+   * Marks the job as unknown — the job was in-flight when the process
+   * crashed and its outcome is ambiguous.
+   */
+  markUnknown(): void {
+    this._status = "unknown";
+    this._completedAt = new Date();
+  }
+
+  /**
    * Marks the job as skipped.
    */
   skip(): void {
@@ -609,7 +638,8 @@ export class WorkflowRun implements TriggerEvaluationContext {
       | "suspended"
       | "succeeded"
       | "failed"
-      | "cancelled",
+      | "cancelled"
+      | "interrupted",
     private _startedAt: Date | undefined,
     private _completedAt: Date | undefined,
     private _jobs: JobRun[],
@@ -623,6 +653,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
     private _instanceId: string | undefined = undefined,
     private _triggerSource: string | undefined = undefined,
     private _references: Record<string, string> | undefined = undefined,
+    private _runPlan:
+      | { fingerprint: string; evaluatedWorkflowId?: string }
+      | undefined = undefined,
   ) {}
 
   /**
@@ -687,6 +720,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
       validated.instanceId,
       validated.triggerSource,
       validated.references,
+      validated.runPlan,
     );
   }
 
@@ -696,7 +730,8 @@ export class WorkflowRun implements TriggerEvaluationContext {
     | "suspended"
     | "succeeded"
     | "failed"
-    | "cancelled" {
+    | "cancelled"
+    | "interrupted" {
     return this._status;
   }
 
@@ -801,7 +836,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
    * No-ops if the run is already cancelled.
    */
   complete(): void {
-    if (this._status === "cancelled") {
+    if (this._status === "cancelled" || this._status === "interrupted") {
       return;
     }
     const anyNonTerminal = this._jobs.some((j) =>
@@ -821,7 +856,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
   cancel(reason?: string): void {
     if (
       this._status === "succeeded" || this._status === "failed" ||
-      this._status === "cancelled"
+      this._status === "cancelled" || this._status === "interrupted"
     ) {
       return;
     }
@@ -839,16 +874,73 @@ export class WorkflowRun implements TriggerEvaluationContext {
     for (const job of this._jobs) {
       for (const step of job.steps) {
         if (step.status === "running") {
-          step.fail(`interrupted: ${reason}`);
+          step.markUnknown(`interrupted: ${reason}`);
         }
       }
       if (job.status === "running") {
-        job.fail();
+        job.markUnknown();
       }
     }
-    this._status = "failed";
+    this._status = "interrupted";
     this._completedAt = new Date();
     this._tags["interrupt_reason"] = reason;
+  }
+
+  /**
+   * Returns the names of all steps currently in `unknown` status.
+   */
+  unknownSteps(): string[] {
+    const result: string[] = [];
+    for (const job of this._jobs) {
+      for (const step of job.steps) {
+        if (step.status === "unknown") {
+          result.push(step.stepName);
+        }
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Resets all `unknown` steps to `pending` for recovery re-execution.
+   * Also resets their containing jobs if those jobs are in `unknown` status.
+   * Only valid on interrupted runs.
+   */
+  resetUnknownStepsForRecovery(): void {
+    if (this._status !== "interrupted") {
+      throw new Error(
+        `Cannot reset unknown steps: run is ${this._status}, expected interrupted`,
+      );
+    }
+    for (const job of this._jobs) {
+      for (const step of job.steps) {
+        if (step.status === "unknown") {
+          step.resetToPending();
+        }
+      }
+      if (job.status === "unknown") {
+        job.resetToPending();
+      }
+    }
+    this._status = "suspended";
+    this._completedAt = undefined;
+  }
+
+  /**
+   * The run plan identity captured at run start. Contains the fingerprint
+   * of the evaluated workflow and an optional reference to the persisted snapshot.
+   */
+  get runPlan():
+    | { fingerprint: string; evaluatedWorkflowId?: string }
+    | undefined {
+    return this._runPlan;
+  }
+
+  captureRunPlan(
+    fingerprint: string,
+    evaluatedWorkflowId?: string,
+  ): void {
+    this._runPlan = { fingerprint, evaluatedWorkflowId };
   }
 
   /**
@@ -1006,6 +1098,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
     if (stepProgress !== undefined) {
       data.stepProgress = stepProgress;
     }
+    if (this._runPlan !== undefined) {
+      data.runPlan = { ...this._runPlan };
+    }
 
     return data;
   }
@@ -1037,7 +1132,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
         total++;
         if (
           step.status === "succeeded" || step.status === "skipped" ||
-          step.status === "failed"
+          step.status === "failed" || step.status === "unknown"
         ) {
           completed++;
         }

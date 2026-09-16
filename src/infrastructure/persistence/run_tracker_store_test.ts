@@ -149,7 +149,7 @@ Deno.test("RunTrackerStore: findStaleRuns finds stale runs by TTL", () => {
   }
 });
 
-Deno.test("RunTrackerStore: reapStaleRuns marks stale runs as failed", () => {
+Deno.test("RunTrackerStore: reapStaleRuns marks stale runs as interrupted", () => {
   const store = new RunTrackerStore(makeTempDbPath());
   try {
     const staleRun = ActiveRun.fromData({
@@ -173,7 +173,7 @@ Deno.test("RunTrackerStore: reapStaleRuns marks stale runs as failed", () => {
     assertEquals(reaped[0].id, "stale-1");
 
     const updated = store.findById("stale-1");
-    assertEquals(updated?.status, "failed");
+    assertEquals(updated?.status, "interrupted");
   } finally {
     store.close();
   }
@@ -397,7 +397,7 @@ Deno.test("RunTrackerStore: schema v2 migration adds pending_runs to existing DB
 
 // ── reapDeadProcessRuns tests ──────────────────────────────────────
 
-Deno.test("RunTrackerStore: reapDeadProcessRuns marks dead-PID runs as failed", () => {
+Deno.test("RunTrackerStore: reapDeadProcessRuns marks dead-PID runs as interrupted", () => {
   const store = new RunTrackerStore(makeTempDbPath());
   try {
     const run = ActiveRun.fromData({
@@ -418,7 +418,7 @@ Deno.test("RunTrackerStore: reapDeadProcessRuns marks dead-PID runs as failed", 
 
     assertEquals(reaped.length, 1);
     assertEquals(reaped[0].id, "dead-1");
-    assertEquals(store.findById("dead-1")?.status, "failed");
+    assertEquals(store.findById("dead-1")?.status, "interrupted");
   } finally {
     store.close();
   }
@@ -526,7 +526,7 @@ Deno.test("RunTrackerStore: reapStaleRuns with instanceId skips rows from differ
 
     assertEquals(reaped.length, 1);
     assertEquals(reaped[0].id, "foreign-instance-1");
-    assertEquals(store.findById("foreign-instance-1")?.status, "failed");
+    assertEquals(store.findById("foreign-instance-1")?.status, "interrupted");
   } finally {
     store.close();
   }
@@ -661,7 +661,7 @@ Deno.test("RunTrackerStore: reapDeadProcessRuns with instanceId reaps dead PIDs 
 
     assertEquals(reaped.length, 1);
     assertEquals(reaped[0].id, "same-instance-dead-1");
-    assertEquals(store.findById("same-instance-dead-1")?.status, "failed");
+    assertEquals(store.findById("same-instance-dead-1")?.status, "interrupted");
   } finally {
     store.close();
   }

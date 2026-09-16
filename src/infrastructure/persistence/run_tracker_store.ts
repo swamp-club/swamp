@@ -367,7 +367,7 @@ export class RunTrackerStore implements RunTrackerRepository {
       const shouldReap = isLocal ? isProcessDead(run.pid) : true;
 
       if (shouldReap) {
-        this.complete(run.id, "failed");
+        this.complete(run.id, "interrupted");
         reaped.push(run);
       }
     }
@@ -389,7 +389,7 @@ export class RunTrackerStore implements RunTrackerRepository {
       if (run.pid === Deno.pid) continue;
       if (!isProcessDead(run.pid)) continue;
 
-      this.complete(run.id, "failed");
+      this.complete(run.id, "interrupted");
       reaped.push(run);
     }
 

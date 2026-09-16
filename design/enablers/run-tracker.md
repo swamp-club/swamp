@@ -77,11 +77,12 @@ collects older run records on demand with a 30-day default, `--older-than`,
 3. **Complete** — on success/failure/cancel/suspend, UPDATE status (guarded by
    `AND status IN ('running', 'suspended')` to prevent TOCTOU races)
 4. **Reap** — find stale rows (heartbeat >90s): same-machine checks
-   `isProcessDead(pid)` first, cross-machine uses TTL alone. Reaping runs at
-   `swamp serve` boot, `swamp model method run`, `swamp model cancel`, and
-   `swamp run doctor --fix` (locally or via the `run.doctor` handler) — not on
-   every CLI invocation (`reapStaleRuns` callers in `src/cli/commands/` and
-   `src/serve/handlers/admin_handlers.ts`)
+   `isProcessDead(pid)` first, cross-machine uses TTL alone. Reaped runs are
+   marked `interrupted` (not `failed`) so they are eligible for checkpoint
+   recovery. Reaping runs at `swamp serve` boot, `swamp model method run`,
+   `swamp model cancel`, and `swamp run doctor --fix` (locally or via the
+   `run.doctor` handler) — not on every CLI invocation (`reapStaleRuns`
+   callers in `src/cli/commands/` and `src/serve/handlers/admin_handlers.ts`)
 5. **Suspend** — workflow approval gates set status to `suspended`, which
    excludes the row from stale detection
 6. **Reactivate** — on workflow resume, transitions `suspended` → `running` and

@@ -60,6 +60,7 @@ import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { MethodExecutionService } from "../models/method_execution_service.ts";
 import { YamlEvaluatedDefinitionRepository } from "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
+import { computeWorkflowFingerprint } from "./workflow_fingerprint.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { type Namespace, SOLO_NAMESPACE } from "../data/namespace.ts";
@@ -1512,6 +1513,16 @@ export class DefaultStepExecutor implements StepExecutor {
 
 // Re-export from dedicated file for backward compatibility
 export type { WorkflowExecutionEvent } from "./execution_events.ts";
+
+export interface RecoveryAssessment {
+  canAutoRecover: boolean;
+  reason?: string;
+  guardedSteps: string[];
+  unguardedSteps: string[];
+  runId?: string;
+  workflowId?: string;
+  fingerprintMismatch?: boolean;
+}
 import type { WorkflowExecutionEvent } from "./execution_events.ts";
 
 /**
@@ -1674,6 +1685,7 @@ export class WorkflowExecutionService {
       let expressionContext: ExpressionContext | undefined;
       let run: WorkflowRun;
       let workflowLogPath: string;
+      let evaluatedWorkflowFingerprint: string | undefined;
       const secretRedactor = new SecretRedactor();
 
       try {
@@ -1727,6 +1739,9 @@ export class WorkflowExecutionService {
             this.repoDir,
           );
           await evaluatedWorkflowRepo.save(workflow);
+          evaluatedWorkflowFingerprint = await computeWorkflowFingerprint(
+            workflow,
+          );
         }
 
         // Create workflow run with merged tags (runtime tags take precedence)
@@ -1776,6 +1791,13 @@ export class WorkflowExecutionService {
         // Enrich span with resolved workflow metadata
         runSpan.setAttribute("workflow.id", workflow.id);
         runSpan.setAttribute("workflow.run_id", run.id);
+
+        // Capture the evaluated workflow fingerprint for recovery
+        if (evaluatedWorkflowFingerprint) {
+          const evalRepo = new YamlEvaluatedWorkflowRepository(this.repoDir);
+          await evalRepo.saveForRun(run.id, workflow);
+          run.captureRunPlan(evaluatedWorkflowFingerprint, run.id);
+        }
 
         // Start execution
         run.start(Deno.pid, options?.instanceId);
@@ -1953,10 +1975,13 @@ export class WorkflowExecutionService {
             if (event.dataHandles) {
               dataHandlesByStep.set(key, event.dataHandles);
             }
+            await this.saveRun(workflow.id, run);
           } else if (event.kind === "step_failed") {
             stepStatuses.set(`${event.jobId}:${event.stepId}`, "failed");
+            await this.saveRun(workflow.id, run);
           } else if (event.kind === "step_skipped") {
             stepStatuses.set(`${event.jobId}:${event.stepId}`, "skipped");
+            await this.saveRun(workflow.id, run);
           }
           if (event.kind === "job_completed" && event.status === "failed") {
             anyJobFailed = true;
@@ -1969,7 +1994,8 @@ export class WorkflowExecutionService {
         // consumed. Derive anyJobFailed from model state.
         if (!anyJobFailed && options?.signal?.aborted) {
           anyJobFailed = run.jobs.some((j) =>
-            j.status === "running" || j.status === "failed"
+            j.status === "running" || j.status === "failed" ||
+            j.status === "unknown"
           );
         }
 
@@ -2245,7 +2271,7 @@ export class WorkflowExecutionService {
       for (const step of job.steps) {
         if (
           step.status === "succeeded" || step.status === "failed" ||
-          step.status === "skipped"
+          step.status === "skipped" || step.status === "unknown"
         ) {
           expressionContext.steps[step.stepName] = {
             status: step.status,
@@ -2357,7 +2383,7 @@ export class WorkflowExecutionService {
           if (
             jobRun &&
             (jobRun.status === "succeeded" || jobRun.status === "failed" ||
-              jobRun.status === "skipped")
+              jobRun.status === "skipped" || jobRun.status === "unknown")
           ) {
             return (async function* () {})();
           }
@@ -2390,10 +2416,13 @@ export class WorkflowExecutionService {
             if (event.dataHandles) {
               dataHandlesByStep.set(key, event.dataHandles);
             }
+            await this.saveRun(workflow.id, existingRun);
           } else if (event.kind === "step_failed") {
             stepStatuses.set(`${event.jobId}:${event.stepId}`, "failed");
+            await this.saveRun(workflow.id, existingRun);
           } else if (event.kind === "step_skipped") {
             stepStatuses.set(`${event.jobId}:${event.stepId}`, "skipped");
+            await this.saveRun(workflow.id, existingRun);
           }
           yield event as WorkflowExecutionEvent;
         }
@@ -2704,7 +2733,8 @@ export class WorkflowExecutionService {
         // consumed. Derive jobFailed from model state so cleanup kicks in.
         if (!jobFailed && options.signal?.aborted) {
           jobFailed = jobRun.steps.some((s) =>
-            s.status === "running" || s.status === "failed"
+            s.status === "running" || s.status === "failed" ||
+            s.status === "unknown"
           );
         }
 
@@ -2720,7 +2750,7 @@ export class WorkflowExecutionService {
       const suspendedWithPendingSteps = run.status === "suspended" &&
         jobRun.steps.some((s) =>
           s.status !== "succeeded" && s.status !== "failed" &&
-          s.status !== "skipped"
+          s.status !== "skipped" && s.status !== "unknown"
         );
       if (suspendedWithPendingSteps) {
         jobSpan.setStatus({ code: SpanStatusCode.OK });
@@ -2798,7 +2828,7 @@ export class WorkflowExecutionService {
     if (
       stepRun &&
       (stepRun.status === "succeeded" || stepRun.status === "failed" ||
-        stepRun.status === "skipped")
+        stepRun.status === "skipped" || stepRun.status === "unknown")
     ) {
       // Replay assert_result for completed assert steps so renderers
       // (JUnit, console summary) include prior-run results.
@@ -3334,7 +3364,7 @@ export class WorkflowExecutionService {
       if (
         stepExprContext?.steps &&
         (stepRun.status === "succeeded" || stepRun.status === "failed" ||
-          stepRun.status === "skipped")
+          stepRun.status === "skipped" || stepRun.status === "unknown")
       ) {
         const stepOutputs = this.extractStepOutputsForContext(stepRun);
         stepExprContext.steps[stepName] = {
@@ -3748,6 +3778,151 @@ export class WorkflowExecutionService {
         definitions,
       )
       : this.modelResolver.buildLightContext();
+  }
+
+  /**
+   * Assesses whether an interrupted run can be automatically recovered.
+   * Returns which unknown steps are auto-recoverable (have guards) and
+   * which require operator acknowledgement.
+   */
+  async assessRecovery(
+    workflowIdOrName: string,
+    runId?: string,
+  ): Promise<RecoveryAssessment> {
+    const workflow = await this.lookupWorkflow(workflowIdOrName);
+    if (!workflow) {
+      return {
+        canAutoRecover: false,
+        reason: `Workflow not found: ${workflowIdOrName}`,
+        guardedSteps: [],
+        unguardedSteps: [],
+      };
+    }
+
+    const allRuns = await this.runRepo.findAllByWorkflowId(workflow.id);
+    const interruptedRuns = allRuns.filter((r) =>
+      r.status === "interrupted"
+    );
+    if (interruptedRuns.length === 0) {
+      return {
+        canAutoRecover: false,
+        reason: `No interrupted runs found for workflow "${workflow.name}"`,
+        guardedSteps: [],
+        unguardedSteps: [],
+      };
+    }
+
+    const run = runId
+      ? interruptedRuns.find((r) => r.id === runId)
+      : interruptedRuns[0];
+    if (!run) {
+      return {
+        canAutoRecover: false,
+        reason: `Interrupted run ${runId} not found`,
+        guardedSteps: [],
+        unguardedSteps: [],
+      };
+    }
+
+    if (run.runPlan?.fingerprint) {
+      const currentFingerprint = await computeWorkflowFingerprint(workflow);
+      if (currentFingerprint !== run.runPlan.fingerprint) {
+        return {
+          canAutoRecover: false,
+          reason:
+            "Workflow definition changed since the run started — use 'swamp workflow resume --from <step>' instead",
+          guardedSteps: [],
+          unguardedSteps: [],
+          fingerprintMismatch: true,
+        };
+      }
+    }
+
+    const unknownStepNames = run.unknownSteps();
+    const guardedSteps: string[] = [];
+    const unguardedSteps: string[] = [];
+
+    for (const stepName of unknownStepNames) {
+      const step = workflow.jobs
+        .flatMap((j) => j.steps)
+        .find((s) => s.name === stepName);
+      if (step?.guard) {
+        guardedSteps.push(stepName);
+      } else {
+        unguardedSteps.push(stepName);
+      }
+    }
+
+    return {
+      canAutoRecover: unguardedSteps.length === 0,
+      reason: unguardedSteps.length > 0
+        ? `${unguardedSteps.length} unknown step(s) lack guard expressions — operator acknowledgement required`
+        : undefined,
+      guardedSteps,
+      unguardedSteps,
+      runId: run.id,
+      workflowId: workflow.id,
+    };
+  }
+
+  /**
+   * Recovers an interrupted run by resetting unknown steps to pending and
+   * re-entering the executor. Requires either all unknown steps to have
+   * guards (auto-recovery) or explicit operator acknowledgement.
+   */
+  async *recover(
+    workflowIdOrName: string,
+    options?: {
+      runId?: string;
+      acknowledgeUnknown?: boolean;
+      signal?: AbortSignal;
+      instanceId?: string;
+    },
+  ): AsyncGenerator<WorkflowExecutionEvent> {
+    const assessment = await this.assessRecovery(
+      workflowIdOrName,
+      options?.runId,
+    );
+
+    if (assessment.fingerprintMismatch) {
+      throw new UserError(assessment.reason!);
+    }
+
+    if (
+      !assessment.canAutoRecover && !options?.acknowledgeUnknown
+    ) {
+      throw new UserError(
+        `Cannot auto-recover: ${assessment.reason}\n` +
+          `Unguarded steps: ${assessment.unguardedSteps.join(", ")}\n` +
+          `Use --acknowledge-unknown to accept re-execution risk for unguarded steps.`,
+      );
+    }
+
+    if (!assessment.runId || !assessment.workflowId) {
+      throw new UserError(assessment.reason ?? "No recoverable run found");
+    }
+
+    const workflow = await this.lookupWorkflow(workflowIdOrName);
+    if (!workflow) {
+      throw new UserError(`Workflow not found: ${workflowIdOrName}`);
+    }
+
+    const run = await this.runRepo.findById(
+      workflow.id,
+      createWorkflowRunId(assessment.runId!),
+    );
+    if (!run || run.status !== "interrupted") {
+      throw new UserError(`Run ${assessment.runId} is no longer interrupted`);
+    }
+
+    // Reset unknown steps to pending for re-execution
+    run.resetUnknownStepsForRecovery();
+    await this.saveRun(workflow.id, run);
+
+    // Re-enter the executor via the existing resume path
+    yield* this.resume(workflowIdOrName, run.id, {
+      signal: options?.signal,
+    });
   }
 
   private async saveRun(

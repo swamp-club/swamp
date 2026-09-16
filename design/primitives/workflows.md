@@ -1023,8 +1023,9 @@ datastore at `workflow-runs/{workflow-uuid}/workflow-run-{run-uuid}.yaml`
 - `suspended` — paused at a manual approval gate
 - `succeeded` — all jobs completed successfully
 - `failed` — at least one job failed or an error occurred
-- `cancelled` — explicitly cancelled by a user (runs orphaned by a serve
-  restart are marked `failed`, see below)
+- `cancelled` — explicitly cancelled by a user
+- `interrupted` — the owning process crashed; in-flight steps are `unknown`
+  and the run is recoverable (see [Recovery](#recovery) below)
 
 ### Cancellation
 
@@ -1043,9 +1044,9 @@ On daemon restart, `swamp serve` automatically reaps orphaned runs left in
 `running` state by the previous process (`reapOrphanedWorkflowRuns` in
 `src/cli/commands/serve.ts`): each is interrupted via
 `run.interrupt("server_crash")` (`src/domain/workflows/workflow_run.ts`), which
-marks in-flight steps and the run **`failed`** and tags the run with
-`interrupt_reason: server_crash`. "daemon restarted" appears only in the log
-line explaining why the run was reaped.
+marks in-flight steps as **`unknown`** and the run as **`interrupted`**, tagged
+with `interrupt_reason: server_crash`. Interrupted runs are recoverable — see
+[Recovery](#recovery) below.
 
 A `RunCancelRegistry` in the serve layer centralises AbortController tracking
 across all execution paths (scheduled, WebSocket ad-hoc, webhook). The cancel
@@ -1079,6 +1080,45 @@ run instead of being skipped.
 The `--timeout` flag kills in-flight subprocesses (SIGTERM) when the deadline
 elapses, then runs cleanup steps. It does not wait for the subprocess to finish
 before marking it failed.
+
+### Recovery
+
+When a serve instance crashes during a workflow run, the run is marked
+`interrupted` and its in-flight steps are marked `unknown`. An `unknown` step
+means the step was running at crash time and its outcome is ambiguous — it may
+have completed externally but Swamp did not record the result.
+
+**Step-boundary checkpoints:** the run is saved after each step reaches a
+terminal state (succeeded, failed, skipped), not just at topological level
+boundaries. This means a crash mid-level preserves completed steps in that level.
+
+**Run plan identity:** at run start, the evaluated workflow is fingerprinted and
+a per-run snapshot is stored in `.swamp/workflows-evaluated/runs/{runId}/`. On
+recovery, the current workflow definition's fingerprint is compared to the run's
+stored fingerprint. If they differ, auto-recovery is refused — the operator must
+use `swamp workflow resume --from <step>` instead.
+
+**Recovery assessment (`swamp workflow recover --assess-only`):** inspects each
+`unknown` step and classifies it as auto-recoverable (the step has a `guard`
+expression) or requires-acknowledgement (no guard). A guard-protected step can
+be safely re-executed because the guard will skip it if the work was already done.
+
+**Recovery flow:**
+
+1. `swamp workflow recover <workflow>` — assesses the interrupted run. If all
+   unknown steps have guards and fingerprints match, resets unknown steps to
+   `pending` and transitions the run to `suspended`.
+2. `swamp workflow resume <workflow> --run <id>` — re-enters the executor. The
+   guard evaluates each reset step: if the step's work completed before the
+   crash, the guard returns truthy and the step is skipped; otherwise it
+   re-executes.
+
+When unknown steps lack guards, `--acknowledge-unknown` explicitly accepts the
+risk of re-executing steps whose external side effects may have already fired.
+
+**Non-goals:** recovery does not promise exactly-once execution. A crash can
+occur after an external side effect succeeds but before Swamp records step
+completion. The `unknown` status makes this ambiguity visible.
 
 ## Domain Events
 

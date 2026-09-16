@@ -512,7 +512,7 @@ export async function reconcileRemoteInterruptedRuns(
     if (!run.instanceId) continue;
     if (run.status !== "running") continue;
     if (!claimedSet.has(run.instanceId)) continue;
-    deps.runTracker.complete(run.id, "failed", "remote_instance_dead");
+    deps.runTracker.complete(run.id, "interrupted", "remote_instance_dead");
     reaped++;
     logger.warn(
       "Reaped run {runId} from dead remote instance {instanceId}",

@@ -34,6 +34,7 @@ import { workflowRejectCommand } from "./workflow_reject.ts";
 import { workflowResumeCommand } from "./workflow_resume.ts";
 import { workflowApprovalsCommand } from "./workflow_approvals.ts";
 import { workflowCancelCommand } from "./workflow_cancel.ts";
+import { workflowRecoverCommand } from "./workflow_recover.ts";
 import { workflowTriggerCommand } from "./workflow_trigger.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 
@@ -54,6 +55,7 @@ export const workflowCommand = new Command()
   .command("approve", workflowApproveCommand)
   .command("cancel", workflowCancelCommand)
   .command("reject", workflowRejectCommand)
+  .command("recover", workflowRecoverCommand)
   .command("resume", workflowResumeCommand)
   .command("approvals", workflowApprovalsCommand)
   .command("schema", workflowSchemaCommand)

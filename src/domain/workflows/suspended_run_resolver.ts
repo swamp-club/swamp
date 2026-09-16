@@ -180,6 +180,8 @@ function nextActionForStatus(
       return ` Resume the failed run with 'swamp workflow resume ${workflowName} --from <step>'.`;
     case "suspended":
       return ` Approve or resume the suspended run with 'swamp workflow approve ${workflowName}'.`;
+    case "interrupted":
+      return ` Recover the interrupted run with 'swamp workflow recover ${workflowName}'.`;
     default:
       return ` Check the run status with 'swamp workflow history ${workflowName}'.`;
   }

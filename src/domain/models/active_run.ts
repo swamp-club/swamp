@@ -28,6 +28,7 @@ export const ActiveRunStatuses = [
   "failed",
   "cancelled",
   "suspended",
+  "interrupted",
 ] as const;
 export type ActiveRunStatus = typeof ActiveRunStatuses[number];
 

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import { JobRun, StepRun, WorkflowRun } from "./workflow_run.ts";
 import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
@@ -1038,7 +1038,7 @@ Deno.test("WorkflowRun.resetForResumeFrom: does not reset jobs without target st
 
 // interrupt() tests
 
-Deno.test("WorkflowRun.interrupt: marks running run as failed with interrupt tag", () => {
+Deno.test("WorkflowRun.interrupt: marks running run as interrupted with interrupt tag", () => {
   const wf = createTestWorkflow();
   const run = WorkflowRun.create(wf);
   run.start();
@@ -1047,12 +1047,12 @@ Deno.test("WorkflowRun.interrupt: marks running run as failed with interrupt tag
 
   run.interrupt("server_shutdown");
 
-  assertEquals(run.status, "failed");
+  assertEquals(run.status, "interrupted");
   assertEquals(run.tags["interrupt_reason"], "server_shutdown");
   assertEquals(run.completedAt instanceof Date, true);
 });
 
-Deno.test("WorkflowRun.interrupt: resets running steps to failed", () => {
+Deno.test("WorkflowRun.interrupt: marks running steps as unknown", () => {
   const wf = createTestWorkflow();
   const run = WorkflowRun.create(wf);
   run.start();
@@ -1061,12 +1061,12 @@ Deno.test("WorkflowRun.interrupt: resets running steps to failed", () => {
 
   run.interrupt("server_crash");
 
-  assertEquals(run.jobs[0].steps[0].status, "failed");
+  assertEquals(run.jobs[0].steps[0].status, "unknown");
   assertEquals(
     run.jobs[0].steps[0].error,
     "interrupted: server_crash",
   );
-  assertEquals(run.jobs[0].status, "failed");
+  assertEquals(run.jobs[0].status, "unknown");
 });
 
 Deno.test("WorkflowRun.interrupt: leaves succeeded steps untouched", () => {
@@ -1081,7 +1081,7 @@ Deno.test("WorkflowRun.interrupt: leaves succeeded steps untouched", () => {
   run.interrupt("server_shutdown");
 
   assertEquals(run.jobs[0].steps[0].status, "succeeded");
-  assertEquals(run.jobs[0].steps[1].status, "failed");
+  assertEquals(run.jobs[0].steps[1].status, "unknown");
 });
 
 Deno.test("WorkflowRun.interrupt: no-ops on succeeded run", () => {
@@ -1121,7 +1121,7 @@ Deno.test("WorkflowRun.interrupt: no-ops on already failed run", () => {
   assertEquals(run.tags["interrupt_reason"], undefined);
 });
 
-Deno.test("WorkflowRun.interrupt: converts cancelled run to failed", () => {
+Deno.test("WorkflowRun.interrupt: converts cancelled run to interrupted", () => {
   const wf = createTestWorkflow();
   const run = WorkflowRun.create(wf);
   run.start();
@@ -1131,8 +1131,98 @@ Deno.test("WorkflowRun.interrupt: converts cancelled run to failed", () => {
 
   run.interrupt("server_shutdown");
 
-  assertEquals(run.status, "failed");
+  assertEquals(run.status, "interrupted");
   assertEquals(run.tags["interrupt_reason"], "server_shutdown");
+});
+
+Deno.test("WorkflowRun.unknownSteps: returns names of unknown steps", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.jobs[0].steps[0].succeed();
+  run.jobs[0].steps[1].start();
+
+  run.interrupt("server_crash");
+
+  assertEquals(run.unknownSteps(), ["step2"]);
+});
+
+Deno.test("WorkflowRun.unknownSteps: returns empty array when no unknown steps", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.jobs[0].steps[0].succeed();
+  run.jobs[0].steps[1].start();
+  run.jobs[0].steps[1].succeed();
+  run.jobs[0].succeed();
+  run.jobs[1].start();
+  run.jobs[1].steps[0].start();
+  run.jobs[1].steps[0].succeed();
+  run.jobs[1].succeed();
+  run.complete();
+
+  assertEquals(run.unknownSteps(), []);
+});
+
+Deno.test("WorkflowRun.resetUnknownStepsForRecovery: resets unknown steps to pending", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.jobs[0].steps[0].succeed();
+  run.jobs[0].steps[1].start();
+
+  run.interrupt("server_crash");
+  assertEquals(run.status, "interrupted");
+  assertEquals(run.jobs[0].steps[1].status, "unknown");
+
+  run.resetUnknownStepsForRecovery();
+
+  assertEquals(run.status, "suspended");
+  assertEquals(run.jobs[0].steps[0].status, "succeeded");
+  assertEquals(run.jobs[0].steps[1].status, "pending");
+  assertEquals(run.jobs[0].status, "pending");
+  assertEquals(run.completedAt, undefined);
+});
+
+Deno.test("WorkflowRun.resetUnknownStepsForRecovery: throws on non-interrupted run", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+  run.start();
+
+  assertThrows(
+    () => run.resetUnknownStepsForRecovery(),
+    Error,
+    "Cannot reset unknown steps: run is running, expected interrupted",
+  );
+});
+
+Deno.test("StepRun.markUnknown: sets status to unknown with error", () => {
+  const step = StepRun.pending("test-step");
+  step.start();
+  step.markUnknown("interrupted: server_crash");
+
+  assertEquals(step.status, "unknown");
+  assertEquals(step.error, "interrupted: server_crash");
+  assertEquals(step.completedAt instanceof Date, true);
+});
+
+Deno.test("WorkflowRun.cancel: no-ops on interrupted run", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+
+  run.interrupt("server_crash");
+  run.cancel("user cancelled");
+
+  assertEquals(run.status, "interrupted");
 });
 
 Deno.test("WorkflowRun.create: sets initiatedBy when provided", () => {

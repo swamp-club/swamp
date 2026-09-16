@@ -85,7 +85,8 @@ export type RunStatus =
   | "waiting_approval"
   | "succeeded"
   | "failed"
-  | "skipped";
+  | "skipped"
+  | "unknown";
 
 /**
  * Context for evaluating trigger conditions.
