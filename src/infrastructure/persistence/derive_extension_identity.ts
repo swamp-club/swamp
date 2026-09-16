@@ -62,10 +62,15 @@ export interface ExtensionIdentity {
  *
  *   - Pulled: `<repoRoot>/.swamp/pulled-extensions/<name>/...`
  *     Note <name> may contain forward slashes (scoped extension names
- *     like `@swamp/aws/ec2` are common). The function consumes
- *     everything between the `pulled-extensions/` prefix and the next
- *     known kind segment (`models`, `vaults`, `datastores`,
- *     `reports`, `webhooks`, `workflows`, `skills`) as the name.
+ *     like `@swamp/aws/ec2` are common). When `knownNames` (e.g. the
+ *     lockfile's entries) contains a prefix of the path, the longest
+ *     such name wins — this is the only way to resolve names that
+ *     themselves contain a kind segment, like `@org/foo/webhooks`.
+ *     Otherwise the function consumes everything between the
+ *     `pulled-extensions/` prefix and the next known kind segment
+ *     (`models`, `vaults`, `datastores`, `reports`, `webhooks`,
+ *     `workflows`, `skills`) as the name, never splitting inside the
+ *     two-segment minimum of a scoped name (`@org/webhooks`).
  *   - Local or source-mounted: any path containing an
  *     `/extensions/<kind>/` segment where `<kind>` is one of the known
  *     kind directory names. Both `<repoRoot>/extensions/<kind>/...`
@@ -92,6 +97,7 @@ export interface ExtensionIdentity {
 export function deriveExtensionIdentity(
   sourcePath: string,
   repoRoot: string,
+  knownNames: readonly string[] = [],
 ): ExtensionIdentity | null {
   // The migration's sub-step 4 has already canonicalized source_path
   // (lowercase + forward-slash on Windows; raw on POSIX). We do the
@@ -103,7 +109,7 @@ export function deriveExtensionIdentity(
   const pulledPrefix = joinForward(repoRoot, ".swamp/pulled-extensions/");
   if (sourcePath.startsWith(pulledPrefix)) {
     const nameAndRest = sourcePath.slice(pulledPrefix.length);
-    const name = extractPulledExtensionName(nameAndRest);
+    const name = extractPulledExtensionName(nameAndRest, knownNames);
     if (name === null) {
       // Path is under pulled-extensions/ but doesn't have a recognizable
       // <name>/<kind>/ segment — corrupt or non-standard layout.
@@ -168,10 +174,28 @@ const KIND_SEGMENTS = new Set([
  *                                     → "@hivemq/harvester/kubeconfig"
  *   "no-kind-segment/file.ts"         → null
  *   "models/at-the-root.ts"           → null (zero-length name)
+ *   "@org/webhooks/models/hook.ts"    → "@org/webhooks"
  */
-function extractPulledExtensionName(nameAndRest: string): string | null {
+function extractPulledExtensionName(
+  nameAndRest: string,
+  knownNames: readonly string[],
+): string | null {
+  let known: string | null = null;
+  for (const name of knownNames) {
+    if (
+      nameAndRest.startsWith(`${name}/`) &&
+      (known === null || name.length > known.length)
+    ) {
+      known = name;
+    }
+  }
+  if (known !== null) return known;
+
   const parts = nameAndRest.split("/");
-  for (let i = 0; i < parts.length; i++) {
+  // Scoped names (`@scope/name`) always have at least two segments, so
+  // a kind-named second segment is part of the name, not a delimiter.
+  const minNameSegments = parts[0].startsWith("@") ? 2 : 0;
+  for (let i = minNameSegments; i < parts.length; i++) {
     if (KIND_SEGMENTS.has(parts[i])) {
       if (i === 0) return null; // Empty name — meaningless.
       return parts.slice(0, i).join("/");

@@ -507,7 +507,11 @@ export class ExtensionRepository {
     let version: string | null = row.extension_version ?? null;
 
     if (!hasName && !hasVersion) {
-      const derived = deriveExtensionIdentity(row.source_path, this.repoRoot);
+      const derived = deriveExtensionIdentity(
+        row.source_path,
+        this.repoRoot,
+        Object.keys(this.lockfileRepository.getAllEntries()),
+      );
       if (derived === null) {
         if (pruneOrphans) {
           logger

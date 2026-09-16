@@ -200,6 +200,9 @@ export class ReconcileFromDiskService {
     } else if (!dryRun && totalExistingRows === 0) {
       this.markAllKindsPopulated();
     } else if (transitions.length === 0) {
+      // A clean full-tree pass proves every kind is in sync; mark them so
+      // kinds added after the catalog was built stop re-triggering reconcile.
+      if (!dryRun) this.markAllKindsPopulated();
       logger.debug`Reconcile complete: no transitions`;
     }
 

@@ -1010,7 +1010,9 @@ function extractWebhookFromSource(
   filePath: string,
   webhooksDir: string,
 ): ExtractedWebhook | null {
-  const webhookMatch = content.match(/export\s+const\s+webhook\s*=\s*\{/);
+  const webhookMatch = content.match(
+    /export\s+const\s+webhook\s*(?::[^=]*)?=\s*\{/,
+  );
   if (!webhookMatch || webhookMatch.index === undefined) return null;
 
   // Must contain createHandler to be a webhook file

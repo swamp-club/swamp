@@ -1065,6 +1065,48 @@ Deno.test("extractContentMetadata extracts webhook type, name, and description",
   }
 });
 
+Deno.test("extractContentMetadata extracts webhook with a type annotation", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const webhooksDir = join(tmpDir, "webhooks");
+    await Deno.mkdir(webhooksDir, { recursive: true });
+
+    const webhookFile = join(webhooksDir, "typed.ts");
+    await Deno.writeTextFile(
+      webhookFile,
+      [
+        'import type { WebhookExport } from "@swamp-club/swamp-testing";',
+        "export const webhook: WebhookExport = {",
+        '  type: "@otherorg/typed",',
+        '  createHandler: () => ({ signatureHeader: "x", requiredHeaders: [], verify: () => true }),',
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata(
+      [],
+      tmpDir,
+      [],
+      [],
+      "",
+      [],
+      "",
+      [],
+      "",
+      [webhookFile],
+      webhooksDir,
+    );
+    assertEquals(result.webhooks, [{
+      fileName: "typed.ts",
+      type: "@otherorg/typed",
+      name: "",
+      description: "",
+    }]);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 Deno.test("extractContentMetadata extracts datastore type, name, and description", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {

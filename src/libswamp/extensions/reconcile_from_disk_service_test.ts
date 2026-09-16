@@ -278,6 +278,44 @@ Deno.test({
   },
 });
 
+Deno.test({
+  name: "ReconcileFromDisk: no-op reconcile marks a newly added kind populated",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        await Deno.writeTextFile(
+          join(repoDir, "extensions", "models", "noop.ts"),
+          MINIMAL_MODEL_CODE(`@test/reconcile-noop-${crypto.randomUUID()}`),
+        );
+        const service = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+        assertEquals((await service.execute()).applied, true);
+
+        // Simulate a catalog built before the webhook kind existed.
+        catalog.invalidate("webhook");
+        assertEquals(repository.anyKindNeedsInvalidation(), true);
+
+        const dry = await service.execute({ dryRun: true });
+        assertEquals(dry.transitions.length, 0);
+        assertEquals(
+          repository.anyKindNeedsInvalidation(),
+          true,
+          "dryRun must not mark kinds populated",
+        );
+
+        const result = await service.execute();
+        assertEquals(result.transitions.length, 0);
+        assertEquals(repository.anyKindNeedsInvalidation(), false);
+      },
+    );
+  },
+});
+
 Deno.test(
   "ReconcileFromDisk: deleted local source → tombstoned",
   async () => {

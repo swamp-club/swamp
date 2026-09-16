@@ -533,6 +533,35 @@ Deno.test("ExtensionRepository: lockfile fallback orphan-DELETEs a pulled row wh
   }, { lockedVersions: {} });
 });
 
+Deno.test("ExtensionRepository: empty-identity pulled row resolves names containing a kind segment via the lockfile", () => {
+  withRepository((repo, cat, repoRoot) => {
+    const sp =
+      `${repoRoot}/.swamp/pulled-extensions/@org/foo/webhooks/models/hook.ts`;
+    cat.upsertWithIdentity({
+      source_path: sp,
+      type_normalized: "@org/foo/webhooks/hook",
+      kind: "model",
+      bundle_path: `${repoRoot}/.swamp/bundles/hook.js`,
+      version: "",
+      description: "",
+      extends_type: "",
+      source_mtime: "",
+      source_fingerprint: "fp",
+      state: "Indexed",
+      extension_name: "",
+      extension_version: "",
+    });
+
+    const exts = repo.loadAllWithPruning();
+    assertEquals(exts.length, 1);
+    assertEquals(exts[0].name, "@org/foo/webhooks");
+    assertEquals(exts[0].version, "1.0.0");
+    assertEquals(cat.findAll().length, 1, "row must not be pruned");
+  }, {
+    lockedVersions: fixedLockedVersions({ "@org/foo/webhooks": "1.0.0" }),
+  });
+});
+
 // ===== Test #10: cold-start guard parity over all 5 kinds =====
 Deno.test("ExtensionRepository: invalidationGuards parity over all 5 kinds × 4 triggers", () => {
   withRepository((repo, cat) => {

@@ -52,6 +52,7 @@ Deno.test("deriveExtensionIdentity: pulled extension with non-models kind", () =
       "vaults",
       "datastores",
       "reports",
+      "webhooks",
       "workflows",
       "skills",
     ]
@@ -65,6 +66,32 @@ Deno.test("deriveExtensionIdentity: pulled extension with non-models kind", () =
       `kind=${kind}`,
     );
   }
+});
+
+Deno.test("deriveExtensionIdentity: scoped name whose second segment is a kind directory", () => {
+  for (const kind of ["models", "webhooks", "reports"]) {
+    assertEquals(
+      deriveExtensionIdentity(
+        `/repo/.swamp/pulled-extensions/@org/${kind}/models/hook.ts`,
+        "/repo",
+      ),
+      { name: `@org/${kind}`, version: "" },
+      `kind=${kind}`,
+    );
+  }
+});
+
+Deno.test("deriveExtensionIdentity: known names resolve names containing a kind segment", () => {
+  const sp = "/repo/.swamp/pulled-extensions/@org/foo/webhooks/models/x.ts";
+  assertEquals(
+    deriveExtensionIdentity(sp, "/repo", ["@org/foo", "@org/foo/webhooks"]),
+    { name: "@org/foo/webhooks", version: "" },
+  );
+  // Unrelated known names fall back to the kind-segment heuristic.
+  assertEquals(
+    deriveExtensionIdentity(sp, "/repo", ["@org/foobar"]),
+    { name: "@org/foo", version: "" },
+  );
 });
 
 Deno.test("deriveExtensionIdentity: pulled extension with no kind segment returns null", () => {
