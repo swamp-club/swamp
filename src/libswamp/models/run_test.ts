@@ -877,3 +877,48 @@ Deno.test("modelMethodRun: does not publish ModelUpdated when method writes no d
 
   assertEquals(published.length, 0);
 });
+
+Deno.test("modelMethodRun: schema-declared inputs contribute authored expressions to the runtime pass", async () => {
+  const definition = Definition.create({
+    name: "schema-input-model",
+    inputs: {
+      type: "object",
+      properties: { value: { type: "string" } },
+    },
+    methods: {
+      run: { arguments: { key: "${{ inputs.value }}" } },
+    },
+  });
+
+  let seenAuthored: ReadonlySet<string> | "unrestricted" | undefined;
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(definition, createTestModelDef("run")),
+    createEvaluationService: () => ({
+      ...createFakeEvaluationService(),
+      resolveRuntimeExpressionsInDefinition: (
+        def: Definition,
+        _redactor: unknown,
+        _ctx: unknown,
+        authored: ReadonlySet<string> | "unrestricted",
+      ) => {
+        seenAuthored = authored;
+        return Promise.resolve({
+          definition: def,
+          secretBag: new VaultSecretBag(),
+        });
+      },
+    }),
+  };
+
+  await collect(
+    modelMethodRun(createLibSwampContext(), deps, {
+      ...createTestInput("schema-input-model", "run"),
+      inputs: { value: "${{ env.HOME }}" },
+    }),
+  );
+
+  assertEquals(
+    seenAuthored !== "unrestricted" && seenAuthored?.has("${{ env.HOME }}"),
+    true,
+  );
+});

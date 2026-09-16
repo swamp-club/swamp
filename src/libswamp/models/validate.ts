@@ -161,8 +161,15 @@ export function createModelValidateDeps(
     definitionRepository: definitionRepo,
     dataQueryService,
     createCelEnvironment: createExtensionCelEnvironment,
+    // Checks run against definitions loaded straight from the repository, with
+    // no CEL substitution applied, so every expression in them is author-written.
     resolveRuntimeExpressions: (data) =>
-      expressionService.resolveRuntimeExpressionsInData(data),
+      expressionService.resolveRuntimeExpressionsInData(
+        data,
+        undefined,
+        undefined,
+        "unrestricted",
+      ),
     labels: options?.labels,
     method: options?.method,
   };

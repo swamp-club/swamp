@@ -26,7 +26,15 @@ import {
   getObjectShape,
   isRecordSchema,
 } from "../../domain/models/zod_type_coercion.ts";
-import { stripExpressionFields } from "../../domain/expressions/expression_parser.ts";
+import type { ExpressionLocation } from "../../domain/expressions/expression.ts";
+import {
+  extractExpressions,
+  stripExpressionFields,
+} from "../../domain/expressions/expression_parser.ts";
+import {
+  type AuthoredExpressions,
+  collectAuthoredExpressions,
+} from "../../domain/expressions/expression_evaluation_service.ts";
 import {
   findLiteralSensitiveGlobalArgs,
   literalSensitiveGlobalArgsMessage,
@@ -62,6 +70,12 @@ export type DirectExecutionResult =
     definitionPath: string;
     routedInputs: RoutedInputs;
     globalArgsUpdated?: boolean;
+    /**
+     * Raw text of every expression in the definition as it was stored on
+     * disk, before any caller-supplied global arguments were applied. Empty
+     * for a freshly created definition, which is synthesised from inputs.
+     */
+    authoredExpressions: ReadonlySet<string>;
   }
   | { ok: false; error: SwampError };
 
@@ -147,8 +161,36 @@ export function autoDefinitionLockKey(name: string): string {
 }
 
 /**
+ * Expressions in the global arguments the caller cannot vouch for: text that
+ * arrived through data substitution rather than being written by an author.
+ * Persisting such text would turn it into an authored expression on every
+ * later load of the definition, so it is refused before any save.
+ */
+function findUnvouchedGlobalArgExpressions(
+  globalArgs: Record<string, unknown>,
+  authored: AuthoredExpressions,
+): ExpressionLocation[] {
+  if (authored === "unrestricted") return [];
+  return extractExpressions(globalArgs).filter((e) => !authored.has(e.raw));
+}
+
+function unvouchedGlobalArgsMessage(
+  definitionName: string,
+  unvouched: ExpressionLocation[],
+): string {
+  const list = unvouched.map((e) => `  ${e.path}: ${e.raw}`).join("\n");
+  return `Refusing to persist definition '${definitionName}': the following global arguments hold expression text that was not written in the workflow or definition source, so it arrived as data content:\n${list}`;
+}
+
+/**
  * Resolves an existing definition by name or auto-creates one.
  * When the definition exists, verifies the type matches.
+ *
+ * `authoredExpressions` is the caller's provenance for `inputs` and
+ * `explicitGlobalArgs`: `"unrestricted"` when an operator typed them, or the
+ * workflow source's set when they have been through CEL substitution. Global
+ * arguments holding expression text outside that set are refused rather than
+ * persisted, so a stored definition only ever contains authored expressions.
  *
  * When `lockDir` is provided, concurrent auto-creation of the same name is
  * serialized with a file lock (double-check locking): the fast-path lookup
@@ -165,6 +207,7 @@ export async function resolveOrCreateDefinition(
   modelDef: ModelDefinition,
   explicitGlobalArgs?: Record<string, unknown>,
   lockDir?: string,
+  authoredExpressions: AuthoredExpressions = "unrestricted",
 ): Promise<DirectExecutionResult> {
   // When explicit globalArgs are provided, skip routing — treat inputs as
   // method args only and use the explicit values as global args.
@@ -218,6 +261,9 @@ export async function resolveOrCreateDefinition(
       };
     }
 
+    const storedExpressions = collectAuthoredExpressions(
+      existing.definition.toData(),
+    );
     const storedGlobal = existing.definition
       .globalArguments as Record<string, unknown>;
     const routedGlobal = routed.globalArguments;
@@ -227,6 +273,18 @@ export async function resolveOrCreateDefinition(
       );
 
     if (globalArgsDiffer) {
+      const unvouched = findUnvouchedGlobalArgExpressions(
+        routedGlobal,
+        authoredExpressions,
+      );
+      if (unvouched.length > 0) {
+        return {
+          ok: false,
+          error: validationFailed(
+            unvouchedGlobalArgsMessage(definitionName, unvouched),
+          ),
+        };
+      }
       for (const key of Object.keys(storedGlobal ?? {})) {
         if (!(key in routedGlobal)) {
           existing.definition.removeGlobalArgument(key);
@@ -262,6 +320,7 @@ export async function resolveOrCreateDefinition(
       ),
       routedInputs: routed,
       globalArgsUpdated: globalArgsDiffer,
+      authoredExpressions: storedExpressions,
     };
   }
 
@@ -307,6 +366,18 @@ export async function resolveOrCreateDefinition(
       error: validationFailed(literalSensitiveGlobalArgsMessage(leakedArgs)),
     };
   }
+  const unvouched = findUnvouchedGlobalArgExpressions(
+    routed.globalArguments,
+    authoredExpressions,
+  );
+  if (unvouched.length > 0) {
+    return {
+      ok: false,
+      error: validationFailed(
+        unvouchedGlobalArgsMessage(definitionName, unvouched),
+      ),
+    };
+  }
 
   const createResult = async (): Promise<DirectExecutionResult> => {
     const definition = Definition.create({
@@ -324,6 +395,7 @@ export async function resolveOrCreateDefinition(
       created: true,
       definitionPath: deps.getDefinitionPath(resolvedType, definition.id),
       routedInputs: routed,
+      authoredExpressions: new Set(),
     };
   };
 
@@ -363,6 +435,9 @@ export async function resolveOrCreateDefinition(
               raceWinner.definition.id,
             ),
             routedInputs: routed,
+            authoredExpressions: collectAuthoredExpressions(
+              raceWinner.definition.toData(),
+            ),
           };
         }
         return await createResult();

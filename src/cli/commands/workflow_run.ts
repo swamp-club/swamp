@@ -361,6 +361,7 @@ export const workflowRunCommand = new Command()
             methodName,
             inputs,
             globalArgs,
+            authoredExpressions,
           ) => {
             const typeStr = typeArg;
             let resolvedType = ModelType.create(typeStr);
@@ -413,6 +414,7 @@ export const workflowRunCommand = new Command()
               modelDef,
               globalArgs,
               repoContext.autoDefinitionsDir,
+              authoredExpressions,
             );
             if (!result.ok) throw new Error(result.error.message);
             return {
@@ -420,6 +422,7 @@ export const workflowRunCommand = new Command()
               modelType: result.modelType,
               created: result.created,
               routedMethodInputs: result.routedInputs.methodArguments,
+              authoredExpressions: result.authoredExpressions,
             };
           };
 

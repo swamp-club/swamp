@@ -28,13 +28,33 @@ import {
   isTriggerInputsPath,
   replaceExpressions,
 } from "../expressions/expression_parser.ts";
-import { containsRuntimeExpression } from "../expressions/expression_evaluation_service.ts";
+import {
+  type AuthoredExpressions,
+  collectAuthoredExpressions,
+  containsRuntimeExpression,
+  partitionAuthored,
+} from "../expressions/expression_evaluation_service.ts";
 import {
   extractDependencies,
   hasStepOutputDependency,
 } from "../expressions/dependency_extractor.ts";
 import type { ExpressionContext } from "../expressions/model_resolver.ts";
 import type { CelExpressionEvaluator } from "../expressions/cel_runtime.ts";
+
+/** Collect template expressions and bare assertion predicates from source. */
+export function collectWorkflowAuthoredExpressions(
+  workflow: Workflow,
+  into: Set<string> = new Set(),
+): Set<string> {
+  collectAuthoredExpressions(workflow.toData(), into);
+  for (const job of workflow.jobs) {
+    for (const step of job.steps) {
+      const task = step.task.data;
+      if (task.type === "assert") into.add(task.expr);
+    }
+  }
+  return into;
+}
 
 /**
  * Result of evaluating a workflow's CEL expressions.
@@ -65,9 +85,13 @@ export class WorkflowExpressionEvaluator {
   async evaluate(
     workflow: Workflow,
     context: ExpressionContext,
+    authored: AuthoredExpressions,
   ): Promise<WorkflowEvaluationResult> {
     const workflowData = workflow.toData();
-    const expressions = extractExpressions(workflowData);
+    const expressions = partitionAuthored(
+      extractExpressions(workflowData),
+      authored,
+    );
 
     if (expressions.length === 0) {
       return { workflow, expressionsEvaluated: 0 };
@@ -167,12 +191,23 @@ export class WorkflowExpressionEvaluator {
 export class DefinitionExpressionEvaluator {
   constructor(private readonly celEvaluator: CelExpressionEvaluator) {}
 
+  /**
+   * @param authored - Expressions the author wrote, collected from the
+   *   workflow and model source before any substitution. A direct-execution
+   *   definition is synthesised from step inputs that already had data
+   *   substituted into them, so anything not in the set is data content and
+   *   is left as literal text. `"unrestricted"` only for unsubstituted source.
+   */
   async evaluate(
     definition: Definition,
     context: ExpressionContext,
+    authored: AuthoredExpressions,
   ): Promise<Definition> {
     const definitionData = definition.toData();
-    const expressions = extractExpressions(definitionData);
+    const expressions = partitionAuthored(
+      extractExpressions(definitionData),
+      authored,
+    );
 
     if (expressions.length === 0) {
       return definition;

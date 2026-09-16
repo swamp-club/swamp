@@ -343,6 +343,8 @@ export const workflowResumeCommand = withRemoteOptions(
       defName,
       methodName,
       inputs,
+      _globalArgs,
+      authoredExpressions,
     ) => {
       let resolvedType = ModelType.create(typeArg);
       let modelDef = await resolveModelType(
@@ -387,6 +389,7 @@ export const workflowResumeCommand = withRemoteOptions(
         modelDef,
         undefined,
         repoContext.autoDefinitionsDir,
+        authoredExpressions,
       );
       if (!result.ok) throw new Error(result.error.message);
       return {
@@ -394,6 +397,7 @@ export const workflowResumeCommand = withRemoteOptions(
         modelType: result.modelType,
         created: result.created,
         routedMethodInputs: result.routedInputs.methodArguments,
+        authoredExpressions: result.authoredExpressions,
       };
     };
 

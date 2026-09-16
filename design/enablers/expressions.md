@@ -1,7 +1,7 @@
 ---
 audience: maintainer, operator
 enables: [models, workflows]
-last-verified: 2026-09-15 @ uncommitted
+last-verified: 2026-09-16 @ uncommitted
 ---
 
 # Expressions
@@ -517,6 +517,76 @@ globalArguments:
   keyData: ${{ vault.get('aws', 'machineKeyData') }}
 ```
 
+### Only Author-Written Expressions Are Evaluated After Substitution
+
+CEL evaluation splices values into the definition tree as raw text, and every
+later pass walks that same tree: the runtime pass that resolves `vault.get()`
+and `env` references, and the second CEL pass the step executor runs over step
+inputs (and over a direct-execution definition synthesised from them) to
+resolve deferred `data.*`, `steps.*` and `self.*` references. Without
+provenance, authored source and substituted content are indistinguishable, so
+text that entered the tree purely as _data content_ would be evaluated as if
+the author had written it — a `vault.get()` or `env` reference resolves a
+secret directly, and any other CEL (a `data.latest()` call on another model's
+sensitive field, say) reads one through the evaluation context.
+
+The rule is therefore: **an expression is evaluated in a pass that runs after
+substitution only if its raw text was written in the workflow or model
+definition source.** Expression syntax that arrives as data content is inert —
+it is left as literal text and a warning naming the path is logged.
+
+The authored set is collected with `collectAuthoredExpressions()` from each
+source _before_ any CEL evaluation runs, and unioned across every
+author-written source feeding a run:
+
+| Source                    | Collected from                                                                      |
+| ------------------------- | ----------------------------------------------------------------------------------- |
+| Model definition          | the definition on disk, in both the normal and `--last-evaluated` paths             |
+| Workflow                  | the workflow YAML on disk, before evaluation, at both the fresh-run and resume seams |
+| Model-run `--input` flags | the operator-typed values, on `swamp model ... method run` only                     |
+
+Workflow runs do **not** seed CLI `--input` values: trigger inputs and CLI
+inputs merge into one map before the evaluator sees them, so a vault reference
+passed to `swamp workflow run --input` is inert (fail-closed). Two further
+sources are deliberately not trusted. Step `task.inputs` are not seeded at
+step-execution time, because the workflow evaluator has already substituted
+data into them — author-written step inputs are covered by the workflow-source
+set instead. A direct-execution definition is not seeded either: it is
+synthesised from `task.inputs` rather than loaded from the repository, so it
+is not an authored source at all.
+
+The set guards available-expression resolution, forEach expansion, whole-record
+inputs/global arguments, step-input and definition evaluation, runtime selectors,
+inherited placement, guards, and assertion-message interpolation. Whole-record
+fields reject untrusted expression strings without evaluating them. Bare assertion
+predicates are checked separately against the original authored CEL source, so
+substitution cannot turn a supplied string into an executable predicate. These
+checks apply to fresh runs, resumed runs, nested calls, and evaluated-cache replay.
+
+Placement merges workflow → job → step defaults before resolving target, labels,
+and platform through the same provenance-gated runtime resolver.
+
+The parameter carrying the set is required rather than optional, typed
+`ReadonlySet<string> | "unrestricted"`, so the compiler forces every caller of
+those passes to state whether its input is author-written. `"unrestricted"` is
+only for callers that have applied no substitution at all, such as model
+validation running against definitions straight from the repository.
+
+Relatedly, the env classifier recognises _any_ bare `env` identifier — dotted,
+bracket-index or passed as a value — as a runtime reference, so no form of env
+access is ever evaluated in the persist phase or written to an evaluated
+definition on disk.
+
+Note that this is a distinct concern from the sensitive-field gating on the data
+_read_ path, which restricts which stored fields have vault references resolved
+when they are read. That gate gives a non-sensitive field's literal text through
+untouched, by design; this one decides whether such text is ever evaluated.
+
+The residual is replay: whoever can write a plain field can inject the exact
+raw text of an expression the author wrote elsewhere in the same source, and
+have it evaluated at a sink of their choosing. That is bounded by what the
+author already granted the run.
+
 ### Dynamic Vault Arguments
 
 vault.get() arguments can be CEL expressions when passed as bare tokens (without
@@ -544,7 +614,11 @@ non-string value, the vault lookup fails with a clear error at runtime — it do
 not silently use the expression text as a literal key.
 
 **Security note:** In local execution, dynamic vault.get() arguments allow
-workflow inputs to select any registered vault and key. This is acceptable
+workflow inputs to select any registered vault and key. Note that the
+authored-expression rule above does **not** constrain this: the expression text
+is author-written, so it stays resolvable, and only its *arguments* are
+evaluated at runtime. If those inputs carry attacker-controlled data, the caller
+still chooses the vault and key. This is acceptable
 because the local user already has filesystem access to vault configurations. In
 remote execution (serve dispatch), the `hasDynamicRefs` flag on the
 `VaultExtractionResult` bypasses the per-dispatch secret allowlist, and

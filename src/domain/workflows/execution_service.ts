@@ -95,9 +95,17 @@ import { ModelOutput } from "../models/model_output.ts";
 import type { Definition } from "../definitions/definition.ts";
 import { ModelType } from "../models/model_type.ts";
 import type { MethodResult, ModelDefinition } from "../models/model.ts";
-import { ExpressionEvaluationService } from "../expressions/expression_evaluation_service.ts";
+import {
+  type AuthoredExpressions,
+  collectAuthoredExpressions,
+  ExpressionEvaluationService,
+  partitionAuthored,
+} from "../expressions/expression_evaluation_service.ts";
 import { resolveAvailableExpressions } from "../expressions/available_expression_resolver.ts";
-import { extractCelExpression } from "../expressions/expression_parser.ts";
+import {
+  extractCelExpression,
+  extractExpressions,
+} from "../expressions/expression_parser.ts";
 import { requiresModelNamespace } from "../expressions/dependency_extractor.ts";
 import { extractStepDefinitionReferences } from "./model_reference_extractor.ts";
 import {
@@ -111,6 +119,7 @@ import {
   createExtensionCelEnvironment,
 } from "../../infrastructure/cel/cel_evaluator.ts";
 import {
+  collectWorkflowAuthoredExpressions,
   DefinitionExpressionEvaluator,
   WorkflowExpressionEvaluator,
 } from "./expression_evaluators.ts";
@@ -136,11 +145,12 @@ import { getRemoteStepDispatcher } from "../remote/remote_dispatch.ts";
  * validated Record or undefined. Throws UserError for user-authored mistakes
  * (wrong expression result type, missing context).
  */
-function resolveRecordExpression(
+async function resolveRecordExpression(
   value: Record<string, unknown> | string | undefined,
   fieldName: string,
   expressionContext: Record<string, unknown> | undefined,
-): Record<string, unknown> | undefined {
+  authored: AuthoredExpressions,
+): Promise<Record<string, unknown> | undefined> {
   if (value === undefined) return undefined;
   if (typeof value !== "string") {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -163,8 +173,11 @@ function resolveRecordExpression(
       `${fieldName} expression "$\{{ ${cel} }}" could not be resolved: no expression context available`,
     );
   }
+  if (partitionAuthored(extractExpressions(value), authored).length !== 1) {
+    throw new UserError(`${fieldName} must be an authored record expression`);
+  }
   const celEvaluator = new CelEvaluator();
-  const resolved = celEvaluator.evaluate(cel, expressionContext);
+  const resolved = await celEvaluator.evaluateAsync(cel, expressionContext);
   if (
     resolved === null || resolved === undefined ||
     typeof resolved !== "object" || Array.isArray(resolved)
@@ -271,6 +284,12 @@ export interface StepExecutionContext {
   mode?: "fresh" | "lastEvaluated";
   /** forEach iteration variable (e.g., { env: "dev" } for self.env) */
   forEachVariable?: { name: string; value: unknown };
+  /**
+   * Expressions written in the workflow source, unioned with the executing
+   * model's own source definition before every post-substitution pass.
+   * See {@link collectAuthoredExpressions}.
+   */
+  authoredExpressions: ReadonlySet<string>;
   /** Tags from the workflow definition, merged into data writer tag overrides */
   workflowTags?: Record<string, string>;
   /** Runtime tags from --tag CLI flags, passed to method execution context */
@@ -379,6 +398,8 @@ export interface DirectTypeResolveResult {
   modelType: ModelType;
   created: boolean;
   routedMethodInputs: Record<string, unknown>;
+  /** Expressions written in the stored definition; empty when created. */
+  authoredExpressions?: ReadonlySet<string>;
 }
 
 export type DirectTypeResolver = (
@@ -386,7 +407,9 @@ export type DirectTypeResolver = (
   definitionName: string,
   methodName: string,
   inputs: Record<string, unknown>,
-  globalArgs?: Record<string, unknown>,
+  globalArgs: Record<string, unknown> | undefined,
+  /** Expressions written in the workflow source; see {@link AuthoredExpressions}. */
+  authoredExpressions: AuthoredExpressions,
 ) => Promise<DirectTypeResolveResult>;
 
 export interface StepLockResult {
@@ -625,14 +648,25 @@ export class DefaultStepExecutor implements StepExecutor {
         task,
         ctx.expressionContext,
         evaluate,
+        ctx.authoredExpressions,
       ) as typeof task;
       if (resolvedPlacement) {
         resolvedPlacement = resolveAvailableExpressions(
           resolvedPlacement,
           ctx.expressionContext,
           evaluate,
+          ctx.authoredExpressions,
         ) as typeof resolvedPlacement;
       }
+    }
+
+    if (resolvedPlacement) {
+      resolvedPlacement = await expressionEvaluator.resolveAllExpressionsInData(
+        resolvedPlacement,
+        ctx.expressionContext ?? { model: {}, env: {} },
+        ctx.secretRedactor,
+        ctx.authoredExpressions,
+      ) as typeof resolvedPlacement;
     }
 
     if (resolvedPlacement && ctx.affinityKey) {
@@ -642,24 +676,57 @@ export class DefaultStepExecutor implements StepExecutor {
       };
     }
 
+    // Resolve selectors only: inputs and arguments keep their existing
+    // evaluation/persistence paths. The authored set excludes substituted data.
+    const selectors = {
+      modelIdOrName: task.modelIdOrName,
+      modelType: task.modelType,
+      modelName: task.modelName,
+      methodName: task.methodName,
+    };
+    task = {
+      ...task,
+      ...await expressionEvaluator.resolveRuntimeExpressionsInData(
+        selectors,
+        ctx.secretRedactor,
+        ctx.expressionContext,
+        ctx.authoredExpressions,
+      ) as typeof selectors,
+    };
+
     // Resolve whole-field expression strings for inputs/globalArgs that survived
     // resolveAvailableExpressions (e.g., deferred step-output dependencies).
     task = {
       ...task,
-      inputs: resolveRecordExpression(
+      inputs: await resolveRecordExpression(
         task.inputs,
         "task.inputs",
         ctx.expressionContext,
+        ctx.authoredExpressions,
       ),
-      globalArgs: resolveRecordExpression(
+      globalArgs: await resolveRecordExpression(
         task.globalArgs,
         "task.globalArgs",
         ctx.expressionContext,
+        ctx.authoredExpressions,
       ),
     };
 
     let originalDefinition: Definition;
     let modelType: ModelType;
+    /**
+     * Expressions contributed by the model's own source definition.
+     * Only a definition loaded from the repository is author-written: a
+     * direct-execution definition that was just created is synthesised from
+     * `task.inputs`, which the workflow evaluator has already substituted data
+     * into, so treating it as a provenance root would re-admit exactly the
+     * injected text this gate exists to refuse. When direct execution reuses
+     * a stored definition, the resolver reports that definition's expressions
+     * as collected before caller-supplied global arguments were applied —
+     * sound because direct execution refuses to persist any expression text
+     * the caller cannot vouch for, so nothing stored is substituted content.
+     */
+    let authoredFromDefinition: ReadonlySet<string> = new Set();
 
     if (task.modelType && task.modelName) {
       const resolver = allDeps.directTypeResolver;
@@ -676,10 +743,12 @@ export class DefaultStepExecutor implements StepExecutor {
         task.methodName,
         (task.inputs ?? {}) as Record<string, unknown>,
         task.globalArgs as Record<string, unknown> | undefined,
+        ctx.authoredExpressions,
       );
 
       originalDefinition = result.definition;
       modelType = result.modelType;
+      authoredFromDefinition = result.authoredExpressions ?? new Set();
 
       task = {
         ...task,
@@ -696,6 +765,9 @@ export class DefaultStepExecutor implements StepExecutor {
       }
       originalDefinition = lookupResult.definition;
       modelType = lookupResult.type;
+      authoredFromDefinition = collectAuthoredExpressions(
+        originalDefinition.toData(),
+      );
     } else {
       throw new Error(
         "Step task requires either modelIdOrName or modelType + modelName",
@@ -758,6 +830,21 @@ export class DefaultStepExecutor implements StepExecutor {
     // Evaluate CEL expressions (vault left raw for persistence)
     let evaluatedDefinition = originalDefinition;
     let stepInputs: Record<string, unknown> = {};
+    // Provenance for every pass from here on. Union the workflow source's
+    // authored expressions with the model's own, where the model has an
+    // authored source at all. Anything else in task.inputs or the evaluated
+    // definition arrived through CEL data substitution and must not be
+    // evaluated again — not by the step-input pass below, not by the
+    // definition pass, and not by the runtime pass.
+    //
+    // task.inputs is deliberately NOT seeded here: by this point the workflow
+    // evaluator has already substituted data into it. Author-written step
+    // inputs are covered by the workflow-source set, collected before that ran.
+    const authoredExpressions = new Set([
+      ...ctx.authoredExpressions,
+      ...authoredFromDefinition,
+    ]);
+
     if (ctx.mode === "lastEvaluated") {
       // Load previously-evaluated definition from cache
       runLogger?.debug("Loading last evaluated definition");
@@ -780,6 +867,7 @@ export class DefaultStepExecutor implements StepExecutor {
         stepInputs = await expressionEvaluator.evaluateData(
           task.inputs,
           ctx.expressionContext,
+          authoredExpressions,
         ) as Record<string, unknown>;
       } else if (task.inputs) {
         stepInputs = task.inputs as Record<string, unknown>;
@@ -806,6 +894,7 @@ export class DefaultStepExecutor implements StepExecutor {
         stepInputs = await expressionEvaluator.evaluateData(
           task.inputs,
           ctx.expressionContext,
+          authoredExpressions,
         ) as Record<string, unknown>;
       }
 
@@ -815,7 +904,11 @@ export class DefaultStepExecutor implements StepExecutor {
 
       evaluatedDefinition = await new DefinitionExpressionEvaluator(
         new CelEvaluator(),
-      ).evaluate(originalDefinition, ctx.expressionContext);
+      ).evaluate(
+        originalDefinition,
+        ctx.expressionContext,
+        authoredExpressions,
+      );
     }
 
     // Forward all step inputs as method arguments.
@@ -849,6 +942,7 @@ export class DefaultStepExecutor implements StepExecutor {
         evaluatedDefinition,
         ctx.secretRedactor,
         ctx.expressionContext,
+        authoredExpressions,
       );
     evaluatedDefinition = runtimeResult.definition;
     const secretBag = runtimeResult.secretBag;
@@ -1525,6 +1619,12 @@ import {
  * Internal options bundle passed through runJob/runStep to reduce parameter count.
  */
 interface StepOptions {
+  /**
+   * Expressions written in the workflow source. Threaded to every pass that
+   * runs after CEL substitution so data content spliced in by evaluation is
+   * never evaluated as if the author had written it.
+   */
+  authoredExpressions: ReadonlySet<string>;
   lastEvaluated?: boolean;
   workflowNestingDepth?: number;
   ancestorWorkflowIds?: Set<string>;
@@ -1679,6 +1779,7 @@ export class WorkflowExecutionService {
       const wfSetupSpan = tracer.startSpan("swamp.workflow.setup");
       let workflow: Workflow;
       let expressionContext: ExpressionContext | undefined;
+      let authoredExpressions: ReadonlySet<string> = new Set();
       let run: WorkflowRun;
       let workflowLogPath: string;
       let evaluatedWorkflowFingerprint: string | undefined;
@@ -1691,6 +1792,12 @@ export class WorkflowExecutionService {
           throw new Error(`Workflow not found: ${idOrName}`);
         }
         workflow = found;
+
+        // Provenance for the runtime pass, collected from the workflow as
+        // loaded from disk. Taken here rather than from the evaluation below
+        // because --last-evaluated swaps in a cached workflow that already has
+        // data content spliced into it and never runs the evaluator at all.
+        authoredExpressions = collectWorkflowAuthoredExpressions(found);
 
         if (options?.lastEvaluated) {
           // Load previously evaluated workflow from cache
@@ -1730,7 +1837,11 @@ export class WorkflowExecutionService {
             expressionContext.inputs = options.inputs;
           }
 
-          workflow = await this.evaluateWorkflow(workflow, expressionContext);
+          workflow = await this.evaluateWorkflow(
+            workflow,
+            expressionContext,
+            authoredExpressions,
+          );
           const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
             this.repoDir,
           );
@@ -1854,6 +1965,7 @@ export class WorkflowExecutionService {
       }
 
       const stepOpts: StepOptions = {
+        authoredExpressions,
         lastEvaluated: options?.lastEvaluated,
         workflowNestingDepth: options?.workflowNestingDepth,
         ancestorWorkflowIds: options?.ancestorWorkflowIds,
@@ -2280,7 +2392,14 @@ export class WorkflowExecutionService {
     const evaluator = new WorkflowExpressionEvaluator(
       new CelEvaluator(),
     );
-    const evaluated = await evaluator.evaluate(workflow, expressionContext);
+    // Collected before evaluation, for the same reason as the fresh-run seam:
+    // afterwards, spliced data content is indistinguishable from source.
+    const authoredExpressions = collectWorkflowAuthoredExpressions(workflow);
+    const evaluated = await evaluator.evaluate(
+      workflow,
+      expressionContext,
+      authoredExpressions,
+    );
     const resolvedWorkflow = evaluated.workflow;
 
     const secretRedactor = new SecretRedactor();
@@ -2321,6 +2440,7 @@ export class WorkflowExecutionService {
       };
 
       const stepOpts: StepOptions = {
+        authoredExpressions,
         workflowTags: resolvedWorkflow.tags,
         runtimeTags: options?.runtimeTags,
         initiatedBy: existingRun.initiatedBy,
@@ -2570,7 +2690,7 @@ export class WorkflowExecutionService {
       let expandedStepsMap: Map<string, ExpandedStep[]> | undefined;
       if (expressionContext) {
         expandedStepsMap = await new ForEachExpansionService(new CelEvaluator())
-          .expand(job, expressionContext);
+          .expand(job, expressionContext, options.authoredExpressions);
         // Rewrite the jobRun's step list to match the expansion. The
         // template StepRun (the step as written in the workflow) never
         // executes once forEach expands, so leaving it in place makes it
@@ -2921,6 +3041,14 @@ export class WorkflowExecutionService {
           stepExprContext,
           options,
         );
+        if (
+          partitionAuthored(
+            extractExpressions(step.guard),
+            options.authoredExpressions,
+          ).length !== 1
+        ) {
+          throw new UserError("Guard must be an authored expression");
+        }
         const guardResult = await celEvaluator.evaluateAsync(
           guardCel,
           guardContext,
@@ -3015,6 +3143,11 @@ export class WorkflowExecutionService {
           options,
         );
         try {
+          if (!options.authoredExpressions.has(task.expr)) {
+            throw new UserError(
+              "Assertion predicate must be authored CEL source",
+            );
+          }
           const result = await celEvaluator.evaluateAsync(
             task.expr,
             assertContext,
@@ -3023,28 +3156,34 @@ export class WorkflowExecutionService {
 
           // Interpolate ${{ }} expressions in the message
           let resolvedMessage = task.message;
-          const exprPattern = /\$\{\{\s*(.+?)\s*\}\}/gs;
-          const matches = [...task.message.matchAll(exprPattern)];
-          for (const match of matches) {
-            const celExpr = match[1].trim();
+          for (
+            const expr of partitionAuthored(
+              extractExpressions(task.message),
+              options.authoredExpressions,
+            )
+          ) {
             try {
-              const value = await celEvaluator.evaluateAsync(
-                celExpr,
-                assertContext,
-              );
+              const value = await this.expressionEvaluator
+                .resolveAllExpressionsInData(
+                  expr.raw,
+                  { model: {}, env: {}, ...assertContext },
+                  options.secretRedactor,
+                  options.authoredExpressions,
+                );
               resolvedMessage = resolvedMessage.replace(
-                match[0],
+                expr.raw,
                 () => String(value ?? ""),
               );
             } catch {
-              // Leave the expression as-is if evaluation fails
+              // Leave the expression as-is if evaluation fails.
             }
           }
 
           const assertResult = {
             passed,
             expr: task.expr,
-            message: resolvedMessage,
+            message: options.secretRedactor?.redact(resolvedMessage) ??
+              resolvedMessage,
             severity: task.severity,
           };
           stepRun.recordAssertResult(assertResult);
@@ -3180,6 +3319,7 @@ export class WorkflowExecutionService {
           workflowTags: options.workflowTags,
           runtimeTags: options.runtimeTags,
           secretRedactor: options.secretRedactor,
+          authoredExpressions: options.authoredExpressions,
           emitEvent: push,
           reportFilterOptions: options.reportFilterOptions,
           swampSha: options.swampSha,
@@ -3401,6 +3541,7 @@ export class WorkflowExecutionService {
         task,
         expressionContext,
         (expr, context) => celEvaluator.evaluate(expr, context),
+        options.authoredExpressions,
       ) as typeof task;
     }
 
@@ -3408,10 +3549,18 @@ export class WorkflowExecutionService {
     // resolveAvailableExpressions (e.g., deferred step-output dependencies).
     task = {
       ...task,
-      inputs: resolveRecordExpression(
+      workflowIdOrName: await this.expressionEvaluator
+        .resolveRuntimeExpressionsInData(
+          task.workflowIdOrName,
+          options.secretRedactor,
+          expressionContext,
+          options.authoredExpressions,
+        ) as string,
+      inputs: await resolveRecordExpression(
         task.inputs,
         "task.inputs",
         expressionContext,
+        options.authoredExpressions,
       ),
     };
 
@@ -3461,9 +3610,12 @@ export class WorkflowExecutionService {
     // per-instance evaluator (was previously constructed per call).
     let evaluatedInputs = task.inputs as Record<string, unknown> | undefined;
     if (task.inputs && typeof task.inputs !== "string" && expressionContext) {
+      // The parent's authored set: the child re-collects its own from its
+      // YAML once it re-enters executeWorkflow.
       evaluatedInputs = await this.expressionEvaluator.evaluateData(
         task.inputs,
         expressionContext,
+        options.authoredExpressions,
       ) as Record<string, unknown>;
     }
 
@@ -3607,6 +3759,7 @@ export class WorkflowExecutionService {
           dataBaseDir: this.dataBaseDir,
           runtimeTags: options.runtimeTags,
           secretRedactor: options.secretRedactor,
+          authoredExpressions: options.authoredExpressions,
         });
         const methodResult = result as {
           dataHandles?: Array<{
@@ -4042,6 +4195,7 @@ export class WorkflowExecutionService {
   private async evaluateWorkflow(
     workflow: Workflow,
     context: ExpressionContext,
+    authored: AuthoredExpressions,
   ): Promise<Workflow> {
     const evalSpan = getTracer().startSpan("swamp.workflow.evaluate", {
       attributes: { "workflow.name": workflow.name },
@@ -4050,7 +4204,7 @@ export class WorkflowExecutionService {
     try {
       const result = await new WorkflowExpressionEvaluator(
         new CelEvaluator(),
-      ).evaluate(workflow, context);
+      ).evaluate(workflow, context, authored);
       evalSpan.setAttribute(
         "workflow.expressions_evaluated",
         result.expressionsEvaluated,

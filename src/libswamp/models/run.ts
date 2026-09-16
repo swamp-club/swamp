@@ -45,6 +45,7 @@ import type { UnifiedDataRepository } from "../../domain/data/repositories.ts";
 import type { OutputRepository } from "../../domain/models/repositories.ts";
 import type { VaultService } from "../../domain/vaults/vault_service.ts";
 import type { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
+import { collectAuthoredExpressions } from "../../domain/expressions/expression_evaluation_service.ts";
 import type { SecretRedactor } from "../../domain/secrets/mod.ts";
 import type { DataQueryService } from "../../domain/data/data_query_service.ts";
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
@@ -354,6 +355,8 @@ export async function* modelMethodRun(
             resolvedModelDef,
             undefined,
             deps.autoDefinitionsDir,
+            // Inputs are typed by the operator running the command.
+            "unrestricted",
           );
 
           if (!result.ok) {
@@ -512,6 +515,17 @@ export async function* modelMethodRun(
           const evaluationService = deps.createEvaluationService();
           let evaluatedDefinition = definition;
 
+          // Provenance for the runtime pass, collected from the SOURCE
+          // definition — never from the evaluated one, which already has data
+          // content spliced into it. Inputs are typed by the operator
+          // running the command (or an authenticated serve caller), so
+          // expressions in them — schema-declared or method overrides — are
+          // author-written too.
+          const authoredExpressions = collectAuthoredExpressions(
+            inputs,
+            collectAuthoredExpressions(definition.toData()),
+          );
+
           if (input.lastEvaluated) {
             const lastEval = await deps.loadEvaluatedDefinition(
               modelType,
@@ -611,6 +625,7 @@ export async function* modelMethodRun(
               evaluatedDefinition,
               redactor,
               runtimeContext,
+              authoredExpressions,
             );
           evaluatedDefinition = runtimeResult.definition;
           const secretBag = runtimeResult.secretBag;

@@ -288,6 +288,131 @@ Deno.test("resolveOrCreateDefinition: updates globalArgs when they differ on exi
   }
 });
 
+Deno.test("resolveOrCreateDefinition: reports the stored definition's expressions before caller args are applied", async () => {
+  const modelDef = createTestModelDef(
+    z.object({ region: z.string(), token: z.string() }),
+    { run: z.object({ id: z.string() }) },
+  );
+  const resolvedType = ModelType.create("test/model");
+  const existingDef = Definition.create({
+    name: "existing-model",
+    type: "test/model",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { region: "${{ env.REGION }}", token: "literal" },
+  });
+
+  const result = await resolveOrCreateDefinition(
+    {
+      lookupDefinition: () =>
+        Promise.resolve({ definition: existingDef, type: resolvedType }),
+      getModelDef: () => modelDef,
+      saveDefinition: () => Promise.resolve(),
+      getDefinitionPath: (_type, id) => `/tmp/models/test/model/${id}.yaml`,
+    },
+    "test/model",
+    "existing-model",
+    "run",
+    // Caller-supplied args arrive post-substitution: they must not become
+    // authored provenance even though they overwrite the stored args.
+    {
+      region: "${{ env.REGION }}",
+      token: "${{ vault.get('injected') }}",
+      id: "abc",
+    },
+    resolvedType,
+    modelDef,
+  );
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.globalArgsUpdated, true);
+    assertEquals([...result.authoredExpressions], ["${{ env.REGION }}"]);
+  }
+});
+
+Deno.test("resolveOrCreateDefinition: refuses to persist global-arg expression text the caller cannot vouch for", async () => {
+  // A workflow caller's inputs have been through CEL substitution. Expression
+  // text outside its authored set is data content; persisting it would let
+  // the next invocation promote it into authored provenance and resolve it.
+  const modelDef = createTestModelDef(
+    z.object({ region: z.string() }),
+    { run: z.object({ id: z.string() }) },
+  );
+  const resolvedType = ModelType.create("test/model");
+  let saved = 0;
+  const deps = {
+    lookupDefinition: () => Promise.resolve(null),
+    getModelDef: () => modelDef,
+    saveDefinition: () => {
+      saved++;
+      return Promise.resolve();
+    },
+    getDefinitionPath: (_type: ModelType, id: string) =>
+      `/tmp/models/test/model/${id}.yaml`,
+  };
+  const inputs = { region: "${{ env.HOME }}", id: "abc" };
+
+  const created = await resolveOrCreateDefinition(
+    deps,
+    "test/model",
+    "injected",
+    "run",
+    inputs,
+    resolvedType,
+    modelDef,
+    undefined,
+    undefined,
+    new Set(["${{ inputs.other }}"]),
+  );
+  assertEquals(created.ok, false);
+  if (!created.ok) {
+    assertEquals(created.error.code, "validation_failed");
+    assertStringIncludes(created.error.message, "${{ env.HOME }}");
+  }
+
+  const existingDef = Definition.create({
+    name: "injected",
+    type: "test/model",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { region: "literal" },
+  });
+  const updated = await resolveOrCreateDefinition(
+    {
+      ...deps,
+      lookupDefinition: () =>
+        Promise.resolve({ definition: existingDef, type: resolvedType }),
+    },
+    "test/model",
+    "injected",
+    "run",
+    inputs,
+    resolvedType,
+    modelDef,
+    undefined,
+    undefined,
+    new Set(),
+  );
+  assertEquals(updated.ok, false);
+  assertEquals(saved, 0);
+  assertEquals(existingDef.globalArguments, { region: "literal" });
+
+  // The same text vouched for by the caller persists as before.
+  const vouched = await resolveOrCreateDefinition(
+    deps,
+    "test/model",
+    "authored",
+    "run",
+    inputs,
+    resolvedType,
+    modelDef,
+    undefined,
+    undefined,
+    new Set(["${{ env.HOME }}"]),
+  );
+  assertEquals(vouched.ok, true);
+  assertEquals(saved, 1);
+});
+
 Deno.test("resolveOrCreateDefinition: does not save when globalArgs match", async () => {
   const modelDef = createTestModelDef(
     z.object({ region: z.string() }),
@@ -839,6 +964,7 @@ Deno.test("resolveOrCreateDefinition: with lockDir adopts race winner's definiti
       name: "racy",
       type: "test/model",
       typeVersion: "2026.01.01.1",
+      globalArguments: { token: "${{ env.WINNER_TOKEN }}" },
     });
     let lookupCount = 0;
 
@@ -873,6 +999,12 @@ Deno.test("resolveOrCreateDefinition: with lockDir adopts race winner's definiti
     if (result.ok) {
       assertEquals(result.created, false);
       assertEquals(result.definition.id, winnerDef.id);
+      // The adopted definition's own expressions are provenance, exactly as
+      // on the sequential existing-definition path.
+      assertEquals(
+        result.authoredExpressions.has("${{ env.WINNER_TOKEN }}"),
+        true,
+      );
     }
     assertEquals(lookupCount, 2);
   });

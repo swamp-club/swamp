@@ -187,6 +187,79 @@ export function containsRuntimeExpression(celExpression: string): boolean {
 }
 
 /**
+ * The set of expressions an author actually wrote, keyed by raw `${{ ... }}`
+ * text (and bare assertion predicates), or `"unrestricted"` to opt out.
+ *
+ * CEL evaluation splices data content into the tree as raw text
+ * ({@link replaceExpressions}), and every later pass — the runtime pass and
+ * any second CEL pass over step inputs — re-parses that tree. Without
+ * provenance the two are indistinguishable, so a plain string field holding
+ * expression text would be evaluated as if the author had written it: a
+ * `vault.get(...)` or `env` reference resolves a secret directly, and any other
+ * CEL (a `data.latest()` call on another model's sensitive field, say) reads
+ * one through the evaluation context. Callers that evaluate a post-CEL tree
+ * must therefore pass the set collected from their pre-CEL source.
+ *
+ * `"unrestricted"` is for callers whose input is author-written source that has
+ * had no substitution applied — it must be spelled out rather than defaulted, so
+ * that every call site states which case it is in.
+ */
+export type AuthoredExpressions =
+  | ReadonlySet<string>
+  | "unrestricted";
+
+/**
+ * Collects the raw text of every expression in `data`.
+ *
+ * Call this on author-written source — a definition or workflow as loaded from
+ * disk — *before* any CEL evaluation, and pass the result to every later pass.
+ * Keyed on raw expression text rather than path because CEL substitution can
+ * replace a whole subtree at a path, and workflow paths do not map onto
+ * definition paths.
+ *
+ * @param data - Author-written source data, pre-CEL
+ * @param into - Optional set to accumulate into, for unioning several sources
+ */
+export function collectAuthoredExpressions(
+  data: unknown,
+  into: Set<string> = new Set(),
+): Set<string> {
+  for (const expr of extractExpressions(data)) {
+    into.add(expr.raw);
+  }
+  return into;
+}
+
+/**
+ * Splits expressions into those the author wrote and those CEL substitution
+ * introduced, logging a warning for each rejection so an injection attempt is
+ * visible in the run log.
+ *
+ * The raw expression text is logged because it is the reference, never a
+ * resolved value — nothing has been evaluated at this point, and that is the
+ * whole point of the rejection.
+ */
+export function partitionAuthored(
+  expressions: ExpressionLocation[],
+  authored: AuthoredExpressions,
+): ExpressionLocation[] {
+  if (authored === "unrestricted") {
+    return expressions;
+  }
+  const allowed: ExpressionLocation[] = [];
+  for (const expr of expressions) {
+    if (authored.has(expr.raw)) {
+      allowed.push(expr);
+      continue;
+    }
+    getLogger(["swamp", "expressions"]).warn(
+      `Refusing to evaluate expression at ${expr.path}: it was not written in the definition or workflow source, so it arrived as data content. Left as literal text. Raw: ${expr.raw}`,
+    );
+  }
+  return allowed;
+}
+
+/**
  * Result of resolving runtime expressions in a definition.
  * Includes the resolved definition and a VaultSecretBag containing
  * sentinel-to-value mappings for any vault secrets encountered.
@@ -244,17 +317,23 @@ export class ExpressionEvaluationService {
 
   /**
    * Evaluates expressions in arbitrary data with the given context.
-   * Used for workflow evaluation.
+   * Used at step-execution seams over workflow-level data.
    *
    * @param data - The data containing expressions
    * @param context - The evaluation context
+   * @param authored - Expressions the author wrote, collected from the
+   *   pre-CEL source with {@link collectAuthoredExpressions}. This seam runs
+   *   over data that has already had substitution applied, so anything not in
+   *   the set arrived as data content and is left as literal text. Pass
+   *   `"unrestricted"` only when `data` is unsubstituted source.
    * @returns The data with expressions replaced
    */
   async evaluateData(
     data: unknown,
     context: ExpressionContext,
+    authored: AuthoredExpressions,
   ): Promise<unknown> {
-    const expressions = extractExpressions(data);
+    const expressions = partitionAuthored(extractExpressions(data), authored);
     if (expressions.length === 0) {
       return data;
     }
@@ -559,21 +638,31 @@ export class ExpressionEvaluationService {
    * @param definition - The definition (may contain remaining ${{ vault.get(...) }} or ${{ env.* }} expressions)
    * @param redactor - Optional SecretRedactor to register resolved secret values for redaction
    * @param expressionContext - Optional context for CEL-evaluating dynamic vault.get() arguments
+   * @param authored - Expressions the author wrote, collected from the pre-CEL
+   *   source with {@link collectAuthoredExpressions}. Anything else in the
+   *   definition arrived via data substitution and is left as literal text.
+   *   Required so every caller states whether its input is author-written;
+   *   pass `"unrestricted"` only when no substitution has run.
    * @returns The definition with sentinels and the VaultSecretBag for resolving them
    */
   async resolveRuntimeExpressionsInDefinition(
     definition: Definition,
-    redactor?: SecretRedactor,
-    expressionContext?: ExpressionContext,
+    redactor: SecretRedactor | undefined,
+    expressionContext: ExpressionContext | undefined,
+    authored: AuthoredExpressions,
   ): Promise<RuntimeResolutionResult> {
     const logger = getLogger(["swamp", "expressions"]);
     const secretBag = new VaultSecretBag();
     const definitionData = definition.toData();
     const expressions = extractExpressions(definitionData);
 
-    // Filter to only runtime expressions (vault or env)
-    const runtimeExpressions = expressions.filter((expr) =>
-      containsRuntimeExpression(expr.celExpression)
+    // Filter to only runtime expressions (vault or env), then to those the
+    // author actually wrote — see AuthoredExpressions.
+    const runtimeExpressions = partitionAuthored(
+      expressions.filter((expr) =>
+        containsRuntimeExpression(expr.celExpression)
+      ),
+      authored,
     );
 
     logger.debug(
@@ -608,16 +697,22 @@ export class ExpressionEvaluationService {
    * @param data - The data (may contain remaining runtime expressions)
    * @param redactor - Optional SecretRedactor to register resolved secret values for redaction
    * @param expressionContext - Optional context for CEL-evaluating dynamic vault.get() arguments
+   * @param authored - Expressions the author wrote. See
+   *   {@link resolveRuntimeExpressionsInDefinition}.
    * @returns The data with all runtime expressions resolved (sentinels replaced with raw values)
    */
   async resolveRuntimeExpressionsInData(
     data: unknown,
-    redactor?: SecretRedactor,
-    expressionContext?: ExpressionContext,
+    redactor: SecretRedactor | undefined,
+    expressionContext: ExpressionContext | undefined,
+    authored: AuthoredExpressions,
   ): Promise<unknown> {
     const expressions = extractExpressions(data);
-    const runtimeExpressions = expressions.filter((expr) =>
-      containsRuntimeExpression(expr.celExpression)
+    const runtimeExpressions = partitionAuthored(
+      expressions.filter((expr) =>
+        containsRuntimeExpression(expr.celExpression)
+      ),
+      authored,
     );
 
     if (runtimeExpressions.length === 0) {
@@ -660,18 +755,22 @@ export class ExpressionEvaluationService {
    *
    * Used at execution-time seams that consume workflow-level data where
    * CEL must materialize before runtime resolution walks the now-CEL-
-   * resolved tree.
+   * resolved tree. Because the CEL pass splices data content into that tree,
+   * the caller must supply provenance collected from authored source before
+   * any substitution, and both passes apply it.
    */
   async resolveAllExpressionsInData(
     data: unknown,
     context: ExpressionContext,
-    redactor?: SecretRedactor,
+    redactor: SecretRedactor | undefined,
+    authored: AuthoredExpressions,
   ): Promise<unknown> {
-    const afterCel = await this.evaluateData(data, context);
+    const afterCel = await this.evaluateData(data, context, authored);
     return await this.resolveRuntimeExpressionsInData(
       afterCel,
       redactor,
       context,
+      authored,
     );
   }
 
@@ -681,7 +780,14 @@ export class ExpressionEvaluationService {
   async resolveVaultExpressionsInDefinition(
     definition: Definition,
   ): Promise<Definition> {
-    const result = await this.resolveRuntimeExpressionsInDefinition(definition);
+    // Legacy seam: callers hand in a definition they own, with no CEL
+    // substitution applied, so every expression in it is author-written.
+    const result = await this.resolveRuntimeExpressionsInDefinition(
+      definition,
+      undefined,
+      undefined,
+      "unrestricted",
+    );
     // Legacy callers expect raw values, so resolve sentinels immediately
     if (!result.secretBag.isEmpty) {
       const data = result.definition.toData();
@@ -697,7 +803,13 @@ export class ExpressionEvaluationService {
    * @deprecated Use resolveRuntimeExpressionsInData instead.
    */
   resolveVaultExpressionsInData(data: unknown): Promise<unknown> {
-    return this.resolveRuntimeExpressionsInData(data);
+    // Legacy seam: see resolveVaultExpressionsInDefinition.
+    return this.resolveRuntimeExpressionsInData(
+      data,
+      undefined,
+      undefined,
+      "unrestricted",
+    );
   }
 
   /**

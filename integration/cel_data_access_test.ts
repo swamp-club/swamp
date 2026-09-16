@@ -40,8 +40,13 @@ import {
   type DataRecord,
   ModelResolver,
 } from "../src/domain/expressions/model_resolver.ts";
-import { ExpressionEvaluationService } from "../src/domain/expressions/expression_evaluation_service.ts";
+import {
+  collectAuthoredExpressions,
+  ExpressionEvaluationService,
+} from "../src/domain/expressions/expression_evaluation_service.ts";
 import { CelEvaluator } from "../src/infrastructure/cel/cel_evaluator.ts";
+import { VaultService } from "../src/domain/vaults/vault_service.ts";
+import { SENSITIVE_FIELDS_TAG } from "../src/domain/models/data_writer.ts";
 import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
 import { DataQueryService } from "../src/domain/data/data_query_service.ts";
 import { initializeTestRepo, runCliCommand } from "./test_helpers.ts";
@@ -658,6 +663,9 @@ Deno.test("CEL Data Access: access environment variables", async () => {
       const runtimeResult = await evalService
         .resolveRuntimeExpressionsInDefinition(
           result.definition,
+          undefined,
+          undefined,
+          collectAuthoredExpressions(model.toData()),
         );
 
       assertEquals(
@@ -1235,6 +1243,337 @@ Deno.test("CEL Data Access: data.latest() sees data written after buildContext()
       assertEquals(latest.version, 2);
       assertEquals(latest.attributes.step, 2);
       assertEquals(latest.attributes.fresh, true);
+    } finally {
+      catalog.close();
+    }
+  });
+});
+
+// ============================================================================
+// swamp-club#2172 — CEL-substituted data content must not re-enter as source
+// ============================================================================
+
+/**
+ * A plain, NON-sensitive string field holding `${{ env.X }}` text is read via
+ * `data.latest()`, spliced into the definition by the CEL pass, and must then
+ * be left alone by the runtime pass. Before the authored-expression gate, the
+ * runtime pass re-parsed the post-CEL tree and resolved it, letting anyone who
+ * could write a plain string field read any environment variable of the swamp
+ * process.
+ *
+ * The env variant is used rather than vault because it is the one with no
+ * redaction anywhere — if the gate fails, the plaintext is simply present.
+ */
+Deno.test("CEL Data Access: env expression injected through data.latest() is not resolved", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    Deno.env.set("SWAMP_TEST_2172_SECRET", "leaked-plaintext");
+
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const type = ModelType.create("test/model");
+    const owner = createOwner("test/model:injector");
+
+    const producer = Definition.create({
+      name: "injector",
+      globalArguments: {},
+    });
+    await definitionRepo.save(type, producer);
+
+    const data = Data.create({
+      name: "notes",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "state", modelName: "injector" },
+      ownerDefinition: owner,
+    });
+
+    // Attacker-controlled text in a field with no `sensitive` marking and no
+    // `_swamp.sensitiveFields` tag — the swamp-club#2119 read-side gate
+    // correctly passes it through as literal text.
+    await dataRepo.save(
+      type,
+      producer.id,
+      data,
+      new TextEncoder().encode(
+        JSON.stringify({ body: "${{ env.SWAMP_TEST_2172_SECRET }}" }),
+      ),
+    );
+
+    const consumer = Definition.create({
+      name: "consumer",
+      globalArguments: {
+        run: '${{ data.latest("injector", "notes").attributes.body }}',
+      },
+    });
+    await definitionRepo.save(type, consumer);
+
+    const catalog = new CatalogStore(
+      join(repoDir, ".swamp", "data", "_catalog.db"),
+    );
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+    try {
+      const evalService = new ExpressionEvaluationService(
+        definitionRepo,
+        repoDir,
+        { dataRepo, dataQueryService: dqs },
+      );
+
+      // Provenance is taken from the source definition, before CEL runs:
+      // the author's data.latest() reference is in it, the env text is not.
+      const authored = collectAuthoredExpressions(consumer.toData());
+      assertEquals(authored.size, 1);
+      assertEquals(authored.has("${{ env.SWAMP_TEST_2172_SECRET }}"), false);
+
+      const evaluated = await evalService.evaluateDefinition(consumer, type);
+
+      // The CEL pass really did splice the attacker's text into the tree —
+      // without this the test would pass for the wrong reason.
+      assertEquals(
+        evaluated.definition.globalArguments.run,
+        "${{ env.SWAMP_TEST_2172_SECRET }}",
+      );
+
+      const runtimeResult = await evalService
+        .resolveRuntimeExpressionsInDefinition(
+          evaluated.definition,
+          undefined,
+          undefined,
+          authored,
+        );
+
+      assertEquals(
+        runtimeResult.definition.globalArguments.run,
+        "${{ env.SWAMP_TEST_2172_SECRET }}",
+      );
+      assertEquals(
+        JSON.stringify(runtimeResult.definition.globalArguments).includes(
+          "leaked-plaintext",
+        ),
+        false,
+      );
+    } finally {
+      catalog.close();
+      Deno.env.delete("SWAMP_TEST_2172_SECRET");
+    }
+  });
+});
+
+/**
+ * The positive half of the same seam: an author-written runtime expression in
+ * the source definition still resolves after a CEL pass that substitutes data
+ * around it. Without this, the gate could "pass" by resolving nothing at all.
+ */
+Deno.test("CEL Data Access: authored env expression still resolves alongside substituted data", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    Deno.env.set("SWAMP_TEST_2172_AUTHORED", "authored-value");
+
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const type = ModelType.create("test/model");
+    const owner = createOwner("test/model:producer");
+
+    const producer = Definition.create({
+      name: "producer",
+      globalArguments: {},
+    });
+    await definitionRepo.save(type, producer);
+
+    const data = Data.create({
+      name: "notes",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "state", modelName: "producer" },
+      ownerDefinition: owner,
+    });
+    await dataRepo.save(
+      type,
+      producer.id,
+      data,
+      new TextEncoder().encode(JSON.stringify({ body: "plain text" })),
+    );
+
+    const consumer = Definition.create({
+      name: "authored_consumer",
+      globalArguments: {
+        fromData: '${{ data.latest("producer", "notes").attributes.body }}',
+        fromEnv: "${{ env.SWAMP_TEST_2172_AUTHORED }}",
+      },
+    });
+    await definitionRepo.save(type, consumer);
+
+    const catalog = new CatalogStore(
+      join(repoDir, ".swamp", "data", "_catalog.db"),
+    );
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+    try {
+      const evalService = new ExpressionEvaluationService(
+        definitionRepo,
+        repoDir,
+        { dataRepo, dataQueryService: dqs },
+      );
+
+      const authored = collectAuthoredExpressions(consumer.toData());
+      const evaluated = await evalService.evaluateDefinition(consumer, type);
+      const runtimeResult = await evalService
+        .resolveRuntimeExpressionsInDefinition(
+          evaluated.definition,
+          undefined,
+          undefined,
+          authored,
+        );
+
+      assertEquals(
+        runtimeResult.definition.globalArguments.fromData,
+        "plain text",
+      );
+      assertEquals(
+        runtimeResult.definition.globalArguments.fromEnv,
+        "authored-value",
+      );
+    } finally {
+      catalog.close();
+      Deno.env.delete("SWAMP_TEST_2172_AUTHORED");
+    }
+  });
+});
+
+/**
+ * The vault route through the second pass. The injected text is not a vault
+ * reference at all — it is a data.latest() call naming another model's
+ * sensitive-tagged field, which the data-READ path resolves through the vault
+ * on access. The runtime gate never sees this shape; only the gate on the
+ * step-input pass stops it. Asserted on the vault call count, never on the
+ * absence of a value: absence cannot distinguish a blocked read from a
+ * redaction. The unrestricted control at the end proves the fixture really
+ * does reach the vault, so the zero above is the gate and not a broken setup.
+ */
+Deno.test("CEL Data Access: data.latest() on a sensitive field injected through a plain field never reads the vault", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const type = ModelType.create("test/model");
+
+    const vaultService = new VaultService();
+    vaultService.registerVault({ name: "v", type: "mock", config: {} });
+    let vaultReads = 0;
+    const originalGet = vaultService.get.bind(vaultService);
+    vaultService.get = (vaultName, secretKey, callerContext) => {
+      vaultReads++;
+      return originalGet(vaultName, secretKey, callerContext);
+    };
+
+    // The victim: a sensitive-tagged field holding a vault reference, which
+    // the read path resolves on access (the swamp-club#2119 contract).
+    const victim = Definition.create({ name: "victim", globalArguments: {} });
+    await definitionRepo.save(type, victim);
+    await dataRepo.save(
+      type,
+      victim.id,
+      Data.create({
+        name: "creds",
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: {
+          type: "state",
+          modelName: "victim",
+          [SENSITIVE_FIELDS_TAG]: JSON.stringify(["token"]),
+        },
+        ownerDefinition: createOwner("test/model:victim"),
+      }),
+      new TextEncoder().encode(
+        JSON.stringify({ token: "${{ vault.get('v', 'demo-api-key') }}" }),
+      ),
+    );
+
+    // The attacker: a plain, non-sensitive field naming the victim's field.
+    const injected = "${{ data.latest('victim', 'creds').attributes.token }}";
+    const injector = Definition.create({
+      name: "injector",
+      globalArguments: {},
+    });
+    await definitionRepo.save(type, injector);
+    await dataRepo.save(
+      type,
+      injector.id,
+      Data.create({
+        name: "notes",
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: { type: "state", modelName: "injector" },
+        ownerDefinition: createOwner("test/model:injector"),
+      }),
+      new TextEncoder().encode(JSON.stringify({ body: injected })),
+    );
+
+    const consumer = Definition.create({
+      name: "consumer",
+      globalArguments: {
+        run: '${{ data.latest("injector", "notes").attributes.body }}',
+      },
+    });
+    await definitionRepo.save(type, consumer);
+
+    const catalog = new CatalogStore(
+      join(repoDir, ".swamp", "data", "_catalog.db"),
+    );
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+    try {
+      const repos = { dataRepo, dataQueryService: dqs, vaultService };
+      const evalService = new ExpressionEvaluationService(
+        definitionRepo,
+        repoDir,
+        repos,
+      );
+      const authored = collectAuthoredExpressions(consumer.toData());
+
+      // Pass 1 splices the attacker's text in, touching no vault.
+      const evaluated = await evalService.evaluateDefinition(consumer, type);
+      assertEquals(evaluated.definition.globalArguments.run, injected);
+      assertEquals(vaultReads, 0);
+
+      // Pass 2, gated: the spliced text is left alone and the vault stays cold.
+      const ctx = await new ModelResolver(definitionRepo, { repoDir, ...repos })
+        .buildContext();
+      const gated = await evalService.evaluateData(
+        evaluated.definition.globalArguments,
+        ctx,
+        authored,
+      ) as { run: string };
+      assertEquals(gated.run, injected);
+      assertEquals(vaultReads, 0);
+
+      // Control: with the gate open the same fixture reads the vault, so the
+      // zero above is the gate working and not a fixture that never could.
+      const open = await evalService.evaluateData(
+        evaluated.definition.globalArguments,
+        ctx,
+        "unrestricted",
+      ) as { run: string };
+      assertEquals(open.run, "super-secret-api-key-12345");
+      assertEquals(vaultReads, 1);
     } finally {
       catalog.close();
     }

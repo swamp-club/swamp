@@ -28,14 +28,8 @@
  * value reaches the workflow as a validated input.
  */
 
+import { join } from "@std/path";
 import { assertEquals, assertRejects } from "@std/assert";
-import {
-  consumeStream,
-  createLibSwampContext,
-  createRepoInitDeps,
-  repoInit,
-  withDefaults,
-} from "../src/libswamp/mod.ts";
 import type { WorkflowRunEvent } from "../src/libswamp/mod.ts";
 import type { WebhookPayload } from "../src/domain/expressions/model_resolver.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
@@ -163,21 +157,17 @@ async function withRepo(
 ): Promise<void> {
   const repoDir = await Deno.makeTempDir({ prefix: "swamp-webhook-inputs-" });
   try {
-    await consumeStream(
-      repoInit(
-        createLibSwampContext({}),
-        createRepoInitDeps("20260101.120000.0"),
-        { path: repoDir, force: false, version: "20260101.120000.0" },
-      ),
-      withDefaults({
-        error: (event) => {
-          throw new Error(String(event.error?.message ?? "repo init failed"));
-        },
-      }),
+    await Deno.writeTextFile(
+      join(repoDir, ".swamp.yaml"),
+      "swampVersion: 0.0.0\ninitializedAt: 2026-01-01T00:00:00.000Z\n",
     );
     await fn(repoDir);
   } finally {
-    await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+    if (Deno.build.os === "windows") {
+      await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repoDir, { recursive: true });
+    }
   }
 }
 
@@ -320,6 +310,294 @@ Deno.test({
       } finally {
         clearActiveTelemetryService();
       }
+    });
+  },
+});
+
+/**
+ * swamp-club#2172 — a webhook payload is the purest form of the injection this
+ * issue is about: the attacker needs no write access to the repo at all, only
+ * the ability to POST. TriggerInputResolver splices payload text into the run's
+ * inputs, the CEL pass splices those into the definition, and before the
+ * authored-expression gate the runtime pass re-parsed that tree and resolved
+ * whatever looked like a vault or env reference.
+ *
+ * This drives the whole path — trigger resolution, workflow evaluation, step
+ * options, step context, runtime pass, step execution — so it covers the
+ * plumbing as well as the gate.
+ *
+ * The assertion is on what the shell step actually ran and printed, NOT on the
+ * evaluated workflow on disk: that artifact is persisted *before* the runtime
+ * pass, so it shows the raw text whether or not the gate works. `env.*` is used
+ * because it is the variant with no redaction anywhere — if the gate fails, the
+ * plaintext is simply there in the output.
+ */
+Deno.test({
+  name:
+    "webhook run: env expression injected through the payload never reaches the shell step",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    Deno.env.set("SWAMP_TEST_2172_WEBHOOK", "leaked-plaintext");
+    try {
+      await withRepo(async (repoDir) => {
+        const workflow = Workflow.create({
+          name: "webhook-injected-expression",
+          trigger: {
+            inputs: {
+              identifier: "${{ webhook.body.data.issue.identifier }}",
+            },
+          },
+          inputs: requiredInputSchema,
+          jobs: [
+            Job.create({
+              name: "main",
+              steps: [
+                Step.create({
+                  name: "echo",
+                  task: StepTask.directExecution(
+                    "command/shell",
+                    "webhook-injected-shell",
+                    "execute",
+                    { run: 'echo "VALUE=${{ inputs.identifier }}"' },
+                  ),
+                }),
+              ],
+            }),
+          ],
+        });
+        await new YamlWorkflowRepository(repoDir).save(workflow);
+
+        const events = await runWebhook(repoDir, workflow.name, {
+          body: {
+            data: {
+              issue: { identifier: "${{ env.SWAMP_TEST_2172_WEBHOOK }}" },
+            },
+          },
+          headers: { "x-linear-event": "Issue" },
+          route: "/hooks/linear",
+        });
+
+        const serialized = JSON.stringify(events);
+
+        // The payload text did reach the command — without this the test could
+        // pass because nothing was substituted at all.
+        assertEquals(
+          serialized.includes("env.SWAMP_TEST_2172_WEBHOOK"),
+          true,
+          `payload text never reached the step: ${serialized}`,
+        );
+        assertEquals(
+          serialized.includes("leaked-plaintext"),
+          false,
+          `environment variable was resolved from webhook payload text: ${serialized}`,
+        );
+      });
+    } finally {
+      Deno.env.delete("SWAMP_TEST_2172_WEBHOOK");
+    }
+  },
+});
+
+/**
+ * The positive counterpart: an env reference written in the workflow source
+ * still resolves at the step, in the same run shape as the test above. Without
+ * this, the gate could "pass" by refusing everything — including the references
+ * authors legitimately write.
+ */
+Deno.test({
+  name:
+    "webhook run: env expression written in the workflow source still resolves",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    Deno.env.set("SWAMP_TEST_2172_AUTHORED", "authored-value");
+    try {
+      await withRepo(async (repoDir) => {
+        const workflow = Workflow.create({
+          name: "webhook-authored-expression",
+          trigger: {
+            inputs: {
+              identifier: "${{ webhook.body.data.issue.identifier }}",
+            },
+          },
+          inputs: requiredInputSchema,
+          jobs: [
+            Job.create({
+              name: "main",
+              steps: [
+                Step.create({
+                  name: "echo",
+                  task: StepTask.directExecution(
+                    "command/shell",
+                    "webhook-authored-shell",
+                    "execute",
+                    { run: 'echo "VALUE=${{ env.SWAMP_TEST_2172_AUTHORED }}"' },
+                  ),
+                }),
+              ],
+            }),
+          ],
+        });
+        await new YamlWorkflowRepository(repoDir).save(workflow);
+
+        const events = await runWebhook(repoDir, workflow.name, {
+          body: { data: { issue: { identifier: "PLT-1" } } },
+          headers: { "x-linear-event": "Issue" },
+          route: "/hooks/linear",
+        });
+
+        const serialized = JSON.stringify(events);
+        assertEquals(
+          serialized.includes("VALUE=authored-value"),
+          true,
+          `authored env reference did not resolve: ${serialized}`,
+        );
+      });
+    } finally {
+      Deno.env.delete("SWAMP_TEST_2172_AUTHORED");
+    }
+  },
+});
+
+/**
+ * The bypass found in adversarial review of the first fix. The runtime pass
+ * only sees expressions classified as runtime, and the classifier used to
+ * recognise only the dotted form of an env reference. The bracket-index form
+ * slipped past it, and the step executor's second CEL pass over the
+ * already-substituted step inputs evaluated it with the process environment
+ * in scope. Two things now stop it, and this test fails if either is undone
+ * on its own: every env form is classified as runtime, and the second pass is
+ * gated on the authored set like the runtime pass is.
+ */
+Deno.test({
+  name:
+    "webhook run: bracket-index env expression injected through the payload never reaches the shell step",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    Deno.env.set("SWAMP_TEST_2172_BRACKET", "leaked-plaintext");
+    try {
+      await withRepo(async (repoDir) => {
+        const workflow = Workflow.create({
+          name: "webhook-injected-bracket-expression",
+          trigger: {
+            inputs: {
+              identifier: "${{ webhook.body.data.issue.identifier }}",
+            },
+          },
+          inputs: requiredInputSchema,
+          jobs: [
+            Job.create({
+              name: "main",
+              steps: [
+                Step.create({
+                  name: "echo",
+                  task: StepTask.directExecution(
+                    "command/shell",
+                    "webhook-injected-bracket-shell",
+                    "execute",
+                    { run: 'echo "VALUE=${{ inputs.identifier }}"' },
+                  ),
+                }),
+              ],
+            }),
+          ],
+        });
+        await new YamlWorkflowRepository(repoDir).save(workflow);
+
+        const events = await runWebhook(repoDir, workflow.name, {
+          body: {
+            data: {
+              issue: { identifier: "${{ env['SWAMP_TEST_2172_BRACKET'] }}" },
+            },
+          },
+          headers: { "x-linear-event": "Issue" },
+          route: "/hooks/linear",
+        });
+
+        const serialized = JSON.stringify(events);
+        assertEquals(
+          serialized.includes("SWAMP_TEST_2172_BRACKET"),
+          true,
+          `payload text never reached the step: ${serialized}`,
+        );
+        assertEquals(
+          serialized.includes("leaked-plaintext"),
+          false,
+          `bracket-index env reference was resolved from webhook payload text: ${serialized}`,
+        );
+      });
+    } finally {
+      Deno.env.delete("SWAMP_TEST_2172_BRACKET");
+    }
+  },
+});
+
+/**
+ * A non-runtime CEL expression injected through the payload must be just as
+ * inert at the second pass: here it names another record through
+ * data.latest(). The runtime gate never sees this shape, so only the gate on
+ * the step-input pass stops it.
+ */
+Deno.test({
+  name:
+    "webhook run: data.latest() expression injected through the payload is not evaluated",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withRepo(async (repoDir) => {
+      const workflow = Workflow.create({
+        name: "webhook-injected-data-expression",
+        trigger: {
+          inputs: {
+            identifier: "${{ webhook.body.data.issue.identifier }}",
+          },
+        },
+        inputs: requiredInputSchema,
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "echo",
+                task: StepTask.directExecution(
+                  "command/shell",
+                  "webhook-injected-data-shell",
+                  "execute",
+                  { run: 'echo "VALUE=${{ inputs.identifier }}"' },
+                ),
+              }),
+            ],
+          }),
+        ],
+      });
+      await new YamlWorkflowRepository(repoDir).save(workflow);
+
+      const injected =
+        "${{ data.latest('webhook-injected-data-shell', 'result').attributes.command }}";
+      const events = await runWebhook(repoDir, workflow.name, {
+        body: { data: { issue: { identifier: injected } } },
+        headers: { "x-linear-event": "Issue" },
+        route: "/hooks/linear",
+      });
+
+      // The command the shell actually received must still carry the raw
+      // expression text (the shell provider brace-escapes it, so match on
+      // the CEL body), proving it was neither evaluated nor stripped. The
+      // run's recorded inputs echo the raw text regardless, so look only at
+      // what the step printed.
+      const printed = events
+        .filter((e) => e.kind === "method_output")
+        .map((e) => JSON.stringify(e))
+        .join("\n");
+      assertEquals(
+        printed.includes(
+          "data.latest('webhook-injected-data-shell', 'result').attributes.command",
+        ),
+        true,
+        `injected data.latest() text was evaluated or altered: ${printed}`,
+      );
     });
   },
 });

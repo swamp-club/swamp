@@ -54,6 +54,7 @@ Deno.test("resolveForEachStepName: resolves single expression in template", () =
     ctx,
     cel,
     "fallback",
+    "unrestricted",
   );
   assertEquals(result.name, "step-hello");
   assertEquals(result.hadEvalFailure, false);
@@ -68,6 +69,7 @@ Deno.test("resolveForEachStepName: resolves multiple expressions in template", (
     ctx,
     cel,
     "0",
+    "unrestricted",
   );
   assertEquals(result.name, "dl-MyShow-Episode1");
   assertEquals(result.hadEvalFailure, false);
@@ -82,6 +84,7 @@ Deno.test("resolveForEachStepName: appends fallback suffix when expression fails
     ctx,
     cel,
     "0",
+    "unrestricted",
   );
   assertEquals(result.name, "step-${{ self.missing.deep.field }}-0");
   assertEquals(result.hadEvalFailure, true);
@@ -96,6 +99,7 @@ Deno.test("resolveForEachStepName: appends fallback suffix when no expressions",
     ctx,
     cel,
     "my-key",
+    "unrestricted",
   );
   assertEquals(result.name, "download-my-key");
   assertEquals(result.hadEvalFailure, false);
@@ -110,6 +114,7 @@ Deno.test("resolveForEachStepName: uses numeric fallback suffix for index-based 
     ctx,
     cel,
     "3",
+    "unrestricted",
   );
   assertEquals(result.name, "process-3");
   assertEquals(result.hadEvalFailure, false);
@@ -124,6 +129,7 @@ Deno.test("resolveForEachStepName: resolves expression with object property acce
     ctx,
     cel,
     "0",
+    "unrestricted",
   );
   assertEquals(result.name, "dl-Futurama");
   assertEquals(result.hadEvalFailure, false);
@@ -138,6 +144,7 @@ Deno.test("resolveForEachStepName: mixed resolved and failed expressions appends
     ctx,
     cel,
     "0",
+    "unrestricted",
   );
   assertEquals(result.name, "resolved-${{ self.nonexistent.deep }}-0");
   assertEquals(result.hadEvalFailure, true);
@@ -164,6 +171,7 @@ Deno.test("ForEachExpansionService.expand: non-forEach step yields one entry tha
   const result = await service.expand(
     makeJobWithSteps([step]),
     makeExpressionContext(),
+    "unrestricted",
   );
 
   const expanded = result.get("plain-step");
@@ -184,6 +192,7 @@ Deno.test("ForEachExpansionService.expand: array iteration produces one entry pe
   const result = await service.expand(
     makeJobWithSteps([step]),
     makeExpressionContext(),
+    "unrestricted",
   );
 
   const expanded = result.get("scan-${{ self.env }}");
@@ -213,6 +222,7 @@ Deno.test("ForEachExpansionService.expand: object iteration binds {key, value} o
   const result = await service.expand(
     makeJobWithSteps([step]),
     makeExpressionContext(),
+    "unrestricted",
   );
 
   const expanded = result.get("deploy-${{ self.region.key }}");
@@ -239,7 +249,12 @@ Deno.test("ForEachExpansionService.expand: throws UserError when forEach.in is n
     task: StepTask.model("m", "run"),
   });
   await assertRejects(
-    () => service.expand(makeJobWithSteps([step]), makeExpressionContext()),
+    () =>
+      service.expand(
+        makeJobWithSteps([step]),
+        makeExpressionContext(),
+        "unrestricted",
+      ),
     UserError,
     "Invalid forEach.in expression",
   );
@@ -253,7 +268,12 @@ Deno.test("ForEachExpansionService.expand: throws UserError when forEach.in eval
     task: StepTask.model("m", "run"),
   });
   await assertRejects(
-    () => service.expand(makeJobWithSteps([step]), makeExpressionContext()),
+    () =>
+      service.expand(
+        makeJobWithSteps([step]),
+        makeExpressionContext(),
+        "unrestricted",
+      ),
     UserError,
     "must evaluate to an array or object",
   );
@@ -269,6 +289,7 @@ Deno.test("ForEachExpansionService.expand: empty array yields zero expansions bu
   const result = await service.expand(
     makeJobWithSteps([step]),
     makeExpressionContext(),
+    "unrestricted",
   );
 
   const expanded = result.get("scan-${{ self.env }}");

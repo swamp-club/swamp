@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { UserError } from "../../domain/errors.ts";
 import type { JobData } from "../../domain/workflows/job.ts";
 import {
   Workflow,
@@ -34,7 +35,10 @@ import {
   isTaskInputsPath,
   replaceExpressions,
 } from "../../domain/expressions/expression_parser.ts";
-import { containsRuntimeExpression } from "../../domain/expressions/expression_evaluation_service.ts";
+import {
+  containsRuntimeExpression,
+} from "../../domain/expressions/expression_evaluation_service.ts";
+import { collectWorkflowAuthoredExpressions } from "../../domain/workflows/expression_evaluators.ts";
 import { resolveAvailableExpressions } from "../../domain/expressions/available_expression_resolver.ts";
 import {
   hasStepOutputDependency,
@@ -186,6 +190,7 @@ async function evaluateWorkflowInternal(
 ): Promise<WorkflowEvaluateItemData> {
   const workflowData = workflow.toData();
   const expressions = extractExpressions(workflowData);
+  const authoredExpressions = collectWorkflowAuthoredExpressions(workflow);
 
   if (expressions.length === 0 && Object.keys(inputs).length === 0) {
     // No expressions and no inputs - still save for consistency
@@ -287,6 +292,9 @@ async function evaluateWorkflowInternal(
       // Async so data.* helpers that return Promises (latest, findByTag,
       // findBySpec, query, etc.) resolve before we iterate. cel-js
       // propagates Promises through its evaluator natively.
+      if (!authoredExpressions.has(inMatch[0])) {
+        throw new UserError("forEach.in must be an authored expression");
+      }
       const items = await deps.evaluateCelAsync(inMatch[1], context);
       const itemName = stepData.forEach.item;
       const nameHasExpression = /\$\{\{.+?\}\}/s.test(stepData.name);
@@ -296,8 +304,7 @@ async function evaluateWorkflowInternal(
       // placement fields in one pass via the shared resolver, then apply the
       // unique-name suffix policy.
       const buildExpandedStep = (
-        // deno-lint-ignore no-explicit-any
-        stepContext: any,
+        stepContext: Record<string, unknown>,
         fallbackSuffix: string,
       ) => {
         const resolved = resolveAvailableExpressions(
@@ -310,6 +317,7 @@ async function evaluateWorkflowInternal(
           },
           stepContext,
           deps.evaluateCel,
+          authoredExpressions,
         ) as {
           name: string;
           task: typeof stepData.task;

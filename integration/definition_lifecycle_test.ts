@@ -34,7 +34,10 @@ import { stringify as stringifyYaml } from "@std/yaml";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
-import { ExpressionEvaluationService } from "../src/domain/expressions/expression_evaluation_service.ts";
+import {
+  collectAuthoredExpressions,
+  ExpressionEvaluationService,
+} from "../src/domain/expressions/expression_evaluation_service.ts";
 import { CLI_ARGS } from "./test_helpers.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -794,6 +797,9 @@ Deno.test("Definition Lifecycle: environment variable expressions", async () => 
       const runtimeResult = await evalService
         .resolveRuntimeExpressionsInDefinition(
           result.definition,
+          undefined,
+          undefined,
+          collectAuthoredExpressions(definition.toData()),
         );
 
       assertEquals(

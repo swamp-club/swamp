@@ -44,7 +44,10 @@ import {
   extractExpressions,
   valueContainsExpression,
 } from "../expressions/expression_parser.ts";
-import { containsVaultExpression } from "../expressions/expression_evaluation_service.ts";
+import {
+  containsEnvExpression,
+  containsVaultExpression,
+} from "../expressions/expression_evaluation_service.ts";
 import type { Data } from "../data/data.ts";
 import type { ExecutionOutput } from "./execution_envelope.ts";
 import { InProcessExecutor } from "./in_process_executor.ts";
@@ -244,8 +247,15 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           const hasVault = exprs.some((e) =>
             containsVaultExpression(e.celExpression)
           );
-          const hint = hasVault
-            ? " (contains vault.get() — check vault configuration and run with --log-level debug for details)"
+          const hasEnv = exprs.some((e) =>
+            containsEnvExpression(e.celExpression)
+          );
+          // A runtime expression left unresolved is most often one that arrived
+          // as data content rather than being written in the definition — the
+          // runtime pass only resolves author-written references. Say so, rather
+          // than sending the user to check a vault that is working fine.
+          const hint = hasVault || hasEnv
+            ? " (contains a vault.get() or env reference that was not resolved — expression syntax arriving as data content is left as literal text and never evaluated; if you wrote this reference in the definition, check vault configuration and run with --log-level debug for details)"
             : "";
           throw new Error(
             `Unresolved expression in globalArguments.${prop}${hint}: ${

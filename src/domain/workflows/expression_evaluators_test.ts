@@ -64,7 +64,11 @@ Deno.test("WorkflowExpressionEvaluator: returns workflow unchanged when no expre
       }),
     ],
   });
-  const result = await evaluator.evaluate(workflow, emptyContext());
+  const result = await evaluator.evaluate(
+    workflow,
+    emptyContext(),
+    "unrestricted",
+  );
   assertEquals(result.expressionsEvaluated, 0);
   assertEquals(result.workflow.name, "no-expr");
 });
@@ -83,7 +87,11 @@ Deno.test("WorkflowExpressionEvaluator: skips runtime expressions (vault/env)", 
       }),
     ],
   });
-  const result = await evaluator.evaluate(workflow, emptyContext());
+  const result = await evaluator.evaluate(
+    workflow,
+    emptyContext(),
+    "unrestricted",
+  );
   // Runtime expressions are not counted.
   assertEquals(result.expressionsEvaluated, 0);
   // And remain raw on the returned workflow.
@@ -107,7 +115,11 @@ Deno.test("WorkflowExpressionEvaluator: skips self.* (forEach variables resolved
       }),
     ],
   });
-  const result = await evaluator.evaluate(workflow, emptyContext());
+  const result = await evaluator.evaluate(
+    workflow,
+    emptyContext(),
+    "unrestricted",
+  );
   assertEquals(result.expressionsEvaluated, 0);
   assertStringIncludes(result.workflow.description ?? "", "self.env");
 });
@@ -131,7 +143,11 @@ Deno.test("WorkflowExpressionEvaluator: skips run.* (resolved at step execution 
       }),
     ],
   });
-  const result = await evaluator.evaluate(workflow, emptyContext());
+  const result = await evaluator.evaluate(
+    workflow,
+    emptyContext(),
+    "unrestricted",
+  );
   assertEquals(result.expressionsEvaluated, 0);
   const step = result.workflow.jobs[0].steps[0];
   const inputs =
@@ -161,7 +177,11 @@ Deno.test("WorkflowExpressionEvaluator: skips bare workflowRunId (resolved at st
       }),
     ],
   });
-  const result = await evaluator.evaluate(workflow, emptyContext());
+  const result = await evaluator.evaluate(
+    workflow,
+    emptyContext(),
+    "unrestricted",
+  );
   assertEquals(result.expressionsEvaluated, 0);
   const step = result.workflow.jobs[0].steps[0];
   const inputs =
@@ -189,7 +209,11 @@ Deno.test("WorkflowExpressionEvaluator: skips forEach.in expressions (must remai
       }),
     ],
   });
-  const result = await evaluator.evaluate(workflow, emptyContext());
+  const result = await evaluator.evaluate(
+    workflow,
+    emptyContext(),
+    "unrestricted",
+  );
   // forEach.in is skipped; self.* in the step name is also skipped.
   assertEquals(result.expressionsEvaluated, 0);
   // And the forEach.in remains as a raw string for forEach expansion later.
@@ -221,7 +245,11 @@ Deno.test("WorkflowExpressionEvaluator: skips task.inputs that depend on step ou
   });
   // Empty model context — would cause an error if evaluated, but the
   // skip rule prevents that.
-  const result = await evaluator.evaluate(workflow, emptyContext());
+  const result = await evaluator.evaluate(
+    workflow,
+    emptyContext(),
+    "unrestricted",
+  );
   assertEquals(result.expressionsEvaluated, 0);
 });
 
@@ -248,7 +276,11 @@ Deno.test("WorkflowExpressionEvaluator: skips assert task.message that depends o
       }),
     ],
   });
-  const result = await evaluator.evaluate(workflow, emptyContext());
+  const result = await evaluator.evaluate(
+    workflow,
+    emptyContext(),
+    "unrestricted",
+  );
   assertEquals(result.expressionsEvaluated, 0);
   const assertStep = result.workflow.jobs[0].steps[1];
   const task = assertStep.task.data as { message: string };
@@ -270,7 +302,7 @@ Deno.test("WorkflowExpressionEvaluator: STRICT — per-expression eval error pro
     ],
   });
   await assertRejects(
-    () => evaluator.evaluate(workflow, emptyContext()),
+    () => evaluator.evaluate(workflow, emptyContext(), "unrestricted"),
     Error,
     "forced eval failure",
   );
@@ -286,7 +318,7 @@ Deno.test("DefinitionExpressionEvaluator: returns definition unchanged when no e
     name: "no-expr",
     methods: { run: { arguments: { hello: "world" } } },
   });
-  const result = await evaluator.evaluate(def, emptyContext());
+  const result = await evaluator.evaluate(def, emptyContext(), "unrestricted");
   assertEquals(result.name, "no-expr");
   assertEquals(result.getMethodArguments("run"), { hello: "world" });
 });
@@ -301,7 +333,7 @@ Deno.test("DefinitionExpressionEvaluator: skips runtime expressions (vault/env)"
       },
     },
   });
-  const result = await evaluator.evaluate(def, emptyContext());
+  const result = await evaluator.evaluate(def, emptyContext(), "unrestricted");
   // Vault remains raw — resolved at runtime by the executor.
   assertEquals(
     result.getMethodArguments("run"),
@@ -318,7 +350,7 @@ Deno.test("DefinitionExpressionEvaluator: LENIENT — per-expression eval error 
     },
   });
   // No throw despite the evaluator rejecting every async call.
-  const result = await evaluator.evaluate(def, emptyContext());
+  const result = await evaluator.evaluate(def, emptyContext(), "unrestricted");
   // The expression is left raw — the Proxy on globalArgs surfaces an
   // error later if the unresolved value is actually needed.
   assertEquals(
@@ -342,9 +374,58 @@ Deno.test("DefinitionExpressionEvaluator: skips expressions referencing missing 
       },
     },
   });
-  const result = await evaluator.evaluate(def, emptyContext());
+  const result = await evaluator.evaluate(def, emptyContext(), "unrestricted");
   assertEquals(
     result.getMethodArguments("run"),
     { vpc_id: "${{ model.foo.resource.bar.attributes.vpc_id }}" },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// DefinitionExpressionEvaluator — authored-expression gate (swamp-club#2172)
+// ---------------------------------------------------------------------------
+
+Deno.test("DefinitionExpressionEvaluator: refuses an expression absent from the authored set", async () => {
+  const evaluator = new DefinitionExpressionEvaluator(new CelEvaluator());
+  // Stands in for a direct-execution definition synthesised from step inputs
+  // the workflow evaluator already substituted data into.
+  const def = Definition.create({
+    name: "injected",
+    methods: {
+      run: { arguments: { run: "echo ${{ inputs.note }}" } },
+    },
+  });
+  const result = await evaluator.evaluate(
+    def,
+    { ...emptyContext(), inputs: { note: "leaked" } },
+    new Set<string>(),
+  );
+  assertEquals(
+    result.getMethodArguments("run"),
+    { run: "echo ${{ inputs.note }}" },
+  );
+});
+
+Deno.test("DefinitionExpressionEvaluator: resolves an authored expression and refuses an injected one side by side", async () => {
+  const evaluator = new DefinitionExpressionEvaluator(new CelEvaluator());
+  const def = Definition.create({
+    name: "mixed",
+    methods: {
+      run: {
+        arguments: {
+          authored: "${{ inputs.ok }}",
+          injected: "${{ inputs.bad }}",
+        },
+      },
+    },
+  });
+  const result = await evaluator.evaluate(
+    def,
+    { ...emptyContext(), inputs: { ok: "fine", bad: "leaked" } },
+    new Set(["${{ inputs.ok }}"]),
+  );
+  assertEquals(
+    result.getMethodArguments("run"),
+    { authored: "fine", injected: "${{ inputs.bad }}" },
   );
 });

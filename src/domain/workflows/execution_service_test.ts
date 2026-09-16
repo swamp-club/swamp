@@ -1542,6 +1542,7 @@ Deno.test("DefaultStepExecutor rejects workflow task type", async () => {
     repoDir: "/tmp",
     signal: new AbortController().signal,
     catalogStore,
+    authoredExpressions: new Set(),
   };
 
   await assertRejects(
@@ -3183,6 +3184,7 @@ Deno.test("DefaultStepExecutor wires dataQueryService into MethodContext", async
         signal: new AbortController().signal,
         step,
         catalogStore,
+        authoredExpressions: new Set(),
       };
 
       const executor = new DefaultStepExecutor();
@@ -3626,6 +3628,7 @@ Deno.test({
               region: "us-east-1",
             },
           },
+          authoredExpressions: new Set(["${{ self.region }}"]),
           forEachVariable: { name: "region", value: "us-east-1" },
           catalogStore,
         };
@@ -4522,10 +4525,12 @@ Deno.test("guard: model.method() guard skips step when method returns truthy", a
 
     class TruthyMethodExecutor implements StepExecutor {
       executedSteps: string[] = [];
+      guardAuthored: ReadonlySet<string> | undefined;
 
       execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
         this.executedSteps.push(`${ctx.jobName}/${ctx.stepName}`);
         if (ctx.stepName.startsWith("__guard_")) {
+          this.guardAuthored = ctx.authoredExpressions;
           return Promise.resolve({ exists: true });
         }
         return Promise.resolve({ executed: true });
@@ -4573,6 +4578,12 @@ Deno.test("guard: model.method() guard skips step when method returns truthy", a
     );
     assertEquals(events.length, 1);
     assertEquals(events[0].reason, "guarded");
+    // The guard's model.method() call runs with the workflow's provenance, so
+    // authored expressions in its inputs resolve instead of arriving literal.
+    assertEquals(
+      executor.guardAuthored?.has('${{ model.method("infra", "exists") }}'),
+      true,
+    );
   });
 });
 
@@ -5708,6 +5719,7 @@ Deno.test({
           signal: new AbortController().signal,
           step,
           catalogStore,
+          authoredExpressions: new Set(),
         };
 
         await executor.execute(step, ctx);

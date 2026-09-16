@@ -17,6 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  type AuthoredExpressions,
+  partitionAuthored,
+} from "../expressions/expression_evaluation_service.ts";
+import { extractExpressions } from "../expressions/expression_parser.ts";
 import { getLogger } from "@logtape/logtape";
 import type { Job } from "./job.ts";
 import type { Step } from "./step.ts";
@@ -60,12 +65,19 @@ export function resolveForEachStepName(
   stepContext: Record<string, unknown>,
   celEvaluator: CelExpressionEvaluator,
   fallbackSuffix: string,
+  authored: AuthoredExpressions,
 ): ResolvedStepName {
   if (hasExpression) {
     let hadEvalFailure = false;
     const resolved = template.replace(
       /\$\{\{\s*(.+?)\s*\}\}/gs,
       (_match, expr) => {
+        if (
+          partitionAuthored(extractExpressions(_match), authored).length !== 1
+        ) {
+          hadEvalFailure = true;
+          return _match;
+        }
         try {
           return String(
             celEvaluator.evaluate(expr as string, stepContext),
@@ -98,6 +110,7 @@ export class ForEachExpansionService {
   async expand(
     job: Job,
     context: ExpressionContext,
+    authored: AuthoredExpressions,
   ): Promise<Map<string, ExpandedStep[]>> {
     const result = new Map<string, ExpandedStep[]>();
 
@@ -124,6 +137,12 @@ export class ForEachExpansionService {
 
       // Async evaluator so data.* helpers (latest, findByTag, findBySpec,
       // query) that return Promises resolve here before we iterate.
+      if (
+        partitionAuthored(extractExpressions(inExpression), authored).length !==
+          1
+      ) {
+        throw new UserError("forEach.in must be an authored expression");
+      }
       const items = await this.celEvaluator.evaluateAsync(match[1], context);
 
       const nameHasExpression = /\$\{\{.+?\}\}/s.test(step.name);
@@ -139,6 +158,7 @@ export class ForEachExpansionService {
               items[index],
               index,
               nameHasExpression,
+              authored,
             ),
           );
         }
@@ -152,6 +172,7 @@ export class ForEachExpansionService {
               key,
               value,
               nameHasExpression,
+              authored,
             ),
           );
         }
@@ -174,6 +195,7 @@ export class ForEachExpansionService {
     item: unknown,
     index: number,
     nameHasExpression: boolean,
+    authored: AuthoredExpressions,
   ): ExpandedStep {
     const stepContext = {
       ...context,
@@ -203,6 +225,7 @@ export class ForEachExpansionService {
       stepContext,
       this.celEvaluator,
       fallbackSuffix,
+      authored,
     );
     if (hadEvalFailure) {
       getLogger(["swamp", "workflows"]).warn(
@@ -227,6 +250,7 @@ export class ForEachExpansionService {
     key: string,
     value: unknown,
     nameHasExpression: boolean,
+    authored: AuthoredExpressions,
   ): ExpandedStep {
     const objItem = { key, value };
     const stepContext = {
@@ -240,6 +264,7 @@ export class ForEachExpansionService {
       stepContext,
       this.celEvaluator,
       key,
+      authored,
     );
     if (hadEvalFailure) {
       getLogger(["swamp", "workflows"]).warn(

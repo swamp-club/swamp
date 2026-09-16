@@ -52,6 +52,7 @@ Deno.test("resolveAvailableExpressions: resolves self.* in a target string", () 
     { workflowIdOrName: "${{ self.item.impl }}" },
     { self: { item: { impl: "lab-capability-ssh" } } },
     evaluate,
+    "unrestricted",
   );
   assertEquals(result, { workflowIdOrName: "lab-capability-ssh" });
 });
@@ -64,6 +65,7 @@ Deno.test("resolveAvailableExpressions: whole-string single expression keeps nat
     },
     { self: { item: { count: 5, obj: { a: 1 } } } },
     evaluate,
+    "unrestricted",
   ) as { inputs: { count: unknown; obj: unknown } };
   assertEquals(result.inputs.count, 5);
   assertEquals(typeof result.inputs.count, "number");
@@ -76,6 +78,7 @@ Deno.test("resolveAvailableExpressions: embedded multi-expression string substit
     { name: "apply-${{ self.item.host }}-${{ self.item.capability }}" },
     { self: { item: { host: "gitea", capability: "ssh" } } },
     evaluate,
+    "unrestricted",
   );
   assertEquals(result, { name: "apply-gitea-ssh" });
 });
@@ -86,7 +89,12 @@ Deno.test("resolveAvailableExpressions: vault and env expressions are always lef
     a: '${{ vault.get("secret") }}',
     b: "${{ env.HOME }}",
   };
-  const result = resolveAvailableExpressions(data, {}, evaluate);
+  const result = resolveAvailableExpressions(
+    data,
+    {},
+    evaluate,
+    "unrestricted",
+  );
   assertEquals(result, data);
   // Deferred kinds must never be handed to the evaluator.
   assertEquals(calls, []);
@@ -98,7 +106,12 @@ Deno.test("resolveAvailableExpressions: step-output / data.* dependencies are le
     a: '${{ data.latest("spec", "name") }}',
     b: "${{ model.foo.resource.bar }}",
   };
-  const result = resolveAvailableExpressions(data, {}, evaluate);
+  const result = resolveAvailableExpressions(
+    data,
+    {},
+    evaluate,
+    "unrestricted",
+  );
   assertEquals(result, data);
   assertEquals(calls, []);
 });
@@ -111,6 +124,7 @@ Deno.test("resolveAvailableExpressions: run.* resolves when in context, stays ra
     { modelIdOrName: "scan-${{ run.id }}" },
     { self: { item: {} } },
     evaluate,
+    "unrestricted",
   );
   assertEquals(evalStage, { modelIdOrName: "scan-${{ run.id }}" });
 
@@ -119,6 +133,7 @@ Deno.test("resolveAvailableExpressions: run.* resolves when in context, stays ra
     { modelIdOrName: "scan-${{ run.id }}" },
     { run: { id: "abc123" } },
     evaluate,
+    "unrestricted",
   );
   assertEquals(runStage, { modelIdOrName: "scan-abc123" });
 });
@@ -129,6 +144,7 @@ Deno.test("resolveAvailableExpressions: a bad reference is left raw", () => {
     { workflowIdOrName: "${{ self.item.typo }}" },
     { self: { item: { impl: "real" } } },
     evaluate,
+    "unrestricted",
   );
   assertEquals(result, { workflowIdOrName: "${{ self.item.typo }}" });
 });
@@ -147,6 +163,7 @@ Deno.test("resolveAvailableExpressions: walks nested objects and arrays", () => 
     },
     { self: { item: { impl: "wf-a", host: "h1", vm: "vm1" } } },
     evaluate,
+    "unrestricted",
   );
   assertEquals(result, {
     task: {
@@ -162,7 +179,29 @@ Deno.test("resolveAvailableExpressions: walks nested objects and arrays", () => 
 Deno.test("resolveAvailableExpressions: leaves expression-free data untouched and returns input when nothing to resolve", () => {
   const { evaluate, calls } = makeEvaluator();
   const data = { workflowIdOrName: "static-name", inputs: { n: 1 } };
-  const result = resolveAvailableExpressions(data, {}, evaluate);
+  const result = resolveAvailableExpressions(
+    data,
+    {},
+    evaluate,
+    "unrestricted",
+  );
   assertEquals(result, data);
   assertEquals(calls, []);
+});
+
+Deno.test("resolveAvailableExpressions: refuses substituted expressions before calling CEL", () => {
+  const data = {
+    ordinary: "${{ 1 + 1 }}",
+    record: '${{ {"value": 1} }}',
+    runtime: "${{ env.HOME }}",
+  };
+  let calls = 0;
+  assertEquals(
+    resolveAvailableExpressions(data, {}, () => {
+      calls++;
+      return "injected";
+    }, new Set()),
+    data,
+  );
+  assertEquals(calls, 0);
 });

@@ -133,6 +133,7 @@ export async function createWorkflowRunDeps(
         methodName,
         inputs,
         globalArgs,
+        authoredExpressions,
       ) => {
         let resolvedType = ModelType.create(typeArg);
         let modelDef = await resolveModelType(resolvedType, getAutoResolver());
@@ -174,6 +175,7 @@ export async function createWorkflowRunDeps(
           modelDef,
           globalArgs,
           repoContext.autoDefinitionsDir,
+          authoredExpressions,
         );
         if (!result.ok) throw new Error(result.error.message);
         return {
@@ -181,6 +183,7 @@ export async function createWorkflowRunDeps(
           modelType: result.modelType,
           created: result.created,
           routedMethodInputs: result.routedInputs.methodArguments,
+          authoredExpressions: result.authoredExpressions,
         };
       };
       const resolver = new DefaultDatastorePathResolver(dir, datastoreConfig);
