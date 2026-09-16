@@ -33,18 +33,23 @@ Deno.test("MyValueObject.create: round-trips through serialization", () => {
 });
 
 Deno.test("MyValueObject.create: rejects invalid inputs", () => {
+  // Expand this arbitrary to match the domain's actual rejection rules.
+  const arbInvalidName = fc.oneof(
+    fc.constant(""),
+    fc.stringOf(fc.constantFrom(" ", "\t", "\n"), {
+      minLength: 1,
+      maxLength: 4,
+    }),
+  );
   fc.assert(
-    fc.property(
-      fc.string({ maxLength: 0 }), // empty strings
-      (name) => {
-        try {
-          MyValueObject.create(name, 0);
-          return false; // should have thrown
-        } catch {
-          return true;
-        }
-      },
-    ),
+    fc.property(arbInvalidName, (name) => {
+      try {
+        MyValueObject.create(name, 0);
+        return false; // should have thrown
+      } catch {
+        return true;
+      }
+    }),
     { numRuns: 200 },
   );
 });
@@ -110,11 +115,12 @@ For enforcing module boundaries. Place in `integration/` as `*_rules_test.ts`.
 Canonical example: `integration/ddd_layer_rules_test.ts`
 
 ```typescript
-import { assertEquals } from "@std/assert";
 import {
   assertPinnedSet,
   collectImportEdges,
   importsLayer,
+  isUnder,
+  repoRelative,
   SRC_DIR,
 } from "./arch_fitness_helpers.ts";
 
