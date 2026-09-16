@@ -137,6 +137,12 @@ export interface WhoamiResponse {
   collectiveId?: string;
   collectiveSlug?: string;
   scopes?: string[];
+  /** Signed verification proof (canonical JSON). Absent from older servers. */
+  verificationProof?: string;
+  /** Ed25519 signature over the proof, base64url-encoded. */
+  verificationSignature?: string;
+  /** Public keys for verifying proofs (each with kid + base64url raw key). */
+  publicKeys?: Array<{ kid: string; key: string }>;
 }
 
 /**

@@ -34,6 +34,7 @@ import {
   AuthRepository,
   type AuthRepositoryOptions,
 } from "../../infrastructure/persistence/auth_repository.ts";
+import { AuthVerificationRepository } from "../../infrastructure/persistence/auth_verification_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import {
   cancelled,
@@ -192,6 +193,18 @@ export async function* whoami(
     if (!response.authenticated) {
       yield { kind: "error", error: invalidApiKey() };
       return;
+    }
+
+    if (
+      response.verificationProof && response.verificationSignature &&
+      response.publicKeys
+    ) {
+      const verificationRepo = new AuthVerificationRepository();
+      await verificationRepo.save(
+        response.verificationProof,
+        response.verificationSignature,
+        response.publicKeys,
+      ).catch(() => {});
     }
 
     const collectives = getCollectives(response);

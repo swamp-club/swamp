@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
+import { AuthVerificationRepository } from "../../infrastructure/persistence/auth_verification_repository.ts";
 import {
   getCollectives,
   SwampClubClient,
@@ -328,6 +329,17 @@ export function createAuthLoginDeps(
     whoami: async (serverUrl: string, apiKey: string) => {
       const client = new SwampClubClient(serverUrl, identity);
       const result = await client.whoami(apiKey);
+      if (
+        result.verificationProof && result.verificationSignature &&
+        result.publicKeys
+      ) {
+        const verificationRepo = new AuthVerificationRepository();
+        await verificationRepo.save(
+          result.verificationProof,
+          result.verificationSignature,
+          result.publicKeys,
+        ).catch(() => {});
+      }
       return {
         username: result.username,
         email: result.email,
