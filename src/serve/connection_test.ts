@@ -1134,6 +1134,32 @@ assertDenormDenied("SWAMP/SERVER-TOKEN", "server-token-uppercase");
 // server-token: canonical
 assertDenormDenied("swamp/server-token", "server-token-canonical");
 
+// enrollment-token: dot separator
+assertDenormDenied("swamp.enrollment-token", "enrollment-token-dot");
+// enrollment-token: double-colon separator
+assertDenormDenied("swamp::enrollment-token", "enrollment-token-doublecolon");
+// enrollment-token: uppercase
+assertDenormDenied("SWAMP/ENROLLMENT-TOKEN", "enrollment-token-uppercase");
+// enrollment-token: whitespace separator
+assertDenormDenied("swamp enrollment-token", "enrollment-token-space");
+// enrollment-token: canonical with @ prefix
+assertDenormDenied("@swamp/enrollment-token", "enrollment-token-at-prefix");
+// enrollment-token: canonical
+assertDenormDenied("swamp/enrollment-token", "enrollment-token-canonical");
+
+// worker: dot separator
+assertDenormDenied("swamp.worker", "worker-dot");
+// worker: double-colon separator
+assertDenormDenied("swamp::worker", "worker-doublecolon");
+// worker: uppercase
+assertDenormDenied("SWAMP/WORKER", "worker-uppercase");
+// worker: whitespace separator
+assertDenormDenied("swamp worker", "worker-space");
+// worker: canonical with @ prefix
+assertDenormDenied("@swamp/worker", "worker-at-prefix");
+// worker: canonical
+assertDenormDenied("swamp/worker", "worker-canonical");
+
 Deno.test("isAccessModelType: normal model typeArg still uses model:* run, not admin", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
