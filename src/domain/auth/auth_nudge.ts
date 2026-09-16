@@ -25,7 +25,7 @@ export const AUTH_WARNING_MESSAGE =
 export const AUTH_WARNING_FIRST_RUN_LINES = [
   `Authentication required from ${AUTH_ENFORCEMENT_DEADLINE}`,
   "",
-  "Starting October 1st, swamp will require authentication.",
+  `Starting ${AUTH_ENFORCEMENT_DEADLINE}, swamp will require authentication.`,
   "",
   "Sign in now: swamp auth login",
 ] as const;
