@@ -589,6 +589,7 @@ Deno.test("extractTopLevelRoot: each bundle kind", () => {
       "vault-bundles",
       "datastore-bundles",
       "report-bundles",
+      "webhook-bundles",
     ]
   ) {
     assertEquals(

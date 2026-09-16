@@ -74,6 +74,7 @@ function makeManifest(
     vaults: [],
     datastores: [],
     reports: [],
+    webhooks: [],
     skills: [],
     include: [],
     additionalFiles: [],
@@ -114,6 +115,9 @@ function makePrepareInput(
     reportsDir: join(repoDir, "reports"),
     allReportFiles: [],
     reportEntryPoints: [],
+    webhooksDir: join(repoDir, "webhooks"),
+    allWebhookFiles: [],
+    webhookEntryPoints: [],
     workflowFiles: [],
     skillDirs: [],
     allSkillFiles: [],
@@ -137,6 +141,7 @@ function makeHashInput(
     vaultFilePaths: [],
     datastoreFilePaths: [],
     reportFilePaths: [],
+    webhookFilePaths: [],
     workflowFilePaths: [],
     additionalFilePaths: [],
     binaryFilePaths: [],
@@ -181,6 +186,7 @@ function makePushPrepareDeps(
         vaults: [],
         datastores: [],
         reports: [],
+        webhooks: [],
         skills: [],
       }),
     analyzeExtensionSafety: () => Promise.resolve({ errors: [], warnings: [] }),
@@ -526,6 +532,64 @@ Deno.test("extensionQuality: cache hit re-audits dependency trust and folds the 
     assertEquals(trustFactor.earnedPoints, 0);
     assertEquals(data.score.allPassed, false);
     assertEquals(data.score.earnedPoints, 10);
+  });
+});
+
+Deno.test("extensionQuality: cache hit audits webhook source dependencies", async () => {
+  await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
+    const webhookPath = join(repoDir, "webhooks", "hook.ts");
+    await Deno.mkdir(join(repoDir, "webhooks"), { recursive: true });
+    await Deno.writeTextFile(webhookPath, CLEAN_MODEL_SOURCE);
+    const manifest = makeManifest();
+    const input = makeQualityInput(repoDir, manifest, {
+      prepareInput: { allWebhookFiles: [webhookPath] },
+      hashInput: { webhookFilePaths: [webhookPath] },
+    });
+
+    completedData(
+      await collect(extensionQuality(ctx, makeQualityDeps(cacheRoot), input)),
+    );
+
+    let auditedFiles: string[] = [];
+    const deps = makeQualityDeps(cacheRoot, {
+      pushPrepareOverrides: {
+        extractDependencySpecifiers: (files: string[]) => {
+          auditedFiles = files;
+          return Promise.resolve([]);
+        },
+      },
+    });
+    const events = await collect(extensionQuality(ctx, deps, input));
+    assertEquals(completedData(events).cacheHit, true);
+    assert(
+      auditedFiles.includes(webhookPath),
+      `webhook source must be audited on a cache hit, got ${auditedFiles}`,
+    );
+  });
+});
+
+Deno.test("extensionQuality: bare import in a webhook source fails validation", async () => {
+  await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
+    const webhookPath = join(repoDir, "webhooks", "hook.ts");
+    await Deno.mkdir(join(repoDir, "webhooks"), { recursive: true });
+    await Deno.writeTextFile(
+      webhookPath,
+      'import { z } from "zod";\nexport const schema = z.object({});\n',
+    );
+    const manifest = makeManifest();
+    const input = makeQualityInput(repoDir, manifest, {
+      prepareInput: { allWebhookFiles: [webhookPath] },
+      hashInput: { webhookFilePaths: [webhookPath] },
+    });
+
+    const events = await collect(
+      extensionQuality(ctx, makeQualityDeps(cacheRoot), input),
+    );
+    const last = events[events.length - 1];
+    assertEquals(last.kind, "error");
+    if (last.kind === "error") {
+      assertStringIncludes(last.error.message, '"zod"');
+    }
   });
 });
 

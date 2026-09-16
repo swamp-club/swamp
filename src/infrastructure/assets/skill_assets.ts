@@ -207,6 +207,10 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     name: "swamp",
   },
   {
+    relativePath: "swamp/references/extension/references/webhook/api.md",
+    name: "swamp",
+  },
+  {
     relativePath: "swamp/references/extension/references/model/checks.md",
     name: "swamp",
   },

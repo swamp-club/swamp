@@ -82,6 +82,7 @@ const BUNDLE_DIR_NAMES: readonly string[] = [
   SWAMP_SUBDIRS.vaultBundles,
   SWAMP_SUBDIRS.datastoreBundles,
   SWAMP_SUBDIRS.reportBundles,
+  SWAMP_SUBDIRS.webhookBundles,
 ];
 
 function toForwardSlashes(p: string): string {

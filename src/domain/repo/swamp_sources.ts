@@ -29,6 +29,7 @@ export type ExtensionKind =
   | "vaults"
   | "datastores"
   | "reports"
+  | "webhooks"
   | "workflows";
 
 export const EXTENSION_KINDS: readonly ExtensionKind[] = [
@@ -36,6 +37,7 @@ export const EXTENSION_KINDS: readonly ExtensionKind[] = [
   "vaults",
   "datastores",
   "reports",
+  "webhooks",
   "workflows",
 ] as const;
 
@@ -70,6 +72,7 @@ export interface ResolvedSourceDirs {
   vaultsDir?: string;
   datastoresDir?: string;
   reportsDir?: string;
+  webhooksDir?: string;
   workflowsDir?: string;
 }
 
@@ -78,6 +81,7 @@ const ExtensionKindSchema = z.enum([
   "vaults",
   "datastores",
   "reports",
+  "webhooks",
   "workflows",
 ]);
 
@@ -156,6 +160,7 @@ export const EXTENSION_EXPORT_NAMES: Record<
   vaults: ["vault"],
   datastores: ["datastore"],
   reports: ["report"],
+  webhooks: ["webhook"],
 } as const;
 
 /**

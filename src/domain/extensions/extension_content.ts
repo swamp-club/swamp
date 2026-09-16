@@ -111,6 +111,14 @@ export interface ExtractedReport {
   labels: string[];
 }
 
+/** Metadata extracted from a single webhook TypeScript file. */
+export interface ExtractedWebhook {
+  fileName: string;
+  type: string;
+  name: string;
+  description: string;
+}
+
 /** Metadata extracted from an extension file that grafts methods onto a foreign type. */
 export interface ExtractedExtension {
   fileName: string;
@@ -128,7 +136,7 @@ export interface ExtractedSkill {
   fileCount: number;
 }
 
-/** Content metadata extracted from all models, workflows, vaults, datastores, reports, and skills in an extension. */
+/** Content metadata extracted from all models, workflows, vaults, datastores, reports, webhooks, and skills in an extension. */
 export interface ExtensionContentMetadata {
   models: ExtractedModel[];
   extensions: ExtractedExtension[];
@@ -136,5 +144,6 @@ export interface ExtensionContentMetadata {
   vaults: ExtractedVault[];
   datastores: ExtractedDatastore[];
   reports: ExtractedReport[];
+  webhooks: ExtractedWebhook[];
   skills: ExtractedSkill[];
 }

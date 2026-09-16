@@ -174,6 +174,7 @@ Deno.test("getDatastoreDirectories: excludes bundle directories from default lis
       "bundles",
       "vault-bundles",
       "report-bundles",
+      "webhook-bundles",
     ]
   ) {
     assertFalse(

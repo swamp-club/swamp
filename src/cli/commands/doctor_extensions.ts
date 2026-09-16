@@ -64,6 +64,7 @@ import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
+import { webhookTypeRegistry } from "../../domain/webhooks/webhook_type_registry.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
@@ -273,6 +274,11 @@ export const doctorExtensionsCommand = withRemoteOptions(
         registry: "report",
         ensureLoaded: () => reportRegistry.ensureLoaded(),
         resetLoadedFlag: () => reportRegistry.resetLoadedFlag(),
+      },
+      {
+        registry: "webhook",
+        ensureLoaded: () => webhookTypeRegistry.ensureLoaded(),
+        resetLoadedFlag: () => webhookTypeRegistry.resetLoadedFlag(),
       },
     ];
 

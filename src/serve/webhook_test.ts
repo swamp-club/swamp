@@ -18,15 +18,25 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
+import { z } from "zod";
 import {
   buildWebhookPayload,
   isSensitiveHeader,
   parseWebhookFlag,
+  resolveExtensionWebhookEndpoints,
   resolveSecret,
+  type WebhookEndpoint,
   WebhookService,
 } from "./webhook.ts";
 import type { VaultSecretResolver } from "./webhook.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
+import { UserError } from "../domain/errors.ts";
+import type { WebhookHandler } from "../domain/webhooks/webhook_handler.ts";
+import type { ExtensionWebhookScheme } from "./webhook_verifiers.ts";
+import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
+import type { RunTrackerStore } from "../infrastructure/persistence/run_tracker_store.ts";
+import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
+import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
 
 await initializeLogging({});
 
@@ -614,4 +624,220 @@ Deno.test("isSensitiveHeader: returns false for safe headers", () => {
       `expected ${header} to be safe`,
     );
   }
+});
+
+// ── Extension webhook schemes ─────────────────────────────────────────
+
+const TOKEN_HEADER = "x-test-secret-token";
+
+/** Registers a uniquely named webhook extension type built from `handler`. */
+function registerExtension(
+  handler: Partial<WebhookHandler>,
+  configSchema?: z.ZodTypeAny,
+): ExtensionWebhookScheme {
+  const type: ExtensionWebhookScheme = `@test/hook-${crypto.randomUUID()}`;
+  webhookTypeRegistry.register({
+    type,
+    name: "Test hook",
+    description: "Test webhook extension",
+    configSchema,
+    createHandler: () => ({
+      signatureHeader: TOKEN_HEADER,
+      requiredHeaders: [TOKEN_HEADER],
+      verify: (_body, headers, secret) => headers.get(TOKEN_HEADER) === secret,
+      ...handler,
+    }),
+  });
+  return type;
+}
+
+function extensionService(scheme: ExtensionWebhookScheme): {
+  service: WebhookService;
+  pendingRuns: unknown[];
+} {
+  const pendingRuns: unknown[] = [];
+  const service = new WebhookService({
+    repoDir: "/tmp/fake",
+    repoContext: {} as unknown as RepositoryContext,
+    datastoreConfig: {} as unknown as DatastoreConfig,
+    endpoints: [{
+      route: "/hooks/ext",
+      workflowIdOrName: "wf",
+      secret: "s3cret",
+      verifier: { scheme, config: {} },
+    }],
+    runTracker: {
+      enqueuePendingRun: (entry: unknown) => pendingRuns.push(entry),
+    } as unknown as RunTrackerStore,
+  });
+  return { service, pendingRuns };
+}
+
+function extensionRequest(token?: string): Request {
+  const headers: Record<string, string> = { "x-event": "update" };
+  if (token !== undefined) headers[TOKEN_HEADER] = token;
+  return new Request("http://localhost/hooks/ext", {
+    method: "POST",
+    headers,
+    body: '{"update_id":1}',
+  });
+}
+
+Deno.test("parseWebhookFlag: accepts a lowercased extension scheme with empty config", async () => {
+  const ep = await parseWebhookFlag("/hooks/tg:wf:tok:@Swamp/Telegram");
+  assertEquals(ep.secret, "tok");
+  assertEquals(ep.verifier, { scheme: "@swamp/telegram", config: {} });
+});
+
+Deno.test("handleRequest: extension respond with enqueue false returns its response without a run", async () => {
+  let seenHeaders: Record<string, string> = {};
+  const type = registerExtension({
+    transform: (body, headers) => {
+      seenHeaders = headers;
+      return { wrapped: body };
+    },
+    respond: (payload) => ({
+      status: 202,
+      body: { echoed: payload.body },
+      enqueue: false,
+    }),
+  });
+  const { service, pendingRuns } = extensionService(type);
+
+  const res = await service.handleRequest(extensionRequest("s3cret"));
+
+  assertEquals(res?.status, 202);
+  assertEquals(await res!.json(), { echoed: { wrapped: { update_id: 1 } } });
+  assertEquals(pendingRuns.length, 0);
+  assertEquals(seenHeaders[TOKEN_HEADER], undefined);
+  assertEquals(seenHeaders["x-event"], "update");
+});
+
+Deno.test("handleRequest: extension hooks never run when verification fails", async () => {
+  let hookCalls = 0;
+  const type = registerExtension({
+    transform: (body) => {
+      hookCalls++;
+      return body;
+    },
+    respond: () => {
+      hookCalls++;
+      return { status: 200, body: "challenge", enqueue: false };
+    },
+  });
+  const { service, pendingRuns } = extensionService(type);
+
+  assertEquals(
+    (await service.handleRequest(extensionRequest("wrong")))?.status,
+    401,
+  );
+  assertEquals((await service.handleRequest(extensionRequest()))?.status, 401);
+  assertEquals(hookCalls, 0);
+  assertEquals(pendingRuns.length, 0);
+});
+
+Deno.test("handleRequest: a throwing or non-boolean extension verifier is rejected with 401", async () => {
+  for (
+    const verify of [
+      () => {
+        throw new Error("boom");
+      },
+      () => "yes" as unknown as boolean,
+    ]
+  ) {
+    const { service } = extensionService(registerExtension({ verify }));
+    const res = await service.handleRequest(extensionRequest("s3cret"));
+    assertEquals(res?.status, 401);
+    assertEquals(await res!.json(), { error: "Invalid signature" });
+  }
+});
+
+Deno.test("handleRequest: failing extension hooks return a generic 500 with no pending run", async () => {
+  const failing: Partial<WebhookHandler>[] = [
+    {
+      transform: () => {
+        throw new Error("secret detail");
+      },
+    },
+    { transform: () => ({ big: 1n }) },
+    { respond: () => ({ status: 700, enqueue: false }) },
+    { respond: () => ({ status: 101, enqueue: false }) },
+    { respond: () => ({ status: 204, body: "x", enqueue: true }) },
+  ];
+  for (const handler of failing) {
+    const { service, pendingRuns } = extensionService(
+      registerExtension(handler),
+    );
+    const res = await service.handleRequest(extensionRequest("s3cret"));
+    assertEquals(res?.status, 500);
+    assertEquals(await res!.json(), { error: "Internal server error" });
+    assertEquals(pendingRuns.length, 0);
+  }
+});
+
+Deno.test("handleRequest: an unregistered extension type fails closed with 500", async () => {
+  const { service, pendingRuns } = extensionService(
+    `@test/missing-${crypto.randomUUID()}`,
+  );
+  const res = await service.handleRequest(extensionRequest("s3cret"));
+  assertEquals(res?.status, 500);
+  assertEquals(pendingRuns.length, 0);
+});
+
+function extensionEndpoint(
+  scheme: ExtensionWebhookScheme,
+  config: Record<string, unknown>,
+): WebhookEndpoint {
+  return {
+    route: "/hooks/ext",
+    workflowIdOrName: "wf",
+    secret: "s",
+    verifier: { scheme, config },
+  };
+}
+
+Deno.test("resolveExtensionWebhookEndpoints: applies the type's configSchema", async () => {
+  const type = registerExtension(
+    {},
+    z.object({ header: z.string().default("x-default") }),
+  );
+  const [ep] = await resolveExtensionWebhookEndpoints(
+    [extensionEndpoint(type, {})],
+    () => Promise.resolve(true),
+  );
+  assertEquals(ep.verifier, { scheme: type, config: { header: "x-default" } });
+});
+
+Deno.test("resolveExtensionWebhookEndpoints: rejects invalid config", async () => {
+  const type = registerExtension({}, z.object({ header: z.string() }));
+  await assertRejects(
+    () =>
+      resolveExtensionWebhookEndpoints(
+        [extensionEndpoint(type, { header: 1 })],
+        () => Promise.resolve(true),
+      ),
+    UserError,
+    "Invalid config for webhook /hooks/ext",
+  );
+});
+
+Deno.test("resolveExtensionWebhookEndpoints: rejects an unresolvable type", async () => {
+  await assertRejects(
+    () =>
+      resolveExtensionWebhookEndpoints(
+        [extensionEndpoint("@test/nope", {})],
+        () => Promise.resolve(false),
+      ),
+    UserError,
+    "no webhook extension of that type is installed",
+  );
+});
+
+Deno.test("resolveExtensionWebhookEndpoints: leaves built-in endpoints untouched", async () => {
+  const builtin = await parseWebhookFlag("/hooks/gh:deploy:secret");
+  const resolved = await resolveExtensionWebhookEndpoints(
+    [builtin],
+    () => Promise.reject(new Error("should not resolve")),
+  );
+  assertEquals(resolved, [builtin]);
 });

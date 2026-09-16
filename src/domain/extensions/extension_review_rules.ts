@@ -51,7 +51,8 @@ export type ExtensionContentKind =
   | "model"
   | "vault"
   | "datastore"
-  | "report";
+  | "report"
+  | "webhook";
 
 /** A single source file presented to the ruleset. */
 export interface ReviewSource {
@@ -189,7 +190,7 @@ export const DEFAULT_REVIEW_RULES: ReviewRule[] = [
     id: "testing-completeness",
     dimension: "Testing Completeness",
     severity: "medium",
-    appliesTo: ["model", "vault", "datastore", "report"],
+    appliesTo: ["model", "vault", "datastore", "report", "webhook"],
     detect: (source) => {
       if (!source.isEntryPoint) return [];
       if (source.path.endsWith("_test.ts")) return [];

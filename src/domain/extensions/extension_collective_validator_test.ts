@@ -31,6 +31,7 @@ function makeMetadata(
     vaults: [],
     datastores: [],
     reports: [],
+    webhooks: [],
     skills: [],
     ...overrides,
   };
@@ -90,6 +91,34 @@ Deno.test("validateContentCollectives — model type with wrong collective — m
   assertEquals(result.mismatches[0].kind, "model");
   assertEquals(result.mismatches[0].identifier, "@evil/echo");
   assertEquals(result.mismatches[0].fileName, "echo.ts");
+});
+
+Deno.test("validateContentCollectives — webhook type with wrong collective — mismatch", () => {
+  const result = validateContentCollectives(
+    "@stack72/my-extension",
+    makeMetadata({
+      webhooks: [
+        {
+          fileName: "ok.ts",
+          type: "@stack72/ok",
+          name: "OK",
+          description: "",
+        },
+        {
+          fileName: "telegram.ts",
+          type: "@evil/telegram",
+          name: "Telegram",
+          description: "",
+        },
+      ],
+    }),
+  );
+  assertEquals(result.valid, false);
+  assertEquals(result.mismatches, [{
+    kind: "webhook",
+    identifier: "@evil/telegram",
+    fileName: "telegram.ts",
+  }]);
 });
 
 Deno.test("validateContentCollectives — model type without @ prefix — mismatch", () => {

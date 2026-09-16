@@ -30,6 +30,7 @@ import type {
   ExtractedReport,
   ExtractedResource,
   ExtractedVault,
+  ExtractedWebhook,
   ExtractedWorkflow,
   ExtractedWorkflowJob,
   ExtractedWorkflowStep,
@@ -54,6 +55,8 @@ export async function extractContentMetadata(
   datastoresDir = "",
   reportFiles: string[] = [],
   reportsDir = "",
+  webhookFiles: string[] = [],
+  webhooksDir = "",
 ): Promise<ExtensionContentMetadata> {
   const models: ExtractedModel[] = [];
   const extensions: ExtractedExtension[] = [];
@@ -61,6 +64,7 @@ export async function extractContentMetadata(
   const vaults: ExtractedVault[] = [];
   const datastores: ExtractedDatastore[] = [];
   const reports: ExtractedReport[] = [];
+  const webhooks: ExtractedWebhook[] = [];
 
   for (const filePath of modelFiles) {
     try {
@@ -131,6 +135,18 @@ export async function extractContentMetadata(
     }
   }
 
+  for (const filePath of webhookFiles) {
+    try {
+      const content = await Deno.readTextFile(filePath);
+      const webhook = extractWebhookFromSource(content, filePath, webhooksDir);
+      if (webhook) {
+        webhooks.push(webhook);
+      }
+    } catch {
+      // Non-fatal: skip files that can't be read or parsed
+    }
+  }
+
   return {
     models,
     extensions,
@@ -138,6 +154,7 @@ export async function extractContentMetadata(
     vaults,
     datastores,
     reports,
+    webhooks,
     skills: [],
   };
 }
@@ -980,6 +997,42 @@ function extractReportFromSource(
     description: descMatch ? (descMatch[1] ?? descMatch[2] ?? "") : "",
     scope: scopeMatch ? scopeMatch[1] : "",
     labels,
+  };
+}
+
+/**
+ * Extracts webhook metadata from a TypeScript source file.
+ * Returns null if the file doesn't contain a recognizable webhook definition.
+ * Uses `createHandler` as the discriminator combined with `export const webhook`.
+ */
+function extractWebhookFromSource(
+  content: string,
+  filePath: string,
+  webhooksDir: string,
+): ExtractedWebhook | null {
+  const webhookMatch = content.match(/export\s+const\s+webhook\s*=\s*\{/);
+  if (!webhookMatch || webhookMatch.index === undefined) return null;
+
+  // Must contain createHandler to be a webhook file
+  if (!/createHandler/.test(content)) return null;
+
+  const webhookStart = webhookMatch.index + webhookMatch[0].length;
+  const webhookBody = extractBalancedBraces(content, webhookStart);
+  if (!webhookBody) return null;
+
+  const typeMatch = webhookBody.match(/type:\s*["']([^"']+)["']/);
+  if (!typeMatch) return null;
+
+  const nameMatch = webhookBody.match(/(?<![.\w])name:\s*["']([^"']+)["']/);
+  const descMatch = webhookBody.match(
+    /(?<![.\w])description:\s*(?:"([^"]*?)"|'([^']*?)')/,
+  );
+
+  return {
+    fileName: relative(webhooksDir, filePath),
+    type: typeMatch[1],
+    name: nameMatch ? nameMatch[1] : "",
+    description: descMatch ? (descMatch[1] ?? descMatch[2] ?? "") : "",
   };
 }
 

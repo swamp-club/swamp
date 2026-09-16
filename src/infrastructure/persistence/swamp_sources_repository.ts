@@ -165,6 +165,9 @@ async function readSourceMarker(
       reportsDir: typeof obj.reportsDir === "string"
         ? obj.reportsDir
         : undefined,
+      webhooksDir: typeof obj.webhooksDir === "string"
+        ? obj.webhooksDir
+        : undefined,
     };
   } catch {
     return null;
@@ -481,6 +484,8 @@ function resolveKindDir(
       return marker?.datastoresDir ?? "extensions/datastores";
     case "reports":
       return marker?.reportsDir ?? "extensions/reports";
+    case "webhooks":
+      return marker?.webhooksDir ?? "extensions/webhooks";
     case "workflows":
       return marker?.workflowsDir ?? "extensions/workflows";
   }
@@ -504,6 +509,9 @@ function setKindDir(
     case "reports":
       resolved.reportsDir = dir;
       break;
+    case "webhooks":
+      resolved.webhooksDir = dir;
+      break;
     case "workflows":
       resolved.workflowsDir = dir;
       break;
@@ -523,6 +531,8 @@ function getKindDir(
       return resolved.datastoresDir;
     case "reports":
       return resolved.reportsDir;
+    case "webhooks":
+      return resolved.webhooksDir;
     case "workflows":
       return resolved.workflowsDir;
   }

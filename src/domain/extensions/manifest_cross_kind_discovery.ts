@@ -34,6 +34,7 @@ const MANIFEST_KIND_KEYS: readonly ExtensionKind[] = [
   "vaults",
   "datastores",
   "reports",
+  "webhooks",
 ];
 
 /**

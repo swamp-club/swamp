@@ -48,7 +48,7 @@ const safePathString = z.string().refine(isSafeRelativePath, {
 
 /**
  * Path resolution base. Selects the directory typed-key entries
- * (`models`, `vaults`, `datastores`, `reports`, `include`)
+ * (`models`, `vaults`, `datastores`, `reports`, `webhooks`, `include`)
  * and `additionalFiles` resolve against during push, and the directory
  * the archive layout mirrors via `relative(base, file)`.
  *
@@ -107,6 +107,7 @@ const ExtensionManifestSchemaV1 = z.object({
   drivers: z.array(safePathString).optional(),
   datastores: z.array(safePathString).optional(),
   reports: z.array(safePathString).optional(),
+  webhooks: z.array(safePathString).optional(),
   skills: z.array(safePathString).optional(),
   include: z.array(safePathString).optional(),
   additionalFiles: z.array(safePathString).optional(),
@@ -128,10 +129,11 @@ const ExtensionManifestSchemaV1 = z.object({
     (data.vaults && data.vaults.length > 0) ||
     (data.datastores && data.datastores.length > 0) ||
     (data.reports && data.reports.length > 0) ||
+    (data.webhooks && data.webhooks.length > 0) ||
     (data.skills && data.skills.length > 0),
   {
     message:
-      "Extension must include at least one model, workflow, vault, datastore, report, or skill",
+      "Extension must include at least one model, workflow, vault, datastore, report, webhook, or skill",
   },
 );
 
@@ -148,6 +150,7 @@ export interface ExtensionManifest {
   vaults: string[];
   datastores: string[];
   reports: string[];
+  webhooks: string[];
   skills: string[];
   include: string[];
   additionalFiles: string[];
@@ -214,6 +217,7 @@ export function parseExtensionManifest(content: string): ExtensionManifest {
     vaults: result.data.vaults ?? [],
     datastores: result.data.datastores ?? [],
     reports: result.data.reports ?? [],
+    webhooks: result.data.webhooks ?? [],
     skills: result.data.skills ?? [],
     include: result.data.include ?? [],
     additionalFiles: result.data.additionalFiles ?? [],

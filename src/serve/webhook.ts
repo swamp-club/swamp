@@ -35,9 +35,12 @@ import {
   extractFirstStepError,
   type WorkflowRunView,
 } from "../libswamp/mod.ts";
+import type { WebhookResponse } from "../domain/webhooks/webhook_handler.ts";
+import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
 import {
-  createVerifier,
+  isExtensionWebhookScheme,
   isWebhookScheme,
+  resolveWebhookHandler,
   type VerifierConfig,
 } from "./webhook_verifiers.ts";
 
@@ -222,7 +225,9 @@ export interface WebhookEndpoint {
  * scheme, and a secret whose colon-tail begins with a reserved keyword would be
  * reinterpreted) is the accepted limitation tracked in #723. When a scheme is
  * given, the remaining fields are positional: `generic` requires a header name
- * (fifth field) and accepts an optional value prefix (sixth field).
+ * (fifth field) and accepts an optional value prefix (sixth field). A webhook
+ * extension type (`@collective/name`) is also accepted as the scheme, with an
+ * empty config.
  */
 export async function parseWebhookFlag(
   flag: string,
@@ -243,7 +248,12 @@ export async function parseWebhookFlag(
   let secret: string;
   let verifier: VerifierConfig;
 
-  if (fields.length >= 4 && isWebhookScheme(fields[3])) {
+  const extensionScheme = fields[3]?.toLowerCase() ?? "";
+  if (fields.length >= 4 && isExtensionWebhookScheme(extensionScheme)) {
+    // Extension scheme: config is only expressible in serve.yaml.
+    secret = fields[2];
+    verifier = { scheme: extensionScheme, config: {} };
+  } else if (fields.length >= 4 && isWebhookScheme(fields[3])) {
     // Scheme-qualified form: fields are positional, so the secret cannot
     // contain a colon here.
     secret = fields[2];
@@ -284,6 +294,73 @@ export async function parseWebhookFlag(
   }
 
   return { route, workflowIdOrName, secret, verifier };
+}
+
+/**
+ * Resolve every extension-scheme endpoint at startup: the webhook extension
+ * type must be installed (or auto-resolvable) and its config must satisfy the
+ * type's configSchema. Returns the endpoints with schema-parsed config.
+ */
+export async function resolveExtensionWebhookEndpoints(
+  endpoints: readonly WebhookEndpoint[],
+  resolveType: (type: string) => Promise<boolean>,
+): Promise<WebhookEndpoint[]> {
+  const resolved: WebhookEndpoint[] = [];
+  for (const endpoint of endpoints) {
+    const verifier = endpoint.verifier;
+    if (!("config" in verifier)) {
+      resolved.push(endpoint);
+      continue;
+    }
+    const info = await resolveType(verifier.scheme)
+      ? webhookTypeRegistry.get(verifier.scheme)
+      : undefined;
+    if (!info) {
+      throw new UserError(
+        `Webhook ${endpoint.route} uses scheme '${verifier.scheme}', but no ` +
+          `webhook extension of that type is installed. Install it with ` +
+          `'swamp extension pull ${verifier.scheme}'.`,
+      );
+    }
+    let config: Record<string, unknown> = { ...verifier.config };
+    if (info.configSchema) {
+      const result = info.configSchema.safeParse(config);
+      if (!result.success) {
+        throw new UserError(
+          `Invalid config for webhook ${endpoint.route} ` +
+            `(scheme '${verifier.scheme}'): ${result.error.message}`,
+        );
+      }
+      config = result.data as Record<string, unknown>;
+    }
+    resolved.push({
+      ...endpoint,
+      verifier: { scheme: verifier.scheme, config },
+    });
+  }
+  return resolved;
+}
+
+/** Convert an extension-supplied {@link WebhookResponse} to an HTTP response. */
+function toHttpResponse(response: WebhookResponse): Response {
+  // The Response constructor enforces the upper bound but permits 101.
+  if (response.status < 200) {
+    throw new RangeError(`invalid webhook response status ${response.status}`);
+  }
+  const headers = new Headers(response.headers);
+  if (response.body === undefined) {
+    return new Response(null, { status: response.status, headers });
+  }
+  if (typeof response.body === "string") {
+    return new Response(response.body, { status: response.status, headers });
+  }
+  if (!headers.has("content-type")) {
+    headers.set("content-type", "application/json");
+  }
+  return new Response(JSON.stringify(response.body), {
+    status: response.status,
+    headers,
+  });
 }
 
 // ── Body Size Limit ────────────────────────────────────────────────────
@@ -447,7 +524,10 @@ export class WebhookService {
       workflowName: endpoint.workflowIdOrName,
     });
 
-    const verifier = createVerifier(endpoint.verifier);
+    const verifier = this.resolveHandler(endpoint);
+    if (!verifier) {
+      return this.handlerFailure(endpoint, "Webhook handler unavailable");
+    }
 
     for (const header of verifier.requiredHeaders) {
       if (!req.headers.get(header)) {
@@ -477,10 +557,19 @@ export class WebhookService {
       );
     }
 
-    // Any verification failure (malformed value, stale timestamp, mismatch)
-    // returns a uniform 401 so the response cannot be used as an oracle.
-    const valid = await verifier.verify(body, req.headers, endpoint.secret);
-    if (!valid) {
+    // Any verification failure (malformed value, stale timestamp, mismatch,
+    // or a throwing extension verifier) returns a uniform 401 so the response
+    // cannot be used as an oracle.
+    let valid = false;
+    try {
+      valid = await verifier.verify(body, req.headers, endpoint.secret);
+    } catch (error) {
+      logger.warn("Webhook verifier threw on {route}: {error}", {
+        route: endpoint.route,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    if (valid !== true) {
       this.emit({
         kind: "webhook_rejected",
         route: endpoint.route,
@@ -491,6 +580,47 @@ export class WebhookService {
         { status: 401 },
       );
     }
+
+    const traceparent = req.headers.get("traceparent") ?? undefined;
+    const tracestate = req.headers.get("tracestate") ?? undefined;
+    const webhookPayload = buildWebhookPayload(
+      body,
+      req.headers,
+      endpoint.route,
+      verifier.signatureHeader,
+    );
+
+    // Extension hooks run only after successful verification, and only see
+    // the redacted payload. Any failure is a generic 500 raised before the
+    // run tracker or queue is touched.
+    // ponytail: extension hooks run inline with no timeout — operator-installed
+    // code; add an AbortSignal deadline if hung handlers become a problem.
+    let serializedPayload: string;
+    let customResponse: WebhookResponse | undefined;
+    let httpResponse: Response | undefined;
+    try {
+      if (verifier.transform) {
+        const transformed = await verifier.transform(
+          webhookPayload.body,
+          { ...webhookPayload.headers },
+        );
+        // Normalize through JSON so live and crash-replayed runs see the same
+        // body; throws for BigInt/cyclic values.
+        webhookPayload.body = JSON.parse(JSON.stringify(transformed ?? null));
+      }
+      serializedPayload = JSON.stringify(webhookPayload);
+      customResponse = await verifier.respond?.(JSON.parse(serializedPayload));
+      // Throws for a status outside 200–599 or a body on a null-body status.
+      if (customResponse) httpResponse = toHttpResponse(customResponse);
+    } catch (error) {
+      logger.warn("Webhook handler hook failed on {route}: {error}", {
+        route: endpoint.route,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return this.handlerFailure(endpoint, "Webhook handler failed");
+    }
+
+    if (httpResponse && !customResponse?.enqueue) return httpResponse;
 
     // Queue the workflow run (with backpressure)
     if (this.runQueue.length >= MAX_QUEUE_DEPTH) {
@@ -505,15 +635,6 @@ export class WebhookService {
       );
     }
 
-    const traceparent = req.headers.get("traceparent") ?? undefined;
-    const tracestate = req.headers.get("tracestate") ?? undefined;
-    const webhookPayload = buildWebhookPayload(
-      body,
-      req.headers,
-      endpoint.route,
-      verifier.signatureHeader,
-    );
-
     let pendingRunId: string | undefined;
     let putPromise: Promise<void> | undefined;
     if (this.deps.runTracker) {
@@ -522,7 +643,7 @@ export class WebhookService {
         id: pendingRunId,
         source: "webhook" as const,
         workflowIdOrName: endpoint.workflowIdOrName,
-        payload: JSON.stringify(webhookPayload),
+        payload: serializedPayload,
         route: endpoint.route,
         traceparent,
         tracestate,
@@ -577,10 +698,30 @@ export class WebhookService {
       );
     }
 
+    if (httpResponse) return httpResponse;
     return Response.json({
       status: "queued",
       workflow: endpoint.workflowIdOrName,
     });
+  }
+
+  private resolveHandler(
+    endpoint: WebhookEndpoint,
+  ): ReturnType<typeof resolveWebhookHandler> {
+    try {
+      return resolveWebhookHandler(endpoint.verifier);
+    } catch (error) {
+      logger.warn("Webhook handler creation failed on {route}: {error}", {
+        route: endpoint.route,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+  }
+
+  private handlerFailure(endpoint: WebhookEndpoint, reason: string): Response {
+    this.emit({ kind: "webhook_rejected", route: endpoint.route, reason });
+    return Response.json({ error: "Internal server error" }, { status: 500 });
   }
 
   enqueueForReplay(entry: {

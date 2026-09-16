@@ -53,6 +53,7 @@ export interface RepoMarkerData {
   vaultsDir?: string;
   datastoresDir?: string;
   reportsDir?: string;
+  webhooksDir?: string;
   repoId?: string;
   telemetryEndpoint?: string;
   telemetryDisabled?: boolean;

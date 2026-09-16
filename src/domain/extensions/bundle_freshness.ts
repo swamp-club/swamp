@@ -36,7 +36,8 @@ export type FreshnessKind =
   | "extension"
   | "vault"
   | "datastore"
-  | "report";
+  | "report"
+  | "webhook";
 
 /**
  * Minimal row shape this module needs from the catalog. The concrete

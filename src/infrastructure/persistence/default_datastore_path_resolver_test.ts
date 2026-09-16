@@ -234,6 +234,10 @@ Deno.test("DefaultDatastorePathResolver - resolvePath routes bundles to local .s
     resolver.resolvePath("report-bundles", "66778899", "report.js"),
     "/repo/.swamp/report-bundles/66778899/report.js",
   );
+  assertPathEquals(
+    resolver.resolvePath("webhook-bundles", "aabbccdd", "hook.js"),
+    "/repo/.swamp/webhook-bundles/aabbccdd/hook.js",
+  );
 });
 
 Deno.test("DefaultDatastorePathResolver - filesystem datastore resolves bundles to same local path", () => {

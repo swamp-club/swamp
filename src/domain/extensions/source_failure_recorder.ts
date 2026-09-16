@@ -35,7 +35,8 @@ export type KindDir =
   | "models"
   | "vaults"
   | "datastores"
-  | "reports";
+  | "reports"
+  | "webhooks";
 
 export interface SourceFailureTransition {
   readonly source: SourceLocation;
@@ -155,6 +156,8 @@ export function kindDirToExtensionKind(
       return "datastore";
     case "reports":
       return "report";
+    case "webhooks":
+      return "webhook";
   }
 }
 
@@ -171,6 +174,8 @@ export function extensionKindToKindDir(
       return "datastores";
     case "report":
       return "reports";
+    case "webhook":
+      return "webhooks";
   }
 }
 

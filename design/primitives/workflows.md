@@ -713,10 +713,13 @@ The signature scheme is selected per endpoint on the `--webhook` flag:
 `<route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]`. `scheme` is one
 of `github` (the default, `X-Hub-Signature-256`), `jira` (`X-Hub-Signature`),
 `linear`, `stripe`, `slack`, or `generic` (which requires a header name and
-accepts an optional value prefix). When no
+accepts an optional value prefix), or a webhook extension type
+(`@collective/name`, e.g. `@swamp/telegram`). When no
 scheme is given the flag behaves exactly as before, so the secret may still
 contain colons; a scheme is recognized only when the fourth field is a known
-scheme keyword.
+scheme keyword or an extension type. An extension may `transform` the body
+before it is exposed as `webhook.body`; `webhook.headers` is always the
+redacted map computed by core.
 
 These expressions are evaluated against the verified payload **at fire time,
 before input validation**, so a payload field can satisfy a `required` input.

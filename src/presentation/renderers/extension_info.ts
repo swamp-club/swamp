@@ -96,6 +96,14 @@ function renderContentMetadata(
     }
   }
 
+  if (meta.webhooks && meta.webhooks.length > 0) {
+    logger.info``;
+    logger.info`Webhooks (${meta.webhooks.length}):`;
+    for (const w of meta.webhooks) {
+      logger.info`  ${w.type} — ${w.description || w.name}`;
+    }
+  }
+
   if (meta.skills.length > 0) {
     logger.info``;
     logger.info`Skills (${meta.skills.length}):`;

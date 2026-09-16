@@ -147,6 +147,7 @@ export async function* extensionQuality(
           ...input.prepareInput.allVaultFiles,
           ...input.prepareInput.allDatastoreFiles,
           ...input.prepareInput.allReportFiles,
+          ...input.prepareInput.allWebhookFiles,
         ];
         const specifiers = await deps.pushPrepareDeps
           .extractDependencySpecifiers(sourceFiles);
@@ -189,6 +190,7 @@ export async function* extensionQuality(
         ...input.prepareInput.allVaultFiles,
         ...input.prepareInput.allDatastoreFiles,
         ...input.prepareInput.allReportFiles,
+        ...input.prepareInput.allWebhookFiles,
       ];
       const bareSpecifiers = new Set<string>();
       for (const file of allSourceFiles) {

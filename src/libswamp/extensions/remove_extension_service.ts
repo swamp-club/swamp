@@ -181,12 +181,13 @@ export class RemoveExtensionService {
     //    never recorded as tracked files when the extension ships no
     //    content for that bundle kind — same shape as the scaffold-dir
     //    fix above. Maps source kind → top-level bundle kind, matching
-    //    the five mkdir+copyDir pairs in pull.ts.
+    //    the bundle mkdir+copyDir pairs in pull.ts.
     const BUNDLE_MAPPINGS: ReadonlyArray<[string, string]> = [
       ["models", "bundles"],
       ["vaults", "vault-bundles"],
       ["datastores", "datastore-bundles"],
       ["reports", "report-bundles"],
+      ["webhooks", "webhook-bundles"],
     ];
     for (const [sourceKind, bundleKind] of BUNDLE_MAPPINGS) {
       parentDirs.push(

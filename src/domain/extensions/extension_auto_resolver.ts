@@ -22,6 +22,7 @@ import { ModelType } from "../models/model_type.ts";
 import { type ModelDefinition, modelRegistry } from "../models/model.ts";
 import { vaultTypeRegistry } from "../vaults/vault_type_registry.ts";
 import { datastoreTypeRegistry } from "../datastore/datastore_type_registry.ts";
+import { webhookTypeRegistry } from "../webhooks/webhook_type_registry.ts";
 
 const logger = getLogger(["swamp", "extensions", "auto-resolver"]);
 
@@ -106,6 +107,7 @@ export interface ExtensionInstallerPort {
   hotLoadModels(): Promise<number>;
   hotLoadVaults(): Promise<void>;
   hotLoadDatastores(): Promise<void>;
+  hotLoadWebhooks(): Promise<void>;
   /**
    * Checks whether any local source extension that failed to index
    * (`BundleBuildFailed` or `ValidationFailed`) contains the given
@@ -462,10 +464,11 @@ export class ExtensionAutoResolver {
 
     if (!installResult) return false;
 
-    // Hot-load newly installed models, vaults, and datastores
+    // Hot-load newly installed models, vaults, datastores, and webhooks
     const newModelsCount = await extensionInstaller.hotLoadModels();
     await extensionInstaller.hotLoadVaults();
     await extensionInstaller.hotLoadDatastores();
+    await extensionInstaller.hotLoadWebhooks();
 
     output.installed(extensionName, installResult.version, newModelsCount);
 
@@ -562,6 +565,25 @@ export async function resolveDatastoreType(
   // Try lazy loading first — the type may be indexed but not imported yet
   await datastoreTypeRegistry.ensureTypeLoaded(type);
   if (datastoreTypeRegistry.has(type)) return true;
+  if (!resolver) return false;
+  if (!type.startsWith("@")) return false;
+
+  return await resolver.resolve(type);
+}
+
+/**
+ * Standalone helper function for resolving webhook types at choke points.
+ *
+ * Checks the webhook type registry first (sync fast path), then falls back
+ * to auto-resolution if a resolver is available.
+ */
+export async function resolveWebhookType(
+  type: string,
+  resolver: ExtensionAutoResolver | null,
+): Promise<boolean> {
+  // Try lazy loading first — the type may be indexed but not imported yet
+  await webhookTypeRegistry.ensureTypeLoaded(type);
+  if (webhookTypeRegistry.has(type)) return true;
   if (!resolver) return false;
   if (!type.startsWith("@")) return false;
 

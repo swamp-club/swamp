@@ -319,6 +319,7 @@ export class ExtensionRepository {
       "vault",
       "datastore",
       "report",
+      "webhook",
     ];
     try {
       this.catalog.runInTransaction(() => {
@@ -352,6 +353,7 @@ export class ExtensionRepository {
       "vault",
       "datastore",
       "report",
+      "webhook",
     ];
     for (const kind of kinds) {
       if (!this.catalog.isPopulated(kind)) return true;

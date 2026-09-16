@@ -65,7 +65,7 @@ export interface ExtensionIdentity {
  *     like `@swamp/aws/ec2` are common). The function consumes
  *     everything between the `pulled-extensions/` prefix and the next
  *     known kind segment (`models`, `vaults`, `datastores`,
- *     `reports`, `workflows`, `skills`) as the name.
+ *     `reports`, `webhooks`, `workflows`, `skills`) as the name.
  *   - Local or source-mounted: any path containing an
  *     `/extensions/<kind>/` segment where `<kind>` is one of the known
  *     kind directory names. Both `<repoRoot>/extensions/<kind>/...`
@@ -151,6 +151,7 @@ const KIND_SEGMENTS = new Set([
   "vaults",
   "datastores",
   "reports",
+  "webhooks",
   "workflows",
   "skills",
 ]);

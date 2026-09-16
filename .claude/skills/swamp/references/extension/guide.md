@@ -1,6 +1,6 @@
 # Swamp Extension
 
-Create TypeScript extensions that swamp loads at startup. Four extension types
+Create TypeScript extensions that swamp loads at startup. Five extension types
 share the same workflow: implement an interface, register in a manifest, publish
 via `swamp-extension-publish`.
 
@@ -12,6 +12,10 @@ via `swamp-extension-publish`.
 | Custom secret backend (HashiCorp Vault, 1P, …) | Vault     | `export const vault`     | `extensions/vaults/*/mod.ts`     |
 | Custom storage backend (GCS, DB, …)            | Datastore | `export const datastore` | `extensions/datastores/*/mod.ts` |
 | Repeatable analysis of model/workflow output   | Report    | `export const report`    | `extensions/reports/*.ts`        |
+| Custom `swamp serve` webhook auth/response     | Webhook   | `export const webhook`   | `extensions/webhooks/*.ts`       |
+
+For webhook extensions, read
+[references/webhook/api.md](references/webhook/api.md).
 
 ## Before Creating an Extension
 

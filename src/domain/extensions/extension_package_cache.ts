@@ -54,6 +54,7 @@ export interface PackageCacheHashInput {
   vaultFilePaths: string[];
   datastoreFilePaths: string[];
   reportFilePaths: string[];
+  webhookFilePaths: string[];
   workflowFilePaths: string[];
   additionalFilePaths: string[];
   binaryFilePaths: string[];
@@ -98,6 +99,7 @@ export async function computePackageCacheHash(
   await appendFileGroup("vaults", input.vaultFilePaths, rootDir, parts);
   await appendFileGroup("datastores", input.datastoreFilePaths, rootDir, parts);
   await appendFileGroup("reports", input.reportFilePaths, rootDir, parts);
+  await appendFileGroup("webhooks", input.webhookFilePaths, rootDir, parts);
   await appendFileGroup("workflows", input.workflowFilePaths, rootDir, parts);
   await appendFileGroup(
     "additional",
@@ -140,6 +142,7 @@ function serializeManifestForHash(manifest: ExtensionManifest): string {
   lines.push(`vaults=${JSON.stringify(manifest.vaults)}`);
   lines.push(`datastores=${JSON.stringify(manifest.datastores)}`);
   lines.push(`reports=${JSON.stringify(manifest.reports)}`);
+  lines.push(`webhooks=${JSON.stringify(manifest.webhooks)}`);
   lines.push(`skills=${JSON.stringify(manifest.skills)}`);
   lines.push(`include=${JSON.stringify(manifest.include)}`);
   lines.push(`additionalFiles=${JSON.stringify(manifest.additionalFiles)}`);

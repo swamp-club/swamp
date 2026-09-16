@@ -298,6 +298,60 @@ Deno.test("loadServeConfig: webhook generic scheme without header produces error
   });
 });
 
+Deno.test("loadServeConfig: webhook extension scheme with config is accepted", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, {
+      webhooks: [{
+        route: "/hooks/tg",
+        workflow: "deploy",
+        secret: "s",
+        scheme: "@swamp/telegram",
+        config: { mode: "strict" },
+      }],
+    });
+    const config = loadServeConfig(undefined, dir);
+    assertEquals(config?.webhooks?.[0].scheme, "@swamp/telegram");
+  });
+});
+
+Deno.test("loadServeConfig: webhook config on a built-in scheme produces error", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, {
+      webhooks: [{
+        route: "/hooks/ci",
+        workflow: "deploy",
+        secret: "s",
+        scheme: "github",
+        config: {},
+      }],
+    });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "config is only supported for webhook extension schemes",
+    );
+  });
+});
+
+Deno.test("loadServeConfig: webhook non-object config produces error", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, {
+      webhooks: [{
+        route: "/hooks/tg",
+        workflow: "deploy",
+        secret: "s",
+        scheme: "@swamp/telegram",
+        config: ["x"],
+      }],
+    });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "config must be an object",
+    );
+  });
+});
+
 Deno.test("loadServeConfig: empty file returns null", () => {
   withTempDir((dir) => {
     const swampDir = join(dir, ".swamp");
@@ -1960,4 +2014,18 @@ Deno.test("loadServeConfig: rejects invalid alert action type", () => {
       Deno.removeSync(dir, { recursive: true });
     } catch { /* Windows EBUSY */ }
   }
+});
+
+Deno.test("parseWebhookConfig: lowercases an extension scheme and passes config through", async () => {
+  const endpoint = await parseWebhookConfig({
+    route: "/hooks/tg",
+    workflow: "bot",
+    secret: "tok",
+    scheme: "@Swamp/Telegram",
+    config: { mode: "strict" },
+  });
+  assertEquals(endpoint.verifier, {
+    scheme: "@swamp/telegram",
+    config: { mode: "strict" },
+  });
 });

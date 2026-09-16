@@ -138,7 +138,7 @@ export interface InstallResult {
  * extension_update, extensionInstall, and extensionPull).
  *
  * Per-type destination dirs (models/workflows/vaults/
- * datastores/reports) are deliberately NOT fields on this context —
+ * datastores/reports/webhooks) are deliberately NOT fields on this context —
  * `installExtension` derives them itself as
  * `.swamp/pulled-extensions/<ref.name>/<type>/` so filesystem state is
  * strictly per-extension (issue 120). Only `skillsDirs` remains because
@@ -486,6 +486,8 @@ export async function detectConflicts(
   reportsDir?: string,
   reportBundlesDir?: string,
   filesDir?: string,
+  webhooksDir?: string,
+  webhookBundlesDir?: string,
 ): Promise<string[]> {
   const conflicts: string[] = [];
 
@@ -575,6 +577,28 @@ export async function detectConflicts(
     for (const file of await listFiles(reportBundlesSrc)) {
       const relPath = relative(reportBundlesSrc, file);
       const destPath = join(reportBundlesDir, relPath);
+      if (await fileExists(destPath)) {
+        conflicts.push(relative(repoDir, destPath));
+      }
+    }
+  }
+
+  if (webhooksDir) {
+    const webhooksSrc = join(extractDir, "webhooks");
+    for (const file of await listFiles(webhooksSrc)) {
+      const relPath = relative(webhooksSrc, file);
+      const destPath = join(webhooksDir, relPath);
+      if (await fileExists(destPath)) {
+        conflicts.push(relative(repoDir, destPath));
+      }
+    }
+  }
+
+  if (webhookBundlesDir) {
+    const webhookBundlesSrc = join(extractDir, "webhook-bundles");
+    for (const file of await listFiles(webhookBundlesSrc)) {
+      const relPath = relative(webhookBundlesSrc, file);
+      const destPath = join(webhookBundlesDir, relPath);
       if (await fileExists(destPath)) {
         conflicts.push(relative(repoDir, destPath));
       }
@@ -849,11 +873,15 @@ export async function installExtension(
     const reportTsFiles = (await listFiles(join(extractDir, "reports"))).filter(
       (f) => f.endsWith(".ts"),
     );
+    const webhookTsFiles = (
+      await listFiles(join(extractDir, "webhooks"))
+    ).filter((f) => f.endsWith(".ts"));
     const tsFiles = [
       ...modelTsFiles,
       ...vaultTsFiles,
       ...datastoreTsFiles,
       ...reportTsFiles,
+      ...webhookTsFiles,
     ];
     if (tsFiles.length > 0) {
       const safetyResult = await analyzeExtensionSafety(tsFiles);
@@ -885,6 +913,7 @@ export async function installExtension(
     const absoluteVaultsDir = join(absoluteExtRoot, "vaults");
     const absoluteDatastoresDir = join(absoluteExtRoot, "datastores");
     const absoluteReportsDir = join(absoluteExtRoot, "reports");
+    const absoluteWebhooksDir = join(absoluteExtRoot, "webhooks");
     const absoluteFilesDir = join(absoluteExtRoot, "files");
     // Bundle cache is namespaced by source dir path. Because each extension
     // now has a unique per-extension models dir, each extension gets its own
@@ -905,6 +934,10 @@ export async function installExtension(
       swampPath(repoDir, "report-bundles"),
       bundleNamespace(absoluteReportsDir, repoDir),
     );
+    const webhookBundlesDir = join(
+      swampPath(repoDir, "webhook-bundles"),
+      bundleNamespace(absoluteWebhooksDir, repoDir),
+    );
 
     const conflicts = await detectConflicts(
       extractDir,
@@ -919,6 +952,8 @@ export async function installExtension(
       absoluteReportsDir,
       reportBundlesDir,
       absoluteFilesDir,
+      absoluteWebhooksDir,
+      webhookBundlesDir,
     );
 
     if (conflicts.length > 0 && !ctx.force) {
@@ -998,6 +1033,22 @@ export async function installExtension(
       repoDir,
     );
     extractedFiles.push(...reportBundlesExtracted);
+
+    await Deno.mkdir(absoluteWebhooksDir, { recursive: true });
+    const webhooksExtracted = await copyDir(
+      join(extractDir, "webhooks"),
+      absoluteWebhooksDir,
+      repoDir,
+    );
+    extractedFiles.push(...webhooksExtracted);
+
+    await Deno.mkdir(webhookBundlesDir, { recursive: true });
+    const webhookBundlesExtracted = await copyDir(
+      join(extractDir, "webhook-bundles"),
+      webhookBundlesDir,
+      repoDir,
+    );
+    extractedFiles.push(...webhookBundlesExtracted);
 
     await Deno.mkdir(absoluteFilesDir, { recursive: true });
     const filesExtracted = await copyDir(
@@ -1079,6 +1130,7 @@ export async function installExtension(
       absoluteVaultsDir,
       absoluteDatastoresDir,
       absoluteReportsDir,
+      absoluteWebhooksDir,
     );
 
     // Extract manifest.yaml into the per-extension root as a read-only

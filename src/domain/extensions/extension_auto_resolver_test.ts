@@ -133,6 +133,9 @@ function createMockInstaller(
     hotLoadDatastores() {
       return Promise.resolve();
     },
+    hotLoadWebhooks() {
+      return Promise.resolve();
+    },
     failedLocalSourceMatchesType(typeNormalized: string) {
       return failedLocalSourceTypes.some((t) =>
         typeNormalized.includes(t) || t.includes(typeNormalized)

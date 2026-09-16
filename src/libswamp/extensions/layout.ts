@@ -51,6 +51,7 @@ export const PULLED_TYPE_DIRS: ReadonlySet<string> = new Set([
   "vaults",
   "datastores",
   "reports",
+  "webhooks",
   "skills",
   "files",
 ]);
@@ -76,6 +77,7 @@ export const PER_EXTENSION_SCAFFOLD_DIRS: readonly string[] = [
   "vaults",
   "datastores",
   "reports",
+  "webhooks",
   "files",
 ];
 
@@ -198,7 +200,8 @@ export function isSkillDirEntryMulti(
  *   `.swamp/pulled-extensions/<flat-name>`
  * - bundle namespaces (`bundles/<hash>/...`,
  *   `vault-bundles/<hash>/...`,
- *   `datastore-bundles/<hash>/...`, `report-bundles/<hash>/...`) →
+ *   `datastore-bundles/<hash>/...`, `report-bundles/<hash>/...`,
+ *   `webhook-bundles/<hash>/...`) →
  *   `<kind>/<hash>`
  *
  * The skillsDir is repo-and-tool-specific (`.claude/skills/`,
@@ -246,6 +249,7 @@ export function extractTopLevelRoot(
     "vault-bundles",
     "datastore-bundles",
     "report-bundles",
+    "webhook-bundles",
   ];
   for (const kind of BUNDLE_KINDS) {
     const prefix = `${SWAMP_DATA_DIR}/${kind}/`;
@@ -296,6 +300,7 @@ export function extractTopLevelRootMulti(
     "vault-bundles",
     "datastore-bundles",
     "report-bundles",
+    "webhook-bundles",
   ];
   for (const kind of BUNDLE_KINDS) {
     const prefix = `${SWAMP_DATA_DIR}/${kind}/`;

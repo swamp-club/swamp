@@ -23,6 +23,7 @@ import { modelRegistry } from "../domain/models/model.ts";
 import { vaultTypeRegistry } from "../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../domain/reports/report_registry.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
+import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
 import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
 import {
   incrementReloadGeneration,
@@ -179,6 +180,16 @@ export async function reloadPulledExtensions(
               version: row.version,
             });
             await reportRegistry.ensureTypeLoaded(row.type_normalized);
+            reloadedCount++;
+          } else if (kind === "webhook") {
+            webhookTypeRegistry.invalidateType(row.type_normalized);
+            webhookTypeRegistry.registerLazy({
+              type: row.type_normalized,
+              bundlePath: row.bundle_path,
+              sourcePath: row.source_path,
+              version: row.version,
+            });
+            await webhookTypeRegistry.ensureTypeLoaded(row.type_normalized);
             reloadedCount++;
           }
         } catch (err) {

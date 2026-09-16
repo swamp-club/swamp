@@ -44,6 +44,7 @@ import { resolveVaultsDir } from "./resolve_vaults_dir.ts";
 import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
 import { resolveDatastoresDir } from "./resolve_datastores_dir.ts";
 import { resolveReportsDir } from "./resolve_reports_dir.ts";
+import { resolveWebhooksDir } from "./resolve_webhooks_dir.ts";
 import { SKILL_DIRS } from "../domain/repo/skill_dirs.ts";
 
 export interface ResolveExtensionFilesContext {
@@ -79,6 +80,10 @@ export interface ResolvedExtensionFiles {
   reportsDir: string;
   reportEntryPoints: string[];
   allReportFiles: string[];
+  /** Effective base for `webhooks` — see {@link modelsDir}. */
+  webhooksDir: string;
+  webhookEntryPoints: string[];
+  allWebhookFiles: string[];
   workflowFiles: Array<{ sourcePath: string; archiveName: string }>;
   skillDirs: Array<{ name: string; absolutePath: string }>;
   allSkillFiles: string[];
@@ -166,6 +171,7 @@ export async function resolveExtensionFiles(
     ...manifest.vaults.map((p) => ({ field: "vaults", path: p })),
     ...manifest.datastores.map((p) => ({ field: "datastores", path: p })),
     ...manifest.reports.map((p) => ({ field: "reports", path: p })),
+    ...manifest.webhooks.map((p) => ({ field: "webhooks", path: p })),
     ...manifest.skills.map((p) => ({ field: "skills", path: p })),
     ...manifest.include.map((p) => ({ field: "include", path: p })),
     ...manifest.additionalFiles.map((p) => ({
@@ -208,6 +214,9 @@ export async function resolveExtensionFiles(
   const reportsDir = useManifestBase
     ? manifestDir
     : resolve(extensionsDir, resolveReportsDir(marker));
+  const webhooksDir = useManifestBase
+    ? manifestDir
+    : resolve(extensionsDir, resolveWebhooksDir(marker));
 
   // 2b. When paths.base=manifest, reject entries that start with their own
   // archive directory prefix — the archive places each typed-key file under
@@ -219,6 +228,7 @@ export async function resolveExtensionFiles(
       { field: "vaults", prefix: "vaults/" },
       { field: "datastores", prefix: "datastores/" },
       { field: "reports", prefix: "reports/" },
+      { field: "webhooks", prefix: "webhooks/" },
       { field: "include", prefix: "models/" },
     ];
     for (const { field, prefix } of typedFieldPrefixes) {
@@ -432,6 +442,31 @@ export async function resolveExtensionFiles(
     allReportFiles.push(...reportImportResult.resolvedFiles);
   }
 
+  // 13a. Collect webhook files from manifest
+  const webhookEntryPoints: string[] = [];
+  for (const webhookRef of manifest.webhooks) {
+    const webhookPath = resolve(webhooksDir, webhookRef);
+    try {
+      await Deno.stat(webhookPath);
+    } catch {
+      throw new UserError(
+        `Webhook file not found: ${webhookRef} (expected at ${webhookPath})` +
+          monorepoHint,
+      );
+    }
+    webhookEntryPoints.push(webhookPath);
+  }
+
+  // 13b. Resolve local imports for webhook entry points
+  const allWebhookFiles: string[] = [];
+  if (webhookEntryPoints.length > 0) {
+    const webhookImportResult = await resolveLocalImports(
+      webhookEntryPoints,
+      webhooksDir,
+    );
+    allWebhookFiles.push(...webhookImportResult.resolvedFiles);
+  }
+
   // 14. Resolve skill directories from manifest
   const skillDirs: Array<{ name: string; absolutePath: string }> = [];
   const allSkillFiles: string[] = [];
@@ -619,6 +654,9 @@ export async function resolveExtensionFiles(
     reportsDir,
     reportEntryPoints,
     allReportFiles,
+    webhooksDir,
+    webhookEntryPoints,
+    allWebhookFiles,
     workflowFiles,
     skillDirs,
     allSkillFiles,

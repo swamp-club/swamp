@@ -302,6 +302,7 @@ export class ExtensionApiClient {
         vaults: detail.vaults ?? [],
         datastores: detail.datastores ?? [],
         reports: detail.reports ?? [],
+        webhooks: detail.webhooks ?? [],
         skills: detail.skills ?? [],
       },
     };

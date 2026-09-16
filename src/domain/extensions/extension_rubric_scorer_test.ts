@@ -52,6 +52,7 @@ function makeManifest(
     vaults: [],
     datastores: [],
     reports: [],
+    webhooks: [],
     skills: [],
     include: [],
     additionalFiles: [],

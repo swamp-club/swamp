@@ -21,7 +21,7 @@
  * @swamp-club/swamp-testing — Test utilities for swamp extensions.
  *
  * Provides test factories and conformance suites for all extension types:
- * models, vaults, datastores, and reports.
+ * models, vaults, datastores, reports, and webhooks.
  *
  * - **Factories** create in-memory fakes for unit testing without infrastructure
  * - **Conformance suites** verify that real implementations satisfy their contracts
@@ -107,6 +107,22 @@ export type {
   VaultExport,
   VaultExportConformanceOptions,
 } from "./vault_conformance.ts";
+
+// --- Webhooks ---
+
+export type {
+  WebhookHandler,
+  WebhookPayload,
+  WebhookResponse,
+} from "./webhook_types.ts";
+
+export { assertWebhookExportConformance } from "./webhook_conformance.ts";
+
+export type {
+  WebhookExport,
+  WebhookExportConformanceOptions,
+  WebhookRequestFixture,
+} from "./webhook_conformance.ts";
 
 // --- Datastores ---
 

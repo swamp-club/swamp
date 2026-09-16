@@ -113,6 +113,8 @@ const PINNED_DOMAIN_INFRA_EDGES: readonly string[] = [
   "src/domain/extensions/source_location.ts -> src/infrastructure/persistence/canonicalize_path.ts",
   "src/domain/extensions/vault_kind_adapter.ts -> src/infrastructure/persistence/extension_catalog_store.ts",
   "src/domain/extensions/vault_kind_adapter.ts -> src/infrastructure/persistence/paths.ts",
+  "src/domain/extensions/webhook_kind_adapter.ts -> src/infrastructure/persistence/extension_catalog_store.ts",
+  "src/domain/extensions/webhook_kind_adapter.ts -> src/infrastructure/persistence/paths.ts",
   "src/domain/models/access/grant_model.ts -> src/infrastructure/cel/grant_condition_environment.ts",
   "src/domain/models/command/shell/shell_model.ts -> src/infrastructure/process/process_executor.ts",
   "src/domain/repo/primary_tool.ts -> src/infrastructure/persistence/repo_marker_repository.ts",

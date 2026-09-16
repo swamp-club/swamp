@@ -23,7 +23,7 @@ description: >
   for idempotent execution and assert steps for validation.
 - **Vaults** — secret storage referenced by models at runtime.
 - **Extensions** — TypeScript packages adding model types, vault backends,
-  datastores, and reports.
+  datastores, reports, and webhook handlers.
 - **Grants** — authorization rules for swamp serve access control.
 - **Serve** — exposes the repo over the network with TLS and authentication.
 
@@ -31,22 +31,22 @@ description: >
 
 Route to the right guide based on what the user needs.
 
-| User intent                                                  | Guide                                                                          |
-| ------------------------------------------------------------ | ------------------------------------------------------------------------------ |
-| Models — create, run, edit, delete, search types             | [references/model/guide.md](references/model/guide.md)                         |
-| Workflows — create, run, validate, DAG, history              | [references/workflow/guide.md](references/workflow/guide.md)                   |
-| Data — list, query, versions, GC, delete                     | [references/data/guide.md](references/data/guide.md)                           |
-| Vaults — create, store/read secrets, expressions             | [references/vault/guide.md](references/vault/guide.md)                         |
-| Reports — run, configure, view, filter                       | [references/report/guide.md](references/report/guide.md)                       |
-| Repository — init, upgrade, datastores, sources              | [references/repo/guide.md](references/repo/guide.md)                           |
-| Extensions — create models/vaults/datastores/reports         | [references/extension/guide.md](references/extension/guide.md)                 |
-| Publishing — push extensions to registry, deprecate          | [references/extension-publish/guide.md](references/extension-publish/guide.md) |
-| Issues — file bugs, features, security reports               | [references/issue/guide.md](references/issue/guide.md)                         |
-| Run tracking — active runs, stale detection, diagnostics     | [references/model/guide.md](references/model/guide.md)                         |
-| Architecture — which primitive to use, design trade-offs     | [references/architecture/guide.md](references/architecture/guide.md)           |
-| Sharing — promote solo repo to team, datastore + vault setup | [references/share/guide.md](references/share/guide.md)                         |
-| Serve — auth, grants, access control, tokens, OAuth          | [references/serve/guide.md](references/serve/guide.md)                         |
-| Troubleshooting — errors, health checks, diagnostics         | [references/troubleshooting/guide.md](references/troubleshooting/guide.md)     |
+| User intent                                                   | Guide                                                                          |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Models — create, run, edit, delete, search types              | [references/model/guide.md](references/model/guide.md)                         |
+| Workflows — create, run, validate, DAG, history               | [references/workflow/guide.md](references/workflow/guide.md)                   |
+| Data — list, query, versions, GC, delete                      | [references/data/guide.md](references/data/guide.md)                           |
+| Vaults — create, store/read secrets, expressions              | [references/vault/guide.md](references/vault/guide.md)                         |
+| Reports — run, configure, view, filter                        | [references/report/guide.md](references/report/guide.md)                       |
+| Repository — init, upgrade, datastores, sources               | [references/repo/guide.md](references/repo/guide.md)                           |
+| Extensions — create models/vaults/datastores/reports/webhooks | [references/extension/guide.md](references/extension/guide.md)                 |
+| Publishing — push extensions to registry, deprecate           | [references/extension-publish/guide.md](references/extension-publish/guide.md) |
+| Issues — file bugs, features, security reports                | [references/issue/guide.md](references/issue/guide.md)                         |
+| Run tracking — active runs, stale detection, diagnostics      | [references/model/guide.md](references/model/guide.md)                         |
+| Architecture — which primitive to use, design trade-offs      | [references/architecture/guide.md](references/architecture/guide.md)           |
+| Sharing — promote solo repo to team, datastore + vault setup  | [references/share/guide.md](references/share/guide.md)                         |
+| Serve — auth, grants, access control, tokens, OAuth           | [references/serve/guide.md](references/serve/guide.md)                         |
+| Troubleshooting — errors, health checks, diagnostics          | [references/troubleshooting/guide.md](references/troubleshooting/guide.md)     |
 
 ## Common Commands
 

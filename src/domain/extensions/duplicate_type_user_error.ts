@@ -30,7 +30,8 @@ export type DuplicateTypeKind =
   | "extension"
   | "vault"
   | "datastore"
-  | "report";
+  | "report"
+  | "webhook";
 
 /**
  * Carries enough information to point a user at one of the two

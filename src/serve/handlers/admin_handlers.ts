@@ -144,6 +144,7 @@ import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
+import { webhookTypeRegistry } from "../../domain/webhooks/webhook_type_registry.ts";
 import type { Principal } from "../../domain/access/principal.ts";
 import {
   authorizeOrReject,
@@ -1576,6 +1577,11 @@ export async function handleDoctorExtensions(
         registry: "report",
         ensureLoaded: () => reportRegistry.ensureLoaded(),
         resetLoadedFlag: () => reportRegistry.resetLoadedFlag(),
+      },
+      {
+        registry: "webhook",
+        ensureLoaded: () => webhookTypeRegistry.ensureLoaded(),
+        resetLoadedFlag: () => webhookTypeRegistry.resetLoadedFlag(),
       },
     ];
 

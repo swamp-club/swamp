@@ -219,6 +219,7 @@ All extension types follow the same lifecycle:
 | Vault     | `extensions/vaults/**/*.ts`     | `export const vault`     | `.swamp/vault-bundles/`     |
 | Datastore | `extensions/datastores/**/*.ts` | `export const datastore` | `.swamp/datastore-bundles/` |
 | Report    | `extensions/reports/*.ts`       | `export const report`    | (bundled inline)            |
+| Webhook   | `extensions/webhooks/**/*.ts`   | `export const webhook`   | `.swamp/webhook-bundles/`   |
 
 Files ending in `_test.ts` are excluded. Files without the correct export are
 silently skipped. When a file fails to load, swamp emits `swamp-warning:` on

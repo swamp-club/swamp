@@ -63,6 +63,7 @@ function buildPassReport(): DoctorExtensionsReport {
       vault: passResult("vault"),
       datastore: passResult("datastore"),
       report: passResult("report"),
+      webhook: passResult("webhook"),
     },
     orphanFiles: [],
     recentTransitions: [],
@@ -78,6 +79,7 @@ function buildFailReport(): DoctorExtensionsReport {
       vault: passResult("vault"),
       datastore: passResult("datastore"),
       report: passResult("report"),
+      webhook: passResult("webhook"),
     },
     orphanFiles: [],
     recentTransitions: [],
@@ -85,7 +87,7 @@ function buildFailReport(): DoctorExtensionsReport {
   };
 }
 
-Deno.test("doctor_extensions json renderer: emits all four registry keys on pass", async () => {
+Deno.test("doctor_extensions json renderer: emits all five registry keys on pass", async () => {
   const out = await captureStdout(async () => {
     const r = createDoctorExtensionsRenderer("json");
     const handlers = r.handlers();
@@ -95,13 +97,13 @@ Deno.test("doctor_extensions json renderer: emits all four registry keys on pass
   const parsed = JSON.parse(out);
   assertEquals(parsed.overallStatus, "pass");
   const keys = Object.keys(parsed.registries).sort();
-  assertEquals(keys, ["datastore", "model", "report", "vault"]);
+  assertEquals(keys, ["datastore", "model", "report", "vault", "webhook"]);
   for (const key of keys) {
     assertEquals(parsed.registries[key].status, "pass");
   }
 });
 
-Deno.test("doctor_extensions json renderer: emits all four registry keys on fail", async () => {
+Deno.test("doctor_extensions json renderer: emits all five registry keys on fail", async () => {
   const out = await captureStdout(async () => {
     const r = createDoctorExtensionsRenderer("json");
     const handlers = r.handlers();
@@ -110,9 +112,9 @@ Deno.test("doctor_extensions json renderer: emits all four registry keys on fail
 
   const parsed = JSON.parse(out);
   assertEquals(parsed.overallStatus, "fail");
-  // All four keys still present even though only one registry failed.
+  // All five keys still present even though only one registry failed.
   const keys = Object.keys(parsed.registries).sort();
-  assertEquals(keys, ["datastore", "model", "report", "vault"]);
+  assertEquals(keys, ["datastore", "model", "report", "vault", "webhook"]);
   assertEquals(parsed.registries.model.status, "fail");
   assertEquals(parsed.registries.vault.status, "pass");
 });
@@ -150,10 +152,11 @@ Deno.test("doctor_extensions json renderer: stable key ordering", async () => {
     const r = createDoctorExtensionsRenderer("json");
     const handlers = r.handlers();
     // Build a report with registries inserted in reverse order — output
-    // should still be model, vault, datastore, report.
+    // should still be model, vault, datastore, report, webhook.
     const reversed: DoctorExtensionsReport = {
       overallStatus: "pass",
       registries: {
+        webhook: passResult("webhook"),
         report: passResult("report"),
         datastore: passResult("datastore"),
         vault: passResult("vault"),
@@ -173,10 +176,12 @@ Deno.test("doctor_extensions json renderer: stable key ordering", async () => {
   const vaultIdx = slice.indexOf('"vault"');
   const datastoreIdx = slice.indexOf('"datastore"');
   const reportIdx = slice.indexOf('"report"');
+  const webhookIdx = slice.indexOf('"webhook"');
 
   assertEquals(modelIdx < vaultIdx, true);
   assertEquals(vaultIdx < datastoreIdx, true);
   assertEquals(datastoreIdx < reportIdx, true);
+  assertEquals(reportIdx < webhookIdx, true);
 });
 
 Deno.test("doctor_extensions log renderer: no implicit fold — renders every row it receives", async () => {
@@ -216,6 +221,7 @@ Deno.test(
           vault: passResult("vault"),
           datastore: passResult("datastore"),
           report: passResult("report"),
+          webhook: passResult("webhook"),
         },
         orphanFiles: [
           {
@@ -253,6 +259,7 @@ Deno.test(
           vault: passResult("vault"),
           datastore: passResult("datastore"),
           report: passResult("report"),
+          webhook: passResult("webhook"),
         },
         orphanFiles: [
           {

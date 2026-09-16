@@ -239,9 +239,18 @@ records older than 4 h are reaped every 10 min. Each fire is also enqueued as a
 pending run (see [High availability](#high-availability)).
 
 **Webhooks.** A `--webhook <route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]`
-or `webhooks[]` entry binds a POST route to a workflow. Signatures are verified by a closed set of schemes — `github`,
+or `webhooks[]` entry binds a POST route to a workflow. Signatures are verified by a built-in scheme — `github`,
 `jira`, `linear`, `stripe`, `slack`, `generic` (header + prefix) — with a
-300 s replay window for the timestamped ones (`src/serve/webhook_verifiers.ts`).
+300 s replay window for the timestamped ones (`src/serve/webhook_verifiers.ts`),
+or by a webhook extension type named `@collective/name` (for example
+`@swamp/telegram`). Extension types are resolved (and auto-pulled for trusted
+collectives) at startup, and their `config` (`webhooks[].config`, yaml only) is
+validated against the type's `configSchema`. An extension handler may also
+`transform` the payload body and `respond` with a custom HTTP response,
+optionally without starting a run. Core keeps every security decision: the
+hooks run only after verification, `transform` sees only redacted headers, and
+a missing type or failing hook returns a generic `500` before anything is
+queued. Hooks run inline with no timeout.
 A verified request becomes a pending run before it is executed, so a crash
 between receipt and completion is replayed at next boot (`src/serve/webhook.ts`).
 Secrets may be `@env=VAR`, `@file=/path` or `@vault=<vault>:<key>` references
@@ -394,9 +403,10 @@ reconciliation loop after `--stale-ttl`.
   extension commands (`pull`, `install`, `rm`, `update`) warn the user after
   a successful `--server` operation that `swamp serve reload` is needed to
   pick up the changes (`src/cli/remote_run.ts`, `warnServerReloadNeeded`).
-- Webhook verification schemes are a closed set; a provider that changes its
-  signing convention needs a swamp release (`src/serve/webhook_verifiers.ts`,
-  tracked in #716).
+- Built-in webhook verification schemes are a closed set; a provider outside
+  it needs a webhook extension (`src/serve/webhook_verifiers.ts`, #2204).
+  Extension handlers are resolved per request, but the endpoint list itself is
+  fixed at startup.
 - Auth mode `none` is deprecated and only permitted on loopback.
 - **Audit**: When configured, serve emits audit events for authorization
   denials and high-value operations. →

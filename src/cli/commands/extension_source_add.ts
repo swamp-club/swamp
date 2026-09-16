@@ -41,6 +41,7 @@ import {
   resolveModelsDir,
   resolveReportsDir,
   resolveVaultsDir,
+  resolveWebhooksDir,
   resolveWorkflowsDir,
 } from "../mod.ts";
 
@@ -75,7 +76,7 @@ export const extensionSourceAddCommand = new Command()
   )
   .option(
     "--only <types:string>",
-    "Only load these extension types (comma-separated: models,vaults,datastores,reports,workflows)",
+    "Only load these extension types (comma-separated: models,vaults,datastores,reports,webhooks,workflows)",
   )
   .action(async function (options: AnyOptions, path: string) {
     const cliCtx = createContext(options as GlobalOptions, [
@@ -96,6 +97,7 @@ export const extensionSourceAddCommand = new Command()
       resolveVaultsDir(marker),
       resolveDatastoresDir(marker),
       resolveReportsDir(marker),
+      resolveWebhooksDir(marker),
       resolveWorkflowsDir(marker),
     ];
     const deps = await createSourceAddDeps(

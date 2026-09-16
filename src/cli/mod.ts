@@ -79,11 +79,13 @@ import { modelKindAdapter } from "../domain/extensions/model_kind_adapter.ts";
 import { vaultKindAdapter } from "../domain/extensions/vault_kind_adapter.ts";
 import { datastoreKindAdapter } from "../domain/extensions/datastore_kind_adapter.ts";
 import { reportKindAdapter } from "../domain/extensions/report_kind_adapter.ts";
+import { webhookKindAdapter } from "../domain/extensions/webhook_kind_adapter.ts";
 import { modelRegistry } from "../domain/models/model.ts";
 import { vaultTypeRegistry } from "../domain/vaults/vault_type_registry.ts";
 import { setConsoleGuardJsonMode } from "../domain/models/console_guard.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { reportRegistry } from "../domain/reports/report_registry.ts";
+import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
 
 // Import datastore types barrel to trigger built-in datastore registration
 import "../domain/datastore/datastore_types.ts";
@@ -207,6 +209,8 @@ import { resolveDatastoresDir } from "./resolve_datastores_dir.ts";
 export { resolveDatastoresDir };
 import { resolveReportsDir } from "./resolve_reports_dir.ts";
 export { resolveReportsDir };
+import { resolveWebhooksDir } from "./resolve_webhooks_dir.ts";
+export { resolveWebhooksDir };
 
 const logger = getLogger(["swamp", "cli"]);
 
@@ -338,6 +342,7 @@ export async function configureExtensionLoaders(
     "datastores",
   );
   const sourceReportsDirs = collectDirsForKind(resolvedSources, "reports");
+  const sourceWebhooksDirs = collectDirsForKind(resolvedSources, "webhooks");
 
   const resolveAbsoluteKindDir = (
     resolveDir: (m: RepoMarkerData | null) => string,
@@ -356,6 +361,10 @@ export async function configureExtensionLoaders(
     [
       "reports",
       [resolveAbsoluteKindDir(resolveReportsDir), ...sourceReportsDirs],
+    ],
+    [
+      "webhooks",
+      [resolveAbsoluteKindDir(resolveWebhooksDir), ...sourceWebhooksDirs],
     ],
   ]);
   const manifestCrossKindDirs = await discoverManifestCrossKindDirs(kindDirs);
@@ -469,6 +478,19 @@ export async function configureExtensionLoaders(
       lockfilePath,
     )
   );
+  webhookTypeRegistry.setLoader(() =>
+    loadUserWebhooks(
+      repoDir,
+      marker,
+      denoRuntime,
+      mergeManifestDirs(sourceWebhooksDirs, "webhooks"),
+      lazyResolver,
+      repository,
+      quiet,
+      effectiveExtDir,
+      lockfilePath,
+    )
+  );
 
   // Skip local filesystem checks when commands route to a remote serve
   // instance — the local repo may be a thin checkout whose lockfile
@@ -574,6 +596,7 @@ export interface DeferredWarning {
     | "vault"
     | "datastore"
     | "report"
+    | "webhook"
     | "extensions"
     | "skills"
     | "skill-migration";
@@ -989,6 +1012,92 @@ async function loadUserReports(
     }
     logger
       .warn`Failed to load user report extensions: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+}
+
+async function loadUserWebhooks(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+  denoRuntime: EmbeddedDenoRuntime,
+  sourceDirs: string[] = [],
+  resolverFactory?: () => Promise<DatastorePathResolver | undefined>,
+  repository?: ExtensionRepository,
+  _quiet = false,
+  extensionsDir?: string,
+  managedLockfilePath?: string,
+): Promise<void> {
+  try {
+    const extBase = extensionsDir ?? repoDir;
+    const webhooksDir = resolveWebhooksDir(marker);
+    const absoluteWebhooksDir = isAbsolute(webhooksDir)
+      ? webhooksDir
+      : resolve(extBase, webhooksDir);
+
+    const resolver = resolverFactory ? await resolverFactory() : undefined;
+    const loader = new ExtensionLoader(
+      denoRuntime,
+      webhookKindAdapter,
+      repoDir,
+      resolver,
+      repository,
+    );
+    const modelsDir = resolveModelsDir(marker);
+    const lockfilePath = managedLockfilePath ?? join(
+      isAbsolute(modelsDir) ? modelsDir : resolve(repoDir, modelsDir),
+      "upstream_extensions.json",
+    );
+    const pulledDirs = await enumeratePulledExtensionDirs(
+      lockfilePath,
+      repoDir,
+      "webhooks",
+    );
+
+    if (repository) {
+      webhookTypeRegistry.setTypeLoader(async (type) => {
+        await loader.loadSingleType(type);
+      });
+
+      const result = await loader.buildIndex(absoluteWebhooksDir, {
+        additionalDirs: [...sourceDirs, ...pulledDirs],
+        indexOnly: true,
+      });
+
+      throwOnTransientLoadFailures(result.failed, "webhook");
+
+      for (const failure of result.failed) {
+        logger
+          .warn`Failed to load user webhook ${failure.file}: ${failure.error}`;
+      }
+    } else {
+      const result = await loader.load(absoluteWebhooksDir, {
+        additionalDirs: [...sourceDirs, ...pulledDirs],
+        skipAlreadyRegistered: true,
+      });
+
+      throwOnTransientLoadFailures(result.failed, "webhook");
+
+      for (const failure of result.failed) {
+        logger
+          .warn`Failed to load user webhook ${failure.file}: ${failure.error}`;
+      }
+    }
+  } catch (error) {
+    if (error instanceof UserError) throw error;
+    if (error instanceof Deno.errors.NotFound) return;
+    if (isMissingHomeError(error)) return;
+    if (isTransientError(error)) {
+      throw new UserError(
+        `Failed to load extension webhooks: ${
+          error instanceof Error ? error.message : String(error)
+        }. ` +
+          "If another swamp process is writing the extension index, retry once it finishes.",
+        "lock_timeout",
+      );
+    }
+    logger
+      .warn`Failed to load user webhook extensions: ${
       error instanceof Error ? error.message : String(error)
     }`;
   }

@@ -28,6 +28,7 @@ export type PulledExtensionType =
   | "vaults"
   | "datastores"
   | "reports"
+  | "webhooks"
   | "files";
 
 /**

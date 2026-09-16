@@ -90,6 +90,7 @@ const ENTRYPOINT_FIELDS = [
   "vaults",
   "datastores",
   "reports",
+  "webhooks",
 ] as const;
 
 const RICH_README_MIN_LENGTH = 500;

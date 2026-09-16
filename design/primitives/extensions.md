@@ -291,8 +291,8 @@ the extension contains and how it should be packaged.
 - `manifestVersion`: Must be `1` (the only supported version).
 - `name`: Scoped name (`@collective/name`).
 - `version`: CalVer version string.
-- At least one of `models`, `workflows`, `vaults`, `datastores`, `reports`, or
-  `skills` must be present.
+- At least one of `models`, `workflows`, `vaults`, `datastores`, `reports`,
+  `webhooks`, or `skills` must be present.
 
 ### Path Safety
 
@@ -590,14 +590,15 @@ the local path since it loads datastore extensions that configure the resolver
 itself. When no resolver is available (e.g. during `repo init` or in tests),
 loaders fall back to the local `.swamp/` path.
 
-### Vaults, Datastores, and Reports
+### Vaults, Datastores, Reports, and Webhooks
 
-Vault, datastore, and report entry points are bundled with the same strategy as
-models — deno bundle with zod externalized. Each entry point gets a compiled
-`.js` file in its corresponding `-bundles/` directory (`vault-bundles/`,
-`datastore-bundles/`, `report-bundles/`). Local imports are resolved recursively
-within the directory boundary. The install-time `KIND_DIRS` array covers
-`["models", "vaults", "datastores", "reports"]`.
+Vault, datastore, report, and webhook entry points are bundled with the same
+strategy as models — deno bundle with zod externalized. Each entry point gets a
+compiled `.js` file in its corresponding `-bundles/` directory
+(`vault-bundles/`, `datastore-bundles/`, `report-bundles/`,
+`webhook-bundles/`). Local imports are resolved recursively within the directory
+boundary. The install-time `KIND_DIRS` array covers
+`["models", "vaults", "datastores", "reports", "webhooks"]`.
 
 The export from each bundle is validated against a Zod schema:
 
@@ -607,11 +608,15 @@ The export from each bundle is validated against a Zod schema:
   `description`, optional `configSchema`, and `createProvider`
 - **Reports**: `export const report` — must have `name`, `description`, `scope`,
   optional `labels`, and `execute`
+- **Webhooks**: `export const webhook` — must have `type`, `name`,
+  `description`, optional `configSchema`, and `createHandler`, which returns a
+  handler used by `swamp serve` webhook endpoints whose scheme is the type
+  (see [serve](serve.md))
 
 ### Collective Validation
 
 All content types — model types, vault types, workflow names, datastore types,
-report names — must use the same collective as the extension
+report names, webhook types — must use the same collective as the extension
 name. This is enforced during push to prevent an extension from registering
 types under a different collective.
 

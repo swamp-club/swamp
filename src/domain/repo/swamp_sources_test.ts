@@ -116,7 +116,7 @@ Deno.test("isGlobPattern: detects glob characters", () => {
 });
 
 Deno.test("EXTENSION_EXPORT_NAMES: covers every non-workflow kind", () => {
-  const expected = ["models", "vaults", "datastores", "reports"];
+  const expected = ["models", "vaults", "datastores", "reports", "webhooks"];
   assertEquals(Object.keys(EXTENSION_EXPORT_NAMES).sort(), expected.sort());
 });
 
@@ -124,6 +124,13 @@ Deno.test("detectKindFromSource: detects model export", () => {
   assertEquals(
     detectKindFromSource(`export const model = { type: "a/b" };`),
     "models",
+  );
+});
+
+Deno.test("detectKindFromSource: detects webhook export", () => {
+  assertEquals(
+    detectKindFromSource(`export const webhook = { type: "a/b" };`),
+    "webhooks",
   );
 });
 

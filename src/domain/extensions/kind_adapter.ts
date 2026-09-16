@@ -26,7 +26,12 @@ import type {
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 import type { FreshnessKind } from "./bundle_freshness.ts";
 
-export type LoaderKind = "model" | "vault" | "datastore" | "report";
+export type LoaderKind =
+  | "model"
+  | "vault"
+  | "datastore"
+  | "report"
+  | "webhook";
 
 export type ValidationResult =
   | { success: true; data: Record<string, unknown> }

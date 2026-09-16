@@ -90,6 +90,14 @@ export interface ResolvedReportEntry {
   labels?: string[];
 }
 
+/** A webhook entry enriched with extracted metadata for the resolved display. */
+export interface ResolvedWebhookEntry {
+  type: string;
+  fileName: string;
+  name?: string;
+  description?: string;
+}
+
 /** Data for showing resolved extension contents before push. */
 export interface ExtensionPushResolvedData {
   name: string;
@@ -102,6 +110,7 @@ export interface ExtensionPushResolvedData {
   vaults: ResolvedVaultEntry[];
   datastores: ResolvedDatastoreEntry[];
   reports: ResolvedReportEntry[];
+  webhooks: ResolvedWebhookEntry[];
   skills: Array<{ name: string; fileCount: number }>;
   additionalFiles: string[];
   platforms: string[];
@@ -121,6 +130,7 @@ export interface ExtensionPushSuccessData {
   vaultCount: number;
   datastoreCount: number;
   reportCount: number;
+  webhookCount: number;
   skillCount: number;
   channel: string;
   visibility: "public" | "private";
@@ -150,6 +160,9 @@ export interface ExtensionPushPrepareInput {
   reportsDir: string;
   allReportFiles: string[];
   reportEntryPoints: string[];
+  webhooksDir: string;
+  allWebhookFiles: string[];
+  webhookEntryPoints: string[];
   workflowFiles: Array<{ sourcePath: string; archiveName: string }>;
   skillDirs: Array<{ name: string; absolutePath: string }>;
   allSkillFiles: string[];
@@ -198,6 +211,7 @@ export interface ExtensionPushCounts {
   vaults: number;
   datastores: number;
   reports: number;
+  webhooks: number;
   skills: number;
 }
 
@@ -239,6 +253,8 @@ export interface ExtensionPushPrepareDeps {
     datastoresDir: string,
     reportFiles: string[],
     reportsDir: string,
+    webhookFiles: string[],
+    webhooksDir: string,
   ) => Promise<ExtensionContentMetadata>;
   analyzeExtensionSafety: (
     files: string[],
@@ -463,6 +479,11 @@ function buildReviewFileRefs(
       all: input.allReportFiles,
       entry: input.reportEntryPoints,
     },
+    {
+      kind: "webhook",
+      all: input.allWebhookFiles,
+      entry: input.webhookEntryPoints,
+    },
   ];
   for (const group of groups) {
     const entrySet = new Set(group.entry);
@@ -482,6 +503,7 @@ function contentKindsPresent(
   if (input.allVaultFiles.length > 0) kinds.push("vault");
   if (input.allDatastoreFiles.length > 0) kinds.push("datastore");
   if (input.allReportFiles.length > 0) kinds.push("report");
+  if (input.allWebhookFiles.length > 0) kinds.push("webhook");
   return kinds;
 }
 
@@ -561,9 +583,11 @@ export async function extensionPushPrepare(
       input.datastoresDir,
       input.allReportFiles,
       input.reportsDir,
+      input.allWebhookFiles,
+      input.webhooksDir,
     );
     ctx.logger
-      .debug`Extracted content metadata: ${contentMetadata.models.length} models, ${contentMetadata.workflows.length} workflows, ${contentMetadata.vaults.length} vaults, ${contentMetadata.datastores.length} datastores, ${contentMetadata.reports.length} reports`;
+      .debug`Extracted content metadata: ${contentMetadata.models.length} models, ${contentMetadata.workflows.length} workflows, ${contentMetadata.vaults.length} vaults, ${contentMetadata.datastores.length} datastores, ${contentMetadata.reports.length} reports, ${contentMetadata.webhooks.length} webhooks`;
   } catch {
     ctx.logger.debug`Content metadata extraction failed, skipping`;
   }
@@ -582,7 +606,7 @@ export async function extensionPushPrepare(
       );
       throw validationFailed(
         "Extension content uses collectives that don't match the extension package. " +
-          "All model types, vault types, workflow names, datastore types, and report names must use the same collective as the extension.",
+          "All model types, vault types, workflow names, datastore types, report names, and webhook types must use the same collective as the extension.",
         {
           expectedCollective,
           mismatches: collectiveResult.mismatches,
@@ -618,6 +642,7 @@ export async function extensionPushPrepare(
     ...input.allVaultFiles,
     ...input.allDatastoreFiles,
     ...input.allReportFiles,
+    ...input.allWebhookFiles,
     ...input.workflowFiles.map((wf) => wf.sourcePath),
     ...input.additionalFilePaths,
   ];
@@ -646,6 +671,7 @@ export async function extensionPushPrepare(
     ...input.allVaultFiles,
     ...input.allDatastoreFiles,
     ...input.allReportFiles,
+    ...input.allWebhookFiles,
   ];
   const specifiers = await deps.extractDependencySpecifiers(sourceFiles);
   if (specifiers.length > 0) {
@@ -798,7 +824,8 @@ export async function extensionPushPrepare(
   if (usingCachedArchive) {
     totalBundles = input.modelEntryPoints.length +
       input.vaultEntryPoints.length +
-      input.datastoreEntryPoints.length + input.reportEntryPoints.length;
+      input.datastoreEntryPoints.length + input.reportEntryPoints.length +
+      input.webhookEntryPoints.length;
     archiveBytes = input.cachedArchive!;
   } else {
     const built = await bundleAndArchive(input, deps, denoPath, ctx);
@@ -836,6 +863,7 @@ export async function extensionPushPrepare(
       vaults: input.vaultEntryPoints.length,
       datastores: input.datastoreEntryPoints.length,
       reports: input.reportEntryPoints.length,
+      webhooks: input.webhookEntryPoints.length,
       skills: input.skillDirs.length,
     },
     isDryRun: input.dryRun,
@@ -972,6 +1000,7 @@ export async function* extensionPush(
           vaultCount: input.counts.vaults,
           datastoreCount: input.counts.datastores,
           reportCount: input.counts.reports,
+          webhookCount: input.counts.webhooks,
           skillCount: input.counts.skills,
           channel: input.channel ?? "stable",
           visibility,
@@ -998,6 +1027,9 @@ function buildResolvedData(
   );
   const extractedReportsByFile = new Map(
     (contentMetadata?.reports ?? []).map((r) => [r.fileName, r]),
+  );
+  const extractedWebhooksByFile = new Map(
+    (contentMetadata?.webhooks ?? []).map((w) => [w.fileName, w]),
   );
 
   const resolvedModels = input.modelEntryPoints.map((f) => {
@@ -1054,6 +1086,19 @@ function buildResolvedData(
     };
   });
 
+  const resolvedWebhooks = input.webhookEntryPoints.map((f) => {
+    const relPath = relative(input.repoDir, f);
+    const extracted = extractedWebhooksByFile.get(
+      relative(input.webhooksDir, f),
+    );
+    return {
+      type: extracted?.type ?? relPath,
+      fileName: relPath,
+      name: extracted?.name,
+      description: extracted?.description,
+    };
+  });
+
   const resolvedReleaseNotes = input.releaseNotes ??
     input.manifest.releaseNotes;
 
@@ -1070,6 +1115,7 @@ function buildResolvedData(
     vaults: resolvedVaults,
     datastores: resolvedDatastores,
     reports: resolvedReports,
+    webhooks: resolvedWebhooks,
     skills: input.skillDirs.map((s) => ({
       name: s.name,
       fileCount:
@@ -1150,6 +1196,19 @@ async function bundleAndArchive(
     "report",
   );
 
+  const webhookBundles = new Map<string, string>();
+  await bundleEntryPoints(
+    input.webhookEntryPoints,
+    input.webhooksDir,
+    webhookBundles,
+    compilationErrors,
+    deps,
+    denoPath,
+    bundleOptions,
+    ctx,
+    "webhook",
+  );
+
   if (compilationErrors.length > 0) {
     throw validationFailed(
       "Bundle compilation failed. Fix the errors above and try again.",
@@ -1158,7 +1217,7 @@ async function bundleAndArchive(
   }
 
   const totalBundles = bundles.size + vaultBundles.size +
-    datastoreBundles.size + reportBundles.size;
+    datastoreBundles.size + reportBundles.size + webhookBundles.size;
 
   const archiveBytes = await createArchive(
     input,
@@ -1166,6 +1225,7 @@ async function bundleAndArchive(
     vaultBundles,
     datastoreBundles,
     reportBundles,
+    webhookBundles,
     ctx,
   );
 
@@ -1208,6 +1268,7 @@ async function createArchive(
   vaultBundles: Map<string, string>,
   datastoreBundles: Map<string, string>,
   reportBundles: Map<string, string>,
+  webhookBundles: Map<string, string>,
   ctx: LibSwampContext,
 ): Promise<Uint8Array> {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_ext_" });
@@ -1224,6 +1285,8 @@ async function createArchive(
       "datastore-bundles",
       "reports",
       "report-bundles",
+      "webhooks",
+      "webhook-bundles",
       "skills",
       "files",
     ];
@@ -1253,6 +1316,9 @@ async function createArchive(
         vaults: input.manifest.vaults,
         datastores: input.manifest.datastores,
         reports: input.manifest.reports,
+        ...(input.manifest.webhooks.length > 0
+          ? { webhooks: input.manifest.webhooks }
+          : {}),
         ...(input.manifest.skills.length > 0
           ? { skills: input.manifest.skills }
           : {}),
@@ -1347,6 +1413,21 @@ async function createArchive(
     // Write compiled report bundles
     for (const [entryName, js] of reportBundles) {
       const destPath = join(extDir, "report-bundles", `${entryName}.js`);
+      await Deno.mkdir(dirname(destPath), { recursive: true });
+      await Deno.writeTextFile(destPath, js);
+    }
+
+    // Copy webhook source files
+    for (const webhookFile of input.allWebhookFiles) {
+      const relPath = relative(input.webhooksDir, webhookFile);
+      const destPath = join(extDir, "webhooks", relPath);
+      await Deno.mkdir(dirname(destPath), { recursive: true });
+      await Deno.copyFile(webhookFile, destPath);
+    }
+
+    // Write compiled webhook bundles
+    for (const [entryName, js] of webhookBundles) {
+      const destPath = join(extDir, "webhook-bundles", `${entryName}.js`);
       await Deno.mkdir(dirname(destPath), { recursive: true });
       await Deno.writeTextFile(destPath, js);
     }

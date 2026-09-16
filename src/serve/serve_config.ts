@@ -28,7 +28,11 @@ import {
   type VaultSecretResolver,
   type WebhookEndpoint,
 } from "./webhook.ts";
-import { WEBHOOK_SCHEMES, type WebhookScheme } from "./webhook_verifiers.ts";
+import {
+  isExtensionWebhookScheme,
+  WEBHOOK_SCHEMES,
+  type WebhookScheme,
+} from "./webhook_verifiers.ts";
 import type { VerifierConfig } from "./webhook_verifiers.ts";
 
 const logger = getSwampLogger(["serve", "config"]);
@@ -67,6 +71,8 @@ export interface WebhookConfigEntry {
   readonly scheme?: string;
   readonly header?: string;
   readonly prefix?: string;
+  /** Extension-specific config, validated against the type's configSchema. */
+  readonly config?: Record<string, unknown>;
 }
 
 // ── Trigger Override Types ────────────────────────────────────────────
@@ -561,12 +567,13 @@ function validateWebhookEntry(
   if (obj.scheme !== undefined) {
     if (
       typeof obj.scheme !== "string" ||
-      !(WEBHOOK_SCHEMES as readonly string[]).includes(obj.scheme)
+      !((WEBHOOK_SCHEMES as readonly string[]).includes(obj.scheme) ||
+        isExtensionWebhookScheme(obj.scheme.toLowerCase()))
     ) {
       throw new UserError(
         `Invalid webhook at index ${index} in ${path}: scheme must be one of ${
           WEBHOOK_SCHEMES.join(", ")
-        }, got '${obj.scheme}'`,
+        } or a webhook extension type (@collective/name), got '${obj.scheme}'`,
       );
     }
     if (obj.scheme === "generic" && typeof obj.header !== "string") {
@@ -574,6 +581,24 @@ function validateWebhookEntry(
         `Invalid webhook at index ${index} in ${path}: generic scheme requires a header name`,
       );
     }
+  }
+  if (
+    obj.config !== undefined &&
+    (typeof obj.config !== "object" || obj.config === null ||
+      Array.isArray(obj.config))
+  ) {
+    throw new UserError(
+      `Invalid webhook at index ${index} in ${path}: config must be an object`,
+    );
+  }
+  if (
+    obj.config !== undefined &&
+    !(typeof obj.scheme === "string" &&
+      isExtensionWebhookScheme(obj.scheme.toLowerCase()))
+  ) {
+    throw new UserError(
+      `Invalid webhook at index ${index} in ${path}: config is only supported for webhook extension schemes`,
+    );
   }
 }
 
@@ -638,10 +663,13 @@ export async function parseWebhookConfig(
   vault?: VaultSecretResolver,
 ): Promise<WebhookEndpoint> {
   const secret = await resolveSecret(entry.secret, vault);
+  const extensionScheme = entry.scheme?.toLowerCase() ?? "";
   const scheme = (entry.scheme ?? "github") as WebhookScheme;
 
   let verifier: VerifierConfig;
-  if (scheme === "generic") {
+  if (isExtensionWebhookScheme(extensionScheme)) {
+    verifier = { scheme: extensionScheme, config: entry.config ?? {} };
+  } else if (scheme === "generic") {
     verifier = {
       scheme: "generic",
       header: entry.header!,

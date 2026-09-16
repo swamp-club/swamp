@@ -30,7 +30,7 @@ import { extractTopLevelRootMulti } from "./layout.ts";
 /**
  * Public registry name for the doctor report. The infrastructure-layer
  * `ExtensionKind` enum carries extra values (`extension`) but only
- * four user-facing registries exist — `extension` is a sub-kind of
+ * five user-facing registries exist — `extension` is a sub-kind of
  * the model loader (it indicates a user extension extending an
  * existing model type) and folds into the `model` row in this report.
  */
@@ -38,7 +38,8 @@ export type DoctorRegistryName =
   | "model"
   | "vault"
   | "datastore"
-  | "report";
+  | "report"
+  | "webhook";
 
 /** Fixed run order — also the row order in the rendered report. */
 export const DOCTOR_REGISTRY_ORDER: ReadonlyArray<DoctorRegistryName> = [
@@ -46,6 +47,7 @@ export const DOCTOR_REGISTRY_ORDER: ReadonlyArray<DoctorRegistryName> = [
   "vault",
   "datastore",
   "report",
+  "webhook",
 ];
 
 /** Per-registry result emitted on `kind-completed`. */

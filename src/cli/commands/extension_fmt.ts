@@ -88,6 +88,7 @@ export const extensionFmtCommand = new Command()
       allVaultFiles,
       allDatastoreFiles,
       allReportFiles,
+      allWebhookFiles,
       additionalFilePaths,
     } = await resolveExtensionFiles({
       repoDir,
@@ -103,6 +104,7 @@ export const extensionFmtCommand = new Command()
       ...allVaultFiles,
       ...allDatastoreFiles,
       ...allReportFiles,
+      ...allWebhookFiles,
       ...additionalFilePaths,
     ];
     const tsFiles = allFiles.filter((f) => f.endsWith(".ts"));

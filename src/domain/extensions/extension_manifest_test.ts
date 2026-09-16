@@ -231,8 +231,32 @@ version: "2026.02.26.1"
   const error = assertThrows(() => parseExtensionManifest(yaml));
   assertStringIncludes(
     (error as Error).message,
-    "at least one model, workflow, vault, datastore, report, or skill",
+    "at least one model, workflow, vault, datastore, report, webhook, or skill",
   );
+});
+
+Deno.test("parseExtensionManifest accepts webhook-only manifest", () => {
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+webhooks:
+  - telegram.ts
+`;
+  const manifest = parseExtensionManifest(yaml);
+  assertEquals(manifest.webhooks, ["telegram.ts"]);
+  assertEquals(manifest.models, []);
+});
+
+Deno.test("parseExtensionManifest rejects unsafe webhook paths", () => {
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+webhooks:
+  - ../escape.ts
+`;
+  assertThrows(() => parseExtensionManifest(yaml));
 });
 
 Deno.test("parseExtensionManifest rejects dependencies without slash", () => {

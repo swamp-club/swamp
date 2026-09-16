@@ -63,6 +63,7 @@ import { modelKindAdapter } from "../../domain/extensions/model_kind_adapter.ts"
 import { vaultKindAdapter } from "../../domain/extensions/vault_kind_adapter.ts";
 import { datastoreKindAdapter } from "../../domain/extensions/datastore_kind_adapter.ts";
 import { reportKindAdapter } from "../../domain/extensions/report_kind_adapter.ts";
+import { webhookKindAdapter } from "../../domain/extensions/webhook_kind_adapter.ts";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 import {
   collectDirsForKind,
@@ -80,6 +81,7 @@ const KIND_DIRS = [
   "vaults",
   "datastores",
   "reports",
+  "webhooks",
 ] as const;
 
 type KindDir = typeof KIND_DIRS[number];
@@ -688,7 +690,8 @@ export class ReconcileFromDiskService {
           | "extension"
           | "vault"
           | "datastore"
-          | "report";
+          | "report"
+          | "webhook";
         typeNormalized: string;
         bundlePath: string;
         fingerprint: string;
@@ -729,6 +732,14 @@ export class ReconcileFromDiskService {
           undefined,
           this.repository,
         );
+      case "webhooks":
+        return new ExtensionLoader(
+          this.denoRuntime,
+          webhookKindAdapter,
+          this.repoDir,
+          undefined,
+          this.repository,
+        );
     }
   }
 
@@ -738,6 +749,7 @@ export class ReconcileFromDiskService {
       "vault",
       "datastore",
       "report",
+      "webhook",
     ];
     this.repository.setLayoutVersion(BUNDLE_LAYOUT_VERSION);
     for (const kind of kinds) {

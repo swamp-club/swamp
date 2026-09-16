@@ -84,7 +84,8 @@ export type ExtensionKind =
   | "extension"
   | "vault"
   | "datastore"
-  | "report";
+  | "report"
+  | "webhook";
 
 /**
  * Reported when {@link ExtensionCatalogStore.resolveOriginConflicts}

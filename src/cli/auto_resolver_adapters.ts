@@ -42,6 +42,7 @@ import { ExtensionLoader } from "../domain/extensions/extension_loader.ts";
 import { modelKindAdapter } from "../domain/extensions/model_kind_adapter.ts";
 import { vaultKindAdapter } from "../domain/extensions/vault_kind_adapter.ts";
 import { datastoreKindAdapter } from "../domain/extensions/datastore_kind_adapter.ts";
+import { webhookKindAdapter } from "../domain/extensions/webhook_kind_adapter.ts";
 import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
 import type { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
 import { modelRegistry } from "../domain/models/model.ts";
@@ -71,6 +72,7 @@ const BUNDLE_ARTIFACT_PREFIXES: readonly string[] = [
   SWAMP_SUBDIRS.vaultBundles,
   SWAMP_SUBDIRS.datastoreBundles,
   SWAMP_SUBDIRS.reportBundles,
+  SWAMP_SUBDIRS.webhookBundles,
 ].map((subdir) => `.swamp/${subdir}/`);
 
 export function isBundleArtifactPath(relPath: string): boolean {
@@ -145,7 +147,7 @@ export function createAutoResolveInstallerAdapter(
       //   "never overwrite" guard applies.
       //
       // Bundle artifacts under .swamp/{bundles,vault-bundles,
-      // datastore-bundles,report-bundles}/ are excluded
+      // datastore-bundles,report-bundles,webhook-bundles}/ are excluded
       // from the truncation check because they are regenerable build
       // output, not source. Clearing the bundle cache (a normal hygiene
       // operation) must not flip the inspection to truncated and steal
@@ -333,6 +335,27 @@ export function createAutoResolveInstallerAdapter(
         datastoreKindAdapter,
         repoDir,
         undefined,
+        repository,
+      );
+      const [primary, ...rest] = pulledDirs;
+      await loader.load(primary, {
+        skipAlreadyRegistered: true,
+        additionalDirs: rest,
+      });
+    },
+
+    async hotLoadWebhooks() {
+      const pulledDirs = await enumeratePulledExtensionDirs(
+        lockfilePath,
+        repoDir,
+        "webhooks",
+      );
+      if (pulledDirs.length === 0) return;
+      const loader = new ExtensionLoader(
+        denoRuntime,
+        webhookKindAdapter,
+        repoDir,
+        datastoreResolver,
         repository,
       );
       const [primary, ...rest] = pulledDirs;

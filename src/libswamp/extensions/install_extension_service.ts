@@ -42,6 +42,7 @@ import { modelKindAdapter } from "../../domain/extensions/model_kind_adapter.ts"
 import { vaultKindAdapter } from "../../domain/extensions/vault_kind_adapter.ts";
 import { datastoreKindAdapter } from "../../domain/extensions/datastore_kind_adapter.ts";
 import { reportKindAdapter } from "../../domain/extensions/report_kind_adapter.ts";
+import { webhookKindAdapter } from "../../domain/extensions/webhook_kind_adapter.ts";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 import type { UpstreamExtensionEntry } from "../../infrastructure/persistence/upstream_extensions.ts";
 
@@ -51,6 +52,7 @@ const KIND_DIRS = [
   "vaults",
   "datastores",
   "reports",
+  "webhooks",
 ] as const;
 
 type KindDir = typeof KIND_DIRS[number];
@@ -301,7 +303,8 @@ export class InstallExtensionService {
           | "extension"
           | "vault"
           | "datastore"
-          | "report";
+          | "report"
+          | "webhook";
         typeNormalized: string;
         bundlePath: string;
         fingerprint: string;
@@ -338,6 +341,14 @@ export class InstallExtensionService {
         return new ExtensionLoader(
           this.denoRuntime,
           reportKindAdapter,
+          repoDir,
+          undefined,
+          this.repository,
+        );
+      case "webhooks":
+        return new ExtensionLoader(
+          this.denoRuntime,
+          webhookKindAdapter,
           repoDir,
           undefined,
           this.repository,

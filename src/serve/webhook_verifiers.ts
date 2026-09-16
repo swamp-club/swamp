@@ -27,9 +27,13 @@
  * linear, stripe, slack, generic) over shared HMAC and constant-time-comparison
  * primitives. Each verifier is a stateless function of (body, headers, secret).
  *
- * Generalizing this into a data-driven/templated engine so new providers need
- * no swamp release is intentionally out of scope here and tracked in #723.
+ * Providers outside this set are supported through webhook extensions
+ * (#2204): a scheme of the form `@collective/name` resolves to a
+ * {@link WebhookHandler} from the webhook type registry.
  */
+
+import type { WebhookHandler } from "../domain/webhooks/webhook_handler.ts";
+import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
 
 /** Replay window for timestamped schemes (stripe, slack). */
 const TIMESTAMP_TOLERANCE_SECONDS = 300;
@@ -53,17 +57,33 @@ export const WEBHOOK_SCHEMES: readonly WebhookScheme[] = [
   "generic",
 ];
 
+/** A webhook extension type identifier, e.g. `@swamp/telegram`. */
+export type ExtensionWebhookScheme = `@${string}/${string}`;
+
+const EXTENSION_WEBHOOK_SCHEME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+$/;
+
 /**
- * Immutable verification config for a single endpoint. Only the `generic`
+ * Immutable verification config for a built-in scheme. Only the `generic`
  * scheme carries extra parameters (the header to read and the value prefix to
  * strip); the named schemes are fully determined by their scheme tag.
  */
-export type VerifierConfig =
+export type BuiltinVerifierConfig =
   | { readonly scheme: "github" | "jira" | "linear" | "stripe" | "slack" }
   | {
     readonly scheme: "generic";
     readonly header: string;
     readonly prefix: string;
+  };
+
+/**
+ * Immutable verification config for a single endpoint: a built-in scheme, or
+ * a webhook extension type (lowercased) with its extension-specific config.
+ */
+export type VerifierConfig =
+  | BuiltinVerifierConfig
+  | {
+    readonly scheme: ExtensionWebhookScheme;
+    readonly config: Readonly<Record<string, unknown>>;
   };
 
 /**
@@ -249,7 +269,9 @@ function slackVerifier(): WebhookVerifier {
  * Build a verifier for the given config. The returned verifier's
  * `signatureHeader` is lowercased.
  */
-export function createVerifier(config: VerifierConfig): WebhookVerifier {
+export function createVerifier(
+  config: BuiltinVerifierConfig,
+): WebhookVerifier {
   switch (config.scheme) {
     case "github":
       return prefixedBodyVerifier("x-hub-signature-256", "sha256=");
@@ -272,4 +294,30 @@ export function createVerifier(config: VerifierConfig): WebhookVerifier {
 /** Type guard: is `value` one of the known scheme keywords? */
 export function isWebhookScheme(value: string): value is WebhookScheme {
   return (WEBHOOK_SCHEMES as readonly string[]).includes(value);
+}
+
+/**
+ * Type guard: is `value` a webhook extension type identifier
+ * (`@collective/name`, lowercase)?
+ */
+export function isExtensionWebhookScheme(
+  value: string,
+): value is ExtensionWebhookScheme {
+  return EXTENSION_WEBHOOK_SCHEME_PATTERN.test(value);
+}
+
+/**
+ * Resolve the handler for an endpoint. Built-in schemes use
+ * {@link createVerifier}; extension schemes are looked up in the webhook type
+ * registry on every call so a SIGHUP extension reload takes effect. Returns
+ * undefined when the extension type is not (or no longer) loaded — callers
+ * must fail closed.
+ */
+export function resolveWebhookHandler(
+  config: VerifierConfig,
+): WebhookHandler | undefined {
+  if (!("config" in config)) return createVerifier(config);
+  return webhookTypeRegistry.get(config.scheme)?.createHandler({
+    ...config.config,
+  });
 }

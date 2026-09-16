@@ -186,6 +186,10 @@ changes that aren't tied to a single building block:
   `split("/").pop()`, `URL.pathname`, or `"/"`-prefixed concatenation.
 - `Deno.symlink` requires `{ type: "file" | "dir" }` — Windows refuses symlinks
   whose target doesn't exist at link-creation time without it.
+- Test fixtures that initialize a repo (`repoInit` / `RepoService.init`) pass
+  `tools: []` unless the test is about tool scaffolding. The default tool list
+  (`["claude"]`) installs bundled skills into `~/.claude/skills`, outside the
+  temp directory.
 - `withTempDir` cleanup uses an inline Windows-only `.catch(() => {})` to absorb
   EBUSY when V8 hasn't GC'd native handles — copy from any existing test file.
 

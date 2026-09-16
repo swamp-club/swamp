@@ -32,6 +32,7 @@ Deno.test("extractContentMetadata returns empty for no inputs", async () => {
     vaults: [],
     datastores: [],
     reports: [],
+    webhooks: [],
     skills: [],
   });
 });
@@ -1008,6 +1009,57 @@ Deno.test("extractContentMetadata skips vault without type", async () => {
       vaultsDir,
     );
     assertEquals(result.vaults.length, 0);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extractContentMetadata extracts webhook type, name, and description", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const webhooksDir = join(tmpDir, "webhooks");
+    await Deno.mkdir(webhooksDir, { recursive: true });
+
+    const webhookFile = join(webhooksDir, "telegram.ts");
+    await Deno.writeTextFile(
+      webhookFile,
+      [
+        "export const webhook = {",
+        '  type: "@myorg/telegram",',
+        '  name: "Telegram",',
+        '  description: "Telegram bot updates.",',
+        "  createHandler(config: Record<string, unknown>) {",
+        '    return { signatureHeader: "x", requiredHeaders: [], verify: () => true };',
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+    // Missing createHandler — not a webhook file.
+    const notWebhook = join(webhooksDir, "other.ts");
+    await Deno.writeTextFile(
+      notWebhook,
+      'export const webhook = { type: "@myorg/other" };',
+    );
+
+    const result = await extractContentMetadata(
+      [],
+      tmpDir,
+      [],
+      [],
+      "",
+      [],
+      "",
+      [],
+      "",
+      [webhookFile, notWebhook],
+      webhooksDir,
+    );
+    assertEquals(result.webhooks, [{
+      fileName: "telegram.ts",
+      type: "@myorg/telegram",
+      name: "Telegram",
+      description: "Telegram bot updates.",
+    }]);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

@@ -105,6 +105,7 @@ import {
 import {
   isSensitiveHeader,
   parseWebhookFlag,
+  resolveExtensionWebhookEndpoints,
   resolveSecret,
   type WebhookEndpoint,
   WebhookService,
@@ -166,6 +167,9 @@ import {
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
+import { webhookTypeRegistry } from "../../domain/webhooks/webhook_type_registry.ts";
+import { resolveWebhookType } from "../../domain/extensions/extension_auto_resolver.ts";
+import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
 import {
   isReloading,
   performServeReload,
@@ -742,6 +746,8 @@ const daemonEnableCommand = new Command()
   .option(
     "--webhook <spec:string>",
     "Register a webhook endpoint: <route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]. " +
+      "scheme is one of github (default), jira, linear, stripe, slack, generic, " +
+      "or a webhook extension type (@collective/name). " +
       "Secret may use @env=VAR to read from an environment variable, " +
       "@file=/path to read from a file, or @vault=<vault>:<key> to read " +
       "from a configured vault (avoids secrets in argv)",
@@ -1129,7 +1135,8 @@ export const serveCommand = new Command()
   .option(
     "--webhook <spec:string>",
     "Register a webhook endpoint: <route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]. " +
-      "scheme is one of github (default), linear, stripe, slack, generic; " +
+      "scheme is one of github (default), jira, linear, stripe, slack, generic, " +
+      "or a webhook extension type (@collective/name); " +
       "generic requires a header name and accepts an optional value prefix. " +
       "Secret may use @env=VAR to read from an environment variable, " +
       "@file=/path to read from a file, or @vault=<vault>:<key> to read " +
@@ -1306,6 +1313,10 @@ export const serveCommand = new Command()
     "Webhook with a provider scheme",
     "swamp serve --webhook '/hooks/linear:my-workflow:@env=LINEAR_SECRET:linear' " +
       "--webhook '/hooks/custom:my-workflow:@env=CUSTOM_SECRET:generic:X-Signature:sha256='",
+  )
+  .example(
+    "Webhook with an extension scheme",
+    "swamp serve --webhook '/hooks/telegram:my-workflow:@env=TELEGRAM_SECRET:@swamp/telegram'",
   )
   .example(
     "Docker workers",
@@ -1620,6 +1631,7 @@ export const serveCommand = new Command()
       vaultTypeRegistry.ensureLoaded(),
       datastoreTypeRegistry.ensureLoaded(),
       reportRegistry.ensureLoaded(),
+      webhookTypeRegistry.ensureLoaded(),
     ]);
 
     // Probe deployment stack and resolve durability mode.
@@ -3739,6 +3751,10 @@ export const serveCommand = new Command()
             parseWebhookConfig(e, vaultService)
           ),
         );
+      webhookEndpoints = await resolveExtensionWebhookEndpoints(
+        webhookEndpoints,
+        (type) => resolveWebhookType(type, getAutoResolver()),
+      );
     }
     if (webhookEndpoints.length > 0) {
       const endpoints = webhookEndpoints;

@@ -334,6 +334,7 @@ Deno.test("kindDirToExtensionKind: maps all kindDir values correctly", () => {
   assertEquals(kindDirToExtensionKind("vaults"), "vault");
   assertEquals(kindDirToExtensionKind("datastores"), "datastore");
   assertEquals(kindDirToExtensionKind("reports"), "report");
+  assertEquals(kindDirToExtensionKind("webhooks"), "webhook");
 });
 
 // ---- extensionKindToKindDir mappings ----
@@ -344,6 +345,7 @@ Deno.test("extensionKindToKindDir: maps all extensionKind values correctly", () 
   assertEquals(extensionKindToKindDir("vault"), "vaults");
   assertEquals(extensionKindToKindDir("datastore"), "datastores");
   assertEquals(extensionKindToKindDir("report"), "reports");
+  assertEquals(extensionKindToKindDir("webhook"), "webhooks");
 });
 
 // ---- findSourceByPath ----

@@ -533,6 +533,26 @@ Deno.test("auto_resolver_adapters: hotLoadDatastores is a no-op when no pulled d
   }
 });
 
+Deno.test("auto_resolver_adapters: hotLoadWebhooks is a no-op when no pulled webhook dirs exist", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const lockfilePath = await seedLockfile(tmpDir, {
+      "@fake/ext": [".swamp/pulled-extensions/@fake/ext/models/foo.ts"],
+    });
+
+    const adapter = createAutoResolveInstallerAdapter({
+      ...stubCallbacks,
+      lockfilePath,
+      repoDir: tmpDir,
+      denoRuntime: stubDenoRuntime,
+    });
+
+    await adapter.hotLoadWebhooks();
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 // Issue 123 regression tests: hotLoadModels must retry user-extension
 // attachment against the shared catalog after a newly-installed base
 // registers. These tests verify the guards — the integration test
@@ -664,11 +684,11 @@ Deno.test("auto_resolver_adapters: hotLoadModels catalog walk skips types whose 
   }
 });
 
-// swamp-club#2050: isBundleArtifactPath must recognise all four bundle
+// swamp-club#2050: isBundleArtifactPath must recognise every bundle
 // stores so the auto-resolver can distinguish bundle-only ConflictErrors
 // (safe to force-overwrite) from source-file conflicts (user WIP).
 
-Deno.test("isBundleArtifactPath: recognises all four bundle stores", () => {
+Deno.test("isBundleArtifactPath: recognises every bundle store", () => {
   assertEquals(isBundleArtifactPath(".swamp/bundles/abc123/x.js"), true);
   assertEquals(isBundleArtifactPath(".swamp/vault-bundles/abc123/v.js"), true);
   assertEquals(
@@ -677,6 +697,10 @@ Deno.test("isBundleArtifactPath: recognises all four bundle stores", () => {
   );
   assertEquals(
     isBundleArtifactPath(".swamp/report-bundles/abc123/r.js"),
+    true,
+  );
+  assertEquals(
+    isBundleArtifactPath(".swamp/webhook-bundles/abc123/w.js"),
     true,
   );
 });

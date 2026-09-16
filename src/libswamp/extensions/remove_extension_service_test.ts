@@ -522,7 +522,7 @@ Deno.test(
 //
 // `pull` unconditionally `Deno.mkdir`s per-extension scaffold
 // dirs (`models`, `workflows`, `vaults`, `datastores`,
-// `reports`, `files`) regardless of whether the extension ships
+// `reports`, `webhooks`, `files`) regardless of whether the extension ships
 // content for that kind. These dirs are never recorded in the
 // lockfile's tracked-file list. Pre-fix, `pruneEmptyDirs`'s upward
 // walk from tracked-file parents stopped at the extension root
@@ -546,6 +546,7 @@ async function stageScaffoldDirs(extRoot: string): Promise<void> {
       "vaults",
       "datastores",
       "reports",
+      "webhooks",
       "files",
     ]
   ) {
@@ -780,7 +781,8 @@ Deno.test(
 //
 // `pull` unconditionally `Deno.mkdir`s bundle namespace dirs
 // (`bundles/<hash>/`, `vault-bundles/<hash>/`,
-// `datastore-bundles/<hash>/`, `report-bundles/<hash>/`) regardless of
+// `datastore-bundles/<hash>/`, `report-bundles/<hash>/`,
+// `webhook-bundles/<hash>/`) regardless of
 // whether the extension ships content for that bundle kind. When the
 // source archive has no bundles for a kind, `copyDir` returns an empty
 // file list and nothing is tracked. `RemoveExtensionService` must push
@@ -796,6 +798,7 @@ const BUNDLE_MAPPINGS: ReadonlyArray<[string, string]> = [
   ["vaults", "vault-bundles"],
   ["datastores", "datastore-bundles"],
   ["reports", "report-bundles"],
+  ["webhooks", "webhook-bundles"],
 ];
 
 async function stageBundleNamespaceDirs(
@@ -991,7 +994,7 @@ Deno.test(
         );
 
         // The empty bundle namespace dirs (vault-,
-        // datastore-, report-) must also be pruned.
+        // datastore-, report-, webhook-) must also be pruned.
         for (
           const [sourceKind, bundleKind] of BUNDLE_MAPPINGS.filter(
             ([_, bk]) => bk !== "bundles",

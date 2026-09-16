@@ -131,7 +131,7 @@ Deno.test("doctorExtensions: emits all five kind-completed events in fixed order
   const events = await collect(doctorExtensions(deps));
   const completedEvents = events.filter((e) => e.kind === "kind-completed");
 
-  assertEquals(completedEvents.length, 4);
+  assertEquals(completedEvents.length, DOCTOR_REGISTRY_ORDER.length);
   for (let i = 0; i < DOCTOR_REGISTRY_ORDER.length; i++) {
     const event = completedEvents[i];
     if (event.kind !== "kind-completed") throw new Error("unreachable");
@@ -229,12 +229,13 @@ Deno.test("doctorExtensions: per-kind throw isolation — a thrown ensureLoaded 
   assertEquals(completed.report.registries.model.status, "pass");
   assertEquals(completed.report.registries.datastore.status, "pass");
   assertEquals(completed.report.registries.report.status, "pass");
+  assertEquals(completed.report.registries.webhook.status, "pass");
 
   const completedEvents = events.filter((e) => e.kind === "kind-completed");
-  assertEquals(completedEvents.length, 4);
+  assertEquals(completedEvents.length, DOCTOR_REGISTRY_ORDER.length);
 });
 
-Deno.test("doctorExtensions: completed report has all four registry keys even on pass", async () => {
+Deno.test("doctorExtensions: completed report has all five registry keys even on pass", async () => {
   resetExtensionLoadWarnings();
   const { deps } = buildDeps({ aggregateState: emptyAggregateReport() });
 
@@ -245,7 +246,7 @@ Deno.test("doctorExtensions: completed report has all four registry keys even on
   }
 
   const keys = Object.keys(completed.report.registries).sort();
-  assertEquals(keys, ["datastore", "model", "report", "vault"]);
+  assertEquals(keys, ["datastore", "model", "report", "vault", "webhook"]);
 });
 
 import { ensureDir } from "@std/fs";
