@@ -87,13 +87,22 @@ export class YamlDefinitionRepository implements DefinitionRepository {
    * and deletions stay visible. That is why `save()` and `delete()` need no
    * invalidation bookkeeping.
    *
+   * A hint also records whether its file lives in the primary definitions
+   * directory or the secondary auto-definitions one, and is only consulted in
+   * the stage of the search that owns that directory. Primary definitions must
+   * keep winning over same-named secondary ones, so a secondary hint can never
+   * short-circuit the primary walk that would find a newly added primary file.
+   *
    * If a cache-reset hook is ever added to this class, it must clear these
    * alongside `idToActualPath`.
    */
-  private readonly nameToActualPath = new Map<string, string>();
+  private readonly nameToActualPath = new Map<
+    string,
+    { path: string; primary: boolean }
+  >();
   private readonly globalNameToActualPath = new Map<
     string,
-    { path: string; pathSegments: string[] }
+    { path: string; pathSegments: string[]; primary: boolean }
   >();
 
   constructor(
@@ -280,9 +289,9 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     // guard rejects, or whose name-derived file does not exist, so a hint check
     // nested inside it would never fire for the cases that need it.
     const hintKey = nameHintKey(type, name);
-    const hintedPath = this.nameToActualPath.get(hintKey);
-    if (hintedPath) {
-      const hinted = await this.readDefinitionIfNamed(hintedPath, name);
+    const hint = this.nameToActualPath.get(hintKey);
+    if (hint?.primary) {
+      const hinted = await this.readDefinitionIfNamed(hint.path, name);
       if (hinted) return hinted;
       this.nameToActualPath.delete(hintKey);
     }
@@ -293,17 +302,29 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     if (found) {
       // findAll records every file it parsed, so the path is already known.
       const foundPath = this.idToActualPath.get(found.id as DefinitionId);
-      if (foundPath) this.nameToActualPath.set(hintKey, foundPath);
+      if (foundPath) {
+        this.nameToActualPath.set(hintKey, { path: foundPath, primary: true });
+      }
       return found;
     }
     if (this.secondaryBaseDir) {
+      // Only now, with the primary directory exhausted, may a secondary hint
+      // answer: the primary definition of the same name always wins.
+      if (hint && !hint.primary) {
+        const hinted = await this.readDefinitionIfNamed(hint.path, name);
+        if (hinted) return hinted;
+        this.nameToActualPath.delete(hintKey);
+      }
       const secondaryDir = join(this.secondaryBaseDir, type.toDirectoryPath());
       const secondaryDefs = await this.findAllInDir(secondaryDir);
       const secondaryMatch = secondaryDefs.find((d) =>
         d.definition.name === name
       );
       if (secondaryMatch) {
-        this.nameToActualPath.set(hintKey, secondaryMatch.path);
+        this.nameToActualPath.set(hintKey, {
+          path: secondaryMatch.path,
+          primary: false,
+        });
         return secondaryMatch.definition;
       }
     }
@@ -390,29 +411,62 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     // call re-walks and re-parses every definition in the repository until it
     // hits a match.
     const hint = this.globalNameToActualPath.get(name);
-    if (hint) {
-      const hinted = await this.readDefinitionIfNamed(hint.path, name);
-      if (hinted) {
-        return {
-          definition: hinted,
-          type: ModelType.create(
-            hinted.type ?? hint.pathSegments.join("/"),
-          ),
-        };
-      }
+    if (hint?.primary) {
+      const hinted = await this.readHintedWithType(hint, name);
+      if (hinted) return hinted;
       this.globalNameToActualPath.delete(name);
     }
 
-    const result = await this.searchDefinitionByName(this.baseDir, [], name);
+    const result = await this.searchDefinitionByName(
+      this.baseDir,
+      [],
+      name,
+      true,
+    );
     if (result) return result;
     if (this.secondaryBaseDir) {
+      // Checked only after the primary walk comes up empty, so a secondary hint
+      // cannot shadow a primary definition added since the hint was recorded.
+      if (hint && !hint.primary) {
+        const hinted = await this.readHintedWithType(hint, name);
+        if (hinted) return hinted;
+        this.globalNameToActualPath.delete(name);
+      }
       return await this.searchDefinitionByName(
         this.secondaryBaseDir,
         [],
         name,
+        false,
       );
     }
     return null;
+  }
+
+  /**
+   * Reads a hinted file and resolves its model type, or returns null.
+   *
+   * The type conversion is guarded because discovery warns and skips a file
+   * whose declared type is not a valid model type. Without the guard a hint
+   * recorded for such a file — or a file edited to an invalid type after the
+   * hint was recorded — would throw here instead of falling back to the walk
+   * that skips it.
+   */
+  private async readHintedWithType(
+    hint: { path: string; pathSegments: string[] },
+    name: string,
+  ): Promise<{ definition: Definition; type: ModelType } | null> {
+    const definition = await this.readDefinitionIfNamed(hint.path, name);
+    if (!definition) return null;
+    try {
+      return {
+        definition,
+        type: ModelType.create(
+          definition.type ?? hint.pathSegments.join("/"),
+        ),
+      };
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -422,6 +476,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     currentDir: string,
     pathSegments: string[],
     name: string,
+    primary: boolean,
   ): Promise<{ definition: Definition; type: ModelType } | null> {
     try {
       for await (const entry of Deno.readDir(currentDir)) {
@@ -441,6 +496,12 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             const definition = Definition.fromData(data);
 
             if (definition.name === name) {
+              // Prefer the type from the YAML, fall back to path-based type.
+              // Resolved before anything is recorded: an invalid type throws
+              // into the catch below, which warns and skips the file, and a
+              // skipped file must not leave a hint behind.
+              const typeStr = definition.type ?? pathSegments.join("/");
+              const modelType = ModelType.create(typeStr);
               this.idToActualPath.set(
                 definition.id as DefinitionId,
                 fullPath,
@@ -448,10 +509,9 @@ export class YamlDefinitionRepository implements DefinitionRepository {
               this.globalNameToActualPath.set(name, {
                 path: fullPath,
                 pathSegments: [...pathSegments],
+                primary,
               });
-              // Prefer the type from the YAML, fall back to path-based type
-              const typeStr = definition.type ?? pathSegments.join("/");
-              return { definition, type: ModelType.create(typeStr) };
+              return { definition, type: modelType };
             }
           } catch (error) {
             if (isIoError(error)) {
@@ -470,6 +530,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             fullPath,
             [...pathSegments, entry.name],
             name,
+            primary,
           );
           if (result) {
             return result;

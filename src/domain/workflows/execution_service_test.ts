@@ -6131,3 +6131,102 @@ Deno.test("report assembly resolves step definitions within the step's own model
     assertEquals(captured[0].modelId, secondaryDef.id);
   });
 });
+
+// A source definition's YAML `type` field wins over the directory it sits in,
+// so a hand-placed definition can live outside its type-derived directory. A
+// step that fails before its evaluated definition is saved falls back to the
+// source repository, where only the global search can find such a file.
+Deno.test("report assembly finds a step definition stored outside its type directory", async () => {
+  const { ModelType } = await import("../models/model_type.ts");
+  const { Definition } = await import("../definitions/definition.ts");
+  const { ensureDir } = await import("@std/fs");
+  const { stringify: stringifyYaml } = await import("@std/yaml");
+
+  await withTempDir(async (tempDir) => {
+    const modelType = ModelType.create("command/shell");
+    const definition = Definition.create({
+      name: "offbeat-model",
+      globalArguments: { origin: "noncanonical" },
+    });
+    const data = definition.toData();
+    data.type = modelType.normalized;
+    // Not models/command/shell/ — the type comes from the YAML, not the path.
+    const offbeatDir = join(tempDir, "models", "misc");
+    await ensureDir(offbeatDir);
+    await Deno.writeTextFile(
+      join(offbeatDir, "offbeat.yaml"),
+      stringifyYaml(JSON.parse(JSON.stringify(data))),
+    );
+
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new MockStepExecutor(),
+      undefined,
+      catalogStore,
+    );
+    const run = await service.execute(workflow.name);
+
+    let captured: { modelId: string; globalArgs: Record<string, unknown> }[] =
+      [];
+    (service as unknown as {
+      workflowReportRunner: {
+        runFor: (args: {
+          stepExecutions: {
+            modelId: string;
+            globalArgs: Record<string, unknown>;
+          }[];
+        }) => Promise<unknown[]>;
+      };
+    }).workflowReportRunner = {
+      runFor: (args) => {
+        captured = args.stepExecutions;
+        return Promise.resolve([]);
+      },
+    };
+
+    const modelInfoByStep = new Map([[
+      "job1:step1",
+      {
+        modelName: definition.name,
+        modelType: modelType.normalized,
+        modelId: definition.id,
+        methodName: "run",
+      },
+    ]]);
+    // Failed before an evaluated definition could be saved, so report assembly
+    // has only the source repository to go on.
+    const stepStatuses = new Map<
+      string,
+      "succeeded" | "failed" | "skipped"
+    >([["job1:step1", "failed"]]);
+
+    const reports = (service as unknown as {
+      runWorkflowReports: (
+        workflow: Workflow,
+        run: WorkflowRun,
+        infoByStep: typeof modelInfoByStep,
+        statuses: typeof stepStatuses,
+        dataHandlesByStep: Map<string, unknown[]>,
+        reportFilterOptions: undefined,
+      ) => AsyncGenerator<unknown>;
+    }).runWorkflowReports(
+      workflow,
+      run,
+      modelInfoByStep,
+      stepStatuses,
+      new Map(),
+      undefined,
+    );
+    for await (const _ of reports) { /* drain */ }
+
+    assertEquals(captured.length, 1);
+    assertEquals(captured[0].globalArgs, { origin: "noncanonical" });
+  });
+});

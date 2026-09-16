@@ -1281,9 +1281,10 @@ Deno.test("YamlDefinitionRepository.findByName hints definitions in the secondar
       repo.findByName(testType, "auto-created")
     );
     assertEquals(second?.id, target.id);
-    // Two reads: the primary dir's ENOENT probe plus the hinted file in the
-    // secondary dir — no walk of either directory.
-    assertEquals(secondReads, 2);
+    // Three reads: the primary dir's ENOENT probe, the primary walk (which must
+    // still run so a primary definition of the same name keeps precedence), and
+    // the hinted file itself — but no walk of the secondary directory.
+    assertEquals(secondReads, 3);
   });
 });
 
@@ -1421,5 +1422,69 @@ Deno.test("YamlDefinitionRepository hint rejects a path swapped for an escaping 
       // same outcome as if the hint had never existed.
       assertEquals(await repo.findByName(testType, "swap-target"), null);
     });
+  });
+});
+
+Deno.test("YamlDefinitionRepository hints never let a secondary definition shadow a primary one", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const auto = createTestDefinition("shared-name");
+    await writeLegacyNamedFile(join(dir, ".swamp", "auto-definitions"), auto);
+
+    // Warm both hints against the only definition that exists so far.
+    assertEquals((await repo.findByName(testType, "shared-name"))?.id, auto.id);
+    assertEquals(
+      (await repo.findByNameGlobal("shared-name"))?.definition.id,
+      auto.id,
+    );
+
+    // A primary definition of the same name appears. It is legacy-named, so
+    // only the primary walk can find it — a hint that skipped that walk would
+    // keep returning the auto-definition forever.
+    const primary = createTestDefinition("shared-name");
+    await writeLegacyNamedFile(join(dir, "models"), primary);
+
+    assertEquals(
+      (await repo.findByName(testType, "shared-name"))?.id,
+      primary.id,
+    );
+    assertEquals(
+      (await repo.findByNameGlobal("shared-name"))?.definition.id,
+      primary.id,
+    );
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findByNameGlobal skips definitions with an invalid type", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    await ensureDir(typeDir);
+    // "/" normalizes to the empty string, which ModelType.create rejects.
+    const writeWithType = async (def: Definition, type: string) => {
+      const data = def.toData();
+      data.type = type;
+      await Deno.writeTextFile(
+        join(typeDir, `${def.id}.yaml`),
+        toCleanYaml(data),
+      );
+    };
+
+    // Discovery warns and skips a file it cannot type, so the name resolves to
+    // nothing — and must keep doing so rather than throwing from a hint.
+    const ghost = createTestDefinition("ghost");
+    await writeWithType(ghost, "/");
+    assertEquals(await repo.findByNameGlobal("ghost"), null);
+    assertEquals(await repo.findByNameGlobal("ghost"), null);
+
+    // Same when a file is edited to an invalid type after its hint is warm.
+    const spirit = createTestDefinition("spirit");
+    await writeWithType(spirit, testType.normalized);
+    assertEquals(
+      (await repo.findByNameGlobal("spirit"))?.definition.id,
+      spirit.id,
+    );
+    await writeWithType(spirit, "/");
+    assertEquals(await repo.findByNameGlobal("spirit"), null);
   });
 });

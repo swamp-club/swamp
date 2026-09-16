@@ -3782,6 +3782,20 @@ export class WorkflowExecutionService {
           definition =
             await this.evaluatedDefRepo.findByName(modelType, info.modelName) ??
               await this.definitionRepo.findByName(modelType, info.modelName);
+          if (!definition) {
+            // A source definition may sit outside the directory its type
+            // implies — the YAML `type` field wins over the path — and a step
+            // that failed before its evaluated definition was saved falls back
+            // to the source repository. Only the global search finds those, so
+            // it stays as a last resort, gated on the type matching so it can
+            // still never pick up a same-named definition of another type.
+            const global = await this.definitionRepo.findByNameGlobal(
+              info.modelName,
+            );
+            if (global?.type.normalized === modelType.normalized) {
+              definition = global.definition;
+            }
+          }
         }
 
         stepExecutions.push({
