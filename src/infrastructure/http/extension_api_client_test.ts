@@ -22,6 +22,52 @@ import { assertStringIncludes } from "@std/assert/string-includes";
 import { ExtensionApiClient } from "./extension_api_client.ts";
 import { UserError } from "../../domain/errors.ts";
 
+for (
+  const visibility of [undefined, "public", "private", null, "PRIVATE", true]
+) {
+  Deno.test(`ExtensionApiClient.confirmPush: validates applied visibility ${visibility}`, async () => {
+    const server = Deno.serve({ port: 0, onListen: () => {} }, async (req) => {
+      const body = await req.json();
+      assertEquals(body.visibility, "private");
+      return Response.json({
+        name: body.name,
+        version: body.version,
+        extensionId: "ext-123",
+        visibility,
+      });
+    });
+    try {
+      const client = new ExtensionApiClient(
+        `http://localhost:${server.addr.port}`,
+      );
+      const confirm = () =>
+        client.confirmPush({
+          name: "@test/ext",
+          version: "2026.09.16.1",
+          description: "",
+          dependencies: [],
+          platforms: [],
+          labels: [],
+          visibility: "private",
+        }, "test-key");
+      if (
+        visibility === undefined || visibility === "public" ||
+        visibility === "private"
+      ) {
+        assertEquals((await confirm()).visibility, visibility);
+      } else {
+        await assertRejects(
+          confirm,
+          UserError,
+          "invalid publication visibility",
+        );
+      }
+    } finally {
+      await server.shutdown();
+    }
+  });
+}
+
 Deno.test("ExtensionApiClient constructor stores server URL", () => {
   const client = new ExtensionApiClient("https://example.com");
   // Just verify it constructs without error

@@ -946,6 +946,10 @@ export {
   type ResolvedVaultEntry,
 } from "./extensions/push.ts";
 export {
+  type PublishVisibility,
+  resolvePublishVisibility,
+} from "../domain/extensions/extension_manifest.ts";
+export {
   ConflictError,
   createExtensionPullDeps,
   createInstallContext,

@@ -25,7 +25,10 @@ import type {
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
-import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import {
+  getSwampLogger,
+  writeOutput,
+} from "../../infrastructure/logging/logger.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
 import {
   qualityCheckLabel,
@@ -58,6 +61,7 @@ export interface ExtensionPushRenderer extends Renderer<ExtensionPushEvent> {
     name: string;
     version: string;
     archiveSize: number;
+    visibility: ExtensionPushResolvedData["visibility"];
   }): void;
 }
 
@@ -72,6 +76,7 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
 
   renderResolved(data: ExtensionPushResolvedData): void {
     this.logger.info`Extension: ${data.name}@${data.version}`;
+    renderRequestedVisibility(data.visibility);
     if (data.description) {
       this.logger.info`Description: ${data.description}`;
     }
@@ -263,8 +268,10 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     name: string;
     version: string;
     archiveSize: number;
+    visibility: ExtensionPushResolvedData["visibility"];
   }): void {
     this.logger.info`Dry run complete for ${data.name}@${data.version}`;
+    renderRequestedVisibility(data.visibility);
     this.logger.info`Archive size: ${formatBytes(data.archiveSize)}`;
     this.logger.info("No API calls were made.");
   }
@@ -381,6 +388,7 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
     name: string;
     version: string;
     archiveSize: number;
+    visibility: ExtensionPushResolvedData["visibility"];
   }): void {
     console.log(JSON.stringify({ ...data, status: "dry_run" }, null, 2));
   }
@@ -407,6 +415,17 @@ export function createExtensionPushRenderer(
     case "log":
       return new LogExtensionPushRenderer();
   }
+}
+
+function renderRequestedVisibility(
+  visibility: ExtensionPushResolvedData["visibility"],
+): void {
+  const label = visibility === "default"
+    ? "default (registry decides)"
+    : visibility === "public"
+    ? "public (registry default; existing visibility preserved)"
+    : visibility;
+  writeOutput(`Requested visibility: ${label}`);
 }
 
 /** Renders cancellation message when user declines a prompt. */

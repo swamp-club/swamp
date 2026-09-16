@@ -40,6 +40,7 @@ import {
   ExtensionPackageCache,
   extensionPush,
   extensionPushPrepare,
+  resolvePublishVisibility,
   RUBRIC_VERSION,
 } from "../../libswamp/mod.ts";
 import {
@@ -71,6 +72,7 @@ interface ExtensionPushOptions extends GlobalOptions {
   dryRun?: boolean;
   releaseNotes?: string;
   channel?: string;
+  visibility?: string;
   versionSuffix?: string;
   skipUpgradeCheck?: boolean;
 }
@@ -190,6 +192,10 @@ export const extensionPushCommand = new Command()
   .option("-f, --force", "Skip confirmation prompts (alias for --yes)")
   .option("--dry-run", "Build archive locally without pushing to registry")
   .option(
+    "--visibility <visibility:string>",
+    "Publication visibility: public (registry default) or private; overrides manifest visibility. Omit to use the manifest or registry default.",
+  )
+  .option(
     "--release-notes <text:string>",
     "Per-version release notes (max 5000 chars)",
   )
@@ -206,6 +212,7 @@ export const extensionPushCommand = new Command()
     "Suppress warning when version is bumped without upgrade entries",
   )
   .action(async function (options: ExtensionPushOptions, manifestPath: string) {
+    resolvePublishVisibility(undefined, options.visibility);
     if (
       options.channel !== undefined &&
       !ReleaseChannel.isValid(options.channel)
@@ -245,7 +252,7 @@ export const extensionPushCommand = new Command()
       extensionsDir,
     });
     const {
-      manifest,
+      manifest: sourceManifest,
       modelsDir,
       modelEntryPoints,
       allModelFiles,
@@ -263,6 +270,13 @@ export const extensionPushCommand = new Command()
       additionalFilePaths,
       binaryFilePaths,
     } = resolved;
+    const manifest = {
+      ...sourceManifest,
+      visibility: resolvePublishVisibility(
+        sourceManifest.visibility,
+        options.visibility,
+      ),
+    };
 
     // 2a. Override version micro with epoch seconds when requested.
     if (options.versionSuffix === "epoch") {
@@ -595,6 +609,7 @@ export const extensionPushCommand = new Command()
         name: prepared.manifest.name,
         version: prepared.manifest.version,
         archiveSize: prepared.archiveBytes.length,
+        visibility: prepared.resolvedData.visibility,
       });
       return;
     }

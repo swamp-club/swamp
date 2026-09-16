@@ -23,7 +23,60 @@ import {
   isSafeRelativePath,
   MAX_LABELS,
   parseExtensionManifest,
+  resolvePublishVisibility,
 } from "./extension_manifest.ts";
+
+Deno.test("parseExtensionManifest: visibility is optional and accepts public or private", () => {
+  const base = {
+    manifestVersion: 1,
+    name: "@myuser/private-ext",
+    version: "2026.09.16.1",
+    models: ["model.ts"],
+  };
+  assertEquals(
+    parseExtensionManifest(JSON.stringify(base)).visibility,
+    undefined,
+  );
+  for (const visibility of ["public", "private"] as const) {
+    assertEquals(
+      parseExtensionManifest(JSON.stringify({ ...base, visibility }))
+        .visibility,
+      visibility,
+    );
+  }
+  for (const visibility of ["internal", "", "PRIVATE", null, true, 0, {}, []]) {
+    assertThrows(
+      () => parseExtensionManifest(JSON.stringify({ ...base, visibility })),
+      Error,
+      "visibility",
+    );
+  }
+});
+
+Deno.test("resolvePublishVisibility: CLI then manifest then registry default", () => {
+  assertEquals(resolvePublishVisibility(undefined), undefined);
+  assertEquals(resolvePublishVisibility("private"), "private");
+  assertEquals(resolvePublishVisibility(undefined, "private"), "private");
+  assertEquals(resolvePublishVisibility("private", "private"), "private");
+  assertEquals(resolvePublishVisibility("public"), "public");
+  assertEquals(resolvePublishVisibility(undefined, "public"), "public");
+  assertEquals(resolvePublishVisibility("private", "public"), "public");
+  assertEquals(resolvePublishVisibility("public", "private"), "private");
+  assertEquals(resolvePublishVisibility("public", "public"), "public");
+  for (const invalid of ["internal", "", "PRIVATE", null, true, 0, {}, []]) {
+    assertThrows(
+      () => resolvePublishVisibility(undefined, invalid),
+      Error,
+      "visibility",
+    );
+    assertThrows(
+      () => resolvePublishVisibility("private", invalid),
+      Error,
+      "visibility",
+    );
+    assertThrows(() => resolvePublishVisibility(invalid), Error, "visibility");
+  }
+});
 
 Deno.test("parseExtensionManifest parses valid manifest with models", () => {
   const yaml = `

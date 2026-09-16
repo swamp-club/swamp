@@ -47,7 +47,11 @@ import {
   buildReviewReportSkeleton,
   reviewReportPath,
 } from "../../domain/extensions/extension_review_rules.ts";
-import type { ExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
+import {
+  type ExtensionManifest,
+  type PublishVisibility,
+  resolvePublishVisibility,
+} from "../../domain/extensions/extension_manifest.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notAuthenticated, validationFailed } from "../errors.ts";
@@ -94,6 +98,8 @@ export interface ResolvedReportEntry {
 export interface ExtensionPushResolvedData {
   name: string;
   version: string;
+  /** Requested intent, not a prediction of registry authorization or defaults. */
+  visibility: PublishVisibility | "default";
   description: string | undefined;
   repository: string | undefined;
   releaseNotes: string | undefined;
@@ -294,6 +300,8 @@ export interface ExtensionPushMetadata {
   releaseNotes?: string;
   binaries?: string[];
   channel?: string;
+  /** Public/default selection is represented by omission on the wire. */
+  visibility?: "private";
   contentMetadata?: ExtensionContentMetadata;
 }
 
@@ -315,7 +323,12 @@ export interface ExtensionPushExecuteDeps {
     serverUrl: string,
     metadata: ExtensionPushMetadata,
     apiKey: string,
-  ) => Promise<{ name: string; version: string; extensionId: string }>;
+  ) => Promise<{
+    name: string;
+    version: string;
+    extensionId: string;
+    visibility?: "public" | "private";
+  }>;
   getExtensionVisibility: (
     serverUrl: string,
     name: string,
@@ -498,6 +511,13 @@ export async function extensionPushPrepare(
   deps: ExtensionPushPrepareDeps,
   input: ExtensionPushPrepareInput,
 ): Promise<ExtensionPushPrepared> {
+  try {
+    resolvePublishVisibility(input.manifest.visibility);
+  } catch (error) {
+    throw validationFailed(
+      error instanceof Error ? error.message : String(error),
+    );
+  }
   // 1. Auth validation (skip in dry-run)
   let credentials:
     | { serverUrl: string; apiKey: string; username: string }
@@ -857,6 +877,20 @@ export async function* extensionPush(
     "swamp.extension.push",
     { "extension.name": input.manifest.name },
     (async function* () {
+      let requestedVisibility: PublishVisibility | undefined;
+      try {
+        requestedVisibility = resolvePublishVisibility(
+          input.manifest.visibility,
+        );
+      } catch (error) {
+        yield {
+          kind: "error" as const,
+          error: validationFailed(
+            error instanceof Error ? error.message : String(error),
+          ),
+        };
+        return;
+      }
       const credentials = await deps.loadCredentials();
       if (!credentials) {
         yield { kind: "error" as const, error: notAuthenticated() };
@@ -886,6 +920,9 @@ export async function* extensionPush(
           ? { binaries: input.manifest.binaries }
           : {}),
         ...(input.channel ? { channel: input.channel } : {}),
+        ...(requestedVisibility === "private"
+          ? { visibility: requestedVisibility }
+          : {}),
       };
 
       // Phase 1: Initiate
@@ -930,6 +967,7 @@ export async function* extensionPush(
         name: string;
         version: string;
         extensionId: string;
+        visibility?: "public" | "private";
       };
       try {
         confirmResult = await deps.confirmPush(
@@ -947,16 +985,33 @@ export async function* extensionPush(
         return;
       }
 
-      let visibility: "public" | "private" = "public";
-      try {
-        const info = await deps.getExtensionVisibility(
-          credentials.serverUrl,
-          confirmResult.name,
-          credentials.apiKey,
-        );
-        if (info?.isPrivate) visibility = "private";
-      } catch {
-        // Best-effort — don't fail the push over a visibility check.
+      if (
+        requestedVisibility === "private" &&
+        confirmResult.visibility !== "private"
+      ) {
+        yield {
+          kind: "error" as const,
+          error: validationFailed(
+            "Registry did not confirm private publication. Publication may have completed; check the extension's visibility in the registry before retrying. Explicit private publication requires a fully upgraded registry.",
+          ),
+        };
+        return;
+      }
+
+      let visibility = confirmResult.visibility ?? "public";
+      if (confirmResult.visibility === undefined) {
+        // Legacy servers omit applied visibility. Public/default intent may use
+        // the historical best-effort lookup; explicit privacy was checked above.
+        try {
+          const info = await deps.getExtensionVisibility(
+            credentials.serverUrl,
+            confirmResult.name,
+            credentials.apiKey,
+          );
+          if (info?.isPrivate) visibility = "private";
+        } catch {
+          // Preserve legacy behavior when no private publication was requested.
+        }
       }
 
       yield {
@@ -1060,6 +1115,7 @@ function buildResolvedData(
   return {
     name: input.manifest.name,
     version: input.manifest.version,
+    visibility: input.manifest.visibility ?? "default",
     description: input.manifest.description,
     repository: input.manifest.repository,
     releaseNotes: resolvedReleaseNotes,
@@ -1242,6 +1298,9 @@ async function createArchive(
         name: input.manifest.name,
         version: input.manifest.version,
         description: input.manifest.description ?? "",
+        ...(input.manifest.visibility
+          ? { visibility: input.manifest.visibility }
+          : {}),
         ...(input.manifest.repository
           ? { repository: input.manifest.repository }
           : {}),

@@ -54,6 +54,7 @@ dependencies:
 | `name`            | Yes      | Scoped name: `@collective/name` or `@collective/name/sub/path` (lowercase, hyphens, underscores)                                                              |
 | `version`         | Yes      | CalVer format: `YYYY.MM.DD.MICRO`                                                                                                                             |
 | `description`     | No       | Human-readable description                                                                                                                                    |
+| `visibility`      | No       | `public` (registry default) or `private`. Optional `--visibility` overrides this field; omitting both preserves registry defaults.                            |
 | `repository`      | No       | HTTPS URL of the upstream repository. Required for users to file issues via `swamp issue --extension` — `swamp extension push` warns when absent.             |
 | `paths.base`      | No       | Path resolution mode for typed keys + `additionalFiles`. `typedDir` (default) or `manifest`. See "Path resolution".                                           |
 | `models`          | No*      | Model file paths. Resolved via `paths.base`.                                                                                                                  |
@@ -71,6 +72,38 @@ dependencies:
 
 *At least one of `models`, `workflows`, `vaults`, `drivers`, `datastores`,
 `reports`, or `skills` must be present with entries.
+
+### Private publication
+
+To require private publication, set `visibility: private` in the manifest or use
+the optional flag on both preview and publish:
+
+```bash
+swamp extension push manifest.yaml --visibility private --dry-run --json
+swamp extension push manifest.yaml --visibility private --yes --json
+```
+
+Use CLI choice > manifest > registry default. Accept `public` or `private` as
+explicit values. `visibility: public` and `--visibility public` select the
+existing registry behavior: new extensions follow the collective's default and
+existing extensions keep their visibility. Use `--visibility public` to override
+a private manifest; it does not convert an already-private extension to public.
+Only private intent is sent to the registry; public omits the request field.
+
+Preview/dry-run `visibility` is `public`, `private` or `default` (registry
+decides); successful publication reports applied `public` or `private`. A dry
+run does not verify registry permissions or private-extension entitlement. An
+explicit private publish requires a private confirmation response. On a
+confirmation error, check registry state before retrying: publication may
+already have completed.
+
+Use a registry fully upgraded for private publication (Lab #2200), on every
+replica. Older servers ignore the field; confirmation validation cannot prevent
+that exposure. Complete rollout before explicit-private publication and pause it
+during service rollback. The registry supports private extensions in public
+collectives and checks permissions/entitlements. An already-public extension
+returns a conflict; change its visibility through the registry before publishing
+privately. Omitting both field and flag retains existing defaults.
 
 ### additionalFiles — directory structure and runtime access
 

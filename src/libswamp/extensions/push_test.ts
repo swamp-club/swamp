@@ -27,6 +27,7 @@ import {
   extensionPush,
   type ExtensionPushExecuteDeps,
   type ExtensionPushExecuteInput,
+  type ExtensionPushMetadata,
   extensionPushPrepare,
   type ExtensionPushPrepareDeps,
   type ExtensionPushPrepareInput,
@@ -173,6 +174,221 @@ function makeExecuteInput(
 }
 
 const ctx = createLibSwampContext();
+
+Deno.test("extensionPush: sends private intent to both phases and uses applied visibility", async () => {
+  const requests: ExtensionPushMetadata[] = [];
+  const deps = makeExecuteDeps({
+    initiatePush: (_url, metadata) => {
+      requests.push(metadata);
+      return Promise.resolve({ uploadUrl: "https://example.com/upload" });
+    },
+    confirmPush: (_url, metadata) => {
+      requests.push(metadata);
+      return Promise.resolve({
+        name: metadata.name,
+        version: metadata.version,
+        extensionId: "ext-private",
+        visibility: "private",
+      });
+    },
+    getExtensionVisibility: () => {
+      throw new Error("Confirmed visibility must not use a lookup");
+    },
+  });
+  // Reusing the effective manifest after a version bump retains private intent.
+  const manifest = makeManifest({ visibility: "private" });
+  for (const version of ["2026.09.16.1", "2026.09.16.2"]) {
+    const events = await collect(extensionPush(
+      ctx,
+      deps,
+      makeExecuteInput({
+        manifest: { ...manifest, version },
+      }),
+    ));
+    const completed = events.at(-1);
+    assertEquals(completed?.kind, "completed");
+    if (completed?.kind === "completed") {
+      assertEquals(completed.data.visibility, "private");
+      assertEquals(completed.data.version, version);
+    }
+  }
+  assertEquals(requests.map((request) => request.visibility), [
+    "private",
+    "private",
+    "private",
+    "private",
+  ]);
+});
+
+for (const visibility of [undefined, "public"] as const) {
+  Deno.test(`extensionPush: private intent rejects ${visibility} confirmation without fallback`, async () => {
+    let lookups = 0;
+    const events = await collect(extensionPush(
+      ctx,
+      makeExecuteDeps({
+        confirmPush: () =>
+          Promise.resolve({
+            name: "@testuser/test-ext",
+            version: "2026.09.16.1",
+            extensionId: "ext-123",
+            visibility,
+          }),
+        getExtensionVisibility: () => {
+          lookups++;
+          return Promise.resolve({ isPrivate: true });
+        },
+      }),
+      makeExecuteInput({ manifest: makeManifest({ visibility: "private" }) }),
+    ));
+    const last = events.at(-1);
+    assertEquals(last?.kind, "error");
+    if (last?.kind === "error") {
+      assertStringIncludes(last.error.message, "did not confirm private");
+      assertStringIncludes(last.error.message, "before retrying");
+    }
+    assertEquals(lookups, 0);
+    assertEquals(events.some((event) => event.kind === "completed"), false);
+  });
+}
+
+Deno.test("extensionPush: omitted intent sends no visibility and prefers confirmation", async () => {
+  const requests: ExtensionPushMetadata[] = [];
+  let lookups = 0;
+  const events = await collect(extensionPush(
+    ctx,
+    makeExecuteDeps({
+      initiatePush: (_url, metadata) => {
+        requests.push(metadata);
+        return Promise.resolve({ uploadUrl: "https://example.com/upload" });
+      },
+      confirmPush: (_url, metadata) => {
+        requests.push(metadata);
+        return Promise.resolve({
+          name: metadata.name,
+          version: metadata.version,
+          extensionId: "ext-123",
+          visibility: "private",
+        });
+      },
+      getExtensionVisibility: () => {
+        lookups++;
+        return Promise.resolve({ isPrivate: false });
+      },
+    }),
+    makeExecuteInput(),
+  ));
+  assertEquals(requests.length, 2);
+  assertEquals(requests.map((request) => "visibility" in request), [
+    false,
+    false,
+  ]);
+  assertEquals(lookups, 0);
+  const last = events.at(-1);
+  assertEquals(last?.kind, "completed");
+  if (last?.kind === "completed") assertEquals(last.data.visibility, "private");
+});
+
+for (const confirmed of [true, false]) {
+  Deno.test(`extensionPush: public uses registry defaults and reports actual private visibility (${confirmed ? "confirmation" : "legacy lookup"})`, async () => {
+    const requests: ExtensionPushMetadata[] = [];
+    let lookups = 0;
+    const events = await collect(extensionPush(
+      ctx,
+      makeExecuteDeps({
+        initiatePush: (_url, metadata) => {
+          requests.push(metadata);
+          return Promise.resolve({ uploadUrl: "https://example.com/upload" });
+        },
+        confirmPush: (_url, metadata) => {
+          requests.push(metadata);
+          return Promise.resolve({
+            name: metadata.name,
+            version: metadata.version,
+            extensionId: "ext-private",
+            ...(confirmed ? { visibility: "private" as const } : {}),
+          });
+        },
+        getExtensionVisibility: () => {
+          lookups++;
+          return Promise.resolve({ isPrivate: true });
+        },
+      }),
+      makeExecuteInput({ manifest: makeManifest({ visibility: "public" }) }),
+    ));
+    assertEquals(requests.map((request) => "visibility" in request), [
+      false,
+      false,
+    ]);
+    assertEquals(lookups, confirmed ? 0 : 1);
+    const last = events.at(-1);
+    assertEquals(last?.kind, "completed");
+    if (last?.kind === "completed") {
+      assertEquals(last.data.visibility, "private");
+    }
+  });
+}
+
+for (const phase of ["initiate", "confirm"] as const) {
+  Deno.test(`extensionPush: private ${phase} denial never retries without privacy`, async () => {
+    const calls: string[] = [];
+    const events = await collect(extensionPush(
+      ctx,
+      makeExecuteDeps({
+        initiatePush: () => {
+          calls.push("initiate");
+          if (phase === "initiate") {
+            throw new Error("Private publication denied (HTTP 403)");
+          }
+          return Promise.resolve({ uploadUrl: "https://example.com/upload" });
+        },
+        uploadArchive: () => {
+          calls.push("upload");
+          return Promise.resolve();
+        },
+        confirmPush: () => {
+          calls.push("confirm");
+          throw new Error("Private publication denied (HTTP 409)");
+        },
+      }),
+      makeExecuteInput({ manifest: makeManifest({ visibility: "private" }) }),
+    ));
+    assertEquals(
+      calls,
+      phase === "initiate" ? ["initiate"] : ["initiate", "upload", "confirm"],
+    );
+    const last = events.at(-1);
+    assertEquals(last?.kind, "error");
+    if (last?.kind === "error") {
+      assertStringIncludes(last.error.message, "Private publication denied");
+    }
+  });
+}
+
+Deno.test("extensionPush: non-CLI invalid visibility is rejected before I/O", async () => {
+  const manifest = {
+    ...makeManifest(),
+    visibility: "internal",
+  } as unknown as ExtensionManifest;
+  let calls = 0;
+  const events = await collect(extensionPush(
+    ctx,
+    makeExecuteDeps({
+      loadCredentials: () => {
+        calls++;
+        return Promise.resolve(null);
+      },
+    }),
+    makeExecuteInput({ manifest }),
+  ));
+  assertEquals(events.length, 1);
+  assertEquals(events[0].kind, "error");
+  assertEquals(calls, 0);
+  const error = await assertRejects(() =>
+    extensionPushPrepare(ctx, makePrepareDeps(), makePrepareInput({ manifest }))
+  ) as SwampError;
+  assertEquals(error.code, "validation_failed");
+  assertStringIncludes(error.message, "visibility");
+});
 
 // ── Prepare tests ─────────────────────────────────────────────────────
 

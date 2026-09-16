@@ -135,6 +135,9 @@ function serializeManifestForHash(manifest: ExtensionManifest): string {
   lines.push(`manifestVersion=${manifest.manifestVersion}`);
   lines.push(`description=${manifest.description ?? ""}`);
   lines.push(`repository=${manifest.repository ?? ""}`);
+  if (manifest.visibility !== undefined) {
+    lines.push(`visibility=${manifest.visibility}`);
+  }
   lines.push(`models=${JSON.stringify(manifest.models)}`);
   lines.push(`workflows=${JSON.stringify(manifest.workflows)}`);
   lines.push(`vaults=${JSON.stringify(manifest.vaults)}`);

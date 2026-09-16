@@ -108,6 +108,32 @@ Deno.test("computePackageCacheHash: manifest name change invalidates hash", asyn
   }
 });
 
+Deno.test("computePackageCacheHash: explicit visibility invalidates cache while omission is stable", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    const input = await makeHashInput(tmp);
+    const omitted = await computePackageCacheHash(input);
+    const explicitUndefined = await computePackageCacheHash({
+      ...input,
+      manifest: { ...input.manifest, visibility: undefined },
+    });
+    const privateHash = await computePackageCacheHash({
+      ...input,
+      manifest: { ...input.manifest, visibility: "private" },
+    });
+    const publicHash = await computePackageCacheHash({
+      ...input,
+      manifest: { ...input.manifest, visibility: "public" },
+    });
+    assertEquals(explicitUndefined, omitted);
+    assertNotEquals(privateHash, omitted);
+    assertNotEquals(publicHash, omitted);
+    assertNotEquals(publicHash, privateHash);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
 Deno.test("computePackageCacheHash: file content change invalidates hash", async () => {
   const tmp = await Deno.makeTempDir();
   try {

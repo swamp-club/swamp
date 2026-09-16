@@ -1,6 +1,6 @@
 ---
 audience: extension-author, maintainer
-last-verified: 2026-08-28 @ 3d5955a9
+last-verified: 2026-09-16 @ 03224b68
 ---
 
 # Extensions
@@ -55,6 +55,40 @@ Use `swamp extension version <name>` to query the registry for the latest
 published version and compute the next CalVer version. Accepts an extension name
 directly or `--manifest <path>` to read the name from a manifest file. Does not
 require a swamp repository — works from any directory.
+
+## Publication Visibility
+
+Extension manifests accept optional `visibility: public` or `visibility: private`.
+`swamp extension push manifest.yaml --visibility private` supplies the same intent
+for one publication. The flag is optional: CLI choice takes precedence over the
+manifest; omitting both preserves registry defaults. `public` explicitly selects
+that default behavior, so `--visibility public` overrides a private manifest.
+It does not convert an already-private extension or override a private collective's
+default. Release channels are independent of visibility.
+
+The effective intent is preserved in the packaged manifest and package cache key.
+Private intent is sent on both initiation and confirmation; public/default intent
+omits the wire field because the registry accepts only explicit private.
+Preview and dry-run output show requested `visibility` as `public`, `private` or
+`default` (registry decides). Public is labelled as registry-default behavior.
+Dry-run does not establish entitlement or applied visibility. Successful output reports the
+confirmation response's actual `public`/`private` visibility; explicit private
+requests require a private confirmation and never use a best-effort lookup.
+
+The upgraded registry creates explicit-private extensions privately from the
+outset, including inside public collectives, and enforces namespace permissions
+and private-extension entitlements. Republish with private intent to retain that
+requirement. An already-public extension produces a conflict: use the registry's
+visibility action before publishing privately. With public or omitted intent, new
+extensions use their collective's default and existing extensions retain their
+own visibility.
+
+Explicit private publication requires the private-publication API from Lab #2200
+on **all registry replicas**. Older servers ignore the field; checking confirmation
+cannot undo public exposure. Complete the registry rollout before using this
+feature, including on custom registries, and pause explicit-private publishing
+during rollback to an older service. Public or omitted requests remain compatible with
+older servers, including their historical visibility-lookup fallback.
 
 ## Release Channels
 

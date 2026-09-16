@@ -30,6 +30,26 @@ const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 
 export const MAX_LABELS = 20;
 
+/** Public selects registry defaults; private requires private publication. */
+export type PublishVisibility = "public" | "private";
+
+const PublishVisibilitySchema = z.enum(["public", "private"]).optional();
+
+/** Validates both sources and gives an explicit CLI choice precedence. */
+export function resolvePublishVisibility(
+  manifestVisibility: unknown,
+  cliVisibility?: unknown,
+): PublishVisibility | undefined {
+  const manifest = PublishVisibilitySchema.safeParse(manifestVisibility);
+  const cli = PublishVisibilitySchema.safeParse(cliVisibility);
+  if (!manifest.success || !cli.success) {
+    throw new UserError(
+      'Invalid publish visibility: must be "public" or "private" when provided. Public or omission uses the registry default.',
+    );
+  }
+  return cli.data ?? manifest.data;
+}
+
 /**
  * Checks whether a relative path is safe for use in an extension manifest.
  * Rejects absolute paths and paths containing '..' components, which would
@@ -92,6 +112,7 @@ const ExtensionManifestSchemaV1 = z.object({
     message: "Version must be valid CalVer format: YYYY.MM.DD.MICRO",
   }),
   description: z.string().optional(),
+  visibility: PublishVisibilitySchema,
   repository: z.string().url().refine(
     // deno-lint-ignore no-control-regex
     (u) => !/[\x00-\x1f]/.test(u),
@@ -141,6 +162,7 @@ export interface ExtensionManifest {
   name: string;
   version: string;
   description: string | undefined;
+  visibility?: PublishVisibility;
   repository: string | undefined;
   paths: { base: PathsBase };
   workflows: string[];
@@ -207,6 +229,7 @@ export function parseExtensionManifest(content: string): ExtensionManifest {
     name: result.data.name,
     version: result.data.version,
     description: result.data.description,
+    ...(result.data.visibility ? { visibility: result.data.visibility } : {}),
     repository: result.data.repository,
     paths: { base: result.data.paths?.base ?? "typedDir" },
     workflows: result.data.workflows ?? [],

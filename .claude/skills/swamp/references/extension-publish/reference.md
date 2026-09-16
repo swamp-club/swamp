@@ -143,6 +143,18 @@ swamp extension push manifest.yaml --dry-run --json
 
 **Verify:** Exit code 0. Confirm any warnings with the user.
 
+If private publication is requested, retain `visibility: private` in the
+manifest or pass optional `--visibility private` in both this dry run and
+State 8. Verify the requested visibility in preview, and use a fully upgraded
+registry. See
+[private publication](references/publishing.md#private-publication) for
+precedence and registry requirements.
+
+Optional `--visibility public` selects registry-default behavior and overrides a
+private manifest. Keep the same choice in State 8; it preserves existing
+extension visibility rather than converting an already-private extension to
+public.
+
 **On Failure:** If the dry-run reports a missing or incomplete adversarial
 review report, the review gate is unsatisfied. Complete the **Adversarial Review
 Gate** in the `swamp-extension` skill (write the content-hash-bound review
@@ -166,6 +178,10 @@ swamp extension push manifest.yaml --yes --json
 ```
 
 **Verify:** The command exits successfully and reports the published version.
+
+For explicit-private publication, verify the successful output reports
+`visibility: "private"`. A dry run proves intent, not applied registry
+visibility.
 
 **On Failure:** If the push fails:
 

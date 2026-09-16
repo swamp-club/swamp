@@ -39,6 +39,8 @@ export interface PushMetadata {
   releaseNotes?: string;
   binaries?: string[];
   channel?: string;
+  /** The registry only accepts explicit private intent; public is omitted. */
+  visibility?: "private";
 }
 
 /** Metadata sent during push confirmation (extends PushMetadata with content metadata). */
@@ -58,6 +60,7 @@ export interface ConfirmPushResult {
   extensionId: string;
   name: string;
   version: string;
+  visibility?: "public" | "private";
 }
 
 /** Information about the latest published version. */
@@ -382,10 +385,19 @@ export class ExtensionApiClient {
 
     await this.checkResponse(res);
     const data = await res.json();
+    if (
+      data.visibility !== undefined && data.visibility !== "public" &&
+      data.visibility !== "private"
+    ) {
+      throw new UserError(
+        "Registry returned invalid publication visibility. Publication may have completed; check the registry before retrying.",
+      );
+    }
     return {
       extensionId: data.extensionId,
       name: data.name,
       version: data.version,
+      ...(data.visibility !== undefined ? { visibility: data.visibility } : {}),
     };
   }
 
