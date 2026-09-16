@@ -23,7 +23,7 @@ import {
   assertRejects,
   assertThrows,
 } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { ensureDirSync } from "@std/fs";
 import { stringify as stringifyYaml } from "@std/yaml";
 import {
@@ -35,6 +35,7 @@ import { computeLatestFlags, DataQueryService } from "./data_query_service.ts";
 import type { DataRecord } from "./data_record.ts";
 import { createNamespace } from "./namespace.ts";
 import { UserError } from "../errors.ts";
+import { ModelType } from "../models/model_type.ts";
 
 function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
   return {
@@ -1967,4 +1968,162 @@ Deno.test("computeLatestFlags: different type_normalized keep independent is_lat
 
   assertEquals(rows[0].is_latest, 1);
   assertEquals(rows[1].is_latest, 1);
+});
+
+// --- Lazy body loading (swamp-club#2122) ---
+
+/** Counts body reads per data name and throws for names marked unreadable. */
+class TracingDataRepository extends FileSystemUnifiedDataRepository {
+  readonly reads = new Map<string, number>();
+  readonly unreadable = new Set<string>();
+
+  override getContentSync(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version?: number,
+  ): Uint8Array | null {
+    this.reads.set(dataName, (this.reads.get(dataName) ?? 0) + 1);
+    if (this.unreadable.has(dataName)) {
+      throw new Deno.errors.PermissionDenied(`cannot read ${dataName}`);
+    }
+    return super.getContentSync(type, modelId, dataName, version);
+  }
+}
+
+function setupLazyTest(
+  bodies: { name: string; specName: string; body: unknown }[],
+): {
+  catalog: CatalogStore;
+  service: DataQueryService;
+  dataRepo: TracingDataRepository;
+  writeBody: (name: string, body: unknown) => void;
+} {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-lazy-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  catalog.markPopulated();
+  const dataRepo = new TracingDataRepository(dir, undefined, catalog);
+  const writeBody = (name: string, body: unknown) => {
+    const path = dataRepo.getContentPath(
+      ModelType.create("test-model"),
+      "model-001",
+      name,
+      1,
+    );
+    ensureDirSync(dirname(path));
+    Deno.writeTextFileSync(path, JSON.stringify(body));
+  };
+  for (const { name, specName, body } of bodies) {
+    writeBody(name, body);
+    catalog.upsert(
+      makeRow({
+        data_name: name,
+        id: crypto.randomUUID(),
+        spec_name: specName,
+      }),
+    );
+  }
+  return {
+    catalog,
+    service: new DataQueryService(catalog, dataRepo),
+    dataRepo,
+    writeBody,
+  };
+}
+
+Deno.test("DataQueryService: metadata-rejected rows do not read bodies", () => {
+  const { catalog, service, dataRepo } = setupLazyTest([
+    { name: "report-a", specName: "report", body: { value: 10 } },
+    { name: "report-b", specName: "report", body: { value: 20 } },
+    { name: "question", specName: "question", body: { value: 1 } },
+  ]);
+  dataRepo.unreadable.add("report-a");
+
+  const results = service.querySync(
+    'specName == "question" && attributes.value > 0',
+  ) as DataRecord[];
+
+  assertEquals(results.map((r) => r.name), ["question"]);
+  assertEquals(results[0].attributes, { value: 1 });
+  assertEquals(dataRepo.reads.get("report-a"), undefined);
+  assertEquals(dataRepo.reads.get("report-b"), undefined);
+  catalog.close();
+});
+
+Deno.test("DataQueryService: unreadable body of a matching row fails the query", () => {
+  const { catalog, service, dataRepo } = setupLazyTest([
+    { name: "question", specName: "question", body: { value: 1 } },
+  ]);
+  dataRepo.unreadable.add("question");
+
+  assertThrows(
+    () => service.querySync('specName == "question" && attributes.value > 0'),
+    Deno.errors.PermissionDenied,
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService: CEL evaluation errors still skip the row", () => {
+  const { catalog, service } = setupLazyTest([
+    { name: "with-detail", specName: "result", body: { detail: { deep: 1 } } },
+    { name: "without-detail", specName: "result", body: { value: 1 } },
+  ]);
+
+  const results = service.querySync(
+    "attributes.detail.deep > 0",
+  ) as DataRecord[];
+
+  assertEquals(results.map((r) => r.name), ["with-detail"]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService: read error absorbed by CEL resurfaces for a matched row", () => {
+  const { catalog, service, dataRepo } = setupLazyTest([
+    { name: "report-a", specName: "report", body: { value: 10 } },
+  ]);
+  dataRepo.unreadable.add("report-a");
+
+  assertThrows(
+    () => service.querySync('attributes.value > 0 || specName == "report"'),
+    Deno.errors.PermissionDenied,
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService: projection and loadAttributes read matched rows only", () => {
+  const { catalog, service, dataRepo } = setupLazyTest([
+    { name: "report-a", specName: "report", body: { value: 10 } },
+    { name: "question", specName: "question", body: { value: 1 } },
+  ]);
+  dataRepo.unreadable.add("report-a");
+
+  const projected = service.querySync('specName == "question"', {
+    select: "attributes.value",
+  });
+  assertEquals(projected, [1]);
+
+  const loaded = service.querySync('specName == "question"', {
+    loadAttributes: true,
+  }) as DataRecord[];
+  assertEquals(loaded[0].attributes, { value: 1 });
+
+  assertEquals(dataRepo.reads.get("report-a"), undefined);
+  assertEquals(dataRepo.reads.get("question"), 2);
+  catalog.close();
+});
+
+Deno.test("DataQueryService: successive queries see rewritten bodies", () => {
+  const { catalog, service, writeBody } = setupLazyTest([
+    { name: "question", specName: "question", body: { value: 1 } },
+  ]);
+
+  assertEquals(service.querySync("attributes.value == 1").length, 1);
+
+  writeBody("question", { value: 2 });
+
+  assertEquals(service.querySync("attributes.value == 1").length, 0);
+  const results = service.querySync("attributes.value == 2") as DataRecord[];
+  assertEquals(results.length, 1);
+  assertEquals(results[0].attributes, { value: 2 });
+  catalog.close();
 });

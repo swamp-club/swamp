@@ -206,8 +206,11 @@ filterable fields:
 | `ns` | string | Namespace slug (`""` in solo mode). Alias for `DataRecord.namespace` — CEL reserves `namespace` as an identifier |
 
 All fields except `attributes` and `content` are metadata stored in the
-catalog. `attributes` and `content` are loaded from disk on demand when the
-predicate or select expression references them. `attributes` contains parsed
+catalog. `attributes` and `content` are loaded from disk on demand, per row:
+only when evaluating the predicate actually touches them (a metadata term
+earlier in `&&` skips the read) or when a matching row's result or `select`
+projection needs them. A body read that fails for a matching row fails the
+query rather than silently skipping the row. `attributes` contains parsed
 JSON (for `application/json` only). `content` is the raw text string for
 `text/*`, `application/yaml` and `application/x-yaml`
 (`src/domain/data/content_type.ts` `isTextContentType`); for

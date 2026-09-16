@@ -523,22 +523,54 @@ export class DataQueryService {
     const needsHydration = !needsAttributes && !selectParsed;
     const matchedRows: CatalogRow[] = [];
     for (const row of rows) {
-      const record = this.rowToRecord(row, needsAttributes, needsContent);
+      const record = this.rowToRecord(row, false, false);
+      // attributes/content are read from disk only when evaluation touches
+      // them or the row matches, so rows rejected by metadata terms never
+      // read their body (swamp-club#2122). The load outcome — record or
+      // error — is memoized per row; nothing is cached across queries.
+      let full: DataRecord | undefined;
+      let loadFailed = false;
+      let loadError: unknown;
+      const load = (): DataRecord => {
+        if (loadFailed) throw loadError;
+        if (!full) {
+          try {
+            full = this.rowToRecord(row, needsAttributes, needsContent);
+          } catch (error) {
+            loadFailed = true;
+            loadError = error;
+            throw error;
+          }
+        }
+        return full;
+      };
       const ctx = Object.create(
         record as unknown as Record<string, unknown>,
       ) as Record<string, unknown>;
       ctx["ns"] = record.namespace;
-      if (record.contentType === "application/json") {
-        ctx["content"] = record.attributes;
-      }
+      Object.defineProperties(ctx, {
+        attributes: { get: () => load().attributes },
+        content: {
+          get: () => {
+            const loaded = load();
+            return loaded.contentType === "application/json"
+              ? loaded.attributes
+              : loaded.content;
+          },
+        },
+      });
       try {
         const match = parsed(ctx);
         if (match === true) {
-          results.push(record);
+          // Materialize as a plain record; a read error absorbed by CEL
+          // (e.g. `<read error> || true`) resurfaces here.
+          results.push(needsHydration ? record : load());
           if (needsHydration) matchedRows.push(row);
           if (results.length >= limit) break;
         }
       } catch (error) {
+        // Required body reads must fail the query, not skip the row.
+        if (loadFailed) throw loadError;
         logger
           .debug`Query predicate skipped row ${row.model_name}/${row.data_name}: ${
           String(error)
