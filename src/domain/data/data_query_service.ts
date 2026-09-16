@@ -283,7 +283,7 @@ export class DataQueryService {
       namespace,
     );
     if (!r) return null;
-    const record = fromRow(r, this.dataRepo, true, false);
+    const record = fromRow(r, this.dataRepo, true, true);
     if (this.vaultService && Object.keys(record.attributes).length > 0) {
       const sensitiveFields = parseSensitiveFieldsFromRowTags(r.tags);
       if (sensitiveFields) {

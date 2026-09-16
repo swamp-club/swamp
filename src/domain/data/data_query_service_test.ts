@@ -1094,6 +1094,36 @@ Deno.test("getLatestRecord: check-first returns write-through row without backfi
   Deno.removeSync(dir, { recursive: true });
 });
 
+Deno.test("getLatestRecord: loads text content for non-JSON artifacts", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-latest-text-test-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+
+  createOnDiskData(dir, "test-model", "model-001", "my-data", "ingest");
+  Deno.writeTextFileSync(
+    join(
+      dir,
+      ".swamp",
+      "data",
+      "test-model",
+      "model-001",
+      "my-data",
+      "1",
+      "raw",
+    ),
+    "hello",
+  );
+  catalog.upsertNewVersion(makeRow({ content_type: "text/plain" }));
+
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const service = new DataQueryService(catalog, dataRepo);
+
+  const record = await service.getLatestRecord("ingest", "my-data");
+  assertEquals(record!.content, "hello");
+
+  catalog.close();
+  Deno.removeSync(dir, { recursive: true });
+});
+
 Deno.test("getLatestRecord: stale row falls through to scoped backfill", async () => {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-scoped-stale-test-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
