@@ -55,15 +55,35 @@ jobs:
         condition:
           type: succeeded
     steps:
+      # `repoPath` is required, not decorative. Without it @swamp/git runs in
+      # the caller's cwd — the checkout `swamp workflow run` was invoked from,
+      # not the verified worktree. That checkout is usually clean and sitting
+      # on origin/main, so the diff comes back EMPTY, both guards below see
+      # zero changed files, and the skill checks silently skip while the
+      # workflow reports success.
+      #
+      # The model is named per-run for the same reason the shell models are:
+      # a step input for a global argument is persisted into the model's
+      # stored definition, so a single shared `repo` model would hand one
+      # run's worktree path to the next, and two concurrent verifications
+      # would race on it. The cleanup job deletes these `*-<run.id>.yaml`
+      # definitions afterwards.
+      #
+      # `threeWay` makes this `origin/main...HEAD`, i.e. merge-base relative.
+      # Without it the guards filter a two-dot diff against the *moving*
+      # origin/main tip, so every commit that lands on main after a branch
+      # forks joins the file list and the guards fire on other people's work.
       - name: changed-files
         task:
           type: model_method
           modelType: "@swamp/git"
-          modelName: repo
+          modelName: repo-${{ run.id }}
           methodName: diff
           inputs:
+            repoPath: "/tmp/swamp-verify-skills-${{ run.id }}"
             base: "origin/main"
             nameOnly: true
+            threeWay: true
 
   # ── Skill Checks ─────────────────────────────────────────────
   - name: skills
@@ -74,7 +94,7 @@ jobs:
           type: succeeded
     steps:
       - name: skill-review
-        guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('.claude/skills/') || f == 'CLAUDE.md' || f == 'scripts/review_skills.ts' || f.startsWith('evals/promptfoo/')).size() == 0 }}"
+        guard: "${{ data.latest('repo-' + run.id, 'diff').attributes.files.filter(f, f.startsWith('.claude/skills/') || f == 'CLAUDE.md' || f == 'scripts/review_skills.ts' || f.startsWith('evals/promptfoo/')).size() == 0 }}"
         task:
           type: model_method
           modelType: "command/shell"
@@ -85,7 +105,7 @@ jobs:
             workingDir: "/tmp/swamp-verify-skills-${{ run.id }}"
 
       - name: skill-trigger-eval
-        guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('.claude/skills/') || f == 'CLAUDE.md' || f == 'scripts/review_skills.ts' || f.startsWith('evals/promptfoo/')).size() == 0 }}"
+        guard: "${{ data.latest('repo-' + run.id, 'diff').attributes.files.filter(f, f.startsWith('.claude/skills/') || f == 'CLAUDE.md' || f == 'scripts/review_skills.ts' || f.startsWith('evals/promptfoo/')).size() == 0 }}"
         task:
           type: model_method
           modelType: "command/shell"

@@ -56,14 +56,37 @@ jobs:
         condition:
           type: succeeded
     steps:
+      # `repoPath` is required, not decorative. Without it @swamp/git runs in
+      # the caller's cwd — the checkout `swamp workflow run` was invoked from,
+      # not the verified worktree. That checkout is usually clean and sitting
+      # on origin/main, so the diff comes back EMPTY, every path guard below
+      # sees zero changed files, and every guarded review silently skips while
+      # the workflow reports success.
+      #
+      # The model is named per-run for the same reason the shell models are:
+      # a step input for a global argument is persisted into the model's
+      # stored definition, so a single shared `repo` model would hand one
+      # run's worktree path to the next, and two concurrent verifications
+      # would race on it — defeating the run-id-keyed worktrees. The cleanup
+      # job deletes these `*-<run.id>.yaml` definitions afterwards.
+      #
+      # `threeWay` makes this `origin/main...HEAD`, i.e. merge-base relative,
+      # matching the `git merge-base` the review steps below compute. Without
+      # it the guards filter a two-dot diff against the *moving* origin/main
+      # tip, so every commit that lands on main after a branch forks joins the
+      # file list — a branch touching only YAML was seen firing the
+      # src/-guarded reviews on 34 unrelated files. The guard list and the
+      # reviewed diff have to be the same set of changes.
       - name: diff
         task:
           type: model_method
           modelType: "@swamp/git"
-          modelName: repo
+          modelName: repo-${{ run.id }}
           methodName: diff
           inputs:
+            repoPath: "/tmp/swamp-verify-reviews-${{ run.id }}"
             base: "origin/main"
+            threeWay: true
 
       - name: changed-files
         dependsOn:
@@ -73,11 +96,13 @@ jobs:
         task:
           type: model_method
           modelType: "@swamp/git"
-          modelName: repo
+          modelName: repo-${{ run.id }}
           methodName: diff
           inputs:
+            repoPath: "/tmp/swamp-verify-reviews-${{ run.id }}"
             base: "origin/main"
             nameOnly: true
+            threeWay: true
 
   # ── Agent Reviews ────────────────────────────────────────────
   - name: reviews
@@ -127,7 +152,7 @@ jobs:
             workingDir: "/tmp/swamp-verify-reviews-${{ run.id }}"
 
       - name: adversarial-review
-        guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('src/cli/') || f.startsWith('src/domain/') || f.startsWith('src/infrastructure/') || f.startsWith('src/libswamp/') || f.startsWith('src/serve/') || f.startsWith('src/worker/')).size() == 0 }}"
+        guard: "${{ data.latest('repo-' + run.id, 'diff').attributes.files.filter(f, f.startsWith('src/cli/') || f.startsWith('src/domain/') || f.startsWith('src/infrastructure/') || f.startsWith('src/libswamp/') || f.startsWith('src/serve/') || f.startsWith('src/worker/')).size() == 0 }}"
         task:
           type: model_method
           modelType: "command/shell"
@@ -167,7 +192,7 @@ jobs:
             workingDir: "/tmp/swamp-verify-reviews-${{ run.id }}"
 
       - name: ux-review
-        guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('src/cli/commands/') || f.startsWith('src/presentation/') || f == 'src/domain/errors.ts' || f.startsWith('src/libswamp/')).size() == 0 }}"
+        guard: "${{ data.latest('repo-' + run.id, 'diff').attributes.files.filter(f, f.startsWith('src/cli/commands/') || f.startsWith('src/presentation/') || f == 'src/domain/errors.ts' || f.startsWith('src/libswamp/')).size() == 0 }}"
         task:
           type: model_method
           modelType: "command/shell"
@@ -207,7 +232,7 @@ jobs:
             workingDir: "/tmp/swamp-verify-reviews-${{ run.id }}"
 
       - name: ci-security-review
-        guard: "${{ data.latest('repo', 'diff').attributes.files.filter(f, f.startsWith('.github/workflows/')).size() == 0 }}"
+        guard: "${{ data.latest('repo-' + run.id, 'diff').attributes.files.filter(f, f.startsWith('.github/workflows/')).size() == 0 }}"
         task:
           type: model_method
           modelType: "command/shell"

@@ -61,6 +61,31 @@ Reviews are guarded by file path — they skip when no relevant files changed:
 | ux-review | `src/cli/commands/`, `src/presentation/`, `src/domain/errors.ts`, `src/libswamp/` | claude-sonnet-4-6 |
 | ci-security-review | `.github/workflows/` | claude-opus-4-6 |
 
+The guards filter the changed-file list produced by the `detect-changes` job.
+Those `@swamp/git` steps **must** pass `repoPath` pointing at the verification
+worktree, and **must** be named per-run (`repo-${{ run.id }}`) like the shell
+models are — a step input for a global argument is persisted into the model's
+stored definition, so a shared `repo` model hands one run's worktree path to the
+next and two concurrent verifications race on it. Guards reach that data with
+`data.latest('repo-' + run.id, 'diff')`.
+
+They **must** also pass `threeWay: true`, making the diff `origin/main...HEAD`
+— merge-base relative, matching the `git merge-base` the review steps compute.
+A two-dot diff is taken against the *moving* `origin/main` tip, so every commit
+that lands on main after a branch forks joins the changed-file list: a branch
+touching only YAML was observed firing the `src/`-guarded reviews on 34
+unrelated files. The list the guards filter and the diff the reviews read have
+to be the same set of changes. `repoPath` defaults to `.`, so a step without it diffs the checkout
+the workflow was launched from rather than the commit being verified — and that
+checkout is usually clean and sitting on `origin/main`, which yields an empty
+file list. An empty list makes every `.size() == 0` guard true, so every guarded
+review skips while the workflow still reports success. The failure is silent and
+leaves an attestation that records a verification which never examined the code.
+
+When adding a guarded step, confirm the guard actually fires: run the workflow
+against a branch you know touches the guarded paths and check the step status is
+`succeeded` rather than `skipped`.
+
 ### Authentication
 
 The claude CLI authenticates via one of two methods:
