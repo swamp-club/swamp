@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { isAbsolute, resolve } from "@std/path";
+import { isAbsolute, resolve, SEPARATOR } from "@std/path";
 import { join } from "@std/path";
 import {
   createContext,
@@ -38,6 +38,22 @@ import { SWAMP_MARKER_FILE } from "../infrastructure/persistence/paths.ts";
 
 // Initialize logging once before tests run
 await initializeLogging({});
+
+/**
+ * Asserts a repo dir was derived from the cwd: either the cwd itself, or an
+ * ancestor of it holding the `.swamp.yaml` marker. Tests cannot assert
+ * `Deno.cwd()` exactly, because the suite may itself run from a subdirectory
+ * or a linked git worktree of a swamp repository.
+ */
+function assertCwdDerivedRepoDir(result: string): void {
+  assertEquals(isAbsolute(result), true);
+  const cwd = Deno.cwd();
+  assertEquals(
+    result === cwd || cwd.startsWith(result + SEPARATOR),
+    true,
+    `${result} is neither the cwd (${cwd}) nor an ancestor of it`,
+  );
+}
 
 Deno.test("createContext returns log mode by default", () => {
   const options: GlobalOptions = {};
@@ -133,8 +149,8 @@ Deno.test("getRepoDirFromArgs returns cwd when no --repo-dir flag", () => {
   const saved = Deno.env.get("SWAMP_REPO_DIR");
   Deno.env.delete("SWAMP_REPO_DIR");
   try {
-    assertEquals(getRepoDirFromArgs([]), Deno.cwd());
-    assertEquals(getRepoDirFromArgs(["model", "create"]), Deno.cwd());
+    assertCwdDerivedRepoDir(getRepoDirFromArgs([]));
+    assertCwdDerivedRepoDir(getRepoDirFromArgs(["model", "create"]));
   } finally {
     if (saved !== undefined) Deno.env.set("SWAMP_REPO_DIR", saved);
   }
@@ -171,10 +187,7 @@ Deno.test("getRepoDirFromArgs returns cwd when --repo-dir is last arg with no va
   const saved = Deno.env.get("SWAMP_REPO_DIR");
   Deno.env.delete("SWAMP_REPO_DIR");
   try {
-    assertEquals(
-      getRepoDirFromArgs(["model", "run", "--repo-dir"]),
-      Deno.cwd(),
-    );
+    assertCwdDerivedRepoDir(getRepoDirFromArgs(["model", "run", "--repo-dir"]));
   } finally {
     if (saved !== undefined) Deno.env.set("SWAMP_REPO_DIR", saved);
   }
@@ -225,7 +238,7 @@ Deno.test("getRepoDirFromArgs ignores empty SWAMP_REPO_DIR and falls back to cwd
   const original = Deno.env.get("SWAMP_REPO_DIR");
   try {
     Deno.env.set("SWAMP_REPO_DIR", "");
-    assertEquals(getRepoDirFromArgs([]), Deno.cwd());
+    assertCwdDerivedRepoDir(getRepoDirFromArgs([]));
   } finally {
     if (original !== undefined) Deno.env.set("SWAMP_REPO_DIR", original);
     else Deno.env.delete("SWAMP_REPO_DIR");
@@ -283,9 +296,7 @@ Deno.test("resolveRepoDir returns absolute cwd when neither cli value nor env va
   const original = Deno.env.get("SWAMP_REPO_DIR");
   try {
     Deno.env.delete("SWAMP_REPO_DIR");
-    const result = resolveRepoDir(undefined);
-    assertEquals(isAbsolute(result), true);
-    assertPathEquals(result, Deno.cwd());
+    assertCwdDerivedRepoDir(resolveRepoDir(undefined));
   } finally {
     if (original !== undefined) Deno.env.set("SWAMP_REPO_DIR", original);
   }
@@ -295,9 +306,7 @@ Deno.test("resolveRepoDir treats empty SWAMP_REPO_DIR as unset", () => {
   const original = Deno.env.get("SWAMP_REPO_DIR");
   try {
     Deno.env.set("SWAMP_REPO_DIR", "");
-    const result = resolveRepoDir(undefined);
-    assertEquals(isAbsolute(result), true);
-    assertPathEquals(result, Deno.cwd());
+    assertCwdDerivedRepoDir(resolveRepoDir(undefined));
   } finally {
     if (original !== undefined) Deno.env.set("SWAMP_REPO_DIR", original);
     else Deno.env.delete("SWAMP_REPO_DIR");
@@ -409,6 +418,64 @@ Deno.test("findAncestorRepoDir: finds marker inside git root", async () => {
 
     const found = findAncestorRepoDir(subdir);
     assertPathEquals(found!, realDir);
+  });
+});
+
+/** Runs a git command, returning false when git is unavailable or fails. */
+async function git(cwd: string, ...args: string[]): Promise<boolean> {
+  try {
+    const result = await new Deno.Command("git", {
+      args,
+      cwd,
+      stdout: "null",
+      stderr: "null",
+    }).output();
+    return result.success;
+  } catch {
+    return false;
+  }
+}
+
+Deno.test("findAncestorRepoDir: finds marker in the main working tree from a linked worktree", async () => {
+  await withTempDir(async (dir) => {
+    const main = join(dir, "main");
+    await Deno.mkdir(main);
+    if (!await git(main, "init")) return;
+    await git(main, "config", "user.email", "test@example.com");
+    await git(main, "config", "user.name", "Test");
+    if (!await git(main, "commit", "--allow-empty", "-m", "init")) return;
+    await Deno.writeTextFile(join(main, SWAMP_MARKER_FILE), "swampVersion: 1");
+
+    // A linked worktree nested inside the main working tree.
+    const worktree = join(main, "worktrees", "feature");
+    if (!await git(main, "worktree", "add", worktree, "-b", "feature")) return;
+    const nested = join(worktree, "src", "cli");
+    await Deno.mkdir(nested, { recursive: true });
+
+    assertPathEquals(
+      findAncestorRepoDir(nested)!,
+      Deno.realPathSync(main),
+    );
+  });
+});
+
+Deno.test("findAncestorRepoDir: returns null from a linked worktree when the main working tree has no marker", async () => {
+  await withTempDir(async (dir) => {
+    // Marker sits ABOVE the main working tree — it must not be found.
+    await Deno.writeTextFile(join(dir, SWAMP_MARKER_FILE), "swampVersion: 1");
+    const main = join(dir, "main");
+    await Deno.mkdir(main);
+    if (!await git(main, "init")) return;
+    await git(main, "config", "user.email", "test@example.com");
+    await git(main, "config", "user.name", "Test");
+    if (!await git(main, "commit", "--allow-empty", "-m", "init")) return;
+
+    const worktree = join(main, "worktrees", "feature");
+    if (!await git(main, "worktree", "add", worktree, "-b", "feature")) return;
+    const nested = join(worktree, "src");
+    await Deno.mkdir(nested, { recursive: true });
+
+    assertEquals(findAncestorRepoDir(nested), null);
   });
 });
 

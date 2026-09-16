@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Logger } from "@logtape/logtape";
-import { dirname, join, resolve } from "@std/path";
+import { basename, dirname, join, resolve, SEPARATOR } from "@std/path";
 import { SWAMP_MARKER_FILE } from "../infrastructure/persistence/paths.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { OutputMode } from "../presentation/output/output.ts";
@@ -130,23 +130,75 @@ export function isQuietFromArgs(args: string[]): boolean {
 
 const MAX_ANCESTOR_DEPTH = 10;
 
+function canonicalize(path: string): string {
+  try {
+    return Deno.realPathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+function isAtOrAbove(ancestor: string, descendant: string): boolean {
+  if (ancestor === descendant) return true;
+  return descendant.startsWith(
+    ancestor.endsWith(SEPARATOR) ? ancestor : ancestor + SEPARATOR,
+  );
+}
+
+/**
+ * Resolves the directory where ancestor traversal must stop.
+ *
+ * In a plain checkout this is the git root. In a *linked worktree* the git root
+ * is the worktree itself, and the swamp repository marker usually lives in the
+ * main working tree — so the boundary is widened to the main working tree,
+ * derived from `git rev-parse --git-common-dir` (which points at the main
+ * repository's `.git` directory even from inside a linked worktree).
+ *
+ * The widened boundary is only used when the main working tree is an ancestor
+ * of the git root; otherwise (worktree checked out elsewhere on disk, bare
+ * repositories, unusual `GIT_DIR` layouts) the git root is kept, preserving
+ * existing behavior.
+ */
 function getGitRootSync(startDir: string): string | null {
   try {
     const result = new Deno.Command("git", {
-      args: ["rev-parse", "--show-toplevel"],
+      args: ["rev-parse", "--show-toplevel", "--git-common-dir"],
       cwd: startDir,
       stdout: "piped",
       stderr: "null",
     }).outputSync();
-    if (result.success) {
-      const raw = new TextDecoder().decode(result.stdout).trim();
-      try {
-        return Deno.realPathSync(raw);
-      } catch {
-        return resolve(raw);
-      }
+    if (!result.success) {
+      return null;
     }
-    return null;
+    const lines = new TextDecoder().decode(result.stdout).trim().split("\n");
+    const topLevel = lines[0]?.trim();
+    if (topLevel === undefined || topLevel === "") {
+      return null;
+    }
+    const gitRoot = canonicalize(topLevel);
+
+    // `--git-common-dir` is relative to the cwd git ran in when the repository
+    // is the main working tree, and absolute from inside a linked worktree.
+    const commonDirRaw = lines[1]?.trim();
+    if (commonDirRaw === undefined || commonDirRaw === "") {
+      return gitRoot;
+    }
+    const commonDir = canonicalize(resolve(startDir, commonDirRaw));
+    if (basename(commonDir) !== ".git") {
+      return gitRoot;
+    }
+    const mainWorkingTree = dirname(commonDir);
+    if (!isAtOrAbove(mainWorkingTree, gitRoot)) {
+      return gitRoot;
+    }
+    try {
+      if (!Deno.statSync(mainWorkingTree).isDirectory) {
+        return gitRoot;
+      }
+    } catch {
+      return gitRoot;
+    }
+    return mainWorkingTree;
   } catch {
     return null;
   }
@@ -156,7 +208,8 @@ function getGitRootSync(startDir: string): string | null {
  * Walks up the directory tree from `startDir` looking for a `.swamp.yaml`
  * marker file.
  *
- * Stops at the git repository root (when inside a git repo) or after
+ * Stops at the git repository root (when inside a git repo) — widened to the
+ * main working tree when started from a linked worktree — or after
  * MAX_ANCESTOR_DEPTH levels (when not in a git repo).
  *
  * @returns The ancestor directory containing `.swamp.yaml`, or `null`.
