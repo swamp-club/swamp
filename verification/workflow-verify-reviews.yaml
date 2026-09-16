@@ -43,6 +43,7 @@ jobs:
               rm -rf "$CHECKOUT_DIR"
               git worktree prune
               git worktree add --detach "$CHECKOUT_DIR" "${{ inputs.commit }}"
+              swamp repo init "$CHECKOUT_DIR"
 
   # ── Detect Changed Files ──────────────────────────────────────
   - name: detect-changes
