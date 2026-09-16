@@ -627,11 +627,13 @@ jobs:
             att_hash=$(jq -r "$jq_path // empty" attestation.json)
             if [ -z "$att_hash" ]; then
               echo "⚠️ \`$label\`: not in attestation" >> "$GITHUB_STEP_SUMMARY"
+              echo "::warning::Config integrity: ${label} not in attestation"
               warnings=$((warnings + 1))
               return
             fi
             if [ ! -f "$file" ]; then
               echo "⚠️ \`$label\`: file not found at commit" >> "$GITHUB_STEP_SUMMARY"
+              echo "::warning::Config integrity: ${label} file not found at commit"
               warnings=$((warnings + 1))
               return
             fi
@@ -640,6 +642,7 @@ jobs:
               echo "✅ \`$label\`" >> "$GITHUB_STEP_SUMMARY"
             else
               echo "❌ \`$label\`: checksum mismatch" >> "$GITHUB_STEP_SUMMARY"
+              echo "::error::Config integrity mismatch for ${label}: attestation=${att_hash:0:12} actual=${actual_hash:0:12}"
               errors=$((errors + 1))
             fi
           }
