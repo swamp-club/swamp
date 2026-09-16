@@ -336,9 +336,14 @@ export function hasStepOutputDependency(expression: string): boolean {
 /**
  * Pattern to match any read of the model or file namespace, covering dotted
  * access (`model.name.resource`), bracket access (`model["name"].file`),
- * and the namespace functions (`file.contents(...)`, `model.method(...)`).
+ * the namespace functions (`file.contents(...)`, `model.method(...)`), and
+ * the namespace used as a bare value (`has(model)`, `size(file)`).
+ *
+ * The leading lookbehind rejects a property that merely shares the name —
+ * `inputs.model` and `data.model.x` read something else entirely — while the
+ * trailing word boundary rejects longer identifiers like `model_name`.
  */
-const MODEL_NAMESPACE_PATTERN = /\b(?:model|file)\s*[.[]/;
+const MODEL_NAMESPACE_PATTERN = /(?<![.\w])(?:model|file)\b/;
 
 /**
  * Checks whether any expression in the given data reads the model or file

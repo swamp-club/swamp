@@ -562,3 +562,35 @@ Deno.test("requiresModelNamespace ignores namespace names outside expressions", 
     false,
   );
 });
+
+Deno.test("requiresModelNamespace is true for a bare namespace value", () => {
+  // `has(model)` never reaches a `.` or `[`, so a pattern anchored on those
+  // would evaluate a real model read against an empty namespace.
+  assertEquals(
+    requiresModelNamespace({ if: "${{ has(model) }}" }),
+    true,
+  );
+  assertEquals(
+    requiresModelNamespace({ if: "${{ size(file) > 0 }}" }),
+    true,
+  );
+});
+
+Deno.test("requiresModelNamespace is false for a property that shares the name", () => {
+  assertEquals(
+    requiresModelNamespace({ with: { name: "${{ inputs.model }}" } }),
+    false,
+  );
+  assertEquals(
+    requiresModelNamespace({ with: { name: "${{ data.model.id }}" } }),
+    false,
+  );
+  assertEquals(
+    requiresModelNamespace({ with: { name: "${{ inputs.model_name }}" } }),
+    false,
+  );
+  assertEquals(
+    requiresModelNamespace({ with: { name: "${{ inputs.mymodel }}" } }),
+    false,
+  );
+});

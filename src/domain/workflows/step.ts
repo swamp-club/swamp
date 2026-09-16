@@ -63,7 +63,7 @@ export type ForEachData = z.infer<typeof ForEachSchema>;
 
 const StepDependencyFieldSchema = z.array(StepDependencySchema).default([]);
 
-const StepObjectSchema = z.object({
+export const StepObjectSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
   task: StepTaskSchema,

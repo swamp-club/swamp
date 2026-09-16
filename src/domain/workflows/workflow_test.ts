@@ -23,9 +23,10 @@ import {
   isFilenameSafeName,
   Workflow,
   type WorkflowInput,
+  WorkflowObjectSchema,
 } from "./workflow.ts";
-import { Job } from "./job.ts";
-import { Step } from "./step.ts";
+import { Job, JobObjectSchema } from "./job.ts";
+import { Step, StepObjectSchema } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { TriggerCondition } from "./trigger_condition.ts";
 
@@ -1114,4 +1115,66 @@ Deno.test("Workflow: writes field is undefined when absent", () => {
     jobs: [createTestJob("main")],
   });
   assertEquals(workflow.writes, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// toData() field coverage
+// ---------------------------------------------------------------------------
+
+Deno.test("toData serialises every schema field at each level", () => {
+  // requiresModelNamespace() decides between the light and full expression
+  // context by scanning workflow.toData(). A schema field that toData() forgets
+  // is invisible to that scan, so an expression living there would silently
+  // evaluate against an empty model namespace. Pin the key sets so adding a
+  // field to a schema without wiring toData() fails here instead.
+  const workflow = Workflow.fromData({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "coverage-workflow",
+    inputs: undefined,
+    jobs: [
+      {
+        name: "job1",
+        steps: [
+          {
+            name: "step1",
+            task: {
+              type: "model_method" as const,
+              modelIdOrName: "test-model",
+              methodName: "run",
+            },
+            dependsOn: [],
+            weight: 0,
+          },
+        ],
+        dependsOn: [],
+        weight: 0,
+      },
+    ],
+    version: 2,
+  });
+
+  const data = workflow.toData();
+  const job = data.jobs[0];
+  const step = job.steps[0];
+
+  const missing = (
+    shape: Record<string, unknown>,
+    serialised: Record<string, unknown>,
+  ) => Object.keys(shape).filter((key) => !(key in serialised)).sort();
+
+  assertEquals(
+    missing(WorkflowObjectSchema.shape, data),
+    [],
+    "Workflow.toData() drops schema fields",
+  );
+  assertEquals(
+    missing(JobObjectSchema.shape, job as Record<string, unknown>),
+    [],
+    "Job.toData() drops schema fields",
+  );
+  assertEquals(
+    missing(StepObjectSchema.shape, step as Record<string, unknown>),
+    [],
+    "Step.toData() drops schema fields",
+  );
 });

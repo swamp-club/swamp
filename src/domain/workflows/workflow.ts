@@ -80,7 +80,7 @@ const workflowNameStrict = workflowNameBase
     },
   );
 
-const WorkflowObjectSchema = z.object({
+export const WorkflowObjectSchema = z.object({
   id: z.string().uuid(),
   name: workflowNameBase,
   description: z.string().optional(),

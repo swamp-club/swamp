@@ -43,7 +43,7 @@ export type JobDependencyData = z.infer<typeof JobDependencySchema>;
 
 const JobDependencyFieldSchema = z.array(JobDependencySchema).default([]);
 
-const JobObjectSchema = z.object({
+export const JobObjectSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
   steps: z.array(StepSchema).min(1),
