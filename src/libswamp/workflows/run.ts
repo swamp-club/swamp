@@ -705,7 +705,7 @@ export async function* workflowRun(
         // scratch store is only allocated once the run will actually execute,
         // and those early-return paths never leak it. Disposed in the finally
         // below on every exit, including early consumer abandonment.
-        const ephemeral = createEphemeralStore();
+        const ephemeral = createEphemeralStore(deps.dataRepo?.namespace);
         const service = deps.createExecutionService(
           deps.workflowRepo,
           deps.runRepo,

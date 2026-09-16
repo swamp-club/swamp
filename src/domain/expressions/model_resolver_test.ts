@@ -36,6 +36,10 @@ import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { DataQueryService } from "../data/data_query_service.ts";
+import {
+  createEphemeralStore,
+  wrapWithEphemeral,
+} from "../../infrastructure/persistence/ephemeral_store.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-resolver-" });
@@ -1933,6 +1937,60 @@ Deno.test("buildContext reuses definitions supplied by the caller", async () => 
       ctx.model["supplied-model"].definition?.globalArguments.region,
       "us-east-1",
     );
+  });
+});
+
+Deno.test("buildLightContext resolves data.latest for ephemeral data (swamp-club#2188)", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const persistentRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const ephemeral = createEphemeralStore();
+    try {
+      const { dataRepo, dataQueryService } = wrapWithEphemeral(
+        persistentRepo,
+        catalog,
+        ephemeral,
+      );
+      const type = ModelType.create("test/model");
+      const model = Definition.create({ name: "differ" });
+      await defRepo.save(type, model);
+
+      const data = Data.create({
+        name: "diff",
+        contentType: "application/json",
+        lifetime: "ephemeral",
+        garbageCollection: 10,
+        tags: { type: "resource", modelName: "differ" },
+        ownerDefinition: owner,
+      });
+      await dataRepo.save(
+        type,
+        model.id,
+        data,
+        new TextEncoder().encode(JSON.stringify({ files: ["a.ts"] })),
+      );
+
+      const resolver = new ModelResolver(defRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService,
+      });
+
+      const record = await resolver.buildLightContext().data!.latest(
+        "differ",
+        "diff",
+      );
+      assertExists(record);
+      assertEquals(record.attributes.files, ["a.ts"]);
+    } finally {
+      ephemeral.dispose();
+    }
   });
 });
 

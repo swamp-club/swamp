@@ -73,6 +73,19 @@ export class CompositeDataQueryService extends DataQueryService {
     this.ephemeralQueryService.setForeignContentFetcher(fetcher);
   }
 
+  // Ephemeral wins, matching the precedence deduplicateRecords gives query().
+  override async getLatestRecord(
+    modelName: string,
+    dataName: string,
+    namespace?: string,
+  ): Promise<DataRecord | null> {
+    return await this.ephemeralQueryService.getLatestRecord(
+      modelName,
+      dataName,
+      namespace,
+    ) ?? await super.getLatestRecord(modelName, dataName, namespace);
+  }
+
   override async query(
     predicate: string,
     options?: DataQueryOptions,

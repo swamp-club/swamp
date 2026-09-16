@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertExists } from "@std/assert";
 import { CompositeDataQueryService } from "./composite_data_query_service.ts";
 import { DataQueryService } from "./data_query_service.ts";
 import { InMemoryUnifiedDataRepository } from "../../infrastructure/persistence/in_memory_data_repository.ts";
@@ -25,6 +25,7 @@ import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts"
 import { Data } from "./data.ts";
 import { ModelType } from "../models/model_type.ts";
 import type { DataRecord } from "./data_record.ts";
+import { createNamespace, type Namespace } from "./namespace.ts";
 
 function createTestData(overrides: Partial<{
   name: string;
@@ -48,15 +49,21 @@ function createTestData(overrides: Partial<{
 const TEST_TYPE = ModelType.create("test/type");
 const TEST_MODEL_ID = "test-model-id";
 
-function createCompositeQueryService(): {
+function createCompositeQueryService(namespace?: Namespace): {
   composite: CompositeDataQueryService;
   persistentRepo: InMemoryUnifiedDataRepository;
   ephemeralRepo: InMemoryUnifiedDataRepository;
 } {
   const persistentCatalog = new CatalogStore(":memory:");
   const ephemeralCatalog = new CatalogStore(":memory:");
-  const persistentRepo = new InMemoryUnifiedDataRepository(persistentCatalog);
-  const ephemeralRepo = new InMemoryUnifiedDataRepository(ephemeralCatalog);
+  const persistentRepo = new InMemoryUnifiedDataRepository(
+    persistentCatalog,
+    namespace,
+  );
+  const ephemeralRepo = new InMemoryUnifiedDataRepository(
+    ephemeralCatalog,
+    namespace,
+  );
   const ephemeralQueryService = new DataQueryService(
     ephemeralCatalog,
     ephemeralRepo,
@@ -200,4 +207,69 @@ Deno.test("CompositeDataQueryService: query with select concatenates without ded
   assertEquals(results.length, 2);
   assertEquals(results[0], "shared");
   assertEquals(results[1], "shared");
+});
+
+async function saveTo(
+  repo: InMemoryUnifiedDataRepository,
+  source: string,
+): Promise<void> {
+  await repo.save(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    createTestData({ name: "shared", ownerRef: source }),
+    new TextEncoder().encode(JSON.stringify({ source })),
+  );
+}
+
+Deno.test("CompositeDataQueryService: getLatestRecord finds ephemeral-only data", async () => {
+  const { composite, ephemeralRepo } = createCompositeQueryService();
+  await saveTo(ephemeralRepo, "eph");
+
+  const record = await composite.getLatestRecord("test-model", "shared");
+
+  assertExists(record);
+  assertEquals(record.attributes.source, "eph");
+});
+
+Deno.test("CompositeDataQueryService: getLatestRecord falls back to persistent data", async () => {
+  const { composite, persistentRepo } = createCompositeQueryService();
+  await saveTo(persistentRepo, "pers");
+
+  const record = await composite.getLatestRecord("test-model", "shared");
+
+  assertExists(record);
+  assertEquals(record.attributes.source, "pers");
+});
+
+Deno.test("CompositeDataQueryService: getLatestRecord prefers ephemeral over persistent", async () => {
+  const { composite, persistentRepo, ephemeralRepo } =
+    createCompositeQueryService();
+  await saveTo(persistentRepo, "pers");
+  await saveTo(ephemeralRepo, "eph");
+
+  const record = await composite.getLatestRecord("test-model", "shared");
+
+  assertExists(record);
+  assertEquals(record.attributes.source, "eph");
+});
+
+Deno.test("CompositeDataQueryService: getLatestRecord returns null when neither store has the data", async () => {
+  const { composite } = createCompositeQueryService();
+
+  assertEquals(await composite.getLatestRecord("test-model", "missing"), null);
+});
+
+Deno.test("CompositeDataQueryService: getLatestRecord finds ephemeral data in a named namespace", async () => {
+  const namespace = createNamespace("team-a");
+  const { composite, ephemeralRepo } = createCompositeQueryService(namespace);
+  await saveTo(ephemeralRepo, "eph");
+
+  const record = await composite.getLatestRecord(
+    "test-model",
+    "shared",
+    namespace,
+  );
+
+  assertExists(record);
+  assertEquals(record.attributes.source, "eph");
 });

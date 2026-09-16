@@ -47,6 +47,8 @@ import type {
   WorkflowRepository,
   WorkflowRunRepository,
 } from "../../domain/workflows/repositories.ts";
+import type { UnifiedDataRepository } from "../../domain/data/repositories.ts";
+import { createNamespace } from "../../domain/data/namespace.ts";
 
 // --- Test helpers ---
 
@@ -1304,4 +1306,28 @@ Deno.test("workflowRun bridge finalizes in-flight invocations when execution ser
   if (recorded[0].durationMs < 0 || Number.isNaN(recorded[0].durationMs)) {
     throw new Error(`unexpected durationMs: ${recorded[0].durationMs}`);
   }
+});
+
+Deno.test("workflowRun creates the ephemeral store in the data repo's namespace", async () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.complete();
+
+  const deps = createTestDeps(workflow, [{ kind: "completed", run }]);
+  deps.dataRepo = {
+    namespace: createNamespace("team-a"),
+  } as unknown as UnifiedDataRepository;
+  let ephemeralNamespace: string | undefined;
+  const createService = deps.createExecutionService;
+  deps.createExecutionService = (wr, rr, rd, cs, ephRepo, ephCatalog) => {
+    ephemeralNamespace = ephRepo?.namespace;
+    return createService(wr, rr, rd, cs, ephRepo, ephCatalog);
+  };
+
+  await collect(workflowRun(createLibSwampContext(), deps, {
+    workflowIdOrName: "test-workflow",
+  }));
+
+  assertEquals(ephemeralNamespace, "team-a");
 });
