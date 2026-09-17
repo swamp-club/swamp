@@ -47,7 +47,12 @@ export interface LoggingOptions {
   forceLog?: boolean;
   /** Suppress console output while keeping the run file sink at info level. */
   quiet?: boolean;
-  /** Write all log output to stderr only (for dispatch runners where stdout carries RPC frames). */
+  /**
+   * Write all log output to stderr only — every console-bound sink, pretty
+   * included. For callers whose stdout carries something other than prose:
+   * RPC frames in the dispatch runners, or a value the user pipes for the
+   * commands listed in `src/cli/stdout_contract.ts`.
+   */
   stderrOnly?: boolean;
   /** Test-only: clear the once-per-process guard so logging can be reconfigured. */
   _reset?: boolean;
@@ -58,10 +63,22 @@ export interface LoggingOptions {
 const stderrEncoder = new TextEncoder();
 const stderrFormatter = textFormatter();
 
-function createStderrSink(): Sink {
+/**
+ * A sink that writes formatted records to stderr.
+ *
+ * The formatter owns the trailing newline — both `textFormatter()` and the
+ * pretty formatter already end their output with exactly one, so this writes
+ * what it is given. Appending another would double-space every record, which
+ * went unnoticed while the dispatch runner was the only caller and nobody read
+ * its stderr.
+ *
+ * Takes the formatter so `stderrOnly` can cover the pretty sink too: the
+ * console sink is not the only console-bound sink, and the pretty one is what a
+ * TTY session actually uses.
+ */
+function createStderrSink(formatter: TextFormatter = stderrFormatter): Sink {
   return (record) => {
-    const text = stderrFormatter(record);
-    Deno.stderr.writeSync(stderrEncoder.encode(text + "\n"));
+    Deno.stderr.writeSync(stderrEncoder.encode(formatter(record)));
   };
 }
 
@@ -112,6 +129,9 @@ export async function initializeLogging(
   //
   // Both sinks use a dynamic formatter that switches to the serve-style
   // " system │ message" format when enableServeOutput() is called.
+  //
+  // `stderrOnly` must reach *every* console-bound sink, not just this one —
+  // see the pretty sink below.
   const consoleSink: Sink = options.stderrOnly
     ? createStderrSink()
     : getConsoleSink({
@@ -148,9 +168,16 @@ export async function initializeLogging(
       inspectOptions: { colors: useColors },
     });
 
-    sinks["pretty"] = getConsoleSink({
-      formatter: createDynamicFormatter(prettyFormat),
-    });
+    // The pretty sink honours `stderrOnly` too. It is easy to miss, because
+    // `prettyOutput` is `!noColor && isStdinTty()` and redirecting *stdout*
+    // does not change *stdin* — so `swamp invite link -v | pbcopy` run from a
+    // terminal takes this path, not the console sink above. Routing only the
+    // console sink leaves the reported bug (swamp-club#2254) intact for every
+    // interactive user while looking fixed in a script.
+    const prettyFormatter = createDynamicFormatter(prettyFormat);
+    sinks["pretty"] = options.stderrOnly
+      ? createStderrSink(prettyFormatter)
+      : getConsoleSink({ formatter: prettyFormatter });
   }
 
   // Initialize the OTel logs signal. When OTLP logs export is enabled (same

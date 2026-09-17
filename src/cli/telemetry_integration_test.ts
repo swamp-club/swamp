@@ -121,6 +121,52 @@ Deno.test("extractCommandInfo handles option=value syntax", () => {
   assertEquals(info.command, "model");
   assertEquals(info.subcommand, "create");
   assertEquals(info.optionKeys, ["--repo-dir"]);
+
+  // The same option *before* the command. This position is the one that used
+  // to break: an attached value was not recognised, so the parser skipped the
+  // next argument as the option's value and ate the command word. The case
+  // above passes either way, which is how it went unnoticed.
+  const leading = extractCommandInfo([
+    "--repo-dir=/path/to/repo",
+    "model",
+    "create",
+  ]);
+
+  assertEquals(leading.command, "model");
+  assertEquals(leading.subcommand, "create");
+});
+
+Deno.test("extractCommandInfo: a leading option=value does not swallow the command", () => {
+  // Each pair is the same invocation written both ways. They must parse
+  // identically — the space-separated form always did, and it passing is what
+  // made the attached form look covered (swamp-club#2254).
+  const equivalents: Array<{ attached: string[]; spaced: string[] }> = [
+    {
+      attached: ["--log-level=debug", "invite", "link"],
+      spaced: ["--log-level", "debug", "invite", "link"],
+    },
+    {
+      attached: ["--repo-dir=/tmp/x", "invite", "link"],
+      spaced: ["--repo-dir", "/tmp/x", "invite", "link"],
+    },
+    {
+      attached: ["--log-level=debug", "vault", "read-secret", "v", "k"],
+      spaced: ["--log-level", "debug", "vault", "read-secret", "v", "k"],
+    },
+  ];
+
+  for (const { attached, spaced } of equivalents) {
+    const fromAttached = extractCommandInfo(attached);
+    const fromSpaced = extractCommandInfo(spaced);
+    assertEquals(fromAttached.command, fromSpaced.command);
+    assertEquals(fromAttached.subcommand, fromSpaced.subcommand);
+  }
+
+  // A single-word command has no subcommand to lose, so it loses the command
+  // itself — this parsed as command "" before the fix.
+  const egg = extractCommandInfo(["--log-level=debug", "first-rule"]);
+  assertEquals(egg.command, "first-rule");
+  assertEquals(egg.subcommand, undefined);
 });
 
 Deno.test("extractCommandInfo handles --no-telemetry flag", () => {

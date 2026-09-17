@@ -47,6 +47,10 @@ type AnyOptions = any;
  * `path` is the invocation as typed: it names the command for tracing and
  * spells the examples, so the egg's own `--help` never tells you to run
  * something else.
+ *
+ * Both names are listed in `src/cli/stdout_contract.ts`, which keeps log
+ * output off stdout for them. Renaming either one means updating that list —
+ * `integration/stdout_contract_rules_test.ts` fails if you forget.
  */
 function buildInviteLinkCommand(name: string, path: string[]): Command {
   const invocation = ["swamp", ...path].join(" ");
@@ -79,7 +83,10 @@ function buildInviteLinkCommand(name: string, path: string[]): Command {
       };
 
       const libCtx = createLibSwampContext({ logger: ctx.logger });
-      const renderer = createInviteLinkRenderer(ctx.outputMode);
+      const renderer = createInviteLinkRenderer(
+        ctx.outputMode,
+        ctx.verbosity === "quiet",
+      );
 
       await consumeStream(
         inviteLink(libCtx, deps, {}),

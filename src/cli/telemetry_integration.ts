@@ -194,11 +194,7 @@ export function extractCommandInfo(args: string[]): CommandInvocationData {
         result.globalOptions.push(arg);
       }
       // Skip value if this option takes one (next arg doesn't start with -)
-      if (
-        i + 1 < args.length &&
-        !args[i + 1].startsWith("-") &&
-        !isKnownFlag(arg)
-      ) {
+      if (consumesNextArg(arg, args[i + 1])) {
         i++; // Skip the value
       }
       i++;
@@ -223,11 +219,7 @@ export function extractCommandInfo(args: string[]): CommandInvocationData {
         result.optionKeys.push(arg.split("=")[0]); // Handle --option=value
       }
       // Skip value if this option takes one
-      if (
-        i + 1 < args.length &&
-        !args[i + 1].startsWith("-") &&
-        !isKnownFlag(arg)
-      ) {
+      if (consumesNextArg(arg, args[i + 1])) {
         i++; // Skip the value
       }
       i++;
@@ -265,11 +257,7 @@ export function extractCommandInfo(args: string[]): CommandInvocationData {
       }
 
       // Skip value if this option takes one (next arg doesn't start with -)
-      if (
-        i + 1 < args.length &&
-        !args[i + 1].startsWith("-") &&
-        !isKnownFlag(arg)
-      ) {
+      if (consumesNextArg(arg, args[i + 1])) {
         i++; // Skip the value
       }
     } else {
@@ -283,6 +271,24 @@ export function extractCommandInfo(args: string[]): CommandInvocationData {
   }
 
   return result;
+}
+
+/**
+ * Whether `arg` consumes the following argument as its value.
+ *
+ * An option written `--log-level=debug` carries its value already, so the next
+ * argument is the command — not a value to skip. Missing that check made a
+ * leading `=`-form option swallow the command word: `--log-level=debug invite
+ * link` parsed as command "link", and `--log-level=debug first-rule` as no
+ * command at all. That was invisible while this only fed telemetry (a
+ * misattributed metric), but `isValueOnlyStdoutCommand` now routes output on
+ * the result, where the same slip costs a corrupted pipe (swamp-club#2254).
+ */
+function consumesNextArg(arg: string, next: string | undefined): boolean {
+  return next !== undefined &&
+    !next.startsWith("-") &&
+    !isKnownFlag(arg) &&
+    !arg.includes("=");
 }
 
 /**

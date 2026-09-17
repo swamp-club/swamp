@@ -119,6 +119,37 @@ Configured in `initializeLogging()`:
 The pretty sink uses `@logtape/pretty` with dimmed timestamps/levels, bold green
 categories, and aligned output.
 
+## Which Stream Log Output Reaches
+
+LogTape's console sink dispatches **by level**: `debug` and `info` go to
+`console.debug`/`console.info` (**stdout**), `warning` and `error` to
+`console.warn`/`console.error` (**stderr**). So in log mode a command's ordinary
+records land on stdout — including everything `-v` unlocks.
+
+For most commands that is fine: stdout carries prose anyway. For a command whose
+stdout carries a **value** — something the caller pipes, captures or redirects —
+a log record is corruption rather than clutter. Those commands are listed in
+`src/cli/stdout_contract.ts`, and `runCli` passes `stderrOnly: true` for them.
+
+`stderrOnly` moves **every** console-bound sink to stderr — the pretty sink
+included. That matters more than it looks: `prettyOutput` is
+`!noColor && isStdinTty()`, and redirecting _stdout_ does not change _stdin_, so
+an interactive `swamp invite link -v | pbcopy` uses the pretty sink. Routing
+only the plain console sink fixes scripts and leaves every terminal user broken
+— which is exactly how swamp-club#2254 was first diagnosed.
+
+Two things `stderrOnly` cannot reach, because neither goes through LogTape:
+
+- `writeOutput()` — a direct `console.log`, which is how value-on-stdout
+  commands emit the value itself.
+- Interactive prompts in `src/cli/prompt_helpers.ts`, which write to stdout
+  (tracked in swamp-club#2260).
+
+Inverting this default — stderr for everything, with commands opting stdout back
+in — is proposed in swamp-club#2259. It is a larger change than it sounds: 53 of
+134 renderer files print their primary output through the logger,
+`swamp version` among them.
+
 ## Timestamp and Line Format
 
 All log lines carry an RFC3339 (ISO-8601 UTC, `Z`) timestamp, e.g.
@@ -128,7 +159,7 @@ defined once in `src/infrastructure/logging/log_format.ts` (`TIMESTAMP_FORMAT`,
 `textFormatter()`) and shared by every text sink so they cannot drift:
 
 - The console (non-TTY / `--no-color`), stderr-only, and persisted run-file
-  sinks all use `textFormatter()`, whose layout is
+  sinks all use `textFormatter()` by default, whose layout is
   `<timestamp> [<LEVEL>] <category>: <message>` in **plain text** — no ANSI, so
   piped or redirected output stays clean.
 - The pretty sink (TTY) keeps its richer aligned, colored layout but uses the

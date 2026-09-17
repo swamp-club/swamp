@@ -103,3 +103,40 @@ Deno.test("createInviteLinkRenderer: both modes raise an error event as a UserEr
     );
   }
 });
+
+Deno.test("createInviteLinkRenderer: -q suppresses the note but never the link", async () => {
+  const { out, err } = await capture(async () => {
+    const renderer = createInviteLinkRenderer("log", true);
+    await consumeStream(
+      toStream([{ kind: "completed", data: LINK }]),
+      renderer.handlers(),
+    );
+  });
+
+  // The link is what the user asked for — `-q` suppresses commentary, not
+  // output. This assertion matters as much as the one below it.
+  assertEquals(out, ["https://swamp.club/r/abc123"]);
+  assertEquals(err, []);
+});
+
+Deno.test("createInviteLinkRenderer: the note survives when not quiet", async () => {
+  // Both the explicit false and the default, since the default is what the
+  // three older tests in this file rely on.
+  const factories = [
+    () => createInviteLinkRenderer("log", false),
+    () => createInviteLinkRenderer("log"),
+  ];
+
+  for (const makeRenderer of factories) {
+    const { out, err } = await capture(async () => {
+      const renderer = makeRenderer();
+      await consumeStream(
+        toStream([{ kind: "completed", data: LINK }]),
+        renderer.handlers(),
+      );
+    });
+
+    assertEquals(out, ["https://swamp.club/r/abc123"]);
+    assertStringIncludes(err.join("\n"), "Marsh Skulker");
+  }
+});

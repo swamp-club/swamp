@@ -351,3 +351,143 @@ Deno.test("initializeLogging: quiet mode keeps run file sink at info level", asy
     }
   }
 });
+
+/**
+ * Captures the two streams separately, which is the whole point here — the
+ * shared `captureConsoleSink()` above funnels every console method into one
+ * array, so it cannot tell "reached stderr" from "reached stdout".
+ *
+ * Both halves matter. LogTape's console sink dispatches by level
+ * (debug → console.debug, info → console.info), so a capture that stubbed only
+ * console.log would record nothing and pass whether or not the routing works.
+ * And the stderr sink writes through Deno.stderr.writeSync rather than any
+ * console method, so it has to be stubbed too.
+ */
+function captureStreams() {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const original = {
+    debug: console.debug,
+    log: console.log,
+    info: console.info,
+    warn: console.warn,
+    error: console.error,
+    writeSync: Deno.stderr.writeSync,
+  };
+  const toStdout = (...args: unknown[]) => {
+    stdout.push(args.map((a) => String(a)).join(" "));
+  };
+  const toStderr = (...args: unknown[]) => {
+    stderr.push(args.map((a) => String(a)).join(" "));
+  };
+  console.debug = toStdout;
+  console.log = toStdout;
+  console.info = toStdout;
+  console.warn = toStderr;
+  console.error = toStderr;
+  Deno.stderr.writeSync = (bytes: Uint8Array) => {
+    stderr.push(new TextDecoder().decode(bytes));
+    return bytes.length;
+  };
+  return {
+    stdout,
+    stderr,
+    restore: () => {
+      console.debug = original.debug;
+      console.log = original.log;
+      console.info = original.info;
+      console.warn = original.warn;
+      console.error = original.error;
+      Deno.stderr.writeSync = original.writeSync;
+    },
+  };
+}
+
+Deno.test("initializeLogging: stderrOnly keeps records off stdout in pretty mode", async () => {
+  const capture = captureStreams();
+  try {
+    await initializeLogging({
+      prettyOutput: true,
+      stderrOnly: true,
+      logLevel: "debug",
+      _reset: true,
+      _logsConfig: { exporterKind: "none" },
+    });
+
+    // Short tokens on purpose: the pretty formatter word-wraps, which
+    // splits a longer message across lines and defeats substring matching.
+    getSwampLogger(["invite", "link"]).debug`dbg-2254`;
+    getSwampLogger(["invite", "link"]).info`inf-2254`;
+
+    // The bug this guards: `prettyOutput` is `!noColor && isStdinTty()`, and
+    // redirecting stdout does not change stdin — so `swamp invite link -v |
+    // pbcopy` from a terminal takes the pretty sink, not the console sink.
+    // Routing only the console sink leaves the pipe corrupted
+    // (swamp-club#2254).
+    assertEquals(capture.stdout, []);
+    assertStringIncludes(
+      capture.stderr.join(""),
+      "dbg-2254",
+    );
+    assertStringIncludes(
+      capture.stderr.join(""),
+      "inf-2254",
+    );
+  } finally {
+    capture.restore();
+  }
+});
+
+Deno.test("initializeLogging: pretty mode without stderrOnly still writes to stdout", async () => {
+  const capture = captureStreams();
+  try {
+    await initializeLogging({
+      prettyOutput: true,
+      logLevel: "debug",
+      _reset: true,
+      _logsConfig: { exporterKind: "none" },
+    });
+
+    getSwampLogger(["version"]).info`stdout-2254`;
+
+    // The other ~53 renderers that print through the logger must keep their
+    // output on stdout — `swamp version` among them. Only the commands in
+    // stdout_contract.ts move.
+    assertStringIncludes(
+      capture.stdout.join(""),
+      "stdout-2254",
+    );
+    assertEquals(capture.stderr, []);
+  } finally {
+    capture.restore();
+  }
+});
+
+Deno.test("initializeLogging: stderrOnly writes one newline per record, not two", async () => {
+  for (const prettyOutput of [false, true]) {
+    const capture = captureStreams();
+    try {
+      await initializeLogging({
+        prettyOutput,
+        stderrOnly: true,
+        noColor: true,
+        logLevel: "debug",
+        _reset: true,
+        _logsConfig: { exporterKind: "none" },
+      });
+
+      getSwampLogger(["dispatch"]).info`newline check`;
+
+      // Asserted on exact bytes, not a substring: the bug was the sink
+      // appending "\n" to formatter output that already ended with one, and a
+      // substring assertion cannot see a trailing blank line. Both formatters
+      // end with exactly one newline, so the sink must add none.
+      assertEquals(capture.stderr.length, 1);
+      const written = capture.stderr[0];
+      assertEquals(written.endsWith("\n"), true);
+      assertEquals(written.endsWith("\n\n"), false);
+    } finally {
+      capture.restore();
+    }
+  }
+});

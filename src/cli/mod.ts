@@ -177,6 +177,7 @@ import {
 import { detectInstalledLinuxMode } from "../infrastructure/update/scheduler_factory.ts";
 import { cronLogPath } from "../infrastructure/update/cron_scheduler.ts";
 import { getOutputModeFromArgs, isQuietFromArgs } from "./context.ts";
+import { isValueOnlyStdoutCommand } from "./stdout_contract.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { getTracer, withSpan } from "../infrastructure/tracing/mod.ts";
 import {
@@ -1709,6 +1710,11 @@ export async function runCli(args: string[]): Promise<void> {
         noColor,
         forceLog: forceLog || verbose,
         quiet: options.quiet ?? false,
+        // Commands whose stdout carries a value, not prose, keep log output off
+        // it entirely — otherwise `-v` corrupts whatever the caller is piping
+        // (swamp-club#2254). `commandInfo` is the parse done above for
+        // telemetry; see stdout_contract.ts.
+        stderrOnly: isValueOnlyStdoutCommand(commandInfo),
       });
 
       // Emit deferred warnings now that logging is initialized
