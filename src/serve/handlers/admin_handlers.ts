@@ -2260,9 +2260,13 @@ export async function handleWorkerPrune(
     };
 
     let result: Record<string, unknown> | undefined;
+    let preview: unknown[] | undefined;
     await consumeStream(
       workerPrune(libCtx, pruneDeps, { gracePeriodMs, dryRun }),
       withDefaults({
+        previewing: (e: { workers: unknown[] }) => {
+          preview = e.workers;
+        },
         completed: (e: { result: unknown }) => {
           result = e.result as Record<string, unknown>;
         },
@@ -2271,6 +2275,9 @@ export async function handleWorkerPrune(
         },
       }),
     );
+    if (dryRun && preview) {
+      result = { ...result, prunable: preview };
+    }
 
     if (controller.signal.aborted) {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");

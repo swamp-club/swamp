@@ -25,6 +25,7 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { promptConfirmation } from "../prompt_helpers.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import {
   consumeStream,
@@ -209,17 +210,60 @@ export const workerPruneCommand = withRemoteOptions(
       }),
   };
 
+  const force = !!options.force;
   let result: WorkerPruneResult | undefined;
+  let previewed = false;
   await consumeStream(
-    workerPrune(libCtx, pruneDeps, { gracePeriodMs, dryRun }),
+    workerPrune(libCtx, pruneDeps, { gracePeriodMs, dryRun: true }),
     withDefaults<WorkerPruneEvent>({
       previewing: (event) => {
-        renderWorkerPrunePreview(
-          event.workers,
-          event.dryRun,
-          cliCtx.outputMode,
-        );
+        previewed = true;
+        if (cliCtx.outputMode === "log") {
+          renderWorkerPrunePreview(event.workers, dryRun, cliCtx.outputMode);
+        }
       },
+      completed: (event) => {
+        result = event.result;
+      },
+      error: (event) => {
+        throw new UserError(event.error.message);
+      },
+    }),
+  );
+
+  if (!previewed || !result) {
+    throw new UserError("Worker prune ended without completing");
+  }
+
+  const previewResult = result;
+
+  if (dryRun) {
+    if (cliCtx.outputMode === "json") {
+      renderWorkerPruneResult(previewResult, cliCtx.outputMode);
+    }
+    return;
+  }
+
+  if (previewResult.workersDeleted === 0 && !force) {
+    if (cliCtx.outputMode === "json") {
+      renderWorkerPruneResult(previewResult, cliCtx.outputMode);
+    } else {
+      renderWorkerPruneResult(previewResult, cliCtx.outputMode);
+    }
+    return;
+  }
+
+  if (cliCtx.outputMode === "log" && !force) {
+    const confirmed = await promptConfirmation("Proceed with pruning?");
+    if (!confirmed) {
+      return;
+    }
+  }
+
+  result = undefined;
+  await consumeStream(
+    workerPrune(libCtx, pruneDeps, { gracePeriodMs, dryRun: false }),
+    withDefaults<WorkerPruneEvent>({
       completed: (event) => {
         result = event.result;
       },
