@@ -81,9 +81,11 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 class MockStepExecutor implements StepExecutor {
   executedSteps: string[] = [];
   shouldFail: Set<string> = new Set();
+  authoredByStep = new Map<string, ReadonlySet<string>>();
 
   execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
     this.executedSteps.push(`${ctx.jobName}/${ctx.stepName}`);
+    this.authoredByStep.set(ctx.stepName, ctx.authoredExpressions);
 
     if (this.shouldFail.has(step.name)) {
       return Promise.reject(new Error(`Step ${step.name} failed`));
@@ -1630,6 +1632,75 @@ Deno.test("workflow step applies child workflow's input defaults", async () => {
       }`,
     );
     assertEquals(executor.executedSteps.includes("job1/child-step"), true);
+  });
+});
+
+Deno.test("workflow step carries parent-authored runtime expressions into the child's provenance", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const childWorkflow = Workflow.create({
+      name: "child-workflow",
+      inputs: { properties: { home: { type: "string" } } },
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "child-step",
+              task: StepTask.modelMethod("some-model", "run", {
+                home: "${{ inputs.home }}",
+              }),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(childWorkflow);
+
+    // The parent author writes a runtime expression as a child input. It
+    // survives the parent's evaluation unresolved and must be admitted in
+    // the child, while data content shaped like an expression must not be.
+    const parentWorkflow = Workflow.create({
+      name: "parent-workflow",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "call-child",
+              task: StepTask.workflow("child-workflow", {
+                home: "${{ env.HOME }}",
+              }),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(parentWorkflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const failures: string[] = [];
+    for await (const event of service.run(parentWorkflow.name)) {
+      if (event.kind === "step_failed") failures.push(event.error);
+    }
+    assertEquals(failures, []);
+
+    const childAuthored = executor.authoredByStep.get("child-step");
+    assertEquals(childAuthored?.has("${{ env.HOME }}"), true);
+    assertEquals(childAuthored?.has("${{ inputs.home }}"), true);
+    assertEquals(childAuthored?.has("${{ vault.get('injected') }}"), false);
   });
 });
 

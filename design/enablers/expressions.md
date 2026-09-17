@@ -544,6 +544,14 @@ author-written source feeding a run:
 | Model definition          | the definition on disk, in both the normal and `--last-evaluated` paths             |
 | Workflow                  | the workflow YAML on disk, before evaluation, at both the fresh-run and resume seams |
 | Model-run `--input` flags | the operator-typed values, on `swamp model ... method run` only                     |
+| Parent workflow           | the parent's set, unioned into a nested child run's set                             |
+
+A parent-authored runtime expression passed as a child input (for example
+`${{ env.HOME }}`) is therefore admitted in the child, and evaluated in the
+child's scope. Two cases currently fail closed with a warning: a suspended
+child resumed directly with `swamp workflow resume` does not inherit the parent
+set, and a `--last-evaluated` replay after the source has been edited cannot
+vouch for expressions that remain only in the cache.
 
 Workflow runs do **not** seed CLI `--input` values: trigger inputs and CLI
 inputs merge into one map before the evaluator sees them, so a vault reference

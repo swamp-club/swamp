@@ -1758,6 +1758,12 @@ export class WorkflowExecutionService {
       assertFailOnSeverity?: AssertSeverity;
       /** Identity of the user who initiated this run */
       initiatedBy?: string;
+      /**
+       * Expressions written in a parent workflow's source, unioned with this
+       * workflow's own so a parent-authored runtime expression passed as an
+       * input (e.g. `${{ env.HOME }}`) still resolves in the child.
+       */
+      authoredExpressions?: ReadonlySet<string>;
       /** Serve instance identity for cross-machine reconciliation */
       instanceId?: string;
       /** How this run was triggered (schedule, webhook, api) */
@@ -1797,7 +1803,10 @@ export class WorkflowExecutionService {
         // loaded from disk. Taken here rather than from the evaluation below
         // because --last-evaluated swaps in a cached workflow that already has
         // data content spliced into it and never runs the evaluator at all.
-        authoredExpressions = collectWorkflowAuthoredExpressions(found);
+        authoredExpressions = collectWorkflowAuthoredExpressions(
+          found,
+          new Set(options?.authoredExpressions),
+        );
 
         if (options?.lastEvaluated) {
           // Load previously evaluated workflow from cache
@@ -3179,11 +3188,16 @@ export class WorkflowExecutionService {
             }
           }
 
+          // Redact once, before the message reaches the step error, the
+          // events, or the span; a vault.get() in the message resolves to
+          // plaintext above.
+          resolvedMessage = options.secretRedactor?.redact(resolvedMessage) ??
+            resolvedMessage;
+
           const assertResult = {
             passed,
             expr: task.expr,
-            message: options.secretRedactor?.redact(resolvedMessage) ??
-              resolvedMessage,
+            message: resolvedMessage,
             severity: task.severity,
           };
           stepRun.recordAssertResult(assertResult);
@@ -3663,6 +3677,7 @@ export class WorkflowExecutionService {
           inputs: evaluatedInputs,
           workflowNestingDepth: depth + 1,
           ancestorWorkflowIds: childAncestors,
+          authoredExpressions: options.authoredExpressions,
         })
       ) {
         if (event.kind === "completed") {
