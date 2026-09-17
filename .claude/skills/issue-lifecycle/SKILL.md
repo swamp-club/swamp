@@ -101,6 +101,12 @@ attestation to flow through.
    post_attestation → link_pr. Step 1 there is the `verify` call just made — do
    not repeat it.
 
+7. **Drive the lifecycle to `done`.** `link_pr` only reaches `pr_open` — it is
+   not the end of the flow, and stopping there leaves the issue parked. Walk
+   the rest: `pr_merged` (→ `releasing`), `ship` or `complete` (→ `notify`),
+   `notify` or `skip_notify` (→ `summarizing`), then `summarize` (→ `done`).
+   See "Closing Out a Shipped Issue" below for the exact commands.
+
 ### Example
 
 ```
