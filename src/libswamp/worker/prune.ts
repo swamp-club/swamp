@@ -218,11 +218,26 @@ export async function* workerPrune(
 
         const tokensByName = new Map(tokens.map((t) => [t.name, t]));
 
-        let remainingWorkers: PrunableWorker[];
+        let remainingWorkers: PrunableWorker[] | null;
         try {
           remainingWorkers = await deps.listWorkers();
         } catch {
-          remainingWorkers = [];
+          remainingWorkers = null;
+        }
+
+        if (remainingWorkers === null) {
+          // Cannot determine which bindings are stale without the worker
+          // list — skip binding cleanup to avoid over-pruning active bindings.
+          yield {
+            kind: "completed" as const,
+            result: {
+              workersDeleted,
+              workersFailed,
+              bindingsPruned: 0,
+              tokensCleaned: 0,
+            },
+          };
+          return;
         }
 
         for (const tokenName of affectedTokens) {

@@ -212,6 +212,7 @@ export const workerPruneCommand = withRemoteOptions(
 
   const force = !!options.force;
   let prunableCount = 0;
+  let prunableWorkers: import("../../libswamp/mod.ts").PrunableWorker[] = [];
   let result: WorkerPruneResult | undefined;
 
   await consumeStream(
@@ -219,9 +220,7 @@ export const workerPruneCommand = withRemoteOptions(
     withDefaults<WorkerPruneEvent>({
       previewing: (event) => {
         prunableCount = event.workers.length;
-        if (cliCtx.outputMode === "log") {
-          renderWorkerPrunePreview(event.workers, dryRun, cliCtx.outputMode);
-        }
+        prunableWorkers = event.workers;
       },
       completed: (event) => {
         result = event.result;
@@ -233,9 +232,7 @@ export const workerPruneCommand = withRemoteOptions(
   );
 
   if (dryRun) {
-    if (cliCtx.outputMode === "json" && result) {
-      renderWorkerPruneResult(result, cliCtx.outputMode);
-    }
+    renderWorkerPrunePreview(prunableWorkers, true, cliCtx.outputMode);
     return;
   }
 
@@ -253,6 +250,7 @@ export const workerPruneCommand = withRemoteOptions(
   }
 
   if (cliCtx.outputMode === "log" && !force) {
+    renderWorkerPrunePreview(prunableWorkers, false, cliCtx.outputMode);
     const confirmed = await promptConfirmation("Proceed with pruning?");
     if (!confirmed) {
       return;
