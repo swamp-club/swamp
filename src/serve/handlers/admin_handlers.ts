@@ -47,8 +47,10 @@ import {
   createExtensionUpdateDeps,
   createInstallContext,
   createLibSwampContext,
+  createModelDeleteDeps,
   createVaultMigrateDeps,
   createWorkerListDeps,
+  createWorkerModelRunDeps,
   createWorkerQueueListDeps,
   createWorkerTokenCreateDeps,
   createWorkerTokenRevokeDeps,
@@ -73,6 +75,8 @@ import {
   type ExtensionSearchDeps,
   extensionUpdate,
   LockfileRepository,
+  modelDelete,
+  modelMethodRun,
   parseExtensionRef,
   ReconcileFromDiskService,
   type ReconcileTransition,
@@ -84,11 +88,20 @@ import {
   vaultMigratePreview,
   withDefaults,
   workerList,
+  workerPrune,
+  type WorkerPruneDeps,
   workerQueueList,
   workerTokenCreate,
   workerTokenList,
   workerTokenRevoke,
 } from "../../libswamp/mod.ts";
+import {
+  WORKER_MODEL_TYPE,
+  WorkerStateSchema,
+} from "../../domain/models/worker/worker_model.ts";
+import { fleetMemberSuffix } from "../worker_gateway.ts";
+import type { DataRecord } from "../../domain/data/data_record.ts";
+import { DEFAULT_WORKER_GC_GRACE_PERIOD_MS } from "../worker_gc_service.ts";
 import {
   type CustomDatastoreConfig,
   isCustomDatastoreConfig,
@@ -118,6 +131,7 @@ import type {
   VaultMigratePayload,
   WorkerListPayload,
   WorkerProbeResult,
+  WorkerPrunePayload,
   WorkerTokenCreatePayload,
   WorkerTokenRevokePayload,
   WorkerVerifyPayload,
@@ -2129,6 +2143,148 @@ export async function handleWorkerTokenRevoke(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "worker_token_revoke_failed", message);
+  } finally {
+    await pushChangedToRemote(ctx);
+  }
+}
+
+export async function handleWorkerPrune(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: WorkerPrunePayload | undefined,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx).allowed
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const gracePeriodMs = payload?.gracePeriodMs ??
+      DEFAULT_WORKER_GC_GRACE_PERIOD_MS;
+    const dryRun = payload?.dryRun ?? false;
+
+    const listDeps = createWorkerListDeps(ctx.repoContext.dataQueryService);
+
+    const runDeps = await createWorkerModelRunDeps(
+      ctx.repoDir,
+      ctx.repoContext,
+    );
+
+    const deleteDeps = createModelDeleteDeps(
+      ctx.repoDir,
+      ctx.datastoreResolver,
+      undefined,
+      ctx.repoContext.markDirty,
+    );
+
+    const pruneDeps: WorkerPruneDeps = {
+      listWorkers: async () => {
+        const records = await ctx.repoContext.dataQueryService.query(
+          `modelType == "${WORKER_MODEL_TYPE.normalized}" && name == "state-main"`,
+          { loadAttributes: true },
+        ) as DataRecord[];
+        return records.flatMap((r) => {
+          const parsed = WorkerStateSchema.safeParse(r.attributes);
+          if (!parsed.success) return [];
+          const s = parsed.data;
+          return [{
+            name: s.name,
+            definitionName: `worker-${s.name}`,
+            status: s.status,
+            tokenName: s.tokenName,
+            disconnectedAt: s.disconnectedAt,
+          }];
+        });
+      },
+
+      listTokens: async () => {
+        const tokens: WorkerPruneDeps extends { listTokens(): Promise<infer R> }
+          ? R
+          : never = [];
+        await consumeStream(
+          workerTokenList(libCtx, listDeps),
+          withDefaults({
+            completed: (
+              e: {
+                data: {
+                  tokens: Array<
+                    { name: string; bindings: Array<{ machineId: string }> }
+                  >;
+                };
+              },
+            ) => {
+              for (const t of e.data.tokens) {
+                tokens.push({ name: t.name, bindings: t.bindings });
+              }
+            },
+          }),
+        );
+        return tokens;
+      },
+
+      deleteWorker: (definitionName) =>
+        modelDelete(libCtx, deleteDeps, {
+          modelIdOrName: definitionName,
+          force: true,
+        }),
+
+      pruneBindings: (tokenName, machineIds) =>
+        modelMethodRun(libCtx, runDeps, {
+          modelIdOrName: tokenName,
+          methodName: "prune_bindings",
+          inputs: { machineIds },
+          lastEvaluated: false,
+        }),
+
+      resolveStaleBindings: async (token, remainingWorkerNames) => {
+        const remaining = new Set(remainingWorkerNames);
+        const stale: string[] = [];
+        for (const binding of token.bindings) {
+          const suffix = await fleetMemberSuffix(binding.machineId);
+          const expectedName = `${token.name}-${suffix}`;
+          if (
+            !remaining.has(expectedName) && !remaining.has(token.name)
+          ) {
+            stale.push(binding.machineId);
+          }
+        }
+        return stale.length > 0 ? stale : null;
+      },
+    };
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      workerPrune(libCtx, pruneDeps, { gracePeriodMs, dryRun }),
+      withDefaults({
+        completed: (e: { result: unknown }) => {
+          result = e.result as Record<string, unknown>;
+        },
+        error: (e: { error: { message: string } }) => {
+          throw new Error(e.error.message);
+        },
+      }),
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "worker.prune",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "worker_prune_failed", message);
   } finally {
     await pushChangedToRemote(ctx);
   }

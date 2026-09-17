@@ -482,10 +482,13 @@ front** — bounded `garbageCollection` version counts (worker 20; token, lease,
 pending-dispatch 10; fleet-probe 1) with `lifetime: "infinite"` on all but the
 fleet probe (`src/domain/models/worker/*_model.ts`).
 
-**Known limit:** the orchestrator does **not** run periodic data GC over its
-bookkeeping models; the only automatic sweep is the boot reconciliation below.
-Until an operator runs `swamp data gc`, the record *count* for workers, tokens,
-leases, and pending dispatches grows without bound (each record's version
+**Worker and token reaping:** `WorkerGcService` runs periodically on the serve
+side (default interval 1 h, default grace period 24 h) and prunes worker records
+that have been disconnected longer than the grace period. After pruning workers,
+stale bindings are removed from their enrollment tokens via the
+`prune_bindings` model method. The CLI equivalent is `swamp worker prune`.
+Step-lease and pending-dispatch records are not yet reaped automatically — until
+that is added, their record count grows without bound (each record's version
 history is what the declared counts cap).
 
 ### Boot reconciliation
@@ -1296,9 +1299,12 @@ Explicit non-goals for v1:
 - **Whole-environment dispatch.** Every dispatched step receives the full
   orchestrator environment snapshot; per-token or per-label env scoping is a
   later refinement.
-- **No periodic bookkeeping GC.** Worker, token, lease, and pending-dispatch
-  records accumulate until an operator runs `swamp data gc`; only the boot
-  sweep is automatic.
+- **No periodic bookkeeping GC for leases and pending dispatches.** Step-lease
+  and pending-dispatch records accumulate until an operator runs
+  `swamp data gc`; only the boot sweep is automatic. Worker and enrollment-token
+  records are pruned by `WorkerGcService` (periodic, on the serve side) and
+  `swamp worker prune` (manual CLI). See
+  `src/serve/worker_gc_service.ts` and `src/libswamp/worker/prune.ts`.
 - **No in-flight resume.** A dispatch that loses its control socket is
   re-dispatched from scratch when no write had landed
   (`src/serve/dispatch_service.ts`); partial progress on the worker is

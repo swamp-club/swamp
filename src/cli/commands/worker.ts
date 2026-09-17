@@ -29,6 +29,7 @@ import { workerQueueCommand } from "./worker_queue.ts";
 import { workerVerifyCommand } from "./worker_verify.ts";
 import { workerDaemonCommand } from "./worker_daemon.ts";
 import { workerExecDispatchCommand } from "./worker_exec_dispatch.ts";
+import { workerPruneCommand } from "./worker_prune.ts";
 
 export const workerTokenCommand = new Command()
   .name("token")
@@ -50,4 +51,5 @@ export const workerCommand = new Command()
   .command("connect", workerConnectCommand)
   .command("verify", workerVerifyCommand)
   .command("daemon", workerDaemonCommand)
-  .command("exec-dispatch", workerExecDispatchCommand);
+  .command("exec-dispatch", workerExecDispatchCommand)
+  .command("prune", workerPruneCommand);

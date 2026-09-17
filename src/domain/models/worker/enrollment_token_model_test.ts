@@ -418,6 +418,145 @@ Deno.test("enrollmentTokenModel: revoke disconnects all bindings", async () => {
   );
 });
 
+// --- prune_bindings ---
+
+Deno.test("enrollmentTokenModel: prune_bindings removes specified machineIds", async () => {
+  const { context, store, plaintext } = await mintFleetToken(
+    "prune-test",
+    "unlimited",
+  );
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: plaintext, machineId: "m1" },
+    context,
+  );
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: plaintext, machineId: "m2" },
+    context,
+  );
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: plaintext, machineId: "m3" },
+    context,
+  );
+  assertEquals(tokenBindings(store).length, 3);
+
+  await enrollmentTokenModel.methods.prune_bindings.execute(
+    { machineIds: ["m1", "m3"] },
+    context,
+  );
+  const remaining = tokenBindings(store);
+  assertEquals(remaining.length, 1);
+  assertEquals(remaining[0].machineId, "m2");
+});
+
+Deno.test("enrollmentTokenModel: prune_bindings with no matching ids is a no-op", async () => {
+  const { context, store, plaintext, versions } = await mintFleetToken(
+    "prune-noop",
+    "unlimited",
+  );
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: plaintext, machineId: "m1" },
+    context,
+  );
+  const versionsAfterEnroll = versions.get("token-main");
+
+  await enrollmentTokenModel.methods.prune_bindings.execute(
+    { machineIds: ["nonexistent"] },
+    context,
+  );
+  assertEquals(versions.get("token-main"), versionsAfterEnroll);
+  assertEquals(tokenBindings(store).length, 1);
+});
+
+Deno.test("enrollmentTokenModel: prune_bindings removes all bindings when all match", async () => {
+  const { context, store, plaintext } = await mintFleetToken(
+    "prune-all",
+    "unlimited",
+  );
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: plaintext, machineId: "m1" },
+    context,
+  );
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: plaintext, machineId: "m2" },
+    context,
+  );
+
+  await enrollmentTokenModel.methods.prune_bindings.execute(
+    { machineIds: ["m1", "m2"] },
+    context,
+  );
+  assertEquals(tokenBindings(store).length, 0);
+});
+
+Deno.test("enrollmentTokenModel: prune_bindings rejects on unused token", async () => {
+  const harness = createInMemoryWorkerContext(
+    ENROLLMENT_TOKEN_MODEL_TYPE,
+    "prune-unused",
+  );
+  await enrollmentTokenModel.methods.mint.execute(mintArgs, harness.context);
+
+  await assertRejects(
+    () =>
+      enrollmentTokenModel.methods.prune_bindings.execute(
+        { machineIds: ["m1"] },
+        harness.context,
+      ),
+    Error,
+    "unused",
+  );
+});
+
+Deno.test("enrollmentTokenModel: prune_bindings works on revoked token", async () => {
+  const { context, store, plaintext } = await mintFleetToken(
+    "prune-revoked",
+    "unlimited",
+  );
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: plaintext, machineId: "m1" },
+    context,
+  );
+  await enrollmentTokenModel.methods.revoke.execute({}, context);
+
+  await enrollmentTokenModel.methods.prune_bindings.execute(
+    { machineIds: ["m1"] },
+    context,
+  );
+  assertEquals(tokenBindings(store).length, 0);
+});
+
+Deno.test("enrollmentTokenModel: prune_bindings frees enrollment slots on capped token", async () => {
+  const { context, store, plaintext } = await mintFleetToken("prune-cap", 2);
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: plaintext, machineId: "m1" },
+    context,
+  );
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: plaintext, machineId: "m2" },
+    context,
+  );
+  await assertRejects(
+    () =>
+      enrollmentTokenModel.methods.redeem.execute(
+        { presentedToken: plaintext, machineId: "m3" },
+        context,
+      ),
+    Error,
+    "allowance exhausted",
+  );
+
+  await enrollmentTokenModel.methods.prune_bindings.execute(
+    { machineIds: ["m1"] },
+    context,
+  );
+  assertEquals(tokenBindings(store).length, 1);
+
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: plaintext, machineId: "m3" },
+    context,
+  );
+  assertEquals(tokenBindings(store).length, 2);
+});
+
 Deno.test("timingSafeEqual: equal and unequal strings", () => {
   assertEquals(timingSafeEqual("abc", "abc"), true);
   assertEquals(timingSafeEqual("abc", "abd"), false);

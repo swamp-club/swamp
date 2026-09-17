@@ -449,6 +449,15 @@ export {
   type WorkerQueueListEvent,
   type WorkerQueueListItem,
 } from "./worker/queue_list.ts";
+export {
+  type PrunableToken,
+  type PrunableWorker,
+  workerPrune,
+  type WorkerPruneDeps,
+  type WorkerPruneEvent,
+  type WorkerPruneInput,
+  type WorkerPruneResult,
+} from "./worker/prune.ts";
 
 // Server token operations (user authentication for swamp serve)
 export {

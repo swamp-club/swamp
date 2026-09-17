@@ -453,6 +453,11 @@ export interface WorkerVerifyPayload {
   labels?: Record<string, string>;
 }
 
+export interface WorkerPrunePayload {
+  gracePeriodMs?: number;
+  dryRun?: boolean;
+}
+
 export type DatastoreStatusPayload = Record<string, never>;
 
 // ── Extension operations ─────────────────────────────────────────────
@@ -832,6 +837,7 @@ export type ServerRequest =
     payload?: WorkerQueueListPayload;
   }
   | { type: "worker.verify"; id: string; payload?: WorkerVerifyPayload }
+  | { type: "worker.prune"; id: string; payload?: WorkerPrunePayload }
   | { type: "datastore.status"; id: string; payload?: DatastoreStatusPayload }
   | {
     type: "datastore.setup.extension";
@@ -1294,6 +1300,10 @@ export interface WorkerQueueListResponse {
   data: Record<string, unknown>;
 }
 
+export interface WorkerPruneResponse {
+  data: Record<string, unknown>;
+}
+
 export interface WorkerProbeResult {
   name: string;
   status: "pass" | "fail" | "error";
@@ -1672,6 +1682,7 @@ export type ServerMessage =
     payload: WorkerQueueListResponse;
   }
   | { type: "worker.verify"; id: string; payload: WorkerVerifyResponse }
+  | { type: "worker.prune"; id: string; payload: WorkerPruneResponse }
   | { type: "datastore.status"; id: string; payload: DatastoreStatusResponse }
   | {
     type: "datastore.setup.extension";

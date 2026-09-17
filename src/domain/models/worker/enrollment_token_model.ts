@@ -247,6 +247,36 @@ async function redeem(
   return { dataHandles: [handle] };
 }
 
+const PruneBindingsArgsSchema = z.object({
+  machineIds: z.array(z.string().min(1)).min(1).describe(
+    "Machine IDs whose bindings should be removed",
+  ),
+});
+
+async function pruneBindings(
+  args: z.infer<typeof PruneBindingsArgsSchema>,
+  context: MethodContext,
+): Promise<MethodResult> {
+  const token = await readToken(context);
+  if (token.state === "unused") {
+    throw new Error(
+      `Enrollment token '${context.definition.name}' is unused — nothing to prune`,
+    );
+  }
+  const idSet = new Set(args.machineIds);
+  const remaining = token.bindings.filter((b) => !idSet.has(b.machineId));
+  if (remaining.length === token.bindings.length) {
+    return { dataHandles: [] };
+  }
+  const updated: EnrollmentToken = { ...token, bindings: remaining };
+  const handle = await context.writeResource!(
+    "token",
+    TOKEN_DATA_NAME,
+    updated,
+  );
+  return { dataHandles: [handle] };
+}
+
 const EmptyArgsSchema = z.object({});
 
 async function revoke(
@@ -329,6 +359,13 @@ export const enrollmentTokenModel: ModelDefinition = defineModel({
       kind: "action",
       arguments: EmptyArgsSchema,
       execute: expire,
+    },
+    prune_bindings: {
+      description:
+        "Remove bindings for specified machine IDs (stale fleet members)",
+      kind: "action",
+      arguments: PruneBindingsArgsSchema,
+      execute: pruneBindings,
     },
   },
 });

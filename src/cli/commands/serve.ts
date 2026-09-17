@@ -71,7 +71,15 @@ import { getActiveTelemetryContext } from "../telemetry_integration.ts";
 import { HttpTelemetrySender } from "../../infrastructure/telemetry/http_telemetry_sender.ts";
 import { USER_AGENT } from "../load_identity.ts";
 import { CapabilityService } from "../../serve/capability_service.ts";
-import { WorkerGateway } from "../../serve/worker_gateway.ts";
+import {
+  fleetMemberSuffix,
+  WorkerGateway,
+} from "../../serve/worker_gateway.ts";
+import {
+  DEFAULT_WORKER_GC_GRACE_PERIOD_MS,
+  DEFAULT_WORKER_GC_INTERVAL_MS,
+  WorkerGcService,
+} from "../../serve/worker_gc_service.ts";
 import { dispatchFleetProbe } from "../../serve/fleet_probe_dispatch.ts";
 import { DispatchService } from "../../serve/dispatch_service.ts";
 import { DispatchRegistry } from "../../serve/dispatch_registry.ts";
@@ -97,11 +105,28 @@ import {
 } from "../../presentation/output/serve_daemon_output.ts";
 import { groupCommandAction } from "../group_action.ts";
 import {
+  consumeStream,
+  createLibSwampContext,
+  createModelDeleteDeps,
+  createWorkerListDeps,
+  createWorkerModelRunDeps,
   enumeratePulledExtensionDirs,
+  modelDelete,
+  modelMethodRun,
   normalizeFireTime,
   ScheduledExecutionService,
   type TriggerOverride,
+  withDefaults,
+  workerPrune,
+  type WorkerPruneDeps,
+  type WorkerPruneResult,
+  workerTokenList,
 } from "../../libswamp/mod.ts";
+import {
+  WORKER_MODEL_TYPE,
+  WorkerStateSchema,
+} from "../../domain/models/worker/worker_model.ts";
+import type { DataRecord } from "../../domain/data/data_record.ts";
 import {
   isSensitiveHeader,
   parseWebhookFlag,
@@ -2766,6 +2791,7 @@ export const serveCommand = new Command()
     }
 
     let heartbeatService: InstanceHeartbeatService | undefined;
+    let workerGcService: WorkerGcService | undefined;
 
     logger.info("Boot: reaping stale runs via tracker");
     // Reap stale runs via the SQLite tracker (heartbeat + PID liveness).
@@ -4773,6 +4799,9 @@ export const serveCommand = new Command()
           }
         }
       }
+      if (workerGcService) {
+        await workerGcService.dispose();
+      }
       if (heartbeatService) {
         await heartbeatService.stop();
       }
@@ -5089,6 +5118,118 @@ export const serveCommand = new Command()
       }
     } else {
       logger.info("Telemetry: disabled for this process");
+    }
+
+    // Worker GC — prunes disconnected worker records and stale token bindings
+    {
+      const libCtx = createLibSwampContext();
+      const listDeps = createWorkerListDeps(
+        repoContext.dataQueryService,
+      );
+      const runDeps = await createWorkerModelRunDeps(
+        repoDir,
+        repoContext,
+      );
+      const deleteDeps = createModelDeleteDeps(
+        repoDir,
+        datastoreResolver,
+        undefined,
+        repoContext.markDirty,
+      );
+
+      const buildPruneDeps = (): WorkerPruneDeps => ({
+        listWorkers: async () => {
+          const records = await repoContext.dataQueryService.query(
+            `modelType == "${WORKER_MODEL_TYPE.normalized}" && name == "state-main"`,
+            { loadAttributes: true },
+          ) as DataRecord[];
+          return records.flatMap((r) => {
+            const parsed = WorkerStateSchema.safeParse(r.attributes);
+            if (!parsed.success) return [];
+            const s = parsed.data;
+            return [{
+              name: s.name,
+              definitionName: `worker-${s.name}`,
+              status: s.status,
+              tokenName: s.tokenName,
+              disconnectedAt: s.disconnectedAt,
+            }];
+          });
+        },
+        listTokens: async () => {
+          const tokens: WorkerPruneDeps extends
+            { listTokens(): Promise<infer R> } ? R : never = [];
+          await consumeStream(
+            workerTokenList(libCtx, listDeps),
+            withDefaults({
+              completed: (
+                e: {
+                  data: {
+                    tokens: Array<
+                      { name: string; bindings: Array<{ machineId: string }> }
+                    >;
+                  };
+                },
+              ) => {
+                for (const t of e.data.tokens) {
+                  tokens.push({ name: t.name, bindings: t.bindings });
+                }
+              },
+            }),
+          );
+          return tokens;
+        },
+        deleteWorker: (definitionName) =>
+          modelDelete(libCtx, deleteDeps, {
+            modelIdOrName: definitionName,
+            force: true,
+          }),
+        pruneBindings: (tokenName, machineIds) =>
+          modelMethodRun(libCtx, runDeps, {
+            modelIdOrName: tokenName,
+            methodName: "prune_bindings",
+            inputs: { machineIds },
+            lastEvaluated: false,
+          }),
+        resolveStaleBindings: async (token, remainingWorkerNames) => {
+          const remaining = new Set(remainingWorkerNames);
+          const stale: string[] = [];
+          for (const binding of token.bindings) {
+            const suffix = await fleetMemberSuffix(binding.machineId);
+            const expectedName = `${token.name}-${suffix}`;
+            if (
+              !remaining.has(expectedName) && !remaining.has(token.name)
+            ) {
+              stale.push(binding.machineId);
+            }
+          }
+          return stale.length > 0 ? stale : null;
+        },
+      });
+
+      workerGcService = new WorkerGcService({
+        intervalMs: DEFAULT_WORKER_GC_INTERVAL_MS,
+        gracePeriodMs: DEFAULT_WORKER_GC_GRACE_PERIOD_MS,
+        runPrune: async (gracePeriodMs: number): Promise<WorkerPruneResult> => {
+          const deps = buildPruneDeps();
+          let result: WorkerPruneResult = {
+            workersDeleted: 0,
+            workersFailed: 0,
+            bindingsPruned: 0,
+            tokensCleaned: 0,
+          };
+          await consumeStream(
+            workerPrune(libCtx, deps, { gracePeriodMs, dryRun: false }),
+            withDefaults({
+              completed: (e: { result: WorkerPruneResult }) => {
+                result = e.result;
+              },
+            }),
+          );
+          return result;
+        },
+      });
+      workerGcService.start();
     }
 
     isReady = true;

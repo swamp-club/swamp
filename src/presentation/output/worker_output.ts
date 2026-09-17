@@ -26,7 +26,9 @@
 import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type {
+  PrunableWorker,
   WorkerListData,
+  WorkerPruneResult,
   WorkerQueueListData,
   WorkerTokenCreateData,
   WorkerTokenListData,
@@ -461,4 +463,70 @@ export function renderWorkerVerify(
       ),
     );
   }
+}
+
+/**
+ * Renders the worker prune preview (dry-run or before confirmation).
+ */
+export function renderWorkerPrunePreview(
+  workers: PrunableWorker[],
+  dryRun: boolean,
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(JSON.stringify({ dryRun, prunable: workers }, null, 2));
+    return;
+  }
+  if (workers.length === 0) {
+    writeOutput(dim("No stale workers to prune."));
+    return;
+  }
+  const label = dryRun ? "Would prune" : "Pruning";
+  writeOutput(`${label} ${bold(String(workers.length))} worker(s):\n`);
+  for (const w of workers) {
+    writeOutput(
+      `  ${dim("•")} ${bold(w.name)} (token: ${w.tokenName}, disconnected: ${
+        w.disconnectedAt ?? "unknown"
+      })`,
+    );
+  }
+  writeOutput("");
+}
+
+/**
+ * Renders the worker prune result. JSON mode emits the structured counts.
+ */
+export function renderWorkerPruneResult(
+  result: WorkerPruneResult,
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  const parts: string[] = [];
+  if (result.workersDeleted > 0) {
+    parts.push(
+      `${green(checkmark)} Pruned ${
+        bold(String(result.workersDeleted))
+      } worker(s)`,
+    );
+  }
+  if (result.bindingsPruned > 0) {
+    parts.push(
+      `${green(checkmark)} Cleaned ${
+        bold(String(result.bindingsPruned))
+      } binding(s) from ${result.tokensCleaned} token(s)`,
+    );
+  }
+  if (result.workersFailed > 0) {
+    parts.push(
+      `${yellow("!")} ${result.workersFailed} worker(s) failed to delete`,
+    );
+  }
+  if (parts.length === 0) {
+    writeOutput(dim("Nothing to prune."));
+    return;
+  }
+  writeOutput(parts.join("\n"));
 }
