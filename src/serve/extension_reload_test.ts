@@ -225,3 +225,53 @@ Deno.test("performServeReload: trigger override updater error is soft failure", 
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
+
+Deno.test("performServeReload: calls extensionDiscoverer and adds count to reloadedCount", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
+
+    let discovererCalled = false;
+    const result = await performServeReload(
+      tmpDir,
+      join(tmpDir, "nonexistent_lockfile.json"),
+      {
+        extensionDiscoverer: () => {
+          discovererCalled = true;
+          return Promise.resolve(3);
+        },
+      },
+    );
+
+    assertEquals(result.success, true);
+    assertEquals(discovererCalled, true);
+    assertEquals(result.reloadedCount, 3);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("performServeReload: extensionDiscoverer error is soft failure", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
+
+    const result = await performServeReload(
+      tmpDir,
+      join(tmpDir, "nonexistent_lockfile.json"),
+      {
+        extensionDiscoverer: () =>
+          Promise.reject(new Error("discovery failed")),
+      },
+    );
+
+    assertEquals(result.success, true);
+    assertStringIncludes(
+      result.errors[0],
+      "Failed to discover new extensions",
+    );
+    assertStringIncludes(result.errors[0], "discovery failed");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});

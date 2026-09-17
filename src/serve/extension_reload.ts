@@ -26,14 +26,19 @@ import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_regist
 import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
 import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
 import {
+  enumeratePulledExtensionDirs,
   incrementReloadGeneration,
   LockfileRepository,
 } from "../libswamp/mod.ts";
-import { removeAttachedExtensionsForType } from "../domain/extensions/model_kind_adapter.ts";
+import {
+  modelKindAdapter,
+  removeAttachedExtensionsForType,
+} from "../domain/extensions/model_kind_adapter.ts";
 import { extensionKindToKindDir } from "../domain/extensions/source_failure_recorder.ts";
 import { computeSourceFingerprint } from "../domain/extensions/bundle_freshness.ts";
 import { bundleExtension } from "../domain/models/bundle.ts";
 import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
+import { ExtensionLoader } from "../domain/extensions/extension_loader.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import { swampPath } from "../infrastructure/persistence/paths.ts";
 import { canonicalizePath } from "../infrastructure/persistence/canonicalize_path.ts";
@@ -53,6 +58,11 @@ import { resolveModelsDir } from "../cli/resolve_models_dir.ts";
 import type { ServeReloadResponse } from "./protocol.ts";
 import { readServeConfigFile } from "./serve_config.ts";
 import type { TriggerOverride } from "../libswamp/mod.ts";
+import { vaultKindAdapter } from "../domain/extensions/vault_kind_adapter.ts";
+import { datastoreKindAdapter } from "../domain/extensions/datastore_kind_adapter.ts";
+import { reportKindAdapter } from "../domain/extensions/report_kind_adapter.ts";
+import { webhookKindAdapter } from "../domain/extensions/webhook_kind_adapter.ts";
+import type { KindAdapter } from "../domain/extensions/kind_adapter.ts";
 
 const logger = getSwampLogger(["serve", "reload"]);
 
@@ -263,6 +273,7 @@ export interface ServeReloadOptions {
     overrides: ReadonlyMap<string, TriggerOverride>,
   ) => Promise<number>;
   workflowReloader?: () => Promise<number>;
+  extensionDiscoverer?: () => Promise<number>;
 }
 
 export async function performServeReload(
@@ -291,6 +302,18 @@ export async function performServeReload(
       lockfilePath,
       pulledExtensionsRoot,
     );
+
+    if (options?.extensionDiscoverer) {
+      try {
+        const discovered = await options.extensionDiscoverer();
+        reloadedCount += discovered;
+      } catch (err) {
+        errors.push(
+          "Failed to discover new extensions: " +
+            (err instanceof Error ? err.message : String(err)),
+        );
+      }
+    }
 
     try {
       await reloadTrustedCollectives(repoDir);
@@ -348,4 +371,53 @@ export async function performServeReload(
   } finally {
     reloading = false;
   }
+}
+
+export interface ExtensionDiscoveryDeps {
+  lockfilePath: string;
+  repoDir: string;
+  pulledExtensionsRoot?: string;
+}
+
+export function createExtensionDiscoverer(
+  deps: ExtensionDiscoveryDeps,
+): () => Promise<number> {
+  return async () => {
+    const { lockfilePath, repoDir, pulledExtensionsRoot } = deps;
+    const denoRuntime = new EmbeddedDenoRuntime();
+    let discovered = 0;
+
+    const kinds: Array<
+      {
+        type: Parameters<typeof enumeratePulledExtensionDirs>[2];
+        adapter: KindAdapter;
+      }
+    > = [
+      { type: "models", adapter: modelKindAdapter },
+      { type: "vaults", adapter: vaultKindAdapter },
+      { type: "datastores", adapter: datastoreKindAdapter },
+      { type: "reports", adapter: reportKindAdapter },
+      { type: "webhooks", adapter: webhookKindAdapter },
+    ];
+
+    for (const { type, adapter } of kinds) {
+      const dirs = await enumeratePulledExtensionDirs(
+        lockfilePath,
+        repoDir,
+        type,
+        pulledExtensionsRoot,
+      );
+      if (dirs.length === 0) continue;
+
+      const loader = new ExtensionLoader(denoRuntime, adapter, repoDir);
+      const [primary, ...rest] = dirs;
+      const result = await loader.load(primary, {
+        skipAlreadyRegistered: true,
+        additionalDirs: rest,
+      });
+      discovered += result.loaded.length;
+    }
+
+    return discovered;
+  };
 }

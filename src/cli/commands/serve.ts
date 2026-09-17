@@ -171,6 +171,7 @@ import { webhookTypeRegistry } from "../../domain/webhooks/webhook_type_registry
 import { resolveWebhookType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
 import {
+  createExtensionDiscoverer,
   isReloading,
   performServeReload,
 } from "../../serve/extension_reload.ts";
@@ -1882,14 +1883,33 @@ export const serveCommand = new Command()
       });
 
       if (repoMarker?.datastore?.managedConfig) {
+        const extensionDiscoverer = createExtensionDiscoverer({
+          lockfilePath: extensionLockfilePath,
+          repoDir: resolvedRepoDir,
+        });
         configPoller = new ConfigPoller({
           syncService,
           syncGate,
           catalogInvalidate: () => repoContext.catalogStore.invalidate(),
-          // No-op: extension type registries (model/vault/datastore/report)
-          // require a full ensureLoaded() reload, not just catalog invalidation.
-          // Deferred to a future extension hot-reload feature.
-          extensionCatalogInvalidate: () => {},
+          extensionReloader: async () => {
+            const result = await performServeReload(
+              resolvedRepoDir,
+              extensionLockfilePath,
+              { extensionDiscoverer },
+            );
+            if (result.success) {
+              if (result.reloadedCount > 0) {
+                logger.info(
+                  "Config poller: reloaded {count} extension type(s)",
+                  { count: result.reloadedCount },
+                );
+              }
+            } else {
+              for (const err of result.errors) {
+                logger.warn`Config poller extension reload: ${err}`;
+              }
+            }
+          },
           namespace: serveNamespace,
         });
         configPoller.start();
@@ -4636,6 +4656,10 @@ export const serveCommand = new Command()
           return;
         }
         logger.info("SIGHUP received, reloading pulled extensions...");
+        const sighupDiscoverer = createExtensionDiscoverer({
+          lockfilePath: extensionLockfilePath,
+          repoDir: resolvedRepoDir,
+        });
         const reloadOptions:
           import("../../serve/extension_reload.ts").ServeReloadOptions = {
             triggerOverrideUpdater: scheduledExecution
@@ -4643,6 +4667,7 @@ export const serveCommand = new Command()
                 scheduledExecution!.updateTriggerOverrides(overrides)
               : undefined,
             workflowReloader: connectionCtx.workflowReloader,
+            extensionDiscoverer: sighupDiscoverer,
           };
         performServeReload(
           resolvedRepoDir,

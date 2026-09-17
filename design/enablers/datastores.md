@@ -1762,10 +1762,12 @@ When a pod boots and logs "N pulled extension(s) have missing source files":
    re-bundles the updated extensions. Without `--hot-reload`, the reload step
    fails and a pod restart is required.
 
-### Hot reload recommendation
+### Extension auto-reload via config poller
 
-For `managedConfig` deployments where pods must be recoverable from
-datastore-only state without `kubectl exec`, enable `--hot-reload` on the serve
-process. This allows `swamp serve reload --server` to re-bundle extensions after
-`extension install --server`, avoiding a full pod restart. See
-[serve.md](../primitives/serve.md) for hot-reload details.
+With `managedConfig`, the config poller automatically detects new or updated
+extension files synced from the remote datastore and triggers
+`performServeReload` to re-index and register them. This means extensions that
+arrive after boot (via another instance's `extension install --server` or
+`extension pull`) are discovered and loaded without a restart or manual SIGHUP.
+`--hot-reload` is still useful for trigger-override and workflow reloading via
+`swamp serve reload`, but extension registration no longer requires it.

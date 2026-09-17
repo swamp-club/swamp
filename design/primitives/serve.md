@@ -301,9 +301,12 @@ per-process memory. A run's events can only be attached to on the instance
 executing it; the control plane records _where_ it is, not _what happened_.
 Grants replicate as data, but each instance loads its own snapshot on its own
 poll, so a grant change is visible on different instances up to 30 s apart.
-Extension registries are indexed at startup and the config poller deliberately
-does not reload them (`extensionCatalogInvalidate` is a documented no-op in
-`src/cli/commands/serve.ts`); use hot reload or a restart.
+Extension registries are indexed at startup. When `managedConfig` is active, the
+config poller triggers `performServeReload` after syncing new extension files,
+which re-indexes existing extensions and discovers newly-arrived ones via
+`createExtensionDiscoverer` (`src/serve/extension_reload.ts`). Extensions that
+arrive via config sync are registered automatically without a restart or manual
+SIGHUP.
 
 **Rolling restart.** On SIGTERM an instance stops accepting triggers, drains
 active runs for 30 s, aborts what remains and waits 5 s more, marks those

@@ -29,7 +29,7 @@ export interface ConfigPollerOptions {
   syncService: DatastoreSyncService;
   syncGate?: SyncGate;
   catalogInvalidate: () => void;
-  extensionCatalogInvalidate: () => void;
+  extensionReloader: () => Promise<void>;
   pollIntervalMs?: number;
   namespace?: string;
 }
@@ -38,7 +38,7 @@ export class ConfigPoller {
   readonly #syncService: DatastoreSyncService;
   readonly #syncGate?: SyncGate;
   readonly #catalogInvalidate: () => void;
-  readonly #extensionCatalogInvalidate: () => void;
+  readonly #extensionReloader: () => Promise<void>;
   readonly #pollIntervalMs: number;
   readonly #namespace?: string;
   #timer: ReturnType<typeof setInterval> | null = null;
@@ -49,7 +49,7 @@ export class ConfigPoller {
     this.#syncService = options.syncService;
     this.#syncGate = options.syncGate;
     this.#catalogInvalidate = options.catalogInvalidate;
-    this.#extensionCatalogInvalidate = options.extensionCatalogInvalidate;
+    this.#extensionReloader = options.extensionReloader;
     this.#pollIntervalMs = options.pollIntervalMs ??
       DEFAULT_CONFIG_POLL_INTERVAL_MS;
     this.#namespace = options.namespace;
@@ -97,7 +97,14 @@ export class ConfigPoller {
         logger
           .info`Config poller: ${count} file(s) updated, invalidating catalogs`;
         this.#catalogInvalidate();
-        this.#extensionCatalogInvalidate();
+        try {
+          await this.#extensionReloader();
+        } catch (error) {
+          logger
+            .warn`Config poller extension reload failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+        }
       }
     } catch (error) {
       logger

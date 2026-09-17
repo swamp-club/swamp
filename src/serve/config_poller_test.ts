@@ -64,28 +64,28 @@ function createMockSyncService(
 function createCallbackTrackers() {
   const state = {
     catalogInvalidateCalls: 0,
-    extensionCatalogInvalidateCalls: 0,
+    extensionReloaderCalls: 0,
   };
   return {
     state,
     catalogInvalidate: () => {
       state.catalogInvalidateCalls++;
     },
-    extensionCatalogInvalidate: () => {
-      state.extensionCatalogInvalidateCalls++;
+    extensionReloader: () => {
+      state.extensionReloaderCalls++;
+      return Promise.resolve();
     },
   };
 }
 
 Deno.test("ConfigPoller: start and stop lifecycle completes cleanly", async () => {
   const sync = createMockSyncService();
-  const { catalogInvalidate, extensionCatalogInvalidate } =
-    createCallbackTrackers();
+  const { catalogInvalidate, extensionReloader } = createCallbackTrackers();
 
   const poller = new ConfigPoller({
     syncService: sync,
     catalogInvalidate,
-    extensionCatalogInvalidate,
+    extensionReloader,
     pollIntervalMs: 50,
   });
 
@@ -96,13 +96,12 @@ Deno.test("ConfigPoller: start and stop lifecycle completes cleanly", async () =
 
 Deno.test("ConfigPoller: pullChanged is called with subdirs config", async () => {
   const sync = createMockSyncService();
-  const { catalogInvalidate, extensionCatalogInvalidate } =
-    createCallbackTrackers();
+  const { catalogInvalidate, extensionReloader } = createCallbackTrackers();
 
   const poller = new ConfigPoller({
     syncService: sync,
     catalogInvalidate,
-    extensionCatalogInvalidate,
+    extensionReloader,
     pollIntervalMs: 30,
   });
 
@@ -116,13 +115,12 @@ Deno.test("ConfigPoller: pullChanged is called with subdirs config", async () =>
 
 Deno.test("ConfigPoller: namespace is passed through to pullChanged", async () => {
   const sync = createMockSyncService();
-  const { catalogInvalidate, extensionCatalogInvalidate } =
-    createCallbackTrackers();
+  const { catalogInvalidate, extensionReloader } = createCallbackTrackers();
 
   const poller = new ConfigPoller({
     syncService: sync,
     catalogInvalidate,
-    extensionCatalogInvalidate,
+    extensionReloader,
     pollIntervalMs: 30,
     namespace: "test-namespace",
   });
@@ -136,13 +134,13 @@ Deno.test("ConfigPoller: namespace is passed through to pullChanged", async () =
 
 Deno.test("ConfigPoller: invalidates both catalogs when pullChanged returns count > 0", async () => {
   const sync = createMockSyncService({ pullResult: 3 });
-  const { state, catalogInvalidate, extensionCatalogInvalidate } =
+  const { state, catalogInvalidate, extensionReloader } =
     createCallbackTrackers();
 
   const poller = new ConfigPoller({
     syncService: sync,
     catalogInvalidate,
-    extensionCatalogInvalidate,
+    extensionReloader,
     pollIntervalMs: 30,
   });
 
@@ -154,22 +152,22 @@ Deno.test("ConfigPoller: invalidates both catalogs when pullChanged returns coun
   await poller.stop();
 
   assertGreater(state.catalogInvalidateCalls, 0);
-  assertGreater(state.extensionCatalogInvalidateCalls, 0);
+  assertGreater(state.extensionReloaderCalls, 0);
   assertEquals(
     state.catalogInvalidateCalls,
-    state.extensionCatalogInvalidateCalls,
+    state.extensionReloaderCalls,
   );
 });
 
 Deno.test("ConfigPoller: does not invalidate catalogs when pullChanged returns 0", async () => {
   const sync = createMockSyncService({ pullResult: 0 });
-  const { state, catalogInvalidate, extensionCatalogInvalidate } =
+  const { state, catalogInvalidate, extensionReloader } =
     createCallbackTrackers();
 
   const poller = new ConfigPoller({
     syncService: sync,
     catalogInvalidate,
-    extensionCatalogInvalidate,
+    extensionReloader,
     pollIntervalMs: 30,
   });
 
@@ -178,18 +176,18 @@ Deno.test("ConfigPoller: does not invalidate catalogs when pullChanged returns 0
   await poller.stop();
 
   assertEquals(state.catalogInvalidateCalls, 0);
-  assertEquals(state.extensionCatalogInvalidateCalls, 0);
+  assertEquals(state.extensionReloaderCalls, 0);
 });
 
 Deno.test("ConfigPoller: does not invalidate catalogs when pullChanged returns void", async () => {
   const sync = createMockSyncService({ pullResult: undefined });
-  const { state, catalogInvalidate, extensionCatalogInvalidate } =
+  const { state, catalogInvalidate, extensionReloader } =
     createCallbackTrackers();
 
   const poller = new ConfigPoller({
     syncService: sync,
     catalogInvalidate,
-    extensionCatalogInvalidate,
+    extensionReloader,
     pollIntervalMs: 30,
   });
 
@@ -198,20 +196,19 @@ Deno.test("ConfigPoller: does not invalidate catalogs when pullChanged returns v
   await poller.stop();
 
   assertEquals(state.catalogInvalidateCalls, 0);
-  assertEquals(state.extensionCatalogInvalidateCalls, 0);
+  assertEquals(state.extensionReloaderCalls, 0);
 });
 
 Deno.test("ConfigPoller: survives pullChanged throwing an error", async () => {
   const sync = createMockSyncService({
     pullError: new Error("network timeout"),
   });
-  const { catalogInvalidate, extensionCatalogInvalidate } =
-    createCallbackTrackers();
+  const { catalogInvalidate, extensionReloader } = createCallbackTrackers();
 
   const poller = new ConfigPoller({
     syncService: sync,
     catalogInvalidate,
-    extensionCatalogInvalidate,
+    extensionReloader,
     pollIntervalMs: 30,
   });
 
@@ -224,13 +221,12 @@ Deno.test("ConfigPoller: survives pullChanged throwing an error", async () => {
 
 Deno.test("ConfigPoller: serializes pulls — skips tick while pulling", async () => {
   const sync = createMockSyncService({ pullDelay: 100 });
-  const { catalogInvalidate, extensionCatalogInvalidate } =
-    createCallbackTrackers();
+  const { catalogInvalidate, extensionReloader } = createCallbackTrackers();
 
   const poller = new ConfigPoller({
     syncService: sync,
     catalogInvalidate,
-    extensionCatalogInvalidate,
+    extensionReloader,
     pollIntervalMs: 20,
   });
 
@@ -246,13 +242,12 @@ Deno.test("ConfigPoller: serializes pulls — skips tick while pulling", async (
 
 Deno.test("ConfigPoller: double start does not create duplicate timers", async () => {
   const sync = createMockSyncService();
-  const { catalogInvalidate, extensionCatalogInvalidate } =
-    createCallbackTrackers();
+  const { catalogInvalidate, extensionReloader } = createCallbackTrackers();
 
   const poller = new ConfigPoller({
     syncService: sync,
     catalogInvalidate,
-    extensionCatalogInvalidate,
+    extensionReloader,
     pollIntervalMs: 30,
   });
 
@@ -278,13 +273,12 @@ Deno.test("ConfigPoller: stop awaits pending pull before returning", async () =>
     return result;
   };
 
-  const { catalogInvalidate, extensionCatalogInvalidate } =
-    createCallbackTrackers();
+  const { catalogInvalidate, extensionReloader } = createCallbackTrackers();
 
   const poller = new ConfigPoller({
     syncService: sync,
     catalogInvalidate,
-    extensionCatalogInvalidate,
+    extensionReloader,
     pollIntervalMs: 20,
   });
 
@@ -299,13 +293,12 @@ Deno.test("ConfigPoller: stop awaits pending pull before returning", async () =>
 
 Deno.test("ConfigPoller: respects custom pollIntervalMs", async () => {
   const sync = createMockSyncService();
-  const { catalogInvalidate, extensionCatalogInvalidate } =
-    createCallbackTrackers();
+  const { catalogInvalidate, extensionReloader } = createCallbackTrackers();
 
   const poller = new ConfigPoller({
     syncService: sync,
     catalogInvalidate,
-    extensionCatalogInvalidate,
+    extensionReloader,
     pollIntervalMs: 80,
   });
 
@@ -323,13 +316,12 @@ Deno.test("ConfigPoller: respects custom pollIntervalMs", async () => {
 
 Deno.test("ConfigPoller: stop on never-started poller is a no-op", async () => {
   const sync = createMockSyncService();
-  const { catalogInvalidate, extensionCatalogInvalidate } =
-    createCallbackTrackers();
+  const { catalogInvalidate, extensionReloader } = createCallbackTrackers();
 
   const poller = new ConfigPoller({
     syncService: sync,
     catalogInvalidate,
-    extensionCatalogInvalidate,
+    extensionReloader,
   });
 
   await poller.stop();
@@ -338,13 +330,12 @@ Deno.test("ConfigPoller: stop on never-started poller is a no-op", async () => {
 
 Deno.test("ConfigPoller: can be restarted after stop", async () => {
   const sync = createMockSyncService();
-  const { catalogInvalidate, extensionCatalogInvalidate } =
-    createCallbackTrackers();
+  const { catalogInvalidate, extensionReloader } = createCallbackTrackers();
 
   const poller = new ConfigPoller({
     syncService: sync,
     catalogInvalidate,
-    extensionCatalogInvalidate,
+    extensionReloader,
     pollIntervalMs: 30,
   });
 
@@ -366,13 +357,12 @@ Deno.test("ConfigPoller: can be restarted after stop", async () => {
 
 Deno.test("ConfigPoller: without namespace, pullChanged options omit namespace", async () => {
   const sync = createMockSyncService();
-  const { catalogInvalidate, extensionCatalogInvalidate } =
-    createCallbackTrackers();
+  const { catalogInvalidate, extensionReloader } = createCallbackTrackers();
 
   const poller = new ConfigPoller({
     syncService: sync,
     catalogInvalidate,
-    extensionCatalogInvalidate,
+    extensionReloader,
     pollIntervalMs: 30,
   });
 
@@ -385,21 +375,18 @@ Deno.test("ConfigPoller: without namespace, pullChanged options omit namespace",
 
 Deno.test("ConfigPoller: pull holds the sync gate, so it cannot interleave a mutation", async () => {
   const sync = createMockSyncService();
-  const { catalogInvalidate, extensionCatalogInvalidate } =
-    createCallbackTrackers();
+  const { catalogInvalidate, extensionReloader } = createCallbackTrackers();
   const gate = createSyncGate();
 
   const poller = new ConfigPoller({
     syncService: sync,
     syncGate: gate,
     catalogInvalidate,
-    extensionCatalogInvalidate,
+    extensionReloader,
     pollIntervalMs: 1,
   });
 
   const order: string[] = [];
-  // A handler's mutation+push unit. The poller fires every 1ms while this
-  // runs, so every one of those attempts must queue behind the gate.
   const mutation = withSyncGate(gate, async () => {
     order.push("mutation:start");
     await new Promise<void>((r) => setTimeout(r, 25));
@@ -420,6 +407,48 @@ Deno.test("ConfigPoller: pull holds the sync gate, so it cannot interleave a mut
     "pulls-during-mutation:0",
     "mutation:end",
   ]);
-  // gatedPull bounds the pull so a hung extension cannot hold the gate.
   assertEquals(typeof sync.pullCalls[0].signal, "object");
+});
+
+Deno.test("ConfigPoller: awaits async extensionReloader when files change", async () => {
+  const sync = createMockSyncService({ pullResult: 2 });
+  let reloaderCompleted = false;
+  const poller = new ConfigPoller({
+    syncService: sync,
+    catalogInvalidate: () => {},
+    extensionReloader: async () => {
+      await new Promise<void>((r) => setTimeout(r, 20));
+      reloaderCompleted = true;
+    },
+    pollIntervalMs: 30,
+  });
+
+  poller.start();
+  await waitFor(() => reloaderCompleted, "extension reloader completed");
+  await poller.stop();
+
+  assertEquals(reloaderCompleted, true);
+});
+
+Deno.test("ConfigPoller: survives extensionReloader throwing an error", async () => {
+  const sync = createMockSyncService({ pullResult: 1 });
+  let reloaderCalls = 0;
+  const poller = new ConfigPoller({
+    syncService: sync,
+    catalogInvalidate: () => {},
+    extensionReloader: () => {
+      reloaderCalls++;
+      return Promise.reject(new Error("reload failed"));
+    },
+    pollIntervalMs: 30,
+  });
+
+  poller.start();
+  await waitFor(
+    () => reloaderCalls >= 2,
+    "reloader called at least twice despite errors",
+  );
+  await poller.stop();
+
+  assertGreater(reloaderCalls, 1);
 });
