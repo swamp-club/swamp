@@ -482,6 +482,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Fetch attestation from swamp-club
         id: find
