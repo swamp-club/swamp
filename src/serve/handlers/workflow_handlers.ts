@@ -117,6 +117,7 @@ import {
   exceptionTypeForClient,
   filterByAuthorization,
   lockTimeoutErrorForClient,
+  pushChangedToRemote,
   sanitizeErrorForClient,
   send,
   sendError,
@@ -1052,6 +1053,8 @@ export async function handleWorkflowApprove(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "workflow_approve_failed", message);
+  } finally {
+    await pushChangedToRemote(ctx);
   }
 }
 
@@ -1126,6 +1129,8 @@ export async function handleWorkflowReject(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "workflow_reject_failed", message);
+  } finally {
+    await pushChangedToRemote(ctx);
   }
 }
 

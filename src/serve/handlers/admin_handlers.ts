@@ -149,6 +149,7 @@ import type { Principal } from "../../domain/access/principal.ts";
 import {
   authorizeOrReject,
   type ConnectionContext,
+  pushChangedToRemote,
   sanitizeErrorForClient,
   send,
   sendError,
@@ -2023,6 +2024,8 @@ export async function handleWorkerTokenCreate(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "worker_token_create_failed", message);
+  } finally {
+    await pushChangedToRemote(ctx);
   }
 }
 
@@ -2126,6 +2129,8 @@ export async function handleWorkerTokenRevoke(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "worker_token_revoke_failed", message);
+  } finally {
+    await pushChangedToRemote(ctx);
   }
 }
 

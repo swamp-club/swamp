@@ -71,11 +71,13 @@ import {
   type ConnectionContext,
   getConnectionCollectives,
   getConnectionGroups,
+  pushChangedToRemote,
   sanitizeErrorForClient,
   send,
   sendError,
 } from "./shared.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+
 import {
   consumeStream,
   createLibSwampContext,
@@ -892,6 +894,8 @@ export async function handleAccessTokenRevoke(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_token_revoke_failed", message);
+  } finally {
+    await pushChangedToRemote(ctx);
   }
 }
 
@@ -948,6 +952,8 @@ export async function handleAccessTokenRotate(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_token_rotate_failed", message);
+  } finally {
+    await pushChangedToRemote(ctx);
   }
 }
 
@@ -1006,5 +1012,7 @@ export async function handleAccessTokenMint(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_token_mint_failed", message);
+  } finally {
+    await pushChangedToRemote(ctx);
   }
 }

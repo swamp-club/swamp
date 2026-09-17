@@ -22,7 +22,10 @@
  */
 
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
-import type { DatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import {
+  type DatastoreConfig,
+  isCustomDatastoreConfig,
+} from "../../domain/datastore/datastore_config.ts";
 import type { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { DatastoreSyncService } from "../../domain/datastore/datastore_sync_service.ts";
@@ -59,6 +62,30 @@ import { buildAuditEvent } from "../../domain/serve_audit/audit_event_builder.ts
 import type { AuditStore } from "../../domain/serve_audit/audit_store.ts";
 import type { AuditPolicy } from "../../domain/serve_audit/audit_policy.ts";
 import type { AuditWal } from "../../domain/serve_audit/audit_wal.ts";
+import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+
+const pushLogger = getSwampLogger(["serve", "sync"]);
+
+/**
+ * Pushes local data mutations to the remote datastore. Call after any
+ * handler that writes data locally — without this push, mutations are
+ * lost on cold boot when the local filesystem is ephemeral.
+ */
+export async function pushChangedToRemote(
+  ctx: ConnectionContext,
+): Promise<void> {
+  if (!ctx.syncService) return;
+  const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+    ? ctx.datastoreConfig.namespace
+    : undefined;
+  try {
+    await ctx.syncService.pushChanged({ namespace });
+  } catch (pushError) {
+    pushLogger.warn("Failed to push changes to remote datastore: {error}", {
+      error: pushError instanceof Error ? pushError.message : String(pushError),
+    });
+  }
+}
 
 export const MAX_CLIENT_ERROR_LENGTH = 200;
 

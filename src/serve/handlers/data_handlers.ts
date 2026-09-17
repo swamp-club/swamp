@@ -77,6 +77,7 @@ import {
   DEFAULT_QUERY_LIMIT,
   filterByAuthorization,
   MAX_QUERY_RESULTS,
+  pushChangedToRemote,
   sanitizeErrorForClient,
   send,
   sendError,
@@ -84,29 +85,6 @@ import {
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
-import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
-import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
-
-const logger = getSwampLogger(["serve", "connection"]);
-
-/**
- * Publishes a data mutation to the remote datastore. The repositories only
- * record per-path dirty state; without this push, deletions never reach the
- * remote and the next poller pull restores them (swamp-club#2240).
- */
-async function pushDataChanges(ctx: ConnectionContext): Promise<void> {
-  if (!ctx.syncService) return;
-  const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-    ? ctx.datastoreConfig.namespace
-    : undefined;
-  try {
-    await ctx.syncService.pushChanged({ namespace });
-  } catch (pushError) {
-    logger.warn("Failed to push changes to remote datastore: {error}", {
-      error: pushError instanceof Error ? pushError.message : String(pushError),
-    });
-  }
-}
 
 export function resolveRunGcInput(
   payload: RunGcPayload | undefined,
@@ -680,7 +658,7 @@ export async function handleDataDelete(
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "data_delete_failed", message);
   } finally {
-    await pushDataChanges(ctx);
+    await pushChangedToRemote(ctx);
   }
 }
 
@@ -750,7 +728,7 @@ export async function handleDataRename(
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "data_rename_failed", message);
   } finally {
-    await pushDataChanges(ctx);
+    await pushChangedToRemote(ctx);
   }
 }
 
@@ -869,7 +847,7 @@ export async function handleDataGc(
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "data_gc_failed", message);
   } finally {
-    await pushDataChanges(ctx);
+    await pushChangedToRemote(ctx);
   }
 }
 
@@ -926,7 +904,7 @@ export async function handleDataPrune(
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "data_prune_failed", message);
   } finally {
-    await pushDataChanges(ctx);
+    await pushChangedToRemote(ctx);
   }
 }
 
@@ -990,6 +968,6 @@ export async function handleRunGc(
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "run_gc_failed", message);
   } finally {
-    await pushDataChanges(ctx);
+    await pushChangedToRemote(ctx);
   }
 }
