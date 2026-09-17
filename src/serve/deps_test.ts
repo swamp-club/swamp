@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertInstanceOf } from "@std/assert";
+import { WorkflowExecutionService } from "../domain/workflows/execution_service.ts";
 import { createWorkflowRunDeps, executeWorkflowWithLocks } from "./deps.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
@@ -79,6 +80,23 @@ Deno.test("createWorkflowRunDeps: leaves telemetrySink undefined by default", as
   );
 
   assertEquals(deps.telemetrySink, undefined);
+});
+
+Deno.test("createWorkflowRunDeps: createExecutionService produces a WorkflowExecutionService", async () => {
+  const deps = await createWorkflowRunDeps(
+    "/tmp/repo",
+    stubRepoContext(),
+    datastoreConfig,
+  );
+
+  const service = deps.createExecutionService(
+    {} as never,
+    {} as never,
+    "/tmp/repo",
+    {} as never,
+  );
+
+  assertInstanceOf(service, WorkflowExecutionService);
 });
 
 function stubSyncService(): DatastoreSyncService & { pushCalledCount: number } {

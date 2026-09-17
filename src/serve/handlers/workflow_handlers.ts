@@ -92,20 +92,12 @@ import {
   type WorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
-import {
-  type StepLockHook,
-  WorkflowExecutionService,
-} from "../../domain/workflows/execution_service.ts";
+import type { StepLockHook } from "../../domain/workflows/execution_service.ts";
 import {
   type Principal,
   principalToString,
 } from "../../domain/access/principal.ts";
 import { createEphemeralStore } from "../../infrastructure/persistence/ephemeral_store.ts";
-import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
-import {
-  resolvePulledExtensionsRoot,
-  SWAMP_SUBDIRS,
-} from "../../infrastructure/persistence/paths.ts";
 import {
   extractTraceContext,
   runWithParentTrace,
@@ -1189,11 +1181,12 @@ export async function handleWorkflowResume(
         return lockResult;
       };
 
-      await createWorkflowRunDeps(
+      const deps = await createWorkflowRunDeps(
         ctx.repoDir,
         ctx.repoContext,
         ctx.datastoreConfig,
         stepLockHook,
+        ctx.runTracker,
       );
 
       const resumeInputs = payload.inputs ?? {};
@@ -1202,26 +1195,13 @@ export async function handleWorkflowResume(
         { isResume: true },
       );
 
-      const resolver = new DefaultDatastorePathResolver(
-        ctx.repoDir,
-        ctx.datastoreConfig,
-      );
-      const service = new WorkflowExecutionService(
+      const service = deps.createExecutionService(
         workflowRepo,
         runRepo,
         ctx.repoDir,
-        undefined,
-        resolver.resolvePath(SWAMP_SUBDIRS.data),
         ctx.repoContext.catalogStore,
-        undefined,
-        ctx.repoContext.markDirty,
-        ctx.repoContext.unifiedDataRepo.namespace,
-        stepLockHook,
-        ctx.runTracker,
         ephemeral.repo,
         ephemeral.catalog,
-        resolvePulledExtensionsRoot(ctx.repoDir),
-        ctx.repoContext.hydrateFile,
       );
 
       const resumeGenerator = async function* (): AsyncGenerator<
@@ -1377,11 +1357,12 @@ export async function handleWorkflowResume(
 
     let ephemeral: ReturnType<typeof createEphemeralStore> | null = null;
     try {
-      await createWorkflowRunDeps(
+      const deps = await createWorkflowRunDeps(
         ctx.repoDir,
         ctx.repoContext,
         ctx.datastoreConfig,
         stepLockHook,
+        ctx.runTracker,
       );
 
       ephemeral = createEphemeralStore(
@@ -1389,26 +1370,13 @@ export async function handleWorkflowResume(
         { isResume: true },
       );
 
-      const resolver = new DefaultDatastorePathResolver(
-        ctx.repoDir,
-        ctx.datastoreConfig,
-      );
-      const service = new WorkflowExecutionService(
+      const service = deps.createExecutionService(
         workflowRepo,
         runRepo,
         ctx.repoDir,
-        undefined,
-        resolver.resolvePath(SWAMP_SUBDIRS.data),
         ctx.repoContext.catalogStore,
-        undefined,
-        ctx.repoContext.markDirty,
-        ctx.repoContext.unifiedDataRepo.namespace,
-        stepLockHook,
-        ctx.runTracker,
         ephemeral.repo,
         ephemeral.catalog,
-        resolvePulledExtensionsRoot(ctx.repoDir),
-        ctx.repoContext.hydrateFile,
       );
 
       const doResume = async () => {
