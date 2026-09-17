@@ -23,6 +23,7 @@ import {
   SWAMP_SUBDIRS,
   swampPath,
 } from "../infrastructure/persistence/paths.ts";
+import { assertContainedPath } from "../infrastructure/persistence/safe_path.ts";
 import type { DenoRuntime } from "../domain/runtime/deno_runtime.ts";
 import { join } from "@std/path";
 import type {
@@ -52,6 +53,7 @@ import {
   renderAutoResolveCollectiveNotTrusted,
   renderAutoResolveInstalled,
   renderAutoResolveInstalling,
+  renderAutoResolveLegacyInstallation,
   renderAutoResolveLocalSourceFailed,
   renderAutoResolveNetworkError,
   renderAutoResolveNoStableVersion,
@@ -129,15 +131,16 @@ export function createAutoResolveInstallerAdapter(
     async inspectInstallation(
       extensionName: string,
     ): Promise<InstallationInspection> {
-      // Tri-state inspection: missing / intact / truncated.
+      // Inspection states: missing / intact / truncated / legacy.
       //
       // The lockfile is the source of truth for "which files should be
       // present". `installExtension` writes the lockfile entry in lockstep
       // with the file copy at the end of install, so the two stay
       // paired — if they drift, that's a bug in install, not here.
       //
-      // - missing: no lockfile entry, or the per-extension directory is
-      //   absent. A clean install should proceed.
+      // - missing: no lockfile entry, or no lockfile-declared source files
+      //   remain when the per-extension directory is absent. A clean install
+      //   should proceed.
       // - truncated: lockfile + directory both present, but one or more
       //   listed source files are absent on disk (swamp-club#133). The
       //   tree is broken; surface a distinct error with `--force`
@@ -161,27 +164,37 @@ export function createAutoResolveInstallerAdapter(
       const pulledRoot = config.pulledExtensionsRoot ??
         resolvePulledExtensionsRoot(repoDir);
       const path = join(pulledRoot, extensionName);
-      try {
-        const stat = await Deno.stat(path);
-        if (!stat.isDirectory) {
-          return { state: "missing", lockedVersion: entry.version };
-        }
-      } catch {
-        return { state: "missing", lockedVersion: entry.version };
-      }
       // Pre-anchor lockfile entries (grandfather path in
       // UpstreamExtensionEntry) may omit `files`. Treat an absent or
-      // empty list as vacuously intact — there's nothing the lockfile
-      // claims should be on disk, so we can't detect truncation.
+      // empty list as having no surviving legacy source.
       const files = entry.files ?? [];
+      const existingFiles: string[] = [];
       const missing: string[] = [];
       for (const relPath of files) {
+        // Lockfiles are repository-controlled input. Validate before statting
+        // so inspection cannot probe paths outside the repository.
+        assertContainedPath(relPath, repoDir);
         if (isBundleArtifactPath(relPath)) continue;
         try {
           await Deno.stat(join(repoDir, relPath));
+          existingFiles.push(relPath);
         } catch {
           missing.push(relPath);
         }
+      }
+      try {
+        const stat = await Deno.stat(path);
+        if (!stat.isDirectory) {
+          if (existingFiles.length > 0) {
+            return { state: "legacy", paths: existingFiles };
+          }
+          return { state: "missing", lockedVersion: entry.version };
+        }
+      } catch {
+        if (existingFiles.length > 0) {
+          return { state: "legacy", paths: existingFiles };
+        }
+        return { state: "missing", lockedVersion: entry.version };
       }
       if (missing.length > 0) {
         return { state: "truncated", path, missing };
@@ -417,6 +430,9 @@ export function createAutoResolveOutputAdapter(
       missing: string[],
     ) {
       renderAutoResolveTruncated(extension, path, missing, mode);
+    },
+    legacyInstallation(extension: string, paths: string[]) {
+      renderAutoResolveLegacyInstallation(extension, paths, mode);
     },
     collectiveNotTrusted(collective: string, type: string) {
       renderAutoResolveCollectiveNotTrusted(collective, type, mode);

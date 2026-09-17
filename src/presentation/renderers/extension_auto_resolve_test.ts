@@ -24,6 +24,7 @@ import {
   renderAutoResolveCollectiveNotTrusted,
   renderAutoResolveInstalled,
   renderAutoResolveInstalling,
+  renderAutoResolveLegacyInstallation,
   renderAutoResolveLocalSourceFailed,
   renderAutoResolveNetworkError,
   renderAutoResolveNoStableVersion,
@@ -124,6 +125,21 @@ Deno.test("renderAutoResolveTruncated: log mode shows Error not Warning", () => 
   assertStringIncludes(output, "2 file(s)");
 });
 
+Deno.test("renderAutoResolveLegacyInstallation: log mode requires an explicit pull", () => {
+  const lines = captureOutput(() => {
+    renderAutoResolveLegacyInstallation(
+      "@acme/widget",
+      [".claude/skills/widget"],
+      "log",
+    );
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "Error");
+  assertEquals(output.includes("Warning"), false);
+  assertStringIncludes(output, "legacy file(s)");
+  assertStringIncludes(output, "swamp extension pull @acme/widget");
+});
+
 Deno.test("renderAutoResolveNetworkError: log mode shows Error not Warning", () => {
   const lines = captureOutput(() => {
     renderAutoResolveNetworkError("@acme/widget", "connection refused", "log");
@@ -212,6 +228,26 @@ Deno.test("renderAutoResolveTruncated: json mode emits failed status", () => {
     const parsed = JSON.parse(logs[0]);
     assertEquals(parsed.status, "failed");
     assertEquals(parsed.reason, "truncated");
+  } finally {
+    console.log = origLog;
+  }
+});
+
+Deno.test("renderAutoResolveLegacyInstallation: json mode emits legacy paths", () => {
+  const logs: string[] = [];
+  const origLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+  try {
+    renderAutoResolveLegacyInstallation(
+      "@acme/widget",
+      [".claude/skills/widget"],
+      "json",
+    );
+    assertEquals(logs.length, 1);
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.status, "failed");
+    assertEquals(parsed.reason, "legacy_on_disk");
+    assertEquals(parsed.paths, [".claude/skills/widget"]);
   } finally {
     console.log = origLog;
   }

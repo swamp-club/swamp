@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import {
@@ -28,6 +28,7 @@ import type { DenoRuntime } from "../domain/runtime/deno_runtime.ts";
 import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
 import { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
+import { PathTraversalError } from "../infrastructure/persistence/safe_path.ts";
 import { modelRegistry } from "../domain/models/model.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
@@ -308,6 +309,57 @@ Deno.test("auto_resolver_adapters: inspectInstallation returns missing when dire
     // Carries the pinned version so the install progress line reports the
     // version that will actually be installed (swamp-club#465).
     assertEquals(result, { state: "missing", lockedVersion: "2026.01.01.1" });
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("auto_resolver_adapters: inspectInstallation preserves legacy files outside the current extension root", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const legacyPath = ".claude/skills/legacy-extension";
+    const lockfilePath = await seedLockfile(tmpDir, {
+      "@fake/legacy-extension": [legacyPath],
+    });
+    await ensureDir(join(tmpDir, legacyPath));
+    await Deno.writeTextFile(
+      join(tmpDir, legacyPath, "SKILL.md"),
+      "# legacy extension\n",
+    );
+    const adapter = createAutoResolveInstallerAdapter({
+      ...stubCallbacks,
+      lockfilePath,
+      repoDir: tmpDir,
+      denoRuntime: stubDenoRuntime,
+    });
+
+    const result = await adapter.inspectInstallation("@fake/legacy-extension");
+
+    assertEquals(result, { state: "legacy", paths: [legacyPath] });
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("auto_resolver_adapters: inspectInstallation rejects unsafe lockfile paths before statting", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    for (const path of ["../outside", "/outside"]) {
+      const lockfilePath = await seedLockfile(tmpDir, {
+        "@fake/unsafe": [path],
+      });
+      const adapter = createAutoResolveInstallerAdapter({
+        ...stubCallbacks,
+        lockfilePath,
+        repoDir: tmpDir,
+        denoRuntime: stubDenoRuntime,
+      });
+
+      await assertRejects(
+        () => adapter.inspectInstallation("@fake/unsafe"),
+        PathTraversalError,
+      );
+    }
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

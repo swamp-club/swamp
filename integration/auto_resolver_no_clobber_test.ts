@@ -154,3 +154,82 @@ Deno.test("integration: auto-resolver refuses to overwrite an existing pulled ex
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
+
+Deno.test("integration: auto-resolver preserves legacy skill directories", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_issue_2183_" });
+  try {
+    const extensionName = "@test/legacy";
+    const legacyDir = join(tmpDir, ".claude", "skills", "legacy");
+    const legacyFile = join(legacyDir, "SKILL.md");
+    const legacyContents = "# Legacy skill\n";
+    await ensureDir(legacyDir);
+    await Deno.writeTextFile(legacyFile, legacyContents);
+
+    const lockfilePath = join(
+      tmpDir,
+      "extensions",
+      "models",
+      "upstream_extensions.json",
+    );
+    await ensureDir(join(tmpDir, "extensions", "models"));
+    const originalLockfile = JSON.stringify(
+      {
+        [extensionName]: {
+          version: "2026.01.01.1",
+          pulledAt: "2026-01-01T00:00:00Z",
+          files: [join(".claude", "skills", "legacy")],
+        },
+      },
+      null,
+      2,
+    );
+    await Deno.writeTextFile(lockfilePath, originalLockfile);
+
+    let downloadArchiveCalled = false;
+    const adapter = createAutoResolveInstallerAdapter({
+      getExtension: (name: string) =>
+        name === extensionName
+          ? Promise.resolve({
+            name,
+            description: "Legacy fixture",
+            latestVersion: "2026.01.01.1",
+          })
+          : Promise.resolve(null),
+      downloadArchive: () => {
+        downloadArchiveCalled = true;
+        return Promise.reject(
+          new Error("REGRESSION: install was attempted on legacy files"),
+        );
+      },
+      getChecksum: () => Promise.resolve(null),
+      lockfilePath,
+      repoDir: tmpDir,
+      denoRuntime: stubDenoRuntime,
+    });
+    const resolver = new ExtensionAutoResolver({
+      allowedCollectives: ["test"],
+      extensionLookup: {
+        getExtension: (name: string) =>
+          name === extensionName
+            ? Promise.resolve({
+              name,
+              description: "Legacy fixture",
+              latestVersion: "2026.01.01.1",
+            })
+            : Promise.resolve(null),
+        searchExtensions: () => Promise.resolve({ extensions: [] }),
+      },
+      extensionInstaller: adapter,
+      output: createAutoResolveOutputAdapter("json"),
+    });
+
+    const result = await resolver.resolve(`${extensionName}/some-type`);
+
+    assertEquals(result, false);
+    assertEquals(downloadArchiveCalled, false);
+    assertEquals(await Deno.readTextFile(legacyFile), legacyContents);
+    assertEquals(await Deno.readTextFile(lockfilePath), originalLockfile);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});

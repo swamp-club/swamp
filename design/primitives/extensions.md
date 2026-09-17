@@ -961,12 +961,12 @@ disk. If the type failed to register despite the extension being present,
 something is wrong locally (commonly a user's in-progress edit introducing a
 syntax error) and a silent force-pull would destroy that work.
 
-The resolver inspects the pulled tree and classifies it into one of three
+The resolver inspects the pulled tree and classifies it into one of four
 states, driving the auto-resolve decision:
 
 - **Missing** — no entry in `upstream_extensions.json`, or the per-extension
-  directory under `.swamp/pulled-extensions/<name>/` is absent. A clean install
-  proceeds.
+  directory under `.swamp/pulled-extensions/<name>/` is absent and no
+  lockfile-declared source files remain on disk. A clean install proceeds.
 - **Intact** — the lockfile entry exists, the directory exists, and every file
   the lockfile lists for this extension is present on disk. If the type still
   failed to register, the cause is local. The resolver surfaces
@@ -988,12 +988,17 @@ states, driving the auto-resolve decision:
     "missing": ["..."]
   }
   ```
+- **Legacy** — the current per-extension directory is absent, but source files
+  declared by the lockfile remain at older locations. Auto-resolution reports
+  this state and leaves those files untouched; run `swamp extension pull <name>`
+  explicitly to accept the migration.
 
-Both "intact-but-fails" and "truncated" surface the same
+"Intact-but-fails" and "truncated" surface the same
 `swamp extension pull <name> --force` recovery — that command is the only way
-auto-installation state can overwrite a pulled extension. No other auto-resolve,
-validate, or run command will ever clobber local edits or silently re-fetch a
-broken tree.
+auto-installation state can overwrite a pulled extension. Legacy state requires
+an explicit `swamp extension pull <name>` migration. No auto-resolve, validate,
+or run command will clobber local edits, silently re-fetch a broken tree, or
+migrate legacy files.
 
 The truncation predicate is file-level: any file listed in the lockfile entry
 for an extension that cannot be stat'd on disk. The check stops at presence — it

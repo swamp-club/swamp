@@ -190,6 +190,35 @@ export function renderAutoResolveTruncated(
   }
 }
 
+export function renderAutoResolveLegacyInstallation(
+  extension: string,
+  paths: string[],
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(
+      JSON.stringify({
+        event: "auto_resolve",
+        status: "failed",
+        extension,
+        paths,
+        reason: "legacy_on_disk",
+      }),
+    );
+  } else {
+    writeOutput(
+      gutterLine(
+        "Error",
+        STATUS_COLORS.error,
+        `${extension} has ${paths.length} legacy file(s) on disk`,
+      ),
+    );
+    writeContentLine(
+      `Auto-resolution will not migrate them. To migrate explicitly: swamp extension pull ${extension}`,
+    );
+  }
+}
+
 export function renderAutoResolveCollectiveNotTrusted(
   collective: string,
   type: string,

@@ -62,6 +62,9 @@ function createMockOutput(): AutoResolveOutputPort & { calls: string[] } {
         `alreadyInstalledTruncated:${ext}:${path}:${missing.join(",")}`,
       );
     },
+    legacyInstallation(ext: string, paths: string[]) {
+      calls.push(`legacyInstallation:${ext}:${paths.join(",")}`);
+    },
     collectiveNotTrusted(collective: string, type: string) {
       calls.push(`collectiveNotTrusted:${collective}:${type}`);
     },
@@ -435,6 +438,34 @@ Deno.test("ExtensionAutoResolver - surfaces truncated error when tree is incompl
   const kinds = output.calls.map((c) => c.split(":")[0]);
   assertEquals(kinds.includes("installing"), false);
   assertEquals(kinds.includes("alreadyInstalledButFailed"), false);
+});
+
+Deno.test("ExtensionAutoResolver - refuses to migrate legacy files automatically", async () => {
+  const output = createMockOutput();
+  const installer = createMockInstaller(true, "2026.03.16.1", {
+    state: "legacy",
+    paths: [".claude/skills/legacy-extension"],
+  });
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup({
+      "@swamp/legacy-extension": {
+        description: "Legacy extension",
+        latestVersion: "2026.03.16.1",
+      },
+    }),
+    extensionInstaller: installer,
+    output,
+  });
+
+  const result = await resolver.resolve("@swamp/legacy-extension/model");
+
+  assertEquals(result, false);
+  assertEquals(installer.installCalls, []);
+  assertEquals(output.calls, [
+    "searching:@swamp/legacy-extension/model",
+    "legacyInstallation:@swamp/legacy-extension:.claude/skills/legacy-extension",
+  ]);
 });
 
 Deno.test("ExtensionAutoResolver - inspectInstallation is consulted before install on the happy path", async () => {

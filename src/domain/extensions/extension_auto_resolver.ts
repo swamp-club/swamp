@@ -63,7 +63,7 @@ export interface ExtensionInstallResultInfo {
 }
 
 /**
- * Tri-state result describing the on-disk state of a pulled extension.
+ * Result describing the on-disk state of a pulled extension.
  *
  * - `missing`: no lockfile entry, or the per-extension directory does
  *   not exist. The auto-resolver should proceed to install. When a lockfile
@@ -80,11 +80,15 @@ export interface ExtensionInstallResultInfo {
  *   "present but incomplete" state that looks installed to a directory
  *   stat but produces `Unknown <kind> type` errors downstream. See
  *   swamp-club#133.
+ * - `legacy`: lockfile-declared source files exist but the current
+ *   per-extension root does not. Auto-resolution must not migrate this
+ *   layout because doing so can delete tracked files as an implicit side effect.
  */
 export type InstallationInspection =
   | { state: "missing"; lockedVersion?: string }
   | { state: "intact"; path: string }
-  | { state: "truncated"; path: string; missing: string[] };
+  | { state: "truncated"; path: string; missing: string[] }
+  | { state: "legacy"; paths: string[] };
 
 /**
  * Port: interface for installing extensions and hot-loading them.
@@ -93,7 +97,7 @@ export type InstallationInspection =
 export interface ExtensionInstallerPort {
   /**
    * Inspects the on-disk state of a pulled extension. The domain
-   * service uses the tri-state return to pick the right branch:
+   * service uses the inspection return to pick the right branch:
    * install (missing), surface the "local edits" error (intact), or
    * surface the "truncated tree" error (truncated). Carries the
    * install path on the non-missing variants so the domain service
@@ -152,6 +156,12 @@ export interface AutoResolveOutputPort {
     path: string,
     missing: string[],
   ): void;
+  /**
+   * Emitted when an extension's lockfile tracks files at a legacy location.
+   * Auto-resolution refuses to migrate these files; the user must explicitly
+   * run extension pull to accept the migration.
+   */
+  legacyInstallation(extension: string, paths: string[]): void;
   /**
    * Emitted when a referenced `@collective/*` type cannot auto-resolve
    * because its collective is not trusted (swamp-club#465). Membership
@@ -441,6 +451,10 @@ export class ExtensionAutoResolver {
         inspection.path,
         inspection.missing,
       );
+      return false;
+    }
+    if (inspection.state === "legacy") {
+      output.legacyInstallation(extensionName, inspection.paths);
       return false;
     }
     // inspection.state === "missing" — proceed to install. Report the version
