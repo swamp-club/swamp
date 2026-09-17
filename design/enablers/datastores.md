@@ -1021,6 +1021,14 @@ dropping remote object deletions. Handlers whose mutations do NOT flow
 through per-path-wired repos (vault, access, admin) still need bare
 `markDirty()` because it is their only dirty signal.
 
+Every serve mutation handler must call `pushChanged()` after a mutation —
+including the data-domain handlers (`data.delete`, `data.rename`, `data.gc`,
+`data.prune`, `run.gc`), which push in a `finally` so a cancelled or failed
+request still pushes whatever it already changed in the local cache.
+`markDirty` only records dirty state; until a push runs, the remote still holds
+the old objects, and the next serve poller pull restores anything deleted from
+the local cache (swamp-club#2240).
+
 **Sync is not a content-integrity tool.** The fingerprint detects index-level
 changes, not per-file corruption — a silently damaged cache file (bit rot,
 truncated write after a crash) can slip through the fast path if the index
