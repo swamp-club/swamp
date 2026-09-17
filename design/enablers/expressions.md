@@ -546,12 +546,8 @@ author-written source feeding a run:
 | Model-run `--input` flags | the operator-typed values, on `swamp model ... method run` only                     |
 | Parent workflow           | the parent's set, unioned into a nested child run's set                             |
 
-A parent-authored runtime expression passed as a child input (for example
-`${{ env.HOME }}`) is therefore admitted in the child, and evaluated in the
-child's scope. Two cases currently fail closed with a warning: a suspended
-child resumed directly with `swamp workflow resume` does not inherit the parent
-set, and a `--last-evaluated` replay after the source has been edited cannot
-vouch for expressions that remain only in the cache.
+A `--last-evaluated` replay after the source has been edited cannot vouch for
+expressions that remain only in the cache; it fails closed with a warning.
 
 Workflow runs do **not** seed CLI `--input` values: trigger inputs and CLI
 inputs merge into one map before the evaluator sees them, so a vault reference
@@ -573,6 +569,14 @@ checks apply to fresh runs, resumed runs, nested calls, and evaluated-cache repl
 
 Placement merges workflow → job → step defaults before resolving target, labels,
 and platform through the same provenance-gated runtime resolver.
+
+Parent-authored runtime expressions passed to child inputs retain their parent
+scope. For example, `${{ env['HOME'] + inputs.suffix }}` uses the parent's
+`suffix`, even when the child has no `suffix` or supplies a different one.
+Internal references identify records containing the original expression and the
+parent's `inputs`, `self`, `run`, `workflowRunId`, and `steps` bindings. An identical
+expression authored by the child still uses child scope. Passing a reference
+through another nested workflow preserves its existing scope.
 
 The parameter carrying the set is required rather than optional, typed
 `ReadonlySet<string> | "unrestricted"`, so the compiler forces every caller of

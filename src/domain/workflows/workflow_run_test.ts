@@ -743,6 +743,18 @@ Deno.test("WorkflowRun: inputs and resumeInputs round-trip through fromData/toDa
   assertEquals(restored.resumeInputs, ["authKey", "region"]);
 });
 
+Deno.test("WorkflowRun: inheritedExpressions round-trip through toData/fromData and are omitted when empty", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  assertEquals(run.inheritedExpressions, []);
+  assertEquals(run.deferredExpressions, []);
+  assertEquals("deferredExpressions" in run.toData(), false);
+  assertEquals("inheritedExpressions" in run.toData(), false);
+
+  run.captureInheritedExpressions(new Set(["${{ env.HOME }}"]));
+  const restored = WorkflowRun.fromData(run.toData());
+  assertEquals(restored.inheritedExpressions, ["${{ env.HOME }}"]);
+});
+
 Deno.test("WorkflowRun.fromData tolerates legacy records lacking inputs/resumeInputs", () => {
   // A run persisted before these fields existed.
   const legacy = {

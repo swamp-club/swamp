@@ -335,6 +335,9 @@ export interface WebhookPayload {
  * Context for evaluating CEL expressions.
  */
 export interface ExpressionContext {
+  /** Parent bindings for internal deferred runtime references. */
+  deferredExpressions?:
+    readonly import("./deferred_expression.ts").DeferredExpression[];
   /** Map of model name/UUID to model data */
   model: Record<string, ModelData>;
   /**

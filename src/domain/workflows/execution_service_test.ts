@@ -1698,9 +1698,112 @@ Deno.test("workflow step carries parent-authored runtime expressions into the ch
     assertEquals(failures, []);
 
     const childAuthored = executor.authoredByStep.get("child-step");
-    assertEquals(childAuthored?.has("${{ env.HOME }}"), true);
+    const childRun = (await runRepo.findAllByWorkflowId(childWorkflow.id))[0];
+    assertEquals(childRun.deferredExpressions[0].expression, "${{ env.HOME }}");
+    assertEquals(childAuthored?.has(String(childRun.inputs.home)), true);
     assertEquals(childAuthored?.has("${{ inputs.home }}"), true);
     assertEquals(childAuthored?.has("${{ vault.get('injected') }}"), false);
+  });
+});
+
+Deno.test("resuming a child run directly keeps the parent-authored expression provenance", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    // The child gates on approval so the parent's run leaves it suspended
+    // with `${{ env.HOME }}` still unresolved in its captured inputs.
+    const childWorkflow = Workflow.create({
+      name: "child-workflow",
+      inputs: { properties: { home: { type: "string" } } },
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("Approve"),
+            }),
+            Step.create({
+              name: "child-step",
+              task: StepTask.modelMethod("some-model", "run", {
+                home: "${{ inputs.home }}",
+              }),
+              dependsOn: [
+                { step: "gate", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(childWorkflow);
+
+    const parentWorkflow = Workflow.create({
+      name: "parent-workflow",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "call-child",
+              task: StepTask.workflow("child-workflow", {
+                home: "${{ env.HOME }}",
+              }),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(parentWorkflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    for await (const _ of service.run(parentWorkflow.name)) { /* drain */ }
+
+    const childRuns = await runRepo.findAllByWorkflowId(childWorkflow.id);
+    assertEquals(childRuns.length, 1);
+    const suspended = childRuns[0];
+    assertEquals(suspended.status, "suspended");
+    assertEquals(
+      suspended.deferredExpressions[0].expression,
+      "${{ env.HOME }}",
+    );
+    assertEquals(
+      suspended.inheritedExpressions.includes(String(suspended.inputs.home)),
+      true,
+    );
+    // Only what the parent passed in is persisted; the child's own source
+    // is re-collected on resume.
+    assertEquals(
+      suspended.inheritedExpressions.includes("${{ inputs.home }}"),
+      false,
+    );
+    const parentRun = (await runRepo.findAllByWorkflowId(parentWorkflow.id))[0];
+    assertEquals(parentRun.inheritedExpressions, []);
+
+    const waiting = suspended.findWaitingApprovalStep()!;
+    suspended.getJob(waiting.jobName)!.getStep(waiting.stepName)!.succeed();
+    await runRepo.save(childWorkflow.id, suspended);
+
+    for await (
+      const _ of service.resume(childWorkflow.name, suspended.id)
+    ) { /* drain */ }
+
+    const childAuthored = executor.authoredByStep.get("child-step");
+    const childRun = (await runRepo.findAllByWorkflowId(childWorkflow.id))[0];
+    assertEquals(childRun.deferredExpressions[0].expression, "${{ env.HOME }}");
+    assertEquals(childAuthored?.has(String(childRun.inputs.home)), true);
+    assertEquals(childAuthored?.has("${{ inputs.home }}"), true);
   });
 });
 

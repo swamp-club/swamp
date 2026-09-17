@@ -17,6 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  type DeferredExpression,
+  DeferredExpressionSchema,
+} from "../expressions/deferred_expression.ts";
 import { z } from "zod";
 import { createWorkflowRunId, type WorkflowRunId } from "./workflow_id.ts";
 import type {
@@ -137,6 +141,11 @@ export const WorkflowRunSchema = z.object({
   // deliberately NOT persisted to avoid writing secrets (e.g. a freshly minted
   // auth key) to the plaintext run record.
   resumeInputs: z.array(z.string()).optional(),
+  // Runtime expressions (env, vault) a parent workflow authored and passed in
+  // through `inputs` unresolved. Persisted so a direct resume of this run can
+  // admit them as provenance; the child's own YAML cannot reconstruct them.
+  inheritedExpressions: z.array(z.string()).optional(),
+  deferredExpressions: z.array(DeferredExpressionSchema).optional(),
   initiatedBy: z.string().optional(),
   instanceId: z.string().optional(),
   triggerSource: z.string().optional(),
@@ -656,6 +665,8 @@ export class WorkflowRun implements TriggerEvaluationContext {
     private _runPlan:
       | { fingerprint: string; evaluatedWorkflowId?: string }
       | undefined = undefined,
+    private _inheritedExpressions: string[] = [],
+    private _deferredExpressions: DeferredExpression[] = [],
   ) {}
 
   /**
@@ -721,6 +732,8 @@ export class WorkflowRun implements TriggerEvaluationContext {
       validated.triggerSource,
       validated.references,
       validated.runPlan,
+      validated.inheritedExpressions ?? [],
+      validated.deferredExpressions ?? [],
     );
   }
 
@@ -973,6 +986,28 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
+   * Records runtime expressions a parent workflow authored into this run's
+   * inputs, so a resume can restore the provenance a fresh run inherited.
+   */
+  captureInheritedExpressions(expressions: Iterable<string>): void {
+    this._inheritedExpressions = [...expressions];
+  }
+
+  /** Capture durable parent scopes so resume does not borrow child bindings. */
+  captureDeferredExpressions(expressions: readonly DeferredExpression[]): void {
+    this._deferredExpressions = structuredClone([...expressions]);
+  }
+
+  get deferredExpressions(): readonly DeferredExpression[] {
+    return this._deferredExpressions;
+  }
+
+  /** Authored expressions inherited from a parent or evaluated cache. */
+  get inheritedExpressions(): ReadonlyArray<string> {
+    return this._inheritedExpressions;
+  }
+
+  /**
    * The key names of inputs supplied across resume invocations, for audit.
    * Values are never recorded.
    */
@@ -1072,6 +1107,12 @@ export class WorkflowRun implements TriggerEvaluationContext {
     }
     if (this._resumeInputs.length > 0) {
       data.resumeInputs = [...this._resumeInputs];
+    }
+    if (this._deferredExpressions.length > 0) {
+      data.deferredExpressions = structuredClone(this._deferredExpressions);
+    }
+    if (this._inheritedExpressions.length > 0) {
+      data.inheritedExpressions = [...this._inheritedExpressions];
     }
     if (this._initiatedBy !== undefined) {
       data.initiatedBy = this._initiatedBy;

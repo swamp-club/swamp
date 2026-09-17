@@ -101,6 +101,10 @@ import {
   ExpressionEvaluationService,
   partitionAuthored,
 } from "../expressions/expression_evaluation_service.ts";
+import {
+  type DeferredExpression,
+  deferredExpressionReference,
+} from "../expressions/deferred_expression.ts";
 import { resolveAvailableExpressions } from "../expressions/available_expression_resolver.ts";
 import {
   extractCelExpression,
@@ -1752,6 +1756,12 @@ export class WorkflowExecutionService {
       runtimeTags?: Record<string, string>;
       workflowNestingDepth?: number;
       ancestorWorkflowIds?: Set<string>;
+      /**
+       * Expressions a parent workflow authored and passed through `inputs`
+       * unresolved (env, vault). Unioned with this workflow's own source.
+       */
+      authoredExpressions?: ReadonlySet<string>;
+      deferredExpressions?: readonly DeferredExpression[];
       signal?: AbortSignal;
       /** Report filter options for per-step report execution */
       reportFilterOptions?: ReportFilterOptions;
@@ -1767,12 +1777,6 @@ export class WorkflowExecutionService {
       assertFailOnSeverity?: AssertSeverity;
       /** Identity of the user who initiated this run */
       initiatedBy?: string;
-      /**
-       * Expressions written in a parent workflow's source, unioned with this
-       * workflow's own so a parent-authored runtime expression passed as an
-       * input (e.g. `${{ env.HOME }}`) still resolves in the child.
-       */
-      authoredExpressions?: ReadonlySet<string>;
       /** Serve instance identity for cross-machine reconciliation */
       instanceId?: string;
       /** How this run was triggered (schedule, webhook, api) */
@@ -1795,6 +1799,7 @@ export class WorkflowExecutionService {
       let workflow: Workflow;
       let expressionContext: ExpressionContext | undefined;
       let authoredExpressions: ReadonlySet<string> = new Set();
+      let deferredExpressions = options?.deferredExpressions ?? [];
       let run: WorkflowRun;
       let workflowLogPath: string;
       let evaluatedWorkflowFingerprint: string | undefined;
@@ -1847,7 +1852,10 @@ export class WorkflowExecutionService {
           const buildCtxSpan = tracer.startSpan(
             "swamp.workflow.build_context",
           );
-          expressionContext = await this.buildRunContext(workflow);
+          expressionContext = await this.buildRunContext(
+            workflow,
+            deferredExpressions,
+          );
           buildCtxSpan.end();
 
           // Add workflow inputs to context
@@ -1869,6 +1877,8 @@ export class WorkflowExecutionService {
           );
         }
 
+        expressionContext.deferredExpressions = deferredExpressions;
+
         // Create workflow run with merged tags (runtime tags take precedence)
         const mergedTags: Record<string, string> = {
           ...(workflow.tags ?? {}),
@@ -1883,6 +1893,12 @@ export class WorkflowExecutionService {
         if (options?.inputs) {
           run.captureInputs(options.inputs);
         }
+        // Only what a parent passed in: the run's own source is re-collected
+        // on resume, so persisting it would keep deleted expressions vouched.
+        if (options?.authoredExpressions?.size) {
+          run.captureInheritedExpressions(options.authoredExpressions);
+        }
+        run.captureDeferredExpressions(deferredExpressions);
         if (options?.references) {
           run.setReferences(options.references);
         }
@@ -2372,7 +2388,10 @@ export class WorkflowExecutionService {
     }
     await this.saveRun(workflow.id, existingRun);
 
-    const expressionContext = await this.buildRunContext(workflow);
+    const expressionContext = await this.buildRunContext(
+      workflow,
+      existingRun.deferredExpressions,
+    );
 
     // Merge resume-time inputs over the inputs captured when the run suspended.
     // Resume overrides win on key collision; new keys are additive. Set before
@@ -2411,8 +2430,14 @@ export class WorkflowExecutionService {
       new CelEvaluator(),
     );
     // Collected before evaluation, for the same reason as the fresh-run seam:
-    // afterwards, spliced data content is indistinguishable from source.
-    const authoredExpressions = collectWorkflowAuthoredExpressions(workflow);
+    // afterwards, spliced data content is indistinguishable from source. The
+    // run's captured inputs may still hold a parent's unresolved runtime
+    // expression, which only the persisted inherited set can vouch for.
+    const authoredExpressions = collectWorkflowAuthoredExpressions(
+      workflow,
+      new Set(existingRun.inheritedExpressions),
+    );
+    expressionContext.deferredExpressions = existingRun.deferredExpressions;
     const evaluated = await evaluator.evaluate(
       workflow,
       expressionContext,
@@ -3643,6 +3668,28 @@ export class WorkflowExecutionService {
       ) as Record<string, unknown>;
     }
 
+    const deferred = expressionContext
+      ? this.expressionEvaluator.deferChildInputs(
+        evaluatedInputs,
+        expressionContext,
+        options.authoredExpressions,
+      )
+      : { data: evaluatedInputs, deferredExpressions: [] };
+    evaluatedInputs = deferred.data as Record<string, unknown> | undefined;
+
+    // Runtime expressions (env, vault) the parent author wrote as child
+    // inputs survive evaluateData unresolved. They are legitimate provenance
+    // in the child, so carry exactly those across; anything else left in the
+    // inputs arrived as data content and stays refused.
+    const inheritedExpressions = new Set(
+      [...collectAuthoredExpressions(evaluatedInputs)].filter((expr) =>
+        options.authoredExpressions.has(expr) ||
+        deferred.deferredExpressions.some(
+          (record) => deferredExpressionReference(record.id) === expr,
+        )
+      ),
+    );
+
     // Apply the child workflow's input defaults — the top-level
     // workflowRun() libswamp layer does this, but nested invocations
     // bypass it entirely and call run() directly.
@@ -3686,9 +3733,10 @@ export class WorkflowExecutionService {
       for await (
         const event of childService.run(task.workflowIdOrName, {
           inputs: evaluatedInputs,
+          authoredExpressions: inheritedExpressions,
+          deferredExpressions: deferred.deferredExpressions,
           workflowNestingDepth: depth + 1,
           ancestorWorkflowIds: childAncestors,
-          authoredExpressions: options.authoredExpressions,
         })
       ) {
         if (event.kind === "completed") {
@@ -3919,8 +3967,9 @@ export class WorkflowExecutionService {
    */
   private async buildRunContext(
     workflow: Workflow,
+    deferredExpressions: readonly DeferredExpression[] = [],
   ): Promise<ExpressionContext> {
-    if (requiresModelNamespace(workflow.toData())) {
+    if (requiresModelNamespace([workflow.toData(), deferredExpressions])) {
       return await this.modelResolver.buildContext();
     }
 
