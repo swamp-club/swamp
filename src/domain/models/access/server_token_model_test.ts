@@ -106,6 +106,20 @@ Deno.test("serverTokenModel: mint after expire succeeds with fresh credentials",
   assertNotEquals(newPlaintext, oldPlaintext);
 });
 
+Deno.test("serverTokenModel: mint succeeds for active token past its expiresAt without explicit expire", async () => {
+  const { context, store, vault, plaintext: oldPlaintext } = await mintToken();
+  assertEquals(store.get("token-main")!.state, "active");
+  store.get("token-main")!.expiresAt = new Date(Date.now() - 1_000)
+    .toISOString();
+  await serverTokenModel.methods.mint.execute(mintArgs, context);
+  const token = store.get("token-main")!;
+  assertEquals(token.state, "active");
+  const newPlaintext = vault.get(
+    `local/${serverTokenSecretKey("user-token-1")}`,
+  )!;
+  assertNotEquals(newPlaintext, oldPlaintext);
+});
+
 Deno.test("serverTokenModel: mint uses default 30-day expiry when durationMs not provided", async () => {
   const { store } = await mintToken();
   const token = store.get("token-main")!;

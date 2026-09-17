@@ -109,6 +109,41 @@ Deno.test("enrollmentTokenModel: mint after expire succeeds with fresh credentia
   assertNotEquals(newPlaintext, oldPlaintext);
 });
 
+Deno.test("enrollmentTokenModel: mint succeeds for unused token past its expiresAt without explicit expire", async () => {
+  const { context, store, vault, plaintext: oldPlaintext } = await mintToken();
+  assertEquals(store.get("token-main")!.state, "unused");
+  store.get("token-main")!.expiresAt = new Date(Date.now() - 1_000)
+    .toISOString();
+  await enrollmentTokenModel.methods.mint.execute(mintArgs, context);
+  const token = store.get("token-main")!;
+  assertEquals(token.state, "unused");
+  const newPlaintext = vault.get(
+    `local/${tokenSecretKey("ci-runner-3")}`,
+  )!;
+  assertNotEquals(newPlaintext, oldPlaintext);
+});
+
+Deno.test("enrollmentTokenModel: mint succeeds for enrolled token past its expiresAt without explicit expire", async () => {
+  const { context, store, vault, plaintext } = await mintToken();
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: plaintext, machineId: "machine-1" },
+    context,
+  );
+  assertEquals(store.get("token-main")!.state, "enrolled");
+  const oldPlaintext = vault.get(
+    `local/${tokenSecretKey("ci-runner-3")}`,
+  )!;
+  store.get("token-main")!.expiresAt = new Date(Date.now() - 1_000)
+    .toISOString();
+  await enrollmentTokenModel.methods.mint.execute(mintArgs, context);
+  const token = store.get("token-main")!;
+  assertEquals(token.state, "unused");
+  const newPlaintext = vault.get(
+    `local/${tokenSecretKey("ci-runner-3")}`,
+  )!;
+  assertNotEquals(newPlaintext, oldPlaintext);
+});
+
 Deno.test("enrollmentTokenModel: redeem transitions unused → enrolled and binds the machine", async () => {
   const { context, store, plaintext } = await mintToken();
   await enrollmentTokenModel.methods.redeem.execute(
