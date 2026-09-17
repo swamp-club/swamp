@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { walk } from "@std/fs/walk";
-import { join } from "@std/path";
+import { join, relative, SEPARATOR } from "@std/path";
 
 const HEADER = `// Swamp, an Automation Framework
 // Copyright (C) 2026 Elder Swamp Club, Inc.
@@ -54,20 +54,26 @@ const SKIP_DIRS = new Set([
   ".git",
 ]);
 
-async function collectFiles(): Promise<string[]> {
+function isSkipped(repoRelativePath: string): boolean {
+  return repoRelativePath.split(SEPARATOR).some((segment) =>
+    SKIP_DIRS.has(segment)
+  );
+}
+
+export async function collectFiles(root = ROOT): Promise<string[]> {
   const files: string[] = [];
 
   // Walk src/, integration/, scripts/, packages/
   for (const dir of ["src", "integration", "scripts", "packages"]) {
-    const dirPath = join(ROOT, dir);
+    const dirPath = join(root, dir);
     try {
       for await (
         const entry of walk(dirPath, {
           exts: [".ts", ".tsx"],
           includeDirs: false,
-          skip: [...SKIP_DIRS].map((d) => new RegExp(`(^|/)${d}(/|$)`)),
         })
       ) {
+        if (isSkipped(relative(root, entry.path))) continue;
         files.push(entry.path);
       }
     } catch (err) {
@@ -78,12 +84,12 @@ async function collectFiles(): Promise<string[]> {
   }
 
   // Root-level .ts/.tsx files
-  for await (const entry of Deno.readDir(ROOT)) {
+  for await (const entry of Deno.readDir(root)) {
     if (
       entry.isFile &&
       (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx"))
     ) {
-      files.push(join(ROOT, entry.name));
+      files.push(join(root, entry.name));
     }
   }
 
@@ -133,4 +139,6 @@ async function main() {
   );
 }
 
-main();
+if (import.meta.main) {
+  await main();
+}
