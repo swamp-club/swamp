@@ -59,9 +59,6 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { WorkerPruneResponse } from "../../serve/protocol.ts";
-import {
-  DEFAULT_WORKER_GC_GRACE_PERIOD_MS,
-} from "../../serve/worker_gc_service.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;

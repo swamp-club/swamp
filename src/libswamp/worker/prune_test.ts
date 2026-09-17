@@ -105,8 +105,8 @@ function makeDeps(
   overrides: Partial<WorkerPruneDeps> = {},
 ): WorkerPruneDeps {
   return {
-    listWorkers: async () => workers,
-    listTokens: async () => tokens,
+    listWorkers: () => Promise.resolve(workers),
+    listTokens: () => Promise.resolve(tokens),
     deleteWorker: () => successDeleteStream(),
     pruneBindings: () => successPruneStream(),
     now: () => NOW,
@@ -195,8 +195,8 @@ Deno.test("workerPrune: deletes stale worker and prunes bindings", async () => {
         pruned.push({ token, ids });
         return successPruneStream();
       },
-      resolveStaleBindings: async (token, _remaining) => {
-        return token.bindings.map((b) => b.machineId);
+      resolveStaleBindings: (token, _remaining) => {
+        return Promise.resolve(token.bindings.map((b) => b.machineId));
       },
     },
   );

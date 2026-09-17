@@ -33,7 +33,7 @@ function makeDeps(
   return {
     intervalMs: 100,
     gracePeriodMs: 1000,
-    runPrune: async () => EMPTY_RESULT,
+    runPrune: () => Promise.resolve(EMPTY_RESULT),
     ...overrides,
   };
 }
@@ -41,9 +41,9 @@ function makeDeps(
 Deno.test("WorkerGcService: runOnce delegates to runPrune with grace period", async () => {
   let capturedGrace: number | undefined;
   const deps = makeDeps({
-    runPrune: async (grace) => {
+    runPrune: (grace) => {
       capturedGrace = grace;
-      return { ...EMPTY_RESULT, workersDeleted: 3 };
+      return Promise.resolve({ ...EMPTY_RESULT, workersDeleted: 3 });
     },
   });
   const svc = new WorkerGcService(deps);
@@ -55,9 +55,9 @@ Deno.test("WorkerGcService: runOnce delegates to runPrune with grace period", as
 Deno.test("WorkerGcService: dispose cancels scheduled timer", async () => {
   let runCount = 0;
   const deps = makeDeps({
-    runPrune: async () => {
+    runPrune: () => {
       runCount++;
-      return EMPTY_RESULT;
+      return Promise.resolve(EMPTY_RESULT);
     },
   });
   const svc = new WorkerGcService(deps);
@@ -80,10 +80,10 @@ Deno.test("WorkerGcService: sweep error does not crash the service", async () =>
   let callCount = 0;
   const deps = makeDeps({
     intervalMs: 50,
-    runPrune: async () => {
+    runPrune: () => {
       callCount++;
-      if (callCount === 1) throw new Error("boom");
-      return EMPTY_RESULT;
+      if (callCount === 1) return Promise.reject(new Error("boom"));
+      return Promise.resolve(EMPTY_RESULT);
     },
   });
   const svc = new WorkerGcService(deps);
