@@ -3512,6 +3512,7 @@ export class WorkflowExecutionService {
       this.ephemeralCatalog,
       this.pulledExtensionsRoot,
       this.hydrateFile,
+      this.vaultsDir,
     );
 
     let childRun: WorkflowRun | undefined;
