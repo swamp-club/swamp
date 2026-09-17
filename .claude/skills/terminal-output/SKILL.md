@@ -17,6 +17,39 @@ Every command **must** support both modes, controlled by `--json` flag:
 The mode is available as `ctx.outputMode` from `createContext()` in
 `src/cli/context.ts`.
 
+## Which Stream
+
+**stdout is the command's output. stderr is interaction and diagnostics.**
+
+| Goes to stdout                       | Goes to stderr                    |
+| ------------------------------------ | --------------------------------- |
+| `writeOutput()` prose (log mode)     | Interactive prompts               |
+| `console.log(JSON…)` (json mode)     | Spinners and progress indicators  |
+| A command's bare _value_ (see below) | LogTape records, warnings, errors |
+
+A few commands put a **value** on stdout — something a caller pipes, captures or
+redirects, not prose about the result:
+
+- `swamp invite link` and `swamp first-rule` — the URL, for `| pbcopy`
+- `swamp vault read-secret` — the secret bytes, for `> key.pem`
+
+Those commands are listed in `src/cli/stdout_contract.ts`, which `runCli`
+consults to keep log records off their stdout. For them stdout is byte-exact:
+swamp-club#1768 removed even the trailing newline. Anything else written there
+is corruption, not clutter. Two bugs came from ignoring this — swamp-club#2254
+(a log record ahead of the URL) and swamp-club#2260 (a confirmation prompt ahead
+of the secret).
+
+**When adding output, ask what it is, not where it is convenient.** A question
+for the user is interaction: prompt through `src/cli/prompt_helpers.ts`, which
+writes to stderr. A wizard's narration is interaction too. Only the result
+belongs on stdout.
+
+`integration/prompt_stream_rules_test.ts` pins every raw
+`Deno.stdout.write(...)` in `src/`; a new one fails that test unless it is the
+command's value. swamp-club#2259 tracks inverting the default so log-mode prose
+goes to stderr as well.
+
 ## Architecture
 
 ```

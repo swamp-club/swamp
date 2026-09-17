@@ -142,8 +142,9 @@ Two things `stderrOnly` cannot reach, because neither goes through LogTape:
 
 - `writeOutput()` — a direct `console.log`, which is how value-on-stdout
   commands emit the value itself.
-- Interactive prompts in `src/cli/prompt_helpers.ts`, which write to stdout
-  (tracked in swamp-club#2260).
+- Interactive prompts in `src/cli/prompt_helpers.ts`. These wrote to stdout
+  until swamp-club#2260 and now write to stderr directly, which is why
+  `stderrOnly` never needed to reach them.
 
 Inverting this default — stderr for everything, with commands opting stdout back
 in — is proposed in swamp-club#2259. It is a larger change than it sounds: 53 of

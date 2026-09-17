@@ -20,9 +20,18 @@
 /**
  * Shared interactive prompt helpers for CLI commands.
  *
- * These thin wrappers over raw stdin/stdout keep the prompt UX
+ * These thin wrappers over raw stdin/stderr keep the prompt UX
  * consistent across every command that needs user confirmation or
  * free-text input.
+ *
+ * Prompts are written to **stderr**, never stdout. A prompt is interaction,
+ * not output: stdout belongs to the command's result, and for the commands
+ * whose stdout carries a *value* a prompt there is corruption, not clutter.
+ * `swamp vault read-secret v k > key.pem` used to write `Continue? [y/N] `
+ * into the key file ahead of the secret (swamp-club#2260), defeating the
+ * byte-exact stdout that swamp-club#1768 established. The stdin gate below
+ * does not help: redirecting stdout does not change stdin, so the prompt
+ * still fires and still lands in the redirect target.
  */
 
 import { UserError } from "../domain/errors.ts";
@@ -50,7 +59,7 @@ function assertInteractiveStdin(): void {
  * Returns the trimmed response, or an empty string on EOF.
  */
 export async function promptLine(message: string): Promise<string> {
-  await Deno.stdout.write(encoder.encode(message));
+  await Deno.stderr.write(encoder.encode(message));
   const buf = new Uint8Array(1024);
   const n = await Deno.stdin.read(buf);
   if (n === null) return "";
@@ -81,9 +90,9 @@ export async function promptChoice(
 ): Promise<string> {
   assertInteractiveStdin();
   while (true) {
-    await Deno.stdout.write(encoder.encode(`${message}\n`));
+    await Deno.stderr.write(encoder.encode(`${message}\n`));
     for (let i = 0; i < choices.length; i++) {
-      await Deno.stdout.write(
+      await Deno.stderr.write(
         encoder.encode(`  ${i + 1}. ${choices[i]}\n`),
       );
     }
@@ -93,7 +102,7 @@ export async function promptChoice(
       return choices[index];
     }
     if (response === "") return choices[0];
-    await Deno.stdout.write(
+    await Deno.stderr.write(
       encoder.encode(`Invalid choice. Please enter 1-${choices.length}.\n`),
     );
   }
