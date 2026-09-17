@@ -106,7 +106,7 @@ unless --force is set. In --json mode, outputs the value directly.`,
     return;
   }
 
-  const { repoDir, repoContext, datastoreConfig, syncService } =
+  const { repoDir, repoContext, datastoreConfig, syncService, vaultsDir } =
     await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
@@ -129,7 +129,9 @@ unless --force is set. In --json mode, outputs the value directly.`,
     }
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createVaultReadSecretDeps(repoDir, repoContext.eventBus);
+    const deps = createVaultReadSecretDeps(repoDir, repoContext.eventBus, {
+      vaultsDir,
+    });
 
     const renderer = createVaultReadSecretRenderer(cliCtx.outputMode);
     await consumeStream(

@@ -137,6 +137,7 @@ export function buildModelMethodRunDeps(
   repoDir: string,
   repoContext: RepositoryContext,
   isDirectExecution: boolean,
+  options?: { vaultsDir?: string },
 ): ModelMethodRunDeps {
   return {
     repoDir,
@@ -162,7 +163,10 @@ export function buildModelMethodRunDeps(
     saveEvaluatedDefinition: (type, definition) =>
       repoContext.evaluatedDefinitionRepo.save(type, definition),
     createExecutionService: () => new DefaultMethodExecutionService(),
-    createVaultService: () => VaultService.fromRepository(repoDir),
+    createVaultService: () =>
+      VaultService.fromRepository(repoDir, {
+        vaultsDir: options?.vaultsDir,
+      }),
     dataRepo: repoContext.unifiedDataRepo,
     definitionRepo: repoContext.definitionRepo,
     outputRepo: repoContext.outputRepo,

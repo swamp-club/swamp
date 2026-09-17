@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { join } from "@std/path";
 import { Command } from "@cliffy/command";
 import {
   consumeStream,
@@ -32,6 +33,8 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { resolveDatastoreForRepo } from "../repo_context.ts";
+import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -92,10 +95,17 @@ export const doctorVaultsCommand = withRemoteOptions(
   }
 
   const repoDir = resolveRepoDir(options.repoDir);
-  await resolveDatastoreForRepo(repoDir);
+  const { marker, datastoreConfig } = await resolveDatastoreForRepo(repoDir);
+
+  const managedConfig = marker?.datastore?.managedConfig === true;
+  let vaultsDir: string | undefined;
+  if (managedConfig && isCustomDatastoreConfig(datastoreConfig)) {
+    const resolver = new DefaultDatastorePathResolver(repoDir, datastoreConfig);
+    vaultsDir = join(resolver.resolvePath("config"), "vaults");
+  }
 
   const libCtx = createLibSwampContext();
-  const deps = await createDoctorVaultsDeps(repoDir);
+  const deps = await createDoctorVaultsDeps(repoDir, { vaultsDir });
   const renderer = createDoctorVaultsRenderer(cliCtx.outputMode);
 
   await consumeStream(

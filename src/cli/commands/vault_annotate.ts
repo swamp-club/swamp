@@ -160,7 +160,7 @@ existing fields are preserved. Use --clear to remove all annotations.`,
     return;
   }
 
-  const { repoDir, repoContext, datastoreConfig, syncService } =
+  const { repoDir, repoContext, datastoreConfig, syncService, vaultsDir } =
     await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
@@ -197,7 +197,9 @@ existing fields are preserved. Use --clear to remove all annotations.`,
     }
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createVaultAnnotateDeps(repoDir, repoContext.eventBus);
+    const deps = createVaultAnnotateDeps(repoDir, repoContext.eventBus, {
+      vaultsDir,
+    });
 
     const renderer = createVaultAnnotateRenderer(cliCtx.outputMode);
     await consumeStream(

@@ -90,14 +90,14 @@ export const vaultListKeysCommand = withRemoteOptions(
     return;
   }
 
-  const { repoDir } = await requireInitializedRepoReadOnly({
+  const { repoDir, vaultsDir } = await requireInitializedRepoReadOnly({
     repoDir: resolveRepoDir(options.repoDir),
     outputMode: cliCtx.outputMode,
     pull: !!(options.pull as boolean | undefined),
   });
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
-  const deps = await createVaultListKeysDeps(repoDir);
+  const deps = await createVaultListKeysDeps(repoDir, { vaultsDir });
 
   const renderer = createVaultListKeysRenderer(cliCtx.outputMode);
   await consumeStream(

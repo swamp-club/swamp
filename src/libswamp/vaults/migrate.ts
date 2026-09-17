@@ -88,9 +88,14 @@ export interface VaultMigrateDeps {
 /** Wires real infrastructure into VaultMigrateDeps. */
 export async function createVaultMigrateDeps(
   repoDir: string,
+  options?: { vaultsDir?: string },
 ): Promise<VaultMigrateDeps> {
   await vaultTypeRegistry.ensureLoaded();
-  const repo = new YamlVaultConfigRepository(repoDir);
+  const repo = new YamlVaultConfigRepository(
+    repoDir,
+    undefined,
+    options?.vaultsDir,
+  );
   return {
     findVaultConfig: (name) => repo.findByName(name),
     resolveExtensionVaultType: async (type) => {
@@ -101,7 +106,10 @@ export async function createVaultMigrateDeps(
     },
     getVaultTypeInfo: (type) => vaultTypeRegistry.get(type),
     createProvider: createVaultProvider,
-    loadSourceVaultService: () => VaultService.fromRepository(repoDir),
+    loadSourceVaultService: () =>
+      VaultService.fromRepository(repoDir, {
+        vaultsDir: options?.vaultsDir,
+      }),
     saveConfig: (config) => repo.save(config),
     deleteConfig: (config) => repo.delete(config),
     listAvailableTypes: () => vaultTypeRegistry.getAll().map((v) => v.type),

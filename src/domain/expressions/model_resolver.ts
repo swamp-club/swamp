@@ -400,6 +400,8 @@ export interface ModelResolverRepositories {
   vaultService?: VaultService;
   /** Repository directory for lazy loading vault configurations */
   repoDir?: string;
+  /** Resolved vault config directory (managed config tier or local vaults/) */
+  vaultsDir?: string;
   /** Optional data repository for loading versioned data */
   dataRepo?: UnifiedDataRepository;
   /** Optional data query service for CEL data.query() support */
@@ -497,6 +499,7 @@ export class ModelResolver {
   private readonly outputRepo?: YamlOutputRepository;
   private vaultService?: VaultService;
   private readonly repoDir?: string;
+  private readonly vaultsDir?: string;
   private readonly dataRepo?: UnifiedDataRepository;
   private readonly dataQueryService?: DataQueryService;
   private readonly vaultRefreshOptions?: VaultRefreshOptions;
@@ -508,6 +511,7 @@ export class ModelResolver {
   ) {
     this.outputRepo = repos?.outputRepo;
     this.repoDir = repos?.repoDir;
+    this.vaultsDir = repos?.vaultsDir;
     this.dataRepo = repos?.dataRepo;
     this.dataQueryService = repos?.dataQueryService;
     this.vaultRefreshOptions = repos?.vaultRefreshOptions;
@@ -534,7 +538,7 @@ export class ModelResolver {
     if (this.repoDir) {
       this.vaultService = await VaultService.fromRepository(
         this.repoDir,
-        { refreshOptions: refreshOpts },
+        { refreshOptions: refreshOpts, vaultsDir: this.vaultsDir },
       );
     } else {
       // No repoDir, create an empty vault service with defaults

@@ -303,7 +303,7 @@ When using --server, the value must be passed as a positional argument or KEY=VA
     refreshTtlMs = parseTimeout(options.refreshTtl);
   }
 
-  const { repoDir, repoContext, datastoreConfig, syncService } =
+  const { repoDir, repoContext, datastoreConfig, syncService, vaultsDir } =
     await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
@@ -324,7 +324,9 @@ When using --server, the value must be passed as a positional argument or KEY=VA
     cliCtx.logger.debug`Parsed key: ${key}`;
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createVaultPutDeps(repoDir, repoContext.eventBus);
+    const deps = createVaultPutDeps(repoDir, repoContext.eventBus, {
+      vaultsDir,
+    });
 
     // Phase 1: Preview — check vault existence and whether secret exists.
     // This runs before value resolution so the user never types a credential

@@ -28,6 +28,7 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import {
   consumeStream,
@@ -87,19 +88,29 @@ export const workerTokenRevokeCommand = withRemoteOptions(
     return;
   }
 
-  const { repoDir, repoContext, datastoreConfig, syncService } =
-    await requireInitializedRepoUnlocked({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
+  const {
+    repoDir,
+    repoContext,
+    datastoreConfig,
+    syncService,
+    vaultsDir,
+  } = await requireInitializedRepoUnlocked({
+    repoDir: resolveRepoDir(options.repoDir),
+    outputMode: cliCtx.outputMode,
+  });
 
   cliCtx.logger.debug`Revoking enrollment token ${name}`;
+
+  const namespace = isCustomDatastoreConfig(datastoreConfig)
+    ? datastoreConfig.namespace
+    : undefined;
 
   const libCtx = createLibSwampContext({ logger: cliCtx.logger });
   const deps = await createWorkerTokenRevokeDeps(
     libCtx,
     repoDir,
     repoContext,
+    { vaultsDir },
   );
 
   // Per-model lock around the state transition — mirrors
@@ -145,6 +156,11 @@ export const workerTokenRevokeCommand = withRemoteOptions(
       );
     }
     renderWorkerTokenRevoke(data, cliCtx.outputMode);
+
+    if (syncService) {
+      await syncService.markDirty();
+      await syncService.pushChanged({ namespace });
+    }
   } finally {
     if (flushModelLocks) {
       try {

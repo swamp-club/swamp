@@ -56,9 +56,16 @@ export interface VaultListKeysDeps {
 /** Wires real infrastructure into VaultListKeysDeps. */
 export async function createVaultListKeysDeps(
   repoDir: string,
+  options?: { vaultsDir?: string },
 ): Promise<VaultListKeysDeps> {
-  const repo = new YamlVaultConfigRepository(repoDir);
-  const vaultService = await VaultService.fromRepository(repoDir);
+  const repo = new YamlVaultConfigRepository(
+    repoDir,
+    undefined,
+    options?.vaultsDir,
+  );
+  const vaultService = await VaultService.fromRepository(repoDir, {
+    vaultsDir: options?.vaultsDir,
+  });
   return {
     findVaultByName: (name) => repo.findByName(name),
     findAllVaults: () => repo.findAll(),

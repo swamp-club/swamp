@@ -136,7 +136,7 @@ export const accessTokenRotateCommand = withRemoteOptions(
     return;
   }
 
-  const { repoDir, repoContext, datastoreConfig, syncService } =
+  const { repoDir, repoContext, datastoreConfig, syncService, vaultsDir } =
     await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
@@ -166,7 +166,9 @@ export const accessTokenRotateCommand = withRemoteOptions(
     }
     effectiveVault = TOKEN_SECRETS_VAULT_NAME;
 
-    const migrationVaultService = await VaultService.fromRepository(repoDir);
+    const migrationVaultService = await VaultService.fromRepository(repoDir, {
+      vaultsDir,
+    });
     await migrateTokenSecrets({
       tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,
       vaultService: migrationVaultService,
@@ -210,6 +212,7 @@ export const accessTokenRotateCommand = withRemoteOptions(
     libCtx,
     repoDir,
     repoContext,
+    { vaultsDir },
   );
 
   const preResult = await findDefinitionByIdOrName(

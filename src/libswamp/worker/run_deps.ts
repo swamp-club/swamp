@@ -54,6 +54,7 @@ import { reportRegistry } from "../../domain/reports/report_registry.ts";
 export async function createWorkerModelRunDeps(
   repoDir: string,
   repoContext: RepositoryContext,
+  options?: { vaultsDir?: string },
 ): Promise<ModelMethodRunDeps> {
   await Promise.all([
     modelRegistry.ensureLoaded(),
@@ -85,7 +86,10 @@ export async function createWorkerModelRunDeps(
     saveEvaluatedDefinition: (type, definition) =>
       repoContext.evaluatedDefinitionRepo.save(type, definition),
     createExecutionService: () => new DefaultMethodExecutionService(),
-    createVaultService: () => VaultService.fromRepository(repoDir),
+    createVaultService: () =>
+      VaultService.fromRepository(repoDir, {
+        vaultsDir: options?.vaultsDir,
+      }),
     dataRepo: repoContext.unifiedDataRepo,
     definitionRepo: repoContext.definitionRepo,
     outputRepo: repoContext.outputRepo,

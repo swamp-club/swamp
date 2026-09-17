@@ -28,6 +28,7 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import {
   consumeStream,
@@ -48,6 +49,8 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { WorkerTokenCreateResponse } from "../../serve/protocol.ts";
+import { TOKEN_SECRETS_VAULT_NAME } from "../../domain/vaults/control_plane_vault_provider.ts";
+import { initializeControlPlaneVaultForCli } from "../control_plane_vault.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -143,19 +146,50 @@ export const workerTokenCreateCommand = withRemoteOptions(
     return;
   }
 
-  const { repoDir, repoContext, datastoreConfig, syncService } =
-    await requireInitializedRepoUnlocked({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
+  const {
+    repoDir,
+    repoContext,
+    datastoreConfig,
+    syncService,
+    vaultsDir,
+  } = await requireInitializedRepoUnlocked({
+    repoDir: resolveRepoDir(options.repoDir),
+    outputMode: cliCtx.outputMode,
+  });
 
   cliCtx.logger.debug`Minting enrollment token ${name}`;
+
+  const namespace = isCustomDatastoreConfig(datastoreConfig)
+    ? datastoreConfig.namespace
+    : undefined;
+
+  const controlPlaneResult = await initializeControlPlaneVaultForCli(
+    repoDir,
+    syncService,
+    {
+      namespace,
+      catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+    },
+  );
+
+  let effectiveVault = options.vault as string | undefined;
+  if (controlPlaneResult) {
+    if (effectiveVault !== undefined) {
+      throw new UserError(
+        `--vault is not supported when a datastore is configured — ` +
+          `enrollment token secrets are stored in the control-plane vault ` +
+          `(${TOKEN_SECRETS_VAULT_NAME}). Remove --vault and retry.`,
+      );
+    }
+    effectiveVault = TOKEN_SECRETS_VAULT_NAME;
+  }
 
   const libCtx = createLibSwampContext({ logger: cliCtx.logger });
   const deps = await createWorkerTokenCreateDeps(
     libCtx,
     repoDir,
     repoContext,
+    { vaultsDir },
   );
 
   // Per-model lock: only relevant when a definition with this name already
@@ -188,7 +222,7 @@ export const workerTokenCreateCommand = withRemoteOptions(
       workerTokenCreate(libCtx, deps, {
         name,
         durationMs,
-        vaultName: options.vault as string | undefined,
+        vaultName: effectiveVault,
         maxEnrollments,
       }),
       withDefaults<WorkerTokenCreateEvent>({
@@ -206,6 +240,24 @@ export const workerTokenCreateCommand = withRemoteOptions(
       );
     }
     renderWorkerTokenCreate(data, cliCtx.outputMode);
+
+    if (syncService) {
+      await syncService.markDirty();
+      await syncService.pushChanged({ namespace });
+
+      repoContext.catalogStore.invalidate();
+      const verifyResult = await findDefinitionByIdOrName(
+        repoContext.definitionRepo,
+        name,
+      );
+      if (!verifyResult) {
+        throw new UserError(
+          `Enrollment token '${name}' was minted but its definition could ` +
+            `not be read back after sync — the token will not be usable by ` +
+            `serve. Re-mint the token after resolving the datastore issue.`,
+        );
+      }
+    }
   } finally {
     if (flushModelLocks) {
       try {

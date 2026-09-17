@@ -84,9 +84,14 @@ export async function createWorkerTokenCreateDeps(
   ctx: LibSwampContext,
   repoDir: string,
   repoContext: RepositoryContext,
+  options?: { vaultsDir?: string },
 ): Promise<WorkerTokenCreateDeps> {
-  const runDeps = await createWorkerModelRunDeps(repoDir, repoContext);
-  const vaultService = await VaultService.fromRepository(repoDir);
+  const runDeps = await createWorkerModelRunDeps(repoDir, repoContext, {
+    vaultsDir: options?.vaultsDir,
+  });
+  const vaultService = await VaultService.fromRepository(repoDir, {
+    vaultsDir: options?.vaultsDir,
+  });
   return {
     listVaultNames: () => Promise.resolve(vaultService.getVaultNames()),
     runMint: (input) =>

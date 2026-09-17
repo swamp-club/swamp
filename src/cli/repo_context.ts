@@ -362,6 +362,8 @@ export interface RepoValidationContext {
   pulledExtensionsRoot: string;
   lockfilePath: string;
   managedConfig?: boolean;
+  /** Resolved vault config directory — the datastore config tier under managedConfig, otherwise `<repoDir>/vaults`. */
+  vaultsDir: string;
 }
 
 /**
@@ -654,6 +656,7 @@ export async function requireInitializedRepoReadOnly(
     pulledExtensionsRoot,
     lockfilePath,
     managedConfig: managedActive,
+    vaultsDir,
   };
 }
 
@@ -893,6 +896,7 @@ export function requireInitializedRepo(
       datastoreResolver,
       pulledExtensionsRoot,
       lockfilePath,
+      vaultsDir,
     };
   });
 }
@@ -1049,6 +1053,7 @@ export async function requireInitializedRepoUnlocked(
     syncService,
     pulledExtensionsRoot,
     lockfilePath,
+    vaultsDir,
   };
 }
 

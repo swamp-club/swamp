@@ -72,13 +72,22 @@ export interface VaultInspectDeps {
   ) => Promise<RefreshHookData | null>;
 }
 
-export function createVaultInspectDeps(repoDir: string): VaultInspectDeps {
-  const vaultConfigRepo = new YamlVaultConfigRepository(repoDir);
+export function createVaultInspectDeps(
+  repoDir: string,
+  options?: { vaultsDir?: string },
+): VaultInspectDeps {
+  const vaultConfigRepo = new YamlVaultConfigRepository(
+    repoDir,
+    undefined,
+    options?.vaultsDir,
+  );
   let vaultServicePromise: Promise<VaultService> | null = null;
 
   const getVaultService = () => {
     if (!vaultServicePromise) {
-      vaultServicePromise = VaultService.fromRepository(repoDir);
+      vaultServicePromise = VaultService.fromRepository(repoDir, {
+        vaultsDir: options?.vaultsDir,
+      });
     }
     return vaultServicePromise;
   };

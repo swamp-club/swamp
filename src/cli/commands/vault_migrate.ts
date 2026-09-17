@@ -153,7 +153,7 @@ Both the source and target vaults must be different types.`,
     return;
   }
 
-  const { repoDir, syncService, datastoreConfig } =
+  const { repoDir, syncService, datastoreConfig, vaultsDir } =
     await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
@@ -175,7 +175,7 @@ Both the source and target vaults must be different types.`,
   }
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
-  const deps = await createVaultMigrateDeps(repoDir);
+  const deps = await createVaultMigrateDeps(repoDir, { vaultsDir });
 
   // Resolve --to-type: use the provided value or prompt interactively
   let toType: string = options.toType;

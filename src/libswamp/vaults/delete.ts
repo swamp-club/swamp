@@ -78,13 +78,20 @@ export interface VaultDeleteDeps {
 export function createVaultDeleteDeps(
   repoDir: string,
   eventBus: EventBus,
+  options?: { vaultsDir?: string },
 ): VaultDeleteDeps {
-  const vaultConfigRepo = new YamlVaultConfigRepository(repoDir);
+  const vaultConfigRepo = new YamlVaultConfigRepository(
+    repoDir,
+    undefined,
+    options?.vaultsDir,
+  );
   let vaultServicePromise: Promise<VaultService> | null = null;
 
   const getVaultService = () => {
     if (!vaultServicePromise) {
-      vaultServicePromise = VaultService.fromRepository(repoDir);
+      vaultServicePromise = VaultService.fromRepository(repoDir, {
+        vaultsDir: options?.vaultsDir,
+      });
     }
     return vaultServicePromise;
   };

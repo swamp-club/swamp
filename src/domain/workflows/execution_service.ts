@@ -299,6 +299,8 @@ export interface StepExecutionContext {
    * namespaced data path.
    */
   namespace?: Namespace;
+  /** Resolved vault config directory (managed config tier or local vaults/) */
+  vaultsDir?: string;
   runTracker?: RunTrackerRepository;
   ephemeralRepo?: UnifiedDataRepository;
   ephemeralCatalog?: CatalogStore;
@@ -443,6 +445,7 @@ export class DefaultStepExecutor implements StepExecutor {
       markDirty?: MarkDirtyHook;
       hydrateFile?: HydrateFileHook;
       namespace?: Namespace;
+      vaultsDir?: string;
     },
   ): Promise<DefaultStepExecutor> {
     return new DefaultStepExecutor(
@@ -465,6 +468,7 @@ export class DefaultStepExecutor implements StepExecutor {
       markDirty: this.markDirty,
       hydrateFile: this.hydrateFile,
       namespace: ctx.namespace,
+      vaultsDir: ctx.vaultsDir,
       ephemeralRepo: ctx.ephemeralRepo,
       ephemeralCatalog: ctx.ephemeralCatalog,
     });
@@ -485,6 +489,7 @@ export class DefaultStepExecutor implements StepExecutor {
       markDirty?: MarkDirtyHook;
       hydrateFile?: HydrateFileHook;
       namespace?: Namespace;
+      vaultsDir?: string;
       ephemeralRepo?: UnifiedDataRepository;
       ephemeralCatalog?: CatalogStore;
     },
@@ -524,7 +529,9 @@ export class DefaultStepExecutor implements StepExecutor {
         opts.markDirty,
       ),
       methodExecutionService: new DefaultMethodExecutionService(),
-      vaultService: await VaultService.fromRepository(repoDir),
+      vaultService: await VaultService.fromRepository(repoDir, {
+        vaultsDir: opts.vaultsDir,
+      }),
       expressionEvaluator: new ExpressionEvaluationService(
         definitionRepo,
         repoDir,
@@ -1582,6 +1589,7 @@ export class WorkflowExecutionService {
     private readonly ephemeralCatalog?: CatalogStore,
     private readonly pulledExtensionsRoot?: string,
     private readonly hydrateFile?: HydrateFileHook,
+    private readonly vaultsDir?: string,
   ) {
     this.executor = executor ??
       new DefaultStepExecutor(
@@ -1623,6 +1631,7 @@ export class WorkflowExecutionService {
       : persistentQueryService;
     this.modelResolver = new ModelResolver(this.definitionRepo, {
       repoDir,
+      vaultsDir,
       dataRepo: this.dataRepo,
       dataQueryService,
     });
@@ -3190,6 +3199,7 @@ export class WorkflowExecutionService {
           dataBaseDir: this.dataBaseDir,
           catalogStore: this.catalogStore,
           namespace: this.namespace,
+          vaultsDir: this.vaultsDir,
           runTracker: this.runTracker,
           ephemeralRepo: this.ephemeralRepo,
           ephemeralCatalog: this.ephemeralCatalog,

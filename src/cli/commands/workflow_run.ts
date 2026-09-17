@@ -440,6 +440,7 @@ export const workflowRunCommand = new Command()
             ephCatalog,
             resolvePulledExtensionsRoot(dir),
             repoContext.hydrateFile,
+            unlocked.vaultsDir,
           );
         },
         catalogStore: repoContext.catalogStore,

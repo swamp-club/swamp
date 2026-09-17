@@ -108,14 +108,14 @@ and refresh-hook fields are omitted when not supported.`,
     return;
   }
 
-  const { repoDir } = await requireInitializedRepoReadOnly({
+  const { repoDir, vaultsDir } = await requireInitializedRepoReadOnly({
     repoDir: resolveRepoDir(options.repoDir),
     outputMode: cliCtx.outputMode,
     pull: !!(options.pull as boolean | undefined),
   });
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
-  const deps = createVaultInspectDeps(repoDir);
+  const deps = createVaultInspectDeps(repoDir, { vaultsDir });
 
   const renderer = createVaultInspectRenderer(cliCtx.outputMode);
   await consumeStream(

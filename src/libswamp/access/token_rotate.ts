@@ -54,9 +54,14 @@ export async function createServerTokenRotateDeps(
   ctx: LibSwampContext,
   repoDir: string,
   repoContext: RepositoryContext,
+  options?: { vaultsDir?: string },
 ): Promise<ServerTokenRotateDeps> {
-  const runDeps = await createServerTokenRunDeps(repoDir, repoContext);
-  const vaultService = await VaultService.fromRepository(repoDir);
+  const runDeps = await createServerTokenRunDeps(repoDir, repoContext, {
+    vaultsDir: options?.vaultsDir,
+  });
+  const vaultService = await VaultService.fromRepository(repoDir, {
+    vaultsDir: options?.vaultsDir,
+  });
   return {
     listVaultNames: () => Promise.resolve(vaultService.getVaultNames()),
     runRotate: (input) => {

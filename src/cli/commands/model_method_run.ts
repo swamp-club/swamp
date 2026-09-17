@@ -265,7 +265,7 @@ Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — 
         "method",
         "run",
       ]);
-      const { repoDir, repoContext, datastoreConfig, syncService } =
+      const { repoDir, repoContext, datastoreConfig, syncService, vaultsDir } =
         await requireInitializedRepoUnlocked({
           repoDir: resolveRepoDir(options.repoDir),
           outputMode: ctx.outputMode,
@@ -339,6 +339,7 @@ Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — 
           createExecutionService: () => new DefaultMethodExecutionService(),
           createVaultService: () =>
             VaultService.fromRepository(repoDir, {
+              vaultsDir,
               defaultVaultName: marker?.defaultVault,
             }),
           dataRepo: repoContext.unifiedDataRepo,

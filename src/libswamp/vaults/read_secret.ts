@@ -65,15 +65,23 @@ export interface VaultReadSecretDeps {
 export function createVaultReadSecretDeps(
   repoDir: string,
   eventBus: EventBus,
+  options?: { vaultsDir?: string },
 ): VaultReadSecretDeps {
-  const vaultConfigRepo = new YamlVaultConfigRepository(repoDir);
+  const vaultConfigRepo = new YamlVaultConfigRepository(
+    repoDir,
+    undefined,
+    options?.vaultsDir,
+  );
   let vaultServicePromise: Promise<VaultService> | null = null;
 
   const getVaultService = () => {
     if (!vaultServicePromise) {
       vaultServicePromise = VaultService.fromRepository(
         repoDir,
-        { refreshOptions: createVaultRefreshOptions() },
+        {
+          vaultsDir: options?.vaultsDir,
+          refreshOptions: createVaultRefreshOptions(),
+        },
       );
     }
     return vaultServicePromise;

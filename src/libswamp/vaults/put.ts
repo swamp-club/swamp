@@ -101,13 +101,20 @@ export interface VaultPutDeps {
 export function createVaultPutDeps(
   repoDir: string,
   eventBus: EventBus,
+  options?: { vaultsDir?: string },
 ): VaultPutDeps {
-  const vaultConfigRepo = new YamlVaultConfigRepository(repoDir);
+  const vaultConfigRepo = new YamlVaultConfigRepository(
+    repoDir,
+    undefined,
+    options?.vaultsDir,
+  );
   let vaultServicePromise: Promise<VaultService> | null = null;
 
   const getVaultService = () => {
     if (!vaultServicePromise) {
-      vaultServicePromise = VaultService.fromRepository(repoDir);
+      vaultServicePromise = VaultService.fromRepository(repoDir, {
+        vaultsDir: options?.vaultsDir,
+      });
     }
     return vaultServicePromise;
   };

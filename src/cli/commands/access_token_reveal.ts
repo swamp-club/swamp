@@ -77,7 +77,7 @@ export const accessTokenRevealCommand = new Command()
       "reveal",
     ]);
 
-    const { repoDir, repoContext, datastoreConfig, syncService } =
+    const { repoDir, repoContext, datastoreConfig, syncService, vaultsDir } =
       await requireInitializedRepoUnlocked({
         repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
@@ -92,7 +92,9 @@ export const accessTokenRevealCommand = new Command()
       catalogInvalidate: () => repoContext.catalogStore.invalidate(),
     });
 
-    const vaultService = await VaultService.fromRepository(repoDir);
+    const vaultService = await VaultService.fromRepository(repoDir, {
+      vaultsDir,
+    });
     const deps = createServerTokenRevealDeps(
       repoContext.dataQueryService,
       vaultService,

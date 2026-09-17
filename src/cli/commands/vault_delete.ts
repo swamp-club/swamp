@@ -123,7 +123,7 @@ When using --server, the confirmation prompt is not available — use --force to
     return;
   }
 
-  const { repoDir, repoContext, datastoreConfig, syncService } =
+  const { repoDir, repoContext, datastoreConfig, syncService, vaultsDir } =
     await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
@@ -136,7 +136,9 @@ When using --server, the confirmation prompt is not available — use --force to
 
   try {
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createVaultDeleteDeps(repoDir, repoContext.eventBus);
+    const deps = createVaultDeleteDeps(repoDir, repoContext.eventBus, {
+      vaultsDir,
+    });
 
     let preview;
     try {

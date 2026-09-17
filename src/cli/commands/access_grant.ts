@@ -218,7 +218,7 @@ const accessGrantCreateCommand = new Command()
       "grant",
       "create",
     ]);
-    const { repoDir, repoContext, datastoreConfig, syncService } =
+    const { repoDir, repoContext, datastoreConfig, syncService, vaultsDir } =
       await requireInitializedRepoUnlocked({
         repoDir: resolveRepoDir(options.repoDir),
         outputMode: ctx.outputMode,
@@ -230,7 +230,9 @@ const accessGrantCreateCommand = new Command()
       reportRegistry.ensureLoaded(),
     ]);
 
-    const deps = buildModelMethodRunDeps(repoDir, repoContext, true);
+    const deps = buildModelMethodRunDeps(repoDir, repoContext, true, {
+      vaultsDir,
+    });
 
     const preResult = await findDefinitionByIdOrName(
       repoContext.definitionRepo,
@@ -534,7 +536,7 @@ const accessGrantRevokeCommand = new Command()
       "grant",
       "revoke",
     ]);
-    const { repoDir, repoContext, datastoreConfig, syncService } =
+    const { repoDir, repoContext, datastoreConfig, syncService, vaultsDir } =
       await requireInitializedRepoUnlocked({
         repoDir: resolveRepoDir(options.repoDir),
         outputMode: ctx.outputMode,
@@ -562,7 +564,9 @@ const accessGrantRevokeCommand = new Command()
       return;
     }
 
-    const deps = buildModelMethodRunDeps(repoDir, repoContext, false);
+    const deps = buildModelMethodRunDeps(repoDir, repoContext, false, {
+      vaultsDir,
+    });
 
     const preResult = await findDefinitionByIdOrName(
       repoContext.definitionRepo,

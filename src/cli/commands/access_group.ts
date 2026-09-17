@@ -109,7 +109,7 @@ async function runGroupMethod(
   isDirectExecution: boolean,
 ): Promise<void> {
   const ctx = createContext(options as GlobalOptions, loggerCategory);
-  const { repoDir, repoContext, datastoreConfig, syncService } =
+  const { repoDir, repoContext, datastoreConfig, syncService, vaultsDir } =
     await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: ctx.outputMode,
@@ -121,7 +121,14 @@ async function runGroupMethod(
     reportRegistry.ensureLoaded(),
   ]);
 
-  const deps = buildModelMethodRunDeps(repoDir, repoContext, isDirectExecution);
+  const deps = buildModelMethodRunDeps(
+    repoDir,
+    repoContext,
+    isDirectExecution,
+    {
+      vaultsDir,
+    },
+  );
 
   const preResult = await findDefinitionByIdOrName(
     repoContext.definitionRepo,

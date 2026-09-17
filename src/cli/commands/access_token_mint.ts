@@ -156,7 +156,7 @@ export const accessTokenMintCommand = withRemoteOptions(
     return;
   }
 
-  const { repoDir, repoContext, datastoreConfig, syncService } =
+  const { repoDir, repoContext, datastoreConfig, syncService, vaultsDir } =
     await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
@@ -192,6 +192,7 @@ export const accessTokenMintCommand = withRemoteOptions(
     libCtx,
     repoDir,
     repoContext,
+    { vaultsDir },
   );
 
   const preResult = await findDefinitionByIdOrName(
@@ -246,6 +247,7 @@ export const accessTokenMintCommand = withRemoteOptions(
     if (controlPlaneResult) {
       const migrationVaultService = await VaultService.fromRepository(
         repoDir,
+        { vaultsDir },
       );
       await migrateTokenSecrets({
         tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,

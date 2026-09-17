@@ -61,8 +61,11 @@ export async function createWorkerTokenRevokeDeps(
   ctx: LibSwampContext,
   repoDir: string,
   repoContext: RepositoryContext,
+  options?: { vaultsDir?: string },
 ): Promise<WorkerTokenRevokeDeps> {
-  const runDeps = await createWorkerModelRunDeps(repoDir, repoContext);
+  const runDeps = await createWorkerModelRunDeps(repoDir, repoContext, {
+    vaultsDir: options?.vaultsDir,
+  });
   return {
     runRevoke: (name) =>
       modelMethodRun(ctx, runDeps, {

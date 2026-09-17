@@ -82,6 +82,7 @@ export interface DoctorVaultsDeps {
  */
 export async function createDoctorVaultsDeps(
   repoDir: string,
+  options?: { vaultsDir?: string },
 ): Promise<DoctorVaultsDeps> {
   await modelRegistry.ensureLoaded();
   const primaryRepo = new YamlDefinitionRepository(repoDir);
@@ -104,7 +105,9 @@ export async function createDoctorVaultsDeps(
       return modelRegistry.get(type);
     },
     hasVault: async () => {
-      const vs = await VaultService.fromRepository(repoDir);
+      const vs = await VaultService.fromRepository(repoDir, {
+        vaultsDir: options?.vaultsDir,
+      });
       return vs.getVaultNames().length > 0;
     },
   };
