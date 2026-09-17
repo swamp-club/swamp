@@ -39,6 +39,7 @@ function resolved(
     vaults: [],
     datastores: [],
     reports: [],
+    webhooks: [],
     skills: [],
     additionalFiles: [],
     platforms: [],
@@ -104,6 +105,7 @@ Deno.test("extensionPushRenderer: JSON success reports applied visibility", asyn
         vaultCount: 0,
         datastoreCount: 0,
         reportCount: 0,
+        webhookCount: 0,
         skillCount: 0,
       },
     });
