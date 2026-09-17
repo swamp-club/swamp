@@ -1904,6 +1904,9 @@ export const serveCommand = new Command()
                   { count: result.reloadedCount },
                 );
               }
+              for (const err of result.errors) {
+                logger.warn`Config poller extension reload: ${err}`;
+              }
             } else {
               for (const err of result.errors) {
                 logger.warn`Config poller extension reload: ${err}`;
