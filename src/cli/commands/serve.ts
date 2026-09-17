@@ -5224,6 +5224,9 @@ export const serveCommand = new Command()
               completed: (e: { result: WorkerPruneResult }) => {
                 result = e.result;
               },
+              error: (e: { error: { message: string } }) => {
+                throw new Error(e.error.message);
+              },
             }),
           );
           return result;

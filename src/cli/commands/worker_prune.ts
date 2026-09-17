@@ -70,7 +70,7 @@ export const workerPruneCommand = withRemoteOptions(
   new Command()
     .name("prune")
     .description(
-      "Remove stale disconnected workers and clean up their token bindings",
+      "Remove stale disconnected worker records (binding cleanup runs server-side)",
     )
     .example("Preview what would be pruned", "swamp worker prune --dry-run")
     .example("Prune with default 24h grace", "swamp worker prune --force")
@@ -211,13 +211,14 @@ export const workerPruneCommand = withRemoteOptions(
   };
 
   const force = !!options.force;
+  let prunableCount = 0;
   let result: WorkerPruneResult | undefined;
-  let previewed = false;
+
   await consumeStream(
     workerPrune(libCtx, pruneDeps, { gracePeriodMs, dryRun: true }),
     withDefaults<WorkerPruneEvent>({
       previewing: (event) => {
-        previewed = true;
+        prunableCount = event.workers.length;
         if (cliCtx.outputMode === "log") {
           renderWorkerPrunePreview(event.workers, dryRun, cliCtx.outputMode);
         }
@@ -231,25 +232,23 @@ export const workerPruneCommand = withRemoteOptions(
     }),
   );
 
-  if (!previewed || !result) {
-    throw new UserError("Worker prune ended without completing");
-  }
-
-  const previewResult = result;
-
   if (dryRun) {
-    if (cliCtx.outputMode === "json") {
-      renderWorkerPruneResult(previewResult, cliCtx.outputMode);
+    if (cliCtx.outputMode === "json" && result) {
+      renderWorkerPruneResult(result, cliCtx.outputMode);
     }
     return;
   }
 
-  if (previewResult.workersDeleted === 0 && !force) {
-    if (cliCtx.outputMode === "json") {
-      renderWorkerPruneResult(previewResult, cliCtx.outputMode);
-    } else {
-      renderWorkerPruneResult(previewResult, cliCtx.outputMode);
-    }
+  if (prunableCount === 0) {
+    renderWorkerPruneResult(
+      result ?? {
+        workersDeleted: 0,
+        workersFailed: 0,
+        bindingsPruned: 0,
+        tokensCleaned: 0,
+      },
+      cliCtx.outputMode,
+    );
     return;
   }
 
