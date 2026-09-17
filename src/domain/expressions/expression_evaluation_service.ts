@@ -24,6 +24,7 @@ import type { YamlDefinitionRepository } from "../../infrastructure/persistence/
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
 import {
   containsExpression,
+  extractCelExpression,
   extractExpressions,
   replaceExpressions,
 } from "./expression_parser.ts";
@@ -236,6 +237,22 @@ export function collectAuthoredExpressions(
     into.add(expr.raw);
   }
   return into;
+}
+
+/** Binding paths (`inputs.home`, `self`, `steps.a.outputs`) a CEL expression reads. */
+function referencedBindingPaths(cel: string): string[] {
+  return [
+    ...cel.matchAll(/\b(inputs|self|run|steps)((?:\.[A-Za-z0-9_]+|\[\d+\])*)/g),
+  ]
+    .map((m) => m[1] + m[2]);
+}
+
+/** True when one path is the other or an ancestor of it. */
+function overlaps(a: string, b: string): boolean {
+  const under = (path: string, root: string) =>
+    path === root || path.startsWith(root + ".") ||
+    path.startsWith(root + "[");
+  return under(a, b) || under(b, a);
 }
 
 /**
@@ -499,6 +516,7 @@ export class ExpressionEvaluationService {
     data: unknown,
     context: ExpressionContext,
     authored: AuthoredExpressions,
+    omitBindings: readonly string[] = [],
   ) {
     const deferredExpressions = [...(context.deferredExpressions ?? [])];
     const values = new Map<string, unknown>();
@@ -509,7 +527,7 @@ export class ExpressionEvaluationService {
         isDeferredExpression(expr.celExpression) || values.has(expr.raw)
       ) continue;
       const id = crypto.randomUUID();
-      bindings ??= captureDeferredBindings(context);
+      bindings ??= captureDeferredBindings(context, omitBindings);
       deferredExpressions.push({ id, expression: expr.raw, bindings });
       values.set(expr.raw, deferredExpressionReference(id));
     }
@@ -896,25 +914,32 @@ export class ExpressionEvaluationService {
     );
     const resolvedReferences = new Map<string, unknown>();
     const resolving = new Set<string>();
-    // The top-level context is identical for every non-deferred expression,
-    // so its deferred bindings are substituted once per call. A record's
-    // own expression evaluates against the parent's bindings instead and is
-    // substituted per call.
-    let substituted: Promise<ExpressionContext> | undefined;
+    // Only the bindings an expression reads are resolved, so an unused
+    // reference (a missing env var or vault key in another input) never
+    // becomes a dependency of this expression. Resolved references are
+    // memoized, so re-substituting per expression is cheap.
     const withBindings = async (
       ctx: ExpressionContext,
+      cel: string,
     ): Promise<ExpressionContext> => {
       const { inputs, self, run, steps } = ctx;
       return {
         ...ctx,
-        ...await resolveBindings({ inputs, self, run, steps }) as object,
+        ...await resolveBindings({ inputs, self, run, steps }, cel) as object,
       };
     };
 
-    const resolveBindings = async (bindings: unknown): Promise<unknown> => {
+    const resolveBindings = async (
+      bindings: unknown,
+      cel: string,
+    ): Promise<unknown> => {
+      const read = referencedBindingPaths(cel);
       const values = new Map<string, unknown>();
       for (const expr of extractExpressions(bindings)) {
-        if (records.has(expr.raw)) {
+        if (
+          records.has(expr.raw) &&
+          read.some((path) => overlaps(path, expr.path))
+        ) {
           values.set(expr.raw, await resolve(expr, context));
         }
       }
@@ -935,6 +960,7 @@ export class ExpressionEvaluationService {
         resolving.add(expr.raw);
         const bindings = await resolveBindings(
           record.bindings,
+          extractCelExpression(record.expression) ?? "",
         ) as typeof record.bindings;
         const value = await resolve(extractExpressions(record.expression)[0], {
           ...context,
@@ -950,11 +976,9 @@ export class ExpressionEvaluationService {
         return value;
       }
       if (isDeferredExpression(expr.celExpression)) return expr.raw;
-      const celContext = !records.size
-        ? ctx
-        : ctx === context
-        ? await (substituted ??= withBindings(ctx))
-        : await withBindings(ctx);
+      const celContext = records.size
+        ? await withBindings(ctx, expr.celExpression)
+        : ctx;
       let cel = expr.celExpression;
       if (containsVaultExpression(cel)) {
         cel = await this.modelResolver.resolveVaultExpressions(

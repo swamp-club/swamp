@@ -6665,3 +6665,99 @@ Deno.test("resume builds a full context when a step definition reads the model n
     assert(modelNamespaceKeys(executor.contexts[0]).includes("source"));
   });
 });
+// Resume-time inputs are audited by key only; a resumed parent that calls a
+// child with a runtime expression must not snapshot their values into the
+// child's persisted deferred bindings.
+Deno.test("resume: resume-only inputs are excluded from the child's deferred bindings", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const childWorkflow = Workflow.create({
+      name: "child-of-resumed",
+      inputs: { properties: { home: { type: "string" } } },
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "child-step",
+              task: StepTask.modelMethod("some-model", "run", {
+                home: "${{ inputs.home }}",
+              }),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(childWorkflow);
+
+    const parentWorkflow = Workflow.create({
+      name: "parent-with-gate",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("Mint the token first"),
+            }),
+            // Iterates a resume-time input, so self.item carries its value.
+            Step.create({
+              name: "call-child",
+              forEach: { item: "item", in: "${{ inputs.items }}" },
+              task: StepTask.workflow("child-of-resumed", {
+                home: "${{ env.HOME }}",
+              }),
+              dependsOn: [
+                { step: "gate", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(parentWorkflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const suspended = await service.execute(parentWorkflow.name, {
+      inputs: { region: "us-east", items: [] },
+    });
+    assertEquals(suspended.status, "suspended");
+
+    const toApprove = await runRepo.findById(parentWorkflow.id, suspended.id);
+    const waiting = toApprove!.findWaitingApprovalStep()!;
+    toApprove!.getJob(waiting.jobName)!.getStep(waiting.stepName)!.succeed();
+    await runRepo.save(parentWorkflow.id, toApprove!);
+
+    const secret = `resume-secret-${crypto.randomUUID()}`;
+    let resumedRun: WorkflowRun | undefined;
+    for await (
+      const event of service.resume(parentWorkflow.name, suspended.id, {
+        inputs: { token: secret, items: [{ token: secret }] },
+      })
+    ) {
+      if (event.kind === "completed") resumedRun = event.run;
+    }
+    assertEquals(resumedRun?.status, "succeeded");
+
+    const childRun = (await runRepo.findAllByWorkflowId(childWorkflow.id))[0];
+    const [record] = childRun.deferredExpressions;
+    assertEquals(record.expression, "${{ env.HOME }}");
+    // The suspend-time inputs are still in scope; the resume-only ones and
+    // the forEach item iterated out of one are not.
+    assertEquals(record.bindings.inputs, { region: "us-east" });
+    assertEquals("item" in (record.bindings.self ?? {}), false);
+    assertEquals(JSON.stringify(childRun.toData()).includes(secret), false);
+  });
+});

@@ -27,6 +27,7 @@ import {
 import type { ModelDefinition } from "../../domain/models/model.ts";
 import { Definition } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
+import { deferredExpressionReference } from "../../domain/expressions/deferred_expression.ts";
 
 function createTestModelDef(
   globalArgs?: z.ZodTypeAny,
@@ -237,6 +238,47 @@ Deno.test("resolveOrCreateDefinition: auto-creates definition with routed global
     assertEquals(result.routedInputs.methodArguments, { target: "prod" });
     assertEquals(savedDefinition !== null, true);
   }
+});
+
+Deno.test("resolveOrCreateDefinition: refuses a parent-scoped deferred reference in global arguments", async () => {
+  const modelDef = createTestModelDef(
+    z.object({ region: z.string() }),
+    { deploy: z.object({ target: z.string() }) },
+  );
+  const reference = deferredExpressionReference(crypto.randomUUID());
+  let saved = false;
+
+  const result = await resolveOrCreateDefinition(
+    {
+      lookupDefinition: () => Promise.resolve(null),
+      getModelDef: () => modelDef,
+      saveDefinition: () => {
+        saved = true;
+        return Promise.resolve();
+      },
+      getDefinitionPath: (_type, id) => `/tmp/models/test/deploy/${id}.yaml`,
+    },
+    "test/deploy",
+    "my-deployer",
+    "deploy",
+    { region: reference, target: "prod" },
+    ModelType.create("test/deploy"),
+    modelDef,
+    undefined,
+    undefined,
+    new Set([reference]),
+  );
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.error.code, "validation_failed");
+    assertStringIncludes(result.error.message, "region");
+    assertStringIncludes(
+      result.error.message,
+      "scoped to the calling workflow run",
+    );
+  }
+  assertEquals(saved, false);
 });
 
 Deno.test("resolveOrCreateDefinition: updates globalArgs when they differ on existing definition", async () => {

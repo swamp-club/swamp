@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { Definition } from "../definitions/definition.ts";
 import { ModelType } from "../models/model_type.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -29,6 +29,7 @@ import {
   ExpressionEvaluationService,
 } from "./expression_evaluation_service.ts";
 import type { ExpressionContext } from "./model_resolver.ts";
+import { deferredExpressionReference } from "./deferred_expression.ts";
 import { SecretRedactor } from "../secrets/secret_redactor.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -1029,6 +1030,59 @@ Deno.test("resolveRuntimeExpressionsInData: refuses an env expression absent fro
       assertEquals(result.note, "${{ env.SWAMP_TEST_DATA_INJECTED }}");
     } finally {
       Deno.env.delete("SWAMP_TEST_DATA_INJECTED");
+    }
+  });
+});
+
+Deno.test("resolveRuntimeExpressionsInData: resolves only the deferred bindings an expression reads", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const originalToObject = Deno.env.toObject;
+    Deno.env.toObject = () => ({ HOME: "runtime-home" });
+    try {
+      // A parent passed two runtime inputs; only `home` resolves.
+      const home = { id: crypto.randomUUID(), expression: "${{ env.HOME }}" };
+      const broken = {
+        id: crypto.randomUUID(),
+        expression: "${{ vault.get('missing-vault', 'key') }}",
+      };
+      const context = makeContext({
+        inputs: {
+          home: deferredExpressionReference(home.id),
+          unused: deferredExpressionReference(broken.id),
+        },
+        deferredExpressions: [home, broken].map((record) => ({
+          ...record,
+          bindings: {},
+        })),
+      });
+      const reads = (input: string) => ({
+        value: `\${{ env.HOME + ":" + inputs.${input} }}`,
+      });
+      const authored = new Set([reads("home").value, reads("unused").value]);
+
+      // The unused input's vault lookup never runs.
+      assertEquals(
+        await service.resolveRuntimeExpressionsInData(
+          reads("home"),
+          undefined,
+          context,
+          authored,
+        ),
+        { value: "runtime-home:runtime-home" },
+      );
+      // Reading it still fails.
+      await assertRejects(() =>
+        service.resolveRuntimeExpressionsInData(
+          reads("unused"),
+          undefined,
+          context,
+          authored,
+        )
+      );
+    } finally {
+      Deno.env.toObject = originalToObject;
     }
   });
 });

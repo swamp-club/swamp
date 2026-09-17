@@ -31,6 +31,7 @@ import {
   extractExpressions,
   stripExpressionFields,
 } from "../../domain/expressions/expression_parser.ts";
+import { isDeferredExpression } from "../../domain/expressions/deferred_expression.ts";
 import {
   type AuthoredExpressions,
   collectAuthoredExpressions,
@@ -243,6 +244,22 @@ export async function resolveOrCreateDefinition(
       return { ok: false, error: routeResult.error };
     }
     routed = routeResult;
+  }
+
+  // A parent-scoped runtime expression only resolves against the run that
+  // passed it in, so it can never live in a persisted definition.
+  const scoped = extractExpressions(routed.globalArguments).filter((e) =>
+    isDeferredExpression(e.celExpression)
+  );
+  if (scoped.length > 0) {
+    return {
+      ok: false,
+      error: validationFailed(
+        `Refusing to persist definition '${definitionName}': global argument(s) ${
+          scoped.map((e) => e.path).join(", ")
+        } hold a runtime expression scoped to the calling workflow run (it reads the parent's inputs, self, run or steps), which cannot be stored in a definition. Pass a literal value, or an expression that does not read parent scope.`,
+      ),
+    };
   }
 
   // Look up existing definition

@@ -66,12 +66,23 @@ export function isDeferredExpression(cel: string): boolean {
   return /^__swamp_deferred_[a-f0-9_]+$/.test(cel);
 }
 
+/**
+ * `omit` names `root.key` binding paths (e.g. `inputs.token`, `self.item`)
+ * whose values must not be persisted, such as resume-time inputs and forEach
+ * items derived from them. Only two-segment paths are supported.
+ */
 export function captureDeferredBindings(
   context: ExpressionContext,
+  omit: readonly string[] = [],
 ): DeferredExpression["bindings"] {
   const { inputs, self, run, workflowRunId, steps } = context;
   // Copy at the call boundary: later step results must not change this scope.
-  return JSON.parse(
+  const bindings = JSON.parse(
     JSON.stringify({ inputs, self, run, workflowRunId, steps }),
-  );
+  ) as Record<string, Record<string, unknown> | undefined>;
+  for (const path of omit) {
+    const [root, key] = path.split(".");
+    delete bindings[root]?.[key];
+  }
+  return bindings as DeferredExpression["bindings"];
 }

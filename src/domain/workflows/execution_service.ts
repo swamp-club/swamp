@@ -109,6 +109,8 @@ import { resolveAvailableExpressions } from "../expressions/available_expression
 import {
   extractCelExpression,
   extractExpressions,
+  extractInputReferencesFromCel,
+  replaceExpressions,
 } from "../expressions/expression_parser.ts";
 import { requiresModelNamespace } from "../expressions/dependency_extractor.ts";
 import { extractStepDefinitionReferences } from "./model_reference_extractor.ts";
@@ -142,6 +144,32 @@ import type { ReportFilterOptions } from "../reports/report_execution_service.ts
 import { getTracer, SpanStatusCode } from "../../infrastructure/tracing/mod.ts";
 import { extractSensitiveFieldValues } from "../models/sensitive_field_extractor.ts";
 import { getRemoteStepDispatcher } from "../remote/remote_dispatch.ts";
+
+/** Parent-scope roots a deferred expression may read; anything else is scope-free. */
+const SCOPED_REFERENCE = /\b(inputs|self|run|steps)\b/;
+
+/**
+ * Replaces deferred references whose expression reads no parent scope with
+ * their authored text and vouches for that text. Scoped references are kept.
+ */
+function inlineUnscopedDeferred<T>(
+  data: T,
+  records: readonly DeferredExpression[],
+  authored: ReadonlySet<string>,
+): { data: T; authored: ReadonlySet<string> } {
+  const byReference = new Map(
+    records.map((record) => [deferredExpressionReference(record.id), record]),
+  );
+  const values = new Map<string, unknown>();
+  const vouched = new Set(authored);
+  for (const expr of extractExpressions(data)) {
+    const record = byReference.get(expr.raw);
+    if (!record || SCOPED_REFERENCE.test(record.expression)) continue;
+    values.set(expr.raw, record.expression);
+    vouched.add(record.expression);
+  }
+  return { data: replaceExpressions(data, values) as T, authored: vouched };
+}
 
 /**
  * Resolves a task field that may be a record, an expression string, or a
@@ -739,6 +767,7 @@ export class DefaultStepExecutor implements StepExecutor {
      */
     let authoredFromDefinition: ReadonlySet<string> = new Set();
 
+    let authoredForDirect = ctx.authoredExpressions;
     if (task.modelType && task.modelName) {
       const resolver = allDeps.directTypeResolver;
 
@@ -748,13 +777,28 @@ export class DefaultStepExecutor implements StepExecutor {
         );
       }
 
+      // Direct execution may persist these values into a definition. A
+      // deferred reference whose expression needs no parent scope (env,
+      // literal vault.get) is restored to its authored text, which persists
+      // and resolves exactly as it did before deferral. Scoped references
+      // stay as tokens and are refused by resolveOrCreateDefinition if they
+      // route to global arguments.
+      const inlined = inlineUnscopedDeferred(
+        { inputs: task.inputs, globalArgs: task.globalArgs },
+        ctx.expressionContext?.deferredExpressions ?? [],
+        ctx.authoredExpressions,
+      );
+      const { modelType: typeArg, modelName, methodName } = task;
+      task = { ...task, ...inlined.data };
+      authoredForDirect = inlined.authored;
+
       const result = await resolver(
-        task.modelType,
-        task.modelName,
-        task.methodName,
+        typeArg,
+        modelName,
+        methodName,
         (task.inputs ?? {}) as Record<string, unknown>,
         task.globalArgs as Record<string, unknown> | undefined,
-        ctx.authoredExpressions,
+        authoredForDirect,
       );
 
       originalDefinition = result.definition;
@@ -852,7 +896,7 @@ export class DefaultStepExecutor implements StepExecutor {
     // evaluator has already substituted data into it. Author-written step
     // inputs are covered by the workflow-source set, collected before that ran.
     const authoredExpressions = new Set([
-      ...ctx.authoredExpressions,
+      ...authoredForDirect,
       ...authoredFromDefinition,
     ]);
 
@@ -1656,6 +1700,12 @@ interface StepOptions {
   assertFailOnSeverity?: AssertSeverity;
   /** Identity of the user who initiated this run */
   initiatedBy?: string;
+  /**
+   * `root.key` binding paths (e.g. `inputs.token`, `self.item`) whose values
+   * came from resume-time inputs. Those are audited by key only and must
+   * never be copied into durable deferred bindings.
+   */
+  resumeDerived?: readonly string[];
 }
 
 /**
@@ -2489,6 +2539,7 @@ export class WorkflowExecutionService {
         initiatedBy: existingRun.initiatedBy,
         secretRedactor,
         signal: options?.signal,
+        resumeDerived: existingRun.resumeInputs.map((key) => `inputs.${key}`),
         // workflow resume never receives CLI report flags — default so
         // resumed runs still execute reports instead of silently skipping.
         reportFilterOptions: options?.reportFilterOptions ?? {},
@@ -3058,6 +3109,23 @@ export class WorkflowExecutionService {
           [forEachVar.name]: forEachVar.value,
         },
       };
+      // An item iterated out of a resume-time input carries that input's
+      // value, so it is excluded from deferred bindings like the input.
+      const resumeKeys = (options.resumeDerived ?? [])
+        .filter((path) => path.startsWith("inputs."))
+        .map((path) => path.slice("inputs.".length));
+      const inRefs = extractInputReferencesFromCel(
+        extractCelExpression(step.forEach?.in ?? "") ?? "",
+      );
+      if (resumeKeys.some((key) => inRefs.has(key))) {
+        options = {
+          ...options,
+          resumeDerived: [
+            ...(options.resumeDerived ?? []),
+            `self.${forEachVar.name}`,
+          ],
+        };
+      }
     }
 
     // Evaluate guard expression — truthy means the step is already done
@@ -3221,7 +3289,6 @@ export class WorkflowExecutionService {
               // Leave the expression as-is if evaluation fails.
             }
           }
-
           // Redact once, before the message reaches the step error, the
           // events, or the span; a vault.get() in the message resolves to
           // plaintext above.
@@ -3668,11 +3735,16 @@ export class WorkflowExecutionService {
       ) as Record<string, unknown>;
     }
 
+    // Deferred bindings are persisted by the child, so resume-derived values
+    // (audited by key, never by value) are left out. A parent runtime
+    // expression that references one fails to resolve in the child instead
+    // of persisting the secret or silently using a stale pre-resume value.
     const deferred = expressionContext
       ? this.expressionEvaluator.deferChildInputs(
         evaluatedInputs,
         expressionContext,
         options.authoredExpressions,
+        options.resumeDerived,
       )
       : { data: evaluatedInputs, deferredExpressions: [] };
     evaluatedInputs = deferred.data as Record<string, unknown> | undefined;
