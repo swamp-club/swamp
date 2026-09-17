@@ -34,6 +34,6 @@ Deno.test("collectFiles: includes source files from a checkout beneath .claude",
 
     assertEquals(await collectFiles(root), [sourceFile]);
   } finally {
-    await Deno.remove(parent, { recursive: true });
+    await Deno.remove(parent, { recursive: true }).catch(() => {});
   }
 });
