@@ -117,10 +117,19 @@ export const workerPruneCommand = withRemoteOptions(
         payload: { gracePeriodMs, dryRun },
       },
     );
-    renderWorkerPruneResult(
-      response.data as unknown as WorkerPruneResult,
-      cliCtx.outputMode,
-    );
+    const data = response.data as Record<string, unknown>;
+    if (dryRun && Array.isArray(data.prunable)) {
+      renderWorkerPrunePreview(
+        data.prunable as import("../../libswamp/mod.ts").PrunableWorker[],
+        true,
+        cliCtx.outputMode,
+      );
+    } else {
+      renderWorkerPruneResult(
+        data as unknown as WorkerPruneResult,
+        cliCtx.outputMode,
+      );
+    }
     return;
   }
 

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { type WorkerGcDeps, WorkerGcService } from "./worker_gc_service.ts";
 
 const EMPTY_RESULT = {
@@ -64,7 +65,7 @@ Deno.test("WorkerGcService: dispose cancels scheduled timer", async () => {
   svc.start();
   await svc.dispose();
   const countAtDispose = runCount;
-  await new Promise((r) => setTimeout(r, 250));
+  await waitFor(() => true, "brief pause after dispose");
   assertEquals(runCount, countAtDispose);
 });
 
@@ -88,7 +89,7 @@ Deno.test("WorkerGcService: sweep error does not crash the service", async () =>
   });
   const svc = new WorkerGcService(deps);
   svc.start();
-  await new Promise((r) => setTimeout(r, 200));
+  await waitFor(() => callCount >= 2, "at least two GC cycles");
   await svc.dispose();
   assertEquals(callCount >= 2, true);
 });
