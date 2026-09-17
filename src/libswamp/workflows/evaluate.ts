@@ -124,7 +124,10 @@ export interface WorkflowEvaluateDeps {
     expression: string,
     context: Record<string, unknown>,
   ) => Promise<unknown>;
-  saveEvaluatedWorkflow: (workflow: Workflow) => Promise<void>;
+  saveEvaluatedWorkflow: (
+    workflow: Workflow,
+    authoredExpressions: ReadonlySet<string>,
+  ) => Promise<void>;
   getEvaluatedPath: (id: WorkflowId) => string;
 }
 
@@ -172,7 +175,8 @@ export function createWorkflowEvaluateDeps(
       celEvaluator.evaluate(expression, context),
     evaluateCelAsync: (expression, context) =>
       celEvaluator.evaluateAsync(expression, context),
-    saveEvaluatedWorkflow: (workflow) => evaluatedWorkflowRepo.save(workflow),
+    saveEvaluatedWorkflow: (workflow, authoredExpressions) =>
+      evaluatedWorkflowRepo.save(workflow, authoredExpressions),
     getEvaluatedPath: (id) => evaluatedWorkflowRepo.getPath(id),
   };
 }
@@ -191,11 +195,13 @@ async function evaluateWorkflowInternal(
 ): Promise<WorkflowEvaluateItemData> {
   const workflowData = workflow.toData();
   const expressions = extractExpressions(workflowData, "", isAssertExprPath);
+  // Persisted with the cache so `workflow run --last-evaluated` can vouch
+  // for the source's expressions even after the source has been edited.
   const authoredExpressions = collectWorkflowAuthoredExpressions(workflow);
 
   if (expressions.length === 0 && Object.keys(inputs).length === 0) {
     // No expressions and no inputs - still save for consistency
-    await deps.saveEvaluatedWorkflow(workflow);
+    await deps.saveEvaluatedWorkflow(workflow, authoredExpressions);
     return {
       id: workflow.id,
       name: workflow.name,
@@ -393,7 +399,7 @@ async function evaluateWorkflowInternal(
   const workflowToSave = forEachExpanded
     ? Workflow.fromData(expandedWorkflowData as WorkflowData)
     : evaluatedWorkflow;
-  await deps.saveEvaluatedWorkflow(workflowToSave);
+  await deps.saveEvaluatedWorkflow(workflowToSave, authoredExpressions);
 
   return {
     id: workflow.id,

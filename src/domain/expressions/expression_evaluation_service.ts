@@ -300,6 +300,8 @@ export interface RuntimeResolutionResult {
 export interface EvaluatedDefinition {
   definition: Definition;
   type: ModelType;
+  /** Expressions collected from source and inputs before substitution. */
+  authoredExpressions: ReadonlySet<string>;
   /** Whether any expressions were evaluated */
   hadExpressions: boolean;
 }
@@ -427,6 +429,10 @@ export class ExpressionEvaluationService {
     context?: ExpressionContext,
   ): Promise<EvaluatedDefinition> {
     const definitionData = definition.toData();
+    const authoredExpressions = collectAuthoredExpressions(
+      inputValues,
+      collectAuthoredExpressions(definitionData),
+    );
 
     // Build context if not provided.
     const ctx = context ??
@@ -450,7 +456,7 @@ export class ExpressionEvaluationService {
     const expressions = extractExpressions(definitionData);
 
     if (expressions.length === 0) {
-      return { definition, type, hadExpressions: false };
+      return { definition, type, hadExpressions: false, authoredExpressions };
     }
 
     // Evaluate CEL-only expressions; skip runtime expressions (vault, env)
@@ -508,7 +514,12 @@ export class ExpressionEvaluationService {
       evaluatedData as ReturnType<typeof definition.toData>,
     );
 
-    return { definition: evaluatedDefinition, type, hadExpressions: true };
+    return {
+      definition: evaluatedDefinition,
+      type,
+      hadExpressions: true,
+      authoredExpressions,
+    };
   }
 
   /** Replace parent-authored runtime input expressions with scoped references. */

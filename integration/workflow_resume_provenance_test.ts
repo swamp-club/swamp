@@ -34,12 +34,21 @@
 
 import { join } from "@std/path";
 import { assertEquals } from "@std/assert";
+import {
+  collect,
+  createLibSwampContext,
+  createModelEvaluateDeps,
+  modelEvaluate,
+} from "../src/libswamp/mod.ts";
 import type { WorkflowRunEvent } from "../src/libswamp/mod.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
+import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
+import { Definition } from "../src/domain/definitions/definition.ts";
+import { ModelType } from "../src/domain/models/model_type.ts";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
 import {
   createWorkflowRunDeps,
@@ -410,6 +419,79 @@ Deno.test({
       });
     } finally {
       Deno.env.delete("SWAMP_TEST_2172_NESTED");
+    }
+  },
+});
+
+/**
+ * --last-evaluated after a source edit. The first run writes the workflow
+ * cache together with the source's authored set. A standalone `model
+ * evaluate` then rewrites the step's definition cache with only the
+ * definition's own provenance, and the workflow source is edited so it no
+ * longer contains the env expression. Only the set persisted with the
+ * workflow cache can now vouch for the cached step input.
+ */
+Deno.test({
+  name:
+    "workflow --last-evaluated: authored env expression survives a source edit via persisted provenance",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    Deno.env.set("SWAMP_TEST_2172_CACHED", "cached-authored");
+    try {
+      await withRepo(async (repoDir) => {
+        const definition = Definition.create({
+          name: "lasteval-edited-shell",
+          methods: { execute: { arguments: { run: "echo placeholder" } } },
+        });
+        await new YamlDefinitionRepository(repoDir).save(
+          ModelType.create("command/shell"),
+          definition,
+        );
+        const build = (run: string): Workflow =>
+          Workflow.fromData({
+            id: "c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f",
+            name: "lasteval-edited-source",
+            inputs: undefined,
+            jobs: [
+              Job.create({
+                name: "main",
+                steps: [
+                  Step.create({
+                    name: "echo",
+                    task: StepTask.modelMethod(definition.name, "execute", {
+                      run,
+                    }),
+                  }),
+                ],
+              }).toData(),
+            ],
+          });
+        const workflowRepo = new YamlWorkflowRepository(repoDir);
+        const original = build(
+          "echo \"VALUE=${{ env['SWAMP_TEST_2172_CACHED'] }}\"",
+        );
+        await workflowRepo.save(original);
+        await runWorkflow(repoDir, original.name, {});
+
+        const evaluateEvents = await collect(modelEvaluate(
+          createLibSwampContext(),
+          createModelEvaluateDeps(repoDir),
+          { modelIdOrName: definition.name },
+        ));
+        assertEquals(evaluateEvents.filter((e) => e.kind === "error"), []);
+
+        await workflowRepo.save(build('echo "VALUE=edited"'));
+        const { events } = await runWorkflow(repoDir, original.name, {}, true);
+        const serialized = JSON.stringify(events);
+        assertEquals(
+          serialized.includes("cached-authored"),
+          true,
+          `cached authored expression was not resolved: ${serialized}`,
+        );
+      });
+    } finally {
+      Deno.env.delete("SWAMP_TEST_2172_CACHED");
     }
   },
 });

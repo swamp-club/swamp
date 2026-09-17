@@ -39,6 +39,7 @@ import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts"
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { Definition } from "../definitions/definition.ts";
 import { ModelType } from "../models/model_type.ts";
+import "../models/models.ts";
 import { runFileSink } from "../../infrastructure/logging/logger.ts";
 import { reportRegistry } from "../reports/report_registry.ts";
 import { Workflow } from "./workflow.ts";
@@ -6761,3 +6762,112 @@ Deno.test("resume: resume-only inputs are excluded from the child's deferred bin
     assertEquals(JSON.stringify(childRun.toData()).includes(secret), false);
   });
 });
+
+for (const target of ["name", "id", "direct"]) {
+  for (
+    const dependency of [
+      "env",
+      "model",
+      "file",
+      "missing-cache",
+      "dynamic",
+      "missing-source",
+      ...(target === "direct" ? ["dynamic-type", "invalid-type"] : []),
+    ]
+  ) {
+    Deno.test(`buildRunContext: cached ${target} target with ${dependency} selects the required namespaces`, async () => {
+      await withTempDir(async (tempDir) => {
+        const { YamlEvaluatedDefinitionRepository } = await import(
+          "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts"
+        );
+        const { YamlEvaluatedWorkflowRepository } = await import(
+          "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts"
+        );
+        const type = ModelType.create("command/shell");
+        const definitionRepo = new YamlDefinitionRepository(tempDir);
+        const source = Definition.create({ name: "consumer" });
+        if (dependency !== "missing-source") {
+          await definitionRepo.save(type, source);
+        }
+        await definitionRepo.save(
+          type,
+          Definition.create({
+            name: "producer",
+            globalArguments: { prefix: "from-source" },
+          }),
+        );
+        if (dependency !== "missing-cache") {
+          const cached = Definition.fromData(source.toData());
+          cached.setMethodArgument(
+            "execute",
+            "run",
+            dependency === "model"
+              ? '${{ env["HOME"] + model.producer.input.globalArguments.prefix }}'
+              : dependency === "file"
+              ? '${{ env["HOME"] + file.contents("producer", "notes") }}'
+              : '${{ env["HOME"] }}',
+          );
+          await new YamlEvaluatedDefinitionRepository(tempDir).save(
+            type,
+            cached,
+          );
+        }
+        const reference = dependency === "dynamic"
+          ? '${{ env["MODEL"] }}'
+          : target === "id"
+          ? source.id
+          : source.name;
+        const task = target === "direct"
+          ? StepTask.directExecution(
+            dependency === "invalid-type"
+              ? "/"
+              : dependency === "dynamic-type"
+              ? '${{ env["TYPE"] }}'
+              : type.normalized,
+            reference,
+            "execute",
+          )
+          : StepTask.model(reference, "execute");
+        const workflow = Workflow.create({
+          name: "cached-context",
+          jobs: [
+            Job.create({
+              name: "main",
+              steps: [Step.create({ name: "capture", task })],
+            }),
+          ],
+        });
+        const workflowRepo = new InMemoryWorkflowRepository();
+        await workflowRepo.save(workflow);
+        await new YamlEvaluatedWorkflowRepository(tempDir).save(workflow);
+        const executor = new RunContextCapturingExecutor();
+        const catalog = new CatalogStore(join(tempDir, "_catalog.db"));
+        try {
+          const service = new WorkflowExecutionService(
+            workflowRepo,
+            new InMemoryWorkflowRunRepository(),
+            tempDir,
+            executor,
+            undefined,
+            catalog,
+          );
+          const run = await service.execute(workflow.name, {
+            lastEvaluated: true,
+            inputs: { suffix: "replayed" },
+          });
+          assertEquals(run.status, "succeeded");
+          const needsFullContext = dependency !== "env" &&
+            !(dependency === "missing-source" && target === "direct");
+          assertEquals(
+            modelNamespaceKeys(executor.contexts[0]).includes("producer"),
+            needsFullContext,
+          );
+          assertEquals(executor.contexts[0]?.inputs, { suffix: "replayed" });
+          if (dependency === "file") assertExists(executor.contexts[0]?.file);
+        } finally {
+          catalog.close();
+        }
+      });
+    });
+  }
+}

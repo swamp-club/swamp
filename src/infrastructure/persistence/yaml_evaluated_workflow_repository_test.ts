@@ -74,3 +74,86 @@ Deno.test("findByName returns null for non-existent workflow", async () => {
     await Deno.remove(tempDir, { recursive: true });
   }
 });
+
+function provenanceWorkflow(): Workflow {
+  return Workflow.fromData({
+    id: "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
+    name: "provenance-workflow",
+    tags: {},
+    inputs: undefined,
+    version: 1,
+    jobs: [
+      {
+        name: "main",
+        dependsOn: [],
+        weight: 0,
+        steps: [
+          {
+            name: "step",
+            dependsOn: [],
+            weight: 0,
+            task: {
+              type: "model_method",
+              modelIdOrName: "test-model",
+              methodName: "run",
+              inputs: { value: "${{ env.HOME }}" },
+            },
+          },
+        ],
+      },
+    ],
+  });
+}
+
+Deno.test("YamlEvaluatedWorkflowRepository: persists provenance and every reader still loads the cache", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const workflow = provenanceWorkflow();
+    const authoredExpressions = new Set(["${{ env.HOME }}"]);
+    await new YamlEvaluatedWorkflowRepository(tempDir).save(
+      workflow,
+      authoredExpressions,
+    );
+
+    // Fresh instances: provenance must come from disk, not memory.
+    const repo = new YamlEvaluatedWorkflowRepository(tempDir);
+    const cached = await repo.findByNameWithProvenance(workflow.name);
+    assertEquals(cached?.authoredExpressions, authoredExpressions);
+    assertEquals(cached?.workflow.toData(), workflow.toData());
+    assertEquals(
+      (await repo.findByName(workflow.name))?.toData(),
+      workflow.toData(),
+    );
+    assertEquals(
+      (await new YamlEvaluatedWorkflowRepository(tempDir).findById(
+        workflow.id,
+      ))?.toData(),
+      workflow.toData(),
+    );
+    assertEquals(
+      (await new YamlEvaluatedWorkflowRepository(tempDir).findAll()).map((w) =>
+        w.name
+      ),
+      [workflow.name],
+    );
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("YamlEvaluatedWorkflowRepository: a cache saved without provenance yields an empty set", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const workflow = provenanceWorkflow();
+    const repo = new YamlEvaluatedWorkflowRepository(tempDir);
+    await repo.save(workflow, new Set(["${{ env.OLD }}"]));
+    await repo.save(workflow);
+    const cached = await new YamlEvaluatedWorkflowRepository(tempDir)
+      .findByNameWithProvenance(workflow.name);
+    assertEquals(cached?.authoredExpressions, new Set());
+    assertEquals(cached?.deferredExpressions, []);
+    assertEquals(cached?.workflow.name, workflow.name);
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});

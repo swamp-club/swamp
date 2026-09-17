@@ -17,9 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  type DeferredExpression,
+  DeferredExpressionSchema,
+} from "../../domain/expressions/deferred_expression.ts";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
+import { z } from "zod";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
@@ -30,6 +35,40 @@ import {
   type WorkflowData,
 } from "../../domain/workflows/workflow.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
+
+export interface EvaluatedWorkflowCache {
+  workflow: Workflow;
+  /** Expressions the source workflow contained when the cache was written. */
+  authoredExpressions: ReadonlySet<string>;
+  deferredExpressions: readonly DeferredExpression[];
+}
+
+// Cache metadata is deliberately separate from the source Workflow schema,
+// which rejects unknown top-level keys — it must be split off before parsing.
+const CacheMetadataSchema = z.object({
+  authoredExpressions: z.array(z.string()).optional(),
+  deferredExpressions: z.array(DeferredExpressionSchema).optional(),
+});
+
+function parseCache(content: string): EvaluatedWorkflowCache | null {
+  const data = parseYaml(content) as
+    | (WorkflowData & {
+      authoredExpressions?: unknown;
+      deferredExpressions?: unknown;
+    })
+    | null;
+  if (!data) return null;
+  const { authoredExpressions, deferredExpressions, ...workflowData } = data;
+  const metadata = CacheMetadataSchema.parse({
+    authoredExpressions,
+    deferredExpressions,
+  });
+  return {
+    workflow: Workflow.fromData(workflowData),
+    authoredExpressions: new Set(metadata.authoredExpressions),
+    deferredExpressions: metadata.deferredExpressions ?? [],
+  };
+}
 
 /**
  * Repository for storing evaluated workflows.
@@ -60,11 +99,10 @@ export class YamlEvaluatedWorkflowRepository {
     const legacyPath = this.getLegacyPath(id);
     try {
       const content = await Deno.readTextFile(legacyPath);
-      const data = parseYaml(content) as WorkflowData | null;
-      if (data) {
-        const workflow = Workflow.fromData(data);
+      const cached = parseCache(content);
+      if (cached) {
         this.idToActualPath.set(id, legacyPath);
-        return workflow;
+        return cached.workflow;
       }
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) {
@@ -77,9 +115,9 @@ export class YamlEvaluatedWorkflowRepository {
     if (cachedPath && cachedPath !== legacyPath) {
       try {
         const content = await Deno.readTextFile(cachedPath);
-        const data = parseYaml(content) as WorkflowData | null;
-        if (data) {
-          return Workflow.fromData(data);
+        const cached = parseCache(content);
+        if (cached) {
+          return cached.workflow;
         }
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) {
@@ -105,9 +143,9 @@ export class YamlEvaluatedWorkflowRepository {
         ) {
           const path = join(dir, entry.name);
           const content = await Deno.readTextFile(path);
-          const data = parseYaml(content) as WorkflowData | null;
-          if (!data) continue;
-          const workflow = Workflow.fromData(data);
+          const cached = parseCache(content);
+          if (!cached) continue;
+          const workflow = cached.workflow;
           this.idToActualPath.set(workflow.id as WorkflowId, path);
           workflows.push(workflow);
         }
@@ -129,18 +167,31 @@ export class YamlEvaluatedWorkflowRepository {
    * @returns The evaluated workflow if found, or null
    */
   async findByName(name: string): Promise<Workflow | null> {
+    return (await this.findByNameWithProvenance(name))?.workflow ?? null;
+  }
+
+  /**
+   * Finds an evaluated workflow by name together with the authored
+   * expressions persisted alongside it. Caches written before provenance was
+   * recorded yield an empty set.
+   */
+  async findByNameWithProvenance(
+    name: string,
+  ): Promise<EvaluatedWorkflowCache | null> {
     if (isFilenameSafeName(name)) {
       const namePath = this.getNamePath(name);
       try {
         const content = await Deno.readTextFile(namePath);
-        const data = parseYaml(content) as WorkflowData | null;
-        if (data) {
-          const workflow = Workflow.fromData(data);
-          if (workflow.name !== name) {
+        const cached = parseCache(content);
+        if (cached) {
+          if (cached.workflow.name !== name) {
             // File content doesn't match filename — fall through to slow path
           } else {
-            this.idToActualPath.set(workflow.id as WorkflowId, namePath);
-            return workflow;
+            this.idToActualPath.set(
+              cached.workflow.id as WorkflowId,
+              namePath,
+            );
+            return cached;
           }
         }
       } catch (error) {
@@ -150,18 +201,56 @@ export class YamlEvaluatedWorkflowRepository {
       }
     }
 
-    const workflows = await this.findAll();
-    return workflows.find((w) => w.name === name) ?? null;
+    const dir = this.getWorkflowsDir();
+    try {
+      for await (const entry of Deno.readDir(dir)) {
+        if (
+          entry.isFile && entry.name.startsWith("workflow-") &&
+          entry.name.endsWith(".yaml")
+        ) {
+          const path = join(dir, entry.name);
+          const cached = parseCache(await Deno.readTextFile(path));
+          if (!cached) continue;
+          this.idToActualPath.set(cached.workflow.id as WorkflowId, path);
+          if (cached.workflow.name === name) return cached;
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+    return null;
   }
 
-  async save(workflow: Workflow): Promise<void> {
+  /**
+   * Saves an evaluated workflow.
+   *
+   * @param workflow - The evaluated workflow
+   * @param authoredExpressions - Expressions collected from the source
+   *   workflow before evaluation, restored by
+   *   {@link findByNameWithProvenance}
+   */
+  async save(
+    workflow: Workflow,
+    authoredExpressions?: ReadonlySet<string>,
+    deferredExpressions?: readonly DeferredExpression[],
+  ): Promise<void> {
     const dir = this.getWorkflowsDir();
     await assertSafePath(dir, this.baseDir);
     await ensureDir(dir);
 
     const targetPath = this.resolveWritePath(workflow);
     await this.notifyDirty(targetPath);
-    const data = workflow.toData();
+    const data = {
+      ...workflow.toData(),
+      deferredExpressions: deferredExpressions?.length
+        ? deferredExpressions
+        : undefined,
+      authoredExpressions: authoredExpressions === undefined
+        ? undefined
+        : [...authoredExpressions],
+    };
     // Remove undefined values since YAML can't stringify them
     const cleanData = JSON.parse(JSON.stringify(data));
     const content = stringifyYaml(cleanData as Record<string, unknown>);
@@ -260,9 +349,9 @@ export class YamlEvaluatedWorkflowRepository {
     const targetPath = join(dir, "evaluated-workflow.yaml");
     try {
       const content = await Deno.readTextFile(targetPath);
-      const data = parseYaml(content) as WorkflowData | null;
-      if (data) {
-        return Workflow.fromData(data);
+      const cached = parseCache(content);
+      if (cached) {
+        return cached.workflow;
       }
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) {

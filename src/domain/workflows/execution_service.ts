@@ -903,7 +903,7 @@ export class DefaultStepExecutor implements StepExecutor {
     if (ctx.mode === "lastEvaluated") {
       // Load previously-evaluated definition from cache
       runLogger?.debug("Loading last evaluated definition");
-      const lastEvaluated = await evaluatedDefRepo.findByName(
+      const lastEvaluated = await evaluatedDefRepo.findByNameWithProvenance(
         modelType,
         originalDefinition.name,
       );
@@ -913,7 +913,22 @@ export class DefaultStepExecutor implements StepExecutor {
             `Run the workflow without --last-evaluated first.`,
         );
       }
-      evaluatedDefinition = lastEvaluated;
+      evaluatedDefinition = lastEvaluated.definition;
+      if (ctx.expressionContext) {
+        // The workflow cache may already have supplied the same records;
+        // de-dup by id so the definition cache does not grow per replay.
+        ctx.expressionContext.deferredExpressions = [
+          ...new Map(
+            [
+              ...(ctx.expressionContext.deferredExpressions ?? []),
+              ...lastEvaluated.deferredExpressions,
+            ].map((record) => [record.id, record]),
+          ).values(),
+        ];
+      }
+      for (const expression of lastEvaluated.authoredExpressions) {
+        authoredExpressions.add(expression);
+      }
 
       // Resolve deferred expressions (data.*, file.contents) that were
       // skipped during workflow evaluate.  evaluateData only touches
@@ -980,7 +995,12 @@ export class DefaultStepExecutor implements StepExecutor {
     }
 
     // Save evaluated definition (with vault expressions still raw) for --last-evaluated
-    await evaluatedDefRepo.save(modelType, evaluatedDefinition);
+    await evaluatedDefRepo.save(
+      modelType,
+      evaluatedDefinition,
+      authoredExpressions,
+      ctx.expressionContext?.deferredExpressions,
+    );
 
     // Capture pre-vault args for report context (so vault secrets stay as expressions)
     const reportGlobalArgs = evaluatedDefinition.globalArguments;
@@ -1849,7 +1869,7 @@ export class WorkflowExecutionService {
       let workflow: Workflow;
       let expressionContext: ExpressionContext | undefined;
       let authoredExpressions: ReadonlySet<string> = new Set();
-      const deferredExpressions = options?.deferredExpressions ?? [];
+      let deferredExpressions = options?.deferredExpressions ?? [];
       let run: WorkflowRun;
       let workflowLogPath: string;
       let evaluatedWorkflowFingerprint: string | undefined;
@@ -1867,6 +1887,8 @@ export class WorkflowExecutionService {
         // loaded from disk. Taken here rather than from the evaluation below
         // because --last-evaluated swaps in a cached workflow that already has
         // data content spliced into it and never runs the evaluator at all.
+        // The set persisted with that cache is unioned in below, so a source
+        // edited since it was evaluated cannot orphan the cached expressions.
         authoredExpressions = collectWorkflowAuthoredExpressions(
           found,
           new Set(options?.authoredExpressions),
@@ -1877,9 +1899,8 @@ export class WorkflowExecutionService {
           const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
             this.repoDir,
           );
-          const lastEvaluated = await evaluatedWorkflowRepo.findByName(
-            workflow.name,
-          );
+          const lastEvaluated = await evaluatedWorkflowRepo
+            .findByNameWithProvenance(workflow.name);
           if (!lastEvaluated) {
             throw new UserError(
               `No previously evaluated workflow found for "${workflow.name}".\n\n` +
@@ -1888,12 +1909,21 @@ export class WorkflowExecutionService {
             );
           }
           // Use the fully evaluated workflow (forEach expanded, expressions resolved)
-          workflow = lastEvaluated;
+          workflow = lastEvaluated.workflow;
+          deferredExpressions = [
+            ...deferredExpressions,
+            ...lastEvaluated.deferredExpressions,
+          ];
+          authoredExpressions = new Set([
+            ...authoredExpressions,
+            ...lastEvaluated.authoredExpressions,
+          ]);
 
-          // Build a lightweight context with only data.* and env so
-          // deferred data expressions can be resolved at step execution
-          // time without the cost of loading all definitions from disk.
-          expressionContext = this.modelResolver.buildLightContext();
+          expressionContext = await this.buildRunContext(
+            workflow,
+            true,
+            deferredExpressions,
+          );
           if (options?.inputs) {
             expressionContext.inputs = options.inputs;
           }
@@ -1904,6 +1934,7 @@ export class WorkflowExecutionService {
           );
           expressionContext = await this.buildRunContext(
             workflow,
+            false,
             deferredExpressions,
           );
           buildCtxSpan.end();
@@ -1921,7 +1952,11 @@ export class WorkflowExecutionService {
           const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
             this.repoDir,
           );
-          await evaluatedWorkflowRepo.save(workflow);
+          await evaluatedWorkflowRepo.save(
+            workflow,
+            authoredExpressions,
+            deferredExpressions,
+          );
           evaluatedWorkflowFingerprint = await computeWorkflowFingerprint(
             workflow,
           );
@@ -2440,6 +2475,7 @@ export class WorkflowExecutionService {
 
     const expressionContext = await this.buildRunContext(
       workflow,
+      false,
       existingRun.deferredExpressions,
     );
 
@@ -4033,16 +4069,67 @@ export class WorkflowExecutionService {
    * Only expressions reading the model or file namespaces need every model
    * definition loaded. The workflow YAML is checked first, then the stored
    * definitions of the steps that will be evaluated against this context.
-   * Direct-type steps are skipped — their auto-created definitions carry only
-   * what the workflow YAML supplied — and so are nested workflow steps, which
-   * build their own context when they run.
+   * Cached runs inspect evaluated definitions, including direct-type steps.
+   * Fresh direct-type steps carry what the workflow YAML supplied. Nested
+   * workflow steps build their own context when they run.
    */
   private async buildRunContext(
     workflow: Workflow,
+    lastEvaluated = false,
     deferredExpressions: readonly DeferredExpression[] = [],
   ): Promise<ExpressionContext> {
     if (requiresModelNamespace([workflow.toData(), deferredExpressions])) {
       return await this.modelResolver.buildContext();
+    }
+
+    if (lastEvaluated) {
+      for (const job of workflow.jobs) {
+        for (const step of job.steps) {
+          const task = step.task.data;
+          if (task.type !== "model_method") continue;
+          const reference = task.modelIdOrName ?? task.modelName;
+          if (
+            !reference || reference.includes("${{") ||
+            task.modelType?.includes("${{")
+          ) {
+            return await this.modelResolver.buildContext();
+          }
+          // Match the definition the executor will load, using the source
+          // only to identify stored targets, never to inspect cached expressions.
+          let type: ModelType;
+          let name = reference;
+          if (task.modelType && task.modelName) {
+            try {
+              type = ModelType.create(task.modelType);
+            } catch {
+              // Invalid targets still fail at step execution.
+              return await this.modelResolver.buildContext();
+            }
+          } else {
+            const found = await findDefinitionByIdOrName(
+              this.definitionRepo,
+              reference,
+            );
+            if (!found) return await this.modelResolver.buildContext();
+            type = found.type;
+            name = found.definition.name;
+          }
+          const cached = await this.evaluatedDefRepo.findByNameWithProvenance(
+            type,
+            name,
+          );
+          if (
+            !cached ||
+            requiresModelNamespace([
+              cached.definition.toData(),
+              cached.deferredExpressions,
+            ])
+          ) {
+            return await this.modelResolver.buildContext();
+          }
+        }
+      }
+      return this.modelResolver.buildLightContext();
     }
 
     // A dynamic reference names an unknown definition until the step runs, so

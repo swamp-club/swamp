@@ -85,6 +85,7 @@ export interface ModelEvaluateDeps {
   saveEvaluatedDefinition: (
     type: ModelType,
     definition: Definition,
+    authoredExpressions: ReadonlySet<string>,
   ) => Promise<void>;
   getEvaluatedPath: (type: ModelType, id: DefinitionId) => string;
 }
@@ -132,8 +133,8 @@ export function createModelEvaluateDeps(
     evaluateDefinition: (definition, type) =>
       evaluationService.evaluateDefinition(definition, type),
     evaluateAllDefinitions: () => evaluationService.evaluateAllDefinitions(),
-    saveEvaluatedDefinition: (type, definition) =>
-      evaluatedDefRepo.save(type, definition),
+    saveEvaluatedDefinition: (type, definition, authoredExpressions) =>
+      evaluatedDefRepo.save(type, definition, authoredExpressions),
     getEvaluatedPath: (type, id) => evaluatedDefRepo.getPath(type, id),
   };
 }
@@ -146,7 +147,11 @@ async function* evaluateAll(
   const items: ModelEvaluateItemData[] = [];
 
   for (const result of results) {
-    await deps.saveEvaluatedDefinition(result.type, result.definition);
+    await deps.saveEvaluatedDefinition(
+      result.type,
+      result.definition,
+      result.authoredExpressions,
+    );
     items.push({
       id: result.definition.id,
       name: result.definition.name,
@@ -179,7 +184,11 @@ async function* evaluateSingle(
 
   const { definition, type } = lookupResult;
   const result = await deps.evaluateDefinition(definition, type);
-  await deps.saveEvaluatedDefinition(type, result.definition);
+  await deps.saveEvaluatedDefinition(
+    type,
+    result.definition,
+    result.authoredExpressions,
+  );
 
   yield {
     kind: "completed",

@@ -106,12 +106,14 @@ function makeDeps(
         definition,
         type: modelType,
         hadExpressions: true,
+        authoredExpressions: new Set<string>(),
       }),
     evaluateAllDefinitions: () =>
       Promise.resolve([{
         definition,
         type: modelType,
         hadExpressions: true,
+        authoredExpressions: new Set<string>(),
       }]),
     saveEvaluatedDefinition: () => Promise.resolve(),
     getEvaluatedPath: (type, id) =>

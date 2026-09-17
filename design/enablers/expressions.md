@@ -545,9 +545,13 @@ author-written source feeding a run:
 | Workflow                  | the workflow YAML on disk, before evaluation, at both the fresh-run and resume seams |
 | Model-run `--input` flags | the operator-typed values, on `swamp model ... method run` only                     |
 | Parent workflow           | the parent's set, unioned into a nested child run's set                             |
+| Evaluated caches          | the set persisted alongside each evaluated definition and evaluated workflow        |
 
-A `--last-evaluated` replay after the source has been edited cannot vouch for
-expressions that remain only in the cache; it fails closed with a warning.
+The evaluated caches carry the authored set that was collected when they were
+written, because `--last-evaluated` executes the cached tree without running
+the evaluator: if the source has been edited since, the current source alone
+cannot vouch for an expression that is still in the cache. The persisted set
+is unioned with the current source's set on load, never substituted for it.
 
 Workflow runs do **not** seed CLI `--input` values: trigger inputs and CLI
 inputs merge into one map before the evaluator sees them, so a vault reference
@@ -577,6 +581,13 @@ Internal references identify records containing the original expression and the
 parent's `inputs`, `self`, `run`, `workflowRunId`, and `steps` bindings. An identical
 expression authored by the child still uses child scope. Passing a reference
 through another nested workflow preserves its existing scope.
+
+Runs and evaluated caches persist these scoped records alongside provenance.
+They do not capture the process environment, service objects, or resolved vault
+secrets. Execution rebuilds service-backed namespaces and resolves vault values
+through the secret bag. Scope metadata is optional: older artifacts keep their
+existing provenance behavior, and missing parent bindings are never reconstructed
+from child inputs.
 
 The parameter carrying the set is required rather than optional, typed
 `ReadonlySet<string> | "unrestricted"`, so the compiler forces every caller of

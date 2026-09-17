@@ -17,11 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  type DeferredExpression,
+  DeferredExpressionSchema,
+} from "../../domain/expressions/deferred_expression.ts";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
+import { z } from "zod";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import { assertSafePath } from "./safe_path.ts";
@@ -34,6 +39,29 @@ import {
 } from "../../domain/definitions/definition.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
+
+interface EvaluatedDefinitionCache {
+  definition: Definition;
+  authoredExpressions: ReadonlySet<string>;
+  deferredExpressions: readonly DeferredExpression[];
+}
+
+// Cache metadata is deliberately separate from the source Definition schema.
+const CacheMetadataSchema = z.object({
+  authoredExpressions: z.array(z.string()).optional(),
+  deferredExpressions: z.array(DeferredExpressionSchema).optional(),
+});
+
+function parseCache(content: string): EvaluatedDefinitionCache | null {
+  const data = parseYaml(content) as DefinitionData | null;
+  if (!data) return null;
+  const metadata = CacheMetadataSchema.parse(data);
+  return {
+    definition: Definition.fromData(data),
+    authoredExpressions: new Set(metadata.authoredExpressions),
+    deferredExpressions: metadata.deferredExpressions ?? [],
+  };
+}
 
 /**
  * YAML-based repository for evaluated definitions.
@@ -77,9 +105,9 @@ export class YamlEvaluatedDefinitionRepository {
     const legacyPath = this.getLegacyPath(type, id);
     try {
       const content = await Deno.readTextFile(legacyPath);
-      const data = parseYaml(content) as DefinitionData | null;
-      if (data) {
-        const definition = Definition.fromData(data);
+      const cached = parseCache(content);
+      if (cached) {
+        const { definition } = cached;
         this.idToActualPath.set(id, legacyPath);
         return definition;
       }
@@ -94,8 +122,8 @@ export class YamlEvaluatedDefinitionRepository {
     if (cachedPath && cachedPath !== legacyPath) {
       try {
         const content = await Deno.readTextFile(cachedPath);
-        const data = parseYaml(content) as DefinitionData | null;
-        if (data) return Definition.fromData(data);
+        const cached = parseCache(content);
+        if (cached) return cached.definition;
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) {
           throw error;
@@ -115,19 +143,25 @@ export class YamlEvaluatedDefinitionRepository {
    * @returns Array of evaluated definitions
    */
   async findAll(type: ModelType): Promise<Definition[]> {
+    return (await this.findAllWithProvenance(type)).map((c) => c.definition);
+  }
+
+  private async findAllWithProvenance(
+    type: ModelType,
+  ): Promise<EvaluatedDefinitionCache[]> {
     const dir = this.getTypeDir(type);
-    const definitions: Definition[] = [];
+    const definitions: EvaluatedDefinitionCache[] = [];
 
     try {
       for await (const entry of Deno.readDir(dir)) {
         if (entry.isFile && entry.name.endsWith(".yaml")) {
           const path = join(dir, entry.name);
           const content = await Deno.readTextFile(path);
-          const data = parseYaml(content) as DefinitionData | null;
-          if (!data) continue;
-          const definition = Definition.fromData(data);
+          const cached = parseCache(content);
+          if (!cached) continue;
+          const { definition } = cached;
           this.idToActualPath.set(definition.id as DefinitionId, path);
-          definitions.push(definition);
+          definitions.push(cached);
         }
       }
     } catch (error) {
@@ -148,18 +182,27 @@ export class YamlEvaluatedDefinitionRepository {
    * @returns The evaluated definition if found, or null
    */
   async findByName(type: ModelType, name: string): Promise<Definition | null> {
+    return (await this.findByNameWithProvenance(type, name))?.definition ??
+      null;
+  }
+
+  /** Reads definition and provenance from the same cache snapshot. */
+  async findByNameWithProvenance(
+    type: ModelType,
+    name: string,
+  ): Promise<EvaluatedDefinitionCache | null> {
     if (isFilenameSafeDefinitionName(name)) {
       const namePath = this.getNamePath(type, name);
       try {
         const content = await Deno.readTextFile(namePath);
-        const data = parseYaml(content) as DefinitionData | null;
-        if (data) {
-          const definition = Definition.fromData(data);
+        const cached = parseCache(content);
+        if (cached) {
+          const { definition } = cached;
           if (definition.name !== name) {
             // File content doesn't match filename — fall through to slow path
           } else {
             this.idToActualPath.set(definition.id as DefinitionId, namePath);
-            return definition;
+            return cached;
           }
         }
       } catch (error) {
@@ -169,8 +212,8 @@ export class YamlEvaluatedDefinitionRepository {
       }
     }
 
-    const definitions = await this.findAll(type);
-    return definitions.find((def) => def.name === name) ?? null;
+    const definitions = await this.findAllWithProvenance(type);
+    return definitions.find((c) => c.definition.name === name) ?? null;
   }
 
   /**
@@ -201,9 +244,9 @@ export class YamlEvaluatedDefinitionRepository {
         if (entry.isFile && entry.name.endsWith(".yaml")) {
           // Found a YAML file, check if it matches the name
           const content = await Deno.readTextFile(fullPath);
-          const data = parseYaml(content) as DefinitionData | null;
-          if (!data) continue;
-          const definition = Definition.fromData(data);
+          const cached = parseCache(content);
+          if (!cached) continue;
+          const { definition } = cached;
 
           if (definition.name === name) {
             this.idToActualPath.set(definition.id as DefinitionId, fullPath);
@@ -262,9 +305,9 @@ export class YamlEvaluatedDefinitionRepository {
         if (entry.isFile && entry.name.endsWith(".yaml")) {
           // Found a YAML file, add it to results
           const content = await Deno.readTextFile(fullPath);
-          const data = parseYaml(content) as DefinitionData | null;
-          if (!data) continue;
-          const definition = Definition.fromData(data);
+          const cached = parseCache(content);
+          if (!cached) continue;
+          const { definition } = cached;
 
           this.idToActualPath.set(definition.id as DefinitionId, fullPath);
           // Reconstruct the model type from the path segments
@@ -292,7 +335,12 @@ export class YamlEvaluatedDefinitionRepository {
    * @param type - The model type
    * @param definition - The evaluated definition to save
    */
-  async save(type: ModelType, definition: Definition): Promise<void> {
+  async save(
+    type: ModelType,
+    definition: Definition,
+    authoredExpressions?: ReadonlySet<string>,
+    deferredExpressions?: readonly DeferredExpression[],
+  ): Promise<void> {
     const targetPath = this.resolveWritePath(type, definition);
     await this.notifyDirty(targetPath);
 
@@ -300,7 +348,15 @@ export class YamlEvaluatedDefinitionRepository {
     await assertSafePath(dir, this.baseDir);
     await ensureDir(dir);
 
-    const data = definition.toData();
+    const data = {
+      ...definition.toData(),
+      deferredExpressions: deferredExpressions?.length
+        ? deferredExpressions
+        : undefined,
+      authoredExpressions: authoredExpressions === undefined
+        ? undefined
+        : [...authoredExpressions],
+    };
     // Ensure type metadata is always present in persisted YAML
     data.type = type.normalized;
     await modelRegistry.ensureTypeLoaded(type);

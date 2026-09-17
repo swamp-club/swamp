@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { DeferredExpression } from "../../domain/expressions/deferred_expression.ts";
 import { cancelled, type SwampError, validationFailed } from "../errors.ts";
 import { inputValidationFailed } from "../workflows/run.ts";
 import type { LibSwampContext } from "../context.ts";
@@ -191,10 +192,17 @@ export interface ModelMethodRunDeps {
   loadEvaluatedDefinition: (
     type: ModelType,
     name: string,
-  ) => Promise<Definition | null>;
+  ) => Promise<
+    {
+      definition: Definition;
+      authoredExpressions: ReadonlySet<string>;
+      deferredExpressions?: readonly DeferredExpression[];
+    } | null
+  >;
   saveEvaluatedDefinition: (
     type: ModelType,
     definition: Definition,
+    authoredExpressions: ReadonlySet<string>,
   ) => Promise<void>;
   createExecutionService: () => MethodExecutionService;
   createVaultService: () => Promise<VaultService>;
@@ -517,7 +525,8 @@ export async function* modelMethodRun(
 
           // Provenance for the runtime pass, collected from the SOURCE
           // definition — never from the evaluated one, which already has data
-          // content spliced into it. Inputs are typed by the operator
+          // content spliced into it. Cached provenance is unioned below for
+          // --last-evaluated. Inputs are typed by the operator
           // running the command (or an authenticated serve caller), so
           // expressions in them — schema-declared or method overrides — are
           // author-written too.
@@ -526,6 +535,7 @@ export async function* modelMethodRun(
             collectAuthoredExpressions(definition.toData()),
           );
 
+          let deferredExpressions: readonly DeferredExpression[] = [];
           if (input.lastEvaluated) {
             const lastEval = await deps.loadEvaluatedDefinition(
               modelType,
@@ -540,7 +550,11 @@ export async function* modelMethodRun(
               };
               return;
             }
-            evaluatedDefinition = lastEval;
+            evaluatedDefinition = lastEval.definition;
+            deferredExpressions = lastEval.deferredExpressions ?? [];
+            for (const expression of lastEval.authoredExpressions) {
+              authoredExpressions.add(expression);
+            }
           } else {
             if (evaluationService.hasDefinitionExpressions(definition)) {
               const evalResult = await evaluationService.evaluateDefinition(
@@ -550,7 +564,11 @@ export async function* modelMethodRun(
               );
               evaluatedDefinition = evalResult.definition;
             }
-            await deps.saveEvaluatedDefinition(modelType, evaluatedDefinition);
+            await deps.saveEvaluatedDefinition(
+              modelType,
+              evaluatedDefinition,
+              authoredExpressions,
+            );
           }
 
           // Merge override inputs into method arguments.
@@ -619,6 +637,7 @@ export async function* modelMethodRun(
           const runtimeContext = await evaluationService.buildRuntimeContext(
             evaluatedDefinition,
             inputs,
+            deferredExpressions,
           );
           const runtimeResult = await evaluationService
             .resolveRuntimeExpressionsInDefinition(

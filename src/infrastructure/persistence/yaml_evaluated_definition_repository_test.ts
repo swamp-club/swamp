@@ -20,6 +20,7 @@
 import {
   assertEquals,
   assertNotEquals,
+  assertRejects,
   assertStringIncludes,
 } from "@std/assert";
 import { join } from "@std/path";
@@ -245,5 +246,86 @@ Deno.test("YamlEvaluatedDefinitionRepository.clearAll also clears path cache", a
 
     await repo.clearAll();
     assertEquals(await repo.findById(testType, definition.id), null);
+  });
+});
+
+Deno.test("YamlEvaluatedDefinitionRepository: reloads provenance from name and UUID caches", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlEvaluatedDefinitionRepository(dir);
+    const definition = Definition.create({ name: "provenance" });
+    const authoredExpressions = new Set(["${{ env.HOME }}"]);
+    await repo.save(testType, definition, authoredExpressions);
+    const path = repo.getPath(testType, definition.id);
+    const legacyPath = join(
+      dir,
+      ".swamp",
+      "definitions-evaluated",
+      testType.toDirectoryPath(),
+      `${definition.id}.yaml`,
+    );
+    for (const legacy of [false, true]) {
+      if (legacy) await Deno.rename(path, legacyPath);
+      const fresh = new YamlEvaluatedDefinitionRepository(dir);
+      const cached = await fresh.findByNameWithProvenance(
+        testType,
+        definition.name,
+      );
+      assertEquals(cached?.authoredExpressions, authoredExpressions);
+      assertEquals(
+        cached?.definition.toData(),
+        (await fresh.findByName(testType, definition.name))?.toData(),
+      );
+      assertEquals(
+        Object.hasOwn(cached!.definition.toData(), "authoredExpressions"),
+        false,
+      );
+    }
+  });
+});
+
+Deno.test("YamlEvaluatedDefinitionRepository: replacing a cache replaces its provenance", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlEvaluatedDefinitionRepository(dir);
+    const definition = Definition.create({ name: "provenance" });
+    await repo.save(testType, definition, new Set(["${{ env.OLD }}"]));
+    for (
+      const authored of [
+        new Set(["${{ env.NEW }}"]),
+        new Set<string>(),
+        undefined,
+      ]
+    ) {
+      await repo.save(testType, definition, authored);
+      const cached = await new YamlEvaluatedDefinitionRepository(dir)
+        .findByNameWithProvenance(testType, definition.name);
+      assertEquals(cached?.authoredExpressions, authored ?? new Set());
+      assertEquals(cached?.deferredExpressions, []);
+    }
+  });
+});
+
+Deno.test("YamlEvaluatedDefinitionRepository: rejects malformed provenance", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlEvaluatedDefinitionRepository(dir);
+    const definition = Definition.create({ name: "provenance" });
+    await repo.save(testType, definition);
+    const path = repo.getPath(testType, definition.id);
+    for (
+      const authoredExpressions of [null, "${{ env.HOME }}", {}, [42], [
+        "${{ env.HOME }}",
+        false,
+      ]]
+    ) {
+      await Deno.writeTextFile(
+        path,
+        toCleanYaml({ ...definition.toData(), authoredExpressions }),
+      );
+      await assertRejects(() =>
+        new YamlEvaluatedDefinitionRepository(dir).findByNameWithProvenance(
+          testType,
+          definition.name,
+        )
+      );
+    }
   });
 });

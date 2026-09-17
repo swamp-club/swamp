@@ -159,9 +159,13 @@ export function buildModelMethodRunDeps(
       );
     },
     loadEvaluatedDefinition: (type, name) =>
-      repoContext.evaluatedDefinitionRepo.findByName(type, name),
-    saveEvaluatedDefinition: (type, definition) =>
-      repoContext.evaluatedDefinitionRepo.save(type, definition),
+      repoContext.evaluatedDefinitionRepo.findByNameWithProvenance(type, name),
+    saveEvaluatedDefinition: (type, definition, authoredExpressions) =>
+      repoContext.evaluatedDefinitionRepo.save(
+        type,
+        definition,
+        authoredExpressions,
+      ),
     createExecutionService: () => new DefaultMethodExecutionService(),
     createVaultService: () =>
       VaultService.fromRepository(repoDir, {
