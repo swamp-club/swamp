@@ -400,6 +400,43 @@ To construct this checklist:
    **If the POST succeeds**, the log output confirms the attestation ID and
    who posted it. A lifecycle entry is also recorded on the swamp-club issue.
 
+## Verifying TTY-Only Behaviour
+
+Some behaviour is reachable only when stdin is a terminal, and an agent shell is
+not one. `initializeLogging` is the live example: `prettyOutput` is
+`!noColor && isStdinTty()`, so a TTY session uses the pretty sink while a
+scripted run uses the plain console sink — two different code paths, and a bug
+can live in the one a script never touches (swamp-club#2254).
+
+Do not record this as "needs a human at a terminal." `script` supplies a real
+pty on stdin while the command's stdout and stderr still go where you point
+them, so the two streams stay separable:
+
+```bash
+script -q /dev/null /bin/sh -c "
+  swamp <command> -v > /tmp/out.txt 2> /tmp/err.txt
+"
+cat -A /tmp/out.txt   # -A shows line endings, so a stray blank line is visible
+cat /tmp/err.txt
+```
+
+Inside the `script` subshell, `tty` confirms stdin really is a terminal — worth
+asserting once, since a harness that silently drops the pty would otherwise make
+the check pass vacuously.
+
+Run the same harness against the **released** binary as well as the built one.
+Two runs that differ only in the binary are what distinguish a fix from a test
+that was always going to pass:
+
+```
+# shipped:   stdout carries the pretty debug record, then the URL
+# built:     stdout carries the URL alone
+```
+
+The same technique covers anything else gated on an interactive terminal —
+prompts from `src/cli/prompt_helpers.ts`, Ink components, and any renderer
+branching on `Deno.stdout.isTerminal()`.
+
 ## Handling Failures
 
 When verification fails, present the failed checklist to the user with a clear
