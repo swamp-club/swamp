@@ -194,6 +194,8 @@ const runDoctorCommand = withRemoteOptions(
             activeRuns,
             staleRuns,
             response.reaped,
+            response.orphanedWorkflowRuns,
+            response.orphanedReaped,
           );
         } else {
           writeDoctorRunsLog(
@@ -201,6 +203,8 @@ const runDoctorCommand = withRemoteOptions(
             staleRuns,
             response.reaped,
             !!options.fix,
+            response.orphanedWorkflowRuns,
+            response.orphanedReaped,
           );
         }
         return;

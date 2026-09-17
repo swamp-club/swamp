@@ -288,9 +288,10 @@ replays pending runs whose trigger is still configured
 
 **Steady state.** Every 60 s (+ up to 500 ms jitter) `reconcileRemoteInterruptedRuns`
 lists heartbeats, claims each stale peer, marks that peer's `running` tracker
-rows `failed` with reason `remote_instance_dead`, deletes its `active-runs/`
-records, and only then removes the heartbeat — so a crash mid-reconcile leaves
-the heartbeat for another instance to pick up when the claim expires. A
+rows `interrupted` with reason `remote_instance_dead`, interrupts that peer's
+YAML workflow-run records, deletes its `active-runs/` records, and only then
+removes the heartbeat — so a crash mid-reconcile leaves the heartbeat for
+another instance to pick up when the claim expires. A
 `ConfigPoller` pulls `.swamp/config/` every 30 s when the datastore manages
 config, and the `AccessDataPoller` pulls grants and groups on the same cadence.
 
@@ -309,8 +310,11 @@ active runs for 30 s, aborts what remains and waits 5 s more, marks those
 workflow runs `interrupted("server_shutdown")` in the run repository, deletes
 its heartbeat and exits. A peer sees no stale heartbeat, so nothing is reaped;
 clients attached to the interrupted runs get the terminal frame; nothing is
-resumed, but `swamp run history` shows the final status. A crash instead of a clean stop is handled by the
-reconciliation loop after `--stale-ttl`.
+resumed, but `swamp run history` shows the final status. If the shutdown handler
+does not complete (e.g. SIGKILL before the YAML records are persisted), the next
+instance's boot reconciliation detects runs from foreign instances whose
+heartbeat no longer exists and interrupts them. A crash instead of a clean stop
+is handled by the reconciliation loop after `--stale-ttl`.
 
 ## Lifecycle and operations
 

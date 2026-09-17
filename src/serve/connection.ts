@@ -3146,13 +3146,13 @@ export function handleMessage(
       break;
     case "run.doctor":
       task = audited(
-        Promise.resolve(handleRunDoctor(
+        handleRunDoctor(
           socket,
           ctx,
           request.id,
           request.payload,
           principal,
-        )),
+        ),
         auditOpts("execution", "run", "*"),
       );
       break;

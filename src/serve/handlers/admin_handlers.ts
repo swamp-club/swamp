@@ -1700,13 +1700,13 @@ export function handleRunHistory(
   });
 }
 
-export function handleRunDoctor(
+export async function handleRunDoctor(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
   payload: { fix?: boolean } | undefined,
   principal: Principal | null,
-): void {
+): Promise<void> {
   if (
     !authorizeOrReject(socket, requestId, principal, "admin", {
       kind: "model",
@@ -1733,6 +1733,43 @@ export function handleRunDoctor(
     reaped = reapedRuns.length;
   }
 
+  let orphanedWorkflowRuns = 0;
+  let orphanedReaped = 0;
+  if (ctx.controlPlaneStore && ctx.instanceId) {
+    try {
+      const reapCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      const yamlRuns = await ctx.repoContext.workflowRunRepo
+        .findGlobalByStatus("running", reapCutoff);
+
+      const heartbeatCache = new Map<string, boolean>();
+      for (const { run, workflowId } of yamlRuns) {
+        if (!run.instanceId || run.instanceId === ctx.instanceId) continue;
+
+        let hasHeartbeat = heartbeatCache.get(run.instanceId);
+        if (hasHeartbeat === undefined) {
+          const data = await ctx.controlPlaneStore.get(
+            `heartbeats/${run.instanceId}`,
+          );
+          hasHeartbeat = data !== null;
+          heartbeatCache.set(run.instanceId, hasHeartbeat);
+        }
+        if (hasHeartbeat) continue;
+
+        orphanedWorkflowRuns++;
+        if (payload?.fix) {
+          run.interrupt("doctor_reap");
+          await ctx.repoContext.workflowRunRepo.save(workflowId, run);
+          orphanedReaped++;
+        }
+      }
+    } catch (err: unknown) {
+      getSwampLogger(["serve", "run-doctor"]).warn(
+        "Failed to scan YAML workflow runs: {error}",
+        { error: err instanceof Error ? err.message : String(err) },
+      );
+    }
+  }
+
   const mapRun = (r: ActiveRun) => ({
     id: r.id,
     runKind: r.runKind,
@@ -1756,6 +1793,8 @@ export function handleRunDoctor(
       active: active.length,
       stale: stale.length,
       reaped,
+      orphanedWorkflowRuns,
+      orphanedReaped,
       activeRuns: active.map(mapRun),
       staleRuns: stale.map(mapRun),
     },

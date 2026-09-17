@@ -39,6 +39,7 @@ import type {
   VaultDeleteProvider,
   VaultProvider,
 } from "../domain/vaults/vault_provider.ts";
+import type { WorkflowRunRepository } from "../domain/workflows/repositories.ts";
 
 const logger = getSwampLogger(["serve", "boot-reconciliation"]);
 
@@ -442,6 +443,7 @@ export interface ReconcileRemoteInterruptedRunsDeps {
   runTracker:
     import("../infrastructure/persistence/run_tracker_store.ts").RunTrackerStore;
   staleTtlMs?: number;
+  workflowRunRepo?: WorkflowRunRepository;
 }
 
 /**
@@ -529,6 +531,32 @@ export async function reconcileRemoteInterruptedRuns(
       logger.info(
         "Cleaned up {count} stale active-run records for instance {instanceId}",
         { count: activeRunsCleaned, instanceId: claimedId },
+      );
+    }
+  }
+
+  if (deps.workflowRunRepo) {
+    try {
+      const reapCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      const yamlRuns = await deps.workflowRunRepo.findGlobalByStatus(
+        "running",
+        reapCutoff,
+      );
+      for (const { run, workflowId } of yamlRuns) {
+        if (!run.instanceId || !claimedSet.has(run.instanceId)) continue;
+        if (run.status !== "running") continue;
+        run.interrupt("remote_instance_dead");
+        await deps.workflowRunRepo.save(workflowId, run);
+        reaped++;
+        logger.warn(
+          "Reaped YAML workflow run {runId} from dead remote instance {instanceId}",
+          { runId: run.id, instanceId: run.instanceId },
+        );
+      }
+    } catch (err: unknown) {
+      logger.warn(
+        "Failed to reconcile YAML workflow runs: {error}",
+        { error: err instanceof Error ? err.message : String(err) },
       );
     }
   }

@@ -1221,6 +1221,105 @@ Deno.test("reconcileRemoteInterruptedRuns: putIfAbsent error propagates", async 
   assertEquals(completed.length, 0);
 });
 
+Deno.test("reconcileRemoteInterruptedRuns: interrupts YAML workflow runs from stale instances", async () => {
+  const run1 = makeActiveRunData({
+    id: "run-1",
+    instanceId: "dead-inst",
+    status: "running",
+  });
+  const h = createReconcileHarness(
+    { "dead-inst": makeHeartbeat("dead-inst", { stale: true }) },
+    [run1],
+  );
+
+  const yamlSaved: Array<{ workflowId: string; runId: string }> = [];
+  const yamlInterrupted: string[] = [];
+  const mockWorkflowRunRepo = {
+    findGlobalByStatus: (_status: string | string[], _since?: Date) =>
+      Promise.resolve([{
+        run: {
+          id: "yaml-run-1",
+          instanceId: "dead-inst",
+          status: "running",
+          interrupt: (reason: string) => {
+            yamlInterrupted.push(`${reason}`);
+          },
+        },
+        workflowId: "wf-1",
+      }]),
+    save: (workflowId: string, run: { id: string }) => {
+      yamlSaved.push({ workflowId, runId: run.id });
+      return Promise.resolve();
+    },
+  };
+  h.deps.workflowRunRepo =
+    mockWorkflowRunRepo as unknown as ReconcileRemoteInterruptedRunsDeps[
+      "workflowRunRepo"
+    ];
+
+  const reaped = await reconcileRemoteInterruptedRuns(h.deps);
+  assertEquals(reaped, 2); // 1 tracker + 1 YAML
+  assertEquals(yamlInterrupted, ["remote_instance_dead"]);
+  assertEquals(yamlSaved.length, 1);
+  assertEquals(yamlSaved[0].workflowId, "wf-1");
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: skips YAML runs from non-stale instances", async () => {
+  const run1 = makeActiveRunData({
+    id: "run-1",
+    instanceId: "dead-inst",
+    status: "running",
+  });
+  const h = createReconcileHarness(
+    { "dead-inst": makeHeartbeat("dead-inst", { stale: true }) },
+    [run1],
+  );
+
+  const yamlSaved: string[] = [];
+  const mockWorkflowRunRepo = {
+    findGlobalByStatus: (_status: string | string[], _since?: Date) =>
+      Promise.resolve([{
+        run: {
+          id: "yaml-run-alive",
+          instanceId: "alive-inst",
+          status: "running",
+          interrupt: () => {
+            throw new Error("should not interrupt alive instance's run");
+          },
+        },
+        workflowId: "wf-1",
+      }]),
+    save: (_workflowId: string, run: { id: string }) => {
+      yamlSaved.push(run.id);
+      return Promise.resolve();
+    },
+  };
+  h.deps.workflowRunRepo =
+    mockWorkflowRunRepo as unknown as ReconcileRemoteInterruptedRunsDeps[
+      "workflowRunRepo"
+    ];
+
+  const reaped = await reconcileRemoteInterruptedRuns(h.deps);
+  assertEquals(reaped, 1); // only the tracker run
+  assertEquals(yamlSaved.length, 0);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: works without workflowRunRepo (existing behavior)", async () => {
+  const run1 = makeActiveRunData({
+    id: "run-1",
+    instanceId: "dead-inst",
+    status: "running",
+  });
+  const h = createReconcileHarness(
+    { "dead-inst": makeHeartbeat("dead-inst", { stale: true }) },
+    [run1],
+  );
+  // No workflowRunRepo set — should work as before
+  const reaped = await reconcileRemoteInterruptedRuns(h.deps);
+  assertEquals(reaped, 1);
+  assertEquals(h.completed.length, 1);
+});
+
 // ── cleanupExpiredClaims tests ─────────────────────────────────────────
 
 Deno.test("cleanupExpiredClaims: deletes expired claims", async () => {

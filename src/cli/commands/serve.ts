@@ -624,6 +624,7 @@ export async function reapOrphanedWorkflowRuns(
   trackerLookup: (runId: string) => { status: string } | null,
   isDeadFn: (pid: number) => boolean = isProcessDead,
   localInstanceId?: string,
+  heartbeatLookup?: (instanceId: string) => Promise<boolean>,
 ): Promise<ReapResult> {
   let reaped = 0;
   let skipped = 0;
@@ -662,6 +663,33 @@ export async function reapOrphanedWorkflowRuns(
       localInstanceId && run.instanceId &&
       run.instanceId !== localInstanceId
     ) {
+      if (heartbeatLookup) {
+        const hasHeartbeat = await heartbeatLookup(run.instanceId);
+        if (hasHeartbeat) {
+          logger.info(
+            "Skipping workflow run {runId} (workflow: {workflowName}) — remote instance {instanceId} still has a heartbeat",
+            {
+              runId: run.id,
+              workflowName: run.workflowName,
+              instanceId: run.instanceId,
+            },
+          );
+          skipped++;
+          continue;
+        }
+        logger.warn(
+          "Reaping orphaned workflow run {runId} (workflow: {workflowName}, reason: {reason})",
+          {
+            runId: run.id,
+            workflowName: run.workflowName,
+            reason: "remote instance dead (no heartbeat)",
+          },
+        );
+        run.interrupt("server_crash");
+        await save(workflowId, run);
+        reaped++;
+        continue;
+      }
       logger.info(
         "Skipping workflow run {runId} (workflow: {workflowName}) — belongs to remote instance {instanceId}",
         {
@@ -2788,6 +2816,12 @@ export const serveCommand = new Command()
       },
       isProcessDead,
       instanceId,
+      hasRemoteControlPlane
+        ? async (id) => {
+          const data = await controlPlaneStore.get(`heartbeats/${id}`);
+          return data !== null;
+        }
+        : undefined,
     );
     if (reapResult.reaped > 0) {
       logger.warn(
@@ -4823,6 +4857,7 @@ export const serveCommand = new Command()
         instanceId,
         runTracker,
         staleTtlMs,
+        workflowRunRepo: repoContext.workflowRunRepo,
       });
       if (remoteReaped > 0) {
         logger
@@ -4884,6 +4919,7 @@ export const serveCommand = new Command()
             instanceId,
             runTracker,
             staleTtlMs,
+            workflowRunRepo: repoContext.workflowRunRepo,
           });
           if (reaped > 0) {
             logger

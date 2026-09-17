@@ -1531,6 +1531,8 @@ export interface RunDoctorResponse {
   active: number;
   stale: number;
   reaped: number;
+  orphanedWorkflowRuns?: number;
+  orphanedReaped?: number;
   activeRuns: RunHistoryResponse["runs"];
   staleRuns: RunHistoryResponse["runs"];
 }

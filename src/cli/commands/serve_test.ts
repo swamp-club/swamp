@@ -730,6 +730,72 @@ Deno.test("reapOrphanedWorkflowRuns: reaps run with no instanceId when tracker m
   assertEquals(saved.length, 1);
 });
 
+Deno.test("reapOrphanedWorkflowRuns: reaps foreign run when heartbeat lookup reports no heartbeat", async () => {
+  const run = makeRun({ pid: 42, instanceId: "remote-1" });
+  const saved: string[] = [];
+  const result = await reapOrphanedWorkflowRuns(
+    [{ run, workflowId: WORKFLOW_ID }],
+    (_wid, r) => {
+      saved.push(r.id);
+      return Promise.resolve();
+    },
+    noTracker,
+    () => {
+      throw new Error("should not check PID for foreign instance");
+    },
+    "local-1",
+    (_instanceId) => Promise.resolve(false), // no heartbeat
+  );
+  assertEquals(result.reaped, 1);
+  assertEquals(result.skipped, 0);
+  assertEquals(run.status, "interrupted");
+  assertEquals(saved.length, 1);
+});
+
+Deno.test("reapOrphanedWorkflowRuns: skips foreign run when heartbeat lookup reports live heartbeat", async () => {
+  const run = makeRun({ pid: 42, instanceId: "remote-1" });
+  const saved: string[] = [];
+  const result = await reapOrphanedWorkflowRuns(
+    [{ run, workflowId: WORKFLOW_ID }],
+    (_wid, r) => {
+      saved.push(r.id);
+      return Promise.resolve();
+    },
+    noTracker,
+    () => {
+      throw new Error("should not check PID for foreign instance");
+    },
+    "local-1",
+    (_instanceId) => Promise.resolve(true), // heartbeat exists
+  );
+  assertEquals(result.reaped, 0);
+  assertEquals(result.skipped, 1);
+  assertEquals(run.status, "running");
+  assertEquals(saved.length, 0);
+});
+
+Deno.test("reapOrphanedWorkflowRuns: skips foreign run when no heartbeat lookup provided", async () => {
+  const run = makeRun({ pid: 42, instanceId: "remote-1" });
+  const saved: string[] = [];
+  const result = await reapOrphanedWorkflowRuns(
+    [{ run, workflowId: WORKFLOW_ID }],
+    (_wid, r) => {
+      saved.push(r.id);
+      return Promise.resolve();
+    },
+    noTracker,
+    () => {
+      throw new Error("should not check PID for foreign instance");
+    },
+    "local-1",
+    undefined, // no heartbeat lookup — preserves old behavior
+  );
+  assertEquals(result.reaped, 0);
+  assertEquals(result.skipped, 1);
+  assertEquals(run.status, "running");
+  assertEquals(saved.length, 0);
+});
+
 Deno.test("reapOrphanedWorkflowRuns: reaps run with foreign instanceId when tracker reports stale", async () => {
   const run = makeRun({ pid: 42, instanceId: "remote-1" });
   const saved: string[] = [];

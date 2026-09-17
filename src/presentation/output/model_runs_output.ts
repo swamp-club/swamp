@@ -134,8 +134,13 @@ export function writeDoctorRunsLog(
   stale: ActiveRun[],
   reaped: number,
   fix: boolean,
+  orphanedWorkflowRuns?: number,
+  orphanedReaped?: number,
 ): void {
-  if (active.length === 0 && stale.length === 0) {
+  if (
+    active.length === 0 && stale.length === 0 &&
+    (!orphanedWorkflowRuns || orphanedWorkflowRuns === 0)
+  ) {
     writeOutput("No active or stale runs.");
     return;
   }
@@ -190,6 +195,24 @@ export function writeDoctorRunsLog(
     }
   }
 
+  if (orphanedWorkflowRuns && orphanedWorkflowRuns > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push(
+      bold(
+        red(
+          `${orphanedWorkflowRuns} orphaned workflow run(s) from dead instances:`,
+        ),
+      ),
+    );
+    if (fix && orphanedReaped) {
+      lines.push(green(`Reaped ${orphanedReaped} orphaned workflow run(s).`));
+    } else if (!fix) {
+      lines.push(
+        dim("Run with --fix to automatically reap orphaned workflow runs."),
+      );
+    }
+  }
+
   writeOutput(lines.join("\n"));
 }
 
@@ -198,6 +221,8 @@ export function writeDoctorRunsJson(
   activeRuns: ActiveRun[],
   staleRuns: ActiveRun[],
   reaped: number,
+  orphanedWorkflowRuns?: number,
+  orphanedReaped?: number,
 ): void {
   const mapRun = (r: ActiveRun) => ({
     id: r.id,
@@ -217,6 +242,9 @@ export function writeDoctorRunsJson(
     active: activeRuns.length,
     stale: staleRuns.length,
     reaped,
+    ...(orphanedWorkflowRuns !== undefined
+      ? { orphanedWorkflowRuns, orphanedReaped: orphanedReaped ?? 0 }
+      : {}),
     activeRuns: activeRuns.map(mapRun),
     staleRuns: staleRuns.map(mapRun),
   }));

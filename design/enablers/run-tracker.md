@@ -82,7 +82,9 @@ collects older run records on demand with a 30-day default, `--older-than`,
    recovery. Reaping runs at `swamp serve` boot, `swamp model method run`,
    `swamp model cancel`, and `swamp run doctor --fix` (locally or via the
    `run.doctor` handler) — not on every CLI invocation (`reapStaleRuns`
-   callers in `src/cli/commands/` and `src/serve/handlers/admin_handlers.ts`)
+   callers in `src/cli/commands/` and `src/serve/handlers/admin_handlers.ts`).
+   The continuous reconciler and `run.doctor` also reconcile YAML
+   workflow-run records from dead remote instances whose heartbeats are gone.
 5. **Suspend** — workflow approval gates set status to `suspended`, which
    excludes the row from stale detection
 6. **Reactivate** — on workflow resume, transitions `suspended` → `running` and
