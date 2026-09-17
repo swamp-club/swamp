@@ -54,10 +54,9 @@ attestation to flow through.
    `git diff --stat main..HEAD`. Build a title and summary from the commits and
    changed files.
 
-2. **Create a tracking issue in swamp-club.** There is no `swamp issue create`
-   — pick the type-specific subcommand (`feature`, `bug`, or `security`). The
-   CLI cannot file `platform` issues, so classify ad-hoc work as `feature` or
-   `bug`:
+2. **Create a tracking issue in swamp-club.** There is no `swamp issue create` —
+   pick the type-specific subcommand (`feature`, `bug`, or `security`). The CLI
+   cannot file `platform` issues, so classify ad-hoc work as `feature` or `bug`:
 
    ```
    swamp issue feature --title "<title>" --body "<summary of work done>" --json
@@ -86,8 +85,8 @@ attestation to flow through.
    reflect how the changes were validated.
 
 5. **Transition to `verifying`.** `fast_forward` leaves the lifecycle at
-   `implementing`, and `post_attestation` is only accepted from `verifying` —
-   so this transition is required, not optional:
+   `implementing`, and `post_attestation` is only accepted from `verifying` — so
+   this transition is required, not optional:
 
    ```
    swamp model @swamp/issue-lifecycle method run verify issue-<N> \
@@ -97,15 +96,14 @@ attestation to flow through.
 
 6. **Proceed with normal verification.** Read
    [references/verification.md](references/verification.md) and continue from
-   its step 2 (Run Verification) through verification_passed →
-   post_attestation → link_pr. Step 1 there is the `verify` call just made — do
-   not repeat it.
+   its step 2 (Run Verification) through verification_passed → post_attestation
+   → link_pr. Step 1 there is the `verify` call just made — do not repeat it.
 
 7. **Drive the lifecycle to `done`.** `link_pr` only reaches `pr_open` — it is
-   not the end of the flow, and stopping there leaves the issue parked. Walk
-   the rest: `pr_merged` (→ `releasing`), `ship` or `complete` (→ `notify`),
-   `notify` or `skip_notify` (→ `summarizing`), then `summarize` (→ `done`).
-   See "Closing Out a Shipped Issue" below for the exact commands.
+   not the end of the flow, and stopping there leaves the issue parked. Walk the
+   rest: `pr_merged` (→ `releasing`), `ship` or `complete` (→ `notify`),
+   `notify` or `skip_notify` (→ `summarizing`), then `summarize` (→ `done`). See
+   "Closing Out a Shipped Issue" below for the exact commands.
 
 ### Example
 
@@ -234,8 +232,16 @@ Read [references/implementation.md](references/implementation.md) — section 7
 covers the summary step.
 
 Restate the original problem and the delivered outcome in plain language, then
-call `summarize` to close out the lifecycle. This final check ensures the work
-actually addressed the issue.
+close out the lifecycle. This final check ensures the work actually addressed
+the issue. All three inputs are required — `summarize` fails validation without
+them:
+
+```
+swamp model @swamp/issue-lifecycle method run summarize issue-<N> \
+  --input originalProblem="<problem>" \
+  --input deliveredOutcome="<outcome>" \
+  --input outcomeMet=true
+```
 
 ## Classification Types
 
@@ -301,7 +307,7 @@ Use this table to determine what to do next:
 | `pr_failed`      | Fix the issue, then `link_pr` (new PR) or `implement` (major rework)       |
 | `releasing`      | Check release build: `ship` when done, or `complete` as fallback           |
 | `notify`         | Check if author is external: `notify` to thank them, `skip_notify` to skip |
-| `summarizing`    | Call `summarize` with the problem restatement and delivered outcome        |
+| `summarizing`    | Call `summarize` — needs originalProblem, deliveredOutcome, outcomeMet     |
 | `done`           | Nothing to do — lifecycle is complete                                      |
 
 The canonical phase list lives in the `TRANSITIONS` constant in
