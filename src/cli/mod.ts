@@ -39,6 +39,7 @@ import { vaultCommand } from "./commands/vault.ts";
 import { dataCommand } from "./commands/data.ts";
 import { issueCommand } from "./commands/issue.ts";
 import { inviteCommand } from "./commands/invite.ts";
+import { firstRuleCommand } from "./commands/invite_link.ts";
 import { telemetryCommand } from "./commands/telemetry_stats.ts";
 import { auditCommand } from "./commands/audit.ts";
 import { updateCommand } from "./commands/update.ts";
@@ -1741,6 +1742,8 @@ export async function runCli(args: string[]): Promise<void> {
     .command("completions", completionCommand)
     .command("issue", issueCommand)
     .command("invite", inviteCommand)
+    // Hidden easter egg — the same command as `swamp invite link`.
+    .command("first-rule", firstRuleCommand)
     .command("auth", authCommand)
     .command("extension", extensionCommand)
     .command("summarise", summariseCommand)

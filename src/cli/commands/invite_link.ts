@@ -36,22 +36,27 @@ import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 type AnyOptions = any;
 
 /**
- * Builds the recruit-link command under a given name.
+ * Builds the invite-link command under a given name and command path.
  *
- * Called twice: once as the documented `link`, and once as `first-rule`, which
- * is registered hidden. An alias would have worked mechanically, but Cliffy
- * prints aliases in the group's help ("link, first-rule"), and an easter egg
- * listed in help is not one — so `first-rule` is a hidden sibling instead.
- * Both share this body, so they cannot drift.
+ * Called twice: once as the documented `swamp invite link`, and once as the
+ * top-level `swamp first-rule`, which is registered hidden. An alias would
+ * have worked mechanically, but Cliffy prints aliases in help ("link,
+ * first-rule"), and an easter egg listed in help is not one — so `first-rule`
+ * is a hidden command instead. Both share this body, so they cannot drift.
+ *
+ * `path` is the invocation as typed: it names the command for tracing and
+ * spells the examples, so the egg's own `--help` never tells you to run
+ * something else.
  */
-function buildInviteLinkCommand(name: string): Command {
+function buildInviteLinkCommand(name: string, path: string[]): Command {
+  const invocation = ["swamp", ...path].join(" ");
   return new Command()
     .name(name)
-    .description("Print your swamp-club recruit link, creating it on first use")
-    .example("Print your recruit link", "swamp invite link")
-    .example("Capture the link for a script", "swamp invite link --json")
+    .description("Print your swamp-club invite link")
+    .example("Print your invite link", invocation)
+    .example("Capture the link for a script", `${invocation} --json`)
     .action(async function (options: AnyOptions) {
-      const ctx = createContext(options as GlobalOptions, ["invite", name]);
+      const ctx = createContext(options as GlobalOptions, path);
 
       const credentials = await new AuthRepository().load();
       // Unlike `swamp issue get`, there is no anonymous form of this endpoint —
@@ -84,11 +89,16 @@ function buildInviteLinkCommand(name: string): Command {
 }
 
 /** The documented command: `swamp invite link`. */
-export const inviteLinkCommand = buildInviteLinkCommand("link");
+export const inviteLinkCommand = buildInviteLinkCommand("link", [
+  "invite",
+  "link",
+]);
 
 /**
- * The same command under its easter-egg name, registered hidden so it stays
- * out of help, shell completions and the `swamp help --json` schema.
+ * The same command under its easter-egg name, mounted at the top level as
+ * `swamp first-rule` and registered hidden so it stays out of help, shell
+ * completions and the `swamp help --json` schema.
  */
-export const inviteFirstRuleCommand = buildInviteLinkCommand("first-rule")
-  .hidden();
+export const firstRuleCommand = buildInviteLinkCommand("first-rule", [
+  "first-rule",
+]).hidden();

@@ -63,7 +63,7 @@ Deno.test("createInviteLinkRenderer: log mode puts the bare URL alone on stdout"
   // is what keeps `swamp invite link | pbcopy` usable.
   assertEquals(out, ["https://swamp.club/r/abc123"]);
   // The prose exists, but on the other stream.
-  assertStringIncludes(err.join("\n"), "earns you points");
+  assertStringIncludes(err.join("\n"), "Marsh Skulker");
 });
 
 Deno.test("createInviteLinkRenderer: json mode emits exactly the two documented keys", async () => {

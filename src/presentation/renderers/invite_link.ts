@@ -36,15 +36,17 @@ class LogInviteLinkRenderer implements Renderer<InviteLinkEvent> {
         // stdout: the link, bare and uncoloured, so a pipeline can consume it.
         writeOutput(e.data.url);
 
-        // Deliberately vague about when and how much. The payout lands only
-        // for a net-new account, and only once that recruit gets established
-        // — not at signup. Naming a moment here would promise something the
-        // server does not do, and the point value lives server-side and will
-        // change.
+        // Names the moment, not the amount. The payout lands only for a
+        // net-new account, and only when that recruit crosses the reward tier
+        // (swamp-club's `PLATFORM_INVITE_REWARD_TIER_ORDINAL`, ordinal 5 —
+        // Marsh Skulker) — never at signup. The point value lives server-side
+        // and will change, so it stays out of here; the rung is the stable
+        // part, and naming it is what stops "once they get established" from
+        // reading as "the moment they sign up".
         console.error("");
         console.error(
           dim(
-            "Someone who joins through this link earns you points once they get established.",
+            "A recruit who joins through this link pays out when they claw their way up to Marsh Skulker.",
           ),
         );
       },

@@ -18,25 +18,44 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { inviteFirstRuleCommand, inviteLinkCommand } from "./invite_link.ts";
+import { Command } from "@cliffy/command";
+import { firstRuleCommand, inviteLinkCommand } from "./invite_link.ts";
 
 Deno.test("inviteLinkCommand: has correct name and description", () => {
   assertEquals(inviteLinkCommand.getName(), "link");
   assertEquals(
     inviteLinkCommand.getDescription(),
-    "Print your swamp-club recruit link, creating it on first use",
+    "Print your swamp-club invite link",
   );
 });
 
-Deno.test("inviteFirstRuleCommand: same command, hidden from help", () => {
-  assertEquals(inviteFirstRuleCommand.getName(), "first-rule");
-  // Hiddenness is asserted in invite_test.ts, where the group can be filtered
-  // with getCommands(false) — Cliffy exposes no public isHidden() reader.
+Deno.test("firstRuleCommand: same command, hidden from help", () => {
+  assertEquals(firstRuleCommand.getName(), "first-rule");
   // It carries the same description as `link`, so the two cannot drift.
   assertEquals(
-    inviteFirstRuleCommand.getDescription(),
+    firstRuleCommand.getDescription(),
     inviteLinkCommand.getDescription(),
   );
   // And `link` itself no longer carries it as an alias.
   assertEquals(inviteLinkCommand.getAliases(), []);
+
+  // Cliffy exposes no public isHidden() reader, so the flag is read the way
+  // help does: register under a throwaway parent and filter. Mounting it here
+  // rather than on the real tree keeps this a unit test — `swamp first-rule`
+  // is wired in src/cli/mod.ts, which only builds inside runCli().
+  const parent = new Command().command("first-rule", firstRuleCommand);
+  assertEquals(parent.getCommands(false).length, 0);
+  assertEquals(parent.getCommand("first-rule", true)?.getName(), "first-rule");
+});
+
+Deno.test("firstRuleCommand: examples spell the egg's own invocation", () => {
+  // The egg is reached as `swamp first-rule`, so its `--help` must not point
+  // at `swamp invite link` — that would give away a command the user did not
+  // ask about and describe a path they did not take.
+  const example = firstRuleCommand.getExample("Print your invite link");
+  assertEquals(example?.description, "swamp first-rule");
+  assertEquals(
+    inviteLinkCommand.getExample("Print your invite link")?.description,
+    "swamp invite link",
+  );
 });

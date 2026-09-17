@@ -19,7 +19,7 @@
 
 import { Command } from "@cliffy/command";
 import { groupCommandAction } from "../group_action.ts";
-import { inviteFirstRuleCommand, inviteLinkCommand } from "./invite_link.ts";
+import { inviteLinkCommand } from "./invite_link.ts";
 
 /**
  * The invite group — a pure group, matching the `issue.ts` idiom.
@@ -31,12 +31,12 @@ import { inviteFirstRuleCommand, inviteLinkCommand } from "./invite_link.ts";
  * Adding a positional later is additive; withdrawing one people have started
  * scripting against is not.
  *
- * `first-rule` is the same command under a second name, registered hidden — an
- * easter egg, so it is deliberately absent from help and the CLI schema.
+ * The `first-rule` easter egg is the same command under a second name, but it
+ * is mounted at the top level (`swamp first-rule`) rather than here — the joke
+ * only lands as a bare two-word invocation. See `invite_link.ts`.
  */
 export const inviteCommand = new Command()
   .name("invite")
   .description("Invite people to swamp-club")
   .action(groupCommandAction)
-  .command("link", inviteLinkCommand)
-  .command("first-rule", inviteFirstRuleCommand);
+  .command("link", inviteLinkCommand);

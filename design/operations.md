@@ -26,10 +26,10 @@ it an `enables:` header.
   `src/infrastructure/github/` (the `gh` call).
 - **Quest / Genesis Pass** — a read model of the user's swamp-club progression
   ladder shown by `swamp quest`. `src/domain/quest/genesis_pass.ts`.
-- **Invite / recruit link** — `swamp invite link` (alias `first-rule`) prints the
-  operative's swamp-club recruit link, a server-owned read model fetched
-  get-or-create. Like Quest, it has no CLI-side domain type.
-  `src/libswamp/invite/`, `SwampClubClient.fetchRecruitLink`.
+- **Invite / recruit link** — `swamp invite link` (and the hidden top-level
+  `swamp first-rule`) prints the operative's swamp-club recruit link, a
+  server-owned read model fetched get-or-create. Like Quest, it has no CLI-side
+  domain type. `src/libswamp/invite/`, `SwampClubClient.fetchRecruitLink`.
 - **Summarise** — cross-context activity summary for `swamp summarise`.
   `src/domain/summary/`.
 - **Source fetch** — downloads and caches swamp source archives for

@@ -28,21 +28,17 @@ Deno.test("inviteCommand: has correct name and description", () => {
   );
 });
 
-Deno.test("inviteCommand: exposes link, and first-rule only as a hidden sibling", () => {
+Deno.test("inviteCommand: exposes link, and nothing else", () => {
   const link = inviteCommand.getCommand("link");
   assertNotEquals(link, undefined);
   assertEquals(link?.getName(), "link");
 
-  // Reachable when typed — getCommand's second arg includes hidden commands.
-  const egg = inviteCommand.getCommand("first-rule", true);
-  assertNotEquals(egg, undefined);
-  assertEquals(egg?.getName(), "first-rule");
+  // The `first-rule` egg moved to the top level (`swamp first-rule`), so it is
+  // not reachable here even when typed in full — hidden commands included.
+  assertEquals(inviteCommand.getCommand("first-rule", true), undefined);
 
-  // ...but absent from the listing help renders, which is what makes it an
-  // easter egg rather than a second documented spelling.
   const listed = inviteCommand.getCommands(false).map((c) => c.getName());
-  assertEquals(listed.includes("link"), true);
-  assertEquals(listed.includes("first-rule"), false);
+  assertEquals(listed, ["link"]);
 });
 
 Deno.test("inviteCommand: takes no positional arguments", () => {
