@@ -1849,7 +1849,7 @@ export class WorkflowExecutionService {
       let workflow: Workflow;
       let expressionContext: ExpressionContext | undefined;
       let authoredExpressions: ReadonlySet<string> = new Set();
-      let deferredExpressions = options?.deferredExpressions ?? [];
+      const deferredExpressions = options?.deferredExpressions ?? [];
       let run: WorkflowRun;
       let workflowLogPath: string;
       let evaluatedWorkflowFingerprint: string | undefined;

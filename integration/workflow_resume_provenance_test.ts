@@ -34,21 +34,12 @@
 
 import { join } from "@std/path";
 import { assertEquals } from "@std/assert";
-import {
-  collect,
-  createLibSwampContext,
-  createModelEvaluateDeps,
-  modelEvaluate,
-} from "../src/libswamp/mod.ts";
 import type { WorkflowRunEvent } from "../src/libswamp/mod.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
-import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
-import { Definition } from "../src/domain/definitions/definition.ts";
-import { ModelType } from "../src/domain/models/model_type.ts";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
 import {
   createWorkflowRunDeps,
