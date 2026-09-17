@@ -51,6 +51,7 @@ Deno.test("buildOtelResource: defaults service.name to 'swamp' and version to 'd
   );
   assertEquals(resource.attributes[ATTR_SERVICE_NAME], "swamp");
   assertEquals(resource.attributes[ATTR_SERVICE_VERSION], "dev");
+  assertEquals(resource.attributes["swamp.version"], "dev");
 });
 
 Deno.test("buildOtelResource: honors OTEL_SERVICE_NAME and SWAMP_VERSION", () => {
@@ -65,6 +66,33 @@ Deno.test("buildOtelResource: honors OTEL_SERVICE_NAME and SWAMP_VERSION", () =>
   );
   assertEquals(resource.attributes[ATTR_SERVICE_NAME], "asdlc-harness");
   assertEquals(resource.attributes[ATTR_SERVICE_VERSION], "1.2.3");
+});
+
+Deno.test("buildOtelResource: swamp.version prefers SWAMP_BUILD_VERSION over SWAMP_VERSION", () => {
+  const resource = buildOtelResource(
+    Resource,
+    stubDetector({}),
+    ATTRS,
+    fakeEnv({
+      SWAMP_BUILD_VERSION: "20260917.032111.0-sha.614bbc7e",
+      SWAMP_VERSION: "1.2.3",
+    }),
+  );
+  assertEquals(
+    resource.attributes["swamp.version"],
+    "20260917.032111.0-sha.614bbc7e",
+  );
+  assertEquals(resource.attributes[ATTR_SERVICE_VERSION], "1.2.3");
+});
+
+Deno.test("buildOtelResource: swamp.version falls back to SWAMP_VERSION", () => {
+  const resource = buildOtelResource(
+    Resource,
+    stubDetector({}),
+    ATTRS,
+    fakeEnv({ SWAMP_VERSION: "1.2.3" }),
+  );
+  assertEquals(resource.attributes["swamp.version"], "1.2.3");
 });
 
 Deno.test("buildOtelResource: merges detector attributes into resource", () => {

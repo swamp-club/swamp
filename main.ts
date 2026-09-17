@@ -36,8 +36,10 @@ import {
   shutdownLogs,
   shutdownTracing,
 } from "./src/infrastructure/tracing/mod.ts";
+import { VERSION } from "./src/cli/commands/version.ts";
 
 if (import.meta.main) {
+  Deno.env.set("SWAMP_BUILD_VERSION", VERSION);
   const parentCtx = await initTracing();
   try {
     await runWithParentTrace(parentCtx, () => runCli(Deno.args));

@@ -49,6 +49,8 @@ export function buildOtelResource(
       new ResourceCtor({
         [attributes.serviceNameAttr]: serviceName,
         [attributes.serviceVersionAttr]: envGet("SWAMP_VERSION") ?? "dev",
+        "swamp.version": envGet("SWAMP_BUILD_VERSION") ??
+          envGet("SWAMP_VERSION") ?? "dev",
       }),
     );
 }
