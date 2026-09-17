@@ -19,6 +19,7 @@
 
 import { getLogger } from "@logtape/logtape";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
+import { gatedPull, type SyncGate } from "./sync_gate.ts";
 
 const logger = getLogger(["swamp", "serve", "runtime-data-poller"]);
 
@@ -26,6 +27,7 @@ const DEFAULT_RUNTIME_DATA_POLL_INTERVAL_MS = 30_000;
 
 export interface RuntimeDataPollerOptions {
   syncService: DatastoreSyncService;
+  syncGate?: SyncGate;
   catalogInvalidate: () => void;
   pollIntervalMs?: number;
   namespace?: string;
@@ -33,6 +35,7 @@ export interface RuntimeDataPollerOptions {
 
 export class RuntimeDataPoller {
   readonly #syncService: DatastoreSyncService;
+  readonly #syncGate?: SyncGate;
   readonly #catalogInvalidate: () => void;
   readonly #pollIntervalMs: number;
   readonly #namespace?: string;
@@ -42,6 +45,7 @@ export class RuntimeDataPoller {
 
   constructor(options: RuntimeDataPollerOptions) {
     this.#syncService = options.syncService;
+    this.#syncGate = options.syncGate;
     this.#catalogInvalidate = options.catalogInvalidate;
     this.#pollIntervalMs = options.pollIntervalMs ??
       DEFAULT_RUNTIME_DATA_POLL_INTERVAL_MS;
@@ -75,10 +79,16 @@ export class RuntimeDataPoller {
   async #pullAndInvalidate(): Promise<void> {
     this.#pulling = true;
     try {
-      const result = await this.#syncService.pullChanged({
-        subdirs: ["data"],
-        namespace: this.#namespace,
-      });
+      const result = await gatedPull(
+        this.#syncGate,
+        "runtime data poller",
+        (signal) =>
+          this.#syncService.pullChanged({
+            signal,
+            subdirs: ["data"],
+            namespace: this.#namespace,
+          }),
+      );
       const count = typeof result === "number" ? result : 0;
       if (count > 0) {
         logger

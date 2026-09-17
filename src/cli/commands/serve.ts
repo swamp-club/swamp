@@ -247,6 +247,7 @@ import {
 import { AccessDataPoller } from "../../serve/access_data_poller.ts";
 import { ConfigPoller } from "../../serve/config_poller.ts";
 import { RuntimeDataPoller } from "../../serve/runtime_data_poller.ts";
+import { createSyncGate } from "../../serve/sync_gate.ts";
 
 import {
   DEFAULT_HEARTBEAT_INTERVAL_MS,
@@ -1557,6 +1558,12 @@ export const serveCommand = new Command()
       outputMode: ctx.outputMode,
     });
 
+    // One gate per serve process, shared by the pollers, the WebSocket
+    // mutation handlers and the device-auth mint path so a pull can never
+    // land between a local delete and its push (swamp-club#2247). Only
+    // meaningful with a sync service — without one nothing syncs.
+    const syncGate = syncService ? createSyncGate() : undefined;
+
     let configPoller: ConfigPoller | null = null;
     let accessDataPoller: AccessDataPoller | null = null;
     let runtimeDataPoller: RuntimeDataPoller | null = null;
@@ -1877,6 +1884,7 @@ export const serveCommand = new Command()
       if (repoMarker?.datastore?.managedConfig) {
         configPoller = new ConfigPoller({
           syncService,
+          syncGate,
           catalogInvalidate: () => repoContext.catalogStore.invalidate(),
           // No-op: extension type registries (model/vault/datastore/report)
           // require a full ensureLoaded() reload, not just catalog invalidation.
@@ -2596,6 +2604,7 @@ export const serveCommand = new Command()
     if (syncService) {
       accessDataPoller = new AccessDataPoller({
         syncService,
+        syncGate,
         policySnapshotLoader,
         catalogInvalidate: () => repoContext.catalogStore.invalidate(),
         namespace: serveNamespace,
@@ -2604,6 +2613,7 @@ export const serveCommand = new Command()
 
       runtimeDataPoller = new RuntimeDataPoller({
         syncService,
+        syncGate,
         catalogInvalidate: () => repoContext.catalogStore.invalidate(),
         namespace: serveNamespace,
       });
@@ -2856,6 +2866,7 @@ export const serveCommand = new Command()
         datastoreConfig,
         datastoreResolver,
         syncService,
+        syncGate,
         workerGateway,
         policySnapshotLoader,
         authConfig,
@@ -4504,6 +4515,7 @@ export const serveCommand = new Command()
             repoMarker?.defaultVault,
             syncService,
             serveNamespace,
+            syncGate,
             connectionCtx.auditEmitter,
             connectionCtx.instanceId,
             deviceRemoteAddr,

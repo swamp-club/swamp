@@ -63,6 +63,7 @@ import type { AuditStore } from "../../domain/serve_audit/audit_store.ts";
 import type { AuditPolicy } from "../../domain/serve_audit/audit_policy.ts";
 import type { AuditWal } from "../../domain/serve_audit/audit_wal.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import type { SyncGate } from "../sync_gate.ts";
 
 const pushLogger = getSwampLogger(["serve", "sync"]);
 
@@ -166,6 +167,14 @@ export interface ConnectionContext {
    * datastores or custom datastores without a cache.
    */
   syncService?: DatastoreSyncService;
+  /**
+   * In-process gate serializing poller pulls against whole mutation+push
+   * units, so a pull cannot land between a handler's local delete and the
+   * push that would delete the remote object (swamp-club#2247). Present
+   * whenever `syncService` is — without a sync service there is nothing to
+   * race. Not reentrant: see `src/serve/sync_gate.ts`.
+   */
+  syncGate?: SyncGate;
   /**
    * Remote-execution worker gateway. When present, `rpc.*` frames on this
    * socket are routed to it (worker enrollment and capability verbs); the

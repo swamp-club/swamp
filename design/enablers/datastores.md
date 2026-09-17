@@ -469,6 +469,14 @@ All three run at 30-second intervals by default and start when a
 `DatastoreSyncService` is available. Each poller is independent — a
 configuration-only pull does not satisfy the runtime refresh, and vice versa.
 
+Every poller pull runs under serve's **sync gate** (`src/serve/sync_gate.ts`)
+and is hard-bounded by `POLLER_PULL_TIMEOUT_MS`. The gate is a single
+in-process permit that a pull and a handler's whole mutation+push unit both
+have to hold, so a pull can never land between a local delete and the push
+that would delete the remote object — see the serve handler obligation below.
+The bound guarantees the permit comes back even when an extension ignores the
+AbortSignal.
+
 The RuntimeDataPoller provides **eventual visibility**, not immediate
 consistency. An idle peer discovers a peer's committed output within one
 polling interval after the data reaches the remote datastore. The query
@@ -1028,6 +1036,41 @@ request still pushes whatever it already changed in the local cache.
 `markDirty` only records dirty state; until a push runs, the remote still holds
 the old objects, and the next serve poller pull restores anything deleted from
 the local cache (swamp-club#2240).
+
+**The mutation and its push are one unit.** A delete is two steps — remove the
+file from the local cache, then `pushChanged()` — and the push decides
+delete-vs-upload by looking at the file on disk (rule 2 above). A poller pull
+that downloads the item between those steps puts it back on disk, so the push
+re-uploads it instead of deleting it and the delete is silently undone
+(swamp-club#2247). Serve closes that window with the **sync gate**: one
+in-process permit (`src/serve/sync_gate.ts`), held across a whole mutating
+handler at its dispatch site in `connection.ts`, across the server-token mint
+in `device_auth_handler.ts`, and across each poller's `pullChanged`. The
+fitness test in `integration/serve_deps_rules_test.ts` fails the build if a
+serve function pushes without being gated or pinned in
+`UNGATED_PUSH_HANDLERS`.
+
+Four properties of the gate are load-bearing and easy to misread:
+
+- **Not reentrant.** Acquiring it inside an already-gated handler
+  self-deadlocks. This is why the long-running run paths
+  (`model.method.run`, `workflow.run`, `workflow.resume`, and the post-run
+  push in `executeWorkflowWithLocks`) are pinned as ungated rather than
+  gated: a gated handler that triggered a run would wedge itself.
+- **Runs are not gated**, so a run's own version GC can still be resurrected
+  by an overlapping poll, and pushes are not globally serial — concurrent
+  `pushChanged()` calls remain possible, which extensions have had to
+  tolerate since swamp-club#2235.
+- **In-process only.** It says nothing about HA peers: another instance's
+  dirty path can still re-upload what this instance deleted. The
+  cross-process `DistributedLock` covers the CLI flush path, not serve pushes.
+- **A request cancelled while queued still mutates.** The cancel signal is
+  deliberately not passed to the gate acquisition — a rejected acquisition
+  would leave the client with no response frame — so the handler runs and then
+  reports `cancelled` from its own abort check. A mutation that waits longer
+  than `GATE_WAIT_TIMEOUT_MS` proceeds *without* the gate and logs a warning,
+  so a wedged holder degrades to the pre-gate behaviour instead of stalling
+  every mutation and all three pollers.
 
 **Sync is not a content-integrity tool.** The fingerprint detects index-level
 changes, not per-file corruption — a silently damaged cache file (bit rot,

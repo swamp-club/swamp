@@ -17,9 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertGreater } from "@std/assert";
 import { walk } from "@std/fs/walk";
 import { join, relative, SEPARATOR } from "@std/path";
+import { UNGATED_PUSH_HANDLERS } from "../src/serve/sync_gate.ts";
 
 const ROOT = join(import.meta.dirname!, "..");
 const SERVE_HANDLERS_DIR = join(ROOT, "src", "serve", "handlers");
@@ -112,5 +113,80 @@ Deno.test("serve handlers must pass injected definition repo to createData*Deps"
       "YamlDefinitionRepository that misses managed-config definitions " +
       "(swamp-club#2109).\n\nViolations:\n" +
       violations.join("\n"),
+  );
+});
+
+const SERVE_DIR = join(ROOT, "src", "serve");
+
+/** Collects identifiers named inside every `withSyncGate(...)` call. */
+function gatedIdentifiers(source: string): Set<string> {
+  const names = new Set<string>();
+  let from = 0;
+  while (true) {
+    const start = source.indexOf("withSyncGate(", from);
+    if (start === -1) return names;
+    let depth = 0;
+    let i = source.indexOf("(", start);
+    for (; i < source.length; i++) {
+      if (source[i] === "(") depth++;
+      else if (source[i] === ")" && --depth === 0) break;
+    }
+    for (const match of source.slice(start, i).matchAll(/[A-Za-z_$][\w$]*/g)) {
+      names.add(match[0]);
+    }
+    from = i;
+  }
+}
+
+Deno.test("serve functions that push must run under the sync gate", async () => {
+  const pushers: { name: string; file: string }[] = [];
+  const gated = new Set<string>();
+
+  for await (
+    const entry of walk(SERVE_DIR, { exts: [".ts"], skip: [/_test\.ts$/] })
+  ) {
+    const content = await Deno.readTextFile(entry.path);
+    const rel = normalise(relative(ROOT, entry.path));
+    if (rel.endsWith("src/serve/sync_gate.ts")) continue;
+
+    for (const name of gatedIdentifiers(content)) gated.add(name);
+
+    // Split on top-level function declarations so a push call is attributed
+    // to the function whose body contains it.
+    const declarations = [
+      ...content.matchAll(/^(?:export )?(?:async )?function (\w+)/gm),
+    ];
+    for (let i = 0; i < declarations.length; i++) {
+      const start = declarations[i].index!;
+      const end = i + 1 < declarations.length
+        ? declarations[i + 1].index!
+        : content.length;
+      const body = content.slice(start, end);
+      if (
+        body.includes("pushChangedToRemote(ctx)") ||
+        /syncService[?.]*\.pushChanged\(/.test(body)
+      ) {
+        pushers.push({ name: declarations[i][1], file: rel });
+      }
+    }
+  }
+
+  assertGreater(pushers.length, 0, "expected to find pushing serve functions");
+
+  const violations = pushers
+    .filter(({ name }) => !gated.has(name) && !UNGATED_PUSH_HANDLERS.has(name))
+    .map(({ name, file }) => `${file}: ${name}`);
+
+  assertEquals(
+    violations,
+    [],
+    "A serve function that mutates the local cache and pushes must run as " +
+      "one unit under the sync gate — otherwise a poller pull can land " +
+      "between the local delete and the push, the push sees the path " +
+      "present on disk, and the delete is silently undone " +
+      "(swamp-club#2247). Wrap the call in withSyncGate(ctx.syncGate, ...) " +
+      "at its dispatch site in connection.ts, or add it to " +
+      "UNGATED_PUSH_HANDLERS in src/serve/sync_gate.ts with a comment " +
+      "saying why it is safe.\n\nViolations:\n" + violations.join("\n"),
   );
 });

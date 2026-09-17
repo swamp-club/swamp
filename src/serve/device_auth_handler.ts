@@ -51,6 +51,7 @@ import { YamlDefinitionRepository } from "../infrastructure/persistence/yaml_def
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
 import { join } from "@std/path";
+import { type SyncGate, withSyncGate } from "./sync_gate.ts";
 
 const logger = getSwampLogger(["serve", "device-auth"]);
 
@@ -454,6 +455,7 @@ export function createDeviceAuthDeps(
   defaultVault?: string,
   syncService?: DatastoreSyncService,
   namespace?: string,
+  syncGate?: SyncGate,
   auditEmitter?: AuditEmitter,
   instanceId?: string,
   sourceIp?: string,
@@ -475,17 +477,22 @@ export function createDeviceAuthDeps(
       rd: string,
       rc: RepositoryContext,
     ) =>
-      mintServerTokenImpl(
-        principalId,
-        principalEmail,
-        collectives,
-        groups,
-        rd,
-        rc,
-        defaultVault,
-        syncService,
-        namespace,
-      ),
+      // The mint writes a definition, a token resource and then pushes — one
+      // unit that a poller pull must not interleave with (swamp-club#2247).
+      // This HTTP path is never reached from inside a gated WebSocket
+      // handler, so taking the non-reentrant gate here is safe.
+      withSyncGate(syncGate, () =>
+        mintServerTokenImpl(
+          principalId,
+          principalEmail,
+          collectives,
+          groups,
+          rd,
+          rc,
+          defaultVault,
+          syncService,
+          namespace,
+        )),
     storeAccessToken: async (tokenName: string, accessToken: string) => {
       const vaultService = await VaultService.fromRepository(
         repoDir,

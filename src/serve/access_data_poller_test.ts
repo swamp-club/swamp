@@ -19,6 +19,7 @@
 
 import { assertEquals, assertGreater } from "@std/assert";
 import { AccessDataPoller } from "./access_data_poller.ts";
+import { createSyncGate, withSyncGate } from "./sync_gate.ts";
 import type {
   DatastoreSyncOptions,
   DatastoreSyncService,
@@ -376,4 +377,45 @@ Deno.test("AccessDataPoller: can be restarted after stop", async () => {
   await poller.stop();
 
   assertGreater(sync.pullCalls.length, countAfterFirstRun);
+});
+
+Deno.test("AccessDataPoller: pull holds the sync gate, so it cannot interleave a mutation", async () => {
+  const sync = createMockSyncService();
+  const loader = createMockPolicySnapshotLoader();
+  const { catalogInvalidate } = createCallbackTrackers();
+  const gate = createSyncGate();
+
+  const poller = new AccessDataPoller({
+    syncService: sync,
+    syncGate: gate,
+    policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+    catalogInvalidate,
+    pollIntervalMs: 1,
+  });
+
+  const order: string[] = [];
+  // A handler's mutation+push unit. The poller fires every 1ms while this
+  // runs, so every one of those attempts must queue behind the gate.
+  const mutation = withSyncGate(gate, async () => {
+    order.push("mutation:start");
+    await new Promise<void>((r) => setTimeout(r, 25));
+    order.push(`pulls-during-mutation:${sync.pullCalls.length}`);
+    order.push("mutation:end");
+  });
+
+  poller.start();
+  await mutation;
+  await waitFor(
+    () => sync.pullCalls.length >= 1,
+    "poller pulled once the gate was free",
+  );
+  await poller.stop();
+
+  assertEquals(order, [
+    "mutation:start",
+    "pulls-during-mutation:0",
+    "mutation:end",
+  ]);
+  // gatedPull bounds the pull so a hung extension cannot hold the gate.
+  assertEquals(typeof sync.pullCalls[0].signal, "object");
 });

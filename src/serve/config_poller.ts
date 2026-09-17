@@ -19,6 +19,7 @@
 
 import { getLogger } from "@logtape/logtape";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
+import { gatedPull, type SyncGate } from "./sync_gate.ts";
 
 const logger = getLogger(["swamp", "serve", "config-poller"]);
 
@@ -26,6 +27,7 @@ const DEFAULT_CONFIG_POLL_INTERVAL_MS = 30_000;
 
 export interface ConfigPollerOptions {
   syncService: DatastoreSyncService;
+  syncGate?: SyncGate;
   catalogInvalidate: () => void;
   extensionCatalogInvalidate: () => void;
   pollIntervalMs?: number;
@@ -34,6 +36,7 @@ export interface ConfigPollerOptions {
 
 export class ConfigPoller {
   readonly #syncService: DatastoreSyncService;
+  readonly #syncGate?: SyncGate;
   readonly #catalogInvalidate: () => void;
   readonly #extensionCatalogInvalidate: () => void;
   readonly #pollIntervalMs: number;
@@ -44,6 +47,7 @@ export class ConfigPoller {
 
   constructor(options: ConfigPollerOptions) {
     this.#syncService = options.syncService;
+    this.#syncGate = options.syncGate;
     this.#catalogInvalidate = options.catalogInvalidate;
     this.#extensionCatalogInvalidate = options.extensionCatalogInvalidate;
     this.#pollIntervalMs = options.pollIntervalMs ??
@@ -78,10 +82,16 @@ export class ConfigPoller {
   async #pullAndInvalidate(): Promise<void> {
     this.#pulling = true;
     try {
-      const result = await this.#syncService.pullChanged({
-        subdirs: ["config"],
-        namespace: this.#namespace,
-      });
+      const result = await gatedPull(
+        this.#syncGate,
+        "config poller",
+        (signal) =>
+          this.#syncService.pullChanged({
+            signal,
+            subdirs: ["config"],
+            namespace: this.#namespace,
+          }),
+      );
       const count = typeof result === "number" ? result : 0;
       if (count > 0) {
         logger

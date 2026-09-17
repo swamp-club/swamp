@@ -27,6 +27,7 @@ import type { ServerRequest } from "./protocol.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { Principal } from "../domain/access/principal.ts";
 import { audited, type AuditedOptions } from "./audited.ts";
+import { withSyncGate } from "./sync_gate.ts";
 import { AuditQueryService } from "../domain/serve_audit/audit_query_service.ts";
 import {
   generateHmacKeyBytes,
@@ -1744,7 +1745,10 @@ export function handleMessage(
       break;
     case "access.reload":
       task = audited(
-        handleAccessReload(socket, ctx, request.id, principal),
+        withSyncGate(
+          ctx.syncGate,
+          () => handleAccessReload(socket, ctx, request.id, principal),
+        ),
         auditOpts("admin", "access", "*"),
       );
       break;
@@ -1825,27 +1829,29 @@ export function handleMessage(
       break;
     case "data.delete":
       task = audited(
-        handleDataDelete(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleDataDelete(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts("data", "data", request.payload?.modelIdOrName ?? "*"),
       );
       break;
     case "data.rename":
       task = audited(
-        handleDataRename(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleDataRename(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts("data", "data", request.payload?.modelIdOrName ?? "*"),
       );
       break;
@@ -1928,14 +1934,15 @@ export function handleMessage(
       break;
     case "vault.delete":
       task = audited(
-        handleVaultDelete(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleVaultDelete(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts("secrets", "vault", request.payload?.vaultName ?? "*"),
       );
       break;
@@ -2536,27 +2543,29 @@ export function handleMessage(
       break;
     case "model.create":
       task = audited(
-        handleModelCreate(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleModelCreate(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts("admin", "model", request.payload?.name ?? "*"),
       );
       break;
     case "model.delete":
       task = audited(
-        handleModelDelete(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleModelDelete(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts("admin", "model", request.payload?.modelIdOrName ?? "*"),
       );
       break;
@@ -2793,27 +2802,29 @@ export function handleMessage(
       break;
     case "workflow.approve":
       task = audited(
-        handleWorkflowApprove(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleWorkflowApprove(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts("execution", "workflow", request.payload?.runId ?? "*"),
       );
       break;
     case "workflow.reject":
       task = audited(
-        handleWorkflowReject(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleWorkflowReject(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts("execution", "workflow", request.payload?.runId ?? "*"),
       );
       break;
@@ -2884,14 +2895,15 @@ export function handleMessage(
       break;
     case "vault.annotate":
       task = audited(
-        handleVaultAnnotate(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleVaultAnnotate(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts("secrets", "vault", request.payload?.vaultName ?? "*"),
       );
       break;
@@ -2960,14 +2972,15 @@ export function handleMessage(
       break;
     case "vault.migrate":
       task = audited(
-        handleVaultMigrate(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleVaultMigrate(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts("admin", "vault", "*"),
       );
       break;
@@ -3011,39 +3024,42 @@ export function handleMessage(
       break;
     case "extension.install":
       task = audited(
-        handleExtensionInstall(
-          socket,
-          ctx,
-          request.id,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleExtensionInstall(
+            socket,
+            ctx,
+            request.id,
+            controller,
+            principal,
+          )),
         auditOpts("admin", "extension", "*"),
       );
       break;
     case "extension.pull":
       task = audited(
-        handleExtensionPull(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleExtensionPull(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts("admin", "extension", request.payload?.extensionName ?? "*"),
       );
       break;
     case "extension.rm":
       task = audited(
-        handleExtensionRm(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleExtensionRm(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts("admin", "extension", request.payload?.extensionName ?? "*"),
       );
       break;
@@ -3061,14 +3077,15 @@ export function handleMessage(
       break;
     case "extension.update":
       task = audited(
-        handleExtensionUpdate(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleExtensionUpdate(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts("admin", "extension", request.payload?.extensionName ?? "*"),
       );
       break;
@@ -3183,53 +3200,57 @@ export function handleMessage(
       break;
     case "access.token.revoke":
       task = audited(
-        handleAccessTokenRevoke(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleAccessTokenRevoke(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts("access", "access", "*"),
       );
       break;
     case "access.token.rotate":
       task = audited(
-        handleAccessTokenRotate(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleAccessTokenRotate(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts("access", "access", "*"),
       );
       break;
     case "access.token.mint":
       task = audited(
-        handleAccessTokenMint(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleAccessTokenMint(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts("access", "access", "*"),
       );
       break;
     case "model.edit":
       task = audited(
-        handleModelEdit(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleModelEdit(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts("admin", "model", request.payload?.modelIdOrName ?? "*"),
       );
       break;
@@ -3261,27 +3282,29 @@ export function handleMessage(
       break;
     case "workflow.create":
       task = audited(
-        handleWorkflowCreate(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleWorkflowCreate(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts("admin", "workflow", request.payload?.name ?? "*"),
       );
       break;
     case "workflow.delete":
       task = audited(
-        handleWorkflowDelete(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleWorkflowDelete(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts(
           "admin",
           "workflow",
@@ -3291,14 +3314,15 @@ export function handleMessage(
       break;
     case "workflow.edit":
       task = audited(
-        handleWorkflowEdit(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleWorkflowEdit(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts(
           "admin",
           "workflow",
@@ -3389,27 +3413,29 @@ export function handleMessage(
       break;
     case "vault.create":
       task = audited(
-        handleVaultCreate(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleVaultCreate(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts("admin", "vault", request.payload?.name ?? "*"),
       );
       break;
     case "vault.edit":
       task = audited(
-        handleVaultEdit(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleVaultEdit(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts("admin", "vault", "*"),
       );
       break;
@@ -3454,14 +3480,15 @@ export function handleMessage(
       break;
     case "worker.token.create":
       task = audited(
-        handleWorkerTokenCreate(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleWorkerTokenCreate(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts("admin", "worker", "*"),
       );
       break;
@@ -3479,53 +3506,57 @@ export function handleMessage(
       break;
     case "worker.token.revoke":
       task = audited(
-        handleWorkerTokenRevoke(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleWorkerTokenRevoke(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts("admin", "worker", "*"),
       );
       break;
     case "data.gc":
       task = audited(
-        handleDataGc(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleDataGc(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts("admin", "data", "*"),
       );
       break;
     case "data.prune":
       task = audited(
-        handleDataPrune(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleDataPrune(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts("admin", "data", "*"),
       );
       break;
     case "run.gc":
       task = audited(
-        handleRunGc(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleRunGc(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts("admin", "run", "*"),
       );
       break;

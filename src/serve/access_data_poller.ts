@@ -19,6 +19,7 @@
 
 import { getLogger } from "@logtape/logtape";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
+import { gatedPull, type SyncGate } from "./sync_gate.ts";
 import type { PolicySnapshotLoader } from "../domain/access/policy_snapshot_loader.ts";
 
 const logger = getLogger(["swamp", "serve", "access-data-poller"]);
@@ -34,6 +35,7 @@ export const ACCESS_DATA_SUBDIRS: readonly string[] = [
 
 export interface AccessDataPollerOptions {
   syncService: DatastoreSyncService;
+  syncGate?: SyncGate;
   policySnapshotLoader: PolicySnapshotLoader;
   catalogInvalidate: () => void;
   pollIntervalMs?: number;
@@ -42,6 +44,7 @@ export interface AccessDataPollerOptions {
 
 export class AccessDataPoller {
   readonly #syncService: DatastoreSyncService;
+  readonly #syncGate?: SyncGate;
   readonly #policySnapshotLoader: PolicySnapshotLoader;
   readonly #catalogInvalidate: () => void;
   readonly #pollIntervalMs: number;
@@ -53,6 +56,7 @@ export class AccessDataPoller {
 
   constructor(options: AccessDataPollerOptions) {
     this.#syncService = options.syncService;
+    this.#syncGate = options.syncGate;
     this.#policySnapshotLoader = options.policySnapshotLoader;
     this.#catalogInvalidate = options.catalogInvalidate;
     this.#pollIntervalMs = options.pollIntervalMs ??
@@ -89,10 +93,16 @@ export class AccessDataPoller {
   async #pullAndReloadPolicy(): Promise<void> {
     this.#pulling = true;
     try {
-      const result = await this.#syncService.pullChanged({
-        subdirs: [...ACCESS_DATA_SUBDIRS],
-        namespace: this.#namespace,
-      });
+      const result = await gatedPull(
+        this.#syncGate,
+        "access data poller",
+        (signal) =>
+          this.#syncService.pullChanged({
+            signal,
+            subdirs: [...ACCESS_DATA_SUBDIRS],
+            namespace: this.#namespace,
+          }),
+      );
       const count = typeof result === "number" ? result : 0;
       if (count > 0) {
         logger

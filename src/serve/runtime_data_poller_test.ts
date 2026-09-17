@@ -19,6 +19,7 @@
 
 import { assertEquals, assertGreater } from "@std/assert";
 import { RuntimeDataPoller } from "./runtime_data_poller.ts";
+import { createSyncGate, withSyncGate } from "./sync_gate.ts";
 import type {
   DatastoreSyncOptions,
   DatastoreSyncService,
@@ -330,4 +331,43 @@ Deno.test("RuntimeDataPoller: without namespace, pullChanged options omit namesp
   await poller.stop();
 
   assertEquals(sync.pullCalls[0].namespace, undefined);
+});
+
+Deno.test("RuntimeDataPoller: pull holds the sync gate, so it cannot interleave a mutation", async () => {
+  const sync = createMockSyncService();
+  const { catalogInvalidate } = createCallbackTrackers();
+  const gate = createSyncGate();
+
+  const poller = new RuntimeDataPoller({
+    syncService: sync,
+    syncGate: gate,
+    catalogInvalidate,
+    pollIntervalMs: 1,
+  });
+
+  const order: string[] = [];
+  // A handler's mutation+push unit. The poller fires every 1ms while this
+  // runs, so every one of those attempts must queue behind the gate.
+  const mutation = withSyncGate(gate, async () => {
+    order.push("mutation:start");
+    await new Promise<void>((r) => setTimeout(r, 25));
+    order.push(`pulls-during-mutation:${sync.pullCalls.length}`);
+    order.push("mutation:end");
+  });
+
+  poller.start();
+  await mutation;
+  await waitFor(
+    () => sync.pullCalls.length >= 1,
+    "poller pulled once the gate was free",
+  );
+  await poller.stop();
+
+  assertEquals(order, [
+    "mutation:start",
+    "pulls-during-mutation:0",
+    "mutation:end",
+  ]);
+  // gatedPull bounds the pull so a hung extension cannot hold the gate.
+  assertEquals(typeof sync.pullCalls[0].signal, "object");
 });
