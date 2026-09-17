@@ -760,16 +760,24 @@ tracks all partition keys and a monotonic `commitSeq` counter:
 
 #### Push path (`commitPush`)
 
-Under the global lock:
+Every index write is a compare-and-swap merge. The global lock is not the
+serializer here — serve-handler pushes take the same path without holding it,
+so a writer must assume the remote shard changed under it:
 
 1. Read `_meta.json` to get the current partition list and `commitSeq`.
-2. Read only the shard(s) touched by the manifest entries.
-3. Merge the manifest entries into those shard(s).
-4. Write the updated shard(s) back.
-5. If new partition keys were introduced (new model, new workflow), append them
-   to `_meta.json`.
-6. Bump `commitSeq` and write `_meta.json`.
-7. Clear the dirty flag.
+2. Read each shard touched by the manifest entries, keeping its etag
+   (S3) or generation (GCS).
+3. Apply **only this writer's** upserts and removals to the shard as read.
+   Never rewrite a shard from the local view — entries the local view lacks
+   belong to other writers and must survive.
+4. Write each shard back conditionally (`If-Match` / `ifGenerationMatch`).
+   On a lost race, re-read and re-merge rather than overwriting.
+5. Merge `_meta.json` the same way, appending any new partition keys and
+   setting `commitSeq` to the value just read plus one.
+6. Clear the dirty flag.
+
+A store that answers `NotImplemented` to a conditional PUT falls back to
+merge-on-write without the compare-and-swap, and warns once.
 
 `preparePush` is unchanged — it uploads files outside the lock and returns an
 opaque manifest containing the affected relative paths, from which `commitPush`
@@ -788,9 +796,12 @@ this is typically faster because parallelism beats single-large-object latency.
 
 #### Shard cleanup
 
-When deletions empty a shard (all entries removed), the shard file is deleted
-from `_index/` and its key is removed from the `_meta.json` partitions list.
-This prevents unbounded growth of orphaned shard files after model deletion.
+When deletions empty a shard (all entries removed), the shard file is left in
+place as an empty object rather than deleted — S3-compatible stores ignore
+`If-Match` on DELETE, so a delete cannot be made conditional and would race a
+concurrent add to the same shard. Its key is unlisted from the `_meta.json`
+partitions list only while a HEAD still shows the etag/generation this push
+wrote; if another writer has since re-populated the shard, the key stays.
 
 #### Zero-diff fast path
 
