@@ -54,13 +54,17 @@ attestation to flow through.
    `git diff --stat main..HEAD`. Build a title and summary from the commits and
    changed files.
 
-2. **Create a tracking issue in swamp-club:**
+2. **Create a tracking issue in swamp-club.** There is no `swamp issue create`
+   — pick the type-specific subcommand (`feature`, `bug`, or `security`). The
+   CLI cannot file `platform` issues, so classify ad-hoc work as `feature` or
+   `bug`:
 
    ```
-   swamp issue create --title "<title>" --body "<summary of work done>" --type platform
+   swamp issue feature --title "<title>" --body "<summary of work done>" --json
    ```
 
-   Capture the issue number from the output.
+   Read `number` from the JSON output — that is `<N>` in every command below.
+   `--body` requires `--title`; without both, the command opens an editor.
 
 3. **Start the lifecycle:**
 
@@ -81,9 +85,21 @@ attestation to flow through.
    describe a logical unit of change with its files. The testing strategy should
    reflect how the changes were validated.
 
-5. **Proceed with normal verification.** Read
-   [references/verification.md](references/verification.md) and continue the
-   standard verify → post_attestation → link_pr flow.
+5. **Transition to `verifying`.** `fast_forward` leaves the lifecycle at
+   `implementing`, and `post_attestation` is only accepted from `verifying` —
+   so this transition is required, not optional:
+
+   ```
+   swamp model @swamp/issue-lifecycle method run verify issue-<N> \
+     --input commit=$(git rev-parse HEAD) \
+     --input branch=$(git branch --show-current)
+   ```
+
+6. **Proceed with normal verification.** Read
+   [references/verification.md](references/verification.md) and continue from
+   its step 2 (Run Verification) through verification_passed →
+   post_attestation → link_pr. Step 1 there is the `verify` call just made — do
+   not repeat it.
 
 ### Example
 
@@ -92,14 +108,16 @@ User: prepare to ship this work
 
 Agent:
 1. git log main..HEAD → "Add retry logic to HTTP client"
-2. swamp issue create --title "Add retry logic to HTTP client" --body "..." --type platform
-   → issue #247
+2. swamp issue feature --title "Add retry logic to HTTP client" --body "..." --json
+   → {"number": 247, ...}
 3. swamp model @swamp/issue-lifecycle method run start issue-247 --input issueNumber=247
 4. swamp model @swamp/issue-lifecycle method run fast_forward issue-247 \
      --input summary="Add exponential backoff retry to HTTP client" \
      --input steps='[{"order":1,"description":"Add retry wrapper","files":["src/http/client.ts"]}]' \
      --input testingStrategy="Unit tests for retry logic added in client_test.ts"
-5. Proceed to verification...
+5. swamp model @swamp/issue-lifecycle method run verify issue-247 \
+     --input commit=$(git rev-parse HEAD) --input branch=$(git branch --show-current)
+6. Proceed to verification (references/verification.md, from step 2)...
 ```
 
 ## Repository Configuration
@@ -222,6 +240,11 @@ swamp-club):
 - `feature` — a request for new functionality or enhancement
 - `platform` — admin-only platform infrastructure work
 - `security` — security vulnerability or hardening work
+
+`platform` is accepted by the `triage` method, but the CLI can neither file nor
+switch an issue to it — `swamp issue bug|feature|security` and
+`swamp issue edit --type` accept only the other three. Classify an existing
+issue as `platform` if it fits; never try to create one.
 
 Two additional classification details are captured in the classification record
 but do NOT map to separate swamp-club types:
