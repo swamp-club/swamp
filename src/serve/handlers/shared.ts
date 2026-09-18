@@ -214,6 +214,8 @@ export interface ConnectionContext {
   serveOptions?: MergedServeOptions;
   /** Health collector — used by cluster.instances to enrich the local instance. */
   healthCollector?: HealthCollector;
+  /** Resolved vault config directory — the managed-config tier when active, otherwise `<repoDir>/vaults`. */
+  vaultsDir?: string;
   /** Managed definitions directory when managedConfig is active. */
   managedDefinitionsDir?: string;
   /** Audit emitter — present when audit config is set in serve.yaml. */
