@@ -517,8 +517,8 @@ export class WebhookService {
         });
       } else if (
         old.workflowIdOrName !== ep.workflowIdOrName ||
-        old.verifier.scheme !== ep.verifier.scheme ||
-        old.secret !== ep.secret
+        old.secret !== ep.secret ||
+        JSON.stringify(old.verifier) !== JSON.stringify(ep.verifier)
       ) {
         changed++;
         logger.info("Webhook route updated: {route} → {workflow} ({scheme})", {

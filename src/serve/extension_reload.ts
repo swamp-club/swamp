@@ -344,17 +344,19 @@ export async function performServeReload(
 
     const needsConfigRead = options?.triggerOverrideUpdater ||
       options?.webhookUpdater;
+    let configReadFailed = false;
     const config = needsConfigRead
       ? await readServeConfigFile(repoDir).catch((err: unknown) => {
         errors.push(
           "Failed to read serve config: " +
             (err instanceof Error ? err.message : String(err)),
         );
+        configReadFailed = true;
         return null;
       })
       : null;
 
-    if (options?.triggerOverrideUpdater && config !== null) {
+    if (options?.triggerOverrideUpdater && !configReadFailed) {
       try {
         const overrides = new Map<string, TriggerOverride>(
           config?.triggers ? Object.entries(config.triggers) : [],
@@ -370,7 +372,7 @@ export async function performServeReload(
       }
     }
 
-    if (options?.webhookUpdater && config !== null) {
+    if (options?.webhookUpdater && !configReadFailed) {
       try {
         webhooksReloaded = await options.webhookUpdater(
           config?.webhooks ?? [],
