@@ -1008,7 +1008,7 @@ markDirty-then-slow-walk is always recoverable; a lost dirty-flip is not.
 | `save`, `append`, `allocateVersion`        | data-name directory (version not yet allocated at notify time)  |
 | `removeLatestMarker`                       | data-name directory                                              |
 | `delete(version=specific)`                 | version directory                                                |
-| `delete(version=undefined)`                | data-name directory (entire subtree removed)                     |
+| `delete(version=undefined)`                | one signal per version directory + latest marker file (matches `collectGarbage` pattern; falls back to data-name directory if version enumeration fails) |
 | `finalizeVersion`, `finalizeVersionDeferred` | version directory (version known)                              |
 | `saveDeferred`                             | data-name directory                                              |
 | `rename`                                   | old-name data-name directory (inner `save()` emits its own per-path signal for new name) |

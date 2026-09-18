@@ -349,10 +349,12 @@ Deno.test("handleDataDelete: pushes the deletion after per-path markDirty (no ba
     assertEquals(pushCalls[0].namespace, "shared");
     const bareCalls = markDirtyCalls.filter((c) => !c.relPath);
     assertEquals(bareCalls.length, 0, "bare markDirty() must not be called");
+    // Full delete emits per-version-directory signals + latest marker
+    // (swamp-club#2277), not a single data-name directory signal.
     assertEquals(
-      markDirtyCalls.some((c) => c.relPath?.endsWith("result")),
+      markDirtyCalls.some((c) => c.relPath?.includes("result/")),
       true,
-      "repo must mark the deleted data directory dirty",
+      "repo must mark deleted version directories and latest marker dirty",
     );
   });
 });

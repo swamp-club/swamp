@@ -507,6 +507,7 @@ Deno.test("DataPlane: DELETE /data/resource deletes resource and returns 204", a
       }),
     );
     assertEquals(resp?.status, 204);
+    assertEquals(h.firstWrites, ["d-1"]);
   });
 });
 

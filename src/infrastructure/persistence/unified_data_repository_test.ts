@@ -855,12 +855,17 @@ Deno.test("mutations call markDirty before writing", async () => {
       repo.getPath(testType, "model-1", "mark-dirty-ren", 1),
     );
 
-    // delete without version → data-name directory (whole subtree)
+    // delete without version → latest marker file (data-name dir already
+    // removed by the prior specific-version delete that left no versions;
+    // listVersions returns [] so only the latest marker signal fires).
     await repo.delete(testType, "model-1", "mark-dirty-ren");
     assertEquals(calls.length, afterRename + 2);
     assertEquals(
       calls[afterRename + 1],
-      repo.getDataNameDir(testType, "model-1", "mark-dirty-ren"),
+      join(
+        repo.getDataNameDir(testType, "model-1", "mark-dirty-ren"),
+        "latest",
+      ),
     );
 
     // collectGarbage (live) with nothing to GC → no markDirty calls
@@ -879,6 +884,55 @@ Deno.test("mutations call markDirty before writing", async () => {
     if (Deno.build.os === "windows") {
       // Best-effort: EBUSY can fire when V8 hasn't GC'd native
       // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("delete: full delete emits per-version markDirty signals", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const calls: Array<string | undefined> = [];
+    const markDirty = (relPath?: string) => {
+      calls.push(relPath);
+      return Promise.resolve();
+    };
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+      markDirty,
+    );
+
+    const data = makeData("multi-ver");
+    await repo.save(testType, "m1", data, new TextEncoder().encode("v1"));
+    await repo.save(testType, "m1", data, new TextEncoder().encode("v2"));
+    await repo.save(testType, "m1", data, new TextEncoder().encode("v3"));
+    calls.length = 0;
+
+    await repo.delete(testType, "m1", "multi-ver");
+
+    // Must emit one signal per version directory + one for the latest marker.
+    const expectedVersionPaths = [1, 2, 3].map((v) =>
+      repo.getPath(testType, "m1", "multi-ver", v)
+    );
+    const expectedLatest = join(
+      repo.getDataNameDir(testType, "m1", "multi-ver"),
+      "latest",
+    );
+    assertEquals(calls.length, 4);
+    for (const vp of expectedVersionPaths) {
+      assertStringIncludes(
+        JSON.stringify(calls),
+        JSON.stringify(vp),
+      );
+    }
+    assertEquals(calls[3], expectedLatest);
+  } finally {
+    if (Deno.build.os === "windows") {
       await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(tmpDir, { recursive: true });

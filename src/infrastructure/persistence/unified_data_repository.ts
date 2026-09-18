@@ -905,15 +905,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     dataName: string,
     version?: number,
   ): Promise<void> {
-    // Per-version delete → version directory; full-name delete → data-name
-    // directory (entire subtree removed).
-    await this.notifyDirty(
-      version !== undefined
-        ? this.getPath(type, modelId, dataName, version)
-        : this.getDataNameDir(type, modelId, dataName),
-    );
-
     if (version !== undefined) {
+      await this.notifyDirty(this.getPath(type, modelId, dataName, version));
       // Delete specific version
       const versionDir = this.getPath(type, modelId, dataName, version);
       try {
@@ -957,8 +950,23 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         this.catalogRemove(type, modelId, dataName);
       }
     } else {
-      // Delete all versions
+      // Delete all versions. Emit per-version-directory signals so the
+      // sync service sees individual absent paths it can match against
+      // its index — a single data-name-directory signal does not map to
+      // any individual index entry and the extension skips deletion.
+      // Matches the collectGarbage pattern (swamp-club#2277).
       const dataNameDir = this.getDataNameDir(type, modelId, dataName);
+      try {
+        const versions = await this.listVersions(type, modelId, dataName);
+        for (const v of versions) {
+          await this.notifyDirty(this.getPath(type, modelId, dataName, v));
+        }
+        await this.notifyDirty(join(dataNameDir, "latest"));
+      } catch {
+        // Enumeration failed (directory absent, lazy hydration) — fall
+        // back to the data-name directory signal.
+        await this.notifyDirty(dataNameDir);
+      }
       try {
         await Deno.remove(dataNameDir, { recursive: true });
       } catch (error) {

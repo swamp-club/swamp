@@ -406,6 +406,7 @@ export class DataPlane {
       return errorResponse(400, "Expected { name }");
     }
 
+    await this.#recordWrite(dispatch);
     try {
       const repo = this.#repoForWorker(workerName, dispatchId);
       await repo.delete(
