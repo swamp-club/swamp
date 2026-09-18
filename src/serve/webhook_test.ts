@@ -841,3 +841,69 @@ Deno.test("resolveExtensionWebhookEndpoints: leaves built-in endpoints untouched
   );
   assertEquals(resolved, [builtin]);
 });
+
+// ── updateEndpoints ─────────────────────────────────────────────────
+
+Deno.test("updateEndpoints: swaps active endpoints and returns change count", async () => {
+  const ep1 = await parseWebhookFlag("/hooks/a:wf-a:secret-a");
+  const ep2 = await parseWebhookFlag("/hooks/b:wf-b:secret-b");
+  const service = new WebhookService({
+    repoDir: "/tmp/fake",
+    repoContext: {} as RepositoryContext,
+    datastoreConfig: {} as DatastoreConfig,
+    endpoints: [ep1],
+  });
+
+  assertEquals(service.listEndpoints().length, 1);
+  assertEquals(service.listEndpoints()[0].route, "/hooks/a");
+
+  const changed = service.updateEndpoints([ep2]);
+
+  assertEquals(changed, 2);
+  assertEquals(service.listEndpoints().length, 1);
+  assertEquals(service.listEndpoints()[0].route, "/hooks/b");
+});
+
+Deno.test("updateEndpoints: returns 0 when endpoints are unchanged", async () => {
+  const ep = await parseWebhookFlag("/hooks/a:wf:secret");
+  const service = new WebhookService({
+    repoDir: "/tmp/fake",
+    repoContext: {} as RepositoryContext,
+    datastoreConfig: {} as DatastoreConfig,
+    endpoints: [ep],
+  });
+
+  const changed = service.updateEndpoints([ep]);
+  assertEquals(changed, 0);
+});
+
+Deno.test("updateEndpoints: detects workflow binding change on same route", async () => {
+  const ep1 = await parseWebhookFlag("/hooks/a:wf-old:secret");
+  const ep2 = await parseWebhookFlag("/hooks/a:wf-new:secret");
+  const service = new WebhookService({
+    repoDir: "/tmp/fake",
+    repoContext: {} as RepositoryContext,
+    datastoreConfig: {} as DatastoreConfig,
+    endpoints: [ep1],
+  });
+
+  const changed = service.updateEndpoints([ep2]);
+
+  assertEquals(changed, 1);
+  assertEquals(service.listEndpoints()[0].workflowIdOrName, "wf-new");
+});
+
+Deno.test("updateEndpoints: clears all endpoints when given empty list", async () => {
+  const ep = await parseWebhookFlag("/hooks/a:wf:secret");
+  const service = new WebhookService({
+    repoDir: "/tmp/fake",
+    repoContext: {} as RepositoryContext,
+    datastoreConfig: {} as DatastoreConfig,
+    endpoints: [ep],
+  });
+
+  const changed = service.updateEndpoints([]);
+
+  assertEquals(changed, 1);
+  assertEquals(service.listEndpoints().length, 0);
+});

@@ -1916,6 +1916,7 @@ export async function handleServeReload(
           ctx.scheduledExecution!.updateTriggerOverrides(overrides)
         : undefined,
       workflowReloader: ctx.workflowReloader,
+      webhookUpdater: ctx.webhookUpdater,
     };
     const result = await performServeReload(
       ctx.repoDir,
@@ -1939,6 +1940,15 @@ export async function handleServeReload(
         logger.info(
           "Reloaded {count} trigger override(s) from serve.yaml (requested by {who})",
           { count: result.triggerOverridesChanged, who },
+        );
+      }
+      if (
+        result.webhooksReloaded &&
+        result.webhooksReloaded > 0
+      ) {
+        logger.info(
+          "Reloaded {count} webhook route(s) from serve.yaml (requested by {who})",
+          { count: result.webhooksReloaded, who },
         );
       }
 

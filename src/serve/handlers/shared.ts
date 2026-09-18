@@ -204,6 +204,10 @@ export interface ConnectionContext {
   scheduledExecution?: ScheduledExecutionService;
   /** Reloads extension workflow directories and rescans schedules during hot reload. */
   workflowReloader?: () => Promise<number>;
+  /** Reloads webhook endpoint config from serve.yaml during hot reload. */
+  webhookUpdater?: (
+    configs: readonly import("../serve_config.ts").WebhookConfigEntry[],
+  ) => Promise<number>;
   /** Inverted resolvedAdmins map: OAuth sub → username. Populated at startup in OAuth mode. */
   resolvedUserNames?: Record<string, string>;
   /** Resolved serve options — used by serve.config endpoint. */

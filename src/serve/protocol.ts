@@ -1076,6 +1076,7 @@ export interface ServeReloadResponse {
   reloadedCount: number;
   triggerOverridesChanged?: number;
   workflowsReloaded?: number;
+  webhooksReloaded?: number;
   errors: string[];
 }
 

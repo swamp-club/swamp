@@ -275,3 +275,131 @@ Deno.test("performServeReload: extensionDiscoverer error is soft failure", async
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
+
+Deno.test("performServeReload: calls webhookUpdater with configs from serve.yaml", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
+    await Deno.writeTextFile(
+      join(tmpDir, ".swamp", "serve.yaml"),
+      `webhooks:\n  - route: /hooks/gh\n    workflow: deploy\n    secret: s3cret\n`,
+    );
+
+    let receivedConfigs:
+      | readonly import("./serve_config.ts").WebhookConfigEntry[]
+      | undefined;
+    const result = await performServeReload(
+      tmpDir,
+      join(tmpDir, "nonexistent_lockfile.json"),
+      {
+        webhookUpdater: (configs) => {
+          receivedConfigs = configs;
+          return Promise.resolve(configs.length);
+        },
+      },
+    );
+
+    assertEquals(result.success, true);
+    assertEquals(result.webhooksReloaded, 1);
+    assertEquals(receivedConfigs?.length, 1);
+    assertEquals(receivedConfigs?.[0].route, "/hooks/gh");
+    assertEquals(receivedConfigs?.[0].workflow, "deploy");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("performServeReload: passes empty array when serve.yaml has no webhooks", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
+    await Deno.writeTextFile(
+      join(tmpDir, ".swamp", "serve.yaml"),
+      `port: 8080\n`,
+    );
+
+    let receivedConfigs:
+      | readonly import("./serve_config.ts").WebhookConfigEntry[]
+      | undefined;
+    const result = await performServeReload(
+      tmpDir,
+      join(tmpDir, "nonexistent_lockfile.json"),
+      {
+        webhookUpdater: (configs) => {
+          receivedConfigs = configs;
+          return Promise.resolve(configs.length);
+        },
+      },
+    );
+
+    assertEquals(result.success, true);
+    assertEquals(result.webhooksReloaded, 0);
+    assertEquals(receivedConfigs?.length, 0);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("performServeReload: webhookUpdater error is soft failure", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
+    await Deno.writeTextFile(
+      join(tmpDir, ".swamp", "serve.yaml"),
+      `webhooks:\n  - route: /hooks/gh\n    workflow: deploy\n    secret: s\n`,
+    );
+
+    const result = await performServeReload(
+      tmpDir,
+      join(tmpDir, "nonexistent_lockfile.json"),
+      {
+        webhookUpdater: () => Promise.reject(new Error("parse failed")),
+      },
+    );
+
+    assertEquals(result.success, true);
+    assertStringIncludes(
+      result.errors[0],
+      "Failed to reload webhook config",
+    );
+    assertStringIncludes(result.errors[0], "parse failed");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("performServeReload: shares config read between triggers and webhooks", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
+    await Deno.writeTextFile(
+      join(tmpDir, ".swamp", "serve.yaml"),
+      `triggers:\n  my-wf:\n    schedule: "0 3 * * *"\nwebhooks:\n  - route: /hooks/a\n    workflow: wf\n    secret: s\n`,
+    );
+
+    let triggersCalled = false;
+    let webhooksCalled = false;
+    const result = await performServeReload(
+      tmpDir,
+      join(tmpDir, "nonexistent_lockfile.json"),
+      {
+        triggerOverrideUpdater: (overrides) => {
+          triggersCalled = true;
+          return Promise.resolve(overrides.size);
+        },
+        webhookUpdater: (configs) => {
+          webhooksCalled = true;
+          return Promise.resolve(configs.length);
+        },
+      },
+    );
+
+    assertEquals(result.success, true);
+    assertEquals(triggersCalled, true);
+    assertEquals(webhooksCalled, true);
+    assertEquals(result.triggerOverridesChanged, 1);
+    assertEquals(result.webhooksReloaded, 1);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});

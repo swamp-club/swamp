@@ -141,6 +141,7 @@ import {
   parseAuditConfig,
   parseExplicitFlags,
   parseWebhookConfig,
+  type WebhookConfigEntry,
 } from "../../serve/serve_config.ts";
 import {
   type AuditCategory,
@@ -3828,7 +3829,8 @@ export const serveCommand = new Command()
     // Parse and initialize webhook endpoints — resolve secrets (including
     // @vault= references) now that the vault type registry is loaded.
     let webhookService: WebhookService | null = null;
-    const hasWebhooks = webhookFlags.length > 0 ||
+    const webhookSourceIsCliFlags = webhookFlags.length > 0;
+    const hasWebhooks = webhookSourceIsCliFlags ||
       (merged.webhookConfigs && merged.webhookConfigs.length > 0);
     let webhookEndpoints: WebhookEndpoint[] = [];
     if (hasWebhooks) {
@@ -3836,7 +3838,7 @@ export const serveCommand = new Command()
         resolvedRepoDir,
         { defaultVaultName: repoMarker?.defaultVault },
       );
-      webhookEndpoints = webhookFlags.length > 0
+      webhookEndpoints = webhookSourceIsCliFlags
         ? await Promise.all(
           webhookFlags.map((f) => parseWebhookFlag(f, vaultService)),
         )
@@ -3929,6 +3931,24 @@ export const serveCommand = new Command()
         }
       }
     }
+
+    const webhookUpdater = (!webhookSourceIsCliFlags && webhookService)
+      ? async (configs: readonly WebhookConfigEntry[]): Promise<number> => {
+        const vaultService = await VaultService.fromRepository(
+          resolvedRepoDir,
+          { defaultVaultName: repoMarker?.defaultVault },
+        );
+        let parsed = await Promise.all(
+          configs.map((e) => parseWebhookConfig(e, vaultService)),
+        );
+        parsed = await resolveExtensionWebhookEndpoints(
+          parsed,
+          (type) => resolveWebhookType(type, getAutoResolver()),
+        );
+        return webhookService!.updateEndpoints(parsed);
+      }
+      : undefined;
+    connectionCtx.webhookUpdater = webhookUpdater;
 
     const wsUpgradeOpts: Deno.UpgradeWebSocketOptions = {};
     if (wsIdleTimeoutSeconds !== undefined) {
@@ -4697,6 +4717,7 @@ export const serveCommand = new Command()
               : undefined,
             workflowReloader: connectionCtx.workflowReloader,
             extensionDiscoverer: sighupDiscoverer,
+            webhookUpdater,
           };
         performServeReload(
           resolvedRepoDir,
@@ -4719,6 +4740,15 @@ export const serveCommand = new Command()
                 logger.info(
                   "Reloaded {count} trigger override(s) from serve.yaml",
                   { count: result.triggerOverridesChanged },
+                );
+              }
+              if (
+                result.webhooksReloaded &&
+                result.webhooksReloaded > 0
+              ) {
+                logger.info(
+                  "Reloaded {count} webhook route(s) from serve.yaml",
+                  { count: result.webhooksReloaded },
                 );
               }
               if (result.errors.length > 0) {

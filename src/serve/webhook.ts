@@ -485,18 +485,65 @@ export class WebhookService {
   private processingPromise: Promise<void> = Promise.resolve();
   private eventHandler: WebhookEventHandler | null = null;
   private readonly running = new Map<string, AbortController>();
+  private endpoints: WebhookEndpoint[];
 
-  constructor(private readonly deps: WebhookServiceDeps) {}
+  constructor(private readonly deps: WebhookServiceDeps) {
+    this.endpoints = [...deps.endpoints];
+  }
 
   setEventHandler(handler: WebhookEventHandler): void {
     this.eventHandler = handler;
   }
 
   /**
+   * Atomically replace the active endpoint list. In-flight runs continue
+   * against their already-matched endpoint; new requests match against the
+   * updated list. Returns the number of routes that changed (added + removed
+   * + modified).
+   */
+  updateEndpoints(newEndpoints: readonly WebhookEndpoint[]): number {
+    const oldByRoute = new Map(this.endpoints.map((e) => [e.route, e]));
+    const newByRoute = new Map(newEndpoints.map((e) => [e.route, e]));
+
+    let changed = 0;
+    for (const [route, ep] of newByRoute) {
+      const old = oldByRoute.get(route);
+      if (!old) {
+        changed++;
+        logger.info("Webhook route added: {route} → {workflow} ({scheme})", {
+          route,
+          workflow: ep.workflowIdOrName,
+          scheme: ep.verifier.scheme,
+        });
+      } else if (
+        old.workflowIdOrName !== ep.workflowIdOrName ||
+        old.verifier.scheme !== ep.verifier.scheme ||
+        old.secret !== ep.secret
+      ) {
+        changed++;
+        logger.info("Webhook route updated: {route} → {workflow} ({scheme})", {
+          route,
+          workflow: ep.workflowIdOrName,
+          scheme: ep.verifier.scheme,
+        });
+      }
+    }
+    for (const route of oldByRoute.keys()) {
+      if (!newByRoute.has(route)) {
+        changed++;
+        logger.info("Webhook route removed: {route}", { route });
+      }
+    }
+
+    this.endpoints = [...newEndpoints];
+    return changed;
+  }
+
+  /**
    * Returns the configured webhook endpoints (without secrets).
    */
   listEndpoints(): ReadonlyArray<WebhookEndpointInfo> {
-    return this.deps.endpoints.map((e) => ({
+    return this.endpoints.map((e) => ({
       route: e.route,
       workflowIdOrName: e.workflowIdOrName,
       scheme: e.verifier.scheme,
@@ -513,7 +560,7 @@ export class WebhookService {
     }
 
     const url = new URL(req.url);
-    const endpoint = this.deps.endpoints.find((e) => e.route === url.pathname);
+    const endpoint = this.endpoints.find((e) => e.route === url.pathname);
     if (!endpoint) {
       return null;
     }

@@ -254,7 +254,7 @@ queued. Hooks run inline with no timeout.
 A verified request becomes a pending run before it is executed, so a crash
 between receipt and completion is replayed at next boot (`src/serve/webhook.ts`).
 Secrets may be `@env=VAR`, `@file=/path` or `@vault=<vault>:<key>` references
-resolved at startup.
+resolved at startup and re-resolved on hot-reload.
 
 **Workers.** Steps whose model type is not loadable locally — or every step,
 under `--remote-only` — are dispatched to enrolled workers by the worker
@@ -332,8 +332,12 @@ is handled by the reconciliation loop after `--stale-ttl`.
   changed, bumps the reload generation (`incrementReloadGeneration`,
   `src/serve/extension_reload.ts`; the loader appends `?fp=…&gen=<n>` to
   bundle imports, `src/domain/extensions/extension_loader.ts`) so in-flight
-  runs keep their old bundles, and re-reads `triggers.*` overrides from
-  `serve.yaml`. Trigger overrides are also applied directly (without a full
+  runs keep their old bundles, re-reads `triggers.*` overrides and
+  `webhooks` from `serve.yaml`. Webhook route changes (added, removed,
+  modified bindings) take effect on the next request; in-flight runs
+  complete against the endpoint they matched. Webhook reload is skipped
+  when `--webhook` CLI flags were used at startup (CLI flags are process
+  arguments, not hot-reloadable config). Trigger overrides are also applied directly (without a full
   reload) when `workflow.trigger.set` or `workflow.trigger.remove` is called
   over WebSocket — the handlers call `updateTriggerOverrides` on the
   `ScheduledExecutionService` after writing, so no `--hot-reload` flag is

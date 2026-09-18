@@ -56,7 +56,10 @@ import {
 } from "../infrastructure/persistence/paths.ts";
 import { resolveModelsDir } from "../cli/resolve_models_dir.ts";
 import type { ServeReloadResponse } from "./protocol.ts";
-import { readServeConfigFile } from "./serve_config.ts";
+import {
+  readServeConfigFile,
+  type WebhookConfigEntry,
+} from "./serve_config.ts";
 import type { TriggerOverride } from "../libswamp/mod.ts";
 import { vaultKindAdapter } from "../domain/extensions/vault_kind_adapter.ts";
 import { datastoreKindAdapter } from "../domain/extensions/datastore_kind_adapter.ts";
@@ -274,6 +277,9 @@ export interface ServeReloadOptions {
   ) => Promise<number>;
   workflowReloader?: () => Promise<number>;
   extensionDiscoverer?: () => Promise<number>;
+  webhookUpdater?: (
+    configs: readonly WebhookConfigEntry[],
+  ) => Promise<number>;
 }
 
 export async function performServeReload(
@@ -295,6 +301,7 @@ export async function performServeReload(
   let reloadedCount = 0;
   let triggerOverridesChanged = 0;
   let workflowsReloaded = 0;
+  let webhooksReloaded = 0;
 
   try {
     reloadedCount = await reloadPulledExtensions(
@@ -335,9 +342,20 @@ export async function performServeReload(
       }
     }
 
-    if (options?.triggerOverrideUpdater) {
+    const needsConfigRead = options?.triggerOverrideUpdater ||
+      options?.webhookUpdater;
+    const config = needsConfigRead
+      ? await readServeConfigFile(repoDir).catch((err: unknown) => {
+        errors.push(
+          "Failed to read serve config: " +
+            (err instanceof Error ? err.message : String(err)),
+        );
+        return null;
+      })
+      : null;
+
+    if (options?.triggerOverrideUpdater && config !== null) {
       try {
-        const config = await readServeConfigFile(repoDir);
         const overrides = new Map<string, TriggerOverride>(
           config?.triggers ? Object.entries(config.triggers) : [],
         );
@@ -352,11 +370,25 @@ export async function performServeReload(
       }
     }
 
+    if (options?.webhookUpdater && config !== null) {
+      try {
+        webhooksReloaded = await options.webhookUpdater(
+          config?.webhooks ?? [],
+        );
+      } catch (err) {
+        errors.push(
+          "Failed to reload webhook config: " +
+            (err instanceof Error ? err.message : String(err)),
+        );
+      }
+    }
+
     return {
       success: true,
       reloadedCount,
       triggerOverridesChanged,
       workflowsReloaded,
+      webhooksReloaded,
       errors,
     };
   } catch (err) {
