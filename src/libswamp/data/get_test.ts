@@ -182,8 +182,9 @@ Deno.test("dataGet yields data_pending when workflow run is active and data not 
   const last = events[1] as Extract<DataGetEvent, { kind: "error" }>;
   assertEquals(last.kind, "error");
   assertEquals(last.error.code, "data_pending");
-  assertStringIncludes(last.error.message, "not yet available");
+  assertStringIncludes(last.error.message, "not found in workflow");
   assertStringIncludes(last.error.message, "running");
+  assertStringIncludes(last.error.message, "instance name");
   assertStringIncludes(last.error.message, "swamp workflow history wf");
 });
 

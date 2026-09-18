@@ -181,8 +181,22 @@ export class WorkflowDataService {
   ): Promise<WorkflowDataItem | null> {
     const allItems = await this.findAllForWorkflowRun(run);
 
+    // Primary: match by exact data instance name.
     for (const item of allItems) {
       if (item.data.name === dataName) {
+        if (version !== undefined && item.data.version !== version) {
+          continue;
+        }
+        return item;
+      }
+    }
+
+    // Fallback: match by specName tag. Instance names often differ from
+    // spec names (e.g. "classification-main" vs "classification"), and
+    // users naturally query by spec name.
+    for (const item of allItems) {
+      const specName = item.data.tags["specName"];
+      if (specName && specName === dataName) {
         if (version !== undefined && item.data.version !== version) {
           continue;
         }

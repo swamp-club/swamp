@@ -354,8 +354,9 @@ async function* workflowScopedGet(
         error: {
           code: "data_pending",
           message:
-            `Data "${actualDataName}" not yet available in workflow "${workflow.name}"${versionInfo}. ` +
-            `The latest run (${run.id}) is ${run.status} — the producing step may not have completed yet. ` +
+            `Data "${actualDataName}" not found in workflow "${workflow.name}"${versionInfo}. ` +
+            `The latest run (${run.id}) is ${run.status}. ` +
+            `If the producing step has completed, try the full instance name (e.g. '${actualDataName}-main'). ` +
             `Check progress with 'swamp workflow history ${workflow.name}'.`,
         },
       };

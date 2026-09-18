@@ -339,6 +339,118 @@ Deno.test("WorkflowDataService.findByNameInWorkflowRun returns null for non-exis
   assertEquals(result, null);
 });
 
+Deno.test("WorkflowDataService.findByNameInWorkflowRun: falls back to specName tag when instance name differs", async () => {
+  const modelType = ModelType.create("aws/ec2/vpc");
+  const data1 = await createTestData("classification-main", {
+    type: "resource",
+    specName: "classification",
+  });
+
+  const globalData = [
+    { data: data1, modelType, modelId: TEST_MODEL_ID },
+  ];
+
+  const run = createTestRun([{
+    stepName: "classify",
+    artifacts: [
+      {
+        dataId: data1.id,
+        name: "classification-main",
+        version: 1,
+        tags: { type: "resource", specName: "classification" },
+      },
+    ],
+  }]);
+
+  const service = new WorkflowDataService(
+    createMockDefinitionRepo(),
+    createMockDataRepo(globalData),
+  );
+
+  // Querying by spec name should resolve via fallback
+  const result = await service.findByNameInWorkflowRun(run, "classification");
+  assertEquals(result !== null, true);
+  assertEquals(result!.data.name, "classification-main");
+  assertEquals(result!.stepName, "classify");
+});
+
+Deno.test("WorkflowDataService.findByNameInWorkflowRun: exact name match takes priority over specName", async () => {
+  const modelType = ModelType.create("aws/ec2/vpc");
+  const exactMatch = await createTestData("classification", {
+    type: "resource",
+    specName: "something-else",
+  });
+  const specMatch = await createTestData("classification-main", {
+    type: "resource",
+    specName: "classification",
+  });
+
+  const globalData = [
+    { data: exactMatch, modelType, modelId: TEST_MODEL_ID },
+    { data: specMatch, modelType, modelId: TEST_MODEL_ID },
+  ];
+
+  const run = createTestRun([{
+    stepName: "step1",
+    artifacts: [
+      {
+        dataId: exactMatch.id,
+        name: "classification",
+        version: 1,
+        tags: { type: "resource", specName: "something-else" },
+      },
+      {
+        dataId: specMatch.id,
+        name: "classification-main",
+        version: 1,
+        tags: { type: "resource", specName: "classification" },
+      },
+    ],
+  }]);
+
+  const service = new WorkflowDataService(
+    createMockDefinitionRepo(),
+    createMockDataRepo(globalData),
+  );
+
+  // Exact name match should win over specName fallback
+  const result = await service.findByNameInWorkflowRun(run, "classification");
+  assertEquals(result !== null, true);
+  assertEquals(result!.data.name, "classification");
+});
+
+Deno.test("WorkflowDataService.findByNameInWorkflowRun: specName fallback skips data without specName tag", async () => {
+  const modelType = ModelType.create("aws/ec2/vpc");
+  const data1 = await createTestData("some-data", {
+    type: "resource",
+  });
+
+  const globalData = [
+    { data: data1, modelType, modelId: TEST_MODEL_ID },
+  ];
+
+  const run = createTestRun([{
+    stepName: "step1",
+    artifacts: [
+      {
+        dataId: data1.id,
+        name: "some-data",
+        version: 1,
+        tags: { type: "resource" },
+      },
+    ],
+  }]);
+
+  const service = new WorkflowDataService(
+    createMockDefinitionRepo(),
+    createMockDataRepo(globalData),
+  );
+
+  // No specName tag on the data, so fallback should not match
+  const result = await service.findByNameInWorkflowRun(run, "nonexistent");
+  assertEquals(result, null);
+});
+
 Deno.test("WorkflowDataService.findAllForWorkflowRun resolves workflow-scope artifacts", async () => {
   const workflowModelType = ModelType.create("workflow");
   const wfReportData = await createTestData("report-swamp-workflow-summary", {
