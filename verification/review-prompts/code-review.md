@@ -2,8 +2,11 @@
 
 Review this change for correctness, conventions, and quality.
 
-First, run `git diff main --name-only` to identify the changed files. Only
-review those files — do not review unchanged code.
+The diff under review is provided as a file; its path is given at the end of
+this prompt. Read that file first — it is the complete and only set of changes
+you are reviewing. You may read other files in the repository for context, but
+every finding must be about a change in the diff. Do not review unchanged code,
+and do not comment on commits or files the diff does not contain.
 
 Read the project's CLAUDE.md to understand code style, conventions, and
 requirements. Use the `ddd` skill to review for domain-driven design principles.

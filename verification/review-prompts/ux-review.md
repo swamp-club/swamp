@@ -9,10 +9,14 @@ Read the project's CLAUDE.md to understand conventions, especially:
 - Every command must support both "log" and "json" output modes
 - The CLI uses Cliffy for commands and LogTape for log-mode output
 
-First, run `git diff main --name-only` to identify the changed files.
+The diff under review is provided as a file; its path is given at the end of
+this prompt. Read that file first — it is the complete and only set of changes
+you are reviewing. You may read other files in the repository for context, but
+every finding must be about a change in the diff. Do not review unchanged code,
+and do not comment on commits or files the diff does not contain.
 
-Then read every changed file. Focus ONLY on files that affect what users see:
-commands, renderers, output formatters, and error handling.
+Focus ONLY on changes that affect what users see: commands, renderers, output
+formatters, and error handling.
 
 ## Review Dimensions
 

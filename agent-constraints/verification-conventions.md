@@ -188,7 +188,7 @@ Verification Checklist (commit <short-sha>)
   ✓ binary-check     build-smoke        0.1s
 
 ✓ Code Review
-  ✓ review           review-code       87.0s   VERDICT: pass
+  ✓ review           review-code       87.0s   GATE_VERDICT: pass
 
 ○ Adversarial Review
   ○ review           review-adversarial  —     skipped (no core changes)
@@ -231,7 +231,10 @@ To construct this checklist:
 
 3. For each step, extract: job name, step name, model name, duration, and
    status (succeeded/failed/skipped). For review steps that ran, include the
-   VERDICT from the review log (explicit marker or inferred).
+   verdict — read it from the `GATE_VERDICT:` line the verdict script writes to
+   the review log, not from the reviewer's prose. That line is what actually
+   gated the step; the reviewer's own marker is only an input to it, and the two
+   can differ (a marker mentioned mid-sentence is not a verdict).
 
    **Timing**: Each step in the `history get` output has a `duration` field
    in milliseconds — use it directly as `durationMs`. For `totalDurationMs`,
@@ -280,7 +283,8 @@ To construct this checklist:
        },
        "scripts": {
          "review-skills": "<sha256 of scripts/review_skills.ts>",
-         "eval-skill-triggers": "<sha256 of evals/promptfoo/package.json>"
+         "eval-skill-triggers": "<sha256 of evals/promptfoo/package.json>",
+         "check-review-verdict": "<sha256 of scripts/check_review_verdict.ts>"
        }
      },
      "reviewConfig": {
@@ -354,7 +358,8 @@ To construct this checklist:
 
    ```bash
    sha256sum CLAUDE.md verification/review-prompts/*.md verification/workflow-verify-*.yaml \
-     scripts/review_skills.ts evals/promptfoo/package.json
+     scripts/review_skills.ts evals/promptfoo/package.json \
+     scripts/check_review_verdict.ts
    ```
 
 6. Present the checklist AND the workflow run file paths to the user so they
@@ -529,15 +534,32 @@ Repeat steps 1–4 until all build steps pass, all reviews pass, and all skill
 checks pass or are skipped. Present the full verification checklist to the user
 after each run.
 
-A review step fails immediately if `claude -p` exits non-zero or if the output
-contains a provider error (usage-limit, rate-limit, auth, or overload messages).
-These errors mean no review ran — the step must not reach the verdict inference.
+A review step fails immediately if `claude -p` exits non-zero. Every other
+outcome is decided by `scripts/check_review_verdict.ts`, which each review step
+invokes with the review output and its label. That script is the only place the
+rule lives — the steps own the reviewer invocation, it owns the decision — and
+it writes its decision to the log as `GATE_VERDICT: <pass|fail|missing|
+provider-error>`.
 
-A review passes when it outputs an explicit `VERDICT: pass` marker. If the
-marker is missing, the workflow infers the verdict: reviews with blocking
-findings (`CRITICAL`, `HIGH`, or `Blocking` severity labels) infer fail; reviews
-with no blocking findings and substantive output infer pass (with a warning).
-Empty or trivially short output (<50 bytes) is treated as a missing verdict.
+A review passes **only** when it outputs an explicit `VERDICT: pass` marker at
+the start of a line. Nothing is inferred:
+
+- **Provider errors** (usage-limit, rate-limit, auth, or overload messages) mean
+  no review ran, and are detected before any marker — a provider error that
+  happens to carry a marker still fails.
+- **A missing marker fails the step.** A reviewer that does not answer in the
+  required format is precisely when a human should look, so the verdict is
+  recorded as `missing` rather than guessed in either direction. Empty or
+  trivially short output (<50 bytes) is reported as missing too, distinguished
+  only in the error message.
+- **Only a line-initial marker counts.** The reviewer is told to begin its
+  response with the marker, so a mention inside a sentence — a reviewer weighing
+  out loud whether to emit pass or fail — is not a verdict. Markdown emphasis
+  around the marker is tolerated.
+
+Expect this to block more often than the old inference did. That is the point:
+before swamp-club#2265 a review reporting two blocking findings in prose was
+recorded as a pass, because the inference defaulted that way.
 
 Do NOT open a PR until the user has seen a fully green checklist,
 confirmed they want to proceed, and the attestation has been posted to

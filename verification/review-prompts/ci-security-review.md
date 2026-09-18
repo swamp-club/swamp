@@ -5,11 +5,15 @@ changes for security vulnerabilities. You are specifically looking for problems
 that could allow attackers to compromise the CI pipeline, exfiltrate secrets, or
 manipulate automated processes.
 
-First, run `git diff main --name-only` to identify the changed files.
+The diff under review is provided as a file; its path is given at the end of
+this prompt. Read that file first — it is the complete and only set of changes
+you are reviewing.
 
-Read every changed workflow file thoroughly. Only review files in the diff — do
-not review unchanged workflows. Then review each changed file against the
-following checklist.
+Work through every changed workflow in the diff thoroughly, then review each
+against the checklist below. You may read other files in the repository for
+context, but every finding must be about a change in the diff. Do not review
+unchanged workflows, and do not comment on commits or files the diff does not
+contain.
 
 ## 1. Prompt Injection
 

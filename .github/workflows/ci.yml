@@ -35,10 +35,20 @@ jobs:
             trust_root:
               - 'CLAUDE.md'
               - 'AGENTS.md'
-              - 'verification/review-prompts/**'
-              - 'verification/workflow-verify-*.yaml'
+              # The whole directory, not just the prompts and workflow files.
+              # A checksummed file that matches no trust-root pattern is
+              # hash-pinned without ever being agent-reviewed, which is how
+              # scripts/review_skills.ts sat outside this gate; covering the
+              # directory means the next file added here is caught by
+              # construction rather than by remembering to list it.
+              - 'verification/**'
               - 'agent-constraints/**'
               - '.claude/skills/issue-lifecycle/references/**'
+              # Scripts the verification harness trusts to decide whether a
+              # check passed. Keep in step with the configIntegrity.scripts
+              # entries below.
+              - 'scripts/check_review_verdict.ts'
+              - 'scripts/review_skills.ts'
 
   claude-ci-security-review:
     name: CI Security Review
@@ -324,7 +334,7 @@ jobs:
             --jq '[.reviews[] | select(.author.login == "github-actions" and ((.body // "") | test("^(## )?Review Integrity")))] | last | .commit.oid')
           head_sha="${{ github.event.pull_request.head.sha }}"
           trust_changes=$(gh api "repos/${{ github.repository }}/compare/${approved_sha}...${head_sha}" \
-            --jq '[.files[].filename | select(test("^CLAUDE\\.md$|^AGENTS\\.md$|^verification/review-prompts/|^verification/workflow-verify-|^agent-constraints/|^\\.claude/skills/issue-lifecycle/references/"))] | length' 2>/dev/null) || trust_changes=1
+            --jq '[.files[].filename | select(test("^CLAUDE\\.md$|^AGENTS\\.md$|^verification/|^agent-constraints/|^\\.claude/skills/issue-lifecycle/references/|^scripts/check_review_verdict\\.ts$|^scripts/review_skills\\.ts$"))] | length' 2>/dev/null) || trust_changes=1
           if [ "$trust_changes" -gt 0 ]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
           else
@@ -660,6 +670,7 @@ jobs:
           check_hash "verify-skills workflow" '.configIntegrity.workflows."verify-skills"' "verification/workflow-verify-skills.yaml"
           check_hash "review-skills script" '.configIntegrity.scripts."review-skills"' "scripts/review_skills.ts"
           check_hash "eval-skill-triggers config" '.configIntegrity.scripts."eval-skill-triggers"' "evals/promptfoo/package.json"
+          check_hash "check-review-verdict script" '.configIntegrity.scripts."check-review-verdict"' "scripts/check_review_verdict.ts"
 
           # -- 6. Steps summary table --
           {
