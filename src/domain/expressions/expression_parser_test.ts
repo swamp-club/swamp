@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStrictEquals } from "@std/assert";
 import {
   containsExpression,
   extractCelExpression,
@@ -31,6 +31,7 @@ import {
   isTaskInputsPath,
   isTriggerInputsPath,
   replaceExpressions,
+  stripExpressionFields,
 } from "./expression_parser.ts";
 
 Deno.test("containsExpression returns true for strings with expressions", () => {
@@ -634,4 +635,51 @@ Deno.test("extractWholeFieldInputRef: handles trailing whitespace", () => {
 Deno.test("extractWholeFieldInputRef: handles inner whitespace variations", () => {
   assertEquals(extractWholeFieldInputRef("${{inputs.foo}}"), "foo");
   assertEquals(extractWholeFieldInputRef("${{  inputs.foo  }}"), "foo");
+});
+
+Deno.test("replaceExpressions: preserves __proto__ key in objects", () => {
+  const data = Object.create(null) as Record<string, unknown>;
+  Object.defineProperty(data, "__proto__", {
+    value: "${{ self.name }}",
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+  Object.defineProperty(data, "normal", {
+    value: "${{ self.version }}",
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+
+  const values = new Map<string, unknown>([
+    ["${{ self.name }}", "resolved"],
+    ["${{ self.version }}", 42],
+  ]);
+
+  const result = replaceExpressions(data, values) as Record<string, unknown>;
+  assertStrictEquals(Object.hasOwn(result, "__proto__"), true);
+  assertEquals(result["__proto__"], "resolved");
+  assertEquals(result["normal"], 42);
+});
+
+Deno.test("stripExpressionFields: preserves __proto__ key for non-expression values", () => {
+  const data = Object.create(null) as Record<string, unknown>;
+  Object.defineProperty(data, "__proto__", {
+    value: "static-value",
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+  Object.defineProperty(data, "expr", {
+    value: "${{ self.name }}",
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+
+  const result = stripExpressionFields(data);
+  assertStrictEquals(Object.hasOwn(result, "__proto__"), true);
+  assertEquals(result["__proto__" as keyof typeof result], "static-value");
+  assertStrictEquals(Object.hasOwn(result, "expr"), false);
 });

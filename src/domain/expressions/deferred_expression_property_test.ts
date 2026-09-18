@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStrictEquals } from "@std/assert";
 import fc from "fast-check";
 import {
   captureDeferredBindings,
@@ -26,6 +26,48 @@ import {
   isDeferredExpression,
 } from "./deferred_expression.ts";
 import { extractExpressions } from "./expression_parser.ts";
+
+Deno.test("DeferredExpression: __proto__ binding key survives round-trip", () => {
+  const inputs = Object.create(null) as Record<string, unknown>;
+  Object.defineProperty(inputs, "__proto__", {
+    value: { nested: "value" },
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+
+  const bindings = captureDeferredBindings({
+    model: {},
+    env: {},
+    inputs,
+  });
+
+  assertStrictEquals(
+    Object.hasOwn(bindings.inputs!, "__proto__"),
+    true,
+    "captureDeferredBindings must preserve __proto__ as an own property",
+  );
+
+  const record = {
+    id: "a0000000-0000-4000-8000-000000000001",
+    expression: "${{ env.HOME + inputs.suffix }}",
+    bindings,
+  };
+
+  const roundTripped = DeferredExpressionSchema.parse(
+    JSON.parse(JSON.stringify(record)),
+  );
+
+  assertStrictEquals(
+    Object.hasOwn(roundTripped.bindings.inputs!, "__proto__"),
+    true,
+    "__proto__ binding must survive Zod schema round-trip",
+  );
+  assertEquals(
+    roundTripped.bindings.inputs!["__proto__"],
+    { nested: "value" },
+  );
+});
 
 Deno.test("DeferredExpression: durable bindings round-trip and references keep scope identity", () => {
   fc.assert(

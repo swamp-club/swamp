@@ -20,7 +20,46 @@
 import { z } from "zod";
 import type { ExpressionContext } from "./model_resolver.ts";
 
-const record = z.record(z.string(), z.unknown());
+/**
+ * Zod v4 z.record() explicitly skips __proto__ keys, silently dropping
+ * any binding whose key is "__proto__".  This helper bypasses z.record()
+ * and copies keys via Object.defineProperty on a null-prototype object.
+ */
+function protoSafeRecord<V extends z.ZodTypeAny>(
+  valueSchema: V,
+): z.ZodType<Record<string, z.infer<V>>> {
+  return z.any().superRefine((val: unknown, ctx) => {
+    if (typeof val !== "object" || val === null || Array.isArray(val)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Expected object",
+      });
+      return;
+    }
+    const obj = val as Record<string, unknown>;
+    for (const key of Object.keys(obj)) {
+      const result = valueSchema.safeParse(obj[key]);
+      if (!result.success) {
+        for (const issue of result.error.issues) {
+          ctx.addIssue({ ...issue, path: [key, ...(issue.path ?? [])] });
+        }
+      }
+    }
+  }).transform((val: Record<string, unknown>) => {
+    const safe = Object.create(null) as Record<string, z.infer<V>>;
+    for (const key of Object.keys(val)) {
+      Object.defineProperty(safe, key, {
+        value: val[key],
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    }
+    return safe;
+  }) as unknown as z.ZodType<Record<string, z.infer<V>>>;
+}
+
+const record = protoSafeRecord(z.unknown());
 
 /** Only durable bindings cross a workflow boundary; services are rebuilt. */
 export const DeferredExpressionSchema = z.object({
@@ -32,7 +71,7 @@ export const DeferredExpressionSchema = z.object({
       id: z.string(),
       name: z.string(),
       version: z.number(),
-      tags: z.record(z.string(), z.string()),
+      tags: protoSafeRecord(z.string()),
       globalArguments: record,
     }).catchall(z.unknown()).optional(),
     run: z.object({
@@ -40,13 +79,12 @@ export const DeferredExpressionSchema = z.object({
       workflowId: z.string(),
       workflowName: z.string(),
       startedAt: z.string(),
-      tags: z.record(z.string(), z.string()),
+      tags: protoSafeRecord(z.string()),
       initiatedBy: z.string().optional(),
       inputs: record.optional(),
     }).optional(),
     workflowRunId: z.string().optional(),
-    steps: z.record(
-      z.string(),
+    steps: protoSafeRecord(
       z.object({
         status: z.string(),
         outputs: record.optional(),
