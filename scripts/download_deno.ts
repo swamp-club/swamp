@@ -23,6 +23,13 @@ import { parseArgs } from "@std/cli/parse-args";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 
+/** Repo-root `.tool-versions` — the single source of truth for the toolchain. */
+const TOOL_VERSIONS_PATH = join(
+  import.meta.dirname ?? ".",
+  "..",
+  ".tool-versions",
+);
+
 /** Maps Deno build target triples to GitHub release artifact names. */
 const TARGET_ARTIFACT_MAP: Record<string, string> = {
   "x86_64-unknown-linux-gnu": "deno-x86_64-unknown-linux-gnu.zip",
@@ -72,6 +79,87 @@ async function getDenoVersion(): Promise<string> {
   // Strip build metadata suffix (e.g. "2.7.0+fb4db33" → "2.7.0")
   // GitHub releases use semver without build metadata
   return match[1].replace(/\+.*$/, "");
+}
+
+/**
+ * Parses the pinned deno version out of `.tool-versions` contents.
+ *
+ * Matches the same shape `denoland/setup-deno` parses, so CI and this script
+ * can never disagree about what the file says. Returns null when the file
+ * carries no `deno` line.
+ */
+export function parsePinnedDenoVersion(contents: string): string | null {
+  const match = contents.match(/^deno\s+v?(\S+)\s*$/m);
+  return match ? match[1] : null;
+}
+
+/**
+ * Compares the deno running this script against the pin in `.tool-versions`.
+ *
+ * Whatever deno runs this script is the deno whose release gets downloaded and
+ * embedded in the compiled binary, so a drifting toolchain silently changes
+ * what ships to users.
+ *
+ * The asymmetry here is deliberate and is the whole design. Under CI this
+ * throws, because release.yml is what compiles the published binary and an
+ * off-pin runtime must never reach a release. Off CI it only warns, because
+ * the other compile that happens routinely is the one inside verify-build on a
+ * maintainer's host, where the binary is a check that the build works rather
+ * than a published artifact — hard-failing there would break every local
+ * verification run for a contributor sitting a patch release off the pin.
+ * Do not tighten this into an unconditional throw without revisiting that
+ * trade-off.
+ */
+export function checkVersionAgainstPin(
+  running: string,
+  pinned: string | null,
+  isCi: boolean,
+): void {
+  if (pinned === null) {
+    console.warn(
+      `WARNING: no deno pin found in ${TOOL_VERSIONS_PATH}; ` +
+        `embedding deno ${running} unverified`,
+    );
+    return;
+  }
+
+  if (running === pinned) {
+    return;
+  }
+
+  const detail = `deno ${running} is running this build, but .tool-versions ` +
+    `pins deno ${pinned}. The running version is what gets embedded in the ` +
+    `compiled binary. Install the pinned version (mise install) and retry.`;
+
+  if (isCi) {
+    throw new Error(`Embedded deno version does not match the pin: ${detail}`);
+  }
+
+  console.warn(`WARNING: embedded deno version does not match the pin.`);
+  console.warn(`  ${detail}`);
+}
+
+/**
+ * Reads `.tool-versions` and checks the running deno against it.
+ *
+ * A missing or unreadable file is a warning, not a failure — this script has
+ * to stay runnable outside a full checkout.
+ */
+async function verifyRunningVersion(running: string): Promise<void> {
+  let contents: string;
+  try {
+    contents = await Deno.readTextFile(TOOL_VERSIONS_PATH);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(`WARNING: could not read ${TOOL_VERSIONS_PATH}: ${reason}`);
+    return;
+  }
+
+  checkVersionAgainstPin(
+    running,
+    parsePinnedDenoVersion(contents),
+    Deno.env.get("CI") !== undefined,
+  );
 }
 
 /** Downloads a file from a URL, returning the bytes. */
@@ -134,6 +222,8 @@ async function main() {
   const binaryName = isWindows ? "deno.exe" : "deno";
 
   const version = await getDenoVersion();
+  await verifyRunningVersion(version);
+
   const url =
     `https://github.com/denoland/deno/releases/download/v${version}/${artifact}`;
 

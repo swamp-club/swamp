@@ -142,7 +142,30 @@ See the swamp skill in your skills directory (e.g.
 
 ### Prerequisites
 
-- [Deno](https://deno.land/) (latest)
+- [Deno](https://deno.land/), at the version pinned in `.tool-versions`
+
+`.tool-versions` is the single source of truth for the toolchain — CI, the
+Docker image, and the runtime embedded in released binaries all derive from it.
+Deno has no native per-project version pinning, so the recommended setup is
+[mise](https://mise.jdx.dev/), which reads `.tool-versions` and switches
+versions on `cd`:
+
+```bash
+mise install    # installs the pinned Deno
+```
+
+mise is optional — `deno upgrade --version <pinned version>` works too. What is
+_not_ optional is that `deno` resolves on a plain, non-login shell's `PATH`. The
+verification workflows invoke a bare `deno` through `command/shell` steps that
+get no shell activation hook, so a mise setup that only activates in interactive
+shells will fail them with exit 127. Confirm with:
+
+```bash
+which deno
+```
+
+To change the Deno version, edit `.tool-versions` and update the `Dockerfile` to
+match — `integration/toolchain_pins_rules_test.ts` fails if they drift.
 
 ### Commands
 

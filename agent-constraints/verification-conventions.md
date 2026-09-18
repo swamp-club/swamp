@@ -260,7 +260,7 @@ To construct this checklist:
        "branch": "<branch name>"
      },
      "environment": {
-       "denoVersion": "2.8.3",
+       "denoVersion": "2.9.7",
        "os": "<platform>",
        "swampVersion": "<version>"
      },

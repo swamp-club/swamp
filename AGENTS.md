@@ -56,6 +56,13 @@ it to verify exact flags and arguments before running any swamp command.
 
 ## Verification
 
+The Deno version is pinned in `.tool-versions` at the repo root — the single
+source of truth for CI, the Docker image, and the runtime embedded in released
+binaries. Change the version there and in the `Dockerfile`, never in an
+individual workflow; `integration/toolchain_pins_rules_test.ts` fails on drift.
+`deno` must resolve on a plain, non-login shell's `PATH` or the verification
+workflows exit 127.
+
 During development, use these commands for quick feedback:
 
 1. `deno check` - Type checking
