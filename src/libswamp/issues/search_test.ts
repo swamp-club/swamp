@@ -45,6 +45,8 @@ Deno.test("issueSearch: returns completed event with search results", async () =
         type: "bug",
         status: "open",
         author: "alice",
+        createdAt: "2026-07-01T09:00:00Z",
+        updatedAt: "2026-07-02T09:00:00Z",
         url: "https://swamp-club.com/lab/42",
       },
     ],

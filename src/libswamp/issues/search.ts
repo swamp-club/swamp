@@ -27,6 +27,8 @@ export interface IssueSearchItem {
   type: string;
   status: string;
   author: string;
+  createdAt: string;
+  updatedAt: string;
   url: string;
 }
 

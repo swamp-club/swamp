@@ -35,6 +35,8 @@ export interface IssueGetData {
   author: string;
   body: string;
   assignees: string[];
+  createdAt: string;
+  updatedAt: string;
   commentCount: number;
   comments: IssueGetComment[];
   url: string;

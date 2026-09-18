@@ -43,6 +43,8 @@ Deno.test("issue search renderer: json mode outputs JSON", () => {
             type: "bug",
             status: "open",
             author: "alice",
+            createdAt: "2026-07-01T09:00:00Z",
+            updatedAt: "2026-07-02T09:00:00Z",
             url: "https://swamp-club.com/lab/1",
           },
         ],
@@ -54,6 +56,8 @@ Deno.test("issue search renderer: json mode outputs JSON", () => {
     assertEquals(parsed.total, 1);
     assertEquals(parsed.issues.length, 1);
     assertEquals(parsed.issues[0].number, 1);
+    assertEquals(parsed.issues[0].createdAt, "2026-07-01T09:00:00Z");
+    assertEquals(parsed.issues[0].updatedAt, "2026-07-02T09:00:00Z");
   } finally {
     console.log = origLog;
   }
@@ -103,6 +107,8 @@ Deno.test("issue search renderer: log mode renders without throwing", () => {
           type: "bug",
           status: "open",
           author: "bob",
+          createdAt: "2026-07-01T09:00:00Z",
+          updatedAt: "2026-07-02T09:00:00Z",
           url: "https://swamp-club.com/lab/42",
         },
       ],
@@ -138,6 +144,8 @@ Deno.test("issue search renderer: log mode handles partial results", () => {
           type: "bug",
           status: "open",
           author: "alice",
+          createdAt: "2026-07-01T09:00:00Z",
+          updatedAt: "2026-07-02T09:00:00Z",
           url: "https://swamp-club.com/lab/1",
         },
       ],

@@ -33,6 +33,8 @@ function makeDeps(overrides: Partial<IssueGetDeps> = {}): IssueGetDeps {
         author: "testuser",
         body: "Something is broken.",
         assignees: ["alice"],
+        createdAt: "2026-07-01T09:00:00Z",
+        updatedAt: "2026-07-02T09:00:00Z",
         commentCount: 3,
         comments: [
           {
@@ -92,6 +94,8 @@ Deno.test("issueGet: passes issueNumber to fetchIssue dep", async () => {
         author: "bob",
         body: "A feature.",
         assignees: [],
+        createdAt: "2026-07-01T09:00:00Z",
+        updatedAt: "2026-07-02T09:00:00Z",
         commentCount: 0,
         comments: [],
         url: "https://swamp-club.com/lab/42",

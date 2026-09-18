@@ -674,6 +674,8 @@ Deno.test("fetchIssue: reads commentCount from top-level comments array", async 
         type: "bug",
         status: "open",
         authorUsername: "alice",
+        createdAt: "2026-07-01T09:00:00Z",
+        updatedAt: "2026-07-02T09:00:00Z",
       },
       comments: [
         { id: "c1", body: "first" },
@@ -685,6 +687,8 @@ Deno.test("fetchIssue: reads commentCount from top-level comments array", async 
     const client = new SwampClubClient(`http://localhost:${mock.port}`);
     const result = await client.fetchIssue(undefined, 42);
     assertEquals(result.commentCount, 2);
+    assertEquals(result.createdAt, "2026-07-01T09:00:00Z");
+    assertEquals(result.updatedAt, "2026-07-02T09:00:00Z");
   } finally {
     await mock.shutdown();
   }

@@ -172,6 +172,8 @@ export interface FetchIssueResponse {
   author: string;
   body: string;
   assignees: string[];
+  createdAt: string;
+  updatedAt: string;
   commentCount: number;
   comments: IssueCommentRecord[];
 }
@@ -571,6 +573,8 @@ export class SwampClubClient {
       type: issue.type ?? "feature",
       status: issue.status ?? "open",
       author: issue.authorUsername ?? "unknown",
+      createdAt: issue.createdAt ?? "",
+      updatedAt: issue.updatedAt ?? "",
       body: issue.body ?? "",
       assignees: (issue.assignees ?? [])
         .filter(
@@ -682,6 +686,8 @@ export class SwampClubClient {
         type: issue.type ?? "feature",
         status: issue.status ?? "open",
         author: issue.authorUsername ?? "unknown",
+        createdAt: issue.createdAt ?? "",
+        updatedAt: issue.updatedAt ?? "",
         body: issue.body ?? "",
         assignees: (issue.assignees ?? [])
           .filter(

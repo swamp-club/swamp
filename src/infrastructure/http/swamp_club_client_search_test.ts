@@ -49,6 +49,8 @@ Deno.test("searchIssues: returns issues and total", async () => {
           status: "open",
           authorUsername: "alice",
           body: "Body text",
+          createdAt: "2026-07-01T09:00:00Z",
+          updatedAt: "2026-07-02T09:00:00Z",
           assignees: [{ userId: "u1", username: "bob" }],
           comments: [{ id: "c1" }],
         },
@@ -68,6 +70,8 @@ Deno.test("searchIssues: returns issues and total", async () => {
     assertEquals(result.issues[0].author, "alice");
     assertEquals(result.issues[0].assignees, ["bob"]);
     assertEquals(result.issues[0].commentCount, 1);
+    assertEquals(result.issues[0].createdAt, "2026-07-01T09:00:00Z");
+    assertEquals(result.issues[0].updatedAt, "2026-07-02T09:00:00Z");
   } finally {
     await mock.shutdown();
   }
