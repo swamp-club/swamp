@@ -124,6 +124,7 @@ export const SYNC_GATED_REQUESTS: ReadonlySet<string> = new Set([
   "vault.delete",
   "vault.edit",
   "vault.migrate",
+  "worker.prune",
   "worker.token.create",
   "worker.token.revoke",
   "workflow.approve",

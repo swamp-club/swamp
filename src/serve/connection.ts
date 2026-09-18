@@ -2958,14 +2958,15 @@ export function handleMessage(
       break;
     case "worker.prune":
       task = audited(
-        handleWorkerPrune(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
+        withSyncGate(ctx.syncGate, () =>
+          handleWorkerPrune(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          )),
         auditOpts("admin", "worker", "*"),
       );
       break;
