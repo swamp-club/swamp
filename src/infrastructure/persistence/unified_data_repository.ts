@@ -1009,13 +1009,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       newVersion: number;
     }
   > {
-    // Bulk: rename writes a new data under newName (via the inner save()
-    // which emits its own per-path signal) plus a tombstone, content,
-    // and latest-marker writes under oldName. The upfront bulk-invalidate
-    // ensures extensions tracking per-path dirty state fall back to a
-    // full walk for this operation — see rule 8 on
-    // DatastoreSyncService.markDirty.
-    await this.notifyDirty();
+    // Old-name directory covers tombstone, content, and latest-marker
+    // writes. The inner save() emits its own per-path signal for newName.
+    await this.notifyDirty(this.getDataNameDir(type, modelId, oldName));
 
     // Read the latest version of old data
     const oldData = await this.findByName(type, modelId, oldName);

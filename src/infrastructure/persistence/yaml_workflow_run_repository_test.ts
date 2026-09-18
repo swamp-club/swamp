@@ -431,10 +431,10 @@ Deno.test("YamlWorkflowRunRepository invokes markDirty with relPath on mutations
     await repo.findAllByWorkflowId(workflow.id);
     assertEquals(calls.length, 1);
 
-    // deleteAllByWorkflowId → bulk (whole runs directory removed)
+    // deleteAllByWorkflowId → runs directory path (not bulk)
     await repo.deleteAllByWorkflowId(workflow.id);
     assertEquals(calls.length, 2);
-    assertEquals(calls[1], undefined);
+    assertEquals(calls[1], join(dir, ".swamp", "workflow-runs", workflow.id));
 
     // deleteAllByWorkflowId on an empty workflow is a no-op and must not
     // notify — nothing was written or removed.

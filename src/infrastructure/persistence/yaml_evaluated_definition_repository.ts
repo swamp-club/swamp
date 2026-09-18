@@ -480,7 +480,7 @@ export class YamlEvaluatedDefinitionRepository {
    * Used when needing to regenerate all evaluations.
    */
   async clearAll(): Promise<void> {
-    await this.notifyDirty();
+    await this.notifyDirty(this.baseDir);
 
     const definitionsDir = this.baseDir;
     try {

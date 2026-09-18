@@ -314,8 +314,8 @@ export class YamlEvaluatedWorkflowRepository {
    * Clears all evaluated workflows.
    */
   async clear(): Promise<void> {
-    await this.notifyDirty();
     const dir = this.getWorkflowsDir();
+    await this.notifyDirty(dir);
     try {
       await Deno.remove(dir, { recursive: true });
     } catch (error) {

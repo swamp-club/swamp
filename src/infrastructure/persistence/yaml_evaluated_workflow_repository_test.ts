@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { join } from "@std/path";
 import { YamlEvaluatedWorkflowRepository } from "./yaml_evaluated_workflow_repository.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 
@@ -155,5 +156,52 @@ Deno.test("YamlEvaluatedWorkflowRepository: a cache saved without provenance yie
     assertEquals(cached?.workflow.name, workflow.name);
   } finally {
     await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("YamlEvaluatedWorkflowRepository: clear calls markDirty with directory path", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const calls: Array<string | undefined> = [];
+    const markDirty = (relPath?: string) => {
+      calls.push(relPath);
+      return Promise.resolve();
+    };
+    const repo = new YamlEvaluatedWorkflowRepository(
+      tempDir,
+      undefined,
+      markDirty,
+    );
+
+    const workflow = Workflow.fromData({
+      id: "a1b2c3d4-e5f6-1a2b-9c3d-4e5f6a7b8c9d",
+      name: "dirty-test",
+      tags: {},
+      inputs: undefined,
+      version: 1,
+      jobs: [{
+        name: "j",
+        dependsOn: [],
+        weight: 0,
+        steps: [{
+          name: "s",
+          dependsOn: [],
+          weight: 0,
+          task: { type: "model_method", modelIdOrName: "m", methodName: "run" },
+        }],
+      }],
+    });
+
+    await repo.save(workflow);
+    assertEquals(calls.length, 1);
+
+    await repo.clear();
+    assertEquals(calls.length, 2);
+    assertEquals(
+      calls[1],
+      join(tempDir, ".swamp", "workflows-evaluated"),
+    );
+  } finally {
+    await Deno.remove(tempDir, { recursive: true }).catch(() => {});
   }
 });

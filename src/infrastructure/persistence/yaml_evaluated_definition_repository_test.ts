@@ -89,12 +89,15 @@ Deno.test(
       await repo.findById(testType, definition.id);
       assertEquals(calls.length, 2);
 
-      // clearAll → bulk (whole evaluated-definitions tree removed)
+      // clearAll → baseDir path (whole evaluated-definitions tree removed)
       await repo.save(testType, definition);
       assertEquals(calls.length, 3);
       await repo.clearAll();
       assertEquals(calls.length, 4);
-      assertEquals(calls[3], undefined);
+      assertEquals(
+        calls[3],
+        join(dir, ".swamp", "definitions-evaluated"),
+      );
     });
   },
 );

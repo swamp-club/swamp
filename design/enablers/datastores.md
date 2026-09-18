@@ -1011,15 +1011,16 @@ markDirty-then-slow-walk is always recoverable; a lost dirty-flip is not.
 | `delete(version=undefined)`                | data-name directory (entire subtree removed)                     |
 | `finalizeVersion`, `finalizeVersionDeferred` | version directory (version known)                              |
 | `saveDeferred`                             | data-name directory                                              |
-| `rename`                                   | `undefined` (bulk; inner `save()` emits its own per-path signal) |
+| `rename`                                   | old-name data-name directory (inner `save()` emits its own per-path signal for new name) |
 | `collectGarbage` (non-dry-run)             | one signal per removed version directory, or the data-name directory when the whole name goes |
 | `pruneExcessVersions` (write-time cap)     | one signal per removed version directory                         |
 | Yaml repos: `save`, `delete`, `deleteOlderThan` | per-yaml file path                                          |
 | Definition repo: `save`, `delete`          | target file path                                                 |
 | Workflow repo: `save`, `delete`            | target file path                                                 |
 | Evaluated workflow repo: `save`, `delete`  | target file path                                                 |
-| Evaluated workflow repo: `clear`           | `undefined` (bulk)                                               |
-| `deleteAllByWorkflowId`, `clearAll`        | `undefined` (bulk)                                               |
+| Evaluated workflow repo: `clear`           | workflows-evaluated directory                                    |
+| `deleteAllByWorkflowId`                    | workflow's runs directory                                        |
+| Evaluated definition repo: `clearAll`      | definitions-evaluated base directory                             |
 
 `advanceLatestMarkers` and `rollbackVersions` emit nothing — they rely on the
 signal their `saveDeferred` / `finalizeVersionDeferred` already sent
@@ -1036,9 +1037,11 @@ extension's scoped-walk optimization, which correctly detects deletions via
 absence-on-disk (rule 2). A bare `markDirty()` call sets `bulkInvalidated`
 in the extension, forcing a full walk that skips deletion detection unless
 the per-path set overflowed — overriding the per-path signal and silently
-dropping remote object deletions. Handlers whose mutations do NOT flow
-through per-path-wired repos (vault, access, admin) still need bare
-`markDirty()` because it is their only dirty signal.
+dropping remote object deletions (swamp-club#2273). The architecture fitness
+test in `integration/datastore_sync_rules_test.ts` enforces this obligation
+at build time. Handlers whose mutations do NOT flow through per-path-wired
+repos (vault, access, admin) still need bare `markDirty()` because it is
+their only dirty signal.
 
 Every serve mutation handler must call `pushChanged()` after a mutation —
 including the data-domain handlers (`data.delete`, `data.rename`, `data.gc`,

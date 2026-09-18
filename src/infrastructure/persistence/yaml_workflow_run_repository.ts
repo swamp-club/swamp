@@ -659,7 +659,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       return 0;
     }
 
-    await this.notifyDirty();
+    await this.notifyDirty(dir);
 
     try {
       await Deno.remove(dir, { recursive: true });

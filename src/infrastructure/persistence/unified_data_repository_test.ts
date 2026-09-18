@@ -819,17 +819,16 @@ Deno.test("mutations call markDirty before writing", async () => {
     );
     const afterAppend = calls.length;
 
-    // rename → bulk (undefined) at entry. Internal save() emits a per-path
-    // signal for the new name. Rule 8: bulk must arrive first within the
-    // operation so extensions can correctly fall back to a full walk.
+    // rename → old-name directory at entry. Internal save() emits a per-path
+    // signal for the new name.
     await repo.rename(testType, "model-1", "mark-dirty-save", "mark-dirty-ren");
     if (calls.length < afterAppend + 2) {
       throw new Error(`rename did not call markDirty: ${calls.length}`);
     }
     assertEquals(
       calls[afterAppend],
-      undefined,
-      "rename's first markDirty call must be bulk (undefined relPath) — rule 8",
+      repo.getDataNameDir(testType, "model-1", "mark-dirty-save"),
+      "rename's first markDirty call must be old-name directory",
     );
     // The inner save() emits a per-path signal for the new name. Verify by
     // looking for the new-name data-name directory in the subsequent calls.
