@@ -43,6 +43,12 @@ import {
   VerificationResultSchema,
 } from "./_lib/schemas.ts";
 import { createSwampClubClient, loadAuthFile } from "./_lib/swamp_club.ts";
+import {
+  recordLifecycle,
+  recordLifecycleBestEffort,
+  recordRipple,
+  recordUpstreamChange,
+} from "./_lib/lifecycle_recorder.ts";
 
 /** Global args type for the issue-lifecycle model. */
 type GlobalArgs = {
@@ -96,7 +102,7 @@ export function buildNotifyMessage(
 
 export const model = {
   type: "@swamp/issue-lifecycle",
-  version: "2026.08.31.1",
+  version: "2026.09.18.1",
   globalArguments: GlobalArgsSchema,
 
   upgrades: [
@@ -228,6 +234,21 @@ export const model = {
         "code conformance review, then transitions to implementing. " +
         "Allows retroactive lifecycle creation for work already done. " +
         "No globalArguments changes.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.09.18.1",
+      description:
+        "Stop swallowing dropped swamp-club writes. postLifecycleEntry, " +
+        "patchIssue and submitComment now report an outcome, and a " +
+        "lifecycle_recorder policy module raises when a mandatory audit " +
+        "record is not written, so a method no longer reports success over a " +
+        "lost entry. transitionStatus confirms an already-applied transition " +
+        "by re-reading the issue status rather than matching server prose. " +
+        "Methods declare rollbackOnFailure so a raised failure leaves the " +
+        "phase unchanged; notify and post_attestation are excluded because " +
+        "their upstream side effects are not idempotent. No globalArguments " +
+        "changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
@@ -660,6 +681,7 @@ export const model = {
 
   methods: {
     start: {
+      rollbackOnFailure: true,
       description: "Ensure the swamp-club issue exists and begin the lifecycle",
       arguments: z.object({}),
       execute: async (
@@ -727,7 +749,7 @@ export const model = {
           },
         );
 
-        await sc.postLifecycleEntry({
+        await recordLifecycle(sc, {
           step: "triage_started",
           targetStatus: "open",
           summary: "Triage started",
@@ -762,7 +784,10 @@ export const model = {
               );
             } else {
               await sc.updateAssignees([...existingIds, resolvedUserId]);
-              await sc.postLifecycleEntry({
+              // Best-effort: this entry reports on the assignment above,
+              // which is itself best-effort. Raising here would break the
+              // triage flow this block promises never to break.
+              await recordLifecycleBestEffort(sc, context.logger, {
                 step: "assigned",
                 targetStatus: "open",
                 summary: `Assigned to ${authUsername}`,
@@ -783,6 +808,7 @@ export const model = {
     },
 
     triage: {
+      rollbackOnFailure: true,
       description: "Classify the issue based on context",
       arguments: z.object({
         type: IssueType,
@@ -913,8 +939,21 @@ export const model = {
           context.logger,
         );
         if (sc) {
-          await sc.updateType(args.type);
-          await sc.postLifecycleEntry({
+          // The entry post is the last fatal upstream action in this method:
+          // rollback reverts the local write but cannot unsend an entry, so
+          // anything that can raise must run before it or a re-run would post
+          // the entry twice.
+          recordUpstreamChange(
+            context.logger,
+            "issue type update",
+            await sc.updateType(args.type),
+          );
+          recordUpstreamChange(
+            context.logger,
+            "status transition to triaged",
+            await sc.transitionStatus("triaged"),
+          );
+          await recordLifecycle(sc, {
             step: "classified",
             targetStatus: "triaged",
             summary:
@@ -934,7 +973,6 @@ export const model = {
             },
             isVerbose: false,
           });
-          await sc.transitionStatus("triaged");
         }
 
         return { dataHandles: handles };
@@ -942,6 +980,7 @@ export const model = {
     },
 
     plan: {
+      rollbackOnFailure: true,
       description: "Generate an initial implementation plan",
       arguments: z.object({
         summary: z.string(),
@@ -1008,7 +1047,7 @@ export const model = {
           context.globalArgs,
           context.logger,
         );
-        await sc?.postLifecycleEntry({
+        await recordLifecycle(sc, {
           step: "plan_generated",
           targetStatus: "triaged",
           summary: `Implementation plan generated (v1) \u2014 ${args.summary}`,
@@ -1070,6 +1109,7 @@ export const model = {
     },
 
     iterate: {
+      rollbackOnFailure: true,
       description:
         "Submit feedback and a revised plan incorporating all prior feedback",
       arguments: z.object({
@@ -1197,7 +1237,7 @@ export const model = {
           context.globalArgs,
           context.logger,
         );
-        await sc?.postLifecycleEntry({
+        await recordLifecycle(sc, {
           step: "plan_revised",
           targetStatus: "triaged",
           summary:
@@ -1220,6 +1260,7 @@ export const model = {
     },
 
     adversarial_review: {
+      rollbackOnFailure: true,
       description:
         "Record adversarial review findings for the current plan version",
       arguments: z.object({
@@ -1292,7 +1333,7 @@ export const model = {
           context.globalArgs,
           context.logger,
         );
-        await sc?.postLifecycleEntry({
+        await recordLifecycle(sc, {
           step: "adversarial_review",
           targetStatus: "triaged",
           summary:
@@ -1315,6 +1356,7 @@ export const model = {
     },
 
     resolve_findings: {
+      rollbackOnFailure: true,
       description:
         "Mark adversarial review findings as resolved after plan revision",
       arguments: z.object({
@@ -1397,7 +1439,7 @@ export const model = {
           context.globalArgs,
           context.logger,
         );
-        await sc?.postLifecycleEntry({
+        await recordLifecycle(sc, {
           step: "findings_resolved",
           targetStatus: "triaged",
           summary:
@@ -1416,6 +1458,7 @@ export const model = {
     },
 
     code_conformance_review: {
+      rollbackOnFailure: true,
       description:
         "Record an adversarial comparison of implemented code against the approved plan. " +
         "Each plan step is verified as implemented, deviated, partially implemented, or missing. " +
@@ -1500,7 +1543,7 @@ export const model = {
           context.globalArgs,
           context.logger,
         );
-        await sc?.postLifecycleEntry({
+        await recordLifecycle(sc, {
           step: "code_conformance_review",
           targetStatus: "in_progress",
           summary:
@@ -1521,6 +1564,7 @@ export const model = {
     },
 
     justify_deviations: {
+      rollbackOnFailure: true,
       description:
         "Add justifications to code conformance review steps that deviate from the plan. " +
         "Deviations are expected — this method records why the code differs.",
@@ -1604,7 +1648,7 @@ export const model = {
           context.globalArgs,
           context.logger,
         );
-        await sc?.postLifecycleEntry({
+        await recordLifecycle(sc, {
           step: "deviations_justified",
           targetStatus: "in_progress",
           summary:
@@ -1623,6 +1667,7 @@ export const model = {
     },
 
     approve: {
+      rollbackOnFailure: true,
       description: "Approve the current plan",
       arguments: z.object({}),
       execute: async (
@@ -1666,7 +1711,13 @@ export const model = {
           context.logger,
         );
         if (sc && plan) {
-          await sc.postLifecycleEntry({
+          // Transition before the entry post — see the note in `triage`.
+          recordUpstreamChange(
+            context.logger,
+            "status transition to in_progress",
+            await sc.transitionStatus("in_progress"),
+          );
+          await recordLifecycle(sc, {
             step: "plan_approved",
             targetStatus: "in_progress",
             summary:
@@ -1679,7 +1730,6 @@ export const model = {
             },
             isVerbose: true,
           });
-          await sc.transitionStatus("in_progress");
         }
 
         return { dataHandles: handles };
@@ -1687,6 +1737,7 @@ export const model = {
     },
 
     implement: {
+      rollbackOnFailure: true,
       description: "Signal that implementation has started",
       arguments: z.object({}),
       execute: async (
@@ -1718,7 +1769,7 @@ export const model = {
           context.globalArgs,
           context.logger,
         );
-        await sc?.postLifecycleEntry({
+        await recordLifecycle(sc, {
           step: "implementation_started",
           targetStatus: "in_progress",
           summary: "Implementation started",
@@ -1732,6 +1783,7 @@ export const model = {
     },
 
     fast_forward: {
+      rollbackOnFailure: true,
       description:
         "Fast-forward lifecycle for ad-hoc work. Atomically writes " +
         "classification, plan, adversarial review, and code conformance " +
@@ -1848,8 +1900,18 @@ export const model = {
           context.logger,
         );
         if (sc) {
-          await sc.updateType("platform");
-          await sc.postLifecycleEntry({
+          // Transition before the entry post — see the note in `triage`.
+          recordUpstreamChange(
+            context.logger,
+            "issue type update",
+            await sc.updateType("platform"),
+          );
+          recordUpstreamChange(
+            context.logger,
+            "status transition to in_progress",
+            await sc.transitionStatus("in_progress"),
+          );
+          await recordLifecycle(sc, {
             step: "fast_forwarded",
             targetStatus: "in_progress",
             summary:
@@ -1862,7 +1924,6 @@ export const model = {
             },
             isVerbose: true,
           });
-          await sc.transitionStatus("in_progress");
         }
 
         return { dataHandles: handles };
@@ -1870,6 +1931,7 @@ export const model = {
     },
 
     verify: {
+      rollbackOnFailure: true,
       description:
         "Start verification — transitions to verifying phase. The agent " +
         "runs the verification workflow in a container sandbox.",
@@ -1909,7 +1971,7 @@ export const model = {
           context.globalArgs,
           context.logger,
         );
-        await sc?.postLifecycleEntry({
+        await recordLifecycle(sc, {
           step: "verification_started",
           targetStatus: "in_progress",
           summary: `Verification started for ${args.commit} on ${args.branch}`,
@@ -1923,6 +1985,7 @@ export const model = {
     },
 
     verification_passed: {
+      rollbackOnFailure: true,
       description:
         "Record that verification passed. Carries the full verification " +
         "checklist — every step, status, and gate result. This data gates " +
@@ -2005,7 +2068,7 @@ export const model = {
           context.globalArgs,
           context.logger,
         );
-        await sc?.postLifecycleEntry({
+        await recordLifecycle(sc, {
           step: "verification_passed",
           targetStatus: "in_progress",
           summary:
@@ -2025,6 +2088,7 @@ export const model = {
     },
 
     verification_failed: {
+      rollbackOnFailure: true,
       description:
         "Record that verification failed. Transitions back to implementing " +
         "so the agent can fix issues and re-verify.",
@@ -2072,7 +2136,7 @@ export const model = {
           context.globalArgs,
           context.logger,
         );
-        await sc?.postLifecycleEntry({
+        await recordLifecycle(sc, {
           step: "verification_failed",
           targetStatus: "in_progress",
           summary: `Verification failed: ${args.failureReason}`,
@@ -2136,24 +2200,43 @@ export const model = {
           { id: result.id, postedBy: result.postedBy },
         );
 
-        await sc.postLifecycleEntry({
-          step: "attestation_posted",
-          targetStatus: "in_progress",
-          summary: "Verification attestation posted to swamp-club",
-          emoji: "\u{1F4DC}",
-          payload: {
-            attestationId: result.id,
-            commit: (parsed.subject as Record<string, unknown>)?.commit,
-            gatePassed: (parsed.gate as Record<string, unknown>)?.allPassed,
-          },
-          isVerbose: false,
-        });
+        // The one deliberate downgrade in this model. Unlike every other
+        // method, the attestation POST above has already written a durable
+        // upstream record that rollback cannot reach, and this entry cannot
+        // run first because its payload carries the id that POST returned.
+        // Failing here would send the operator into a re-run that files a
+        // second attestation for the same commit — worse than a missing
+        // entry, since the attestation row is itself the audit record and
+        // `postAttestation` already raises when it fails. The id is named in
+        // the warning so the entry can be reconstructed by hand.
+        try {
+          await recordLifecycle(sc, {
+            step: "attestation_posted",
+            targetStatus: "in_progress",
+            summary: "Verification attestation posted to swamp-club",
+            emoji: "\u{1F4DC}",
+            payload: {
+              attestationId: result.id,
+              commit: (parsed.subject as Record<string, unknown>)?.commit,
+              gatePassed: (parsed.gate as Record<string, unknown>)?.allPassed,
+            },
+            isVerbose: false,
+          });
+        } catch (err) {
+          context.logger.warning(
+            "Attestation {id} was posted, but its lifecycle entry was not " +
+              "recorded: {error}. The attestation itself is the durable " +
+              "record; re-running this method would file a duplicate.",
+            { id: result.id, error: String(err) },
+          );
+        }
 
         return { dataHandles: [] };
       },
     },
 
     link_pr: {
+      rollbackOnFailure: true,
       description:
         "Link a pull request to the implementation. Idempotent — calling " +
         "again overwrites the recorded URL with the latest link. " +
@@ -2216,7 +2299,7 @@ export const model = {
           context.globalArgs,
           context.logger,
         );
-        await sc?.postLifecycleEntry({
+        await recordLifecycle(sc, {
           step: "pr_linked",
           targetStatus: "in_progress",
           summary: `PR linked (attempt ${attempt}): ${args.url}`,
@@ -2230,6 +2313,7 @@ export const model = {
     },
 
     pr_merged: {
+      rollbackOnFailure: true,
       description:
         "Record that the linked PR has been merged. Transitions to releasing.",
       arguments: z.object({
@@ -2295,7 +2379,7 @@ export const model = {
           context.globalArgs,
           context.logger,
         );
-        await sc?.postLifecycleEntry({
+        await recordLifecycle(sc, {
           step: "pr_merged",
           targetStatus: "in_progress",
           summary:
@@ -2314,6 +2398,7 @@ export const model = {
     },
 
     pr_failed: {
+      rollbackOnFailure: true,
       description:
         "Record that the linked PR has failed (CI failure, review rejection, etc.). " +
         "Transitions to pr_failed so the agent knows to fix and re-link.",
@@ -2381,7 +2466,7 @@ export const model = {
           context.globalArgs,
           context.logger,
         );
-        await sc?.postLifecycleEntry({
+        await recordLifecycle(sc, {
           step: "pr_failed",
           targetStatus: "in_progress",
           summary: `PR failed (attempt ${attempt}): ${args.reason}`,
@@ -2395,6 +2480,7 @@ export const model = {
     },
 
     ship: {
+      rollbackOnFailure: true,
       description:
         "Mark the release as shipped after the release build completes. " +
         "Transitions to done and sets swamp-club status to shipped.",
@@ -2437,7 +2523,13 @@ export const model = {
           context.logger,
         );
         if (sc) {
-          await sc.postLifecycleEntry({
+          // Transition before the entry post — see the note in `triage`.
+          recordUpstreamChange(
+            context.logger,
+            "status transition to shipped",
+            await sc.transitionStatus("shipped"),
+          );
+          await recordLifecycle(sc, {
             step: "shipped",
             targetStatus: "shipped",
             summary: args.releaseUrl
@@ -2450,7 +2542,6 @@ export const model = {
             },
             isVerbose: false,
           });
-          await sc.transitionStatus("shipped");
         }
 
         return { dataHandles: [stateHandle] };
@@ -2458,6 +2549,7 @@ export const model = {
     },
 
     complete: {
+      rollbackOnFailure: true,
       description: "Mark the issue lifecycle as done",
       arguments: z.object({}),
       execute: async (
@@ -2493,7 +2585,13 @@ export const model = {
           context.logger,
         );
         if (sc) {
-          await sc.postLifecycleEntry({
+          // Transition before the entry post — see the note in `triage`.
+          recordUpstreamChange(
+            context.logger,
+            "status transition to shipped",
+            await sc.transitionStatus("shipped"),
+          );
+          await recordLifecycle(sc, {
             step: "complete",
             targetStatus: "shipped",
             summary: "Complete",
@@ -2501,7 +2599,6 @@ export const model = {
             payload: {},
             isVerbose: false,
           });
-          await sc.transitionStatus("shipped");
         }
 
         return { dataHandles: [stateHandle] };
@@ -2564,7 +2661,10 @@ export const model = {
         if (author && author !== "unknown" && sc) {
           const body = args.message ??
             buildNotifyMessage(author, prData, planData);
-          await sc.submitComment(body);
+          // The ripple is this method's deliverable, not a courtesy, so a
+          // failure raises. It runs before the state write, so the phase is
+          // still `notify` and the re-run retries it with no duplicate.
+          await recordRipple(sc, body);
           context.logger.info(
             "Posted thank-you ripple for @{author} on issue #{issueNumber}",
             { author, issueNumber },
@@ -2583,7 +2683,7 @@ export const model = {
         });
 
         if (sc) {
-          await sc.postLifecycleEntry({
+          await recordLifecycle(sc, {
             step: "contributor_notified",
             targetStatus: "shipped",
             summary: author && author !== "unknown"
@@ -2600,6 +2700,7 @@ export const model = {
     },
 
     skip_notify: {
+      rollbackOnFailure: true,
       description:
         "Skip contributor notification and transition to summarizing. " +
         "Use when the issue author is a collaborator or notification is not needed.",
@@ -2634,7 +2735,7 @@ export const model = {
           context.logger,
         );
         if (sc) {
-          await sc.postLifecycleEntry({
+          await recordLifecycle(sc, {
             step: "notification_skipped",
             targetStatus: "shipped",
             summary: "Contributor notification skipped",
@@ -2649,6 +2750,7 @@ export const model = {
     },
 
     summarize: {
+      rollbackOnFailure: true,
       description:
         "Record a session summary restating the original problem and delivered outcome. " +
         "Transitions to done. Must be called after notify/skip_notify.",
@@ -2714,7 +2816,7 @@ export const model = {
           context.globalArgs,
           context.logger,
         );
-        await sc?.postLifecycleEntry({
+        await recordLifecycle(sc, {
           step: "session_summarized",
           targetStatus: "shipped",
           summary: args.outcomeMet

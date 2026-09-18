@@ -39,6 +39,27 @@ before continuing." Do not fall back to `deno run dev`.
 **Never auto-approve.** Always stop and show the plan to the human. Always ask
 for feedback. Only call `approve` when the human explicitly says to proceed.
 
+**A failed method means the upstream record was not written.** Lifecycle entries
+are the audit trail, so a method fails rather than reporting success over a
+dropped entry. The error names the step, the HTTP status, and swamp-club's own
+reason.
+
+- **Most methods roll back.** The local phase is unchanged, so fix the cause and
+  re-run the same method. Re-running is safe: a status transition that already
+  landed is recognised as a no-op.
+- **`notify` does not roll back.** If it fails after the ripple posted, the
+  phase has already advanced — do not re-run it, or the contributor is thanked
+  twice. Continue with `summarize`.
+- **`post_attestation` warns instead of failing.** The attestation itself is the
+  durable record, and re-running would file a duplicate for the same commit. The
+  warning names the attestation id.
+
+The most common cause is payload text the server refuses: until swamp-club#2284
+is fixed, it rejects any string value that begins with a dollar sign, and any
+prose containing a double-quote immediately followed by one — a quoted shell
+variable in a code snippet, for example. Rephrase the text (name the variable in
+words) and re-run.
+
 ## Prepare to Ship (Ad-Hoc Work)
 
 When the user says **"prepare to ship"** (or "ready to ship", "prepare to ship

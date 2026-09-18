@@ -229,3 +229,241 @@ Deno.test("postAttestation: throws on non-OK response with status and body", asy
     globalThis.fetch = originalFetch;
   }
 });
+
+// ---------------------------------------------------------------------------
+// Upstream outcome reporting
+// ---------------------------------------------------------------------------
+
+interface RecordedCall {
+  method: string;
+  url: string;
+}
+
+/**
+ * Install a fetch stub driven by a per-call responder, recording every call so
+ * a test can assert that a read was (or was not) attempted.
+ */
+function withScriptedFetch(
+  respond: (call: RecordedCall, index: number) => Response | Error,
+): { client: SwampClubClient; calls: RecordedCall[]; restore: () => void } {
+  const calls: RecordedCall[] = [];
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = ((
+    input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> => {
+    const url = typeof input === "string"
+      ? input
+      : input instanceof URL
+      ? input.toString()
+      : input.url;
+    const call = { method: init?.method ?? "GET", url };
+    const index = calls.length;
+    calls.push(call);
+
+    const result = respond(call, index);
+    if (result instanceof Error) return Promise.reject(result);
+    return Promise.resolve(result);
+  }) as typeof fetch;
+
+  return {
+    client: new SwampClubClient("https://fake.swamp-club.com", "fake-key", 42),
+    calls,
+    restore: () => {
+      globalThis.fetch = originalFetch;
+    },
+  };
+}
+
+function issueResponse(status: string): Response {
+  return new Response(
+    JSON.stringify({ issue: { number: 42, status, type: "bug" } }),
+    { status: 200, headers: { "Content-Type": "application/json" } },
+  );
+}
+
+Deno.test("postLifecycleEntry: reports the entry as accepted on success", async () => {
+  const { client, restore } = withScriptedFetch(() =>
+    new Response("{}", { status: 201 })
+  );
+  try {
+    const outcome = await client.postLifecycleEntry({
+      step: "classified",
+      targetStatus: "triaged",
+      summary: "ok",
+      emoji: "x",
+      payload: {},
+    });
+    assertEquals(outcome, { ok: true });
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("postLifecycleEntry: reports a rejection with status and body preserved", async () => {
+  const body = JSON.stringify({ error: "payload keys must not start with $" });
+  const { client, restore } = withScriptedFetch(() =>
+    new Response(body, { status: 400 })
+  );
+  try {
+    const outcome = await client.postLifecycleEntry({
+      step: "classified",
+      targetStatus: "triaged",
+      summary: "ok",
+      emoji: "x",
+      payload: {},
+    });
+    assertEquals(outcome, {
+      ok: false,
+      reason: "rejected",
+      status: 400,
+      body,
+    });
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("postLifecycleEntry: reports unavailable when the request throws", async () => {
+  const { client, restore } = withScriptedFetch(() =>
+    new Error("connection reset")
+  );
+  try {
+    const outcome = await client.postLifecycleEntry({
+      step: "classified",
+      targetStatus: "triaged",
+      summary: "ok",
+      emoji: "x",
+      payload: {},
+    });
+    assertEquals(outcome.ok, false);
+    if (!outcome.ok) assertEquals(outcome.reason, "unavailable");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("submitComment: reports the ripple as accepted on success", async () => {
+  const { client, restore } = withScriptedFetch(() =>
+    new Response(JSON.stringify({ comment: { id: "c1" } }), { status: 201 })
+  );
+  try {
+    assertEquals(await client.submitComment("thanks"), { ok: true });
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("submitComment: reports a rejection rather than returning null", async () => {
+  const { client, restore } = withScriptedFetch(() =>
+    new Response("nope", { status: 403 })
+  );
+  try {
+    const outcome = await client.submitComment("thanks");
+    assertEquals(outcome, {
+      ok: false,
+      reason: "rejected",
+      status: 403,
+      body: "nope",
+    });
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("transitionStatus: a 422 is a no-op when a re-read confirms the requested status", async () => {
+  const { client, calls, restore } = withScriptedFetch((call) =>
+    call.method === "PATCH"
+      ? new Response("precondition", { status: 422 })
+      : issueResponse("triaged")
+  );
+  try {
+    assertEquals(await client.transitionStatus("triaged"), {
+      ok: true,
+      noop: true,
+    });
+    assertEquals(calls.length, 2);
+    assertEquals(calls[1].method, "GET");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("transitionStatus: a 422 is a real failure when the re-read shows another status", async () => {
+  const { client, restore } = withScriptedFetch((call) =>
+    call.method === "PATCH"
+      ? new Response("precondition", { status: 422 })
+      : issueResponse("open")
+  );
+  try {
+    const outcome = await client.transitionStatus("triaged");
+    assertEquals(outcome.ok, false);
+    if (!outcome.ok && outcome.reason === "rejected") {
+      assertEquals(outcome.status, 422);
+    }
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("transitionStatus: retries the re-read once before giving up", async () => {
+  const { client, calls, restore } = withScriptedFetch((call, index) => {
+    if (call.method === "PATCH") return new Response("", { status: 422 });
+    return index === 1 ? new Error("flaky read") : issueResponse("triaged");
+  });
+  try {
+    assertEquals(await client.transitionStatus("triaged"), {
+      ok: true,
+      noop: true,
+    });
+    assertEquals(calls.length, 3);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("transitionStatus: a 422 is a real failure when the re-read keeps failing", async () => {
+  const { client, calls, restore } = withScriptedFetch((call) =>
+    call.method === "PATCH"
+      ? new Response("", { status: 422 })
+      : new Error("unreachable")
+  );
+  try {
+    const outcome = await client.transitionStatus("triaged");
+    assertEquals(outcome.ok, false);
+    assertEquals(calls.length, 3);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("updateType: a 422 is a plain failure and attempts no re-read", async () => {
+  const { client, calls, restore } = withScriptedFetch(() =>
+    new Response("bad type", { status: 422 })
+  );
+  try {
+    const outcome = await client.updateType("bug");
+    assertEquals(outcome, {
+      ok: false,
+      reason: "rejected",
+      status: 422,
+      body: "bad type",
+    });
+    assertEquals(calls.length, 1);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("updateAssignees: stays best-effort and never throws on rejection", async () => {
+  const { client, calls, restore } = withScriptedFetch(() =>
+    new Response("nope", { status: 422 })
+  );
+  try {
+    await client.updateAssignees(["u1"]);
+    assertEquals(calls.length, 1);
+  } finally {
+    restore();
+  }
+});

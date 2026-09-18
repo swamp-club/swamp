@@ -330,8 +330,8 @@ Deno.test("model: exposes the new post_attestation method definition", () => {
   );
 });
 
-Deno.test("model: version is 2026.08.31.1", () => {
-  assertEquals(model.version, "2026.08.31.1");
+Deno.test("model: version is 2026.09.18.1", () => {
+  assertEquals(model.version, "2026.09.18.1");
 });
 
 // ---------------------------------------------------------------------------
@@ -1700,4 +1700,201 @@ Deno.test("fast_forward: writes classification, plan, adversarialReview, codeCon
 
 Deno.test("model: exposes fast_forward method definition", () => {
   assertEquals("fast_forward" in model.methods, true);
+});
+
+// ---------------------------------------------------------------------------
+// Pinned invariants
+// ---------------------------------------------------------------------------
+
+/**
+ * Every upstream write must go through the policy module in
+ * `_lib/lifecycle_recorder.ts`. A direct client call would reintroduce the
+ * swallow this model was changed to remove — including in `post_attestation`,
+ * whose deliberate downgrade wraps the policy call in a try/catch rather than
+ * bypassing it, which is why this assertion needs no exceptions.
+ */
+Deno.test("issue_lifecycle: no upstream write bypasses the policy module", async () => {
+  const source = await Deno.readTextFile(
+    new URL("./issue_lifecycle.ts", import.meta.url),
+  );
+
+  const bypasses = [".postLifecycleEntry(", ".submitComment("];
+  for (const call of bypasses) {
+    assertEquals(
+      source.includes(call),
+      false,
+      `${call} must be reached through _lib/lifecycle_recorder.ts, not called ` +
+        `directly — a direct call swallows the failure it should surface`,
+    );
+  }
+});
+
+/**
+ * Pinned ratchet over the rollback flag. A method that writes local state
+ * before its lifecycle post must roll that write back when the post raises,
+ * or the phase advances past a step the audit trail never recorded.
+ *
+ * The two exclusions are deliberate and not interchangeable with an omission:
+ * `notify` sends a contributor ripple and `post_attestation` files an
+ * attestation, neither of which rollback can reach, so re-running them would
+ * duplicate an external side effect. `review` neither writes nor posts.
+ *
+ * Adding a method forces an edit here and a decision about the flag.
+ */
+Deno.test("issue_lifecycle: rollbackOnFailure matches the pinned method set", () => {
+  const rollsBack = [
+    "start",
+    "triage",
+    "plan",
+    "iterate",
+    "adversarial_review",
+    "resolve_findings",
+    "code_conformance_review",
+    "justify_deviations",
+    "approve",
+    "implement",
+    "fast_forward",
+    "verify",
+    "verification_passed",
+    "verification_failed",
+    "link_pr",
+    "pr_merged",
+    "pr_failed",
+    "ship",
+    "complete",
+    "skip_notify",
+    "summarize",
+  ];
+  const doesNotRollBack = ["review", "post_attestation", "notify"];
+
+  const methods = model.methods as Record<string, { rollbackOnFailure?: true }>;
+  assertEquals(
+    Object.keys(methods).sort(),
+    [...rollsBack, ...doesNotRollBack].sort(),
+    "a method was added or removed — decide whether it needs rollbackOnFailure",
+  );
+
+  for (const name of rollsBack) {
+    assertEquals(
+      methods[name].rollbackOnFailure,
+      true,
+      `${name} writes state before its lifecycle post, so it must roll that ` +
+        `write back when the post raises`,
+    );
+  }
+  for (const name of doesNotRollBack) {
+    assertEquals(
+      methods[name].rollbackOnFailure,
+      undefined,
+      `${name} is deliberately excluded from rollback`,
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Model wiring — a dropped audit record fails the step
+// ---------------------------------------------------------------------------
+
+/**
+ * Like `buildTestContext`, but with credentials present and fetch stubbed, so
+ * the method builds a real client and the upstream responses are scripted.
+ */
+async function buildOnlineTestContext(
+  issueNumber: number,
+  respond: (url: string, method: string) => Response,
+): Promise<{
+  context: Parameters<typeof model.methods.pr_merged.execute>[1];
+  restore: () => Promise<void>;
+}> {
+  const { context, restore: restoreBase } = await buildTestContext(issueNumber);
+  const originalFetch = globalThis.fetch;
+
+  Deno.env.set("SWAMP_API_KEY", "fake-key");
+  Deno.env.set("SWAMP_CLUB_URL", "https://fake.swamp-club.com");
+
+  globalThis.fetch = ((
+    input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> => {
+    const url = typeof input === "string" ? input : String(input);
+    return Promise.resolve(respond(url, init?.method ?? "GET"));
+  }) as typeof fetch;
+
+  return {
+    context,
+    restore: async () => {
+      globalThis.fetch = originalFetch;
+      await restoreBase();
+    },
+  };
+}
+
+Deno.test("plan: fails the step when the lifecycle entry is rejected", async () => {
+  const { context, restore } = await buildOnlineTestContext(
+    42,
+    (url) =>
+      url.endsWith("/healthz")
+        ? new Response("ok", { status: 200 })
+        : new Response(
+          JSON.stringify({ error: "payload keys must not start with $" }),
+          { status: 400 },
+        ),
+  );
+  try {
+    const error = await assertRejects(
+      () =>
+        model.methods.plan.execute({
+          summary: "s",
+          dddAnalysis: "d",
+          steps: [{ order: 1, description: "x", files: ["a.ts"] }],
+          testingStrategy: "t",
+          potentialChallenges: [],
+        }, context),
+      Error,
+    );
+    assertStringIncludes(error.message, "plan_generated lifecycle entry");
+    assertStringIncludes(error.message, "HTTP 400");
+  } finally {
+    await restore();
+  }
+});
+
+Deno.test("plan: succeeds unchanged when no credentials are configured", async () => {
+  const { context, writes, restore } = await buildTestContext(42);
+  try {
+    await model.methods.plan.execute({
+      summary: "s",
+      dddAnalysis: "d",
+      steps: [{ order: 1, description: "x", files: ["a.ts"] }],
+      testingStrategy: "t",
+      potentialChallenges: [],
+    }, context);
+
+    const stateWrite = writes.find((w) => w.specName === "state");
+    assertEquals(stateWrite!.data.phase, "plan_generated");
+  } finally {
+    await restore();
+  }
+});
+
+/**
+ * The auto-assign block promises in its own comment that assignment never
+ * breaks the triage flow, so the entry reporting on it must use the
+ * best-effort variant. Asserted at the source, since driving `start` to that
+ * branch would need the whole assignee lookup stubbed.
+ */
+Deno.test("start: the assignment entry is recorded best-effort", async () => {
+  const source = await Deno.readTextFile(
+    new URL("./issue_lifecycle.ts", import.meta.url),
+  );
+  const assignedEntry = source.indexOf('step: "assigned"');
+  assertEquals(assignedEntry > -1, true, "the assigned entry must still exist");
+
+  const preceding = source.slice(0, assignedEntry);
+  const recorder = preceding.lastIndexOf("recordLifecycle");
+  assertStringIncludes(
+    source.slice(recorder, assignedEntry),
+    "recordLifecycleBestEffort",
+    "the assigned entry reports on a best-effort action and must not raise",
+  );
 });
