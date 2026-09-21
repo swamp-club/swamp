@@ -802,6 +802,36 @@ all partition keys, then fetch all shards in parallel. Merge into the in-memory
 index. This replaces the single monolith GET with N parallel GETs — on S3/GCS
 this is typically faster because parallelism beats single-large-object latency.
 
+#### Memory contract
+
+`pullChanged` implementations run on a process-lifetime singleton in
+`swamp serve` — the sync service is created once at startup and shared across
+all pollers and handlers for the entire process. Any internal state that
+accumulates across calls is a memory leak.
+
+Rules:
+
+1. **Stream file content to disk.** Downloaded file bodies (`Uint8Array`,
+   `ArrayBuffer`) must not be retained in instance state after writing to the
+   local cache. Prefer streaming (`ReadableStream.pipeTo`) over buffering
+   (`transformToByteArray`) for file downloads. If buffering is unavoidable,
+   scope the reference to the download function so it becomes unreachable once
+   the write completes.
+
+2. **Bound or flush internal indexes.** If the implementation maintains an
+   in-memory index (e.g. a `Record<string, IndexEntry>`), write it to disk
+   after each `pullChanged` rather than accumulating entries across calls.
+   An in-memory-only index on a serve singleton grows unboundedly as the
+   datastore grows.
+
+3. **No file-content hashing in JS heap.** When comparing local files against
+   remote hashes, use a streaming hasher (`node:crypto.createHash`) rather than
+   reading entire files into memory with `Deno.readFile`.
+
+These rules are enforced by convention, not at the type level — the interface
+cannot assert memory behavior. The conformance suite in `packages/testing/`
+documents the expectation.
+
 #### Shard cleanup
 
 When deletions empty a shard (all entries removed), the shard file is left in

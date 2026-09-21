@@ -188,6 +188,14 @@ export function assertDatastoreExportConformance(
   );
 }
 
+// ── Memory contract (not runtime-assertable) ──────────────────────────
+//
+// pullChanged implementations MUST NOT retain file content buffers
+// (Uint8Array, ArrayBuffer) in instance state after writing to disk.
+// In swamp serve the sync service is a process-lifetime singleton, so
+// any accumulated state leaks for the entire process. See
+// design/enablers/datastores.md "Memory contract" for the full rules.
+
 /**
  * Asserts that a DistributedLock implementation satisfies the behavioral
  * contract.
