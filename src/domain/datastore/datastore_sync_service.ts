@@ -166,7 +166,25 @@ export interface DatastoreSyncOptions {
  * bidirectional sync between a local cache and a remote backend.
  */
 export interface DatastoreSyncService {
-  /** Pull changed files from the remote datastore to the local cache. */
+  /**
+   * Pull changed files from the remote datastore to the local cache.
+   *
+   * Memory contract — implementations MUST obey these rules:
+   *
+   * 1. **No retained file content.** Downloaded file bodies (Uint8Array,
+   *    ArrayBuffer) MUST NOT be held in instance state after they are
+   *    written to the local cache. Stream file content directly to disk
+   *    or scope buffer references so they become unreachable once the
+   *    write completes.
+   * 2. **Serve lifetime awareness.** In `swamp serve`, the sync service
+   *    is a process-lifetime singleton on `ConnectionContext` — it is
+   *    NOT recreated per command. Any per-call state that accumulates
+   *    (file content buffers, intermediate data structures) leaks for
+   *    the lifetime of the process.
+   * 3. **Bounded internal indexes.** If the implementation maintains an
+   *    in-memory index of remote entries, prefer writing it to disk
+   *    after each pull rather than growing it across calls.
+   */
   pullChanged(options?: DatastoreSyncOptions): Promise<number | void>;
   /** Push changed files from the local cache to the remote datastore. */
   pushChanged(options?: DatastoreSyncOptions): Promise<number | void>;

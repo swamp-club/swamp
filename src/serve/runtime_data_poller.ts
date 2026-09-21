@@ -95,6 +95,7 @@ export class RuntimeDataPoller {
           .info`Runtime data poller: ${count} file(s) updated, invalidating catalog`;
         this.#catalogInvalidate();
       }
+      this.#logHeapStats();
     } catch (error) {
       logger
         .warn`Runtime data poller pull failed: ${
@@ -102,6 +103,20 @@ export class RuntimeDataPoller {
       }`;
     } finally {
       this.#pulling = false;
+    }
+  }
+
+  #logHeapStats(): void {
+    try {
+      const mem = Deno.memoryUsage();
+      const rss = Math.round(mem.rss / 1024 / 1024);
+      const heapUsed = Math.round(mem.heapUsed / 1024 / 1024);
+      const heapTotal = Math.round(mem.heapTotal / 1024 / 1024);
+      const external = Math.round(mem.external / 1024 / 1024);
+      logger
+        .debug`Heap: rss=${rss}MB heapUsed=${heapUsed}MB heapTotal=${heapTotal}MB external=${external}MB`;
+    } catch {
+      // Deno.memoryUsage may not be available in all environments
     }
   }
 }
