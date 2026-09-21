@@ -171,6 +171,30 @@ interface WorkflowDef {
 
 // -- Helpers ----------------------------------------------------------------
 
+/**
+ * The environment child processes inherit, minus the dynamic-linker variables.
+ *
+ * Deno refuses to spawn under a scoped `--allow-run` while a dynamic-loader
+ * variable is set: the loader could be redirected to substitute a library for
+ * the binary named in the permission, so the scope would not mean what it
+ * says. Dropping them keeps the narrow permission rather than widening to an
+ * unscoped `--allow-run` — the tools spawned here are git and swamp, and
+ * neither needs them.
+ *
+ * The match is deliberately broad. This surfaced with LD_DYLD_PATH and
+ * dyld_file both set by a nix toolchain — one not matching a DYLD_ prefix and
+ * one lower-case — so it tests for either shape, case-insensitively, rather
+ * than enumerating names Deno may extend.
+ */
+function childEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(Deno.env.toObject())) {
+    if (/^LD_|DYLD/i.test(key)) continue;
+    env[key] = value;
+  }
+  return env;
+}
+
 /** Runs a command, returning stdout on success and null on any failure. */
 async function capture(
   command: string,
@@ -181,6 +205,8 @@ async function capture(
       args,
       stdout: "piped",
       stderr: "piped",
+      env: childEnv(),
+      clearEnv: true,
     }).output();
     return code === 0 ? new TextDecoder().decode(stdout) : null;
   } catch {
@@ -271,6 +297,8 @@ async function showAtCommit(
     args: ["show", `${commit}:${path}`],
     stdout: "piped",
     stderr: "piped",
+    env: childEnv(),
+    clearEnv: true,
   });
   const { code, stdout } = await cmd.output();
   return code === 0 ? stdout : null;
