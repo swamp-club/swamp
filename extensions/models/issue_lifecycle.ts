@@ -22,6 +22,8 @@ import {
   AdversarialFindingSchema,
   type AdversarialReviewData,
   AdversarialReviewSchema,
+  type AttestationRecordData,
+  AttestationRecordSchema,
   ClassificationSchema,
   type CodeConformanceReviewData,
   CodeConformanceReviewSchema,
@@ -49,6 +51,18 @@ import {
   recordRipple,
   recordUpstreamChange,
 } from "./_lib/lifecycle_recorder.ts";
+
+/**
+ * The moment `post_attestation` began writing an attestationRecord.
+ *
+ * A verification recorded before this passes the `attestation-posted` check
+ * without a receipt: definitions auto-upgrade at run time, so the check
+ * reaches lifecycles that were parked in `verifying` under the previous
+ * version, and those posted attestations that could not leave one. A
+ * verification recorded after it must have a receipt, because from that point
+ * on every accepted POST writes one.
+ */
+const ATTESTATION_RECEIPT_SINCE = Date.parse("2026-09-21T00:00:00.000Z");
 
 /** Global args type for the issue-lifecycle model. */
 type GlobalArgs = {
@@ -102,7 +116,7 @@ export function buildNotifyMessage(
 
 export const model = {
   type: "@swamp/issue-lifecycle",
-  version: "2026.09.18.1",
+  version: "2026.09.21.1",
   globalArguments: GlobalArgsSchema,
 
   upgrades: [
@@ -251,6 +265,18 @@ export const model = {
         "changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
+    {
+      toVersion: "2026.09.21.1",
+      description:
+        "post_attestation writes an attestationRecord resource and takes an " +
+        "optional workflowRunId. The documented attestation gate finally has " +
+        "something to require: new attestation-posted check on link_pr. " +
+        "Definitions auto-upgrade at run time, so the check reaches " +
+        "lifecycles already parked in `verifying` — one whose verification " +
+        "predates the upgrade passes without a receipt, since it could not " +
+        "have written one. No globalArguments changes.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
   ],
 
   resources: {
@@ -307,6 +333,16 @@ export const model = {
       schema: VerificationResultSchema,
       lifetime: "infinite" as const,
       garbageCollection: 5,
+    },
+    "attestationRecord": {
+      description:
+        "Receipt for an attestation swamp-club accepted. Written by " +
+        "post_attestation, taken as a data dependency by the create-PR step " +
+        "of the submit-change workflow, and required by the " +
+        "attestation-posted check on link_pr for anyone opening a PR by hand.",
+      schema: AttestationRecordSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 10,
     },
     "pullRequest": {
       description:
@@ -596,6 +632,95 @@ export const model = {
             pass: false,
             errors: [
               `Verification failed (${result.stepsFailed} step(s) failed). Fix the issues and re-verify.`,
+            ],
+          };
+        }
+
+        return { pass: true };
+      },
+    },
+
+    "attestation-posted": {
+      description:
+        "Ensures an attestation was published before a PR can be linked",
+      labels: ["policy"],
+      appliesTo: ["link_pr"],
+      execute: async (context: {
+        dataRepository: {
+          getContent: (
+            type: string,
+            modelId: string,
+            dataName: string,
+          ) => Promise<Uint8Array | null>;
+        };
+        modelType: string;
+        modelId: string;
+      }) => {
+        const content = await context.dataRepository.getContent(
+          context.modelType,
+          context.modelId,
+          "attestationRecord-main",
+        );
+
+        if (!content) {
+          // Backwards compatibility, and the one place this check may pass on
+          // an absent record. Definitions auto-upgrade at run time, so this
+          // check reaches lifecycles that were already parked in `verifying`
+          // when the upgrade landed — including ones that posted a perfectly
+          // good attestation under the previous version, which wrote no
+          // receipt. Refusing those would strand them with no way forward but
+          // to re-verify work already verified. A verification recorded before
+          // the upgrade is therefore admitted; one recorded after it is not,
+          // because from that point on post_attestation always writes a
+          // receipt and a missing one means no attestation was published.
+          const verification = await context.dataRepository.getContent(
+            context.modelType,
+            context.modelId,
+            "verificationResult-main",
+          );
+          if (!verification) {
+            return {
+              pass: false,
+              errors: [
+                "No attestation has been published. Run the submit-change " +
+                "workflow, which generates the attestation from the run " +
+                "and posts it, rather than linking a PR by hand.",
+              ],
+            };
+          }
+          const result = JSON.parse(
+            new TextDecoder().decode(verification),
+          ) as { verifiedAt?: string };
+          const verifiedAt = result.verifiedAt
+            ? Date.parse(result.verifiedAt)
+            : Number.NaN;
+          if (
+            !Number.isNaN(verifiedAt) &&
+            verifiedAt < ATTESTATION_RECEIPT_SINCE
+          ) {
+            return { pass: true };
+          }
+          return {
+            pass: false,
+            errors: [
+              "No attestation record exists for this verification. " +
+              "post_attestation writes one on every successful publish, so " +
+              "its absence means the attestation was never accepted. Run " +
+              "the submit-change workflow to verify, attest and open the PR.",
+            ],
+          };
+        }
+
+        const record = JSON.parse(
+          new TextDecoder().decode(content),
+        ) as AttestationRecordData;
+
+        if (!record.gatePassed) {
+          return {
+            pass: false,
+            errors: [
+              `The published attestation ${record.attestationId} records a ` +
+              "failed gate. Fix the failures and re-run submit-change.",
             ],
           };
         }
@@ -2155,24 +2280,35 @@ export const model = {
 
     post_attestation: {
       description:
-        "Post the verification attestation to swamp-club. Must be called " +
-        "after verification passes and the user confirms the checklist, " +
-        "before opening a PR. The PR must not open without a stored " +
-        "attestation — this is a hard gate.",
+        "Post the verification attestation to swamp-club and record the " +
+        "receipt locally. Normally invoked as a step of the submit-change " +
+        "workflow, whose attest step generates the attestation from the " +
+        "run's own record. The attestationRecord it writes is what the " +
+        "create-PR step depends on and what the attestation-posted check " +
+        "requires, so a PR cannot open without one.",
       arguments: z.object({
         attestation: z.string().min(1).describe(
           "The verification attestation JSON as a string. Must include " +
             "version, subject, gate, configIntegrity, steps, and timing.",
         ),
+        workflowRunId: z.string().optional().describe(
+          "The submit-change run that produced the attestation. Recorded on " +
+            "the receipt; omitted when an attestation is posted by hand.",
+        ),
       }),
       execute: async (
-        args: { attestation: string },
+        args: { attestation: string; workflowRunId?: string },
         context: {
           globalArgs: GlobalArgs;
           logger: {
             info: (msg: string, props: Record<string, unknown>) => void;
             warning: (msg: string, props: Record<string, unknown>) => void;
           };
+          writeResource: (
+            specName: string,
+            instanceName: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
         },
       ) => {
         const sc = await createSwampClubClient(
@@ -2198,6 +2334,32 @@ export const model = {
         context.logger.info(
           "Attestation posted to swamp-club: id={id} postedBy={postedBy}",
           { id: result.id, postedBy: result.postedBy },
+        );
+
+        // The receipt is written from the attestation's own fields, never from
+        // separate arguments. A caller that could state the commit alongside
+        // the document could state a different one, and the receipt is what
+        // gates the PR.
+        const subject = (parsed.subject ?? {}) as Record<string, unknown>;
+        const gate = (parsed.gate ?? {}) as Record<string, unknown>;
+        const attestationHandle = await context.writeResource(
+          "attestationRecord",
+          "attestationRecord-main",
+          {
+            attestationId: result.id,
+            commit: String(subject.commit ?? ""),
+            branch: String(subject.branch ?? ""),
+            gatePassed: gate.allPassed === true,
+            workflowRunId: args.workflowRunId ??
+              (typeof parsed.workflowRunId === "string"
+                ? parsed.workflowRunId
+                : undefined),
+            generatedBy: typeof parsed.generatedBy === "string"
+              ? parsed.generatedBy
+              : undefined,
+            postedBy: result.postedBy,
+            postedAt: result.postedAt,
+          },
         );
 
         // The one deliberate downgrade in this model. Unlike every other
@@ -2231,7 +2393,7 @@ export const model = {
           );
         }
 
-        return { dataHandles: [] };
+        return { dataHandles: [attestationHandle] };
       },
     },
 

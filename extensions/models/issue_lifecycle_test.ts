@@ -330,8 +330,8 @@ Deno.test("model: exposes the new post_attestation method definition", () => {
   );
 });
 
-Deno.test("model: version is 2026.09.18.1", () => {
-  assertEquals(model.version, "2026.09.18.1");
+Deno.test("model: version is 2026.09.21.1", () => {
+  assertEquals(model.version, "2026.09.21.1");
 });
 
 // ---------------------------------------------------------------------------
@@ -1897,4 +1897,109 @@ Deno.test("start: the assignment entry is recorded best-effort", async () => {
     "recordLifecycleBestEffort",
     "the assigned entry reports on a best-effort action and must not raise",
   );
+});
+
+// ---------------------------------------------------------------------------
+// attestation-posted check
+// ---------------------------------------------------------------------------
+
+function attestationCheckContext(
+  stored: Record<string, Record<string, unknown> | undefined>,
+) {
+  return {
+    methodName: "link_pr",
+    dataRepository: {
+      getContent: (_type: string, _modelId: string, dataName: string) => {
+        const value = stored[dataName];
+        return Promise.resolve(
+          value === undefined
+            ? null
+            : new TextEncoder().encode(JSON.stringify(value)),
+        );
+      },
+    },
+    modelType: "@swamp/issue-lifecycle",
+    modelId: "issue-42",
+  };
+}
+
+Deno.test("attestation-posted: passes when a receipt records a passing gate", async () => {
+  const result = await model.checks["attestation-posted"].execute(
+    attestationCheckContext({
+      "attestationRecord-main": {
+        attestationId: "att-1",
+        commit: "abc123",
+        branch: "fix/thing",
+        gatePassed: true,
+        postedBy: "someone",
+        postedAt: new Date().toISOString(),
+      },
+    }),
+  );
+
+  assertEquals(result.pass, true);
+});
+
+Deno.test("attestation-posted: rejects a receipt whose gate failed", async () => {
+  const result = await model.checks["attestation-posted"].execute(
+    attestationCheckContext({
+      "attestationRecord-main": {
+        attestationId: "att-2",
+        commit: "abc123",
+        branch: "fix/thing",
+        gatePassed: false,
+        postedBy: "someone",
+        postedAt: new Date().toISOString(),
+      },
+    }),
+  );
+
+  assertEquals(result.pass, false);
+  assertStringIncludes(result.errors![0], "att-2");
+});
+
+Deno.test("attestation-posted: rejects a PR with no verification at all", async () => {
+  const result = await model.checks["attestation-posted"].execute(
+    attestationCheckContext({}),
+  );
+
+  assertEquals(result.pass, false);
+  assertStringIncludes(result.errors![0], "submit-change");
+});
+
+Deno.test("attestation-posted: admits a verification recorded before receipts existed", async () => {
+  // In-flight lifecycles: definitions auto-upgrade at run time, so this check
+  // reaches a lifecycle that posted a good attestation under the previous
+  // version, which wrote no receipt. Stranding it would force a re-verify of
+  // work already verified.
+  const result = await model.checks["attestation-posted"].execute(
+    attestationCheckContext({
+      "verificationResult-main": {
+        allPassed: true,
+        stepsFailed: 0,
+        verifiedAt: "2026-09-01T12:00:00.000Z",
+      },
+    }),
+  );
+
+  assertEquals(result.pass, true);
+});
+
+Deno.test("attestation-posted: rejects a verification recorded after receipts existed", async () => {
+  const result = await model.checks["attestation-posted"].execute(
+    attestationCheckContext({
+      "verificationResult-main": {
+        allPassed: true,
+        stepsFailed: 0,
+        verifiedAt: new Date().toISOString(),
+      },
+    }),
+  );
+
+  assertEquals(result.pass, false);
+  assertStringIncludes(result.errors![0], "never accepted");
+});
+
+Deno.test("attestation-posted: applies to link_pr", () => {
+  assertEquals(model.checks["attestation-posted"].appliesTo, ["link_pr"]);
 });

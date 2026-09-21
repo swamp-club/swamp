@@ -282,6 +282,43 @@ export const VerificationResultSchema = z.object({
 
 export type VerificationResultData = z.infer<typeof VerificationResultSchema>;
 
+// ---------------------------------------------------------------------------
+// Attestation Record Schema
+// ---------------------------------------------------------------------------
+
+/**
+ * Local receipt for an attestation that was accepted by swamp-club.
+ *
+ * `post_attestation` used to write nothing, so three places could document
+ * "a PR must not open without a stored attestation" while nothing downstream
+ * had anything to require. This resource is that something: the create-PR step
+ * takes it as a data dependency, and the `attestation-posted` check on
+ * `link_pr` requires it for anyone who opens a PR by hand.
+ */
+export const AttestationRecordSchema = z.object({
+  attestationId: z.string().describe(
+    "The id swamp-club assigned to the stored attestation.",
+  ),
+  commit: z.string().describe(
+    "Commit the attestation is bound to, read from the attestation itself.",
+  ),
+  branch: z.string().describe("Branch the attestation names."),
+  gatePassed: z.boolean().describe(
+    "The attestation's own gate.allPassed verdict.",
+  ),
+  workflowRunId: z.string().optional().describe(
+    "Run that produced the attestation. Absent when it was posted by hand.",
+  ),
+  generatedBy: z.string().optional().describe(
+    "How the attestation was produced — 'workflow-step' when a run generated " +
+      "it. Absent on attestations assembled outside a run.",
+  ),
+  postedBy: z.string().describe("Who swamp-club recorded as the poster."),
+  postedAt: z.string().describe("ISO-8601 timestamp of the accepted POST."),
+});
+
+export type AttestationRecordData = z.infer<typeof AttestationRecordSchema>;
+
 export const PullRequestSchema = z.object({
   url: z.string().min(1).describe(
     "Canonical URL of the pull request. Opaque to the model — the agent " +

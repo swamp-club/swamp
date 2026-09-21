@@ -24,6 +24,12 @@ inputs:
     branch:
       type: string
       description: Branch name being verified.
+    issue:
+      type: integer
+      description: |
+        swamp-club lab issue number. The run publishes the attestation through
+        that issue's @swamp/issue-lifecycle instance (`issue-<N>`), which must
+        already exist and be in the `verifying` phase.
     runBuild:
       type: boolean
       default: true
@@ -42,6 +48,7 @@ inputs:
   required:
     - commit
     - branch
+    - issue
 
 reports:
   require:
@@ -501,16 +508,23 @@ jobs:
             run: "deno task eval-skill-triggers"
             workingDir: "/tmp/swamp-verify-skills-${{ run.id }}"
 
-  # ══ Cleanup ════════════════════════════════════════════════════════════════
+  # ══ Attestation ════════════════════════════════════════════════════════════
   #
-  # One cleanup job for all three groups, not one per group. The three used to
-  # clean up independently because each had its own run id to scope the
-  # `*-<run id>.yaml` auto-definition sweep by; under a shared run id, a
-  # per-group cleanup would delete another still-running group's model
-  # definitions.
+  # The attestation is generated here, by a step of the run it describes, from
+  # what the run has already persisted. It used to be assembled by the agent
+  # out of the run records it had just produced — which made the party that
+  # performed verification and the author of the document attesting to it the
+  # same party.
+  #
+  # The dependency conditions are `always`, not `succeeded`. A deselected group
+  # reports `skipped`, and a skipped job does not satisfy a `succeeded`
+  # dependency, so a `succeeded` condition here would silently stop attesting
+  # the moment anyone re-ran a subset. A failed verification still attests —
+  # the attestation records the failure, and the jobs that publish and open the
+  # PR are what depend on `succeeded`.
 
-  - name: cleanup
-    description: Remove the temporary worktrees and per-run model definitions.
+  - name: attest
+    description: Build the verification attestation from the run's own record.
     dependsOn:
       - job: build-compile
         condition:
@@ -522,6 +536,68 @@ jobs:
         condition:
           type: always
       - job: skills
+        condition:
+          type: always
+    steps:
+      - name: build-attestation
+        task:
+          type: model_method
+          modelType: "command/shell"
+          modelName: submit-attest-${{ run.id }}
+          methodName: execute
+          inputs:
+            # stdout is the attestation and nothing else, so the publish step
+            # can take it verbatim as its input. Diagnostics go to stderr.
+            run: |
+              set -euo pipefail
+              RUN_JSON=$(mktemp)
+              SWAMP_WORKFLOWS_DIR=verification swamp workflow history get \
+                "${{ run.id }}" --json > "$RUN_JSON"
+              deno run --allow-read --allow-run=git \
+                scripts/build_attestation.ts \
+                --run-file "$RUN_JSON" \
+                --commit "${{ inputs.commit }}" \
+                --branch "${{ inputs.branch }}"
+              STATUS=$?
+              rm -f "$RUN_JSON"
+              exit $STATUS
+
+  - name: publish-attestation
+    description: Post the attestation to swamp-club through the issue lifecycle.
+    dependsOn:
+      - job: attest
+        condition:
+          type: succeeded
+    steps:
+      - name: post
+        task:
+          type: model_method
+          modelType: "@swamp/issue-lifecycle"
+          modelName: issue-${{ inputs.issue }}
+          methodName: post_attestation
+          inputs:
+            # The attestation text comes from the generating step's recorded
+            # output. Not a file path and not something the caller supplies:
+            # the only thing that can reach swamp-club is what the attest step
+            # actually wrote.
+            attestation: "${{ data.latest('submit-attest-' + run.id, 'result').attributes.stdout }}"
+            workflowRunId: "${{ run.id }}"
+
+  # ══ Cleanup ════════════════════════════════════════════════════════════════
+  #
+  # One cleanup job for all three groups, not one per group. The three used to
+  # clean up independently because each had its own run id to scope the
+  # `*-<run id>.yaml` auto-definition sweep by; under a shared run id, a
+  # per-group cleanup would delete another still-running group's model
+  # definitions.
+
+  - name: cleanup
+    description: Remove the temporary worktrees and per-run model definitions.
+    dependsOn:
+      - job: attest
+        condition:
+          type: always
+      - job: publish-attestation
         condition:
           type: always
     steps:

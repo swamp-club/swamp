@@ -1,11 +1,12 @@
 # Verification Flow
 
 Read this after code conformance review is complete and all deviations are
-justified. The verification loop runs the same checks as CI in a container
-sandbox **before** opening a PR.
+justified. The `submit-change` workflow runs the same checks as CI, generates
+the attestation from its own run record, and publishes it — all **before** a PR
+opens.
 
-Read `agent-constraints/verification-conventions.md` for repo-specific container
-and workflow configuration.
+Read `agent-constraints/verification-conventions.md` for repo-specific workflow
+configuration.
 
 ## 1. Start Verification
 
@@ -25,7 +26,8 @@ skill checks:
 ```
 SWAMP_WORKFLOWS_DIR=verification swamp workflow run submit-change \
   --input commit=$(git rev-parse HEAD) \
-  --input branch=$(git branch --show-current)
+  --input branch=$(git branch --show-current) \
+  --input issue=<N>
 ```
 
 `SWAMP_WORKFLOWS_DIR=verification` tells swamp to look for workflow files in the
@@ -42,93 +44,60 @@ group cannot be affected. When you can, deselect it with a boolean input —
 reason, so the attestation says the group was deselected rather than quietly
 counting more skips.
 
-## 3. Read the Attestation
+## 3. The Attestation Is Built and Published by the Run
 
-The workflow produces a verification attestation on completion (pass or fail).
-Look for the attestation in the workflow output — it shows a checklist of every
-step with pass/fail status.
+The workflow's `attest` step generates the attestation from the run's own record
+— step statuses, durations, skip reasons — and hashes of the config files at the
+verified commit. The `publish-attestation` job posts it to swamp-club through
+the issue's lifecycle instance, which writes an `attestationRecord` receipt
+locally.
 
-If any step failed, the attestation includes retrieval commands to get the full
-output:
+**Do NOT construct, edit or reuse an attestation.** There is nothing to fill in:
+every field comes from the run. An agent that both performs verification and
+writes the document attesting to it is a weaker property than any specific
+ordering bug, and this is what removes it.
 
-```
-swamp data get <model-name> <data-name>
-```
+See `agent-constraints/verification-conventions.md` for what the attestation
+carries and why.
 
 ## 4. Handle the Result
 
 ### All steps passed
 
-**Only proceed when `gate.allPassed` is true — every non-skipped step must have
-succeeded.** A partial pass is NOT a pass. If any step failed, go to "Any step
-failed" below.
+**Only proceed when no step failed** — a partial pass is NOT a pass. If any step
+failed, go to "Any step failed" below.
 
-1. **Build a fresh attestation from the actual run data.** Query
-   `workflow history get <run-id> --json` for the run, extract real step
-   durations and statuses, and recompute `configIntegrity` checksums from the
-   files at the verified commit (`sha256sum`). **NEVER reuse or edit a previous
-   attestation** — swapping the commit SHA or run IDs in an old attestation is a
-   trust chain violation. See `agent-constraints/verification-conventions.md`
-   for the full schema.
+1. Read the run record:
 
-2. Call `verification_passed` with the attestation data:
+   ```
+   SWAMP_WORKFLOWS_DIR=verification swamp workflow history get <run-id> --json
+   ```
+
+2. Call `verification_passed` with what the run recorded:
 
    ```
    swamp model @swamp/issue-lifecycle method run verification_passed issue-<N> \
      --input workflowRunId=<run-id> \
      --input commit=<SHA> \
      --input branch=<branch> \
-     --input steps='[{"job":"static-analysis","step":"lint","model":"build-lint","status":"succeeded"}, ...]'
+     --input steps='[{"job":"build-static-analysis","step":"lint","model":"build-lint","status":"succeeded"}, ...]'
    ```
 
-   Populate the `steps` array from the attestation output. Include every step
-   with its actual status (succeeded, failed, or skipped).
+   Populate `steps` from the run record. Include every step with its actual
+   status (succeeded, failed, or skipped).
 
-3. **Present the full verification checklist to the user and wait for their
-   confirmation to proceed.** The checklist must show every step in the run —
-   status, model, duration, and for reviews the VERDICT and finding count.
-   Include the workflow run file paths so the user can inspect the raw data. See
-   `agent-constraints/verification-conventions.md` for the checklist format.
+3. **Present the verification checklist to the user.** Show every step with its
+   status, model, duration, and for skipped steps the recorded reason. Include
+   the run file path so the user can inspect the raw data.
 
-   **Stop here and wait.** Do NOT post the attestation or open a PR until the
-   user has seen the checklist and explicitly said they are ready to open the
-   PR.
+4. Proceed to open a PR — read the "Create a PR" section in
+   [implementation.md](implementation.md).
 
-4. **After the user confirms**, post the attestation to swamp-club using the
-   issue-lifecycle model's `post_attestation` method. The user's confirmation is
-   what triggers the attestation push. Do not post it automatically after
-   verification passes — the user decides when to ship.
-
-   Write the attestation JSON to a file first, then pass it as a stringified
-   JSON value:
-
-   ```
-   swamp model @swamp/issue-lifecycle method run post_attestation issue-<N> \
-     --input attestation="$(cat <path-to-attestation.json>)" \
-     --repo-dir <repo-root>
-   ```
-
-   The `attestation` input must be the full attestation JSON as a single string
-   — use `$(cat file)` to inline it from the file you wrote in step 1.
-
-   The method posts the attestation to swamp-club using the CLI's existing auth
-   credentials. It throws on failure — if it fails, fix the auth or connectivity
-   issue and retry.
-
-   **Do NOT proceed until `post_attestation` succeeds.** The CI
-   `validate-attestation` check will fail if no attestation exists for the
-   commit.
-
-   **NEVER amend, rebase, or modify the commit after posting the attestation.**
-   The attestation is bound to a specific commit SHA. If you amend the commit
-   (e.g., to add a co-author, fix a typo, or reword the message), the SHA
-   changes and the attestation becomes invalid — CI will report a commit
-   mismatch. If you need to change the commit after posting, you must re-run
-   verification on the new SHA and post a new attestation.
-
-5. **Only after `post_attestation` succeeds**, proceed to open a PR — read the
-   "Create a PR" section in [implementation.md](implementation.md). If you
-   skipped step 4, implementation.md will send you back here.
+   **NEVER amend, rebase, or modify the commit after the attestation is
+   published.** The attestation is bound to a commit SHA. Amending — to add a
+   co-author, fix a typo, reword the message — changes the SHA and CI reports a
+   commit mismatch. If the commit has to change, re-run `submit-change` on the
+   new SHA.
 
 ### Any step failed
 
@@ -149,21 +118,19 @@ This transitions back to `implementing`. Fix the failing code:
 
 After fixing, return to step 1 and re-verify. Repeat until all steps pass.
 
-## 5. Do NOT Open a PR Without Verification and Attestation
+## 5. The PR Cannot Open Without an Attestation
 
-The `link_pr` method requires a passing verification result. If you skip
-verification and try to link a PR directly, it will be missing the
-`verificationResult` data that the lifecycle checks for.
+`link_pr` has two gates it cannot get past:
 
-**Two hard gates before a PR opens:**
+1. **`verification-clear`** — a `verificationResult` recording that no step
+   failed.
+2. **`attestation-posted`** — an `attestationRecord`, written only when
+   swamp-club accepts an attestation, whose gate passed.
 
-1. **Verification passes** — `gate.allPassed` is true
-2. **Attestation posted** — the attestation JSON has been successfully stored in
-   swamp-club via `POST /api/v1/admin/attestations`
+The second is a backstop, not the mechanism: someone can still run
+`gh pr create` by hand, so the check is the belt. The sanctioned route is the
+`submit-change` workflow, where the attestation is a data dependency of PR
+creation rather than a claim checked afterwards.
 
-If either gate fails, do NOT open a PR. The CI `validate-attestation` job reads
-the attestation from swamp-club and validates commit match, config integrity,
-and freshness. A missing attestation will be flagged.
-
-The loop is: implement → conformance review → verify → fix → re-verify → present
-checklist → user confirms → post attestation → PR.
+The loop is: implement → conformance review → submit-change → fix → re-run →
+present the checklist → PR.
