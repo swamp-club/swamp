@@ -41,7 +41,10 @@ import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { extractModelReferencesFromWorkflow } from "../../domain/workflows/model_reference_extractor.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { mergeInputArgs, parseInputs } from "../input_parser.ts";
-import { InputValidationService } from "../../domain/inputs/mod.ts";
+import {
+  coerceInputTypes,
+  InputValidationService,
+} from "../../domain/inputs/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import {
@@ -152,11 +155,16 @@ export const workflowEvaluateCommand = withRemoteOptions(
       throw new UserError(`Workflow not found: ${workflowIdOrName}`);
     }
 
-    // Validate inputs against workflow schema if provided
+    // Validate inputs against workflow schema if provided.
+    //
+    // Coerce first, exactly as `workflow run` does. `--input issue=42` arrives
+    // as the string "42"; validating before coercion rejected every non-string
+    // input ("issue must be an integer", "runBuild must be a boolean") for a
+    // workflow that runs perfectly well.
     if (workflow.inputs && Object.keys(inputs).length > 0) {
       const validationService = new InputValidationService();
       const inputsWithDefaults = validationService.applyDefaults(
-        inputs,
+        coerceInputTypes(inputs, workflow.inputs),
         workflow.inputs,
       );
       const validationResult = validationService.validate(
