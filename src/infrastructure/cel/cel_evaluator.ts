@@ -31,6 +31,39 @@ export interface ValidationResult {
   error?: string;
 }
 
+/**
+ * Fields of `DataRecord` — the shape `data.latest()` and `data.version()`
+ * resolve to. See {@link CelEvaluator.explainMissedLookups} for why these are
+ * written out rather than derived.
+ */
+const DATA_RECORD_FIELDS = new Set([
+  "attributes",
+  "content",
+  "contentType",
+  "createdAt",
+  "dataType",
+  "id",
+  "isLatest",
+  "jobName",
+  "lifetime",
+  "modelId",
+  "modelName",
+  "modelType",
+  "name",
+  "namespace",
+  "ownerRef",
+  "ownerType",
+  "size",
+  "source",
+  "specName",
+  "stepName",
+  "streaming",
+  "tags",
+  "version",
+  "workflowName",
+  "workflowRunId",
+]);
+
 function unwrapOptional(value: unknown): unknown {
   if (value instanceof Optional) {
     return value.hasValue() ? value.value() : null;
@@ -115,9 +148,40 @@ export class CelWorkersNamespace {
  */
 export class CelDataNamespace {
   private readonly delegate: Record<string, unknown>;
+  /**
+   * Lookups that resolved to no record, in call order. A null lookup is a
+   * supported result — guards use it as a presence test and `.?attributes`
+   * selects through it — so the miss is recorded rather than thrown, and
+   * {@link CelEvaluator} uses it to explain the "No such key" that a
+   * non-optional select on the missing record raises.
+   */
+  readonly missedLookups: string[] = [];
 
   constructor(delegate: Record<string, unknown>) {
     this.delegate = delegate;
+  }
+
+  /** Drops recorded misses so they cannot leak into a later evaluation. */
+  clearMissedLookups(): void {
+    this.missedLookups.length = 0;
+  }
+
+  /**
+   * Records `call` when the lookup resolved to no record. Delegates return
+   * either a value or a Promise; the Promise arm returns the derived promise
+   * so the miss is recorded before cel-js selects a field off the result.
+   */
+  private recordMiss(result: unknown, call: string): unknown {
+    if (result instanceof Promise) {
+      return result.then((value) => {
+        if (value === null || value === undefined) {
+          this.missedLookups.push(call);
+        }
+        return value;
+      });
+    }
+    if (result === null || result === undefined) this.missedLookups.push(call);
+    return result;
   }
 
   latest(modelName: string, dataName: string, varyValues?: unknown[]): unknown {
@@ -126,7 +190,10 @@ export class CelDataNamespace {
       const resolvedName = varyValues && varyValues.length > 0
         ? composeDataName(dataName, varyValues.map((v) => String(v)))
         : dataName;
-      return (fn as (m: string, d: string) => unknown)(modelName, resolvedName);
+      return this.recordMiss(
+        (fn as (m: string, d: string) => unknown)(modelName, resolvedName),
+        `data.latest("${modelName}", "${resolvedName}")`,
+      );
     }
     return null;
   }
@@ -147,17 +214,23 @@ export class CelDataNamespace {
             versionOrVary.map((v) => String(v)),
           )
           : dataName;
-        return (fn as (m: string, d: string, v: number) => unknown)(
-          modelName,
-          resolvedName,
-          Number(version),
+        return this.recordMiss(
+          (fn as (m: string, d: string, v: number) => unknown)(
+            modelName,
+            resolvedName,
+            Number(version),
+          ),
+          `data.version("${modelName}", "${resolvedName}", ${Number(version)})`,
         );
       }
       // 3-arg form: version(model, name, version)
-      return (fn as (m: string, d: string, v: number) => unknown)(
-        modelName,
-        dataName,
-        Number(versionOrVary),
+      return this.recordMiss(
+        (fn as (m: string, d: string, v: number) => unknown)(
+          modelName,
+          dataName,
+          Number(versionOrVary),
+        ),
+        `data.version("${modelName}", "${dataName}", ${Number(versionOrVary)})`,
       );
     }
     return null;
@@ -458,16 +531,16 @@ export class CelEvaluator {
    * @throws InvalidExpressionError if evaluation fails
    */
   evaluate(expression: string, context: Record<string, unknown>): unknown {
+    // Wrap file/data namespace objects in registered types so cel-js can
+    // resolve receiver methods instead of treating them as maps. Hoisted out
+    // of the try so the catch can read back which data lookups missed.
+    const wrappedContext = this.wrapNamespaces(context);
     try {
       // Transform hyphenated model names to bracket notation before evaluation
       const transformedExpr = transformHyphenatedModelRefs(expression);
 
       // Warn about deprecated model.*.resource / model.*.file patterns
       this.warnDeprecatedPatterns(transformedExpr);
-
-      // Wrap file/data namespace objects in registered types so cel-js can
-      // resolve receiver methods instead of treating them as maps.
-      const wrappedContext = this.wrapNamespaces(context);
 
       const rawResult = this.env.evaluate(transformedExpr, wrappedContext);
       const result = unwrapOptional(rawResult);
@@ -503,7 +576,10 @@ export class CelEvaluator {
       // (the Promise detection above already throws this type).
       if (error instanceof InvalidExpressionError) throw error;
       throw new InvalidExpressionError(
-        error instanceof Error ? error.message : String(error),
+        this.explainMissedLookups(
+          error instanceof Error ? error.message : String(error),
+          wrappedContext,
+        ),
         expression,
         undefined,
         error instanceof Error ? error : undefined,
@@ -527,10 +603,10 @@ export class CelEvaluator {
     expression: string,
     context: Record<string, unknown>,
   ): Promise<unknown> {
+    const wrappedContext = this.wrapNamespaces(context);
     try {
       const transformedExpr = transformHyphenatedModelRefs(expression);
       this.warnDeprecatedPatterns(transformedExpr);
-      const wrappedContext = this.wrapNamespaces(context);
       const rawResult = await this.env.evaluate(
         transformedExpr,
         wrappedContext,
@@ -538,7 +614,10 @@ export class CelEvaluator {
       return coerceBigInts(unwrapOptional(rawResult));
     } catch (error) {
       throw new InvalidExpressionError(
-        error instanceof Error ? error.message : String(error),
+        this.explainMissedLookups(
+          error instanceof Error ? error.message : String(error),
+          wrappedContext,
+        ),
         expression,
         undefined,
         error instanceof Error ? error : undefined,
@@ -588,6 +667,10 @@ export class CelEvaluator {
       data && typeof data === "object" && !(data instanceof CelDataNamespace)
     ) {
       wrapped["data"] = new CelDataNamespace(data as Record<string, unknown>);
+    } else if (data instanceof CelDataNamespace) {
+      // An already-wrapped namespace is reused across evaluations; drop the
+      // previous expression's misses so they cannot explain this one's error.
+      data.clearMissedLookups();
     }
     if (
       workers && typeof workers === "object" &&
@@ -607,6 +690,42 @@ export class CelEvaluator {
       delete wrapped["modelMethod"];
     }
     return wrapped;
+  }
+
+  /**
+   * Appends an explanation when a "No such key" error is really a data lookup
+   * that found no record.
+   *
+   * `data.latest()` and `data.version()` return null when the record is
+   * missing, and a non-optional select off that null raises cel-js's generic
+   * "No such key: attributes" — which points the caret at the field and hides
+   * the real cause. The hint names the lookups that missed, and is appended
+   * below cel-js's own source snippet so the caret survives.
+   *
+   * Gated on the selected key being a field of `DataRecord`, so an expression
+   * that mixes an optional miss with a genuine misspelled attribute is not
+   * told to make the misspelling optional. The field set is written out rather
+   * than derived from the `DataRecord` type, which carries no runtime keys;
+   * drift is harmless either way — a missing entry only costs the hint, and a
+   * stale one only adds it to an expression that already names a missed
+   * lookup.
+   */
+  private explainMissedLookups(
+    message: string,
+    wrappedContext: Record<string, unknown>,
+  ): string {
+    // cel-js appends a source snippet and caret after the first line, so this
+    // matches the prefix — never the whole message.
+    const key = message.match(/^No such key: (\w+)/)?.[1];
+    if (!key || !DATA_RECORD_FIELDS.has(key)) return message;
+    const data = wrappedContext["data"];
+    if (!(data instanceof CelDataNamespace)) return message;
+    const missed = [...new Set(data.missedLookups)];
+    if (missed.length === 0) return message;
+    return `${message}\n\n${
+      missed.join(" and ")
+    } found no data record — check the model and data names, or use ` +
+      `.?${key} if the record may not exist yet.`;
   }
 
   /**

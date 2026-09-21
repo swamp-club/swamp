@@ -24,6 +24,7 @@ import {
   assertThrows,
 } from "@std/assert";
 import {
+  CelDataNamespace,
   CelEvaluator,
   coerceBigInts,
   createExtensionCelEnvironment,
@@ -1420,4 +1421,176 @@ Deno.test("coerceBigInts: preserves __proto__ key in objects", () => {
   assertStrictEquals(Object.hasOwn(result, "__proto__"), true);
   assertEquals(result["__proto__"], 42);
   assertEquals(result["normal"], 7);
+});
+
+/** Data delegate over a fixed record set; every other name resolves to null. */
+function missingRecordContext(
+  records: Record<string, Record<string, unknown>> = {
+    result: { id: "d1", name: "result", version: 1, attributes: { ok: 1 } },
+  },
+  async = true,
+): Record<string, unknown> {
+  const lookup = (_modelName: string, dataName: string) =>
+    records[dataName] ?? null;
+  return {
+    data: {
+      latest: (m: string, d: string) =>
+        async ? Promise.resolve(lookup(m, d)) : lookup(m, d),
+      version: (m: string, d: string, _v: number) =>
+        async ? Promise.resolve(lookup(m, d)) : lookup(m, d),
+    },
+  };
+}
+
+async function messageFrom(
+  evaluator: CelEvaluator,
+  expression: string,
+  context: Record<string, unknown>,
+): Promise<string> {
+  try {
+    await evaluator.evaluateAsync(expression, context);
+  } catch (error) {
+    return (error as Error).message;
+  }
+  throw new Error(`expected ${expression} to throw`);
+}
+
+Deno.test("CelEvaluator: explains 'No such key' when data.latest() found no record", async () => {
+  const message = await messageFrom(
+    new CelEvaluator(),
+    'data.latest("echo-hi", "nope").attributes.exitCode',
+    missingRecordContext(),
+  );
+  assertStringIncludes(message, "No such key: attributes");
+  assertStringIncludes(
+    message,
+    'data.latest("echo-hi", "nope") found no data record',
+  );
+  assertStringIncludes(message, ".?attributes");
+  // cel-js's source snippet and caret must survive the appended hint.
+  assertStringIncludes(
+    message,
+    'data.latest("echo-hi", "nope").attributes.exitCode',
+  );
+  assertStringIncludes(message, "^");
+});
+
+Deno.test("CelEvaluator: explains a missed data.version() lookup with its version", async () => {
+  const message = await messageFrom(
+    new CelEvaluator(),
+    'data.version("echo-hi", "nope", 2).attributes.exitCode',
+    missingRecordContext(),
+  );
+  assertStringIncludes(
+    message,
+    'data.version("echo-hi", "nope", 2) found no data record',
+  );
+});
+
+Deno.test("CelEvaluator: explains a missed lookup from a synchronous data delegate", () => {
+  const evaluator = new CelEvaluator();
+  const error = assertThrows(
+    () =>
+      evaluator.evaluate(
+        'data.latest("echo-hi", "nope").attributes.exitCode',
+        missingRecordContext(undefined, false),
+      ),
+    Error,
+  );
+  assertStringIncludes(
+    error.message,
+    'data.latest("echo-hi", "nope") found no data record',
+  );
+});
+
+Deno.test("CelEvaluator: leaves 'No such key' alone for an unknown field on a record that exists", async () => {
+  const message = await messageFrom(
+    new CelEvaluator(),
+    'data.latest("echo-hi", "result").attributes.typo',
+    missingRecordContext(),
+  );
+  assertStringIncludes(message, "No such key: typo");
+  assertEquals(message.includes("found no data record"), false);
+});
+
+Deno.test("CelEvaluator: does not blame a missed optional lookup for an unrelated bad field", async () => {
+  // The miss is recorded, but `typo` is not a DataRecord field, so the hint
+  // must stay off — otherwise it would suggest making the typo optional.
+  const message = await messageFrom(
+    new CelEvaluator(),
+    'data.latest("m", "nope").?attributes.orValue({}) == {} ' +
+      '&& data.latest("m", "result").attributes.typo == 1',
+    missingRecordContext(),
+  );
+  assertStringIncludes(message, "No such key: typo");
+  assertEquals(message.includes("found no data record"), false);
+});
+
+Deno.test("CelEvaluator: names only the lookup that missed", async () => {
+  const message = await messageFrom(
+    new CelEvaluator(),
+    'data.latest("echo-hi", "result").attributes.ok == 1 ' +
+      '&& data.latest("echo-hi", "gone").attributes.ok == 1',
+    missingRecordContext(),
+  );
+  assertStringIncludes(
+    message,
+    'data.latest("echo-hi", "gone") found no data record',
+  );
+  assertEquals(message.includes('"echo-hi", "result") found no'), false);
+});
+
+Deno.test("CelEvaluator: names every lookup when more than one missed", async () => {
+  const message = await messageFrom(
+    new CelEvaluator(),
+    'data.latest("m", "gone-a").?attributes.orValue({}) == {} ' +
+      '&& data.latest("m", "gone-b").attributes.ok == 1',
+    missingRecordContext(),
+  );
+  assertStringIncludes(message, 'data.latest("m", "gone-a")');
+  assertStringIncludes(message, 'data.latest("m", "gone-b")');
+});
+
+Deno.test("CelEvaluator: a miss does not leak into a later evaluation", async () => {
+  const evaluator = new CelEvaluator();
+  const context = missingRecordContext();
+  await messageFrom(
+    evaluator,
+    'data.latest("echo-hi", "nope").attributes.exitCode',
+    context,
+  );
+  const message = await messageFrom(
+    evaluator,
+    'data.latest("echo-hi", "result").attributes.typo',
+    context,
+  );
+  assertEquals(message.includes("found no data record"), false);
+});
+
+Deno.test("CelEvaluator: a miss does not leak through a reused wrapped context", async () => {
+  const evaluator = new CelEvaluator();
+  const wrapped = {
+    data: new CelDataNamespace(
+      missingRecordContext()["data"] as Record<string, unknown>,
+    ),
+  };
+  await messageFrom(
+    evaluator,
+    'data.latest("echo-hi", "nope").attributes.exitCode',
+    wrapped,
+  );
+  const message = await messageFrom(
+    evaluator,
+    'data.latest("echo-hi", "result").attributes.typo',
+    wrapped,
+  );
+  assertEquals(message.includes("found no data record"), false);
+});
+
+Deno.test("CelEvaluator: a resolved lookup still returns its attributes", async () => {
+  const result = await new CelEvaluator().evaluateAsync(
+    'data.latest("echo-hi", "result").attributes.ok',
+    missingRecordContext(),
+  );
+  assertEquals(result, 1);
 });
