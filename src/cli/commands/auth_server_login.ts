@@ -20,7 +20,11 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
-import { getEnvCaCerts, resolveServeUrl } from "../remote_run.ts";
+import {
+  createTlsHttpClient,
+  getEnvCaCerts,
+  resolveServeUrl,
+} from "../remote_run.ts";
 import { FileServerCredentialRepository } from "../../infrastructure/persistence/server_credential_repository.ts";
 import { normalizeServerUrl } from "../../domain/auth/server_url.ts";
 import { splitServerToken } from "../../serve/token_auth.ts";
@@ -151,7 +155,7 @@ async function handleOAuthFlow(
   const normalizedUrl = normalizeServerUrl(rawUrl);
   const caCerts = getEnvCaCerts();
   const httpClient = caCerts?.length
-    ? Deno.createHttpClient({ caCerts })
+    ? createTlsHttpClient({ caCerts })
     : undefined;
   const deps = createServerLoginDeps({ httpClient });
   const input = { serverUrl: rawUrl, signal: AbortSignal.timeout(300_000) };

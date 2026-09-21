@@ -762,7 +762,50 @@ async function classifyConnectionError(
   return originalMessage;
 }
 
-const wsHttpClient = Deno.createHttpClient({});
+/**
+ * Creates an HTTP client, turning an unreadable OS certificate store into
+ * guidance instead of an uncaught error.
+ *
+ * Every client shares the process-wide rustls root store, which swamp points
+ * at `system,mozilla` (see `infrastructure/runtime/tls_trust.ts`). `caCerts`
+ * are added *on top of* those roots, so a `--ca-cert` bundle does not avoid
+ * the failing store read — only `DENO_TLS_CA_STORE=mozilla` does.
+ *
+ * `create` is injected only so the failure path can be tested; Deno's own
+ * factory cannot be made to throw on demand.
+ */
+export function createTlsHttpClient(
+  options: Deno.CreateHttpClientOptions = {},
+  create: typeof Deno.createHttpClient = Deno.createHttpClient,
+): Deno.HttpClient {
+  try {
+    return create(options);
+  } catch (e: unknown) {
+    const detail = e instanceof Error ? e.message : String(e);
+    throw new UserError(
+      `Could not read the OS certificate store: ${detail} — swamp defaults ` +
+        `DENO_TLS_CA_STORE to "system,mozilla"; re-run with ` +
+        `DENO_TLS_CA_STORE=mozilla to use Deno's bundled roots instead ` +
+        `(also pass --ca-cert /path/to/ca.pem if the server needs a ` +
+        `private root)`,
+    );
+  }
+}
+
+let wsHttpClient: Deno.HttpClient | undefined;
+
+/**
+ * The default HTTP client, created on first use.
+ *
+ * Creating it at module load crashed the whole CLI — including offline
+ * commands like `swamp help` and `swamp model search` — on machines where
+ * the platform certificate store cannot be read (swamp-club#2293). Deferring
+ * it keeps that failure on the commands that actually talk to a server.
+ */
+export function getDefaultHttpClient(): Deno.HttpClient {
+  if (!wsHttpClient) wsHttpClient = createTlsHttpClient();
+  return wsHttpClient;
+}
 
 let resolvedEnvCaCerts: string[] | undefined;
 
@@ -809,7 +852,7 @@ function getCaCertFetchClient(): Deno.HttpClient | undefined {
   const caCerts = getEnvCaCerts();
   if (!caCerts?.length) return undefined;
   if (!cachedCaCertFetchClient) {
-    cachedCaCertFetchClient = Deno.createHttpClient({ caCerts });
+    cachedCaCertFetchClient = createTlsHttpClient({ caCerts });
   }
   return cachedCaCertFetchClient;
 }
@@ -823,13 +866,13 @@ function createSocket(
   let client: Deno.HttpClient;
   if (effectiveCaCerts?.length) {
     if (!cachedCaCertClient) {
-      cachedCaCertClient = Deno.createHttpClient({
+      cachedCaCertClient = createTlsHttpClient({
         caCerts: effectiveCaCerts,
       });
     }
     client = cachedCaCertClient;
   } else {
-    client = wsHttpClient;
+    client = getDefaultHttpClient();
   }
   const opts: Record<string, unknown> = { client };
   if (headers && Object.keys(headers).length > 0) {
