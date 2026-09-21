@@ -42,6 +42,7 @@ import type {
 } from "../serve/protocol.ts";
 import { deserializeEvent } from "../serve/serializer.ts";
 import type { ServerCredentialRepository } from "../domain/auth/server_credential.ts";
+import { normalizeServerUrl as normalizeServerUrlForCredentials } from "../domain/auth/server_url.ts";
 import { FileServerCredentialRepository } from "../infrastructure/persistence/server_credential_repository.ts";
 import { resolveExtraHeaders } from "../domain/auth/extra_headers.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
@@ -181,7 +182,7 @@ export async function resolveServerToken(
     return readTokenFile(envTokenFile, "SWAMP_SERVER_TOKEN_FILE");
   }
   const repo = credentialRepo ?? new FileServerCredentialRepository();
-  const credential = await repo.get(toHttpUrl(serverUrl));
+  const credential = await repo.get(serverUrl);
   return credential?.token;
 }
 
@@ -209,26 +210,27 @@ export async function resolveServerTokenFromOptions(
   return resolveServerToken(serverUrl, explicitToken, credentialRepo);
 }
 
-/** Normalizes http(s) URLs to ws(s) so `--server http://host:4000` works. */
-export function normalizeServerUrl(server: string): string {
-  let url: URL;
+/**
+ * Normalizes a server URL to a WebSocket URL (ws/wss).
+ * Accepts http(s) and ws(s) inputs. Uses the domain normalizeServerUrl
+ * for canonical normalization, then converts http→ws / https→wss.
+ */
+export function toWebSocketUrl(server: string): string {
+  let normalized: string;
   try {
-    url = new URL(server);
+    normalized = normalizeServerUrlForCredentials(server);
   } catch {
     throw new UserError(
       `Invalid --server URL '${server}' — expected ws://host:port (or http://)`,
     );
   }
-  if (url.protocol === "http:") {
-    url.protocol = "ws:";
-  } else if (url.protocol === "https:") {
-    url.protocol = "wss:";
-  } else if (url.protocol !== "ws:" && url.protocol !== "wss:") {
-    throw new UserError(
-      `Invalid --server URL '${server}' — expected ws://, wss://, http://, or https://`,
-    );
+  const parsed = new URL(normalized);
+  if (parsed.protocol === "http:") {
+    parsed.protocol = "ws:";
+  } else if (parsed.protocol === "https:") {
+    parsed.protocol = "wss:";
   }
-  return url.href;
+  return parsed.href;
 }
 
 export function runWorkflowOverServer(
@@ -287,7 +289,7 @@ export function requestServerResponse<T>(
   request: { type: string; id?: string; payload?: unknown },
 ): Promise<T> {
   writeRemoteIndicator(options.server);
-  const baseUrl = normalizeServerUrl(options.server);
+  const baseUrl = toWebSocketUrl(options.server);
   const extraHeaders = options.headers ?? resolveExtraHeaders();
   const headers: Record<string, string> = { ...extraHeaders };
   if (options.token) {
@@ -432,7 +434,7 @@ export async function* streamServerResponse<T extends { done?: boolean }>(
   request: { type: string; id?: string; payload?: unknown },
 ): AsyncGenerator<T> {
   writeRemoteIndicator(options.server);
-  const baseUrl = normalizeServerUrl(options.server);
+  const baseUrl = toWebSocketUrl(options.server);
   const extraHeaders = options.headers ?? resolveExtraHeaders();
   const headers: Record<string, string> = { ...extraHeaders };
   if (options.token) {
@@ -557,7 +559,7 @@ export async function* subscribeServerEvents(
   options: SubscribeServerOptions,
   request: { type: string; payload?: unknown },
 ): AsyncGenerator<Record<string, unknown>> {
-  const baseUrl = normalizeServerUrl(options.server);
+  const baseUrl = toWebSocketUrl(options.server);
   const extraHeaders = options.headers ?? resolveExtraHeaders();
   const headers: Record<string, string> = { ...extraHeaders };
   if (options.token) {
@@ -953,7 +955,7 @@ async function* singleConnectionStream(
   { kind: string; [key: string]: unknown },
   StreamOutcome
 > {
-  const baseUrl = normalizeServerUrl(options.server);
+  const baseUrl = toWebSocketUrl(options.server);
   const extraHeaders = options.headers ?? resolveExtraHeaders();
   const headers: Record<string, string> = { ...extraHeaders };
   if (options.token) {

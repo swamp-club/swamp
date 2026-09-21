@@ -21,7 +21,7 @@ import { assert, assertEquals, assertThrows } from "@std/assert";
 import fc from "fast-check";
 import { normalizeServerUrl } from "./server_url.ts";
 
-const arbScheme = fc.constantFrom("http", "https");
+const arbScheme = fc.constantFrom("http", "https", "ws", "wss");
 
 const arbHost = fc.constantFrom(
   "example.com",
@@ -74,11 +74,17 @@ Deno.test("normalizeServerUrl: is idempotent", () => {
   );
 });
 
-Deno.test("normalizeServerUrl: never keeps a trailing slash and always keeps the scheme", () => {
+Deno.test("normalizeServerUrl: never keeps a trailing slash and outputs http(s)", () => {
+  const expectedScheme: Record<string, string> = {
+    http: "http",
+    https: "https",
+    ws: "http",
+    wss: "https",
+  };
   fc.assert(
     fc.property(arbUrlParts, (parts) => {
       const normalized = normalizeServerUrl(buildUrl(parts));
-      assert(normalized.startsWith(`${parts.scheme}://`));
+      assert(normalized.startsWith(`${expectedScheme[parts.scheme]}://`));
       assertEquals(normalized.endsWith("/"), false);
       assertEquals(normalized, normalized.toLowerCase());
     }),
@@ -171,10 +177,10 @@ Deno.test("normalizeServerUrl: default ports are stripped, others are kept", () 
   );
 });
 
-Deno.test("normalizeServerUrl: rejects non-http(s) schemes", () => {
+Deno.test("normalizeServerUrl: rejects non-http(s)/ws(s) schemes", () => {
   fc.assert(
     fc.property(
-      fc.constantFrom("ftp", "file", "ws", "wss", "swamp"),
+      fc.constantFrom("ftp", "file", "swamp"),
       arbHost,
       (scheme, host) => {
         assertThrows(
@@ -184,6 +190,19 @@ Deno.test("normalizeServerUrl: rejects non-http(s) schemes", () => {
       },
     ),
     { numRuns: 100 },
+  );
+});
+
+Deno.test("normalizeServerUrl: ws(s) normalizes to the same key as http(s)", () => {
+  fc.assert(
+    fc.property(arbUrlParts, (parts) => {
+      if (parts.scheme !== "ws" && parts.scheme !== "wss") return;
+      const httpScheme = parts.scheme === "ws" ? "http" : "https";
+      const wsUrl = buildUrl(parts);
+      const httpUrl = buildUrl({ ...parts, scheme: httpScheme });
+      assertEquals(normalizeServerUrl(wsUrl), normalizeServerUrl(httpUrl));
+    }),
+    { numRuns: 300 },
   );
 });
 

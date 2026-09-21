@@ -41,10 +41,10 @@ import {
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
-  normalizeServerUrl,
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
+  toWebSocketUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { VaultDeleteResponse } from "../../serve/protocol.ts";
@@ -89,7 +89,7 @@ When using --server, the confirmation prompt is not available — use --force to
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
-    const wsUrl = normalizeServerUrl(server);
+    const wsUrl = toWebSocketUrl(server);
     const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
     try {
       const parsed = new URL(wsUrl);
@@ -98,7 +98,7 @@ When using --server, the confirmation prompt is not available — use --force to
           "Sending request over unencrypted connection — use wss:// for security",
         );
       }
-    } catch { /* invalid URL handled by normalizeServerUrl */ }
+    } catch { /* invalid URL handled by toWebSocketUrl */ }
 
     const token = await resolveServerTokenFromOptions(
       server,

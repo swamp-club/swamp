@@ -215,8 +215,10 @@ parameter (in that priority order). The CLI sends it via the `Authorization`
 header. Unauthenticated connections receive HTTP 401. The client resolves the
 token from (in precedence order) the `--token` flag, the `--token-file` flag
 (read from a file at the given path), the `SWAMP_SERVER_TOKEN_FILE` env var
-(read from a file), the `SWAMP_SERVER_TOKEN` + `SWAMP_SERVER_URL` env vars, or
-stored credentials in `~/.config/swamp/servers.json` (managed by
+(read from a file), the `SWAMP_SERVER_TOKEN` env var (scoped by
+`SWAMP_SERVER_URL` — both must be set, and both accept `ws(s)://` or
+`http(s)://` URLs), or stored credentials in `~/.config/swamp/servers.json`
+(managed by
 `swamp auth server-login`). `--token` and `--token-file` are mutually exclusive.
 The file-based options (`--token-file`, `SWAMP_SERVER_TOKEN_FILE`) let operators
 avoid putting tokens in environment variables, reducing the window where tokens
