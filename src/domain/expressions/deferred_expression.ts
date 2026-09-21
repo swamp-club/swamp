@@ -77,8 +77,12 @@ export function captureDeferredBindings(
 ): DeferredExpression["bindings"] {
   const { inputs, self, run, workflowRunId, steps } = context;
   // Copy at the call boundary: later step results must not change this scope.
+  // The reviver drops `__proto__` keys: zod's record parsers strip them, so a
+  // binding captured under that name would vanish on the way back out of
+  // persistence and resume with a different scope than it was captured with.
   const bindings = JSON.parse(
     JSON.stringify({ inputs, self, run, workflowRunId, steps }),
+    (key, value) => key === "__proto__" ? undefined : value,
   ) as Record<string, Record<string, unknown> | undefined>;
   for (const path of omit) {
     const [root, key] = path.split(".");
