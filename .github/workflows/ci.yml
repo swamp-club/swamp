@@ -49,6 +49,10 @@ jobs:
               # entries below.
               - 'scripts/check_review_verdict.ts'
               - 'scripts/review_skills.ts'
+              # The attestation generator. An attestation is only as
+              # trustworthy as the script that produced it, so the script that
+              # produces it is a trust root in its own right.
+              - 'scripts/build_attestation.ts'
 
   claude-ci-security-review:
     name: CI Security Review
@@ -334,7 +338,7 @@ jobs:
             --jq '[.reviews[] | select(.author.login == "github-actions" and ((.body // "") | test("^(## )?Review Integrity")))] | last | .commit.oid')
           head_sha="${{ github.event.pull_request.head.sha }}"
           trust_changes=$(gh api "repos/${{ github.repository }}/compare/${approved_sha}...${head_sha}" \
-            --jq '[.files[].filename | select(test("^CLAUDE\\.md$|^AGENTS\\.md$|^verification/|^agent-constraints/|^\\.claude/skills/issue-lifecycle/references/|^scripts/check_review_verdict\\.ts$|^scripts/review_skills\\.ts$"))] | length' 2>/dev/null) || trust_changes=1
+            --jq '[.files[].filename | select(test("^CLAUDE\\.md$|^AGENTS\\.md$|^verification/|^agent-constraints/|^\\.claude/skills/issue-lifecycle/references/|^scripts/check_review_verdict\\.ts$|^scripts/review_skills\\.ts$|^scripts/build_attestation\\.ts$"))] | length' 2>/dev/null) || trust_changes=1
           if [ "$trust_changes" -gt 0 ]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
           else
@@ -373,7 +377,8 @@ jobs:
             - `CLAUDE.md`
             - `AGENTS.md`
             - `verification/review-prompts/*.md`
-            - `verification/workflow-verify-*.yaml`
+            - `verification/workflow-submit-change.yaml`
+            - `scripts/build_attestation.ts`
             - `agent-constraints/*.md`
             - `.claude/skills/issue-lifecycle/references/*.md`
 
