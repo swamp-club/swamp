@@ -2009,8 +2009,17 @@ Deno.test("attestation-posted: rejects a verification recorded after receipts ex
   assertStringIncludes(result.errors![0], "never accepted");
 });
 
-Deno.test("attestation-posted: applies to link_pr", () => {
-  assertEquals(model.checks["attestation-posted"].appliesTo, ["link_pr"]);
+Deno.test("attestation-posted and verification-clear gate link_pr and complete", () => {
+  // complete transitions the swamp-club issue to `shipped`, so it carries the
+  // same evidence requirement as opening a PR.
+  assertEquals(model.checks["attestation-posted"].appliesTo, [
+    "link_pr",
+    "complete",
+  ]);
+  assertEquals(model.checks["verification-clear"].appliesTo, [
+    "link_pr",
+    "complete",
+  ]);
 });
 
 // ---------------------------------------------------------------------------
@@ -2141,6 +2150,174 @@ Deno.test("verification_passed: writes the checklist derived from the attestatio
     assertEquals(write.data.stepsSkipped, 1);
     assertEquals(write.data.stepsFailed, 0);
     assertEquals(write.data.stepsTotal, 2);
+  } finally {
+    await restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Commit binding and the complete override
+// ---------------------------------------------------------------------------
+
+function gateContext(
+  stored: Record<string, Record<string, unknown> | undefined>,
+  opts: { methodName?: string; reason?: string } = {},
+) {
+  return {
+    methodName: opts.methodName ?? "link_pr",
+    unresolvedMethodArgs: opts.reason === undefined
+      ? {}
+      : { reason: opts.reason },
+    dataRepository: {
+      getContent: (_t: string, _m: string, dataName: string) => {
+        const value = stored[dataName];
+        return Promise.resolve(
+          value === undefined
+            ? null
+            : new TextEncoder().encode(JSON.stringify(value)),
+        );
+      },
+    },
+    modelType: "@swamp/issue-lifecycle",
+    modelId: "issue-42",
+  };
+}
+
+const PASSING_RESULT = { allPassed: true, stepsFailed: 0, commit: "abc123" };
+const PASSING_RECORD = {
+  attestationId: "att-1",
+  commit: "abc123",
+  branch: "fix/thing",
+  gatePassed: true,
+  postedBy: "someone",
+  postedAt: "2026-09-21T12:00:00.000Z",
+};
+const TARGET = {
+  commit: "abc123",
+  branch: "fix/thing",
+  startedAt: "2026-09-21T11:00:00.000Z",
+};
+
+Deno.test("verify: persists the commit and branch verification was started for", async () => {
+  const { context, writes, restore } = await buildTestContext(42);
+  try {
+    await model.methods.verify.execute(
+      { commit: "abc123", branch: "fix/thing" },
+      context,
+    );
+
+    const target = writes.find((w) => w.specName === "verificationTarget")!;
+    assertEquals(target.instanceName, "verificationTarget-main");
+    assertEquals(target.data.commit, "abc123");
+    assertEquals(target.data.branch, "fix/thing");
+  } finally {
+    await restore();
+  }
+});
+
+Deno.test("verification-clear: rejects a result from a different commit", async () => {
+  const result = await model.checks["verification-clear"].execute(
+    gateContext({
+      "verificationResult-main": { ...PASSING_RESULT, commit: "old999" },
+      "verificationTarget-main": TARGET,
+    }),
+  );
+
+  assertEquals(result.pass, false);
+  assertStringIncludes(result.errors![0], "old999");
+  assertStringIncludes(result.errors![0], "abc123");
+});
+
+Deno.test("attestation-posted: rejects an attestation for a different commit", async () => {
+  const result = await model.checks["attestation-posted"].execute(
+    gateContext({
+      "attestationRecord-main": { ...PASSING_RECORD, commit: "old999" },
+      "verificationTarget-main": TARGET,
+    }),
+  );
+
+  assertEquals(result.pass, false);
+  assertStringIncludes(result.errors![0], "att-1");
+});
+
+Deno.test("commit binding: both checks pass when every record agrees", async () => {
+  const stored = {
+    "verificationResult-main": PASSING_RESULT,
+    "attestationRecord-main": PASSING_RECORD,
+    "verificationTarget-main": TARGET,
+  };
+
+  assertEquals(
+    (await model.checks["verification-clear"].execute(gateContext(stored)))
+      .pass,
+    true,
+  );
+  assertEquals(
+    (await model.checks["attestation-posted"].execute(gateContext(stored)))
+      .pass,
+    true,
+  );
+});
+
+Deno.test("commit binding: a lifecycle with no target is admitted", async () => {
+  // Verified before `verify` began persisting its commit — there is nothing to
+  // compare against, and stranding it would force re-verifying finished work.
+  const result = await model.checks["verification-clear"].execute(
+    gateContext({ "verificationResult-main": PASSING_RESULT }),
+  );
+
+  assertEquals(result.pass, true);
+});
+
+Deno.test("complete: is gated by verification and attestation like link_pr", async () => {
+  const result = await model.checks["verification-clear"].execute(
+    gateContext({}, { methodName: "complete" }),
+  );
+
+  assertEquals(result.pass, false);
+  assertStringIncludes(result.errors![0], "reason=");
+});
+
+Deno.test("complete: a written reason opens the escape", async () => {
+  const stored = {};
+  assertEquals(
+    (await model.checks["verification-clear"].execute(
+      gateContext(stored, { methodName: "complete", reason: "docs only" }),
+    )).pass,
+    true,
+  );
+  assertEquals(
+    (await model.checks["attestation-posted"].execute(
+      gateContext(stored, { methodName: "complete", reason: "docs only" }),
+    )).pass,
+    true,
+  );
+});
+
+Deno.test("complete: a blank reason is not an escape", async () => {
+  const result = await model.checks["verification-clear"].execute(
+    gateContext({}, { methodName: "complete", reason: "   " }),
+  );
+
+  assertEquals(result.pass, false);
+});
+
+Deno.test("link_pr: the complete escape does not apply to it", async () => {
+  // The override is complete's alone — link_pr is the path the verification
+  // chain exists to guard, so a reason must never open it.
+  const result = await model.checks["attestation-posted"].execute(
+    gateContext({}, { methodName: "link_pr", reason: "just this once" }),
+  );
+
+  assertEquals(result.pass, false);
+});
+
+Deno.test("complete: records the override reason on the lifecycle entry", async () => {
+  const { context, restore } = await buildTestContext(42);
+  try {
+    // No swamp-club credentials in the test context, so this exercises the
+    // local path: the reason must reach the log and the state write must land.
+    await model.methods.complete.execute({ reason: "docs only" }, context);
   } finally {
     await restore();
   }

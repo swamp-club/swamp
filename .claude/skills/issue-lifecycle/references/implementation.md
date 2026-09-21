@@ -159,6 +159,19 @@ For quick close-out (e.g., the PR merged and you just want to wrap up),
 `complete` still works from `implementing`, `pr_open`, or `releasing`
 (transitions to `notify`).
 
+`complete` transitions the swamp-club issue to `shipped`, so it carries the same
+gates as `link_pr`: `verification-clear` and `attestation-posted`. From
+`pr_open` or `releasing` those already hold. From `implementing` there may be no
+code to verify, so the escape stays open — but it has to be stated:
+
+```
+swamp model @swamp/issue-lifecycle method run complete issue-<N> \
+  --input reason="docs-only change, nothing to verify"
+```
+
+The reason is logged and recorded on the issue. Do not reach for it to skip a
+verification run that should have happened.
+
 ## 6. Notify the Contributor
 
 After `ship` or `complete`, the phase is `notify`. Check whether the issue

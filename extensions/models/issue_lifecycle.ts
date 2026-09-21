@@ -43,6 +43,8 @@ import {
   SummarySchema,
   TRANSITIONS,
   VerificationResultSchema,
+  type VerificationTargetData,
+  VerificationTargetSchema,
 } from "./_lib/schemas.ts";
 import { createSwampClubClient, loadAuthFile } from "./_lib/swamp_club.ts";
 import {
@@ -63,6 +65,74 @@ import {
  * on every accepted POST writes one.
  */
 const ATTESTATION_RECEIPT_SINCE = Date.parse("2026-09-21T00:00:00.000Z");
+
+/** Shape of the context the pre-flight checks below receive. */
+interface CheckContext {
+  methodName?: string;
+  unresolvedMethodArgs?: Record<string, unknown>;
+  dataRepository: {
+    getContent: (
+      type: string,
+      modelId: string,
+      dataName: string,
+    ) => Promise<Uint8Array | null>;
+  };
+  modelType: string;
+  modelId: string;
+}
+
+/** Reads and parses a resource instance, or null when it does not exist. */
+async function readResourceJson<T>(
+  context: CheckContext,
+  dataName: string,
+): Promise<T | null> {
+  const content = await context.dataRepository.getContent(
+    context.modelType,
+    context.modelId,
+    dataName,
+  );
+  if (!content) return null;
+  return JSON.parse(new TextDecoder().decode(content)) as T;
+}
+
+/**
+ * The deliberate close-out escape.
+ *
+ * `complete` is reachable from `implementing`, where there may be no code to
+ * verify at all, so gating it outright would strand work that legitimately
+ * ships without a PR. Requiring a written reason keeps the escape open but
+ * makes taking it a decision someone recorded rather than a silent default.
+ *
+ * Only `complete` may use it. On `link_pr` the gates are absolute — that is
+ * the path the whole verification chain exists to guard.
+ */
+function completeOverride(context: CheckContext): string | null {
+  if (context.methodName !== "complete") return null;
+  const reason = context.unresolvedMethodArgs?.["reason"];
+  return typeof reason === "string" && reason.trim().length > 0
+    ? reason.trim()
+    : null;
+}
+
+/**
+ * Asserts a record names the commit verification was started for.
+ *
+ * Returns an error string, or null when the record is consistent. A missing
+ * target admits the record: lifecycles verified before `verify` began
+ * persisting its commit have nothing to compare against, and stranding them
+ * would force a re-verification of work already verified.
+ */
+function commitMismatch(
+  target: VerificationTargetData | null,
+  recordCommit: string,
+  label: string,
+): string | null {
+  if (!target) return null;
+  if (recordCommit === target.commit) return null;
+  return `The ${label} names commit ${recordCommit || "(none)"}, but ` +
+    `verification was started for ${target.commit}. Re-run submit-change ` +
+    `against the commit you intend to ship.`;
+}
 
 /** The checklist `verification_passed` records, however it was supplied. */
 interface ResolvedVerification {
@@ -375,7 +445,14 @@ export const model = {
         "attestation the submit-change run generated and derives the commit, " +
         "branch, run id and step list from it, refusing one whose gate did " +
         "not pass; its explicit arguments become optional for the manual " +
-        "path. No globalArguments changes.",
+        "path. verify persists a verificationTarget resource, and both gates " +
+        "now refuse a record naming a commit other than the one verification " +
+        "was started for — a lifecycle with no target predates the resource " +
+        "and is admitted. Both gates also apply to complete, which " +
+        "transitions the issue to `shipped`; complete takes an optional " +
+        "`reason` that opens the escape for work shipping without a " +
+        "verification run and records it on the issue. No globalArguments " +
+        "changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
@@ -432,6 +509,16 @@ export const model = {
         "their statuses, and the gate outcome. Written by verification_passed " +
         "and used as a gate on link_pr.",
       schema: VerificationResultSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 5,
+    },
+    "verificationTarget": {
+      description:
+        "The commit and branch `verify` was started for. The anchor every " +
+        "downstream record must name: verification-clear and " +
+        "attestation-posted both refuse a record belonging to a different " +
+        "commit.",
+      schema: VerificationTargetSchema,
       lifetime: "infinite" as const,
       garbageCollection: 5,
     },
@@ -696,37 +783,32 @@ export const model = {
     },
 
     "verification-clear": {
-      description: "Ensures verification passed before a PR can be linked",
+      description:
+        "Ensures verification passed, for the commit it was started on, " +
+        "before a PR is linked or the lifecycle is completed",
       labels: ["policy"],
-      appliesTo: ["link_pr"],
-      execute: async (context: {
-        dataRepository: {
-          getContent: (
-            type: string,
-            modelId: string,
-            dataName: string,
-          ) => Promise<Uint8Array | null>;
-        };
-        modelType: string;
-        modelId: string;
-      }) => {
-        const content = await context.dataRepository.getContent(
-          context.modelType,
-          context.modelId,
-          "verificationResult-main",
-        );
-        if (!content) {
+      appliesTo: ["link_pr", "complete"],
+      execute: async (context: CheckContext) => {
+        const override = completeOverride(context);
+        if (override) return { pass: true };
+
+        const result = await readResourceJson<
+          { allPassed: boolean; stepsFailed: number; commit?: string }
+        >(context, "verificationResult-main");
+
+        if (!result) {
           return {
             pass: false,
             errors: [
-              "No verification result exists. Run 'verify' and then 'verification_passed' before linking a PR.",
+              context.methodName === "complete"
+                ? "No verification result exists. Run submit-change, or pass " +
+                  "--input reason='<why this ships unverified>' to complete " +
+                  "deliberately."
+                : "No verification result exists. Run 'verify' and then " +
+                  "'verification_passed' before linking a PR.",
             ],
           };
         }
-
-        const result = JSON.parse(
-          new TextDecoder().decode(content),
-        ) as { allPassed: boolean; stepsFailed: number };
 
         if (!result.allPassed) {
           return {
@@ -737,26 +819,31 @@ export const model = {
           };
         }
 
+        const target = await readResourceJson<VerificationTargetData>(
+          context,
+          "verificationTarget-main",
+        );
+        const mismatch = commitMismatch(
+          target,
+          result.commit ?? "",
+          "verification result",
+        );
+        if (mismatch) return { pass: false, errors: [mismatch] };
+
         return { pass: true };
       },
     },
 
     "attestation-posted": {
       description:
-        "Ensures an attestation was published before a PR can be linked",
+        "Ensures an attestation was published, for the commit verification " +
+        "was started on, before a PR is linked or the lifecycle is completed",
       labels: ["policy"],
-      appliesTo: ["link_pr"],
-      execute: async (context: {
-        dataRepository: {
-          getContent: (
-            type: string,
-            modelId: string,
-            dataName: string,
-          ) => Promise<Uint8Array | null>;
-        };
-        modelType: string;
-        modelId: string;
-      }) => {
+      appliesTo: ["link_pr", "complete"],
+      execute: async (context: CheckContext) => {
+        const override = completeOverride(context);
+        if (override) return { pass: true };
+
         const content = await context.dataRepository.getContent(
           context.modelType,
           context.modelId,
@@ -825,6 +912,17 @@ export const model = {
             ],
           };
         }
+
+        const target = await readResourceJson<VerificationTargetData>(
+          context,
+          "verificationTarget-main",
+        );
+        const mismatch = commitMismatch(
+          target,
+          record.commit,
+          `published attestation ${record.attestationId}`,
+        );
+        if (mismatch) return { pass: false, errors: [mismatch] };
 
         return { pass: true };
       },
@@ -2181,11 +2279,26 @@ export const model = {
         },
       ) => {
         const { issueNumber } = context.globalArgs;
+        const now = new Date().toISOString();
+
+        // Persist what verification was started for. Until this existed,
+        // `verify` took a commit and dropped it, `verification_passed` asked
+        // for one again, and nothing compared the two — so a result from an
+        // earlier commit satisfied every downstream gate.
+        const targetHandle = await context.writeResource(
+          "verificationTarget",
+          "verificationTarget-main",
+          {
+            commit: args.commit,
+            branch: args.branch,
+            startedAt: now,
+          },
+        );
 
         const stateHandle = await context.writeResource("state", "state-main", {
           phase: "verifying",
           issueNumber,
-          updatedAt: new Date().toISOString(),
+          updatedAt: now,
         });
 
         context.logger.info(
@@ -2206,7 +2319,7 @@ export const model = {
           isVerbose: false,
         });
 
-        return { dataHandles: [stateHandle] };
+        return { dataHandles: [targetHandle, stateHandle] };
       },
     },
 
@@ -2824,10 +2937,21 @@ export const model = {
 
     complete: {
       rollbackOnFailure: true,
-      description: "Mark the issue lifecycle as done",
-      arguments: z.object({}),
+      description:
+        "Mark the issue lifecycle as done. Gated by verification-clear and " +
+        "attestation-posted like link_pr, since complete transitions the " +
+        "swamp-club issue to `shipped`. Pass `reason` to close out work that " +
+        "legitimately ships without a verification run.",
+      arguments: z.object({
+        reason: z.string().min(1).optional().describe(
+          "Why this lifecycle completes without a verified, attested " +
+            "commit. Reachable from `implementing`, where there may be no " +
+            "code to verify, so the escape stays open — but taking it is " +
+            "recorded on the swamp-club issue rather than passing silently.",
+        ),
+      }),
       execute: async (
-        _args: Record<string, never>,
+        args: { reason?: string },
         context: {
           globalArgs: GlobalArgs;
           logger: {
@@ -2849,6 +2973,13 @@ export const model = {
           updatedAt: new Date().toISOString(),
         });
 
+        if (args.reason) {
+          context.logger.warning(
+            "Completing without a verified, attested commit: {reason}",
+            { reason: args.reason },
+          );
+        }
+
         context.logger.info(
           "Issue lifecycle complete — awaiting contributor notification",
           {},
@@ -2868,9 +2999,11 @@ export const model = {
           await recordLifecycle(sc, {
             step: "complete",
             targetStatus: "shipped",
-            summary: "Complete",
+            summary: args.reason
+              ? `Complete (unverified: ${args.reason})`
+              : "Complete",
             emoji: "\u{2705}",
-            payload: {},
+            payload: args.reason ? { unverifiedReason: args.reason } : {},
             isVerbose: false,
           });
         }

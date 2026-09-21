@@ -286,6 +286,31 @@ reports `skipped` and must not read as a failure.
 step's output, and that `record-verification` passes the attestation rather
 than a step list of its own.
 
+## Commit Binding
+
+`verify` persists what it was started for as `verificationTarget-main`. Before
+that it took a commit and a branch and dropped both, so `verification_passed`
+asked for them again with nothing comparing the two, and `verification-clear`
+read only pass/fail counts — a result belonging to an earlier commit satisfied
+it.
+
+`verification-clear` and `attestation-posted` now both assert their record
+names that commit. A lifecycle with no target predates the resource and is
+admitted, since there is nothing to compare and stranding it would force a
+re-verification of finished work.
+
+What this does **not** close: the commit is still whatever the caller passed to
+`verify`, and nothing reads HEAD, so a record that is stale relative to the
+working tree still passes. Verify A, commit B, link without re-verifying, and
+every record agrees with the target. Catching that needs the check to resolve
+HEAD — the first model check that would run a process — and is deliberately
+left open rather than papered over.
+
+Both gates also apply to `complete`, which transitions the swamp-club issue to
+`shipped`. `complete` is reachable from `implementing`, where there may be no
+code to verify, so it takes a `reason` argument that opens the escape and is
+recorded on the issue. `link_pr` has no such escape.
+
 ## Presenting the Result
 
 Read the run and show the user what happened:

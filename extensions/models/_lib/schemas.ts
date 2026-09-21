@@ -283,6 +283,31 @@ export const VerificationResultSchema = z.object({
 export type VerificationResultData = z.infer<typeof VerificationResultSchema>;
 
 // ---------------------------------------------------------------------------
+// Verification Target Schema
+// ---------------------------------------------------------------------------
+
+/**
+ * What `verify` was started for.
+ *
+ * `verify` took a commit and a branch and persisted neither, so
+ * `verification_passed` asked for them again with nothing comparing the two —
+ * and `verification-clear` read only pass/fail counts, so a result belonging
+ * to some other commit satisfied it. This resource is the anchor: every
+ * downstream record has to name the commit verification was started for.
+ *
+ * It does not make the commit trustworthy — it is still whatever the caller
+ * passed to `verify`. It makes the records consistent with each other, so a
+ * result or an attestation for a different commit cannot pass the gates.
+ */
+export const VerificationTargetSchema = z.object({
+  commit: z.string().describe("Commit SHA verification was started for."),
+  branch: z.string().describe("Branch verification was started for."),
+  startedAt: z.string().describe("ISO-8601 timestamp of the verify call."),
+});
+
+export type VerificationTargetData = z.infer<typeof VerificationTargetSchema>;
+
+// ---------------------------------------------------------------------------
 // Attestation Record Schema
 // ---------------------------------------------------------------------------
 

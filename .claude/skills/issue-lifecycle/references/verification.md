@@ -151,12 +151,29 @@ step that opens the PR, read from the `attestationRecord` that
 `post_attestation` writes only when swamp-club accepts the document. An
 unattested PR is not rejected — it cannot be expressed.
 
-Someone can still run `gh pr create` by hand, so `link_pr` keeps two checks as
-the backstop:
+Someone can still run `gh pr create` by hand, so two checks are the backstop:
 
 1. **`verification-clear`** — a `verificationResult` recording that no step
    failed.
 2. **`attestation-posted`** — an `attestationRecord` whose gate passed.
+
+Both also assert the record names the commit `verify` was started for, which
+`verify` now persists as `verificationTarget-main`. A result or attestation
+belonging to a different commit no longer satisfies either gate. (A record stale
+relative to the _working tree_ still can — nothing here reads HEAD.)
+
+Both apply to **`complete`** as well as `link_pr`, since `complete` transitions
+the swamp-club issue to `shipped`. `complete` is reachable from `implementing`,
+where there may be no code to verify, so the escape stays open — but it has to
+be written down:
+
+```
+swamp model @swamp/issue-lifecycle method run complete issue-<N> \
+  --input reason="docs-only change, nothing to verify"
+```
+
+The reason is logged and posted on the issue. It does **not** work on `link_pr`
+— that path is absolute.
 
 If you find yourself reaching for `gh pr create`, you are on the unsanctioned
 path. Run `submit-change` instead.
