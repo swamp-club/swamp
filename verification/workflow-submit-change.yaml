@@ -31,6 +31,15 @@ inputs:
         @swamp/issue-lifecycle instance (`issue-<N>`), which must already
         exist. The run moves it into `verifying` itself — see the
         start-verification job.
+    repoDir:
+      type: string
+      default: ""
+      description: |
+        Absolute path to the swamp repository holding the run records, when it
+        is not the directory the workflow was launched from. Shell steps have
+        every SWAMP_* variable stripped from their environment by design, so
+        SWAMP_REPO_DIR cannot reach the attest step — it has to be passed as
+        an input or the step falls back to its working directory.
     diffBase:
       type: string
       default: "origin/main"
@@ -629,8 +638,13 @@ jobs:
             run: |
               set -euo pipefail
               export SWAMP_WORKFLOWS_DIR=verification
+              REPO_ARGS=""
+              if [ -n "${{ inputs.repoDir }}" ]; then
+                REPO_ARGS="--repo-dir ${{ inputs.repoDir }}"
+              fi
               RUN_JSON=$(mktemp)
-              swamp workflow history get "${{ run.id }}" --json > "$RUN_JSON"
+              # shellcheck disable=SC2086
+              swamp workflow history get "${{ run.id }}" $REPO_ARGS --json > "$RUN_JSON"
               deno run --allow-read --allow-env --allow-run=git,swamp \
                 scripts/build_attestation.ts \
                 --run-file "$RUN_JSON" \

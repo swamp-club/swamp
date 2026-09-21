@@ -171,12 +171,6 @@ interface WorkflowDef {
 
 // -- Helpers ----------------------------------------------------------------
 
-/**
- * Reads a file as it stands at the verified commit, not as it stands in the
- * working tree. The two differ exactly when someone edits a prompt or a
- * workflow after launching verification, which is the case config integrity
- * exists to catch.
- */
 /** Runs a command, returning stdout on success and null on any failure. */
 async function capture(
   command: string,
@@ -206,7 +200,12 @@ async function capture(
 async function fetchPriorRuns(
   commit: string,
   currentRunId: string,
+  repoDir: string | undefined,
 ): Promise<RunRecord[]> {
+  // Shell steps have SWAMP_* stripped from their environment, so the repo
+  // location cannot be inherited — it is passed in or the CLI falls back to
+  // the working directory.
+  const repoArgs = repoDir ? ["--repo-dir", repoDir] : [];
   const listing = await capture("swamp", [
     "workflow",
     "history",
@@ -215,6 +214,7 @@ async function fetchPriorRuns(
     "submit-change",
     "--input",
     `commit=${commit}`,
+    ...repoArgs,
     "--json",
   ]);
   if (!listing) {
@@ -244,6 +244,7 @@ async function fetchPriorRuns(
       "history",
       "get",
       id,
+      ...repoArgs,
       "--json",
     ]);
     if (!record) continue;
@@ -256,6 +257,12 @@ async function fetchPriorRuns(
   return runs;
 }
 
+/**
+ * Reads a file as it stands at the verified commit, not as it stands in the
+ * working tree. The two differ exactly when someone edits a prompt or a
+ * workflow after launching verification, which is the case config integrity
+ * exists to catch.
+ */
 async function showAtCommit(
   commit: string,
   path: string,
@@ -621,7 +628,7 @@ export function buildAttestation(
 
 async function main(): Promise<number> {
   const args = parseArgs(Deno.args, {
-    string: ["run-file", "commit", "branch"],
+    string: ["run-file", "commit", "branch", "repo-dir"],
   });
 
   const runFile = args["run-file"];
@@ -690,7 +697,7 @@ async function main(): Promise<number> {
     os: Deno.build.os,
     arch: Deno.build.arch,
     now: new Date(),
-    priorRuns: await fetchPriorRuns(commit, run.id),
+    priorRuns: await fetchPriorRuns(commit, run.id, args["repo-dir"]),
   });
 
   console.log(JSON.stringify(attestation));
