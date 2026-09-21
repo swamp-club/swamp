@@ -161,10 +161,13 @@ logged in to swamp-club with the `serve:*` scope (`requireAuthenticated` /
 `swamp serve daemon enable`). OAuth mode additionally reads `SWAMP_API_KEY` to
 register the instance with the provider and resolve admin usernames.
 
-**Tokens.** A presented token is split on the first `.`; the name addresses a
-ServerToken model and the secret is verified by running that model's `redeem`
-method — authentication is itself a method run (`src/serve/token_auth.ts`).
-Secrets live in the encrypted control-plane vault (`ControlPlaneVaultProvider`,
+**Tokens.** A presented token is split on the first `.`; the name resolves a
+`swamp/server-token` lifecycle resource and its vault secret. Serve applies the
+same pure lifecycle and timing-safe credential validation as explicit `redeem`,
+but ingress authentication is read-only: it neither writes `lastUsedAt` nor
+creates a model run (`src/serve/token_auth.ts`). Explicit `redeem` remains a
+model action and retains its usage update. Secrets live in the encrypted
+control-plane vault (`ControlPlaneVaultProvider`,
 `src/domain/vaults/control_plane_vault_provider.ts`) rather than the user's
 vault, so they replicate with the control-plane store and can be deleted
 immediately. At boot `checkTokenHealth` reports secrets that no longer decrypt
@@ -420,6 +423,7 @@ is handled by the reconciliation loop after `--stale-ttl`.
   fixed at startup.
 - Auth mode `none` is deprecated and only permitted on loopback.
 - **Audit**: When configured, serve emits audit events for authorization
-  denials and high-value operations. →
+  denials and high-value operations, including successful server-token ingress
+  without the credential secret. →
   [serve-audit](../enablers/serve-audit.md). This is separate from the CLI
   audit subsystem (`src/domain/audit/`) which tracks local command history.

@@ -206,8 +206,10 @@ network I/O, so the user always knows the command is targeting a server
 rather than the local repository.
 
 When `--auth-mode token` is active, the server validates the token presented at
-WebSocket upgrade time via the `swamp/server-token` model's `redeem` method
-(timing-safe, vault-backed). The server accepts the token via `Authorization:
+WebSocket upgrade time by read-only lookup of its `swamp/server-token` lifecycle
+record and vault secret, applying the model's shared timing-safe validation. It
+does not invoke `redeem`, create a model run, or update `lastUsedAt`. The server
+accepts the token via `Authorization:
 Bearer`, the `Sec-WebSocket-Protocol` subprotocol, or a `?token=` query
 parameter (in that priority order). The CLI sends it via the `Authorization`
 header. Unauthenticated connections receive HTTP 401. The client resolves the
@@ -1388,4 +1390,3 @@ load promise via `typeLoadPromises` and wait rather than failing.
 - **V8 module cache**: Cache busting uses `?fp=<source_fingerprint>&gen=<reloadGeneration>`
   query parameters; the generation counter guarantees a fresh import on every
   reload even when the fingerprint is unchanged.
-

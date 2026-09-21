@@ -18,13 +18,76 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
-import { createLibSwampContext, modelMethodRun } from "../libswamp/mod.ts";
-import { createModelMethodRunDeps } from "./deps.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import {
+  SERVER_TOKEN_MODEL_TYPE,
+  type ServerToken,
+  ServerTokenSchema,
+  validateServerToken,
+} from "../domain/models/access/server_token_model.ts";
+import { VaultService } from "../domain/vaults/vault_service.ts";
+import type { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
+import type { AuditEvent } from "../domain/serve_audit/audit_event.ts";
+import { buildAuditEvent } from "../domain/serve_audit/audit_event_builder.ts";
 
 const logger = getSwampLogger(["serve", "token-auth"]);
 
 const TOKEN_DATA_NAME = "token-main";
+
+export interface ServerTokenAuthDeps {
+  readonly readToken: (name: string) => Promise<ServerToken>;
+  readonly readSecret: (
+    vaultName: string,
+    secretKey: string,
+  ) => Promise<string>;
+}
+
+export interface TokenAuthAuditContext {
+  readonly emitter?: Pick<AuditEmitter, "emit">;
+  readonly instanceId?: string;
+  readonly sourceIp?: string;
+  readonly requestId?: string;
+  readonly ingress?: string;
+}
+
+export async function createServerTokenAuthDeps(
+  repoDir: string,
+  repoContext: RepositoryContext,
+): Promise<ServerTokenAuthDeps> {
+  const vaultService = await VaultService.fromRepository(repoDir);
+  return {
+    readToken: async (name) => {
+      const definition = await repoContext.definitionRepo.findByName(
+        SERVER_TOKEN_MODEL_TYPE,
+        name,
+      );
+      if (definition === null) {
+        throw new Error(
+          `Server token '${name}' does not exist — mint it first`,
+        );
+      }
+      const content = await repoContext.unifiedDataRepo.getContent(
+        SERVER_TOKEN_MODEL_TYPE,
+        definition.id,
+        TOKEN_DATA_NAME,
+      );
+      if (content === null) {
+        throw new Error(
+          `Server token '${name}' does not exist — mint it first`,
+        );
+      }
+      return ServerTokenSchema.parse(
+        JSON.parse(new TextDecoder().decode(content)),
+      );
+    },
+    readSecret: (vaultName, secretKey) =>
+      vaultService.get(
+        vaultName,
+        secretKey,
+        "model:server-token-verify",
+      ),
+  };
+}
 
 /**
  * Splits a presented server token of the form `<name>.<secret>`.
@@ -121,9 +184,9 @@ export function classifyRedeemError(message: string): TokenAuthRejectionReason {
 }
 
 /**
- * Validates a presented `<name>.<secret>` server token by running the
- * ServerToken model's `redeem` method. Returns the authenticated
- * principal ID on success, or an error message on failure.
+ * Validates a presented `<name>.<secret>` server token directly against its
+ * lifecycle resource. Authentication is read-only; explicit model `redeem`
+ * calls retain their `lastUsedAt` update behavior.
  */
 const MAX_TOKEN_LENGTH = 512;
 
@@ -131,6 +194,8 @@ export async function authenticateServerToken(
   presented: string,
   repoDir: string,
   repoContext: RepositoryContext,
+  auditContext?: TokenAuthAuditContext,
+  authDeps?: ServerTokenAuthDeps,
 ): Promise<ServerTokenAuthResult> {
   if (presented.length > MAX_TOKEN_LENGTH) {
     return {
@@ -149,60 +214,63 @@ export async function authenticateServerToken(
     };
   }
 
-  const deps = await createModelMethodRunDeps(repoDir, repoContext);
-  const libCtx = createLibSwampContext({});
+  try {
+    const deps = authDeps ??
+      await createServerTokenAuthDeps(repoDir, repoContext);
+    const token = await deps.readToken(split.name);
+    const nowMs = Date.now();
+    validateServerToken(token, split.name, presented, nowMs);
+    const secret = await deps.readSecret(token.vaultName, token.secretKey);
+    validateServerToken(token, split.name, presented, nowMs, secret);
 
-  let principalId: string | undefined;
-  let collectives: readonly string[] = [];
-  let groups: readonly string[] = [];
-  for await (
-    const event of modelMethodRun(libCtx, deps, {
-      modelIdOrName: split.name,
-      methodName: "redeem",
-      inputs: { presentedToken: presented },
-      lastEvaluated: false,
-      skipAllReports: true,
-    })
-  ) {
-    if (event.kind === "error") {
-      const reason = classifyRedeemError(event.error.message);
-      logger.warn(
-        "Token authentication failed for {name} ({reason}): {error}",
-        {
-          name: split.name,
-          reason,
-          error: event.error.message,
-        },
-      );
-      return { ok: false, error: "Authentication failed", reason };
-    }
-    if (event.kind === "completed") {
-      const tokenRecord = event.run.dataArtifacts.find(
-        (artifact) => artifact.name === TOKEN_DATA_NAME,
-      )?.attributes;
-      if (tokenRecord && typeof tokenRecord.principalId === "string") {
-        principalId = tokenRecord.principalId;
-      }
-      if (tokenRecord && Array.isArray(tokenRecord.collectives)) {
-        collectives = tokenRecord.collectives as string[];
-      }
-      if (tokenRecord && Array.isArray(tokenRecord.groups)) {
-        groups = tokenRecord.groups as string[];
-      }
-    }
-  }
-
-  if (principalId === undefined) {
+    emitTokenUseAuditEvent(auditContext, split.name, token.principalId);
+    logger.info("Authenticated token {name} as {principal}", {
+      name: split.name,
+      principal: token.principalId,
+    });
     return {
-      ok: false,
-      error: "Token validation completed but principal could not be resolved",
-      reason: "unknown",
+      ok: true,
+      principalId: token.principalId,
+      collectives: token.collectives,
+      groups: token.groups,
     };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const reason = classifyRedeemError(message);
+    logger.warn(
+      "Token authentication failed for {name} ({reason}): {error}",
+      { name: split.name, reason, error: message },
+    );
+    return { ok: false, error: "Authentication failed", reason };
   }
+}
 
-  logger.info("Authenticated token {name} as {principal}", {
-    name: split.name,
-    principal: principalId,
-  });
-  return { ok: true, principalId, collectives, groups };
+function emitTokenUseAuditEvent(
+  auditContext: TokenAuthAuditContext | undefined,
+  tokenName: string,
+  principalId: string,
+): void {
+  if (!auditContext?.emitter) return;
+  try {
+    const event: AuditEvent = buildAuditEvent({
+      instanceId: auditContext.instanceId ?? "unknown",
+      category: "auth",
+      stage: "response",
+      outcome: "success",
+      action: "auth.token.used",
+      resourceKind: "server-token",
+      resourceName: tokenName,
+      principalKind: "user",
+      principalId,
+      initiatedBy: principalId,
+      sourceIp: auditContext.sourceIp ?? "unknown",
+      requestId: auditContext.requestId ?? crypto.randomUUID(),
+      detail: auditContext.ingress,
+    });
+    auditContext.emitter.emit(event);
+  } catch (error) {
+    logger.warn("Failed to emit server-token auth audit event: {error}", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }

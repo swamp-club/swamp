@@ -141,6 +141,7 @@ Actions:
 - `auth.login.completed` — OAuth flow completed, server token minted (success)
 - `auth.login.denied` — admission check failed or user denied authorization
 - `auth.login.expired` — device code expired before completion
+- `auth.token.used` — a server token passed direct authentication ingress
 
 The `AuditEmitter` and `instanceId` are threaded through `DeviceAuthDeps`; the
 `sourceIp` is resolved by the serve HTTP handler (respecting `trustProxy` /
@@ -149,6 +150,11 @@ The `AuditEmitter` and `instanceId` are threaded through `DeviceAuthDeps`; the
 
 Token revocation is audited separately via the `access.token.revoke` WebSocket
 handler under the `admin` category.
+
+Successful `auth.token.used` events contain the token name, authenticated
+principal, source IP, and ingress metadata, but never the credential secret.
+They are best-effort and cannot interrupt authentication. Token-creation audit
+events record the created token name as their resource name.
 
 ## System events
 

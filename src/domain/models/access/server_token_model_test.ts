@@ -22,11 +22,14 @@ import {
   assertNotEquals,
   assertRejects,
   assertStringIncludes,
+  assertThrows,
 } from "@std/assert";
 import {
   SERVER_TOKEN_MODEL_TYPE,
   serverTokenModel,
+  ServerTokenSchema,
   serverTokenSecretKey,
+  validateServerToken,
 } from "./server_token_model.ts";
 import { createInMemoryWorkerContext } from "../worker/worker_test_helpers.ts";
 
@@ -152,6 +155,46 @@ Deno.test("serverTokenModel: redeem succeeds with valid token and updates lastUs
   );
   const token = store.get("token-main")!;
   assertEquals(typeof token.lastUsedAt, "string");
+});
+
+Deno.test("validateServerToken: enforces lifecycle, name, and credential checks", async () => {
+  const { store, plaintext } = await mintToken();
+  const token = ServerTokenSchema.parse(store.get("token-main")!);
+
+  assertEquals(
+    validateServerToken(
+      token,
+      "user-token-1",
+      `user-token-1.${plaintext}`,
+      Date.now(),
+      plaintext,
+    ),
+    plaintext,
+  );
+  assertThrows(
+    () =>
+      validateServerToken(
+        token,
+        "user-token-1",
+        "wrong-name.secret",
+        Date.now(),
+        plaintext,
+      ),
+    Error,
+    "name mismatch",
+  );
+  assertThrows(
+    () =>
+      validateServerToken(
+        token,
+        "user-token-1",
+        "user-token-1.wrong-secret",
+        Date.now(),
+        plaintext,
+      ),
+    Error,
+    "does not match",
+  );
 });
 
 Deno.test("serverTokenModel: redeem with wrong secret fails", async () => {

@@ -114,6 +114,7 @@ function emitAuthAuditEvent(
   outcome: AuditOutcome,
   principalId?: string,
   detail?: string,
+  tokenName?: string,
 ): AuditEvent | undefined {
   if (!deps.auditEmitter) return undefined;
   const event = buildAuditEvent({
@@ -122,8 +123,8 @@ function emitAuthAuditEvent(
     stage: "response",
     outcome,
     action,
-    resourceKind: "server",
-    resourceName: deps.instanceId ?? "unknown",
+    resourceKind: tokenName ? "server-token" : "server",
+    resourceName: tokenName ?? deps.instanceId ?? "unknown",
     principalKind: principalId ? "user" : "anonymous",
     principalId: principalId ?? "anonymous",
     initiatedBy: principalId ? `user:${principalId}` : "anonymous",
@@ -293,6 +294,8 @@ async function handleDeviceToken(
       "auth.login.completed",
       "success",
       userInfo.sub,
+      undefined,
+      tokenName,
     );
     return jsonResponse(200, {
       token,
