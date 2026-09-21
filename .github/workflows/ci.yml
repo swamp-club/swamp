@@ -669,6 +669,10 @@ jobs:
           check_hash "review-skills script" '.configIntegrity.scripts."review-skills"' "scripts/review_skills.ts"
           check_hash "eval-skill-triggers config" '.configIntegrity.scripts."eval-skill-triggers"' "evals/promptfoo/package.json"
           check_hash "check-review-verdict script" '.configIntegrity.scripts."check-review-verdict"' "scripts/check_review_verdict.ts"
+          # The generator pins itself: the attestation is only as trustworthy
+          # as the script that produced it, so that script's content is part
+          # of what the attestation commits to.
+          check_hash "build-attestation script" '.configIntegrity.scripts."build-attestation"' "scripts/build_attestation.ts"
 
           # -- 6. Steps summary table --
           {
