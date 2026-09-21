@@ -27,6 +27,7 @@ import {
   type MethodDefinition,
   type MethodResult,
   type ModelDefinition,
+  modelRegistry,
 } from "./model.ts";
 import type { Definition } from "../definitions/definition.ts";
 import { UserError } from "../errors.ts";
@@ -885,7 +886,10 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
               .followUpActions as FollowUpAction[] | undefined,
             executor: remoteResult.workerName,
           };
-        } else if (isRemoteOnlyMode()) {
+        } else if (
+          isRemoteOnlyMode() &&
+          !modelRegistry.isInternal(context.modelType)
+        ) {
           throw new UserError(
             `Step '${methodName}' on model '${context.modelType.normalized}' ` +
               `has no placement but the server is running in remote-only mode. ` +

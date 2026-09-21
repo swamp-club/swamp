@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
-import { setRemoteStepDispatcher } from "../remote/remote_dispatch.ts";
+import {
+  setRemoteOnlyMode,
+  setRemoteStepDispatcher,
+} from "../remote/remote_dispatch.ts";
 import { fromResourceHandle } from "../data/data_record_mapper.ts";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import { DefaultMethodExecutionService } from "./method_execution_service.ts";
@@ -31,6 +34,7 @@ import type {
   MethodResult,
   ModelDefinition,
 } from "./model.ts";
+import { modelRegistry } from "./model.ts";
 import { z } from "zod";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import { SOLO_NAMESPACE } from "../data/namespace.ts";
@@ -3654,3 +3658,85 @@ Deno.test(
     assertEquals(capturedArgs, { someKey: "someValue" });
   },
 );
+
+// ---------- Remote-Only Mode Exemption Tests (swamp-club#2307) ----------
+
+Deno.test("executeWorkflow: internal model executes in-process in remote-only mode", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  const internalType = ModelType.create("swamp/test-internal");
+  modelRegistry.markInternal(internalType);
+  setRemoteOnlyMode(true);
+  try {
+    let executed = false;
+    const model: ModelDefinition = {
+      type: internalType,
+      version: "1",
+      methods: {
+        redeem: {
+          description: "Control-plane method",
+          kind: "action",
+          arguments: z.object({}),
+          execute: () => {
+            executed = true;
+            return Promise.resolve({});
+          },
+        },
+      },
+    };
+
+    const definition = Definition.create({
+      name: "test-internal-model",
+      globalArguments: {},
+    });
+
+    const { context } = createTestContext({ modelType: internalType });
+    const result = await service.executeWorkflow(
+      definition,
+      model,
+      "redeem",
+      context,
+    );
+
+    assertEquals(result !== undefined, true);
+    assertEquals(executed, true);
+  } finally {
+    setRemoteOnlyMode(false);
+  }
+});
+
+Deno.test("executeWorkflow: non-internal model without placement throws in remote-only mode", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  setRemoteOnlyMode(true);
+  try {
+    const model: ModelDefinition = {
+      type: ModelType.create("test/user-model"),
+      version: "1",
+      methods: {
+        run: {
+          description: "User method",
+          arguments: z.object({}),
+          execute: () => Promise.resolve({}),
+        },
+      },
+    };
+
+    const definition = Definition.create({
+      name: "test-user-model",
+      globalArguments: {},
+    });
+
+    const { context } = createTestContext({
+      modelType: model.type,
+    });
+
+    await assertRejects(
+      () => service.executeWorkflow(definition, model, "run", context),
+      UserError,
+      "remote-only mode",
+    );
+  } finally {
+    setRemoteOnlyMode(false);
+  }
+});
