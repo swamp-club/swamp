@@ -19,7 +19,7 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
-import { CLI_ARGS } from "./test_helpers.ts";
+import { CLI_ARGS, isolatedHomeEnv } from "./test_helpers.ts";
 
 interface CliRunResult {
   stdout: string;
@@ -98,6 +98,9 @@ Deno.test("CLI bootstrap stamps invocationContext on persisted telemetry", async
     const configDir = join(dir, "xdg");
     const childEnvWith = (extra: Record<string, string> = {}) => ({
       ...baseChildEnv(),
+      // `repo init --tool claude --tool cursor` installs bundled skills into
+      // the child's ~/.claude/skills and ~/.agents/skills. Root them here.
+      ...isolatedHomeEnv(join(dir, "home")),
       XDG_CONFIG_HOME: configDir,
       ...extra,
     });

@@ -21,7 +21,8 @@ import { dirname, join } from "@std/path";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { getSwampConfigDir } from "./paths.ts";
 
-const BUILTIN_TOOL_SKILL_DIRS_FILE = "builtin-tool-skill-dirs.json";
+/** File name of the built-in tool skill-dirs registry inside the config dir. */
+export const BUILTIN_TOOL_SKILL_DIRS_FILE = "builtin-tool-skill-dirs.json";
 
 export class BuiltInToolSkillDirsRepository {
   private readonly filePath: string;

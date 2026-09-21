@@ -21,7 +21,8 @@ import { dirname, join } from "@std/path";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { getSwampConfigDir } from "./paths.ts";
 
-const CUSTOM_TOOL_SKILL_DIRS_FILE = "custom-tool-skill-dirs.json";
+/** File name of the custom tool skill-dirs registry inside the config dir. */
+export const CUSTOM_TOOL_SKILL_DIRS_FILE = "custom-tool-skill-dirs.json";
 
 export class CustomToolSkillDirsRepository {
   private readonly filePath: string;

@@ -22,130 +22,93 @@ import { join } from "@std/path";
 import { UserIdentityRepository } from "./user_identity_repository.ts";
 import type { UserIdentityData } from "../../domain/identity/user_identity.ts";
 
-Deno.test("UserIdentityRepository.getUserId creates identity file when missing", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  const originalHome = Deno.env.get("HOME");
-  const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
-  try {
-    Deno.env.set("XDG_CONFIG_HOME", tmpDir);
-    Deno.env.delete("HOME"); // Ensure XDG takes priority
+// The config directory is injected rather than steered through HOME /
+// XDG_CONFIG_HOME: `deno test --parallel` shares one process and one
+// `Deno.env` across test files, so repointing them here would send other
+// files' writes into a temp directory this file is about to delete. How
+// those variables resolve to a config dir is covered by paths_test.ts.
 
-    const repo = new UserIdentityRepository();
+async function withTempDir(
+  fn: (dir: string) => Promise<void>,
+): Promise<void> {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_identity_test_" });
+  try {
+    await fn(tmpDir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native handles yet.
+      // Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+}
+
+Deno.test("UserIdentityRepository.getUserId creates identity file when missing", async () => {
+  await withTempDir(async (tmpDir) => {
+    const repo = new UserIdentityRepository(tmpDir);
     const userId = await repo.getUserId();
 
     assertEquals(typeof userId, "string");
     assertEquals(userId !== null, true);
 
-    // Verify file was created
-    const content = await Deno.readTextFile(
-      join(tmpDir, "swamp", "identity.json"),
-    );
+    const content = await Deno.readTextFile(join(tmpDir, "identity.json"));
     const data: UserIdentityData = JSON.parse(content);
     assertEquals(data.userId, userId);
     assertEquals(typeof data.createdAt, "string");
-  } finally {
-    if (originalHome) Deno.env.set("HOME", originalHome);
-    else Deno.env.delete("HOME");
-    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
-    else Deno.env.delete("XDG_CONFIG_HOME");
-    await Deno.remove(tmpDir, { recursive: true });
-  }
+  });
 });
 
 Deno.test("UserIdentityRepository.getUserId returns same userId on subsequent calls", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
-  try {
-    Deno.env.set("XDG_CONFIG_HOME", tmpDir);
+  await withTempDir(async (tmpDir) => {
+    const repo = new UserIdentityRepository(tmpDir);
 
-    const repo = new UserIdentityRepository();
     const userId1 = await repo.getUserId();
     const userId2 = await repo.getUserId();
 
     assertEquals(userId1, userId2);
-  } finally {
-    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
-    else Deno.env.delete("XDG_CONFIG_HOME");
-    await Deno.remove(tmpDir, { recursive: true });
-  }
+  });
 });
 
 Deno.test("UserIdentityRepository.getUserId reads existing identity file", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
-  try {
-    Deno.env.set("XDG_CONFIG_HOME", tmpDir);
-
-    // Pre-create identity file
-    const swampDir = join(tmpDir, "swamp");
-    await Deno.mkdir(swampDir, { recursive: true });
+  await withTempDir(async (tmpDir) => {
     const existingData: UserIdentityData = {
       userId: "existing-uuid-1234",
       createdAt: "2024-01-01T00:00:00.000Z",
     };
     await Deno.writeTextFile(
-      join(swampDir, "identity.json"),
+      join(tmpDir, "identity.json"),
       JSON.stringify(existingData),
     );
 
-    const repo = new UserIdentityRepository();
-    const userId = await repo.getUserId();
+    const repo = new UserIdentityRepository(tmpDir);
 
-    assertEquals(userId, "existing-uuid-1234");
-  } finally {
-    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
-    else Deno.env.delete("XDG_CONFIG_HOME");
-    await Deno.remove(tmpDir, { recursive: true });
-  }
+    assertEquals(await repo.getUserId(), "existing-uuid-1234");
+  });
 });
 
-Deno.test("UserIdentityRepository.getUserId uses HOME fallback when XDG_CONFIG_HOME is not set", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  const originalHome = Deno.env.get("HOME");
-  const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
-  try {
-    Deno.env.delete("XDG_CONFIG_HOME");
-    Deno.env.set("HOME", tmpDir);
+Deno.test("UserIdentityRepository.getUserId creates the config directory when missing", async () => {
+  await withTempDir(async (tmpDir) => {
+    const configDir = join(tmpDir, "nested", "swamp");
+    const repo = new UserIdentityRepository(configDir);
 
-    const repo = new UserIdentityRepository();
     const userId = await repo.getUserId();
 
-    assertEquals(typeof userId, "string");
-    assertEquals(userId !== null, true);
-
-    // Verify file was created at ~/.config/swamp/identity.json
-    const content = await Deno.readTextFile(
-      join(tmpDir, ".config", "swamp", "identity.json"),
-    );
+    const content = await Deno.readTextFile(join(configDir, "identity.json"));
     const data: UserIdentityData = JSON.parse(content);
     assertEquals(data.userId, userId);
-  } finally {
-    if (originalHome) Deno.env.set("HOME", originalHome);
-    else Deno.env.delete("HOME");
-    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
-    else Deno.env.delete("XDG_CONFIG_HOME");
-    await Deno.remove(tmpDir, { recursive: true });
-  }
+  });
 });
 
 Deno.test("UserIdentityRepository.getUserId returns different ids for different directories", async () => {
-  const tmpDir1 = await Deno.makeTempDir();
-  const tmpDir2 = await Deno.makeTempDir();
-  const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
-  try {
-    Deno.env.set("XDG_CONFIG_HOME", tmpDir1);
-    const repo1 = new UserIdentityRepository();
-    const userId1 = await repo1.getUserId();
+  await withTempDir(async (tmpDir) => {
+    const dir1 = join(tmpDir, "one");
+    const dir2 = join(tmpDir, "two");
 
-    Deno.env.set("XDG_CONFIG_HOME", tmpDir2);
-    const repo2 = new UserIdentityRepository();
-    const userId2 = await repo2.getUserId();
+    const userId1 = await new UserIdentityRepository(dir1).getUserId();
+    const userId2 = await new UserIdentityRepository(dir2).getUserId();
 
     assertNotEquals(userId1, userId2);
-  } finally {
-    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
-    else Deno.env.delete("XDG_CONFIG_HOME");
-    await Deno.remove(tmpDir1, { recursive: true });
-    await Deno.remove(tmpDir2, { recursive: true });
-  }
+  });
 });

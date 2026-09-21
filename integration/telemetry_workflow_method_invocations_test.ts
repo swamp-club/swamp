@@ -31,7 +31,7 @@ import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { stringify as stringifyYaml } from "@std/yaml";
-import { CLI_ARGS } from "./test_helpers.ts";
+import { CLI_ARGS, isolatedHomeEnv } from "./test_helpers.ts";
 
 interface CliRunResult {
   stdout: string;
@@ -170,6 +170,9 @@ Deno.test({
       const configDir = join(repoDir, "xdg");
       const childEnvWith = (extra: Record<string, string> = {}) => ({
         ...baseChildEnv(),
+        // `repo init --tool claude` installs bundled skills into the child's
+        // ~/.claude/skills. Root them here.
+        ...isolatedHomeEnv(join(repoDir, "home")),
         XDG_CONFIG_HOME: configDir,
         ...extra,
       });

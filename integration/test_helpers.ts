@@ -28,6 +28,54 @@ import { stringify as stringifyYaml } from "@std/yaml";
 /** Absolute path to the project root (parent of integration/). */
 const PROJECT_ROOT = join(dirname(fromFileUrl(import.meta.url)), "..");
 
+/**
+ * The deno module cache this process is using, captured at module load —
+ * before any test has had a chance to repoint HOME.
+ */
+const DENO_CACHE_DIR = resolveDenoCacheDir();
+
+function resolveDenoCacheDir(): string {
+  const explicit = Deno.env.get("DENO_DIR");
+  if (explicit) return explicit;
+  const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE") ?? "";
+  switch (Deno.build.os) {
+    case "darwin":
+      return join(home, "Library", "Caches", "deno");
+    case "windows":
+      return join(
+        Deno.env.get("LOCALAPPDATA") ?? join(home, "AppData", "Local"),
+        "deno",
+      );
+    default:
+      return join(
+        Deno.env.get("XDG_CACHE_HOME") ?? join(home, ".cache"),
+        "deno",
+      );
+  }
+}
+
+/**
+ * Environment entries that root a spawned CLI's user-home writes in `homeDir`.
+ *
+ * `repo init`/`repo upgrade` install bundled skills into `~/.claude/skills`,
+ * `~/.agents/skills` and `~/.kiro/skills`, resolved from the child's HOME at
+ * spawn time. Inheriting the parent's HOME overwrites the developer's real
+ * skills on every `deno run test`, and — because the suite runs every test
+ * file in one process with one shared `Deno.env` — it can also capture a temp
+ * directory another test file has momentarily assigned to HOME, whose cleanup
+ * then fails with `Directory not empty`.
+ *
+ * DENO_DIR is pinned alongside it: moving HOME would otherwise move the module
+ * cache with it and force the child to re-resolve every dependency.
+ */
+export function isolatedHomeEnv(homeDir: string): Record<string, string> {
+  return {
+    HOME: homeDir,
+    USERPROFILE: homeDir,
+    DENO_DIR: DENO_CACHE_DIR,
+  };
+}
+
 /** CLI launch args that bypass `deno task` config resolution. */
 export const CLI_ARGS = [
   "run",

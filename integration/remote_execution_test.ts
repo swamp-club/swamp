@@ -117,6 +117,9 @@ async function startOrchestrator(
         path: repoDir,
         force: false,
         version: "20260101.120000.0",
+        // No tool scaffolding: the default ["claude"] would install bundled
+        // skills into the real ~/.claude/skills.
+        tools: [],
       }),
       withDefaults({
         error: (event) => {
