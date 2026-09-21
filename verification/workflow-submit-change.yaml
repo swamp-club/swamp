@@ -682,17 +682,42 @@ jobs:
               # Push the verified commit explicitly rather than whatever HEAD
               # has become. The attestation is bound to this SHA; pushing the
               # branch tip would let a commit made after verification reach the
-              # PR under an attestation that never saw it.
+              # PR under an attestation that never saw it. A non-fast-forward
+              # push fails loudly here, which is correct: it means history was
+              # rewritten under an attestation that described the old history.
               git push origin \
                 "${{ inputs.commit }}:refs/heads/${{ inputs.branch }}" >&2
-              BODY_FILE=$(mktemp)
-              printf '%s\n\n---\n\nAttestation: `%s`\nVerification run: `%s`\n' \
-                "$PR_BODY" "$ATTESTATION_ID" "${{ run.id }}" > "$BODY_FILE"
-              PR_URL=$(gh pr create \
+
+              # Open or update. Re-running is the normal case, not an edge
+              # case: CI validates that the attestation's commit equals the
+              # PR head, so every push to an open PR needs a fresh attestation
+              # for the new SHA — and the pr_failed recovery loop re-verifies
+              # against a PR that is already open. `gh pr create` refuses a
+              # second PR for the same branch, so look first.
+              PR_URL=$(gh pr list \
                 --head "${{ inputs.branch }}" \
-                --base main \
-                --title "$PR_TITLE" \
-                --body-file "$BODY_FILE")
+                --state open \
+                --json url \
+                --jq '.[0].url // empty')
+
+              BODY_FILE=$(mktemp)
+              if [ -n "$PR_URL" ]; then
+                # Comment rather than rewrite the body: the body may carry
+                # human edits, and one comment per attestation leaves the
+                # audit trail of which commits were verified and when.
+                printf 'Re-verified `%s`.\n\nAttestation: `%s`\nVerification run: `%s`\n' \
+                  "${{ inputs.commit }}" "$ATTESTATION_ID" "${{ run.id }}" \
+                  > "$BODY_FILE"
+                gh pr comment "$PR_URL" --body-file "$BODY_FILE" >&2
+              else
+                printf '%s\n\n---\n\nAttestation: `%s`\nVerification run: `%s`\n' \
+                  "$PR_BODY" "$ATTESTATION_ID" "${{ run.id }}" > "$BODY_FILE"
+                PR_URL=$(gh pr create \
+                  --head "${{ inputs.branch }}" \
+                  --base main \
+                  --title "$PR_TITLE" \
+                  --body-file "$BODY_FILE")
+              fi
               rm -f "$BODY_FILE"
               printf '%s' "$PR_URL"
 

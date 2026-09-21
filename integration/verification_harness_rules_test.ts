@@ -449,3 +449,23 @@ Deno.test("submit-change: the recorded checklist comes from the attestation", as
     "record-verification must not pass its own step list",
   );
 });
+
+Deno.test("submit-change: create-pr reuses an open PR instead of failing", async () => {
+  // Re-running is the normal case, not an edge case. CI validates that the
+  // attestation's commit equals the PR head, so every push to an open PR needs
+  // a fresh attestation for the new SHA, and the pr_failed recovery loop
+  // re-verifies against a PR that is already open. `gh pr create` refuses a
+  // second PR for the same branch, so a step that always creates would break
+  // both loops at exactly the point a human is waiting on it.
+  const workflow = await readReviewsWorkflow();
+  const createPr = (((workflow.jobs ?? []).find((j) => j.name === "open-pr")
+    ?.steps ?? []) as readonly EnvStep[]).find((s) => s.name === "create-pr");
+
+  const shell = createPr?.task?.inputs?.run ?? "";
+  assertStringIncludes(
+    shell,
+    "gh pr list",
+    "create-pr must look for an existing open PR on the branch before " +
+      "calling `gh pr create`, which fails when one already exists",
+  );
+});

@@ -123,17 +123,19 @@ Check the PR status externally (e.g.,
 
 ## 4c. Handle PR Failure
 
-When in `pr_failed`, diagnose and fix the issue. Then either:
+When in `pr_failed`, diagnose and fix the issue, then re-run `submit-change` on
+the new commit. CI checks that the attestation's commit equals the PR head, so a
+fix needs a fresh attestation — the run finds the open PR, comments the new
+attestation id on it, and re-links it rather than opening a second one. Do not
+push by hand and call `link_pr` yourself; the run does both, and a push without
+a re-verification leaves the PR carrying an attestation for a commit that is no
+longer its head.
 
-- Push fixes and call `link_pr` again (same or new PR URL) to return to
-  `pr_open`:
-  ```
-  swamp model @swamp/issue-lifecycle method run link_pr issue-<N> --input url=<PR URL>
-  ```
-- Call `implement` to go back to the implementing phase for major rework:
-  ```
-  swamp model @swamp/issue-lifecycle method run implement issue-<N>
-  ```
+For major rework, call `implement` first to return to the implementing phase:
+
+```
+swamp model @swamp/issue-lifecycle method run implement issue-<N>
+```
 
 ## 5. Ship the Release
 

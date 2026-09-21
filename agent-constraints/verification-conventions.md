@@ -256,13 +256,24 @@ The `open-pr` job takes the attestation id as an **input**, read from the
 the document. No accepted attestation, no id, no step. The illegal state is not
 rejected; it cannot be expressed.
 
-Two details the job is deliberate about:
+Three details the job is deliberate about:
 
 - It pushes `<commit>:refs/heads/<branch>`, not the branch tip. The attestation
   is bound to a SHA; pushing whatever HEAD has become would let a commit made
-  after verification reach the PR under an attestation that never saw it.
+  after verification reach the PR under an attestation that never saw it. A
+  non-fast-forward push fails loudly, which is correct — it means history was
+  rewritten under an attestation describing the old history.
+- **It opens or updates.** Re-running is the normal case, not an edge case: CI
+  validates that the attestation's commit equals the PR head, so every push to
+  an open PR needs a fresh attestation for the new SHA, and the `pr_failed`
+  recovery loop re-verifies against a PR that is already open. `gh pr create`
+  refuses a second PR for the same branch, so the step looks for an open one
+  first and comments the new attestation id on it instead. Commenting rather
+  than rewriting the body preserves human edits and leaves one entry per
+  attestation — the audit trail of which commits were verified and when.
 - `link_pr` takes its URL from the create-PR step's recorded output, so the
   lifecycle records what the run produced rather than what an agent typed.
+  `link_pr` is idempotent, so a re-run bumps `attempt` on the same URL.
 
 Everything past `record-verification` runs only when verification actually
 passed. `attest` runs on failure too — an attestation recording a failure is

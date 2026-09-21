@@ -69,12 +69,12 @@ counting more skips.
 
 Everything that used to be an agent step is now a job:
 
-| Job                   | What it does                                                                                                                    |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `attest`              | Generates the attestation from the run's own record and hashes of the verified commit's config files                            |
-| `record-verification` | Calls `verification_passed` with that attestation — the commit, branch, run id and step list are read out of it                 |
-| `publish-attestation` | Posts it to swamp-club via `post_attestation`, which writes an `attestationRecord` receipt                                      |
-| `open-pr`             | Pushes the verified commit, opens the PR with the attestation id as an input, and calls `link_pr` with the URL the run produced |
+| Job                   | What it does                                                                                                                                   |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `attest`              | Generates the attestation from the run's own record and hashes of the verified commit's config files                                           |
+| `record-verification` | Calls `verification_passed` with that attestation — the commit, branch, run id and step list are read out of it                                |
+| `publish-attestation` | Posts it to swamp-club via `post_attestation`, which writes an `attestationRecord` receipt                                                     |
+| `open-pr`             | Pushes the verified commit, opens **or updates** the PR with the attestation id as an input, and calls `link_pr` with the URL the run produced |
 
 **Do NOT construct, edit or reuse an attestation, and do NOT open the PR by
 hand.** There is nothing to fill in: every field comes from the run. An agent
@@ -110,6 +110,12 @@ Do NOT call `verification_passed` or `link_pr` — `record-verification` and
 bound to a commit SHA. Amending — to add a co-author, fix a typo, reword the
 message — changes the SHA and CI reports a commit mismatch. If the commit has to
 change, re-run `submit-change` on the new SHA.
+
+**Re-run `submit-change` after every push to an open PR.** CI checks that the
+attestation's commit equals the PR head, so a new commit needs a new
+attestation. The run finds the open PR, comments the new attestation id on it,
+and re-links it — it does not open a second PR. This is also how the `pr_failed`
+recovery loop works: fix, re-run, and the same PR carries a fresh attestation.
 
 ### A verification step failed
 
