@@ -295,3 +295,118 @@ Deno.test("CompositeUnifiedDataRepository: delete deletes from persistent when d
   );
   assertEquals(found, null);
 });
+
+// ---------------------------------------------------------------------------
+// Deferred writes
+//
+// rollbackOnFailure model methods write deferred and settle afterwards. The
+// composite used to reject the whole trio, so any such method run as a
+// workflow step failed at its first write — and the rollback in the error
+// handler then threw its own "not supported", masking the real cause.
+// ---------------------------------------------------------------------------
+
+Deno.test("composite: a deferred write routes by lifetime and commits on the same side", async () => {
+  const { composite, persistent, ephemeral } = createCompositeRepo();
+  const data = createTestData({ lifetime: "infinite", name: "persisted" });
+
+  const receipt = await composite.saveDeferred(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    data,
+    TEST_CONTENT,
+  );
+  const { receipt: finalized } = await composite.finalizeVersionDeferred(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    data,
+    1,
+  );
+  await composite.advanceLatestMarkers([finalized]);
+
+  assertEquals(receipt.dataName, "persisted");
+  // Committed to the persistent side, and nothing leaked into the ephemeral.
+  assertEquals(
+    (await persistent.findByName(TEST_TYPE, TEST_MODEL_ID, "persisted")) !==
+      null,
+    true,
+  );
+  assertEquals(
+    await ephemeral.findByName(TEST_TYPE, TEST_MODEL_ID, "persisted"),
+    null,
+  );
+});
+
+Deno.test("composite: an ephemeral deferred write settles on the ephemeral side", async () => {
+  const { composite, persistent, ephemeral } = createCompositeRepo();
+  const data = createTestData({ lifetime: "ephemeral", name: "scratch" });
+
+  await composite.saveDeferred(TEST_TYPE, TEST_MODEL_ID, data, TEST_CONTENT);
+  const { receipt } = await composite.finalizeVersionDeferred(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    data,
+    1,
+  );
+  await composite.advanceLatestMarkers([receipt]);
+
+  assertEquals(
+    (await ephemeral.findByName(TEST_TYPE, TEST_MODEL_ID, "scratch")) !== null,
+    true,
+  );
+  assertEquals(
+    await persistent.findByName(TEST_TYPE, TEST_MODEL_ID, "scratch"),
+    null,
+  );
+});
+
+Deno.test("composite: rollback undoes a deferred write on the side that made it", async () => {
+  const { composite, persistent } = createCompositeRepo();
+  const data = createTestData({ lifetime: "infinite", name: "rolled-back" });
+
+  await composite.saveDeferred(TEST_TYPE, TEST_MODEL_ID, data, TEST_CONTENT);
+  const { receipt } = await composite.finalizeVersionDeferred(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    data,
+    1,
+  );
+  await composite.rollbackVersions([receipt]);
+
+  assertEquals(
+    await persistent.findByName(TEST_TYPE, TEST_MODEL_ID, "rolled-back"),
+    null,
+  );
+});
+
+Deno.test("composite: settling receipts from both sides routes each correctly", async () => {
+  const { composite, persistent, ephemeral } = createCompositeRepo();
+  const kept = createTestData({ lifetime: "infinite", name: "kept" });
+  const scratch = createTestData({ lifetime: "ephemeral", name: "scratch" });
+
+  await composite.saveDeferred(TEST_TYPE, TEST_MODEL_ID, kept, TEST_CONTENT);
+  await composite.saveDeferred(TEST_TYPE, TEST_MODEL_ID, scratch, TEST_CONTENT);
+  const a = await composite.finalizeVersionDeferred(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    kept,
+    1,
+  );
+  const b = await composite.finalizeVersionDeferred(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    scratch,
+    1,
+  );
+
+  // One call carrying receipts from both repositories.
+  await composite.advanceLatestMarkers([a.receipt, b.receipt]);
+
+  assertEquals(
+    (await persistent.findByName(TEST_TYPE, TEST_MODEL_ID, "kept")) !== null,
+    true,
+  );
+  assertEquals(
+    (await ephemeral.findByName(TEST_TYPE, TEST_MODEL_ID, "scratch")) !== null,
+    true,
+  );
+});

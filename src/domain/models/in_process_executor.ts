@@ -321,11 +321,28 @@ export class InProcessExecutor {
           ...getResourceReceipts(),
           ...getFileReceipts(),
         ];
-        await this.context.dataRepository.rollbackVersions(receipts);
+        const original = error instanceof Error ? error.message : String(error);
+
+        // The rollback must never replace what it was cleaning up after. A
+        // repository that cannot roll back reports that instead of the method
+        // failure that triggered it, and the operator is sent to debug the
+        // wrong thing entirely — which is how an unsupported deferred write
+        // surfaced as a rollback error on a method that had nothing wrong
+        // with it.
+        let rollbackFailure: string | undefined;
+        try {
+          await this.context.dataRepository.rollbackVersions(receipts);
+        } catch (rollbackError) {
+          rollbackFailure = rollbackError instanceof Error
+            ? rollbackError.message
+            : String(rollbackError);
+        }
 
         return {
           status: "error",
-          error: error instanceof Error ? error.message : String(error),
+          error: rollbackFailure
+            ? `${original} (rollback also failed: ${rollbackFailure})`
+            : original,
           outputs: [],
           logs,
           durationMs,
