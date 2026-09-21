@@ -3607,6 +3607,12 @@ export const serveCommand = new Command()
               runMetricsTracker.record("completed", schedDuration);
               break;
             }
+            case "schedule_suspended":
+              logger.info(
+                "Scheduled workflow {name} suspended awaiting approval (run: {runId})",
+                { name: event.workflowName, runId: event.runId },
+              );
+              break;
             case "schedule_failed":
               logger.error(
                 "Scheduled workflow {name} failed: {error}",
