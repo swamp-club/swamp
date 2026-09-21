@@ -861,6 +861,8 @@ export class WebhookService {
 
     try {
       let completedRun: WorkflowRunView | undefined;
+      let streamError: string | undefined;
+      let suspended = false;
 
       await executeWorkflowWithLocks(
         this.deps.repoDir,
@@ -890,8 +892,14 @@ export class WebhookService {
               );
             }
           }
-          if (event.kind === "completed") {
+          if (event.kind === "completed" || event.kind === "cancelled") {
             completedRun = event.run;
+          }
+          if (event.kind === "suspended") {
+            suspended = true;
+          }
+          if (event.kind === "error") {
+            streamError = event.error.message;
           }
         },
         this.deps.syncService,
@@ -899,19 +907,12 @@ export class WebhookService {
         { triggerSource: "webhook" },
       );
 
-      if (completedRun?.status === "failed") {
-        const message = extractFirstStepError(completedRun);
-        this.emit({
-          kind: "webhook_failed",
-          route,
-          workflowName: workflowIdOrName,
-          error: message,
-        });
-        logger.error(
-          "Webhook workflow {workflow} failed: {error}",
-          { workflow: workflowIdOrName, error: message },
-        );
-      } else {
+      // Success requires an explicit "succeeded" status. A run that ends any
+      // other way — a failed step, a cancellation, an error event carrying a
+      // pre-run failure — must not be reported as a completion, because
+      // webhook_completed feeds the "completed" bucket of the health
+      // endpoint's throughput metrics.
+      if (completedRun?.status === "succeeded") {
         this.emit({
           kind: "webhook_completed",
           route,
@@ -921,6 +922,30 @@ export class WebhookService {
         logger.info(
           "Webhook workflow {workflow} completed (run: {runId})",
           { workflow: workflowIdOrName, runId },
+        );
+      } else if (suspended) {
+        // A gated run has not finished: neither terminal event would be true,
+        // so it contributes no health record until it resumes. Resumption
+        // happens through the CLI, outside this service.
+        logger.info(
+          "Webhook workflow {workflow} suspended awaiting approval (run: {runId})",
+          { workflow: workflowIdOrName, runId },
+        );
+      } else {
+        const message = completedRun
+          ? (completedRun.status === "cancelled"
+            ? "workflow was cancelled"
+            : extractFirstStepError(completedRun))
+          : streamError ?? "workflow did not complete";
+        this.emit({
+          kind: "webhook_failed",
+          route,
+          workflowName: workflowIdOrName,
+          error: message,
+        });
+        logger.error(
+          "Webhook workflow {workflow} failed: {error}",
+          { workflow: workflowIdOrName, error: message },
         );
       }
     } catch (error) {
