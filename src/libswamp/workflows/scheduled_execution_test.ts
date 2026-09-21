@@ -267,6 +267,73 @@ Deno.test("ScheduledExecutionService: emits schedule_failed when no terminal eve
   assertEquals(completed.length, 0);
 });
 
+Deno.test("ScheduledExecutionService: emits schedule_suspended when workflow yields suspended event", async () => {
+  const wf = createTestWorkflow("gated-wf", "* * * * * *");
+  const events: ScheduledExecutionEvent[] = [];
+
+  const mockRepo = createMockWorkflowRepo([wf]);
+  const service = new ScheduledExecutionService({
+    workflowRepo: mockRepo,
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: (
+      _input,
+      _signal,
+      onEvent: (event: WorkflowRunEvent) => void,
+    ) => {
+      onEvent({
+        kind: "started",
+        runId: "run-1",
+        workflowName: "gated-wf",
+        jobs: [],
+      });
+      onEvent({
+        kind: "suspended",
+        run: {
+          id: "run-1",
+          workflowId: wf.id,
+          workflowName: "gated-wf",
+          status: "suspended",
+          jobs: [{
+            name: "job1",
+            status: "running",
+            steps: [{
+              name: "step1",
+              status: "running",
+            }],
+          }],
+        },
+        jobId: "job1",
+        stepId: "step1",
+        prompt: "Approve deployment?",
+      });
+      return Promise.resolve();
+    },
+  });
+
+  await service.start((e) => events.push(e));
+
+  await waitFor(
+    () => events.some((e) => e.kind === "schedule_suspended"),
+    "schedule_suspended event",
+  );
+  await service.stop();
+
+  const suspended = events.filter((e) => e.kind === "schedule_suspended");
+  assertEquals(suspended.length >= 1, true);
+  for (const event of suspended) {
+    assertEquals(
+      (event as { kind: "schedule_suspended"; runId: string }).runId,
+      "run-1",
+    );
+  }
+
+  const failed = events.filter((e) => e.kind === "schedule_failed");
+  assertEquals(failed.length, 0);
+
+  const completed = events.filter((e) => e.kind === "schedule_completed");
+  assertEquals(completed.length, 0);
+});
+
 Deno.test("ScheduledExecutionService: stop clears schedules", async () => {
   const wf = createTestWorkflow("scheduled-wf", "0 * * * *");
 

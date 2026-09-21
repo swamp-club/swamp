@@ -78,6 +78,12 @@ export type ScheduledExecutionEvent =
     runId: string;
   }
   | {
+    kind: "schedule_suspended";
+    workflowId: WorkflowId;
+    workflowName: string;
+    runId: string;
+  }
+  | {
     kind: "schedule_failed";
     workflowId: WorkflowId;
     workflowName: string;
@@ -593,6 +599,7 @@ export class ScheduledExecutionService {
     try {
       let completedRun: WorkflowRunView | undefined;
       let streamError: string | undefined;
+      let suspended = false;
 
       const override = this.triggerOverrides.get(workflowName);
 
@@ -621,6 +628,9 @@ export class ScheduledExecutionService {
               }
               if (event.kind === "cancelled") {
                 completedRun = event.run;
+              }
+              if (event.kind === "suspended") {
+                suspended = true;
               }
               if (event.kind === "error") {
                 streamError = event.error.message;
@@ -652,6 +662,17 @@ export class ScheduledExecutionService {
         logger.warn(
           "Scheduled run cancelled for workflow {name}: {error}",
           { name: workflowName, error: message },
+        );
+      } else if (suspended) {
+        this.emit({
+          kind: "schedule_suspended",
+          workflowId,
+          workflowName,
+          runId,
+        });
+        logger.info(
+          "Scheduled run suspended awaiting approval for workflow {name} (run: {runId})",
+          { name: workflowName, runId },
         );
       } else {
         const message = completedRun
