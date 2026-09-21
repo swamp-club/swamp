@@ -97,9 +97,25 @@ The group:
    worktree
 4. Each review uses the factory pattern — one `reviewer` model, called once per
    review type with different prompt files and models
-5. Review diffs use `git merge-base origin/main HEAD` so only the branch's own
-   changes are reviewed — the setup step fetches `origin main` first to ensure
-   the diff base is current regardless of local branch state
+5. Review diffs use `git merge-base <diffBase> HEAD` so only the branch's own
+   changes are reviewed — the setup step fetches the diff base first, when it
+   is a remote ref, so it is current regardless of local branch state
+
+### Stacked branches
+
+`diffBase` defaults to `origin/main` and `prBase` to `main`. Set both when this
+branch is stacked on another:
+
+```
+--input diffBase=cue/10-introduce-submit-change-workflow \
+--input prBase=cue/10-introduce-submit-change-workflow
+```
+
+Without them the reviews diff against `main` and see the union of this branch
+and its parent — re-reviewing everything the parent already had reviewed, at
+four large-model calls, and burying the change actually under review. A local
+parent branch needs no fetch, which is why the setup step only fetches a base
+that looks like `origin/…`.
 
 ### Guards
 

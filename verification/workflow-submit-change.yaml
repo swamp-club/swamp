@@ -30,6 +30,20 @@ inputs:
         swamp-club lab issue number. The run publishes the attestation through
         that issue's @swamp/issue-lifecycle instance (`issue-<N>`), which must
         already exist and be in the `verifying` phase.
+    diffBase:
+      type: string
+      default: "origin/main"
+      description: |
+        Git ref the agent reviews diff against. Defaults to origin/main; set it
+        to the parent branch when this branch is stacked on another, so the
+        reviews see only this branch's own changes rather than the union with
+        everything the parent already had reviewed.
+    prBase:
+      type: string
+      default: "main"
+      description: |
+        Branch the pull request targets. Defaults to main; set it to the parent
+        branch for a stacked PR.
     prTitle:
       type: string
       description: Pull request title.
@@ -236,7 +250,13 @@ jobs:
           inputs:
             run: |
               set -e
-              git fetch origin main
+              # Fetch only when the diff base is a remote ref. A stacked
+              # branch diffs against a local parent branch, which needs no
+              # fetch and has no origin/ counterpart to fetch from.
+              DIFF_BASE="${{ inputs.diffBase }}"
+              case "$DIFF_BASE" in
+                origin/*) git fetch origin "${DIFF_BASE#origin/}" ;;
+              esac
               CHECKOUT_DIR="/tmp/swamp-verify-reviews-${{ run.id }}"
               rm -rf "$CHECKOUT_DIR"
               git worktree prune
@@ -276,7 +296,7 @@ jobs:
           methodName: diff
           inputs:
             repoPath: "/tmp/swamp-verify-reviews-${{ run.id }}"
-            base: "origin/main"
+            base: "${{ inputs.diffBase }}"
             threeWay: true
 
       - name: changed-files
@@ -292,7 +312,7 @@ jobs:
           methodName: diff
           inputs:
             repoPath: "/tmp/swamp-verify-reviews-${{ run.id }}"
-            base: "origin/main"
+            base: "${{ inputs.diffBase }}"
             nameOnly: true
             threeWay: true
 
@@ -317,7 +337,7 @@ jobs:
           inputs:
             run: |
               set -o pipefail
-              MERGE_BASE=$(git merge-base origin/main HEAD)
+              MERGE_BASE=$(git merge-base "${{ inputs.diffBase }}" HEAD)
               DIFF_FILE=$(mktemp)
               PROMPT_FILE=$(mktemp)
               RESULT_FILE=$(mktemp)
@@ -351,7 +371,7 @@ jobs:
           inputs:
             run: |
               set -o pipefail
-              MERGE_BASE=$(git merge-base origin/main HEAD)
+              MERGE_BASE=$(git merge-base "${{ inputs.diffBase }}" HEAD)
               DIFF_FILE=$(mktemp)
               PROMPT_FILE=$(mktemp)
               RESULT_FILE=$(mktemp)
@@ -385,7 +405,7 @@ jobs:
           inputs:
             run: |
               set -o pipefail
-              MERGE_BASE=$(git merge-base origin/main HEAD)
+              MERGE_BASE=$(git merge-base "${{ inputs.diffBase }}" HEAD)
               DIFF_FILE=$(mktemp)
               PROMPT_FILE=$(mktemp)
               RESULT_FILE=$(mktemp)
@@ -419,7 +439,7 @@ jobs:
           inputs:
             run: |
               set -o pipefail
-              MERGE_BASE=$(git merge-base origin/main HEAD)
+              MERGE_BASE=$(git merge-base "${{ inputs.diffBase }}" HEAD)
               DIFF_FILE=$(mktemp)
               PROMPT_FILE=$(mktemp)
               RESULT_FILE=$(mktemp)
@@ -458,7 +478,13 @@ jobs:
           inputs:
             run: |
               set -e
-              git fetch origin main
+              # Fetch only when the diff base is a remote ref. A stacked
+              # branch diffs against a local parent branch, which needs no
+              # fetch and has no origin/ counterpart to fetch from.
+              DIFF_BASE="${{ inputs.diffBase }}"
+              case "$DIFF_BASE" in
+                origin/*) git fetch origin "${DIFF_BASE#origin/}" ;;
+              esac
               CHECKOUT_DIR="/tmp/swamp-verify-skills-${{ run.id }}"
               rm -rf "$CHECKOUT_DIR"
               git worktree prune
@@ -486,7 +512,7 @@ jobs:
           methodName: diff
           inputs:
             repoPath: "/tmp/swamp-verify-skills-${{ run.id }}"
-            base: "origin/main"
+            base: "${{ inputs.diffBase }}"
             nameOnly: true
             threeWay: true
 
@@ -719,7 +745,7 @@ jobs:
                   "$PR_BODY" "$ATTESTATION_ID" "${{ run.id }}" > "$BODY_FILE"
                 PR_URL=$(gh pr create \
                   --head "${{ inputs.branch }}" \
-                  --base main \
+                  --base "${{ inputs.prBase }}" \
                   --title "$PR_TITLE" \
                   --body-file "$BODY_FILE")
               fi

@@ -469,3 +469,29 @@ Deno.test("submit-change: create-pr reuses an open PR instead of failing", async
       "calling `gh pr create`, which fails when one already exists",
   );
 });
+
+Deno.test("submit-change: the diff and PR bases are inputs, never hardcoded", async () => {
+  // A branch stacked on another must diff against its parent, or the agent
+  // reviews see the union with everything the parent already had reviewed —
+  // re-reviewing thousands of lines at four large-model calls, and burying the
+  // change actually under review. `main` was hardcoded in ten places.
+  const source = await Deno.readTextFile(REVIEWS_WORKFLOW);
+  const offenders = source
+    .split("\n")
+    .map((line, i) => ({ line: line.trim(), n: i + 1 }))
+    .filter(({ line }) =>
+      // Comments and the input defaults are where `main` legitimately appears.
+      !line.startsWith("#") &&
+      (/base:\s*"origin\/main"/.test(line) ||
+        /merge-base\s+origin\/main\b/.test(line) ||
+        /--base\s+main\b/.test(line))
+    )
+    .map(({ line, n }) => `${n}: ${line}`);
+
+  assertEquals(
+    offenders,
+    [],
+    "Use ${{ inputs.diffBase }} and ${{ inputs.prBase }} rather than a " +
+      `hardcoded main. Offenders: ${offenders.join("; ")}`,
+  );
+});
