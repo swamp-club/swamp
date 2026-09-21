@@ -25,24 +25,50 @@ export interface TerminalSize {
   height: number;
 }
 
+const DEFAULT_COLUMNS = 80;
+const DEFAULT_ROWS = 24;
+
+/**
+ * A dimension is usable only when it is a positive number. A pty can report
+ * `0` columns and rows — `script` with no attached window does, as do some CI
+ * runners — and `Deno.consoleSize()` returns that zero rather than throwing,
+ * so "did not throw" is not on its own evidence of a usable size. Zero also
+ * survives `??`, so it has to be rejected explicitly rather than defaulted.
+ */
+function usable(dimension: number | undefined): number | undefined {
+  return typeof dimension === "number" && dimension > 0 ? dimension : undefined;
+}
+
+/** Reads the console size, throwing when no console is attached. */
+export type ConsoleSizeProbe = () => { columns: number; rows: number };
+
 /**
  * Reads current terminal dimensions. Prefers Deno.consoleSize() (TIOCGWINSZ
  * ioctl) which reliably reports the actual pane size in tmux, multiplexers,
  * and non-standard emulators. Falls back to Ink's stdout properties, then
  * to safe defaults.
+ *
+ * `consoleSize` is injectable so each branch can be selected explicitly.
+ * Which branch runs otherwise depends on whether the process happens to have
+ * a console attached, which makes a caller — a test above all — behave
+ * differently in a terminal than under a pipe.
  */
 export function getTerminalDimensions(
   stdout: NodeJS.WriteStream | undefined,
+  consoleSize: ConsoleSizeProbe = () => Deno.consoleSize(),
 ): TerminalSize {
   try {
-    const { columns, rows } = Deno.consoleSize();
-    return { width: columns, height: rows };
+    const { columns, rows } = consoleSize();
+    const width = usable(columns);
+    const height = usable(rows);
+    if (width !== undefined && height !== undefined) return { width, height };
   } catch {
-    return {
-      width: stdout?.columns ?? 80,
-      height: stdout?.rows ?? 24,
-    };
+    // No console attached — fall through to stdout, then to the defaults.
   }
+  return {
+    width: usable(stdout?.columns) ?? DEFAULT_COLUMNS,
+    height: usable(stdout?.rows) ?? DEFAULT_ROWS,
+  };
 }
 
 /**
