@@ -2275,13 +2275,13 @@ Deno.test("typeArg authz: prefix wildcard grant covers matching typeArg", async 
   );
 });
 
-Deno.test("typeArg authz: @ prefix on typeArg is stripped before authorization", async () => {
+Deno.test("typeArg authz: @ prefix on typeArg is preserved for authorization", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
   const shellGrant = makeGrant({
     subject: { kind: "user", name: "adam" },
     actions: ["run"],
-    resource: { kind: "model", pattern: "command/shell" },
+    resource: { kind: "model", pattern: "@command/shell" },
   });
   const ctx = makeCtx(modeTokenConfig, [narrowModelGrant, shellGrant]);
 
@@ -2313,7 +2313,7 @@ Deno.test("typeArg authz: @ prefix on typeArg is stripped before authorization",
   assertEquals(
     unauthorizedErrors.length,
     0,
-    "@ prefix on typeArg should be stripped — grant for command/shell should match @command/shell",
+    "grant for @command/shell should match @command/shell typeArg",
   );
 });
 

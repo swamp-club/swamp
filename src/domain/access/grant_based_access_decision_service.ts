@@ -68,7 +68,19 @@ function grantMatchesResource(grant: Grant, resource: AccessResource): boolean {
   if (grant.resource.kind !== resource.kind) {
     return false;
   }
-  return resourceSelectorMatches(grant.resource, resource.name);
+  if (resourceSelectorMatches(grant.resource, resource.name)) {
+    return true;
+  }
+  // For model resources, also match against the extension type so that
+  // namespace-scoped grants like model:@scope/* cover model instances
+  // whose type falls under that namespace.
+  if (
+    resource.kind === "model" &&
+    typeof resource.fields.modelType === "string"
+  ) {
+    return resourceSelectorMatches(grant.resource, resource.fields.modelType);
+  }
+  return false;
 }
 
 function grantMatchesAction(grant: Grant, action: Action): boolean {

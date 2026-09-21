@@ -232,3 +232,27 @@ Deno.test("accessCanIRenderer json: specific check verdict is deny when deny dec
   assertEquals(parsed.effect, "deny");
   assertEquals(parsed.decisions.length, 2);
 });
+
+// ── Method echo ───────────────────────────────────────────────────────────
+
+Deno.test("accessCanIRenderer json: method is included in output when present in query", () => {
+  const output = captureRender("json", {
+    principal: "user:adam",
+    decisions: [makeDecision()],
+    query: { action: "run", resource: "model:@acme/my-model", method: "list" },
+  });
+  const parsed = JSON.parse(output.join(""));
+  assertEquals(parsed.method, "list");
+  assertEquals(parsed.action, "run");
+  assertEquals(parsed.resource, "model:@acme/my-model");
+});
+
+Deno.test("accessCanIRenderer json: method is omitted when not in query", () => {
+  const output = captureRender("json", {
+    principal: "user:adam",
+    decisions: [makeDecision()],
+    query: { action: "run", resource: "workflow:@acme/deploy" },
+  });
+  const parsed = JSON.parse(output.join(""));
+  assertEquals(parsed.method, undefined);
+});

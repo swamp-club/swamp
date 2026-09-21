@@ -175,7 +175,18 @@ Patterns support a trailing `*` wildcard:
 - `@acme/deploy` matches only `@acme/deploy` (exact)
 - `*` matches everything
 
-Implementation: `src/domain/access/resource_selector.ts`.
+#### Model resource dual-identity matching
+
+For `model` resources, grants match against **both** the model instance name and
+the extension type. A grant on `model:@xero/segment/*` matches any model
+instance whose extension type falls under `@xero/segment/` (e.g., a model named
+`segment-test-audiences` with type `@xero/segment/audience`). The instance name
+is checked first; if it does not match, the extension type from the model's
+definition is checked as a fallback. This applies to all grant evaluation paths:
+`decide()`, `explain()`, and `filterByAuthorization` for collection operations.
+
+Implementation: `src/domain/access/resource_selector.ts`,
+`src/domain/access/grant_based_access_decision_service.ts`.
 
 ### Actions
 
@@ -337,7 +348,8 @@ swamp access can-i --action run --on model:@acme/my-model --method read --server
 ```
 
 Returns the matching grant decision (allow or deny) and exits with code 0 for
-allow, 1 for deny.
+allow, 1 for deny. When `--method` is provided, the JSON response includes a
+`method` field echoing the method that was tested.
 
 **List all permissions** — omit `--action` and `--on` to see every grant that
 applies to the caller:

@@ -850,3 +850,152 @@ Deno.test("hasAnyGrantForKind: run implies approve", () => {
     true,
   );
 });
+
+// --- Model type fallback matching ---
+
+Deno.test("decide: matches model grant by extension type when instance name does not match", () => {
+  const grant = makeGrant({
+    actions: ["run"],
+    resource: { kind: "model", pattern: "@xero/segment/*" },
+  });
+  const snapshot = new PolicySnapshot([grant], [], celEvaluator);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const result = service.decide(makePrincipal("adam"), "run", {
+    kind: "model",
+    name: "segment-test-stage-audiences",
+    fields: { modelType: "@xero/segment/audience", methodName: "list" },
+  });
+  assertEquals(result?.effect, "allow");
+});
+
+Deno.test("decide: exact extension type grant matches model instance via modelType", () => {
+  const grant = makeGrant({
+    actions: ["run"],
+    resource: { kind: "model", pattern: "@xero/segment/audience" },
+  });
+  const snapshot = new PolicySnapshot([grant], [], celEvaluator);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const result = service.decide(makePrincipal("adam"), "run", {
+    kind: "model",
+    name: "my-audiences",
+    fields: { modelType: "@xero/segment/audience" },
+  });
+  assertEquals(result?.effect, "allow");
+});
+
+Deno.test("decide: deny grant on extension type blocks model instance", () => {
+  const denyGrant = makeGrant({
+    effect: "deny",
+    actions: ["run"],
+    resource: { kind: "model", pattern: "@xero/segment/*" },
+  });
+  const allowGrant = makeGrant({
+    effect: "allow",
+    actions: ["run"],
+    resource: { kind: "model", pattern: "*" },
+  });
+  const snapshot = new PolicySnapshot(
+    [denyGrant, allowGrant],
+    [],
+    celEvaluator,
+  );
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const result = service.decide(makePrincipal("adam"), "run", {
+    kind: "model",
+    name: "segment-test-audiences",
+    fields: { modelType: "@xero/segment/audience" },
+  });
+  assertEquals(result?.effect, "deny");
+});
+
+Deno.test("decide: model grant by instance name still works (primary match)", () => {
+  const grant = makeGrant({
+    actions: ["run"],
+    resource: { kind: "model", pattern: "my-model-instance" },
+  });
+  const snapshot = new PolicySnapshot([grant], [], celEvaluator);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const result = service.decide(makePrincipal("adam"), "run", {
+    kind: "model",
+    name: "my-model-instance",
+    fields: { modelType: "@acme/some-type" },
+  });
+  assertEquals(result?.effect, "allow");
+});
+
+Deno.test("decide: model type fallback does not apply to non-model resources", () => {
+  const grant = makeGrant({
+    actions: ["run"],
+    resource: { kind: "workflow", pattern: "@acme/deploy" },
+  });
+  const snapshot = new PolicySnapshot([grant], [], celEvaluator);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const result = service.decide(makePrincipal("adam"), "run", {
+    kind: "workflow",
+    name: "some-other-name",
+    fields: { modelType: "@acme/deploy" },
+  });
+  assertEquals(result, null);
+});
+
+Deno.test("decide: model type fallback does not match when modelType is absent", () => {
+  const grant = makeGrant({
+    actions: ["run"],
+    resource: { kind: "model", pattern: "@xero/segment/*" },
+  });
+  const snapshot = new PolicySnapshot([grant], [], celEvaluator);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const result = service.decide(makePrincipal("adam"), "run", {
+    kind: "model",
+    name: "segment-test-audiences",
+    fields: {},
+  });
+  assertEquals(result, null);
+});
+
+Deno.test("decide: method-scoped grant matches model instance via extension type", () => {
+  const grant = makeGrant({
+    actions: ["run"],
+    resource: { kind: "model", pattern: "@xero/segment/*" },
+    methods: ["list", "search"],
+  });
+  const snapshot = new PolicySnapshot([grant], [], celEvaluator);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const allowed = service.decide(makePrincipal("adam"), "run", {
+    kind: "model",
+    name: "segment-audiences",
+    fields: { modelType: "@xero/segment/audience", methodName: "list" },
+  });
+  assertEquals(allowed?.effect, "allow");
+
+  const denied = service.decide(makePrincipal("adam"), "run", {
+    kind: "model",
+    name: "segment-audiences",
+    fields: { modelType: "@xero/segment/audience", methodName: "delete" },
+  });
+  assertEquals(denied, null);
+});
+
+Deno.test("explain: includes model type fallback matches", () => {
+  const grant = makeGrant({
+    actions: ["run"],
+    resource: { kind: "model", pattern: "@xero/segment/*" },
+  });
+  const snapshot = new PolicySnapshot([grant], [], celEvaluator);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const decisions = service.explain(makePrincipal("adam"), "run", {
+    kind: "model",
+    name: "segment-test-audiences",
+    fields: { modelType: "@xero/segment/audience" },
+  });
+  assertEquals(decisions.length, 1);
+  assertEquals(decisions[0].effect, "allow");
+});
