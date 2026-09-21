@@ -45,11 +45,13 @@ import {
   type WorkerDispatchEvent,
 } from "./dispatch_handler.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
-import { diagnoseTlsMessage } from "../cli/remote_run.ts";
+import {
+  createTlsHttpClient,
+  diagnoseTlsMessage,
+  getDefaultHttpClient,
+} from "../cli/remote_run.ts";
 
 const logger = getSwampLogger(["worker", "connect"]);
-
-const defaultHttpClient = Deno.createHttpClient({});
 
 /** Refresh the session credential when 2/3 of its lifetime has elapsed. */
 const REFRESH_FRACTION = 2 / 3;
@@ -142,8 +144,8 @@ export async function runWorker(
     await Deno.makeTempDir({ prefix: "swamp-worker-cache-" });
   const machineId = await loadOrCreateMachineId(cacheDir);
   const httpClient = options.caCerts?.length
-    ? Deno.createHttpClient({ caCerts: options.caCerts })
-    : defaultHttpClient;
+    ? createTlsHttpClient({ caCerts: options.caCerts })
+    : getDefaultHttpClient();
 
   const concurrency = options.concurrency ?? 1;
   let drainReason: WorkerExitReason | null = null;

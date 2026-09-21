@@ -25,6 +25,7 @@ import {
 } from "@std/assert";
 import { UserError } from "../domain/errors.ts";
 import {
+  createTlsHttpClient,
   diagnoseTlsMessage,
   normalizeServerUrl,
   probeServerHealth,
@@ -1607,6 +1608,25 @@ Deno.test({
       await server.shutdown();
     }
   },
+});
+
+// ── createTlsHttpClient tests ─────────────────────────────────────────
+
+Deno.test("createTlsHttpClient: turns a cert-store failure into guidance", () => {
+  const error = assertThrows(
+    () =>
+      createTlsHttpClient({}, () => {
+        throw new Error("SecTrustSettingsCopyCertificates failed");
+      }),
+    UserError,
+  );
+  assertStringIncludes(error.message, "SecTrustSettingsCopyCertificates");
+  assertStringIncludes(error.message, "DENO_TLS_CA_STORE=mozilla");
+});
+
+Deno.test("createTlsHttpClient: returns the client when the store loads", () => {
+  using client = createTlsHttpClient();
+  assertEquals(typeof client.close, "function");
 });
 
 // ── diagnoseTlsMessage tests ──────────────────────────────────────────
