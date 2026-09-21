@@ -729,11 +729,6 @@ export class WebhookService {
       workflowName: endpoint.workflowIdOrName,
     });
 
-    logger.info(
-      "Webhook received on {route}, queued workflow {workflow}",
-      { route: endpoint.route, workflow: endpoint.workflowIdOrName },
-    );
-
     // Start processing the queue — only store when actually starting
     if (!this.processing) {
       this.processingPromise = this.processQueue().catch(
@@ -919,10 +914,6 @@ export class WebhookService {
           workflowName: workflowIdOrName,
           runId,
         });
-        logger.info(
-          "Webhook workflow {workflow} completed (run: {runId})",
-          { workflow: workflowIdOrName, runId },
-        );
       } else if (suspended) {
         // A gated run has not finished: neither terminal event would be true,
         // so it contributes no health record until it resumes. Resumption
@@ -943,10 +934,6 @@ export class WebhookService {
           workflowName: workflowIdOrName,
           error: message,
         });
-        logger.error(
-          "Webhook workflow {workflow} failed: {error}",
-          { workflow: workflowIdOrName, error: message },
-        );
       }
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
@@ -963,10 +950,6 @@ export class WebhookService {
         workflowName: workflowIdOrName,
         error: message,
       });
-      logger.error(
-        "Webhook workflow {workflow} failed: {error}",
-        { workflow: workflowIdOrName, error: message },
-      );
     } finally {
       this.running.delete(execId);
       if (runId && this.deps.controlPlaneStore && this.deps.instanceId) {
