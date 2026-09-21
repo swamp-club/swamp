@@ -18,7 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { JobRun, StepRun, WorkflowRun } from "./workflow_run.ts";
+import {
+  JobRun,
+  StepRun,
+  StepSkipReasonSchema,
+  WorkflowRun,
+} from "./workflow_run.ts";
 import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";
@@ -98,6 +103,58 @@ Deno.test("StepRun.skip marks step as skipped", () => {
   stepRun.skip();
   assertEquals(stepRun.status, "skipped");
   assertEquals(stepRun.completedAt instanceof Date, true);
+});
+
+Deno.test("StepRun.skip records a guard reason with its expression", () => {
+  const stepRun = StepRun.pending("step1");
+  stepRun.skip({ kind: "guarded", expression: "!inputs.runBuild" });
+
+  assertEquals(stepRun.status, "skipped");
+  const reason = stepRun.skipReason;
+  assertEquals(reason?.kind, "guarded");
+  // Narrowed, not asserted: the schema is a discriminated union, so reaching
+  // for `expression` without establishing the kind is a compile error.
+  assertEquals(
+    reason?.kind === "guarded" ? reason.expression : undefined,
+    "!inputs.runBuild",
+  );
+});
+
+Deno.test("StepRun.skip leaves skipReason unset when no reason is given", () => {
+  const stepRun = StepRun.pending("step1");
+  stepRun.skip();
+
+  assertEquals(stepRun.status, "skipped");
+  assertEquals(stepRun.skipReason, undefined);
+});
+
+Deno.test("StepRun round-trips skipReason through toData/fromData", () => {
+  const stepRun = StepRun.pending("step1");
+  stepRun.skip({ kind: "guarded", expression: "changed.size() == 0" });
+
+  const restored = StepRun.fromData(stepRun.toData());
+
+  assertEquals(restored.skipReason, {
+    kind: "guarded",
+    expression: "changed.size() == 0",
+  });
+});
+
+Deno.test("StepRun.toData omits skipReason when none was recorded", () => {
+  const stepRun = StepRun.pending("step1");
+  stepRun.start();
+  stepRun.succeed();
+
+  assertEquals("skipReason" in stepRun.toData(), false);
+});
+
+Deno.test("StepRun.resetToPending clears a recorded skipReason", () => {
+  const stepRun = StepRun.pending("step1");
+  stepRun.skip({ kind: "dependency" });
+  stepRun.resetToPending();
+
+  assertEquals(stepRun.status, "pending");
+  assertEquals(stepRun.skipReason, undefined);
 });
 
 Deno.test("StepRun.toData returns correct structure", () => {
@@ -244,6 +301,13 @@ Deno.test("JobRun.skip marks job and pending steps as skipped", () => {
   assertEquals(jobRun.status, "skipped");
   assertEquals(jobRun.getStep("step1")?.status, "succeeded"); // Already completed, not changed
   assertEquals(jobRun.getStep("step2")?.status, "skipped"); // Was pending, now skipped
+});
+
+Deno.test("JobRun.skip attributes cascaded step skips to the job", () => {
+  const jobRun = JobRun.pending("job1", ["step1"]);
+  jobRun.skip();
+
+  assertEquals(jobRun.getStep("step1")?.skipReason, { kind: "job_skipped" });
 });
 
 Deno.test("JobRun.toData returns correct structure", () => {
@@ -1565,4 +1629,39 @@ Deno.test("JobRun.getStatus: registerForEachExpansion is idempotent on re-regist
   jobRun.getStep("deploy-qa")!.succeed();
 
   assertEquals(jobRun.getStatus("deploy"), "succeeded");
+});
+
+Deno.test("StepSkipReasonSchema: an expression is only representable on a guard", () => {
+  // The shape used to be one object with an optional `expression`, which
+  // validated `{ kind: "dependency", expression: "..." }` — a reason that
+  // describes nothing that can happen. A reader of a run record could not
+  // tell whether such a field meant anything.
+  assertEquals(
+    StepSkipReasonSchema.safeParse({
+      kind: "guarded",
+      expression: "files.size() == 0",
+    }).success,
+    true,
+  );
+  assertEquals(
+    StepSkipReasonSchema.safeParse({ kind: "dependency" }).success,
+    true,
+  );
+  // An expression on a non-guard is dropped rather than rejected. Stripping
+  // is deliberate: these schemas parse run records written by older versions,
+  // and a strict shape would fail every record the day a field is added. The
+  // guarantee wanted here is that no consumer can read such a value back, and
+  // stripping gives that as firmly as refusing does — the type has no
+  // `expression` on this member either way.
+  const parsed = StepSkipReasonSchema.safeParse({
+    kind: "dependency",
+    expression: "oops",
+  });
+  assertEquals(parsed.success, true);
+  assertEquals(parsed.success && "expression" in parsed.data, false);
+
+  assertEquals(
+    StepSkipReasonSchema.safeParse({ kind: "nonsense" }).success,
+    false,
+  );
 });

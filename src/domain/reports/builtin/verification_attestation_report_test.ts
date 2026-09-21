@@ -369,3 +369,68 @@ Deno.test("verificationAttestationReport: failed assert step appears in attestat
     "Expected output to contain result.",
   );
 });
+
+Deno.test("verificationAttestationReport: a guard skip and a deselected group are distinguishable", async () => {
+  const ctx = makeWorkflowContext({
+    stepExecutions: [
+      makeStepExecution({ jobName: "build", stepName: "lint" }),
+      makeStepExecution({
+        jobName: "reviews",
+        stepName: "ux-review",
+        status: "skipped",
+        skipReason: {
+          kind: "guarded",
+          expression: "changedFiles.size() == 0",
+        },
+      }),
+      makeStepExecution({
+        jobName: "skills",
+        stepName: "skill-review",
+        status: "skipped",
+        skipReason: { kind: "guarded", expression: "!inputs.runSkills" },
+      }),
+      makeStepExecution({
+        jobName: "skills",
+        stepName: "skill-trigger-eval",
+        status: "skipped",
+        skipReason: { kind: "job_skipped" },
+      }),
+    ],
+  });
+
+  const result = await verificationAttestationReport.execute(ctx);
+
+  assertStringIncludes(result.markdown, "guard: changedFiles.size() == 0");
+  assertStringIncludes(result.markdown, "guard: !inputs.runSkills");
+  assertStringIncludes(result.markdown, "job was skipped");
+
+  const steps = result.json.steps as Array<Record<string, unknown>>;
+  assertEquals(steps[1].skipKind, "guarded");
+  assertEquals(steps[1].skipExpression, "changedFiles.size() == 0");
+  assertEquals(steps[2].skipExpression, "!inputs.runSkills");
+  assertEquals(steps[3].skipKind, "job_skipped");
+  assertEquals(steps[0].skipKind, undefined);
+
+  const gate = result.json.gate as Record<string, unknown>;
+  assertEquals(gate.stepsSkipped, 3);
+  assertEquals(gate.skippedByKind, { guarded: 2, job_skipped: 1 });
+});
+
+Deno.test("verificationAttestationReport: a skip with no recorded reason says so", async () => {
+  const ctx = makeWorkflowContext({
+    stepExecutions: [
+      makeStepExecution({
+        jobName: "reviews",
+        stepName: "ux-review",
+        status: "skipped",
+      }),
+    ],
+  });
+
+  const result = await verificationAttestationReport.execute(ctx);
+
+  assertStringIncludes(result.markdown, "reason not recorded");
+
+  const gate = result.json.gate as Record<string, unknown>;
+  assertEquals(gate.skippedByKind, { unrecorded: 1 });
+});

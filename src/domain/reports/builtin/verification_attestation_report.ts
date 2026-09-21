@@ -19,12 +19,38 @@
 
 import type {
   ReportContext,
+  StepSkipReasonInfo,
   WorkflowReportContext,
 } from "../report_context.ts";
 import type { ReportDefinition, ReportResult } from "../report.ts";
 
 function isWorkflowContext(ctx: ReportContext): ctx is WorkflowReportContext {
   return ctx.scope === "workflow";
+}
+
+/**
+ * One-line rendering of why a step did not run.
+ *
+ * A skip with no recorded reason reads as `skipped (reason not recorded)`
+ * rather than a bare `skipped`: runs persisted before skip reasons existed
+ * are legitimately silent, and saying so is honest where an unqualified
+ * "skipped" invites the reader to assume a guard.
+ */
+function describeSkipReason(reason: StepSkipReasonInfo | undefined): string {
+  if (!reason) return "reason not recorded";
+  switch (reason.kind) {
+    case "guarded":
+      return reason.expression
+        ? `guard: ${reason.expression}`
+        // Bare "guard", matching the run display exactly. The two surfaces
+        // report the same fact and a reader comparing them should not have to
+        // decide whether two different phrasings mean two different things.
+        : "guard";
+    case "dependency":
+      return "dependency condition not met";
+    case "job_skipped":
+      return "job was skipped";
+  }
 }
 
 export const verificationAttestationReport: ReportDefinition = {
@@ -53,6 +79,13 @@ export const verificationAttestationReport: ReportDefinition = {
       .length;
     const failed = stepExecutions.filter((s) => s.status === "failed").length;
     const skipped = stepExecutions.filter((s) => s.status === "skipped").length;
+
+    const skipBreakdown: Record<string, number> = {};
+    for (const step of stepExecutions) {
+      if (step.status !== "skipped") continue;
+      const kind = step.skipReason?.kind ?? "unrecorded";
+      skipBreakdown[kind] = (skipBreakdown[kind] ?? 0) + 1;
+    }
 
     const commit = (inputs?.["commit"] as string) ?? "unknown";
     const branch = (inputs?.["branch"] as string) ?? "unknown";
@@ -104,6 +137,10 @@ export const verificationAttestationReport: ReportDefinition = {
         lines.push(
           `  ${stepIcon} ${step.stepName}  —  ${typeLabel}  (${step.status})`,
         );
+
+        if (step.status === "skipped") {
+          lines.push(`    ${describeSkipReason(step.skipReason)}`);
+        }
 
         if (step.status === "failed") {
           if (step.taskType !== "model_method" && step.errorMessage) {
@@ -161,6 +198,15 @@ export const verificationAttestationReport: ReportDefinition = {
         method: s.methodName || undefined,
         status: s.status,
         errorMessage: s.errorMessage,
+        // `skipKind` is the machine-readable discriminator CI can count on;
+        // `reason` is the same fact rendered for a human reading the table.
+        skipKind: s.status === "skipped" ? s.skipReason?.kind : undefined,
+        skipExpression: s.status === "skipped"
+          ? s.skipReason?.expression
+          : undefined,
+        reason: s.status === "skipped"
+          ? describeSkipReason(s.skipReason)
+          : undefined,
         retrievalCommands: s.status === "failed"
           ? s.dataHandles.map((h) => `swamp data get ${s.modelName} ${h.name}`)
           : undefined,
@@ -174,6 +220,10 @@ export const verificationAttestationReport: ReportDefinition = {
         stepsTotal: stepExecutions.length,
         stepsSkipped: skipped,
         stepsFailed: failed,
+        // A single skip count cannot separate "a guard correctly excluded
+        // this" from "the operator deselected this group", and CI reads the
+        // count. The breakdown keeps the two distinguishable downstream.
+        skippedByKind: skipBreakdown,
       },
     };
 
