@@ -92,6 +92,7 @@ function environment(
     os: "darwin",
     arch: "aarch64",
     now: new Date("2026-09-21T12:02:15.000Z"),
+    priorRuns: [],
     ...overrides,
   };
 }
@@ -334,4 +335,170 @@ Deno.test("buildAttestation: a skip with no recorded reason says so", () => {
     (att.gate as Record<string, unknown>).skippedByKind,
     { unrecorded: 1 },
   );
+});
+
+// ---------------------------------------------------------------------------
+// Evidence carried forward across runs at the same commit
+// ---------------------------------------------------------------------------
+
+/** A run in which the named groups were deselected and skipped outright. */
+function runWithDeselected(
+  id: string,
+  deselected: readonly string[],
+): RunRecord {
+  const base = run({ id });
+  const prefixes: Record<string, string> = {
+    runBuild: "build",
+    runReviews: "reviews",
+    runSkills: "skills",
+  };
+  const off = deselected.map((d) => prefixes[d]);
+
+  return {
+    ...base,
+    inputs: {
+      ...base.inputs,
+      ...Object.fromEntries(deselected.map((d) => [d, false])),
+    },
+    jobs: base.jobs.map((job) =>
+      off.some((p) => job.name.startsWith(p))
+        ? {
+          ...job,
+          steps: job.steps.map((s) => ({
+            name: s.name,
+            status: "skipped",
+            skipReason: {
+              kind: "guarded" as const,
+              expression: `!inputs.${
+                deselected.find((d) => job.name.startsWith(prefixes[d]))
+              }`,
+            },
+          })),
+        }
+        : job
+    ),
+  };
+}
+
+Deno.test("buildAttestation: deselecting every group does NOT pass the gate", () => {
+  // Nothing ran. Before the gate required evidence per group, this produced
+  // zero steps, zero failures and allPassed: true — an instant bypass of the
+  // whole chain, and the cheapest thing anyone testing the pipeline would try.
+  const att = buildAttestation(
+    runWithDeselected("run-2", ["runBuild", "runReviews", "runSkills"]),
+    environment(),
+  );
+
+  const gate = att.gate as Record<string, unknown>;
+  assertEquals(gate.allPassed, false);
+  assertEquals(gate.groupsWithEvidence, 0);
+  assertEquals(gate.groupsTotal, 3);
+});
+
+Deno.test("buildAttestation: a deselected group carries forward from an earlier run at this commit", () => {
+  // The legitimate re-run: a review flaked, so reviews are re-run on their own
+  // at the same commit. Build and skills evidence from the earlier run is
+  // exactly as good — it examined the same tree.
+  const att = buildAttestation(
+    runWithDeselected("run-2", ["runBuild", "runSkills"]),
+    environment({ priorRuns: [run({ id: "run-1" })] }),
+  );
+
+  const gate = att.gate as Record<string, unknown>;
+  assertEquals(gate.allPassed, true);
+  assertEquals(gate.groupsWithEvidence, 3);
+
+  const groups = att.groups as Array<Record<string, unknown>>;
+  const build = groups.find((g) => g.name === "verify-build")!;
+  assertEquals(build.ran, true);
+  assertEquals(build.carriedForward, true);
+  assertEquals(build.evidenceFrom, "run-1");
+
+  const reviews = groups.find((g) => g.name === "verify-reviews")!;
+  assertEquals(reviews.carriedForward, undefined);
+  assertEquals(reviews.evidenceFrom, "run-2");
+});
+
+Deno.test("buildAttestation: carried steps name the run that recorded them", () => {
+  const att = buildAttestation(
+    runWithDeselected("run-2", ["runBuild"]),
+    environment({ priorRuns: [run({ id: "run-1" })] }),
+  );
+
+  const steps = att.steps as Array<Record<string, unknown>>;
+  const lint = steps.find((s) => s.step === "lint")!;
+  assertEquals(lint.status, "succeeded");
+  assertEquals(lint.fromRun, "run-1");
+  // Model names embed the run id, so a carried step must be named with the
+  // id of the run that actually executed it.
+  assertEquals(lint.model, "build-lint-run-1");
+
+  // A step from this run carries no provenance marker.
+  assertEquals(steps.find((s) => s.step === "code-review")!.fromRun, undefined);
+});
+
+Deno.test("buildAttestation: a prior run that also skipped the group carries nothing", () => {
+  const att = buildAttestation(
+    runWithDeselected("run-3", ["runBuild"]),
+    environment({
+      priorRuns: [runWithDeselected("run-2", ["runBuild"])],
+    }),
+  );
+
+  const gate = att.gate as Record<string, unknown>;
+  assertEquals(gate.allPassed, false);
+
+  const build = (att.groups as Array<Record<string, unknown>>)
+    .find((g) => g.name === "verify-build")!;
+  assertEquals(build.ran, false);
+  assertEquals(build.evidenceFrom, undefined);
+});
+
+Deno.test("buildAttestation: a prior run that FAILED the group carries nothing", () => {
+  // Carrying a failure forward would launder it into a pass on the next run.
+  const failed = run({ id: "run-1" });
+  const prior: RunRecord = {
+    ...failed,
+    jobs: failed.jobs.map((job) =>
+      job.name === "build-static-analysis"
+        ? {
+          ...job,
+          status: "failed",
+          steps: [{ name: "lint", status: "failed", error: "exit 1" }],
+        }
+        : job
+    ),
+  };
+
+  const att = buildAttestation(
+    runWithDeselected("run-2", ["runBuild"]),
+    environment({ priorRuns: [prior] }),
+  );
+
+  assertEquals((att.gate as Record<string, unknown>).allPassed, false);
+});
+
+Deno.test("buildAttestation: the newest passing prior run wins", () => {
+  const att = buildAttestation(
+    runWithDeselected("run-3", ["runBuild"]),
+    // Newest first, as fetchPriorRuns supplies them.
+    environment({ priorRuns: [run({ id: "run-2" }), run({ id: "run-1" })] }),
+  );
+
+  const build = (att.groups as Array<Record<string, unknown>>)
+    .find((g) => g.name === "verify-build")!;
+  assertEquals(build.evidenceFrom, "run-2");
+});
+
+Deno.test("buildAttestation: a path-guard skip still counts as the group having run", () => {
+  // verify-skills with no skill files changed: setup succeeds, both steps skip
+  // on the path guard. The group ran — it simply had nothing to do — so it
+  // must not be treated as missing evidence.
+  const att = buildAttestation(run(), environment());
+
+  const skills = (att.groups as Array<Record<string, unknown>>)
+    .find((g) => g.name === "verify-skills")!;
+  assertEquals(skills.ran, true);
+  assertEquals(skills.carriedForward, undefined);
+  assertEquals((att.gate as Record<string, unknown>).allPassed, true);
 });

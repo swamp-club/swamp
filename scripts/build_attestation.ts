@@ -177,6 +177,85 @@ interface WorkflowDef {
  * workflow after launching verification, which is the case config integrity
  * exists to catch.
  */
+/** Runs a command, returning stdout on success and null on any failure. */
+async function capture(
+  command: string,
+  args: string[],
+): Promise<string | null> {
+  try {
+    const { code, stdout } = await new Deno.Command(command, {
+      args,
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    return code === 0 ? new TextDecoder().decode(stdout) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Earlier submit-change runs for this commit, newest first, excluding the
+ * current one.
+ *
+ * Read through the CLI rather than the run files so the lookback sees exactly
+ * what `workflow history` would — the same records, filtered the same way.
+ * A failure here is not fatal: with no priors nothing carries forward, which
+ * fails closed rather than open.
+ */
+async function fetchPriorRuns(
+  commit: string,
+  currentRunId: string,
+): Promise<RunRecord[]> {
+  const listing = await capture("swamp", [
+    "workflow",
+    "history",
+    "search",
+    "--workflow",
+    "submit-change",
+    "--input",
+    `commit=${commit}`,
+    "--json",
+  ]);
+  if (!listing) {
+    console.error(
+      "::warning::could not list earlier runs for this commit; no evidence " +
+        "will be carried forward",
+    );
+    return [];
+  }
+
+  let results: Array<{ id?: string; startedAt?: string }> = [];
+  try {
+    results = (JSON.parse(listing).results ?? []) as typeof results;
+  } catch {
+    return [];
+  }
+
+  const ids = results
+    .filter((r) => r.id && r.id !== currentRunId)
+    .sort((a, b) => (b.startedAt ?? "").localeCompare(a.startedAt ?? ""))
+    .map((r) => r.id!);
+
+  const runs: RunRecord[] = [];
+  for (const id of ids) {
+    const record = await capture("swamp", [
+      "workflow",
+      "history",
+      "get",
+      id,
+      "--json",
+    ]);
+    if (!record) continue;
+    try {
+      runs.push(JSON.parse(record) as RunRecord);
+    } catch {
+      // A record we cannot parse contributes no evidence; skip it.
+    }
+  }
+  return runs;
+}
+
 async function showAtCommit(
   commit: string,
   path: string,
@@ -205,6 +284,89 @@ function setIn(
 
 function groupFor(jobName: string) {
   return GROUPS.find((g) => jobName.startsWith(g.jobPrefix));
+}
+
+type Group = typeof GROUPS[number];
+
+/** Every step of every job belonging to this group, with its job name. */
+function groupSteps(
+  run: RunRecord,
+  group: Group,
+): Array<{ job: string; step: StepRecord }> {
+  return run.jobs
+    .filter((j) => j.name.startsWith(group.jobPrefix))
+    .flatMap((j) => j.steps.map((step) => ({ job: j.name, step })));
+}
+
+/**
+ * Whether the group executed at all in this run.
+ *
+ * Keyed on the setup step, whose guard is the group flag alone. That is what
+ * separates "the operator deselected this group" from "a path guard correctly
+ * excluded one review inside it" — in the latter case setup still succeeded
+ * and the group did run, it simply had nothing to do.
+ */
+function groupRan(run: RunRecord, group: Group): boolean {
+  const setup = run.jobs.find((j) => j.name === group.setupJob)?.steps?.[0];
+  return setup?.status === "succeeded";
+}
+
+/** Whether the group ran and every one of its steps reached a clean end. */
+function groupPassed(run: RunRecord, group: Group): boolean {
+  if (!groupRan(run, group)) return false;
+  return groupSteps(run, group).every(({ step }) =>
+    step.status === "succeeded" || step.status === "skipped"
+  );
+}
+
+/** Where a group's evidence came from, and what it was. */
+interface GroupEvidence {
+  group: Group;
+  /** The run the steps below were recorded by, or null when there is none. */
+  fromRun: string | null;
+  /** True when the evidence came from an earlier run at the same commit. */
+  carried: boolean;
+  steps: Array<{ job: string; step: StepRecord }>;
+}
+
+/**
+ * Resolves each group to the best evidence available for this commit:
+ * this run when the group ran here, otherwise the newest earlier run at the
+ * same commit where it passed.
+ */
+function resolveEvidence(
+  run: RunRecord,
+  priorRuns: readonly RunRecord[],
+): GroupEvidence[] {
+  return GROUPS.map((group) => {
+    if (groupRan(run, group)) {
+      return {
+        group,
+        fromRun: run.id,
+        carried: false,
+        steps: groupSteps(run, group),
+      };
+    }
+
+    const source = priorRuns.find((prior) => groupPassed(prior, group));
+    if (source) {
+      return {
+        group,
+        fromRun: source.id,
+        carried: true,
+        steps: groupSteps(source, group),
+      };
+    }
+
+    // No evidence anywhere at this commit. This run's own (skipped) steps are
+    // still listed so the attestation shows what was asked for and declined.
+    return {
+      group,
+      fromRun: null,
+      carried: false,
+      steps: groupSteps(run, group),
+    };
+  });
 }
 
 /** One-line rendering of why a step did not run. */
@@ -273,6 +435,21 @@ export interface AttestationEnvironment {
   os: string;
   arch: string;
   now: Date;
+  /**
+   * Earlier submit-change runs for the same commit, newest first, excluding
+   * this one. A group deselected in this run carries its result forward from
+   * the most recent run where it actually passed.
+   *
+   * This is what makes targeted re-run sound. Re-running a subset is only
+   * legitimate when the commit has not changed — if the code moved, the
+   * deselected groups reviewed a different diff and their evidence is stale
+   * anyway. At a fixed commit the opposite holds: an earlier run's evidence
+   * is exactly as good as this run's, because it examined the same tree. So
+   * the gate asks "has every group passed for this commit?" rather than "did
+   * every group run in this run?" — which keeps a re-run after a flaky
+   * review cheap without letting it ship on partial evidence.
+   */
+  priorRuns: RunRecord[];
 }
 
 /**
@@ -288,34 +465,51 @@ export function buildAttestation(
   env: AttestationEnvironment,
 ): Record<string, unknown> {
   const { commit, branch, workflow } = env;
-  const models = modelNames(workflow, run.id);
   const reviewers = reviewModels(workflow);
+
+  // Model names embed the run id, so a carried-forward step has to be named
+  // with the id of the run that actually recorded it — otherwise the
+  // attestation would name a model that never existed.
+  const modelsByRun = new Map<string, Map<string, string>>();
+  const modelFor = (runId: string, job: string, step: string) => {
+    let names = modelsByRun.get(runId);
+    if (!names) {
+      names = modelNames(workflow, runId);
+      modelsByRun.set(runId, names);
+    }
+    return names.get(`${job}:${step}`);
+  };
 
   // The attestation covers the verification groups. The jobs that build,
   // publish and open are the run's own machinery — including them would have
   // the attestation attest to the act of attesting.
-  const verificationJobs = run.jobs.filter((j) => groupFor(j.name));
+  const evidence = resolveEvidence(run, env.priorRuns);
 
-  const steps = verificationJobs.flatMap((job) =>
-    job.steps.map((step) => ({
-      job: job.name,
+  const steps = evidence.flatMap((e) =>
+    e.steps.map(({ job, step }) => ({
+      job,
       step: step.name,
-      model: models.get(`${job.name}:${step.name}`),
+      model: modelFor(e.fromRun ?? run.id, job, step.name),
       status: step.status,
       durationMs: step.duration,
       // A review step's status IS the gate decision: every review delegates to
       // check_review_verdict.ts, whose exit code decides the step. Reading a
       // verdict out of the reviewer's prose would be reading the input to that
       // decision rather than the decision.
-      verdict: job.name === REVIEW_JOB && step.status === "succeeded"
+      verdict: job === REVIEW_JOB && step.status === "succeeded"
         ? "pass"
         : undefined,
       skipKind: step.status === "skipped" ? step.skipReason?.kind : undefined,
       skipExpression: step.status === "skipped"
         ? step.skipReason?.expression
         : undefined,
-      reason: step.status === "skipped" ? describeSkip(step.skipReason) : undefined,
+      reason: step.status === "skipped"
+        ? describeSkip(step.skipReason)
+        : undefined,
       errorMessage: step.status === "failed" ? step.error : undefined,
+      // Present only on evidence carried from an earlier run at this commit,
+      // so a reader can always tell which run examined the code.
+      fromRun: e.carried ? e.fromRun : undefined,
     }))
   );
 
@@ -334,18 +528,22 @@ export function buildAttestation(
     skippedByKind[kind] = (skippedByKind[kind] ?? 0) + 1;
   }
 
-  // Which groups actually ran. A group's setup step is guarded by its flag
-  // alone, so its status separates "the operator deselected this group" from
-  // "a path guard excluded one review inside it" — a distinction a bare skip
-  // count cannot carry, and the one a reader of the attestation needs.
-  const groups = GROUPS.map((group) => {
-    const setup = run.jobs.find((j) => j.name === group.setupJob)?.steps?.[0];
-    const selected = run.inputs?.[group.input] !== false;
+  // Which groups have evidence for this commit, and where it came from. A
+  // group's setup step is guarded by its flag alone, so its status separates
+  // "the operator deselected this group" from "a path guard excluded one
+  // review inside it" — a distinction a bare skip count cannot carry, and the
+  // one a reader of the attestation needs.
+  const groups = evidence.map((e) => {
+    const setup = run.jobs.find((j) => j.name === e.group.setupJob)?.steps?.[0];
     return {
-      name: group.name,
-      input: group.input,
-      selected,
-      ran: setup?.status === "succeeded",
+      name: e.group.name,
+      input: e.group.input,
+      selected: run.inputs?.[e.group.input] !== false,
+      /** Evidence exists for this commit — from this run or an earlier one. */
+      ran: e.fromRun !== null,
+      /** The run that actually examined the code for this group. */
+      evidenceFrom: e.fromRun ?? undefined,
+      carriedForward: e.carried || undefined,
       reason: setup?.status === "skipped"
         ? describeSkip(setup.skipReason)
         : undefined,
@@ -395,7 +593,13 @@ export function buildAttestation(
     steps,
 
     gate: {
-      allPassed: failed === 0,
+      // Two conditions, not one. No step failed, AND every group has evidence
+      // for this commit. Without the second, deselecting all three groups
+      // produces zero steps, zero failures, and a green gate — nothing ran and
+      // the attestation says everything passed.
+      allPassed: failed === 0 && groups.every((g) => g.ran),
+      groupsWithEvidence: groups.filter((g) => g.ran).length,
+      groupsTotal: groups.length,
       stepsCompleted: succeeded,
       stepsTotal: steps.length,
       stepsSkipped: skipped,
@@ -486,6 +690,7 @@ async function main(): Promise<number> {
     os: Deno.build.os,
     arch: Deno.build.arch,
     now: new Date(),
+    priorRuns: await fetchPriorRuns(commit, run.id),
   });
 
   console.log(JSON.stringify(attestation));

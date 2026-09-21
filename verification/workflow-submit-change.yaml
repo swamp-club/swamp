@@ -559,12 +559,17 @@ jobs:
           inputs:
             # stdout is the attestation and nothing else, so the publish step
             # can take it verbatim as its input. Diagnostics go to stderr.
+            # `swamp` is granted alongside `git` because the generator looks
+            # back at earlier runs for this commit and carries a deselected
+            # group's result forward from the last run where it passed. Both
+            # reads go through the CLI, so the lookback sees exactly the
+            # records `workflow history` would.
             run: |
               set -euo pipefail
+              export SWAMP_WORKFLOWS_DIR=verification
               RUN_JSON=$(mktemp)
-              SWAMP_WORKFLOWS_DIR=verification swamp workflow history get \
-                "${{ run.id }}" --json > "$RUN_JSON"
-              deno run --allow-read --allow-run=git \
+              swamp workflow history get "${{ run.id }}" --json > "$RUN_JSON"
+              deno run --allow-read --allow-env --allow-run=git,swamp \
                 scripts/build_attestation.ts \
                 --run-file "$RUN_JSON" \
                 --commit "${{ inputs.commit }}" \

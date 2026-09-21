@@ -20,8 +20,25 @@ names the whole verification rather than one third of it.
 ### Targeted re-run
 
 Each group has a boolean input defaulting to `true`. Deselecting one skips its
-steps; everything downstream still runs, so the attestation stays complete and
-says which group was deselected.
+steps, and the attestation **carries that group's result forward** from the
+most recent earlier run at the same commit where it passed.
+
+That binding to the commit is what makes a subset re-run sound. If the code
+moved, the deselected groups reviewed a different diff and their evidence is
+stale regardless. At a fixed commit the opposite holds — an earlier run
+examined the same tree, so its evidence is exactly as good as this run's. The
+gate therefore asks "has every group passed for this commit?" rather than "did
+every group run in this run?", which keeps a re-run after a flaky review cheap
+without letting it ship on partial evidence.
+
+The practical case is a group that failed for a non-code reason: Claude
+overloaded, `TESSL_TOKEN` missing, a flaky test, a network blip. Re-run that
+group alone; the rest carries.
+
+`gate.allPassed` requires no failed step **and** every group having evidence,
+so deselecting all three fails closed rather than producing a green gate over
+zero steps. Each entry in `groups[]` names the run its evidence came from, and
+a carried step is marked `fromRun`.
 
 ```
 SWAMP_WORKFLOWS_DIR=verification swamp workflow run submit-change \
@@ -216,10 +233,10 @@ did.
 | `subject.commit` / `subject.branch` | The run's own inputs |
 | `steps[]` | Every step of the three verification groups: status, `durationMs`, `skipKind`, `skipExpression` |
 | `steps[].verdict` | `pass` on a succeeded review. The step status *is* the gate decision — `check_review_verdict.ts` decides both |
-| `groups[]` | Per group: `selected` (the boolean input), `ran` (its setup step succeeded), and the reason when it did not |
+| `groups[]` | Per group: `selected` (the boolean input), `ran` (evidence exists for this commit), `evidenceFrom` (the run that examined the code), `carriedForward`, and the reason when it did not run here |
 | `reviewConfig` | Each review's claude model, read out of the review step's own shell at the verified commit |
 | `configIntegrity` | sha256 of CLAUDE.md, AGENTS.md, the review prompts, the workflow, and the verdict and attestation scripts, all as they stand at the verified commit |
-| `gate` | Pass/fail counts plus `skippedByKind`, so a guard skip and a deselected group are not one number |
+| `gate` | Pass/fail counts, `skippedByKind` so a guard skip and a deselected group are not one number, and `groupsWithEvidence`/`groupsTotal`. `allPassed` needs both: no failed step, and every group covered |
 | `generatedBy` | `workflow-step` — stated, not inferred |
 
 The `configIntegrity` section proves the prompts, workflow and scripts used

@@ -59,11 +59,21 @@ change detection, guards, parallel execution, and result collection. See
 Reviews need `~/.config/swamp/verify.env` with `ANTHROPIC_API_KEY`, or a
 claude.ai login.
 
-**Re-running after a fix**: re-run the whole workflow unless you can say why a
-group cannot be affected. When you can, deselect it with a boolean input —
-`--input runSkills=false`. The skipped steps record `!inputs.runSkills` as their
-reason, so the attestation says the group was deselected rather than quietly
-counting more skips.
+**Re-running after a fix**: if the commit changed, re-run everything — the
+deselected groups would have reviewed a different diff, so their evidence is
+stale.
+
+Deselect a group only when re-running **the same commit** after a non-code
+failure (Claude overloaded, `TESSL_TOKEN` missing, a flaky test):
+
+```
+--input runBuild=false --input runSkills=false
+```
+
+The attestation carries those groups' results forward from the last run at this
+commit where they passed, naming which run each came from. If a group has never
+passed at this commit, the gate fails — so deselecting everything is not a
+shortcut to green.
 
 ## 3. What the Run Does After Verification
 
