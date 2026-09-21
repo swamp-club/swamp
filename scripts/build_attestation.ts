@@ -320,8 +320,12 @@ export function buildAttestation(
   );
 
   const succeeded = steps.filter((s) => s.status === "succeeded").length;
-  const failed = steps.filter((s) => s.status === "failed").length;
   const skipped = steps.filter((s) => s.status === "skipped").length;
+  // Anything that is neither succeeded nor skipped counts against the gate,
+  // not just `failed`. A step left `unknown` by a crashed run, or still
+  // `running`, is a step nobody can vouch for, and a gate that only looks for
+  // `failed` would pass it.
+  const failed = steps.length - succeeded - skipped;
 
   const skippedByKind: Record<string, number> = {};
   for (const step of steps) {

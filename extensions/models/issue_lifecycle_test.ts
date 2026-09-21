@@ -17,8 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
-import { buildNotifyMessage, model } from "./issue_lifecycle.ts";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
+import {
+  buildNotifyMessage,
+  model,
+  resolveVerificationArgs,
+} from "./issue_lifecycle.ts";
 import { PR_COOLDOWN_MS } from "./_lib/schemas.ts";
 
 // ---------------------------------------------------------------------------
@@ -2002,4 +2011,137 @@ Deno.test("attestation-posted: rejects a verification recorded after receipts ex
 
 Deno.test("attestation-posted: applies to link_pr", () => {
   assertEquals(model.checks["attestation-posted"].appliesTo, ["link_pr"]);
+});
+
+// ---------------------------------------------------------------------------
+// verification_passed argument resolution
+// ---------------------------------------------------------------------------
+
+function attestation(overrides: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    version: "1",
+    workflowRunId: "run-7",
+    subject: { commit: "abc123", branch: "fix/thing" },
+    gate: { allPassed: true, stepsFailed: 0 },
+    steps: [
+      {
+        job: "build-static-analysis",
+        step: "lint",
+        model: "build-lint-run-7",
+        status: "succeeded",
+      },
+      {
+        job: "reviews",
+        step: "ux-review",
+        model: "review-ux-run-7",
+        status: "skipped",
+      },
+    ],
+    ...overrides,
+  });
+}
+
+Deno.test("resolveVerificationArgs: reads the whole checklist out of the attestation", () => {
+  const resolved = resolveVerificationArgs({ attestation: attestation() });
+
+  assertEquals(resolved.workflowRunId, "run-7");
+  assertEquals(resolved.commit, "abc123");
+  assertEquals(resolved.branch, "fix/thing");
+  assertEquals(resolved.steps.length, 2);
+  assertEquals(resolved.steps[0].model, "build-lint-run-7");
+  assertEquals(resolved.steps[1].status, "skipped");
+});
+
+Deno.test("resolveVerificationArgs: the attestation wins over anything else supplied", () => {
+  // The point of the workflow path: a caller cannot narrate a commit the run
+  // did not verify alongside the document that says which one it did.
+  const resolved = resolveVerificationArgs({
+    attestation: attestation(),
+    commit: "deadbeef",
+    branch: "some/other",
+    workflowRunId: "run-999",
+    steps: [],
+  });
+
+  assertEquals(resolved.commit, "abc123");
+  assertEquals(resolved.workflowRunId, "run-7");
+  assertEquals(resolved.steps.length, 2);
+});
+
+Deno.test("resolveVerificationArgs: refuses an attestation whose gate did not pass", () => {
+  assertThrows(
+    () =>
+      resolveVerificationArgs({
+        attestation: attestation({
+          gate: { allPassed: false, stepsFailed: 2 },
+        }),
+      }),
+    Error,
+    "did not pass",
+  );
+});
+
+Deno.test("resolveVerificationArgs: a non-terminal step status is not a pass", () => {
+  const resolved = resolveVerificationArgs({
+    attestation: attestation({
+      steps: [{ job: "build-tests", step: "run-tests", status: "unknown" }],
+    }),
+  });
+
+  assertEquals(resolved.steps[0].status, "failed");
+});
+
+Deno.test("resolveVerificationArgs: rejects malformed attestation JSON", () => {
+  assertThrows(
+    () => resolveVerificationArgs({ attestation: "{not json" }),
+    Error,
+    "not valid JSON",
+  );
+});
+
+Deno.test("resolveVerificationArgs: the manual path still takes explicit arguments", () => {
+  const resolved = resolveVerificationArgs({
+    workflowRunId: "run-1",
+    commit: "abc123",
+    branch: "fix/thing",
+    steps: [{
+      job: "build-tests",
+      step: "run-tests",
+      model: "build-tests",
+      method: "execute",
+      status: "succeeded",
+    }],
+  });
+
+  assertEquals(resolved.commit, "abc123");
+  assertEquals(resolved.steps.length, 1);
+});
+
+Deno.test("resolveVerificationArgs: names what the manual path is missing", () => {
+  assertThrows(
+    () => resolveVerificationArgs({ commit: "abc123" }),
+    Error,
+    "workflowRunId, branch, steps",
+  );
+});
+
+Deno.test("verification_passed: writes the checklist derived from the attestation", async () => {
+  const { context, writes, restore } = await buildTestContext(42);
+  try {
+    await model.methods.verification_passed.execute(
+      { attestation: attestation() },
+      context,
+    );
+
+    const write = writes.find((w) => w.specName === "verificationResult")!;
+    assertEquals(write.data.workflowRunId, "run-7");
+    assertEquals(write.data.commit, "abc123");
+    assertEquals(write.data.allPassed, true);
+    assertEquals(write.data.stepsCompleted, 1);
+    assertEquals(write.data.stepsSkipped, 1);
+    assertEquals(write.data.stepsFailed, 0);
+    assertEquals(write.data.stepsTotal, 2);
+  } finally {
+    await restore();
+  }
 });

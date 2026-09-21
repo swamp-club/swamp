@@ -244,7 +244,13 @@ const GROUP_FLAGS: Record<string, string> = {
  * machinery. Attesting has to happen on a subset re-run too, or deselecting a
  * group would quietly stop producing an attestation.
  */
-const UNGUARDED_JOBS = ["attest", "publish-attestation", "cleanup"];
+const UNGUARDED_JOBS = [
+  "attest",
+  "record-verification",
+  "publish-attestation",
+  "open-pr",
+  "cleanup",
+];
 
 interface GuardedStep extends WorkflowStep {
   readonly guard?: string;
@@ -360,5 +366,86 @@ Deno.test("submit-change: attest does not depend on a group succeeding", async (
     "every attest dependency must use `always` (or an or of succeeded and " +
       "skipped) so a deselected group still produces an attestation. " +
       `Offenders: ${wrong.join("; ")}`,
+  );
+});
+
+// ── The PR cannot be opened without the attestation ────────────────────────
+
+interface EnvStep extends WorkflowStep {
+  readonly task?: {
+    readonly inputs?: {
+      readonly run?: string;
+      readonly env?: Record<string, string>;
+      readonly url?: string;
+      readonly attestation?: string;
+    };
+  };
+}
+
+Deno.test("submit-change: creating the PR takes the attestation as an input", async () => {
+  // `gh pr create` used to live in a skill, so no check on link_pr could stop
+  // an unattested PR — by the time link_pr ran, the PR existed. The step that
+  // opens the PR must therefore depend on data that exists only once an
+  // attestation was accepted, making an unattested PR unrepresentable rather
+  // than rejected.
+  const workflow = await readReviewsWorkflow();
+  const openPr = (workflow.jobs ?? []).find((j) => j.name === "open-pr");
+
+  assertEquals(
+    openPr !== undefined,
+    true,
+    "no `open-pr` job — PR creation left the run and the gate is gone with it",
+  );
+
+  const createPr = ((openPr!.steps ?? []) as readonly EnvStep[])
+    .find((s) => s.name === "create-pr");
+  assertEquals(createPr !== undefined, true, "no `create-pr` step");
+
+  const env = createPr!.task?.inputs?.env ?? {};
+  const referencesRecord = Object.values(env).some((value) =>
+    value.includes("attestationRecord-main")
+  );
+  assertEquals(
+    referencesRecord,
+    true,
+    "create-pr must read attestationRecord-main, the resource written only " +
+      "when swamp-club accepts an attestation. Without that input the step " +
+      "can run with no attestation behind it.",
+  );
+});
+
+Deno.test("submit-change: link-pr records the URL the run produced", async () => {
+  // Not the URL an agent typed: the recorded output of the step that created
+  // the PR.
+  const workflow = await readReviewsWorkflow();
+  const linkPr = (((workflow.jobs ?? []).find((j) => j.name === "open-pr")
+    ?.steps ?? []) as readonly EnvStep[]).find((s) => s.name === "link-pr");
+
+  assertEquals(linkPr !== undefined, true, "no `link-pr` step");
+  assertStringIncludes(
+    linkPr!.task?.inputs?.url ?? "",
+    "data.latest('submit-create-pr-' + run.id, 'result')",
+  );
+});
+
+Deno.test("submit-change: the recorded checklist comes from the attestation", async () => {
+  // verification_passed gates link_pr. Supplying it a step list assembled
+  // outside the run would put agent testimony back under the gate the
+  // attestation exists to replace.
+  const workflow = await readReviewsWorkflow();
+  const record = (((workflow.jobs ?? [])
+    .find((j) => j.name === "record-verification")?.steps ??
+    []) as readonly EnvStep[])[0];
+
+  assertEquals(record !== undefined, true, "no `record-verification` step");
+  const inputs = record!.task?.inputs ?? {};
+  assertStringIncludes(
+    inputs.attestation ?? "",
+    "data.latest('submit-attest-' + run.id, 'result')",
+  );
+  assertEquals(
+    "steps" in inputs,
+    false,
+    "record-verification must not pass its own step list",
   );
 });

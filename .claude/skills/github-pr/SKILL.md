@@ -26,35 +26,43 @@ fi
 - **Otherwise**: Read [references/git.md](references/git.md) for VCS-specific
   commands
 
-## Pre-flight Checks
-
-The verification workflow must have passed before opening a PR. If using the
-issue-lifecycle skill, verification is already enforced — the `link_pr` method
-requires a passing attestation.
-
-If working outside the issue lifecycle (e.g. a quick fix), run the verification
-workflow in the container sandbox before submitting. See
-`agent-constraints/verification-conventions.md` for the docker command.
-
-Do not run lint/test/fmt manually as a pre-PR gate — the verification workflow
-covers all checks.
-
 ## Create PR
 
-After pushing changes (see VCS reference), create the PR:
+In this repository the PR is opened by the `submit-change` workflow, not by
+`gh pr create`. The workflow verifies, generates the attestation from its own
+run record, publishes it, pushes the verified commit and opens the PR with the
+attestation id as an input — so a PR with no attestation behind it cannot be
+expressed. `link_pr` also rejects one, as a backstop for the manual path.
+
+Run it with the title and body you would otherwise have passed to `gh`:
 
 ```bash
-gh pr create --head <branch-or-bookmark> --base main --title "Title here" --body "$(cat <<'EOF'
-## Summary
+cat > /tmp/pr-body.yaml <<'EOF'
+prBody: |
+  ## Summary
 
-Brief description of changes.
+  Brief description of changes.
 
-## Test Plan
+  ## Test Plan
 
-- How the changes were tested
+  - How the changes were tested
 EOF
-)"
+
+SWAMP_WORKFLOWS_DIR=verification swamp workflow run submit-change \
+  --input commit=$(git rev-parse HEAD) \
+  --input branch=$(git branch --show-current) \
+  --input issue=<N> \
+  --input prTitle="Title here" \
+  --input-file /tmp/pr-body.yaml
 ```
+
+Do not push by hand first — the run pushes `<commit>:refs/heads/<branch>` so the
+pushed tip is the commit the attestation names.
+
+Do not run lint/test/fmt manually as a pre-PR gate; the run covers all checks.
+See `agent-constraints/verification-conventions.md` and the `issue-lifecycle`
+skill's [verification reference](../issue-lifecycle/references/verification.md)
+for the full flow, including the boolean inputs for re-running a subset.
 
 ## Check Merge Status
 

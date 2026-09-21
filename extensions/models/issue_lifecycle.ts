@@ -64,6 +64,103 @@ import {
  */
 const ATTESTATION_RECEIPT_SINCE = Date.parse("2026-09-21T00:00:00.000Z");
 
+/** The checklist `verification_passed` records, however it was supplied. */
+interface ResolvedVerification {
+  workflowRunId: string;
+  commit: string;
+  branch: string;
+  steps: Array<{
+    job: string;
+    step: string;
+    model: string;
+    method: string;
+    status: "succeeded" | "failed" | "skipped";
+  }>;
+}
+
+/**
+ * Resolves `verification_passed`'s arguments, preferring the attestation.
+ *
+ * The submit-change run hands over the attestation its own attest step
+ * generated and nothing else, so the checklist the lifecycle gates on says
+ * what the run recorded rather than what a caller typed. The explicit
+ * arguments remain for the manual path, where there is no run to read.
+ *
+ * An attestation whose gate did not pass is refused outright: recording a
+ * failed verification as passed is the one thing this method must never do,
+ * and the attestation is the only party that knows.
+ */
+export function resolveVerificationArgs(
+  args: {
+    attestation?: string;
+    workflowRunId?: string;
+    commit?: string;
+    branch?: string;
+    steps?: ResolvedVerification["steps"];
+  },
+): ResolvedVerification {
+  if (args.attestation !== undefined) {
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(args.attestation) as Record<string, unknown>;
+    } catch {
+      throw new Error("attestation input is not valid JSON");
+    }
+
+    const gate = (parsed.gate ?? {}) as Record<string, unknown>;
+    if (gate.allPassed !== true) {
+      throw new Error(
+        "The attestation records a gate that did not pass " +
+          `(${gate.stepsFailed ?? "?"} step(s) failed). ` +
+          "Call verification_failed instead.",
+      );
+    }
+
+    const subject = (parsed.subject ?? {}) as Record<string, unknown>;
+    const rawSteps = Array.isArray(parsed.steps) ? parsed.steps : [];
+
+    return {
+      workflowRunId: String(parsed.workflowRunId ?? ""),
+      commit: String(subject.commit ?? ""),
+      branch: String(subject.branch ?? ""),
+      steps: rawSteps.map((entry) => {
+        const s = entry as Record<string, unknown>;
+        const status = s.status === "succeeded" || s.status === "skipped"
+          ? s.status
+          // Anything else — failed, unknown, still running — is not a pass.
+          // The gate check above means this branch is unreachable for a
+          // well-formed attestation; mapping rather than trusting keeps a
+          // malformed one from widening the enum.
+          : "failed" as const;
+        return {
+          job: String(s.job ?? ""),
+          step: String(s.step ?? ""),
+          model: String(s.model ?? ""),
+          method: "execute",
+          status,
+        };
+      }),
+    };
+  }
+
+  const missing = (["workflowRunId", "commit", "branch", "steps"] as const)
+    .filter((key) => args[key] === undefined);
+  if (missing.length > 0) {
+    throw new Error(
+      `verification_passed needs either 'attestation' or all of ` +
+        `workflowRunId, commit, branch and steps — missing: ` +
+        `${missing.join(", ")}`,
+    );
+  }
+
+  return {
+    workflowRunId: args.workflowRunId!,
+    commit: args.commit!,
+    branch: args.branch!,
+    steps: args.steps!,
+  };
+}
+
 /** Global args type for the issue-lifecycle model. */
 type GlobalArgs = {
   issueNumber: number;
@@ -274,7 +371,11 @@ export const model = {
         "Definitions auto-upgrade at run time, so the check reaches " +
         "lifecycles already parked in `verifying` — one whose verification " +
         "predates the upgrade passes without a receipt, since it could not " +
-        "have written one. No globalArguments changes.",
+        "have written one. verification_passed additionally accepts the " +
+        "attestation the submit-change run generated and derives the commit, " +
+        "branch, run id and step list from it, refusing one whose gate did " +
+        "not pass; its explicit arguments become optional for the manual " +
+        "path. No globalArguments changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
@@ -2114,25 +2215,34 @@ export const model = {
       description:
         "Record that verification passed. Carries the full verification " +
         "checklist — every step, status, and gate result. This data gates " +
-        "the transition to link_pr.",
+        "the transition to link_pr. Pass `attestation` to derive the whole " +
+        "checklist from the document the submit-change run generated; the " +
+        "explicit arguments exist for the manual path.",
       arguments: z.object({
-        workflowRunId: z.string(),
-        commit: z.string(),
-        branch: z.string(),
+        attestation: z.string().optional().describe(
+          "The attestation JSON the submit-change run generated. When given, " +
+            "the commit, branch, run id and step list are all read out of it " +
+            "and the other arguments are ignored — the checklist then says " +
+            "what the run recorded rather than what the caller typed.",
+        ),
+        workflowRunId: z.string().optional(),
+        commit: z.string().optional(),
+        branch: z.string().optional(),
         steps: z.array(z.object({
           job: z.string(),
           step: z.string(),
           model: z.string(),
           method: z.string().default("execute"),
           status: z.enum(["succeeded", "failed", "skipped"]),
-        })),
+        })).optional(),
       }),
       execute: async (
-        args: {
-          workflowRunId: string;
-          commit: string;
-          branch: string;
-          steps: Array<{
+        rawArgs: {
+          attestation?: string;
+          workflowRunId?: string;
+          commit?: string;
+          branch?: string;
+          steps?: Array<{
             job: string;
             step: string;
             model: string;
@@ -2156,10 +2266,12 @@ export const model = {
         const { issueNumber } = context.globalArgs;
         const now = new Date().toISOString();
 
+        const args = resolveVerificationArgs(rawArgs);
+
         const succeeded = args.steps.filter((s) => s.status === "succeeded")
           .length;
         const skipped = args.steps.filter((s) => s.status === "skipped").length;
-        const failed = args.steps.filter((s) => s.status === "failed").length;
+        const failed = args.steps.length - succeeded - skipped;
 
         const verificationHandle = await context.writeResource(
           "verificationResult",

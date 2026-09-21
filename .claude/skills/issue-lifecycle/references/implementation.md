@@ -45,48 +45,48 @@ approved plan. All deviations must be justified before proceeding.
 ## 3b. Verification Loop
 
 **After code conformance review**, read [verification.md](verification.md) and
-run the verification workflow in the container sandbox. This runs lint, test,
-compile, and agent reviews — the same checks as CI — before a PR is opened. The
-agent iterates until all steps pass.
+run the `submit-change` workflow. It runs lint, test, compile, agent reviews and
+skill checks — the same checks as CI — then attests, publishes and opens the PR
+in the same run. Iterate until every step passes; nothing downstream of
+verification runs until it does.
 
-Do NOT proceed to create a PR until verification passes.
+## 4. The PR Is Opened by the Run
 
-## 4. Create a PR
+Do NOT run `gh pr create`. The `submit-change` workflow verifies, attests,
+publishes and opens the PR in one run — see [verification.md](verification.md).
+The attestation id is an _input_ to the step that opens the PR, so a PR with no
+attestation behind it cannot be expressed rather than being caught afterwards.
 
-**PREREQUISITE: The verification attestation MUST be posted to swamp-club before
-opening a PR.** If you have not yet posted the attestation via
-`POST /api/v1/admin/attestations`, STOP — go back to
-[verification.md](verification.md) step 4 and complete the attestation flow
-first. Do NOT skip this step. Do NOT open a PR without a posted attestation.
+**Ask the human before running `submit-change`.** The human gate sits before the
+run, not inside it: the real decision is "ship this commit", and it is better
+made up front with more information than half-way through a sequence that would
+then sit parked. Present a summary of the changes and only run after explicit
+confirmation.
 
-**DO NOT amend, rebase, or modify the verified commit after the attestation has
-been posted.** The attestation is bound to the commit SHA — amending (even just
-to add a co-author line) changes the SHA and invalidates the attestation. The
-co-author trailer must be included in the ORIGINAL commit, not added via amend
-afterwards. If the commit has already been amended, you must re-run verification
-and post a new attestation for the new SHA.
+**DO NOT amend, rebase, or modify the verified commit after the run.** The
+attestation is bound to the commit SHA — amending (even just to add a co-author
+line) changes the SHA and invalidates it. The co-author trailer must be in the
+ORIGINAL commit, not added via amend afterwards. If the commit has already been
+amended, re-run `submit-change` on the new SHA.
 
-**Always ask the human before opening a PR.** Do not create the PR automatically
-— present a summary of the changes and ask if they are ready to open it. Only
-proceed after explicit confirmation.
+Read `agent-constraints/implementation-conventions.md` for repo-specific PR
+conventions, and the `github-pr` skill for the title and body to pass in.
 
-Use the repository's normal PR tooling. Read
-`agent-constraints/implementation-conventions.md` for repo-specific PR
-conventions.
+## 4a. The PR Link
 
-## 4a. Link the PR
+`open-pr`'s `link-pr` step calls `link_pr` with the URL the run produced, which
+writes a `pullRequest-main` resource, transitions the phase to `pr_open`, and
+posts a `pr_linked` lifecycle entry on the swamp-club issue. The swamp-club
+status stays at `in_progress` — there is no new status for `pr_open`; the PR
+link is additional evidence attached to the in-progress state.
 
-After the PR is open, record its URL on the lifecycle so the swamp-club record
-points to where the fix lives:
+Calling `link_pr` by hand is the manual path, and it is gated:
+`verification-clear` requires a passing `verificationResult` and
+`attestation-posted` requires an `attestationRecord` whose gate passed.
 
 ```
 swamp model @swamp/issue-lifecycle method run link_pr issue-<N> --input url=<PR URL>
 ```
-
-This writes a `pullRequest-main` resource, transitions the phase to `pr_open`,
-and posts a `pr_linked` lifecycle entry on the swamp-club issue. The swamp-club
-status stays at `in_progress` — there is no new status for `pr_open`; the PR
-link is additional evidence attached to the in-progress state.
 
 `link_pr` is **idempotent** — call it again with a new URL if:
 

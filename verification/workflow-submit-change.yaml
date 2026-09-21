@@ -30,6 +30,15 @@ inputs:
         swamp-club lab issue number. The run publishes the attestation through
         that issue's @swamp/issue-lifecycle instance (`issue-<N>`), which must
         already exist and be in the `verifying` phase.
+    prTitle:
+      type: string
+      description: Pull request title.
+    prBody:
+      type: string
+      description: |
+        Pull request description. Authored by whoever is submitting the change
+        — unlike the attestation, the summary of a change is legitimately
+        written by its author.
     runBuild:
       type: boolean
       default: true
@@ -49,6 +58,8 @@ inputs:
     - commit
     - branch
     - issue
+    - prTitle
+    - prBody
 
 reports:
   require:
@@ -562,10 +573,58 @@ jobs:
               rm -f "$RUN_JSON"
               exit $STATUS
 
+  # Everything past this point runs only when verification actually passed.
+  # `attest` runs on failure too — an attestation that records a failure is
+  # worth having — so the pass/fail decision lives here, on the group jobs
+  # themselves. `or(succeeded, skipped)` rather than `succeeded`, because a
+  # deselected group reports `skipped` and must not read as a failure.
+  - name: record-verification
+    description: Record the verification checklist on the issue lifecycle.
+    dependsOn:
+      - job: attest
+        condition:
+          type: succeeded
+      - job: build-compile
+        condition:
+          type: or
+          conditions:
+            - type: succeeded
+            - type: skipped
+      - job: build-deps-audit
+        condition:
+          type: or
+          conditions:
+            - type: succeeded
+            - type: skipped
+      - job: reviews
+        condition:
+          type: or
+          conditions:
+            - type: succeeded
+            - type: skipped
+      - job: skills
+        condition:
+          type: or
+          conditions:
+            - type: succeeded
+            - type: skipped
+    steps:
+      - name: record
+        task:
+          type: model_method
+          modelType: "@swamp/issue-lifecycle"
+          modelName: issue-${{ inputs.issue }}
+          methodName: verification_passed
+          inputs:
+            # The attestation is the only argument. The commit, branch, run id
+            # and step list are all read out of it, so the checklist the
+            # lifecycle gates on says what the run recorded.
+            attestation: "${{ data.latest('submit-attest-' + run.id, 'result').attributes.stdout }}"
+
   - name: publish-attestation
     description: Post the attestation to swamp-club through the issue lifecycle.
     dependsOn:
-      - job: attest
+      - job: record-verification
         condition:
           type: succeeded
     steps:
@@ -583,6 +642,73 @@ jobs:
             attestation: "${{ data.latest('submit-attest-' + run.id, 'result').attributes.stdout }}"
             workflowRunId: "${{ run.id }}"
 
+  # ══ Pull request ═══════════════════════════════════════════════════════════
+  #
+  # `gh pr create` used to appear in exactly one file in the repo — a skill
+  # instructing the agent — so no check on link_pr could prevent an unattested
+  # PR: by the time link_pr ran the PR already existed, and every gate-based
+  # fix sat downstream of the act it guarded.
+  #
+  # Here the attestation id is an INPUT to the step that opens the PR. It comes
+  # from the attestationRecord that post_attestation writes only when
+  # swamp-club accepts the document, so a PR with no attestation behind it is
+  # not rejected — it cannot be expressed. The `attestation-posted` check on
+  # link_pr remains as the backstop for anyone running `gh pr create` by hand.
+
+  - name: open-pr
+    description: Push the verified commit and open the pull request.
+    dependsOn:
+      - job: publish-attestation
+        condition:
+          type: succeeded
+    steps:
+      - name: create-pr
+        task:
+          type: model_method
+          modelType: "command/shell"
+          modelName: submit-create-pr-${{ run.id }}
+          methodName: execute
+          inputs:
+            env:
+              # The data dependency. No attestationRecord, no id, no step.
+              ATTESTATION_ID: "${{ data.latest('issue-' + string(inputs.issue), 'attestationRecord-main').attributes.attestationId }}"
+              PR_TITLE: "${{ inputs.prTitle }}"
+              PR_BODY: "${{ inputs.prBody }}"
+            # stdout is the PR URL and nothing else, so link_pr records what
+            # the run produced rather than what an agent typed. Everything
+            # else goes to stderr.
+            run: |
+              set -euo pipefail
+              # Push the verified commit explicitly rather than whatever HEAD
+              # has become. The attestation is bound to this SHA; pushing the
+              # branch tip would let a commit made after verification reach the
+              # PR under an attestation that never saw it.
+              git push origin \
+                "${{ inputs.commit }}:refs/heads/${{ inputs.branch }}" >&2
+              BODY_FILE=$(mktemp)
+              printf '%s\n\n---\n\nAttestation: `%s`\nVerification run: `%s`\n' \
+                "$PR_BODY" "$ATTESTATION_ID" "${{ run.id }}" > "$BODY_FILE"
+              PR_URL=$(gh pr create \
+                --head "${{ inputs.branch }}" \
+                --base main \
+                --title "$PR_TITLE" \
+                --body-file "$BODY_FILE")
+              rm -f "$BODY_FILE"
+              printf '%s' "$PR_URL"
+
+      - name: link-pr
+        dependsOn:
+          - step: create-pr
+            condition:
+              type: succeeded
+        task:
+          type: model_method
+          modelType: "@swamp/issue-lifecycle"
+          modelName: issue-${{ inputs.issue }}
+          methodName: link_pr
+          inputs:
+            url: "${{ data.latest('submit-create-pr-' + run.id, 'result').attributes.stdout }}"
+
   # ══ Cleanup ════════════════════════════════════════════════════════════════
   #
   # One cleanup job for all three groups, not one per group. The three used to
@@ -597,7 +723,13 @@ jobs:
       - job: attest
         condition:
           type: always
+      - job: record-verification
+        condition:
+          type: always
       - job: publish-attestation
+        condition:
+          type: always
+      - job: open-pr
         condition:
           type: always
     steps:

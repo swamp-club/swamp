@@ -244,6 +244,37 @@ attestation's own fields — never from separate arguments, since a caller that
 could state the commit alongside the document could state a different one. That
 receipt is what the PR depends on.
 
+## Opening the Pull Request
+
+`gh pr create` used to appear in exactly one file in the repo — a skill
+instructing the agent — so no check on `link_pr` could prevent an unattested
+PR: by the time `link_pr` ran, the PR already existed, and every gate-based fix
+sat downstream of the act it guarded.
+
+The `open-pr` job takes the attestation id as an **input**, read from the
+`attestationRecord` that `post_attestation` writes only when swamp-club accepts
+the document. No accepted attestation, no id, no step. The illegal state is not
+rejected; it cannot be expressed.
+
+Two details the job is deliberate about:
+
+- It pushes `<commit>:refs/heads/<branch>`, not the branch tip. The attestation
+  is bound to a SHA; pushing whatever HEAD has become would let a commit made
+  after verification reach the PR under an attestation that never saw it.
+- `link_pr` takes its URL from the create-PR step's recorded output, so the
+  lifecycle records what the run produced rather than what an agent typed.
+
+Everything past `record-verification` runs only when verification actually
+passed. `attest` runs on failure too — an attestation recording a failure is
+worth having — so the pass/fail decision lives on the group jobs, with
+`or(succeeded, skipped)` rather than `succeeded`, because a deselected group
+reports `skipped` and must not read as a failure.
+
+`integration/verification_harness_rules_test.ts` pins all of this: that
+`create-pr` reads `attestationRecord-main`, that `link-pr` reads the create
+step's output, and that `record-verification` passes the attestation rather
+than a step list of its own.
+
 ## Presenting the Result
 
 Read the run and show the user what happened:
@@ -253,13 +284,17 @@ SWAMP_WORKFLOWS_DIR=verification swamp workflow history get <run-id> --json
 ```
 
 Present every step with its status, model, duration, and for skipped steps the
-recorded reason. Include the run file path so the user can inspect the raw
-data. Call `verification_passed` with the run id, commit, branch and the step
-list from the run record — it records the checklist the lifecycle gates on.
+recorded reason, then the PR the run opened. Include the run file path so the
+user can inspect the raw data.
 
-**Only call `verification_passed` when no step failed.** A partial pass is not
-a pass. If any step failed, call `verification_failed` instead and fix the
-failures.
+The run already recorded the checklist: `record-verification` calls
+`verification_passed` with the attestation, which derives the commit, branch,
+run id and step list from it. Do not call `verification_passed` by hand on this
+path — and note it refuses an attestation whose gate did not pass.
+
+When verification fails, `record-verification` and everything after it skip, so
+no attestation is published and no PR opens. Present the failures and call
+`verification_failed` with a summary; that transitions back to `implementing`.
 
 ## Verifying TTY-Only Behaviour
 

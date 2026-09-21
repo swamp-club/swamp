@@ -117,8 +117,9 @@ attestation to flow through.
 
 6. **Proceed with normal verification.** Read
    [references/verification.md](references/verification.md) and continue from
-   its step 2 (Run Verification) through verification_passed → post_attestation
-   → link_pr. Step 1 there is the `verify` call just made — do not repeat it.
+   its step 2 (Run Verification). The `submit-change` run does the rest —
+   verification_passed, post_attestation and link_pr are all its steps. Step 1
+   there is the `verify` call just made — do not repeat it.
 
 7. **Drive the lifecycle to `done`.** `link_pr` only reaches `pr_open` — it is
    not the end of the flow, and stopping there leaves the issue parked. Walk the
