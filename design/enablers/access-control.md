@@ -32,6 +32,19 @@ and authorization is skipped entirely.
 
 Implementation: `src/domain/access/principal.ts`.
 
+### Server-token authentication
+
+Server tokens use the `<name>.<secret>` credential format. At HTTP and WebSocket
+authentication ingress, serve resolves only a `swamp/server-token` definition,
+reads its `token-main` lifecycle resource and vault secret, then applies the
+same pure lifecycle and timing-safe secret validation used by the model's
+explicit `redeem` method. Ingress authentication is read-only: it does not
+write `lastUsedAt`, execute a model method, or create a model run. Explicit
+`redeem` invocations retain their lifecycle usage update.
+
+Implementation: `src/serve/token_auth.ts`,
+`src/domain/models/access/server_token_model.ts`.
+
 ## Admission
 
 Before authorization, a separate admission gate controls who may connect at all.

@@ -594,6 +594,8 @@ Deno.test("handleDeviceAuth: POST /auth/device/token emits auth.login.completed 
   assertEquals(sink.events[0].principalKind, "user");
   assertEquals(sink.events[0].principalId, "user-1");
   assertEquals(sink.events[0].sourceIp, "10.0.0.1");
+  assertEquals(sink.events[0].resourceKind, "server-token");
+  assertEquals(sink.events[0].resourceName, "oauth-user-1-1234567890");
 });
 
 Deno.test("handleDeviceAuth: POST /auth/device/token emits auth.login.denied on admission failure", async () => {

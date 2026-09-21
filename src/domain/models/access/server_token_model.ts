@@ -71,6 +71,48 @@ export function serverTokenSecretKey(tokenName: string): string {
   return `${SERVER_TOKEN_SECRET_KEY_PREFIX}${tokenName}`;
 }
 
+/**
+ * Validates a presented credential against a server token lifecycle record.
+ * Supplying the vault secret performs the timing-safe credential comparison;
+ * omitting it permits callers to reject invalid lifecycle state before a vault
+ * read.
+ */
+export function validateServerToken(
+  token: ServerToken,
+  name: string,
+  presentedToken: string,
+  nowMs: number,
+  expectedSecret?: string,
+): string {
+  const dotIndex = presentedToken.indexOf(".");
+  if (dotIndex === -1) {
+    throw new Error("Invalid token format: expected <name>.<secret>");
+  }
+
+  if (token.state === "revoked") {
+    throw new Error(`Server token '${name}' has been revoked`);
+  }
+  if (token.state === "expired" || isExpired(token, nowMs)) {
+    throw new Error(`Server token '${name}' has expired`);
+  }
+
+  const presentedName = presentedToken.slice(0, dotIndex);
+  if (presentedName !== name) {
+    throw new Error(
+      `Server token name mismatch: expected '${name}'`,
+    );
+  }
+
+  const presentedSecret = presentedToken.slice(dotIndex + 1);
+  if (
+    expectedSecret !== undefined &&
+    !timingSafeEqual(expectedSecret, presentedSecret)
+  ) {
+    throw new Error(`Server token '${name}' does not match`);
+  }
+  return presentedSecret;
+}
+
 async function readToken(context: MethodContext): Promise<ServerToken> {
   const raw = await context.readResource!(TOKEN_DATA_NAME);
   if (raw === null) {
@@ -149,37 +191,16 @@ async function redeem(
     throw new Error("Redeeming a server token requires a vault service");
   }
 
-  const dotIndex = args.presentedToken.indexOf(".");
-  if (dotIndex === -1) {
-    throw new Error("Invalid token format: expected <name>.<secret>");
-  }
-
   const token = await readToken(context);
   const name = context.definition.name;
-
-  if (token.state === "revoked") {
-    throw new Error(`Server token '${name}' has been revoked`);
-  }
-  if (token.state === "expired" || isExpired(token, Date.now())) {
-    throw new Error(`Server token '${name}' has expired`);
-  }
-
-  const presentedName = args.presentedToken.slice(0, dotIndex);
-  if (presentedName !== name) {
-    throw new Error(
-      `Server token name mismatch: expected '${name}'`,
-    );
-  }
-
-  const presentedSecret = args.presentedToken.slice(dotIndex + 1);
+  const nowMs = Date.now();
+  validateServerToken(token, name, args.presentedToken, nowMs);
   const secret = await context.vaultService.get(
     token.vaultName,
     token.secretKey,
     "model:server-token-verify",
   );
-  if (!timingSafeEqual(secret, presentedSecret)) {
-    throw new Error(`Server token '${name}' does not match`);
-  }
+  validateServerToken(token, name, args.presentedToken, nowMs, secret);
 
   const updated: ServerToken = {
     ...token,

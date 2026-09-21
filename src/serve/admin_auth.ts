@@ -30,6 +30,7 @@ import {
   clearRateLimit,
   rateLimitKey,
 } from "./rate_limiter.ts";
+import type { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
 
 export interface AdminAuthDeps {
   readonly authMode: string;
@@ -37,6 +38,8 @@ export interface AdminAuthDeps {
   readonly repoContext: RepositoryContext;
   readonly policySnapshotLoader: PolicySnapshotLoader | null;
   readonly trustProxy: boolean;
+  readonly auditEmitter?: AuditEmitter;
+  readonly instanceId?: string;
 }
 
 export type AdminAuthResult =
@@ -101,6 +104,12 @@ export async function authenticateAdmin(
     token,
     deps.repoDir,
     deps.repoContext,
+    {
+      emitter: deps.auditEmitter,
+      instanceId: deps.instanceId,
+      sourceIp: clientAddr,
+      ingress: new URL(req.url).pathname,
+    },
   );
 
   if (!authResult.ok) {

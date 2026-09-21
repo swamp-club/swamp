@@ -22,9 +22,12 @@ import {
   authenticateServerToken,
   classifyRedeemError,
   extractWebSocketToken,
+  type ServerTokenAuthDeps,
   splitServerToken,
 } from "./token_auth.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
+import type { ServerToken } from "../domain/models/access/server_token_model.ts";
+import type { AuditEvent } from "../domain/serve_audit/audit_event.ts";
 
 // ── splitServerToken ────────────────────────────────────────────────────
 
@@ -236,6 +239,134 @@ Deno.test("classifyRedeemError: returns unknown for unrecognized errors", () => 
 });
 
 // ── authenticateServerToken ─────────────────────────────────────────────
+
+function activeToken(overrides: Partial<ServerToken> = {}): ServerToken {
+  return {
+    name: "test-token",
+    state: "active",
+    principalId: "user:test-user",
+    principalEmail: "test@example.com",
+    collectives: ["engineering"],
+    groups: ["developers"],
+    createdAt: "2026-01-01T00:00:00.000Z",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    vaultName: "token-vault",
+    secretKey: "server-token-test-token",
+    ...overrides,
+  };
+}
+
+function makeAuthDeps(
+  overrides: Partial<ServerTokenAuthDeps> = {},
+): ServerTokenAuthDeps {
+  return {
+    readToken: () => Promise.resolve(activeToken()),
+    readSecret: () => Promise.resolve("secret-value"),
+    ...overrides,
+  };
+}
+
+const unusedRepoContext = {} as RepositoryContext;
+
+function authenticateWithDeps(
+  token: string,
+  deps: ServerTokenAuthDeps,
+  events?: AuditEvent[],
+) {
+  return authenticateServerToken(
+    token,
+    "/tmp/nonexistent",
+    unusedRepoContext,
+    events
+      ? {
+        emitter: { emit: (event) => events.push(event) },
+        instanceId: "instance-1",
+        sourceIp: "192.0.2.1",
+        requestId: "request-1",
+        ingress: "websocket:bearer",
+      }
+      : undefined,
+    deps,
+  );
+}
+
+Deno.test("authenticateServerToken: reads and validates a token without a model run", async () => {
+  const result = await authenticateWithDeps(
+    "test-token.secret-value",
+    makeAuthDeps(),
+  );
+
+  assertEquals(result, {
+    ok: true,
+    principalId: "user:test-user",
+    collectives: ["engineering"],
+    groups: ["developers"],
+  });
+});
+
+Deno.test("authenticateServerToken: applies the shared lifecycle validation", async () => {
+  const result = await authenticateWithDeps(
+    "test-token.secret-value",
+    makeAuthDeps({
+      readToken: () => Promise.resolve(activeToken({ state: "revoked" })),
+    }),
+  );
+
+  assertEquals(result, {
+    ok: false,
+    error: "Authentication failed",
+    reason: "revoked",
+  });
+});
+
+Deno.test("authenticateServerToken: rejects a mismatched secret", async () => {
+  const result = await authenticateWithDeps(
+    "test-token.wrong-secret",
+    makeAuthDeps(),
+  );
+
+  assertEquals(result, {
+    ok: false,
+    error: "Authentication failed",
+    reason: "secret-mismatch",
+  });
+});
+
+Deno.test("authenticateServerToken: emits a secret-free audit event after successful ingress", async () => {
+  const events: AuditEvent[] = [];
+  const result = await authenticateWithDeps(
+    "test-token.secret-value",
+    makeAuthDeps(),
+    events,
+  );
+
+  assertEquals(result.ok, true);
+  assertEquals(events.length, 1);
+  assertEquals(events[0].action, "auth.token.used");
+  assertEquals(events[0].resourceName, "test-token");
+  assertEquals(events[0].principalId, "user:test-user");
+  assertEquals(events[0].sourceIp, "192.0.2.1");
+  assertEquals(events[0].detail, "websocket:bearer");
+  assertEquals(JSON.stringify(events[0]).includes("secret-value"), false);
+});
+
+Deno.test("authenticateServerToken: ignores audit-emitter errors", async () => {
+  const result = await authenticateServerToken(
+    "test-token.secret-value",
+    "/tmp/nonexistent",
+    unusedRepoContext,
+    {
+      emitter: {
+        emit: () => {
+          throw new Error("audit unavailable");
+        },
+      },
+    },
+    makeAuthDeps(),
+  );
+
+  assertEquals(result.ok, true);
+});
 
 Deno.test("authenticateServerToken: rejects token exceeding MAX_TOKEN_LENGTH", async () => {
   const longToken = "name." + "a".repeat(513);

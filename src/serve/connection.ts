@@ -3262,7 +3262,7 @@ export function handleMessage(
             controller,
             principal,
           )),
-        auditOpts("access", "access", "*"),
+        auditOpts("access", "access", request.payload.name),
       );
       break;
     case "model.edit":

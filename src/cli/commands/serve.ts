@@ -4018,6 +4018,8 @@ export const serveCommand = new Command()
       repoContext,
       policySnapshotLoader,
       trustProxy,
+      auditEmitter: connectionCtx.auditEmitter,
+      instanceId,
     };
 
     // Dashboard static file serving
@@ -4188,6 +4190,12 @@ export const serveCommand = new Command()
               extracted.token,
               resolvedRepoDir,
               repoContext,
+              {
+                emitter: connectionCtx.auditEmitter,
+                instanceId: connectionCtx.instanceId,
+                sourceIp: remoteAddr,
+                ingress: `websocket:${extracted.transport}`,
+              },
             );
             if (!result.ok) {
               logger.warn(
@@ -4292,6 +4300,12 @@ export const serveCommand = new Command()
                 token,
                 resolvedRepoDir,
                 repoContext,
+                {
+                  emitter: connectionCtx.auditEmitter,
+                  instanceId: connectionCtx.instanceId,
+                  sourceIp: cancelRemoteAddr,
+                  ingress: "http-cancel",
+                },
               );
               if (!authResult.ok) {
                 return new Response(
