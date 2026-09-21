@@ -2015,6 +2015,7 @@ export async function handleWorkerTokenCreate(
       libCtx,
       ctx.repoDir,
       ctx.repoContext,
+      { vaultsDir: ctx.vaultsDir },
     );
 
     let result: Record<string, unknown> | undefined;
@@ -2125,6 +2126,7 @@ export async function handleWorkerTokenRevoke(
       libCtx,
       ctx.repoDir,
       ctx.repoContext,
+      { vaultsDir: ctx.vaultsDir },
     );
 
     let result: Record<string, unknown> | undefined;
@@ -2185,6 +2187,7 @@ export async function handleWorkerPrune(
     const runDeps = await createWorkerModelRunDeps(
       ctx.repoDir,
       ctx.repoContext,
+      { vaultsDir: ctx.vaultsDir },
     );
 
     const deleteDeps = createModelDeleteDeps(

@@ -1580,6 +1580,7 @@ export const serveCommand = new Command()
       datastoreConfig,
       syncService,
       lockfilePath: managedLockfilePath,
+      vaultsDir,
     } = await requireInitializedRepoUnlocked({
       repoDir,
       outputMode: ctx.outputMode,
@@ -2935,6 +2936,7 @@ export const serveCommand = new Command()
           ? { resolvedUserNames }
           : {}),
         serveOptions: merged,
+        vaultsDir,
         managedDefinitionsDir: repoMarker?.datastore?.managedConfig
           ? join(datastoreResolver.resolvePath("config"), "models")
           : undefined,

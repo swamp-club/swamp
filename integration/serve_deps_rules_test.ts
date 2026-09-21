@@ -190,3 +190,47 @@ Deno.test("serve functions that push must run under the sync gate", async () => 
       "saying why it is safe.\n\nViolations:\n" + violations.join("\n"),
   );
 });
+
+const WORKER_DEPS_PATTERN =
+  /create(?:WorkerTokenCreate|WorkerTokenRevoke|WorkerModelRun)Deps\(/;
+
+Deno.test("serve handlers must pass vaultsDir to createWorker*Deps", async () => {
+  const violations: string[] = [];
+
+  for await (
+    const entry of walk(SERVE_HANDLERS_DIR, {
+      exts: [".ts"],
+      skip: [/_test\.ts$/],
+    })
+  ) {
+    const content = await Deno.readTextFile(entry.path);
+    const rel = normalise(relative(ROOT, entry.path));
+
+    const lines = content.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (WORKER_DEPS_PATTERN.test(line)) {
+        const callStart = i;
+        let callBlock = "";
+        for (let j = i; j < lines.length && j < i + 10; j++) {
+          callBlock += lines[j];
+          if (lines[j].includes(");")) break;
+        }
+        if (!callBlock.includes("vaultsDir")) {
+          violations.push(`${rel}:${callStart + 1}: ${line.trim()}`);
+        }
+      }
+    }
+  }
+
+  assertEquals(
+    violations,
+    [],
+    "Serve handlers calling createWorker*Deps must pass " +
+      "{ vaultsDir: ctx.vaultsDir } so VaultService scans the correct " +
+      "vault config directory under managedConfig. Without it, the " +
+      "function falls back to join(repoDir, 'vaults'), which misses " +
+      "user-configured vaults (swamp-club#2276).\n\nViolations:\n" +
+      violations.join("\n"),
+  );
+});
