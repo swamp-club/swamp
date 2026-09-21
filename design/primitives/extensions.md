@@ -1270,6 +1270,28 @@ Explicit `swamp extension pull <name>` is the user's opt-in path to accept
 whatever bytes the registry currently serves; integrity verification is scoped
 strictly to lockfile-restore flows.
 
+### Restore Reconciliation
+
+`swamp extension install` decides per entry whether the on-disk state already
+satisfies the lockfile. File presence alone is not that decision — a different
+version's files can already occupy the per-extension subtree, left there by an
+earlier pull or by `doctor extensions` repairing a missing type. For every entry
+whose files are all present at the current layout, install compares:
+
+1. **Version** — the `version` recorded in the entry against the `version` in
+   the installed `manifest.yaml` copy. A mismatch re-pulls the pinned version
+   (swamp-club#2150). A constraint pin (`>=`, `^`, `~`) has no single version to
+   match and an entry installed before the manifest copy existed has no on-disk
+   identity; both fall through to the content check rather than re-pulling on
+   every run.
+2. **Content** — the subtree digest against `filesChecksum`, which catches a
+   lockfile updated through git without a matching re-fetch (swamp-club#1021).
+
+`doctor extensions --repair` restores the pinned version for the same reason:
+re-pulling registry latest would rewrite the entry and silently discard the pin.
+Extensions with no lockfile entry have nothing to pin to and still resolve
+latest.
+
 ### Concurrency Safety
 
 All mutations to `upstream_extensions.json` use an advisory lockfile

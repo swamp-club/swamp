@@ -396,8 +396,15 @@ export const doctorExtensionsCommand = withRemoteOptions(
                   repoDir,
                   { identity },
                 );
+                // Repair restores what the lockfile pins, not whatever
+                // the registry currently calls latest — pulling latest
+                // here rewrites the entry and destroys the pin
+                // (swamp-club#2150). Extensions with no entry have
+                // nothing to pin to, so they still resolve latest.
+                const pinnedVersion =
+                  pullLockfileRepo.getEntry(name)?.version ?? null;
                 await pullExtension(
-                  { name, version: null },
+                  { name, version: pinnedVersion },
                   {
                     getExtension: deps.getExtension,
                     downloadArchive: deps.downloadArchive,

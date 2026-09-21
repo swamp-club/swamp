@@ -1720,3 +1720,174 @@ Deno.test(
     }
   },
 );
+
+/**
+ * Lays down a current-layout extension on disk — one model file plus the
+ * read-only `manifest.yaml` copy that `installExtension` leaves in the
+ * per-extension root — and writes a lockfile entry pinning
+ * `pinnedVersion`. Pass `manifestVersion: null` to omit the manifest
+ * entirely, the shape left by installs that predate the manifest copy.
+ *
+ * Deliberately omits `filesChecksum` so the content check stays out of
+ * the way and each test exercises the version comparison alone.
+ */
+async function seedInstalledExtension(
+  tmpDir: string,
+  lockfilePath: string,
+  opts: { pinnedVersion: string; manifestVersion: string | null },
+): Promise<void> {
+  const extRoot = join(tmpDir, ".swamp", "pulled-extensions", "@test", "ext");
+  await ensureDir(join(extRoot, "models"));
+  await Deno.writeTextFile(join(extRoot, "models", "main.ts"), "// installed");
+  if (opts.manifestVersion !== null) {
+    await Deno.writeTextFile(
+      join(extRoot, "manifest.yaml"),
+      `name: "@test/ext"\nversion: "${opts.manifestVersion}"\n`,
+    );
+  }
+  await Deno.writeTextFile(
+    lockfilePath,
+    JSON.stringify({
+      "@test/ext": {
+        version: opts.pinnedVersion,
+        pulledAt: "2026-01-01T00:00:00Z",
+        files: [".swamp/pulled-extensions/@test/ext/models/main.ts"],
+      },
+    }),
+  );
+}
+
+Deno.test(
+  "extensionInstall: re-installs when the on-disk version differs from the pin (swamp-club#2150)",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const lockfilePath = join(tmpDir, "upstream_extensions.json");
+      await seedInstalledExtension(tmpDir, lockfilePath, {
+        pinnedVersion: "1.0.0",
+        manifestVersion: "2.0.0",
+      });
+
+      const ctx = createLibSwampContext({});
+      const events = await collectEvents(
+        extensionInstall(ctx, {
+          lockfilePath,
+          repoDir: tmpDir,
+          createInstallContext: () =>
+            makeStubInstallContext(tmpDir, lockfilePath),
+          installExtensionFn: makeSuccessfulInstall(tmpDir, lockfilePath),
+        }),
+      );
+
+      const completed = events.find((e) => e.kind === "completed");
+      assertEquals(completed?.kind, "completed");
+      if (completed?.kind === "completed") {
+        assertEquals(completed.data.installed, 1);
+        assertEquals(completed.data.upToDate, 0);
+        assertEquals(completed.data.entries[0].status, "installed");
+        assertEquals(completed.data.entries[0].version, "1.0.0");
+      }
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "extensionInstall: on-disk version matching the pin stays up to date",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const lockfilePath = join(tmpDir, "upstream_extensions.json");
+      await seedInstalledExtension(tmpDir, lockfilePath, {
+        pinnedVersion: "1.0.0",
+        manifestVersion: "1.0.0",
+      });
+
+      const ctx = createLibSwampContext({});
+      const events = await collectEvents(
+        extensionInstall(ctx, {
+          lockfilePath,
+          repoDir: tmpDir,
+          createInstallContext: () =>
+            Promise.reject(new Error("should not be called for up-to-date")),
+        }),
+      );
+
+      const completed = events.find((e) => e.kind === "completed");
+      assertEquals(completed?.kind, "completed");
+      if (completed?.kind === "completed") {
+        assertEquals(completed.data.upToDate, 1);
+        assertEquals(completed.data.installed, 0);
+      }
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "extensionInstall: an extension with no manifest.yaml keeps the existing behaviour",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const lockfilePath = join(tmpDir, "upstream_extensions.json");
+      await seedInstalledExtension(tmpDir, lockfilePath, {
+        pinnedVersion: "1.0.0",
+        manifestVersion: null,
+      });
+
+      const ctx = createLibSwampContext({});
+      const events = await collectEvents(
+        extensionInstall(ctx, {
+          lockfilePath,
+          repoDir: tmpDir,
+          createInstallContext: () =>
+            Promise.reject(new Error("should not be called for up-to-date")),
+        }),
+      );
+
+      const completed = events.find((e) => e.kind === "completed");
+      assertEquals(completed?.kind, "completed");
+      if (completed?.kind === "completed") {
+        assertEquals(completed.data.upToDate, 1);
+        assertEquals(completed.data.installed, 0);
+      }
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "extensionInstall: a constraint pin never triggers a version re-pull",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const lockfilePath = join(tmpDir, "upstream_extensions.json");
+      await seedInstalledExtension(tmpDir, lockfilePath, {
+        pinnedVersion: ">=1.0.0",
+        manifestVersion: "1.2.0",
+      });
+
+      const ctx = createLibSwampContext({});
+      const events = await collectEvents(
+        extensionInstall(ctx, {
+          lockfilePath,
+          repoDir: tmpDir,
+          createInstallContext: () =>
+            Promise.reject(new Error("should not be called for up-to-date")),
+        }),
+      );
+
+      const completed = events.find((e) => e.kind === "completed");
+      assertEquals(completed?.kind, "completed");
+      if (completed?.kind === "completed") {
+        assertEquals(completed.data.upToDate, 1);
+        assertEquals(completed.data.installed, 0);
+      }
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
