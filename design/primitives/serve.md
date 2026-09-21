@@ -87,7 +87,7 @@ path is optional.
 | `--max-concurrent-runs`, `--max-runs-per-principal`, `--max-run-duration` | `SWAMP_MAX_*` | `100`, unset, unset | Enforced by `ActiveRunRegistry` (`src/serve/active_run_registry.ts`; the `100` is the registry's own fallback). `--max-run-duration` is capped at 2 147 483 647 ms |
 | `--hot-reload`                                | —                                | `false`                     | Writes `.swamp/serve.pid`; not supported on Windows. Without it SIGHUP is a shutdown signal (`src/infrastructure/process/shutdown_handlers.ts`) |
 | `--enable-internal-api`                       | `SWAMP_ENABLE_INTERNAL_API`      | `false`                     | Exposes `/internal/runs` (`limit` default 100, clamped 1–10 000)         |
-| `--remote-only`                               | `SWAMP_REMOTE_ONLY`              | `false`                     | Steps run only on workers (`src/domain/remote/remote_dispatch.ts`)       |
+| `--remote-only`                               | `SWAMP_REMOTE_ONLY`              | `false`                     | User steps run only on workers; built-in `swamp/*` control-plane models (server tokens, enrollment tokens, workers, step leases, etc.) always run on the orchestrator (`src/domain/remote/remote_dispatch.ts`) |
 | `--dashboard`                                 | `SWAMP_DASHBOARD`                | `false`                     | Serves `/dashboard/*` when the build embeds the SPA                       |
 | `--detach-runs`                               | —                                | `false`                     | Deprecated, no effect: runs are always detached                          |
 
