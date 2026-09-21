@@ -147,6 +147,8 @@ exceeds 10,000 entries. Event sources: scheduled execution
 (`workflow.run`, `model.method.run`) are **not** recorded
 (`runMetricsTracker.record` is called only from the schedule and webhook event
 handlers in `src/cli/commands/serve.ts`), so health throughput excludes them.
+A webhook run that suspends on an approval gate emits neither event and so
+contributes no health record until it resumes.
 
 The metrics are surfaced on `GET /api/v1/health` and
 `GET /api/v1/health/stream`.
