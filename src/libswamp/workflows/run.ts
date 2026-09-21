@@ -495,6 +495,10 @@ export function toRunData(
             stepData.assertResult = { ...step.assertResult };
           }
 
+          if (step.skipReason) {
+            stepData.skipReason = { ...step.skipReason };
+          }
+
           if (step.approvalDecision) {
             stepData.approval = mapApprovalDecision(
               step.approvalDecision,

@@ -100,6 +100,52 @@ Deno.test("StepRun.skip marks step as skipped", () => {
   assertEquals(stepRun.completedAt instanceof Date, true);
 });
 
+Deno.test("StepRun.skip records a guard reason with its expression", () => {
+  const stepRun = StepRun.pending("step1");
+  stepRun.skip({ kind: "guarded", expression: "!inputs.runBuild" });
+
+  assertEquals(stepRun.status, "skipped");
+  assertEquals(stepRun.skipReason?.kind, "guarded");
+  assertEquals(stepRun.skipReason?.expression, "!inputs.runBuild");
+});
+
+Deno.test("StepRun.skip leaves skipReason unset when no reason is given", () => {
+  const stepRun = StepRun.pending("step1");
+  stepRun.skip();
+
+  assertEquals(stepRun.status, "skipped");
+  assertEquals(stepRun.skipReason, undefined);
+});
+
+Deno.test("StepRun round-trips skipReason through toData/fromData", () => {
+  const stepRun = StepRun.pending("step1");
+  stepRun.skip({ kind: "guarded", expression: "changed.size() == 0" });
+
+  const restored = StepRun.fromData(stepRun.toData());
+
+  assertEquals(restored.skipReason, {
+    kind: "guarded",
+    expression: "changed.size() == 0",
+  });
+});
+
+Deno.test("StepRun.toData omits skipReason when none was recorded", () => {
+  const stepRun = StepRun.pending("step1");
+  stepRun.start();
+  stepRun.succeed();
+
+  assertEquals("skipReason" in stepRun.toData(), false);
+});
+
+Deno.test("StepRun.resetToPending clears a recorded skipReason", () => {
+  const stepRun = StepRun.pending("step1");
+  stepRun.skip({ kind: "dependency" });
+  stepRun.resetToPending();
+
+  assertEquals(stepRun.status, "pending");
+  assertEquals(stepRun.skipReason, undefined);
+});
+
 Deno.test("StepRun.toData returns correct structure", () => {
   const stepRun = StepRun.pending("step1");
   stepRun.start();
@@ -244,6 +290,13 @@ Deno.test("JobRun.skip marks job and pending steps as skipped", () => {
   assertEquals(jobRun.status, "skipped");
   assertEquals(jobRun.getStep("step1")?.status, "succeeded"); // Already completed, not changed
   assertEquals(jobRun.getStep("step2")?.status, "skipped"); // Was pending, now skipped
+});
+
+Deno.test("JobRun.skip attributes cascaded step skips to the job", () => {
+  const jobRun = JobRun.pending("job1", ["step1"]);
+  jobRun.skip();
+
+  assertEquals(jobRun.getStep("step1")?.skipReason, { kind: "job_skipped" });
 });
 
 Deno.test("JobRun.toData returns correct structure", () => {

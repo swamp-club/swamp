@@ -55,6 +55,33 @@ export const AssertResultSchema = z.object({
 export type AssertResultData = z.infer<typeof AssertResultSchema>;
 
 /**
+ * Why a step did not execute.
+ *
+ * A bare `skipped` status cannot distinguish a step a path guard correctly
+ * excluded from one an operator deselected for a subset re-run, and both
+ * reach CI as the same skip count. Recording the cause — and, for a guard,
+ * the expression that decided it — is what lets an attestation say which
+ * it was.
+ */
+export const StepSkipReasonSchema = z.object({
+  kind: z.enum([
+    /** A `dependsOn` condition on the step was not satisfied. */
+    "dependency",
+    /** The step's own `guard` expression evaluated truthy. */
+    "guarded",
+    /** The step's job was skipped, so the step never became eligible. */
+    "job_skipped",
+  ]),
+  /** The evaluated guard expression. Present only for `guarded`. */
+  expression: z.string().optional(),
+});
+
+/**
+ * Type representing why a step was skipped.
+ */
+export type StepSkipReasonData = z.infer<typeof StepSkipReasonSchema>;
+
+/**
  * Zod schema for step run.
  */
 export const StepRunSchema = z.object({
@@ -78,6 +105,7 @@ export const StepRunSchema = z.object({
   approvalPrompt: z.string().optional(),
   assertResult: AssertResultSchema.optional(),
   forEachTemplate: z.string().optional(),
+  skipReason: StepSkipReasonSchema.optional(),
 });
 
 /**
@@ -188,6 +216,7 @@ export class StepRun {
     private _approvalPrompt: string | undefined = undefined,
     private _assertResult: AssertResultData | undefined = undefined,
     private _forEachTemplate: string | undefined = undefined,
+    private _skipReason: StepSkipReasonData | undefined = undefined,
   ) {}
 
   /**
@@ -231,6 +260,7 @@ export class StepRun {
       validated.approvalPrompt,
       validated.assertResult,
       validated.forEachTemplate,
+      validated.skipReason,
     );
   }
 
@@ -285,6 +315,13 @@ export class StepRun {
   }
 
   /**
+   * Why this step was skipped. Undefined unless {@link status} is `skipped`.
+   */
+  get skipReason(): StepSkipReasonData | undefined {
+    return this._skipReason;
+  }
+
+  /**
    * Records an approval or rejection decision on this step.
    */
   recordApprovalDecision(decision: ApprovalDecisionData): void {
@@ -320,6 +357,7 @@ export class StepRun {
     this._approvalDecision = undefined;
     this._approvalPrompt = undefined;
     this._assertResult = undefined;
+    this._skipReason = undefined;
   }
 
   /**
@@ -374,10 +412,17 @@ export class StepRun {
 
   /**
    * Marks the step as skipped.
+   *
+   * `reason` is optional so older callers keep compiling, but every
+   * production skip site supplies one — a skip with no recorded cause is
+   * exactly the ambiguity this field exists to remove.
    */
-  skip(): void {
+  skip(reason?: StepSkipReasonData): void {
     this._status = "skipped";
     this._completedAt = new Date();
+    if (reason !== undefined) {
+      this._skipReason = { ...reason };
+    }
   }
 
   /**
@@ -409,6 +454,9 @@ export class StepRun {
     }
     if (this._forEachTemplate) {
       data.forEachTemplate = this._forEachTemplate;
+    }
+    if (this._skipReason) {
+      data.skipReason = { ...this._skipReason };
     }
     return data;
   }
@@ -614,7 +662,7 @@ export class JobRun implements TriggerEvaluationContext {
     // Skip all pending steps
     for (const step of this._steps) {
       if (step.status === "pending") {
-        step.skip();
+        step.skip({ kind: "job_skipped" });
       }
     }
   }

@@ -4513,6 +4513,51 @@ Deno.test("guard: step with truthy guard expression is skipped", async () => {
   });
 });
 
+Deno.test("guard: a guarded skip persists its reason and expression on the run", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = Workflow.create({
+      name: "guard-reason-wf",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "guarded-truthy",
+              task: StepTask.model("test-model", "run"),
+              guard: "${{ true }}",
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    for await (const _ of service.run(workflow.name)) { /* drain */ }
+
+    const runs = await runRepo.findAllByWorkflowId(workflow.id);
+    const step = runs[0].getJob("job1")?.getStep("guarded-truthy");
+    assertEquals(step?.status, "skipped");
+    assertEquals(step?.skipReason?.kind, "guarded");
+    // The recorded expression is the evaluated CEL, so an attestation can
+    // name which guard excluded the step rather than only that one did.
+    assertEquals(step?.skipReason?.expression, "true");
+  });
+});
+
 Deno.test("guard: guarded-skip triggers downstream with skipped condition", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();

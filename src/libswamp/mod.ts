@@ -97,6 +97,7 @@ export {
   type JobRunView,
   type StepArtifactsData,
   type StepRunView,
+  type StepSkipReasonView,
   type WorkflowRunView,
 } from "./workflows/workflow_run_view.ts";
 

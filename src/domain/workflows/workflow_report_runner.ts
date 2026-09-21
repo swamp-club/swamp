@@ -33,6 +33,7 @@ import { BUILTIN_WORKFLOW_REPORTS } from "../reports/builtin/mod.ts";
 import { ModelType } from "../models/model_type.ts";
 import type { Workflow } from "./workflow.ts";
 import type { WorkflowExecutionEvent } from "./execution_events.ts";
+import type { StepSkipReasonData } from "./workflow_run.ts";
 
 /**
  * Per-step execution detail collected during workflow execution.
@@ -54,6 +55,8 @@ export interface WorkflowStepExecutionDetail {
   modelId: string;
   globalArgs: Record<string, unknown>;
   errorMessage?: string;
+  /** Why the step did not run. Populated only when `status` is `skipped`. */
+  skipReason?: StepSkipReasonData;
 }
 
 /**

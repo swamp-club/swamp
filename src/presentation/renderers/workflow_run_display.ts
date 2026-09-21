@@ -67,6 +67,18 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
         writeOutput(`      -> ${red(step.error)}`);
       }
 
+      if (step.status === "skipped" && step.skipReason) {
+        const r = step.skipReason;
+        const detail = r.kind === "guarded" && r.expression
+          ? `guarded · ${r.expression}`
+          : r.kind === "guarded"
+          ? "guarded"
+          : r.kind === "dependency"
+          ? "dependency condition not met"
+          : "job was skipped";
+        writeOutput(`      -> skipped (${detail})`);
+      }
+
       if (step.approval) {
         const a = step.approval;
         if (a.status === "approved") {

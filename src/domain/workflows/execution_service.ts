@@ -3110,7 +3110,7 @@ export class WorkflowExecutionService {
     if (!forEachVar || !forEachVar.name) {
       const shouldRun = this.shouldStepRun(step, jobRun);
       if (!shouldRun) {
-        stepRun.skip();
+        stepRun.skip({ kind: "dependency" });
         stepSpan.setAttribute("step.status", "skipped");
         stepSpan.end();
         yield {
@@ -3203,7 +3203,7 @@ export class WorkflowExecutionService {
         if (guardResult) {
           guardLogger
             .debug`Step ${stepName} guard skipped: ${guardCel} → ${guardResult}`;
-          stepRun.skip();
+          stepRun.skip({ kind: "guarded", expression: guardCel });
           stepSpan.setAttribute("step.status", "skipped");
           stepSpan.setAttribute("step.skip.reason", "guarded");
           stepSpan.end();
@@ -4304,6 +4304,14 @@ export class WorkflowExecutionService {
       const stepName = stepNameFromCompositeKey(key);
       const info = modelInfoByStep.get(key);
 
+      // A skipped step records why it was skipped so reports can tell a
+      // guard-excluded step from one whose group was deselected. Both reach
+      // a report as `skipped` otherwise, and the attestation would flatten
+      // them into the same count.
+      const skipReason = status === "skipped"
+        ? run.getJob(jobName)?.getStep(stepName)?.skipReason
+        : undefined;
+
       if (info) {
         if (status === "skipped") {
           stepExecutions.push({
@@ -4318,6 +4326,7 @@ export class WorkflowExecutionService {
             methodArgs: {},
             modelId: info.modelId,
             globalArgs: {},
+            skipReason,
           });
           continue;
         }
@@ -4392,6 +4401,7 @@ export class WorkflowExecutionService {
           errorMessage: status === "failed"
             ? run.getJob(jobName)?.getStep(stepName)?.error
             : undefined,
+          skipReason,
         });
       }
     }
