@@ -4,6 +4,7 @@
 
 - [Common Errors](#common-errors)
   - ["No such key: resource" in CEL Expressions](#no-such-key-resource-in-cel-expressions)
+  - ["No such key: attributes" after data.latest()](#no-such-key-attributes-after-datalatest)
   - ["No data found for model"](#no-data-found-for-model)
   - ["Data ownership validation failed"](#data-ownership-validation-failed)
   - ["Version not found"](#version-not-found)
@@ -49,6 +50,46 @@ model.my-vpc.resource.vpc.main.attributes.VpcId
       ──────         ─── ───
       model name     |   └── instanceName (from writeResource 2nd arg)
                      └── specName (from writeResource 1st arg)
+```
+
+### "No such key: attributes" after data.latest()
+
+**Symptom**: `data.latest("<model>", "<data>").attributes.<field>` fails with
+"No such key: attributes", with the caret under `.attributes`. The same shape
+fails identically in a workflow `assert` step, a step's `task.inputs`, and a
+guard — it is not specific to any one of them.
+
+**Cause**: `data.latest()` and `data.version()` return null when no record
+matches, and a plain `.` select off null raises this error. The caret points at
+the field, but the field is not the problem — the record is missing. swamp
+appends a line naming the lookup that found nothing:
+
+```
+data.latest("race-comparison", "comparison") found no data record — check the
+model and data names, or use .?attributes if the record may not exist yet.
+```
+
+**Solutions**:
+
+```bash
+# 1. Confirm the record exists under the name the expression uses
+swamp data list <model-name> --json
+
+# 2. The data name is not always the spec name — a spec that varies is stored
+#    under a composite name, which data.latest() takes as a third argument
+swamp data get <model-name> <data-name> --json
+```
+
+```
+data.latest("scanner", "result", ["us-east-1", "prod"])
+```
+
+If the record legitimately may not exist yet — a guard probing for work, or an
+assert that runs before the producing step — use optional selection instead of a
+plain select:
+
+```
+data.latest("model", "spec").?attributes.?ready.orValue(false)
 ```
 
 ### "No data found for model"
