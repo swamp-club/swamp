@@ -19,36 +19,28 @@ swamp model @swamp/issue-lifecycle method run verify issue-<N> \
 
 ## 2. Run Verification
 
-Launch build verification and agent reviews in parallel. The container must be
-built first (`./verification/container/build.sh`).
-
-**Build** (host workflow):
+One workflow runs all three verification groups — build, agent reviews, and
+skill checks:
 
 ```
-SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-build \
+SWAMP_WORKFLOWS_DIR=verification swamp workflow run submit-change \
   --input commit=$(git rev-parse HEAD) \
   --input branch=$(git branch --show-current)
 ```
 
-**Reviews** (host workflow):
-
-```
-SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-reviews \
-  --input commit=$(git rev-parse HEAD) \
-  --input branch=$(git branch --show-current)
-```
-
-Reviews run on the host (not in a container) as a swamp workflow that invokes
-`claude -p` for each review type. The workflow handles change detection, guards,
-parallel execution, and result collection. See
+`SWAMP_WORKFLOWS_DIR=verification` tells swamp to look for workflow files in the
+`verification/` directory. Everything runs on the host: the workflow handles
+change detection, guards, parallel execution, and result collection. See
 `agent-constraints/verification-conventions.md` for details.
 
-Both workflows run on the host. `SWAMP_WORKFLOWS_DIR=verification` tells swamp
-to look for workflow files in the `verification/` directory.
-
 Reviews need `~/.config/swamp/verify.env` with `ANTHROPIC_API_KEY`, or a
-claude.ai login. Without either, skip reviews — build verification still works
-independently.
+claude.ai login.
+
+**Re-running after a fix**: re-run the whole workflow unless you can say why a
+group cannot be affected. When you can, deselect it with a boolean input —
+`--input runSkills=false`. The skipped steps record `!inputs.runSkills` as their
+reason, so the attestation says the group was deselected rather than quietly
+counting more skips.
 
 ## 3. Read the Attestation
 
@@ -72,7 +64,7 @@ succeeded.** A partial pass is NOT a pass. If any step failed, go to "Any step
 failed" below.
 
 1. **Build a fresh attestation from the actual run data.** Query
-   `workflow history get <run-id> --json` for both workflows, extract real step
+   `workflow history get <run-id> --json` for the run, extract real step
    durations and statuses, and recompute `configIntegrity` checksums from the
    files at the verified commit (`sha256sum`). **NEVER reuse or edit a previous
    attestation** — swapping the commit SHA or run IDs in an old attestation is a
@@ -93,11 +85,10 @@ failed" below.
    with its actual status (succeeded, failed, or skipped).
 
 3. **Present the full verification checklist to the user and wait for their
-   confirmation to proceed.** The checklist must show every step from both the
-   build and review workflows — status, model, duration, and for reviews the
-   VERDICT and finding count. Include the workflow run file paths so the user
-   can inspect the raw data. See `agent-constraints/verification-conventions.md`
-   for the checklist format.
+   confirmation to proceed.** The checklist must show every step in the run —
+   status, model, duration, and for reviews the VERDICT and finding count.
+   Include the workflow run file paths so the user can inspect the raw data. See
+   `agent-constraints/verification-conventions.md` for the checklist format.
 
    **Stop here and wait.** Do NOT post the attestation or open a PR until the
    user has seen the checklist and explicitly said they are ready to open the

@@ -48,10 +48,13 @@ import { join } from "@std/path";
 import { repoRelative, ROOT } from "./arch_fitness_helpers.ts";
 
 const PROMPTS_DIR = join(ROOT, "verification", "review-prompts");
+// The agent reviews are the `reviews` job of the consolidated submit-change
+// workflow. They used to be a workflow of their own; the rules below are about
+// the review steps, so they follow the steps rather than the file.
 const REVIEWS_WORKFLOW = join(
   ROOT,
   "verification",
-  "workflow-verify-reviews.yaml",
+  "workflow-submit-change.yaml",
 );
 const VERDICT_SCRIPT = "scripts/check_review_verdict.ts";
 
@@ -164,7 +167,7 @@ Deno.test("review prompts: each scopes the review to the provided diff", async (
   }
 });
 
-Deno.test("verify-reviews: the expected review steps are present", async () => {
+Deno.test("submit-change reviews: the expected review steps are present", async () => {
   const steps = reviewSteps(await readReviewsWorkflow());
   assertEquals(
     steps.map((s) => s.name).sort(),
@@ -172,7 +175,7 @@ Deno.test("verify-reviews: the expected review steps are present", async () => {
   );
 });
 
-Deno.test("verify-reviews: every review step delegates its verdict to the shared script", async () => {
+Deno.test("submit-change reviews: every review step delegates its verdict to the shared script", async () => {
   const steps = reviewSteps(await readReviewsWorkflow());
   for (const step of steps) {
     const name = step.name ?? "<unnamed>";
@@ -197,7 +200,7 @@ Deno.test("verify-reviews: every review step delegates its verdict to the shared
   }
 });
 
-Deno.test("verify-reviews: no step infers a verdict when the marker is absent", async () => {
+Deno.test("submit-change reviews: no step infers a verdict when the marker is absent", async () => {
   const source = await Deno.readTextFile(REVIEWS_WORKFLOW);
   // A reviewer that does not answer in the required format is precisely when a
   // human should look, so the absence of a marker must fail the step. Neither
@@ -215,7 +218,97 @@ Deno.test("verify-reviews: no step infers a verdict when the marker is absent", 
   assertEquals(
     violations,
     [],
-    "verify-reviews must not infer a verdict from output that carries no " +
+    "The reviews job must not infer a verdict from output that carries no " +
       `VERDICT marker. Offending text: ${violations.join("; ")}`,
   );
+});
+
+// ── Group guards ───────────────────────────────────────────────────────────
+//
+// submit-change replaced three workflows with three guarded groups in one
+// file, so "this group did not run" is now a property of every step's guard
+// rather than of the run that was never launched. A job whose steps all skip
+// still reports `succeeded`, so a step that loses its group flag does not skip
+// with its group — it runs against a worktree the group's setup step never
+// created, and fails for a reason that has nothing to do with the change.
+
+/** Job-name prefix → the boolean input that selects that group. */
+const GROUP_FLAGS: Record<string, string> = {
+  "build-": "runBuild",
+  "reviews": "runReviews",
+  "skills": "runSkills",
+};
+
+/** Jobs that deliberately run whatever the group flags say. */
+const UNGUARDED_JOBS = ["cleanup"];
+
+interface GuardedStep extends WorkflowStep {
+  readonly guard?: string;
+}
+
+function groupFlagFor(jobName: string): string | undefined {
+  for (const [prefix, flag] of Object.entries(GROUP_FLAGS)) {
+    if (jobName.startsWith(prefix)) return flag;
+  }
+  return undefined;
+}
+
+Deno.test("submit-change: every step in a group carries its group's flag", async () => {
+  const workflow = await readReviewsWorkflow();
+  const jobs = workflow.jobs ?? [];
+
+  // Load-bearing: a renamed job prefix would leave this test checking nothing.
+  const grouped = jobs.filter((j) => groupFlagFor(j.name ?? "") !== undefined);
+  assertEquals(
+    jobs.length - grouped.length,
+    UNGUARDED_JOBS.length,
+    `Every job must belong to a guarded group or be listed in ` +
+      `UNGUARDED_JOBS. Ungrouped: ${
+        jobs
+          .filter((j) => groupFlagFor(j.name ?? "") === undefined)
+          .map((j) => j.name)
+          .join(", ")
+      }`,
+  );
+
+  const violations: string[] = [];
+  for (const job of grouped) {
+    const flag = groupFlagFor(job.name ?? "")!;
+    for (const step of (job.steps ?? []) as readonly GuardedStep[]) {
+      if (!step.guard?.includes(`!inputs.${flag}`)) {
+        violations.push(`${job.name}/${step.name}: expected !inputs.${flag}`);
+      }
+    }
+  }
+
+  assertEquals(
+    violations,
+    [],
+    "Every step in a verification group must be guarded by that group's " +
+      "boolean input, or deselecting the group leaves it running against a " +
+      `worktree that was never created. Offenders: ${violations.join("; ")}`,
+  );
+});
+
+Deno.test("submit-change: a group's setup step is guarded by the flag alone", async () => {
+  const workflow = await readReviewsWorkflow();
+  // The setup guard is what makes a deselected group distinguishable from a
+  // path guard correctly excluding one review: setup skipped means the whole
+  // group was deselected, setup succeeded means the path guard decided.
+  const setups = (workflow.jobs ?? []).filter((j) =>
+    (j.name ?? "").endsWith("-setup")
+  );
+  assertEquals(setups.length, 3, "expected one setup job per group");
+
+  for (const job of setups) {
+    const flag = groupFlagFor(job.name ?? "")!;
+    const steps = (job.steps ?? []) as readonly GuardedStep[];
+    assertEquals(steps.length, 1, `${job.name} must have one setup step`);
+    assertEquals(
+      steps[0].guard,
+      `\${{ !inputs.${flag} }}`,
+      `${job.name}'s guard must be the group flag alone — a compound guard ` +
+        "makes a deselected group indistinguishable from a path-guard skip",
+    );
+  }
 });

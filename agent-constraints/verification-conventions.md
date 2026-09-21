@@ -1,41 +1,74 @@
 # Verification Conventions
 
-## Build Verification (Host Workflow)
+## The submit-change Workflow
 
-Build checks run as a swamp workflow on the host — native filesystem speed,
-same Deno that's already installed. Isolation comes from a fresh `git worktree`
-at the verified commit in `/tmp/swamp-verify-build-<run-id>`. Each workflow run
-gets its own unique directory (keyed by run ID, not commit SHA) so multiple
-verifications can run in parallel without colliding.
+Verification is one workflow, `submit-change`, with three groups of jobs:
+`verify-build`, `verify-reviews` and `verify-skills`. It replaced three
+separately-launched workflows, which made "all three ran" a matter of agent
+discipline and left three run ids to correlate by hand.
 
 ```
-SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-build \
+SWAMP_WORKFLOWS_DIR=verification swamp workflow run submit-change \
   --input commit=<SHA> \
   --input branch=<branch>
 ```
 
-The workflow creates the worktree in a `setup` job, runs all build steps with
-`workingDir` pointing at it, and removes the worktree in a `cleanup` job that
-fires regardless of pass/fail.
+One run covers all three groups, so `VerificationResultSchema.workflowRunId`
+names the whole verification rather than one third of it.
+
+### Targeted re-run
+
+Each group has a boolean input defaulting to `true`. Deselecting one skips its
+steps; everything downstream still runs, so the attestation stays complete and
+says which group was deselected.
+
+```
+SWAMP_WORKFLOWS_DIR=verification swamp workflow run submit-change \
+  --input commit=<SHA> \
+  --input branch=<branch> \
+  --input runBuild=false \
+  --input runSkills=false
+```
+
+Every step in a group carries that group's `!inputs.runX` guard. A job whose
+steps all skip still reports `succeeded`, so guarding only the group's setup
+step would leave the rest of the group running against a worktree that was
+never created. The setup step's guard is the group flag **alone** — that is
+what distinguishes a deselected group (setup skipped) from a path guard
+correctly excluding one review (setup succeeded, the review skipped).
+`integration/verification_harness_rules_test.ts` pins both rules.
+
+Path guards put the group flag first: `!inputs.runReviews || <path filter>`.
+CEL short-circuits `||`, so a deselected group never reaches the `data.latest`
+call for a diff its own `detect-changes` step skipped.
+
+## Build Verification (verify-build group)
+
+Build checks run on the host — native filesystem speed, same Deno that's
+already installed. Isolation comes from a fresh `git worktree` at the verified
+commit in `/tmp/swamp-verify-build-<run-id>`. Each run gets its own directory
+(keyed by run ID, not commit SHA) so multiple verifications can run in parallel
+without colliding.
+
+The `build-setup` job creates the worktree, the build jobs run with
+`workingDir` pointing at it, and a single `cleanup` job at the end of the
+workflow removes all three worktrees regardless of pass/fail. Cleanup is one
+job for all three groups, not one per group: under a shared run id a per-group
+cleanup would delete another still-running group's `*-<run id>.yaml` model
+definitions.
 
 All steps use `command/shell` which correctly fails on non-zero exit code —
 lint, test, and compile failures are reported accurately.
 
-## Agent Reviews (Host Workflow)
+## Agent Reviews (verify-reviews group)
 
-Reviews run as a swamp workflow on the host (not in a container) so the claude
-CLI has full project context — CLAUDE.md, skills, and the codebase. Like the
-build workflow, reviews run in a fresh `git worktree` at the verified commit
+Reviews run on the host (not in a container) so the claude CLI has full project
+context — CLAUDE.md, skills, and the codebase. Like the build group, reviews
+run in a fresh `git worktree` at the verified commit
 (`/tmp/swamp-verify-reviews-<run-id>`) so that `claude -p`'s Read/Glob/Grep
 tools see the committed file state, not the caller's working tree.
 
-```
-SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-reviews \
-  --input commit=<SHA> \
-  --input branch=<branch>
-```
-
-The workflow:
+The group:
 
 1. Creates a clean worktree at the verified commit
 2. Detects changed files via `@swamp/git` diff (full diff, then `nameOnly` for
@@ -48,7 +81,6 @@ The workflow:
 5. Review diffs use `git merge-base origin/main HEAD` so only the branch's own
    changes are reviewed — the setup step fetches `origin main` first to ensure
    the diff base is current regardless of local branch state
-6. Cleans up the worktree regardless of pass/fail
 
 ### Guards
 
@@ -63,11 +95,14 @@ Reviews are guarded by file path — they skip when no relevant files changed:
 
 The guards filter the changed-file list produced by the `detect-changes` job.
 Those `@swamp/git` steps **must** pass `repoPath` pointing at the verification
-worktree, and **must** be named per-run (`repo-${{ run.id }}`) like the shell
+worktree, and **must** be named per-run *and per-group*
+(`repo-reviews-${{ run.id }}`, `repo-skills-${{ run.id }}`) like the shell
 models are — a step input for a global argument is persisted into the model's
-stored definition, so a shared `repo` model hands one run's worktree path to the
-next and two concurrent verifications race on it. Guards reach that data with
-`data.latest('repo-' + run.id, 'diff')`.
+stored definition, so a shared `repo` model hands one run's worktree path to
+the next and two concurrent verifications race on it. Since consolidation the
+two groups share a run id, so the group segment is what keeps the reviews
+worktree path out of the skills diff. Guards reach that data with
+`data.latest('repo-reviews-' + run.id, 'diff')`.
 
 They **must** also pass `threeWay: true`, making the diff `origin/main...HEAD`
 — merge-base relative, matching the `git merge-base` the review steps compute.
@@ -114,19 +149,13 @@ EOF
 chmod 600 ~/.config/swamp/verify.env
 ```
 
-## Skill Verification (Host Workflow)
+## Skill Verification (verify-skills group)
 
-Skill checks run as a swamp workflow on the host, following the same worktree
-pattern as the build and review workflows. Isolation comes from a fresh
-`git worktree` at the verified commit in `/tmp/swamp-verify-skills-<run-id>`.
+Skill checks follow the same worktree pattern as the build and review groups.
+Isolation comes from a fresh `git worktree` at the verified commit in
+`/tmp/swamp-verify-skills-<run-id>`.
 
-```
-SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-skills \
-  --input commit=<SHA> \
-  --input branch=<branch>
-```
-
-The workflow detects changed files and guards both steps behind a skill-path
+The group detects changed files and guards both steps behind a skill-path
 filter (`.claude/skills/**`, `CLAUDE.md`, `scripts/review_skills.ts`,
 `evals/promptfoo/**`). When no skill files changed, both steps are skipped.
 
@@ -135,33 +164,29 @@ filter (`.claude/skills/**`, `CLAUDE.md`, `scripts/review_skills.ts`,
 | skill-review | `deno task review-skills` | `TESSL_TOKEN` | **Fails** (exit 1) — must be configured |
 | skill-trigger-eval | `deno task eval-skill-triggers` | `ANTHROPIC_API_KEY` | Skipped (exit 0) if missing |
 
-## Running All Three in Parallel
+## Inspecting a Run
 
-The agent launches the build, review, and skill workflows simultaneously. All
-three must pass for verification to succeed.
-
-After each workflow completes, present the commands to the user so they can
-inspect the attestations. Use `--input commit=<SHA>` to find the correct run
-when multiple verifications run in parallel:
+All three groups share one run, so there is one run id to find and one record
+to read. Use `--input commit=<SHA>` to pick the right run when several
+verifications are in flight:
 
 ```
-# 1. Find the run IDs for this commit
+# 1. Find the run ID for this commit
 SWAMP_WORKFLOWS_DIR=verification swamp workflow history search \
-  --workflow verify-build --input commit=<SHA> --json
-SWAMP_WORKFLOWS_DIR=verification swamp workflow history search \
-  --workflow verify-reviews --input commit=<SHA> --json
-SWAMP_WORKFLOWS_DIR=verification swamp workflow history search \
-  --workflow verify-skills --input commit=<SHA> --json
+  --workflow submit-change --input commit=<SHA> --json
 
-# 2. Get detailed step data (duration, status, data artifacts)
-SWAMP_WORKFLOWS_DIR=verification swamp workflow history get <build-run-id> --json
-SWAMP_WORKFLOWS_DIR=verification swamp workflow history get <reviews-run-id> --json
-SWAMP_WORKFLOWS_DIR=verification swamp workflow history get <skills-run-id> --json
+# 2. Get detailed step data (duration, status, skip reason, data artifacts)
+SWAMP_WORKFLOWS_DIR=verification swamp workflow history get <run-id> --json
 
 # 3. Read step output (e.g. review findings or build errors)
 SWAMP_WORKFLOWS_DIR=verification swamp data get \
-  --workflow verify-reviews --run <reviews-run-id> log --json
+  --workflow submit-change --run <run-id> log --json
 ```
+
+Every skipped step in that record carries a `skipReason`: `guarded` with the
+expression that decided it, `dependency`, or `job_skipped`. A group that was
+deselected shows its `*-setup` step skipped on `!inputs.runX`; a path guard
+shows the filter expression on the individual review.
 
 ## Verification Checklist
 
@@ -209,25 +234,20 @@ Total: 2m 15s
 
 To construct this checklist:
 
-1. Find the run IDs for this commit:
+1. Find the run ID for this commit:
    ```
    SWAMP_WORKFLOWS_DIR=verification swamp workflow history search \
-     --workflow verify-build --input commit=<SHA> --json
-   SWAMP_WORKFLOWS_DIR=verification swamp workflow history search \
-     --workflow verify-reviews --input commit=<SHA> --json
-   SWAMP_WORKFLOWS_DIR=verification swamp workflow history search \
-     --workflow verify-skills --input commit=<SHA> --json
+     --workflow submit-change --input commit=<SHA> --json
    ```
    The `--input commit=<SHA>` filter ensures you get the correct run when
    multiple verifications run in parallel across worktrees.
 
-2. Get detailed step data for each run:
+2. Get detailed step data for the run:
    ```
-   SWAMP_WORKFLOWS_DIR=verification swamp workflow history get <build-run-id> --json
-   SWAMP_WORKFLOWS_DIR=verification swamp workflow history get <reviews-run-id> --json
-   SWAMP_WORKFLOWS_DIR=verification swamp workflow history get <skills-run-id> --json
+   SWAMP_WORKFLOWS_DIR=verification swamp workflow history get <run-id> --json
    ```
-   The `history get` output includes per-step `duration` (in ms) and status.
+   The `history get` output includes per-step `duration` (in ms), status, and
+   `skipReason` for every skipped step.
 
 3. For each step, extract: job name, step name, model name, duration, and
    status (succeeded/failed/skipped). For review steps that ran, include the
@@ -277,9 +297,7 @@ To construct this checklist:
          "ci-security-review": "<sha256 of verification/review-prompts/ci-security-review.md>"
        },
        "workflows": {
-         "verify-build": "<sha256 of verification/workflow-verify-build.yaml>",
-         "verify-reviews": "<sha256 of verification/workflow-verify-reviews.yaml>",
-         "verify-skills": "<sha256 of verification/workflow-verify-skills.yaml>"
+         "submit-change": "<sha256 of verification/workflow-submit-change.yaml>"
        },
        "scripts": {
          "review-skills": "<sha256 of scripts/review_skills.ts>",
@@ -343,11 +361,7 @@ To construct this checklist:
        "completedAt": "<ISO 8601>",
        "totalDurationMs": 135000
      },
-     "runs": {
-       "build": "<workflow-run-id>",
-       "reviews": "<workflow-run-id>",
-       "skills": "<workflow-run-id>"
-     }
+     "workflowRunId": "<workflow-run-id>"
    }
    ```
 
@@ -357,7 +371,7 @@ To construct this checklist:
    Compute hashes with:
 
    ```bash
-   sha256sum CLAUDE.md verification/review-prompts/*.md verification/workflow-verify-*.yaml \
+   sha256sum CLAUDE.md verification/review-prompts/*.md verification/workflow-submit-change.yaml \
      scripts/review_skills.ts evals/promptfoo/package.json \
      scripts/check_review_verdict.ts
    ```
@@ -474,26 +488,17 @@ search` output.
 List all data for a run:
 ```bash
 SWAMP_WORKFLOWS_DIR=verification swamp data list \
-  --workflow verify-build --run <run-id> --json
+  --workflow submit-change --run <run-id> --json
 ```
 
 Get a specific data item (e.g. the log for a failed step):
 ```bash
 SWAMP_WORKFLOWS_DIR=verification swamp data get \
-  --workflow verify-build --run <run-id> log --json
+  --workflow submit-change --run <run-id> log --json
 ```
 
-For review output, query the reviews workflow:
-```bash
-SWAMP_WORKFLOWS_DIR=verification swamp data get \
-  --workflow verify-reviews --run <run-id> log --json
-```
-
-For skill check output, query the skills workflow:
-```bash
-SWAMP_WORKFLOWS_DIR=verification swamp data get \
-  --workflow verify-skills --run <run-id> log --json
-```
+Build, review and skill output all live under the same run, so there is one
+place to look regardless of which group failed.
 
 ### 3. Fix the issues
 
@@ -512,21 +517,18 @@ SWAMP_WORKFLOWS_DIR=verification swamp data get \
 
 ### 4. Re-run verification
 
-Commit the fixes, then re-run BOTH verification workflows:
+Commit the fixes, then re-run the workflow:
 
 ```bash
-SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-build \
-  --input commit=$(git rev-parse HEAD) \
-  --input branch=$(git branch --show-current)
-
-SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-reviews \
-  --input commit=$(git rev-parse HEAD) \
-  --input branch=$(git branch --show-current)
-
-SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-skills \
+SWAMP_WORKFLOWS_DIR=verification swamp workflow run submit-change \
   --input commit=$(git rev-parse HEAD) \
   --input branch=$(git branch --show-current)
 ```
+
+Re-run everything unless you can say why a group cannot be affected by the
+fix. When you can, deselect it — `--input runSkills=false` — and the skipped
+steps record `!inputs.runSkills` as their reason, so the attestation says the
+group was deselected rather than silently counting three more skips.
 
 ### 5. Repeat until green
 

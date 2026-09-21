@@ -21,7 +21,7 @@
  * The verdict rule for the pre-PR agent reviews.
  *
  * This is the single place that decides whether a review passed. It is shared
- * by every review step in `verification/workflow-verify-reviews.yaml`; the
+ * by every review step in `verification/workflow-submit-change.yaml`; the
  * steps own the reviewer invocation, this owns the decision.
  *
  * A review passes only when the reviewer states an explicit `VERDICT: pass`
