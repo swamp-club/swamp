@@ -55,9 +55,14 @@ export function coerceBigInts(value: unknown): unknown {
     return value.map(coerceBigInts);
   }
   if (value !== null && typeof value === "object") {
-    const result: Record<string, unknown> = {};
+    const result: Record<string, unknown> = Object.create(null);
     for (const [k, v] of Object.entries(value)) {
-      result[k] = coerceBigInts(v);
+      Object.defineProperty(result, k, {
+        value: coerceBigInts(v),
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
     }
     return result;
   }

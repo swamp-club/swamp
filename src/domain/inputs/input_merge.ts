@@ -25,19 +25,37 @@ export function deepMerge(
   base: Record<string, unknown>,
   overrides: Record<string, unknown>,
 ): Record<string, unknown> {
-  const result: Record<string, unknown> = { ...base };
+  const result: Record<string, unknown> = Object.create(null);
+  for (const key of Object.keys(base)) {
+    Object.defineProperty(result, key, {
+      value: base[key],
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
 
   for (const [key, overrideValue] of Object.entries(overrides)) {
     const baseValue = result[key];
     if (
       isPlainObject(baseValue) && isPlainObject(overrideValue)
     ) {
-      result[key] = deepMerge(
-        baseValue as Record<string, unknown>,
-        overrideValue as Record<string, unknown>,
-      );
+      Object.defineProperty(result, key, {
+        value: deepMerge(
+          baseValue as Record<string, unknown>,
+          overrideValue as Record<string, unknown>,
+        ),
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
     } else {
-      result[key] = overrideValue;
+      Object.defineProperty(result, key, {
+        value: overrideValue,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
     }
   }
 

@@ -65,9 +65,14 @@ export class TriggerInputResolver {
       return out;
     }
     if (value !== null && typeof value === "object") {
-      const out: Record<string, unknown> = {};
+      const out: Record<string, unknown> = Object.create(null);
       for (const [key, item] of Object.entries(value)) {
-        out[key] = await this.resolveValue(item, context);
+        Object.defineProperty(out, key, {
+          value: await this.resolveValue(item, context),
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
       }
       return out;
     }

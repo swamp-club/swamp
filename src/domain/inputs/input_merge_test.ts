@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStrictEquals } from "@std/assert";
 import { deepMerge } from "./input_merge.ts";
 
 Deno.test("deepMerge: overrides take precedence over base for scalar keys", () => {
@@ -62,4 +62,32 @@ Deno.test("deepMerge: does not mutate the base object", () => {
 Deno.test("deepMerge: empty overrides returns a copy of base", () => {
   const result = deepMerge({ a: 1 }, {});
   assertEquals(result, { a: 1 });
+});
+
+Deno.test("deepMerge: preserves __proto__ key from overrides", () => {
+  const overrides = Object.create(null) as Record<string, unknown>;
+  Object.defineProperty(overrides, "__proto__", {
+    value: "override-value",
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+  const result = deepMerge({ a: 1 }, overrides);
+  assertStrictEquals(Object.hasOwn(result, "__proto__"), true);
+  assertEquals(result["__proto__"], "override-value");
+  assertEquals(result["a"], 1);
+});
+
+Deno.test("deepMerge: preserves __proto__ key from base", () => {
+  const base = Object.create(null) as Record<string, unknown>;
+  Object.defineProperty(base, "__proto__", {
+    value: "base-value",
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+  const result = deepMerge(base, { a: 1 });
+  assertStrictEquals(Object.hasOwn(result, "__proto__"), true);
+  assertEquals(result["__proto__"], "base-value");
+  assertEquals(result["a"], 1);
 });

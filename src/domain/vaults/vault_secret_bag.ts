@@ -125,9 +125,14 @@ export class VaultSecretBag {
       return data.map((item) => this.resolveDeep(item));
     }
     if (data !== null && typeof data === "object") {
-      const result: Record<string, unknown> = {};
+      const result: Record<string, unknown> = Object.create(null);
       for (const [key, value] of Object.entries(data)) {
-        result[key] = this.resolveDeep(value);
+        Object.defineProperty(result, key, {
+          value: this.resolveDeep(value),
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
       }
       return result;
     }

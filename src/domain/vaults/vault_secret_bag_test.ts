@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStrictEquals } from "@std/assert";
 import { getQuoteContext } from "./vault_secret_bag.ts";
 import { VaultSecretBag } from "./vault_secret_bag.ts";
 
@@ -148,6 +148,28 @@ Deno.test("VaultSecretBag", async (t) => {
       bool: true,
       nullVal: null,
     });
+  });
+
+  await t.step("resolveDeep: preserves __proto__ key", () => {
+    const bag = new VaultSecretBag();
+    const sentinel = bag.addSecret("proto-secret");
+    const data = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(data, "__proto__", {
+      value: sentinel,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+    Object.defineProperty(data, "normal", {
+      value: "plain",
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+    const resolved = bag.resolveDeep(data) as Record<string, unknown>;
+    assertStrictEquals(Object.hasOwn(resolved, "__proto__"), true);
+    assertEquals(resolved["__proto__"], "proto-secret");
+    assertEquals(resolved["normal"], "plain");
   });
 
   await t.step(

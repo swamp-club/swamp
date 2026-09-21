@@ -92,10 +92,15 @@ export function valueContainsExpression(value: unknown): boolean {
 export function stripExpressionFields<T extends Record<string, unknown>>(
   data: T,
 ): Partial<T> {
-  const result: Partial<T> = {};
+  const result = Object.create(null) as Partial<T>;
   for (const [key, value] of Object.entries(data)) {
     if (!valueContainsExpression(value)) {
-      result[key as keyof T] = value as T[keyof T];
+      Object.defineProperty(result, key, {
+        value: value as T[keyof T],
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
     }
   }
   return result;
@@ -211,15 +216,15 @@ function replaceExpressionsRecursive(
       replaceExpressionsRecursive(item, values, `${path}[${index}]`, skipPath)
     );
   } else if (data !== null && typeof data === "object") {
-    const result: Record<string, unknown> = {};
+    const result: Record<string, unknown> = Object.create(null);
     for (const [key, value] of Object.entries(data)) {
       const propPath = path ? `${path}.${key}` : key;
-      result[key] = replaceExpressionsRecursive(
-        value,
-        values,
-        propPath,
-        skipPath,
-      );
+      Object.defineProperty(result, key, {
+        value: replaceExpressionsRecursive(value, values, propPath, skipPath),
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
     }
     return result;
   }

@@ -17,9 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import {
+  assertEquals,
+  assertStrictEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   CelEvaluator,
+  coerceBigInts,
   createExtensionCelEnvironment,
 } from "./cel_evaluator.ts";
 import { InvalidExpressionError } from "../../domain/expressions/errors.ts";
@@ -1394,4 +1400,24 @@ Deno.test("CelEvaluator: .?content.?key returns null when data doesn't exist", a
     context,
   );
   assertEquals(result, null);
+});
+
+Deno.test("coerceBigInts: preserves __proto__ key in objects", () => {
+  const data = Object.create(null) as Record<string, unknown>;
+  Object.defineProperty(data, "__proto__", {
+    value: 42n,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+  Object.defineProperty(data, "normal", {
+    value: 7n,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+  const result = coerceBigInts(data) as Record<string, unknown>;
+  assertStrictEquals(Object.hasOwn(result, "__proto__"), true);
+  assertEquals(result["__proto__"], 42);
+  assertEquals(result["normal"], 7);
 });
