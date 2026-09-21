@@ -190,10 +190,7 @@ export async function handleModelMethodRun(
         ) return;
 
         if (payload.typeArg) {
-          const stripped = payload.typeArg.startsWith("@")
-            ? payload.typeArg.slice(1)
-            : payload.typeArg;
-          const executionTarget = ModelType.create(stripped).normalized;
+          const executionTarget = ModelType.create(payload.typeArg).normalized;
           if (
             !authorizeOrReject(socket, requestId, principal, "run", {
               kind: "model",
@@ -385,10 +382,7 @@ export async function handleModelMethodRun(
     ) return;
 
     if (payload.typeArg) {
-      const stripped = payload.typeArg.startsWith("@")
-        ? payload.typeArg.slice(1)
-        : payload.typeArg;
-      const executionTarget = ModelType.create(stripped).normalized;
+      const executionTarget = ModelType.create(payload.typeArg).normalized;
       if (
         !authorizeOrReject(socket, requestId, principal, "run", {
           kind: "model",

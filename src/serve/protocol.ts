@@ -1050,6 +1050,7 @@ export interface AccessCanIDecision {
 
 export interface AccessCanIResponse {
   principal: string;
+  method?: string;
   decisions: AccessCanIDecision[];
 }
 

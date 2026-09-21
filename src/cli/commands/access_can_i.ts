@@ -127,6 +127,7 @@ export const accessCanICommand = new Command()
           query: {
             action: options.action as string,
             resource: options.on as string,
+            ...(options.method ? { method: options.method as string } : {}),
           },
         }
         : {}),

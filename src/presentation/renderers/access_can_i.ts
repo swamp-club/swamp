@@ -31,8 +31,9 @@ export interface CanIDecision {
 
 export interface AccessCanIResult {
   principal: string;
+  method?: string;
   decisions: CanIDecision[];
-  query?: { action: string; resource: string };
+  query?: { action: string; resource: string; method?: string };
 }
 
 export interface AccessCanIRenderer {
@@ -115,6 +116,7 @@ class JsonAccessCanIRenderer implements AccessCanIRenderer {
             principal: result.principal,
             action: result.query.action,
             resource: result.query.resource,
+            ...(result.query.method ? { method: result.query.method } : {}),
             effect,
             decisions: result.decisions,
           },

@@ -492,6 +492,7 @@ export function handleAccessCanI(
         id: requestId,
         payload: {
           principal: principalStr,
+          ...(payload.method ? { method: payload.method } : {}),
           decisions: decisions.map((d) => ({
             action: payload.action!,
             resource: payload.resource!,
