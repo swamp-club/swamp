@@ -33,6 +33,7 @@ import {
   type StepExecutionContext,
   type StepExecutor,
   stepNameFromCompositeKey,
+  trackerStatusForRun,
   WorkflowExecutionService,
 } from "./execution_service.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
@@ -58,6 +59,8 @@ import type {
   WorkflowRunRepository,
 } from "./repositories.ts";
 import { WorkflowRun } from "./workflow_run.ts";
+import type { RunTrackerRepository } from "../models/run_tracker_repository.ts";
+import type { ActiveRun, ActiveRunStatus } from "../models/active_run.ts";
 import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
 import type { ExportResult } from "@opentelemetry/core";
 
@@ -6871,3 +6874,203 @@ for (const target of ["name", "id", "direct"]) {
     });
   }
 }
+
+/**
+ * Records every tracker call so a test can assert the status the workflow
+ * reported. Only the methods the execution service reaches are implemented.
+ */
+class RecordingRunTracker implements RunTrackerRepository {
+  readonly completions: { runId: string; status: ActiveRunStatus }[] = [];
+
+  register(_run: ActiveRun): void {}
+
+  heartbeat(_runId: string): void {}
+
+  complete(runId: string, status: ActiveRunStatus, _reason?: string): void {
+    this.completions.push({ runId, status });
+  }
+
+  reactivate(_runId: string): void {}
+
+  findById(_runId: string): ActiveRun | null {
+    return null;
+  }
+
+  findAllRunning(): ActiveRun[] {
+    return [];
+  }
+
+  findStaleRuns(_ttlMs: number): ActiveRun[] {
+    return [];
+  }
+
+  findAll(): ActiveRun[] {
+    return [];
+  }
+
+  findRecent(_hours?: number): ActiveRun[] {
+    return [];
+  }
+
+  reapStaleRuns(_ttlMs: number, _instanceId?: string): ActiveRun[] {
+    return [];
+  }
+
+  close(): void {}
+}
+
+function serviceWithTracker(
+  workflowRepo: WorkflowRepository,
+  runRepo: WorkflowRunRepository,
+  tempDir: string,
+  executor: StepExecutor,
+  catalogStore: CatalogStore,
+  tracker: RunTrackerRepository,
+): WorkflowExecutionService {
+  return new WorkflowExecutionService(
+    workflowRepo,
+    runRepo,
+    tempDir,
+    executor,
+    undefined,
+    catalogStore,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    tracker,
+  );
+}
+
+Deno.test("run tracker records failed when a workflow step fails", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+    executor.shouldFail.add("step1");
+    const tracker = new RecordingRunTracker();
+
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = serviceWithTracker(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      catalogStore,
+      tracker,
+    );
+
+    const run = await service.execute(workflow.name);
+
+    assertEquals(run.status, "failed");
+    assertEquals(tracker.completions, [{ runId: run.id, status: "failed" }]);
+  });
+});
+
+Deno.test("run tracker records completed when the workflow succeeds", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+    const tracker = new RecordingRunTracker();
+
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = serviceWithTracker(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      catalogStore,
+      tracker,
+    );
+
+    const run = await service.execute(workflow.name);
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(tracker.completions, [{ runId: run.id, status: "completed" }]);
+  });
+});
+
+Deno.test("resume: run tracker records failed when a step fails after approval", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+    executor.shouldFail.add("after-gate");
+    const tracker = new RecordingRunTracker();
+
+    const workflow = Workflow.create({
+      name: "resume-failure",
+      jobs: [
+        Job.create({
+          name: "j",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("Approve"),
+            }),
+            Step.create({
+              name: "after-gate",
+              task: StepTask.model("test-model", "run"),
+              dependsOn: [
+                { step: "gate", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = serviceWithTracker(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      catalogStore,
+      tracker,
+    );
+
+    const suspended = await service.execute(workflow.name);
+    assertEquals(suspended.status, "suspended");
+
+    const toApprove = await runRepo.findById(workflow.id, suspended.id);
+    const waiting = toApprove!.findWaitingApprovalStep()!;
+    toApprove!.getJob(waiting.jobName)!.getStep(waiting.stepName)!.succeed();
+    await runRepo.save(workflow.id, toApprove!);
+
+    let resumedRun: WorkflowRun | undefined;
+    for await (const event of service.resume(workflow.name, suspended.id)) {
+      if (event.kind === "completed") resumedRun = event.run;
+    }
+
+    assertEquals(resumedRun?.status, "failed");
+    assertEquals(tracker.completions, [
+      { runId: suspended.id, status: "suspended" },
+      { runId: suspended.id, status: "failed" },
+    ]);
+  });
+});
+
+Deno.test("trackerStatusForRun: maps every aggregate status to the tracker vocabulary", () => {
+  const cases: [WorkflowRun["status"], ActiveRunStatus][] = [
+    ["pending", "completed"],
+    ["running", "completed"],
+    ["succeeded", "completed"],
+    ["failed", "failed"],
+    ["cancelled", "cancelled"],
+    ["interrupted", "interrupted"],
+    ["suspended", "suspended"],
+  ];
+
+  for (const [aggregate, expected] of cases) {
+    assertEquals(trackerStatusForRun(aggregate), expected);
+  }
+});
