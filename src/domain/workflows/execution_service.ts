@@ -54,7 +54,7 @@ import {
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import type { OutputRepository } from "../models/repositories.ts";
 import type { RunTrackerRepository } from "../models/run_tracker_repository.ts";
-import { ActiveRun } from "../models/active_run.ts";
+import { ActiveRun, type ActiveRunStatus } from "../models/active_run.ts";
 import { hostname } from "node:os";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { MethodExecutionService } from "../models/method_execution_service.ts";
@@ -416,6 +416,35 @@ export function stepNameFromCompositeKey(key: string): string {
 export function jobNameFromCompositeKey(key: string): string {
   const idx = key.indexOf(":");
   return idx >= 0 ? key.slice(0, idx) : key;
+}
+
+/**
+ * Translate a {@link WorkflowRun} status into the tracker's vocabulary.
+ *
+ * The run tracker is a projection of the aggregate, so its row must report
+ * the outcome the aggregate derived — not merely that the process finished.
+ * `pending`, `running` and `succeeded` all map to `completed`: the first two
+ * cannot reach a completion path, and they are listed only to keep the switch
+ * exhaustive. There is no `default` on purpose — a status added to the
+ * aggregate later fails the type check here instead of being read as success.
+ */
+export function trackerStatusForRun(
+  status: WorkflowRun["status"],
+): ActiveRunStatus {
+  switch (status) {
+    case "failed":
+      return "failed";
+    case "cancelled":
+      return "cancelled";
+    case "interrupted":
+      return "interrupted";
+    case "suspended":
+      return "suspended";
+    case "pending":
+    case "running":
+    case "succeeded":
+      return "completed";
+  }
 }
 
 /**
@@ -2274,10 +2303,15 @@ export class WorkflowExecutionService {
 
       // Complete workflow
       if (wfHeartbeatInterval) clearInterval(wfHeartbeatInterval);
-      if (this.runTracker) this.runTracker.complete(run.id, "completed");
       const wfTeardownSpan = tracer.startSpan("swamp.workflow.teardown");
       try {
         run.complete();
+        // After complete(), not before: the aggregate folds the job outcomes
+        // into its status there, so a run whose steps failed reaches this line
+        // as failed.
+        if (this.runTracker) {
+          this.runTracker.complete(run.id, trackerStatusForRun(run.status));
+        }
 
         // Execute workflow-scope reports before the completed event so the
         // run aggregate carries the workflow-scope dataArtifacts produced by
@@ -2716,10 +2750,13 @@ export class WorkflowExecutionService {
         return;
       }
 
-      if (this.runTracker) {
-        this.runTracker.complete(existingRun.id, "completed");
-      }
       existingRun.complete();
+      if (this.runTracker) {
+        this.runTracker.complete(
+          existingRun.id,
+          trackerStatusForRun(existingRun.status),
+        );
+      }
 
       yield* this.runWorkflowReports(
         resolvedWorkflow,
