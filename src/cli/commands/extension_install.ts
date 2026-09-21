@@ -52,7 +52,7 @@ export const extensionInstallCommand = withRemoteOptions(
   new Command()
     .name("install")
     .description(
-      "Restore pulled extensions from the lockfile.\n\nReads upstream_extensions.json and re-pulls any extensions whose source\nfiles are missing. Use after cloning a repo or in CI.\nTo add a new extension, use 'swamp extension pull <name>' instead.",
+      "Restore pulled extensions from the lockfile.\n\nReads upstream_extensions.json and re-pulls any extension whose source\nfiles are missing, whose content has drifted, or whose installed version\ndoes not match the pinned one. Use after cloning a repo or in CI.\nTo add a new extension, use 'swamp extension pull <name>' instead.",
     )
     .example("Restore extensions from lockfile", "swamp extension install")
     .arguments("[unexpected:string]")

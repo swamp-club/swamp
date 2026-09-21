@@ -22,6 +22,7 @@ import { resolvePulledExtensionsRoot } from "../../infrastructure/persistence/pa
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
 import { readInstalledExtensionDigest } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
+import { readManifestIdentityAt } from "../../infrastructure/persistence/local_manifest_reader.ts";
 import { assertContainedPath } from "../../infrastructure/persistence/safe_path.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -31,6 +32,7 @@ import {
   type InstallContext,
   installExtension,
   type InstallResult,
+  isVersionConstraint,
   parseExtensionRef,
 } from "./pull.ts";
 import { classifyExtensionFile, isSkillDirEntryMulti } from "./layout.ts";
@@ -132,12 +134,14 @@ export interface ExtensionInstallDeps {
 }
 
 /**
- * Reads upstream_extensions.json and re-pulls any extensions whose files
- * are either missing from disk or still sit at a legacy on-disk layout
- * (gen-1 `extensions/<type>/…` or gen-2 flat
- * `.swamp/pulled-extensions/<type>/…`). Analogous to `npm install` but
- * also performs layout migration on legacy repos — a single call brings
- * the repo to the current per-extension subtree layout.
+ * Reads upstream_extensions.json and re-pulls any extension whose files
+ * are missing from disk, whose installed version disagrees with the
+ * lockfile pin, whose content has drifted from the recorded
+ * filesChecksum, or which still sits at a legacy on-disk layout (gen-1
+ * `extensions/<type>/…` or gen-2 flat `.swamp/pulled-extensions/<type>/…`).
+ * Analogous to `npm install` but also performs layout migration on legacy
+ * repos — a single call brings the repo to the current per-extension
+ * subtree layout.
  *
  * For legacy-layout entries, the per-entry flow is: capture the original
  * `files[]` list BEFORE install (installExtension rewrites the lockfile
@@ -180,21 +184,46 @@ export async function* extensionInstall(
           deps.skillsDirsRelative,
         );
 
-        // When all files exist at current layout, verify their content
-        // matches the lockfile's filesChecksum. This catches the case
-        // where upstream_extensions.json was updated via git but the
-        // on-disk files weren't re-fetched (swamp-club#1021).
-        if (needs === "up_to_date" && entry.filesChecksum) {
-          try {
-            const effectivePulledRoot = deps.pulledExtensionsRoot ??
-              resolvePulledExtensionsRoot(deps.repoDir);
-            const extRoot = join(effectivePulledRoot, name);
-            const onDisk = await readInstalledExtensionDigest(extRoot);
-            if (onDisk !== entry.filesChecksum) {
+        // When all files exist at current layout, reconcile the on-disk
+        // extension against the lockfile entry — presence alone says
+        // nothing about which version is sitting there.
+        if (needs === "up_to_date") {
+          const effectivePulledRoot = deps.pulledExtensionsRoot ??
+            resolvePulledExtensionsRoot(deps.repoDir);
+          // The lockfile is repo-controlled input: reject an entry name
+          // that escapes the pulled root before any filesystem access.
+          assertContainedPath(name, effectivePulledRoot);
+          const extRoot = join(effectivePulledRoot, name);
+
+          // The pin is the authority. Compare it against the installed
+          // manifest.yaml so a different version already on disk — e.g.
+          // left behind by `doctor extensions` — is re-pulled instead of
+          // silently kept (swamp-club#2150). A constraint pin has no
+          // single version to match, and a missing or malformed manifest
+          // yields no identity; both leave the decision to the content
+          // check below rather than re-pulling on every run.
+          if (!isVersionConstraint(version)) {
+            const identity = readManifestIdentityAt(
+              join(extRoot, "manifest.yaml"),
+            );
+            if (identity && identity.version !== version) {
               needs = "install";
             }
-          } catch {
-            // Degrade gracefully on I/O errors — don't block install.
+          }
+
+          // Content check: files at the current layout can still differ
+          // from the lockfile's filesChecksum when upstream_extensions.json
+          // was updated via git but the on-disk files weren't re-fetched
+          // (swamp-club#1021).
+          if (needs === "up_to_date" && entry.filesChecksum) {
+            try {
+              const onDisk = await readInstalledExtensionDigest(extRoot);
+              if (onDisk !== entry.filesChecksum) {
+                needs = "install";
+              }
+            } catch {
+              // Degrade gracefully on I/O errors — don't block install.
+            }
           }
         }
 
