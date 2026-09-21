@@ -259,6 +259,7 @@ import {
 } from "../../infrastructure/persistence/run_tracker_store.ts";
 import {
   getSwampConfigDir,
+  getSwampDataDir,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
@@ -975,6 +976,7 @@ const daemonEnableCommand = new Command()
       certFile: options.certFile as string | undefined,
       keyFile: options.keyFile as string | undefined,
       extraArgs: extraArgs.length > 0 ? extraArgs : undefined,
+      env: { SWAMP_HOME: getSwampDataDir() },
     });
 
     renderDaemonEnabled(ctx.outputMode, toServiceMode(mode));
@@ -1136,11 +1138,12 @@ export const serveCommand = new Command()
     "Start a WebSocket API server for workflow and model execution.\n\n" +
       "Service deployments: swamp loads all extensions — including " +
       "already-pulled repo extensions — through an embedded runtime under the " +
-      "user's home directory (~/.swamp). When running under a service manager " +
-      "such as systemd, ensure HOME (or USERPROFILE on Windows) is set in the " +
-      "unit environment, e.g. `Environment=HOME=/root`. Without it, scheduled " +
-      'workflow runs fail with "Unknown model type" for pulled extension ' +
-      "types.",
+      "swamp data directory (SWAMP_HOME, or ~/.swamp). `swamp serve daemon " +
+      "enable` sets SWAMP_HOME in the generated service unit automatically. " +
+      "If you author a service unit manually, set SWAMP_HOME or HOME in the " +
+      "unit environment, e.g. `Environment=SWAMP_HOME=/opt/swamp`. Without " +
+      'it, scheduled workflow runs fail with "Unknown model type" for pulled ' +
+      "extension types.",
   )
   .example("Start server", "swamp serve")
   .example("Custom port", "swamp serve --port 8080")

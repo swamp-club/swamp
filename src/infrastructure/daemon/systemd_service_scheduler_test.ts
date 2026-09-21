@@ -95,6 +95,15 @@ Deno.test("buildServeService: omits env block when no env vars", () => {
   assertFalse(unit.includes("Environment="));
 });
 
+Deno.test("buildServeService: includes SWAMP_HOME when passed via env", () => {
+  const config: ServiceConfig = {
+    ...baseConfig,
+    env: { SWAMP_HOME: "/opt/swamp" },
+  };
+  const unit = buildServeService(config);
+  assertStringIncludes(unit, 'Environment="SWAMP_HOME=/opt/swamp"');
+});
+
 Deno.test("buildServeService: includes network ordering", () => {
   const unit = buildServeService(baseConfig);
   assertStringIncludes(unit, "After=network-online.target");
