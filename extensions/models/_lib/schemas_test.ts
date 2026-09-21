@@ -91,8 +91,12 @@ Deno.test("TRANSITIONS: link_pr is rejected from earlier lifecycle phases", () =
   }
 });
 
-Deno.test("TRANSITIONS: fast_forward accepts only triaging", () => {
-  assertEquals(TRANSITIONS.fast_forward, ["triaging"]);
+Deno.test("TRANSITIONS: fast_forward accepts triaging and classified", () => {
+  assertEquals(TRANSITIONS.fast_forward, ["triaging", "classified"]);
+});
+
+Deno.test("TRANSITIONS: resolve_findings accepts plan_generated and approved", () => {
+  assertEquals(TRANSITIONS.resolve_findings, ["plan_generated", "approved"]);
 });
 
 Deno.test("PullRequestSchema: accepts any non-empty URL string", () => {

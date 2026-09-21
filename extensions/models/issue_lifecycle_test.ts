@@ -330,8 +330,8 @@ Deno.test("model: exposes the new post_attestation method definition", () => {
   );
 });
 
-Deno.test("model: version is 2026.09.18.1", () => {
-  assertEquals(model.version, "2026.09.18.1");
+Deno.test("model: version is 2026.09.21.1", () => {
+  assertEquals(model.version, "2026.09.21.1");
 });
 
 // ---------------------------------------------------------------------------
@@ -1439,6 +1439,82 @@ Deno.test("model: exposes justify_deviations method definition", () => {
 
 Deno.test("model: exposes code-conformance-clear check definition", () => {
   assertEquals("code-conformance-clear" in model.checks, true);
+});
+
+// ---------------------------------------------------------------------------
+// conformance-review-required (verify pre-flight)
+// ---------------------------------------------------------------------------
+
+Deno.test("conformance-review-required: rejects when no conformance review exists", async () => {
+  const checkContext = {
+    methodName: "verify",
+    dataRepository: {
+      getContent: (
+        _type: string,
+        _modelId: string,
+        _dataName: string,
+      ) => {
+        return Promise.resolve(null);
+      },
+    },
+    modelType: "@swamp/issue-lifecycle",
+    modelId: "issue-42",
+  };
+
+  const result = await model.checks["conformance-review-required"].execute(
+    checkContext,
+  );
+  assertEquals(result.pass, false);
+  assertStringIncludes(
+    result.errors![0],
+    "No code conformance review exists",
+  );
+  assertStringIncludes(
+    result.errors![0],
+    "code_conformance_review",
+  );
+});
+
+Deno.test("conformance-review-required: passes when conformance review exists", async () => {
+  const checkContext = {
+    methodName: "verify",
+    dataRepository: {
+      getContent: (
+        _type: string,
+        _modelId: string,
+        dataName: string,
+      ) => {
+        if (dataName === "codeConformanceReview-main") {
+          return Promise.resolve(
+            new TextEncoder().encode(
+              JSON.stringify({
+                planVersion: 1,
+                steps: [
+                  { order: 1, status: "implemented", description: "Done" },
+                ],
+              }),
+            ),
+          );
+        }
+        return Promise.resolve(null);
+      },
+    },
+    modelType: "@swamp/issue-lifecycle",
+    modelId: "issue-42",
+  };
+
+  const result = await model.checks["conformance-review-required"].execute(
+    checkContext,
+  );
+  assertEquals(result.pass, true);
+});
+
+Deno.test("model: exposes conformance-review-required check definition", () => {
+  assertEquals("conformance-review-required" in model.checks, true);
+  assertEquals(
+    model.checks["conformance-review-required"].appliesTo,
+    ["verify"],
+  );
 });
 
 // ---------------------------------------------------------------------------

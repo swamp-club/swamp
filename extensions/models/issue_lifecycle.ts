@@ -102,7 +102,7 @@ export function buildNotifyMessage(
 
 export const model = {
   type: "@swamp/issue-lifecycle",
-  version: "2026.09.18.1",
+  version: "2026.09.21.1",
   globalArguments: GlobalArgsSchema,
 
   upgrades: [
@@ -249,6 +249,18 @@ export const model = {
         "phase unchanged; notify and post_attestation are excluded because " +
         "their upstream side effects are not idempotent. No globalArguments " +
         "changes.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.09.21.1",
+      description:
+        "Fix two ordering deadlocks. fast_forward now allowed from " +
+        "classified (not just triaging) and transitions upstream through " +
+        "triaged before in_progress. verify now requires a code conformance " +
+        "review to exist (conformance-review-required check) so the ordering " +
+        "mistake is caught early instead of discovered at link_pr. " +
+        "resolve_findings now also allowed from approved. " +
+        "No globalArguments changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
@@ -674,6 +686,42 @@ export const model = {
           };
         }
 
+        return { pass: true };
+      },
+    },
+
+    "conformance-review-required": {
+      description:
+        "Ensures a code conformance review exists before verification can start, " +
+        "preventing a deadlock where verify moves to verifying but link_pr " +
+        "demands a conformance review that can no longer be created",
+      labels: ["policy"],
+      appliesTo: ["verify"],
+      execute: async (context: {
+        dataRepository: {
+          getContent: (
+            type: string,
+            modelId: string,
+            dataName: string,
+          ) => Promise<Uint8Array | null>;
+        };
+        modelType: string;
+        modelId: string;
+      }) => {
+        const content = await context.dataRepository.getContent(
+          context.modelType,
+          context.modelId,
+          "codeConformanceReview-main",
+        );
+        if (!content) {
+          return {
+            pass: false,
+            errors: [
+              "No code conformance review exists. Run 'code_conformance_review' before 'verify' — " +
+              "once in the verifying phase, the conformance review can no longer be created.",
+            ],
+          };
+        }
         return { pass: true };
       },
     },
@@ -1900,11 +1948,17 @@ export const model = {
           context.logger,
         );
         if (sc) {
-          // Transition before the entry post — see the note in `triage`.
           recordUpstreamChange(
             context.logger,
             "issue type update",
             await sc.updateType("platform"),
+          );
+          // Walk through triaged first — a freshly filed issue is in status
+          // open, and swamp-club rejects a direct jump to in_progress.
+          recordUpstreamChange(
+            context.logger,
+            "status transition to triaged",
+            await sc.transitionStatus("triaged"),
           );
           recordUpstreamChange(
             context.logger,
