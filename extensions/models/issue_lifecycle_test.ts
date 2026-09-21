@@ -28,7 +28,7 @@ import {
   model,
   resolveVerificationArgs,
 } from "./issue_lifecycle.ts";
-import { PR_COOLDOWN_MS } from "./_lib/schemas.ts";
+import { PR_COOLDOWN_MS, TRANSITIONS } from "./_lib/schemas.ts";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -2321,4 +2321,18 @@ Deno.test("complete: records the override reason on the lifecycle entry", async 
   } finally {
     await restore();
   }
+});
+
+Deno.test("verify: is legal from every phase a commit can move in", () => {
+  // Re-verifying has to stay reachable after a PR is open: CI checks the
+  // attestation's commit against the PR head, so every push needs a fresh
+  // verification, and `verify` is what records the commit the gates compare
+  // against. Accepting only `implementing` meant refreshing that record
+  // required marking a healthy PR failed first.
+  assertEquals(TRANSITIONS.verify, [
+    "implementing",
+    "verifying",
+    "pr_open",
+    "pr_failed",
+  ]);
 });

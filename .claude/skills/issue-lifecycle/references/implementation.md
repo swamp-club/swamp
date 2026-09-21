@@ -131,7 +131,11 @@ push by hand and call `link_pr` yourself; the run does both, and a push without
 a re-verification leaves the PR carrying an attestation for a commit that is no
 longer its head.
 
-For major rework, call `implement` first to return to the implementing phase:
+The run calls `verify` itself, and `verify` is legal from `pr_failed` and
+`pr_open`, so no phase juggling is needed to re-verify a change whose commit
+moved.
+
+For major rework, call `implement` to return to the implementing phase:
 
 ```
 swamp model @swamp/issue-lifecycle method run implement issue-<N>

@@ -452,7 +452,10 @@ export const model = {
         "transitions the issue to `shipped`; complete takes an optional " +
         "`reason` that opens the escape for work shipping without a " +
         "verification run and records it on the issue. No globalArguments " +
-        "changes.",
+        "changes. verify additionally accepts verifying, pr_open and pr_failed as " +
+        "source phases so a re-verification after the commit moves no longer " +
+        "requires marking a healthy PR failed first — the submit-change run " +
+        "calls verify itself and refreshes the recorded commit each time.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],

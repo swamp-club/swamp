@@ -84,7 +84,13 @@ export const TRANSITIONS: Record<string, Phase[]> = {
   resolve_findings: ["plan_generated"],
   code_conformance_review: ["implementing", "pr_failed"],
   justify_deviations: ["implementing", "pr_failed"],
-  verify: ["implementing"],
+  // Re-verifying is idempotent and must stay legal from every phase a change
+  // can be sitting in when its commit moves. CI checks that the attestation's
+  // commit equals the PR head, so every push to an open PR needs a fresh
+  // verification — and `verify` is what records the commit the gates compare
+  // against. Accepting only `implementing` meant refreshing that record
+  // required marking a healthy PR failed first.
+  verify: ["implementing", "verifying", "pr_open", "pr_failed"],
   verification_passed: ["verifying"],
   verification_failed: ["verifying"],
   post_attestation: ["verifying"],

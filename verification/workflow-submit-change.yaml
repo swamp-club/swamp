@@ -27,9 +27,10 @@ inputs:
     issue:
       type: integer
       description: |
-        swamp-club lab issue number. The run publishes the attestation through
-        that issue's @swamp/issue-lifecycle instance (`issue-<N>`), which must
-        already exist and be in the `verifying` phase.
+        swamp-club lab issue number. The run drives that issue's
+        @swamp/issue-lifecycle instance (`issue-<N>`), which must already
+        exist. The run moves it into `verifying` itself — see the
+        start-verification job.
     diffBase:
       type: string
       default: "origin/main"
@@ -104,9 +105,36 @@ concurrency: 4
 # correctly excluding one review (setup ran, the review skipped).
 
 jobs:
+  # ══ Start verification ═════════════════════════════════════════════════════
+  #
+  # The run establishes its own precondition. `verification_passed` is legal
+  # only from the `verifying` phase, so a run launched without this would burn
+  # the whole verification — build, four agent reviews, skill evals — and only
+  # then fail at record-verification on a missing transition.
+  #
+  # It also refreshes `verificationTarget` to the commit being verified, which
+  # is what the verification-clear and attestation-posted gates compare their
+  # records against. Without that, a re-run on a new commit would carry the
+  # previous run's target and the gates would reject their own run's records.
+  - name: start-verification
+    description: Move the lifecycle into `verifying` for this commit.
+    steps:
+      - name: verify
+        task:
+          type: model_method
+          modelIdOrName: issue-${{ inputs.issue }}
+          methodName: verify
+          inputs:
+            commit: "${{ inputs.commit }}"
+            branch: "${{ inputs.branch }}"
+
   # ══ verify-build ═══════════════════════════════════════════════════════════
   - name: build-setup
     description: Create a clean worktree at the verified commit.
+    dependsOn:
+      - job: start-verification
+        condition:
+          type: succeeded
     steps:
       - name: checkout
         guard: "${{ !inputs.runBuild }}"
@@ -239,6 +267,10 @@ jobs:
 
   - name: reviews-setup
     description: Create a clean worktree at the verified commit.
+    dependsOn:
+      - job: start-verification
+        condition:
+          type: succeeded
     steps:
       - name: checkout
         guard: "${{ !inputs.runReviews }}"
@@ -467,6 +499,10 @@ jobs:
 
   - name: skills-setup
     description: Create a clean worktree at the verified commit.
+    dependsOn:
+      - job: start-verification
+        condition:
+          type: succeeded
     steps:
       - name: checkout
         guard: "${{ !inputs.runSkills }}"
@@ -643,8 +679,7 @@ jobs:
       - name: record
         task:
           type: model_method
-          modelType: "@swamp/issue-lifecycle"
-          modelName: issue-${{ inputs.issue }}
+          modelIdOrName: issue-${{ inputs.issue }}
           methodName: verification_passed
           inputs:
             # The attestation is the only argument. The commit, branch, run id
@@ -662,8 +697,7 @@ jobs:
       - name: post
         task:
           type: model_method
-          modelType: "@swamp/issue-lifecycle"
-          modelName: issue-${{ inputs.issue }}
+          modelIdOrName: issue-${{ inputs.issue }}
           methodName: post_attestation
           inputs:
             # The attestation text comes from the generating step's recorded
@@ -759,8 +793,7 @@ jobs:
               type: succeeded
         task:
           type: model_method
-          modelType: "@swamp/issue-lifecycle"
-          modelName: issue-${{ inputs.issue }}
+          modelIdOrName: issue-${{ inputs.issue }}
           methodName: link_pr
           inputs:
             url: "${{ data.latest('submit-create-pr-' + run.id, 'result').attributes.stdout }}"

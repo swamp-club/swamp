@@ -245,6 +245,7 @@ const GROUP_FLAGS: Record<string, string> = {
  * group would quietly stop producing an attestation.
  */
 const UNGUARDED_JOBS = [
+  "start-verification",
   "attest",
   "record-verification",
   "publish-attestation",

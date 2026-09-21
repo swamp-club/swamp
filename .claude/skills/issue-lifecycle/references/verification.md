@@ -8,17 +8,10 @@ opens.
 Read `agent-constraints/verification-conventions.md` for repo-specific workflow
 configuration.
 
-## 1. Start Verification
+## 1. Run Verification
 
-Transition the lifecycle to the `verifying` phase:
-
-```
-swamp model @swamp/issue-lifecycle method run verify issue-<N> \
-  --input commit=$(git rev-parse HEAD) \
-  --input branch=$(git branch --show-current)
-```
-
-## 2. Run Verification
+Do **not** call `verify` by hand. The run's first job does it, which is what
+lets a re-run refresh the commit the gates compare against — see step 3.
 
 One workflow runs all three verification groups — build, agent reviews, and
 skill checks:
@@ -75,12 +68,13 @@ commit where they passed, naming which run each came from. If a group has never
 passed at this commit, the gate fails — so deselecting everything is not a
 shortcut to green.
 
-## 3. What the Run Does After Verification
+## 2. What the Run Does
 
 Everything that used to be an agent step is now a job:
 
 | Job                   | What it does                                                                                                                                   |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `start-verification`  | Calls `verify`, moving the lifecycle into `verifying` and recording the commit this run verifies                                               |
 | `attest`              | Generates the attestation from the run's own record and hashes of the verified commit's config files                                           |
 | `record-verification` | Calls `verification_passed` with that attestation — the commit, branch, run id and step list are read out of it                                |
 | `publish-attestation` | Posts it to swamp-club via `post_attestation`, which writes an `attestationRecord` receipt                                                     |
@@ -99,7 +93,7 @@ nothing and opens nothing.
 See `agent-constraints/verification-conventions.md` for what the attestation
 carries and why.
 
-## 4. Handle the Result
+## 3. Handle the Result
 
 ### The run succeeded
 
@@ -152,9 +146,11 @@ This transitions back to `implementing`. Fix the failing code:
 - **Build failures** (lint, fmt, test, compile): fix the code directly
 - **Review failures**: read the findings, address blocking issues
 
-After fixing, return to step 1 and re-run. Repeat until the run goes green.
+After fixing, re-run submit-change on the new commit. It calls `verify` again
+itself, which refreshes the recorded commit — so the gates compare this run's
+records against this run's commit rather than an earlier one.
 
-## 5. The PR Cannot Open Without an Attestation
+## 4. The PR Cannot Open Without an Attestation
 
 The workflow is the sanctioned route: the attestation id is an _input_ to the
 step that opens the PR, read from the `attestationRecord` that

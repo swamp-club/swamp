@@ -321,6 +321,16 @@ than a step list of its own.
 
 ## Commit Binding
 
+The run's first job calls `verify`, so the workflow establishes its own
+precondition rather than depending on the caller having moved the phase. That
+matters twice: `verification_passed` is legal only from `verifying`, so a run
+launched without it would burn the whole verification and fail at the end; and
+each run refreshes the recorded commit, so a re-run on a new commit compares its
+own records against its own commit. `verify` accordingly accepts
+`implementing`, `verifying`, `pr_open` and `pr_failed` — refreshing the
+record used to require marking a healthy PR failed first.
+
+
 `verify` persists what it was started for as `verificationTarget-main`. Before
 that it took a commit and a branch and dropped both, so `verification_passed`
 asked for them again with nothing comparing the two, and `verification-clear`
