@@ -26,6 +26,7 @@ import {
   isAssertMessagePath,
   isGuardPath,
   isTaskInputsPath,
+  isTaskTargetPath,
   isTriggerInputsPath,
   replaceExpressions,
 } from "../expressions/expression_parser.ts";
@@ -105,8 +106,17 @@ export class WorkflowExpressionEvaluator {
     // remain as strings so forEach expansion can iterate them at run
     // time.
     const forEachInExpressions = new Set<string>();
-    for (const job of workflow.jobs) {
-      for (const step of job.steps) {
+    // Path prefixes of steps carrying a guard, used to defer their task
+    // targets below. Prefix matching is sound because expression paths are
+    // positional — `jobs[i].steps[j].task.modelIdOrName` — and derived from
+    // the same unexpanded definition walked here. forEach changes nothing:
+    // expansion rewrites the job *run* at job start, long after this.
+    const guardedStepPrefixes: string[] = [];
+    for (const [jobIndex, job] of workflow.jobs.entries()) {
+      for (const [stepIndex, step] of job.steps.entries()) {
+        if (step.guard) {
+          guardedStepPrefixes.push(`jobs[${jobIndex}].steps[${stepIndex}].`);
+        }
         if (step.forEach) {
           const match = step.forEach.in.match(/\$\{\{\s*(.+?)\s*\}\}/s);
           if (match) {
@@ -115,6 +125,16 @@ export class WorkflowExpressionEvaluator {
         }
       }
     }
+    const isOnGuardedStep = (path: string) =>
+      guardedStepPrefixes.some((prefix) => path.startsWith(prefix));
+
+    // Deferral is decided per path, but substitution below is keyed on the raw
+    // expression text and rewrites every occurrence of it. Two steps can carry
+    // the identical expression — `${{ inputs.name }}` on a guarded step and on
+    // a plain one — and without this the plain step's evaluated value would be
+    // written into the guarded step's deferred target, silently undoing the
+    // deferral. Recording which paths deferred lets them be skipped by path.
+    const deferredTargetPaths = new Set<string>();
 
     const evaluatedValues = new Map<string, unknown>();
     for (const expr of expressions) {
@@ -159,6 +179,26 @@ export class WorkflowExpressionEvaluator {
       ) {
         continue;
       }
+      // A step's task target — what it executes — defers for either of two
+      // reasons, each sufficient on its own:
+      //
+      //   - it reads step output, so the data it names does not exist yet;
+      //   - its step carries a guard, so the step may not run at all, and a
+      //     target evaluated for a step that will skip is exactly the defect
+      //     in swamp-club#2304: an empty result failed StepTask validation and
+      //     killed the whole run before any step executed.
+      //
+      // An unguarded target with no step-output dependency still resolves
+      // here, so a mistyped name fails at run start where the error is
+      // cheapest — deferral buys nothing for a step that is going to run.
+      if (
+        isTaskTargetPath(expr.path) &&
+        (hasStepOutputDependency(expr.celExpression) ||
+          isOnGuardedStep(expr.path))
+      ) {
+        deferredTargetPaths.add(expr.path);
+        continue;
+      }
 
       // Strict: per-expression eval errors propagate.
       const value = await this.celEvaluator.evaluateAsync(
@@ -171,7 +211,7 @@ export class WorkflowExpressionEvaluator {
     const evaluatedData = replaceExpressions(
       workflowData,
       evaluatedValues,
-      isAssertExprPath,
+      (path) => isAssertExprPath(path) || deferredTargetPaths.has(path),
     );
     return {
       workflow: WorkflowClass.fromData(evaluatedData as WorkflowInput),

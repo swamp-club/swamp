@@ -478,3 +478,177 @@ Deno.test("DefinitionExpressionEvaluator: resolves an authored expression and re
     { authored: "fine", injected: "${{ inputs.bad }}" },
   );
 });
+
+// ---------------------------------------------------------------------------
+// Task target deferral (swamp-club#2304)
+//
+// The target defers for either of two independent reasons: it reads step
+// output, or its step carries a guard. The four combinations below pin both
+// conditions and the case where neither applies.
+// ---------------------------------------------------------------------------
+
+/** Narrows a step's task data to the model_method form and returns its target. */
+function targetOf(
+  step: { task: { data: { type: string } } },
+): string | undefined {
+  const data = step.task.data;
+  if (data.type !== "model_method") throw new Error("not a model_method task");
+  return (data as { modelIdOrName?: string }).modelIdOrName;
+}
+
+/** A one-step workflow whose task target and guard are supplied by the test. */
+function targetOnlyWorkflow(target: string, guard?: string): Workflow {
+  return Workflow.create({
+    name: "target-deferral",
+    inputs: {
+      type: "object",
+      properties: { name: { type: "string", default: "picked" } },
+    },
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            guard,
+            task: StepTask.model(target, "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+async function evaluateTarget(
+  target: string,
+  guard?: string,
+): Promise<string | undefined> {
+  const workflow = targetOnlyWorkflow(target, guard);
+  const authored = collectWorkflowAuthoredExpressions(workflow);
+  const context = emptyContext();
+  context.inputs = { name: "picked" };
+
+  const { workflow: evaluated } = await new WorkflowExpressionEvaluator(
+    new CelEvaluator(),
+  ).evaluate(workflow, context, authored);
+
+  return targetOf(evaluated.jobs[0].steps[0]);
+}
+
+Deno.test("target deferral: unguarded and static resolves at run start", async () => {
+  // Neither condition applies, so the target resolves eagerly and a mistyped
+  // name fails where the error is cheapest.
+  assertEquals(await evaluateTarget("${{ inputs.name }}"), "picked");
+});
+
+Deno.test("target deferral: a guard defers an otherwise resolvable target", async () => {
+  // The step may not run, so resolving its target is exactly the defect.
+  assertEquals(
+    await evaluateTarget("${{ inputs.name }}", "${{ true }}"),
+    "${{ inputs.name }}",
+  );
+});
+
+Deno.test("target deferral: a step-output dependency defers without any guard", async () => {
+  // The data does not exist yet, so this defers on its own merits.
+  const target = "${{ data.latest('m', 'rec').?attributes.?name.orValue('') }}";
+  assertEquals(await evaluateTarget(target), target);
+});
+
+Deno.test("target deferral: both conditions together still defer", async () => {
+  const target = "${{ data.latest('m', 'rec').?attributes.?name.orValue('') }}";
+  assertEquals(await evaluateTarget(target, "${{ true }}"), target);
+});
+
+Deno.test("target deferral: a guard on one step does not defer another step's target", async () => {
+  // Prefix matching is positional, so it must not leak across steps.
+  const workflow = Workflow.create({
+    name: "mixed-guards",
+    inputs: {
+      type: "object",
+      properties: { name: { type: "string", default: "picked" } },
+    },
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "guarded",
+            guard: "${{ true }}",
+            task: StepTask.model("${{ inputs.name }}", "run"),
+          }),
+          Step.create({
+            name: "plain",
+            task: StepTask.model("${{ inputs.name }}", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+  const authored = collectWorkflowAuthoredExpressions(workflow);
+  const context = emptyContext();
+  context.inputs = { name: "picked" };
+
+  const { workflow: evaluated } = await new WorkflowExpressionEvaluator(
+    new CelEvaluator(),
+  ).evaluate(workflow, context, authored);
+
+  const steps = evaluated.jobs[0].steps;
+  assertEquals(targetOf(steps[0]), "${{ inputs.name }}");
+  assertEquals(targetOf(steps[1]), "picked");
+});
+
+Deno.test("target deferral: the direct-execution form defers its modelName too", async () => {
+  // ADV-5 called modelName the riskier half: it names a definition to
+  // auto-create, and every guarded step in the repo's own verification
+  // workflow uses this form with a run-id-based name.
+  const workflow = Workflow.create({
+    name: "direct-execution-target",
+    inputs: {
+      type: "object",
+      properties: { name: { type: "string", default: "picked" } },
+    },
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "guarded",
+            guard: "${{ true }}",
+            task: StepTask.directExecution(
+              "command/shell",
+              "${{ inputs.name }}",
+              "execute",
+            ),
+          }),
+          Step.create({
+            name: "plain",
+            task: StepTask.directExecution(
+              "command/shell",
+              "${{ inputs.name }}",
+              "execute",
+            ),
+          }),
+        ],
+      }),
+    ],
+  });
+  const authored = collectWorkflowAuthoredExpressions(workflow);
+  const context = emptyContext();
+  context.inputs = { name: "picked" };
+
+  const { workflow: evaluated } = await new WorkflowExpressionEvaluator(
+    new CelEvaluator(),
+  ).evaluate(workflow, context, authored);
+
+  const nameOf = (step: { task: { data: { type: string } } }) => {
+    const data = step.task.data;
+    if (data.type !== "model_method") throw new Error("not a model_method");
+    return (data as { modelName?: string }).modelName;
+  };
+
+  // Guarded defers; unguarded still resolves at run start, and the shared
+  // expression text does not leak across them.
+  assertEquals(nameOf(evaluated.jobs[0].steps[0]), "${{ inputs.name }}");
+  assertEquals(nameOf(evaluated.jobs[0].steps[1]), "picked");
+});

@@ -929,6 +929,40 @@ expr: >-
   data.latest("model", "spec").?attributes.?ready == true
 ```
 
+### When Expressions Resolve
+
+Two moments, and which one applies decides what an expression can see.
+
+| Field                                  | Resolves                                                          | Sees                                      |
+| -------------------------------------- | ----------------------------------------------------------------- | ----------------------------------------- |
+| Most fields                            | Run start                                                         | `inputs.*`, literals                      |
+| `guard`                                | Step time                                                         | Data written by earlier steps in this run |
+| `task.inputs`, assert `task.message`   | Step time **when** they read `data.*`                             | Same                                      |
+| `task.modelIdOrName`, `task.modelName` | Step time when they read `data.*` **or** their step has a `guard` | Same                                      |
+| `trigger.inputs`                       | Trigger fire time                                                 | The webhook payload                       |
+| `forEach.in`                           | Job start                                                         | Data available when the job begins        |
+| `run.*`, `self.*`                      | Step time                                                         | The run record, the forEach variable      |
+
+The null-safe form applies to **same-run** data, not only to data from a prior
+cycle. `data.latest("m", "rec").attributes.x` fails at run start when an earlier
+step in the _same run_ writes that record — the record does not exist yet, so
+member access throws. `data.latest("m", "rec").?attributes.?x.orValue("")`
+defers to step time and sees the write:
+
+```yaml
+# Step 1 writes the record; step 2 reads it in the same run.
+- name: consume
+  task:
+    type: model_method
+    modelIdOrName: "${{ data.latest('writer', 'rec').?attributes.?name.orValue('') }}"
+    methodName: run
+```
+
+A target on a **guarded** step defers whether or not it reads data, so a guard
+that skips the step keeps its target from being resolved at all. An _unguarded_
+target reading no data still resolves at run start, so a mistyped name fails
+before any step runs.
+
 ### Assert Output: `--fail-on` and `--junit`
 
 Two flags on `swamp workflow run` control assert result handling:

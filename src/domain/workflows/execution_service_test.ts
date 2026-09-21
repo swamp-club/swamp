@@ -7123,3 +7123,340 @@ Deno.test("trackerStatusForRun: maps every aggregate status to the tracker vocab
     assertEquals(trackerStatusForRun(aggregate), expected);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Task target deferral (swamp-club#2304)
+//
+// A guarded step never runs, but its task target used to be evaluated at run
+// start anyway. A target resolving to an empty string then failed StepTask
+// validation while the evaluated workflow was rebuilt, killing the whole run
+// before any step executed — and recording no run at all, so there was nothing
+// to inspect afterwards.
+// ---------------------------------------------------------------------------
+
+/** Builds a two-job workflow whose second step is optionally guarded. */
+function targetWorkflow(opts: {
+  name: string;
+  target: string;
+  guard?: string;
+}): Workflow {
+  return Workflow.create({
+    name: opts.name,
+    inputs: {
+      type: "object",
+      properties: { target: { type: "string", default: "" } },
+    },
+    jobs: [
+      Job.create({
+        name: "writer",
+        steps: [
+          Step.create({ name: "write", task: StepTask.model("writer", "run") }),
+        ],
+      }),
+      Job.create({
+        name: "consumer",
+        dependsOn: [{ job: "writer", condition: TriggerCondition.succeeded() }],
+        steps: [
+          Step.create({
+            name: "consume",
+            guard: opts.guard,
+            task: StepTask.model(opts.target, "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+Deno.test("task target: a guarded step with a valid dynamic target still executes when its guard is false", async () => {
+  // The ordinary case, and the one the widening actually risks: every guarded
+  // step in the repo's own verification workflow names a run-id-based model.
+  // This must pass before and after the change.
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = targetWorkflow({
+      name: "valid-dynamic-target",
+      target: "${{ inputs.target }}",
+      guard: "${{ false }}",
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    for await (
+      const _ of service.run(workflow.name, { inputs: { target: "writer" } })
+    ) { /* drain */ }
+
+    const runs = await runRepo.findAllByWorkflowId(workflow.id);
+    assertEquals(
+      runs[0].getJob("consumer")?.getStep("consume")?.status,
+      "succeeded",
+    );
+  });
+});
+
+Deno.test("task target: a guarded step whose target resolves to empty skips instead of killing the run", async () => {
+  // The reported defect. The target is a plain inputs reference with no
+  // step-output dependency, so only the guard condition defers it.
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = targetWorkflow({
+      name: "guarded-empty-target",
+      target: "${{ inputs.target }}",
+      guard: "${{ true }}",
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    for await (
+      const _ of service.run(workflow.name, { inputs: { target: "" } })
+    ) { /* drain */ }
+
+    const runs = await runRepo.findAllByWorkflowId(workflow.id);
+    assertEquals(runs.length, 1);
+    assertEquals(runs[0].status, "succeeded");
+    assertEquals(
+      runs[0].getJob("writer")?.getStep("write")?.status,
+      "succeeded",
+    );
+    assertEquals(
+      runs[0].getJob("consumer")?.getStep("consume")?.status,
+      "skipped",
+    );
+  });
+});
+
+Deno.test("task target: an unguarded step with an empty target still fails at run start", async () => {
+  // Fail-fast is deliberately preserved. Deferral buys nothing for a step that
+  // is going to run, and a mistyped target should surface before any work.
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = targetWorkflow({
+      name: "unguarded-empty-target",
+      target: "${{ inputs.target }}",
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    let error: string | undefined;
+    try {
+      for await (
+        const _ of service.run(workflow.name, { inputs: { target: "" } })
+      ) { /* drain */ }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+
+    assertStringIncludes(
+      error ?? "",
+      "requires either modelIdOrName or modelType",
+    );
+    assertEquals(executor.executedSteps, []);
+  });
+});
+
+Deno.test("task target: a guarded forEach step resolves its deferred target per expansion", async () => {
+  // The only place in this change where one deferred expression yields several
+  // values: the target is a single raw string shared by every expansion and
+  // resolved against each expansion's own self context.
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = Workflow.create({
+      name: "guarded-foreach-target",
+      inputs: {
+        type: "object",
+        properties: { targets: { type: "array" } },
+      },
+      jobs: [
+        Job.create({
+          name: "fan-out",
+          steps: [
+            Step.create({
+              name: "run-${{ self.t }}",
+              guard: "${{ false }}",
+              task: StepTask.model("${{ self.t }}", "run"),
+              forEach: { item: "t", in: "${{ inputs.targets }}" },
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    for await (
+      const _ of service.run(workflow.name, {
+        inputs: { targets: ["alpha", "beta"] },
+      })
+    ) { /* drain */ }
+
+    // Each expansion executed against its own target, not a shared one.
+    assertEquals(executor.executedSteps.sort(), [
+      "fan-out/run-alpha",
+      "fan-out/run-beta",
+    ]);
+  });
+});
+
+Deno.test("task target: a deferred target survives --last-evaluated and resolves from cache", async () => {
+  // A deferred target is persisted raw in the evaluated workflow. On a
+  // --last-evaluated run, evaluation is skipped entirely, so the raw target has
+  // to survive to step time and resolve there.
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = targetWorkflow({
+      name: "last-evaluated-target",
+      target: "${{ inputs.target }}",
+      guard: "${{ false }}",
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    for await (
+      const _ of service.run(workflow.name, { inputs: { target: "writer" } })
+    ) { /* drain */ }
+    for await (
+      const _ of service.run(workflow.name, {
+        inputs: { target: "writer" },
+        lastEvaluated: true,
+      })
+    ) { /* drain */ }
+
+    const runs = await runRepo.findAllByWorkflowId(workflow.id);
+    assertEquals(runs.length, 2);
+    for (const run of runs) {
+      assertEquals(
+        run.getJob("consumer")?.getStep("consume")?.status,
+        "succeeded",
+      );
+    }
+  });
+});
+
+Deno.test("task target: a deferred target resolves after suspend and resume", async () => {
+  // Resume re-establishes expression provenance from persisted state rather
+  // than re-deriving it at run start, and a deferred target is exactly the kind
+  // of raw expression that path has to carry. Every other route by which a
+  // target survives as a raw expression is covered; this is the last.
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = Workflow.create({
+      name: "suspend-resume-target",
+      inputs: {
+        type: "object",
+        properties: { target: { type: "string", default: "" } },
+      },
+      jobs: [
+        Job.create({
+          name: "j",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("Approve"),
+            }),
+            Step.create({
+              name: "consume",
+              guard: "${{ false }}",
+              task: StepTask.model("${{ inputs.target }}", "run"),
+              dependsOn: [
+                { step: "gate", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const suspended = await service.execute(workflow.name, {
+      inputs: { target: "writer" },
+    });
+    assertEquals(suspended.status, "suspended");
+
+    const toApprove = await runRepo.findById(workflow.id, suspended.id);
+    const waiting = toApprove!.findWaitingApprovalStep()!;
+    toApprove!.getJob(waiting.jobName)!.getStep(waiting.stepName)!.succeed();
+    await runRepo.save(workflow.id, toApprove!);
+
+    let resumed: WorkflowRun | undefined;
+    for await (const event of service.resume(workflow.name, suspended.id)) {
+      if (event.kind === "completed") resumed = event.run;
+    }
+
+    assertEquals(resumed?.status, "succeeded");
+    assertEquals(resumed?.getJob("j")?.getStep("consume")?.status, "succeeded");
+    assertEquals(executor.executedSteps, ["j/consume"]);
+  });
+});

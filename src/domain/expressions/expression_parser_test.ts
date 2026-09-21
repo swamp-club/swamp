@@ -29,6 +29,7 @@ import {
   isAssertMessagePath,
   isTaskGlobalArgsPath,
   isTaskInputsPath,
+  isTaskTargetPath,
   isTriggerInputsPath,
   replaceExpressions,
   stripExpressionFields,
@@ -682,4 +683,45 @@ Deno.test("stripExpressionFields: preserves __proto__ key for non-expression val
   assertStrictEquals(Object.hasOwn(result, "__proto__"), true);
   assertEquals(result["__proto__" as keyof typeof result], "static-value");
   assertStrictEquals(Object.hasOwn(result, "expr"), false);
+});
+
+// ---------------------------------------------------------------------------
+// isTaskTargetPath
+// ---------------------------------------------------------------------------
+
+Deno.test("isTaskTargetPath returns true for modelIdOrName", () => {
+  assertEquals(
+    isTaskTargetPath("jobs[0].steps[1].task.modelIdOrName"),
+    true,
+  );
+});
+
+Deno.test("isTaskTargetPath returns true for modelName", () => {
+  // The direct-execution form fails the same way when its name resolves to
+  // empty, so it is a target too.
+  assertEquals(isTaskTargetPath("jobs[0].steps[1].task.modelName"), true);
+});
+
+Deno.test("isTaskTargetPath returns false for other task fields", () => {
+  // modelType alone names no definition; methodName and inputs are not
+  // targets. Deferring them would change unrelated evaluation timing.
+  for (
+    const path of [
+      "jobs[0].steps[0].task.modelType",
+      "jobs[0].steps[0].task.methodName",
+      "jobs[0].steps[0].task.inputs.name",
+      "jobs[0].steps[0].guard",
+    ]
+  ) {
+    assertEquals(isTaskTargetPath(path), false, path);
+  }
+});
+
+Deno.test("isTaskTargetPath does not match a field merely containing the name", () => {
+  // Anchored at the end, so a nested input that happens to be called
+  // modelIdOrName is not mistaken for the target.
+  assertEquals(
+    isTaskTargetPath("jobs[0].steps[0].task.inputs.modelIdOrName"),
+    false,
+  );
 });
