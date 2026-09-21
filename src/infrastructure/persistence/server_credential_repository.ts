@@ -24,6 +24,7 @@ import type {
 } from "../../domain/auth/server_credential.ts";
 import { normalizeServerUrl } from "../../domain/auth/server_url.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
+import { getSwampLogger } from "../logging/logger.ts";
 import { getSwampConfigDir } from "./paths.ts";
 
 const SERVERS_FILE = "servers.json";
@@ -105,14 +106,20 @@ export class FileServerCredentialRepository
     const envToken = this.getServerToken();
     if (envToken) {
       const envUrl = this.getServerUrl();
-      if (envUrl && normalizeServerUrl(envUrl) === key) {
-        return {
-          serverUrl: key,
-          tokenName: "",
-          token: envToken,
-          principalId: "",
-          obtainedAt: "",
-        };
+      if (envUrl) {
+        if (normalizeServerUrl(envUrl) === key) {
+          return {
+            serverUrl: key,
+            tokenName: "",
+            token: envToken,
+            principalId: "",
+            obtainedAt: "",
+          };
+        }
+      } else {
+        const logger = getSwampLogger(["auth", "credential"]);
+        logger
+          .warn`SWAMP_SERVER_TOKEN is set but SWAMP_SERVER_URL is not — token not sent. Set SWAMP_SERVER_URL to the target server URL or use --token instead.`;
       }
     }
 

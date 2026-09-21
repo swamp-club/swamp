@@ -100,3 +100,38 @@ Deno.test("normalizeServerUrl: http scheme preserved", () => {
     "http://localhost:8080",
   );
 });
+
+Deno.test("normalizeServerUrl: ws converts to http", () => {
+  assertEquals(
+    normalizeServerUrl("ws://swamp.example.com:8080"),
+    "http://swamp.example.com:8080",
+  );
+});
+
+Deno.test("normalizeServerUrl: wss converts to https", () => {
+  assertEquals(
+    normalizeServerUrl("wss://swamp.example.com"),
+    "https://swamp.example.com",
+  );
+});
+
+Deno.test("normalizeServerUrl: wss with port converts to https with port", () => {
+  assertEquals(
+    normalizeServerUrl("wss://swamp.example.com:9090/"),
+    "https://swamp.example.com:9090",
+  );
+});
+
+Deno.test("normalizeServerUrl: ws and http normalize to same key", () => {
+  assertEquals(
+    normalizeServerUrl("ws://swamp.example.com:8080"),
+    normalizeServerUrl("http://swamp.example.com:8080"),
+  );
+});
+
+Deno.test("normalizeServerUrl: wss and https normalize to same key", () => {
+  assertEquals(
+    normalizeServerUrl("wss://SWAMP.Example.COM:443/"),
+    normalizeServerUrl("https://swamp.example.com"),
+  );
+});

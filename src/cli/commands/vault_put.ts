@@ -47,10 +47,10 @@ import {
 } from "../../infrastructure/io/stdin_reader.ts";
 import { parseTimeout } from "../duration_parser.ts";
 import {
-  normalizeServerUrl,
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
+  toWebSocketUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { VaultPutResponse } from "../../serve/protocol.ts";
@@ -253,7 +253,7 @@ When using --server, the value must be passed as a positional argument or KEY=VA
       refreshTtlMs = parseTimeout(options.refreshTtl);
     }
 
-    const wsUrl = normalizeServerUrl(server);
+    const wsUrl = toWebSocketUrl(server);
     const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
     try {
       const parsed = new URL(wsUrl);
@@ -262,7 +262,7 @@ When using --server, the value must be passed as a positional argument or KEY=VA
           "Sending secrets over unencrypted connection — use wss:// for security",
         );
       }
-    } catch { /* invalid URL handled by normalizeServerUrl */ }
+    } catch { /* invalid URL handled by toWebSocketUrl */ }
 
     const token = await resolveServerTokenFromOptions(
       server,

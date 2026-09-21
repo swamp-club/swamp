@@ -97,16 +97,6 @@ async function handleStaticToken(
     );
   }
 
-  try {
-    const parsed = new URL(rawUrl);
-    if (parsed.protocol === "ws:") parsed.protocol = "http:";
-    else if (parsed.protocol === "wss:") parsed.protocol = "https:";
-    rawUrl = parsed.href;
-  } catch {
-    throw new UserError(
-      `Invalid --server URL "${rawUrl}": expected ws://, wss://, http://, or https:// URL`,
-    );
-  }
   let serverUrl: string;
   try {
     serverUrl = normalizeServerUrl(rawUrl);
@@ -142,17 +132,14 @@ async function handleOAuthFlow(
   rawUrl: string,
   cliCtx: { outputMode: string },
 ): Promise<void> {
+  let normalizedUrl: string;
   try {
-    const parsed = new URL(rawUrl);
-    if (parsed.protocol === "ws:") parsed.protocol = "http:";
-    else if (parsed.protocol === "wss:") parsed.protocol = "https:";
-    rawUrl = parsed.href;
+    normalizedUrl = normalizeServerUrl(rawUrl);
   } catch {
     throw new UserError(
       `Invalid --server URL "${rawUrl}": expected ws://, wss://, http://, or https:// URL`,
     );
   }
-  const normalizedUrl = normalizeServerUrl(rawUrl);
   const caCerts = getEnvCaCerts();
   const httpClient = caCerts?.length
     ? createTlsHttpClient({ caCerts })

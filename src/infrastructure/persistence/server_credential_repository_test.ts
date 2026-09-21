@@ -323,7 +323,7 @@ Deno.test("FileServerCredentialRepository.get: SWAMP_SERVER_TOKEN does not match
   }
 });
 
-Deno.test("FileServerCredentialRepository.get: SWAMP_SERVER_TOKEN without SWAMP_SERVER_URL falls through to file", async () => {
+Deno.test("FileServerCredentialRepository.get: SWAMP_SERVER_TOKEN without SWAMP_SERVER_URL falls through to file with warning", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const repo = new FileServerCredentialRepository({
@@ -351,4 +351,29 @@ Deno.test("FileServerCredentialRepository.get: SWAMP_SERVER_TOKEN normalizes env
 
   assertExists(loaded);
   assertEquals(loaded.token, "env_token_normalized");
+});
+
+Deno.test("FileServerCredentialRepository.get: SWAMP_SERVER_URL with wss:// matches wss:// query", async () => {
+  const repo = new FileServerCredentialRepository({
+    getServerToken: () => "env_token_wss",
+    getServerUrl: () => "wss://swamp.example.com:9090",
+  });
+
+  const loaded = await repo.get("wss://swamp.example.com:9090");
+
+  assertExists(loaded);
+  assertEquals(loaded.token, "env_token_wss");
+  assertEquals(loaded.serverUrl, "https://swamp.example.com:9090");
+});
+
+Deno.test("FileServerCredentialRepository.get: SWAMP_SERVER_URL with wss:// matches https:// query", async () => {
+  const repo = new FileServerCredentialRepository({
+    getServerToken: () => "env_token_wss_cross",
+    getServerUrl: () => "wss://swamp.example.com",
+  });
+
+  const loaded = await repo.get("https://swamp.example.com");
+
+  assertExists(loaded);
+  assertEquals(loaded.token, "env_token_wss_cross");
 });

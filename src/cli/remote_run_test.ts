@@ -27,7 +27,6 @@ import { UserError } from "../domain/errors.ts";
 import {
   createTlsHttpClient,
   diagnoseTlsMessage,
-  normalizeServerUrl,
   probeServerHealth,
   readTokenFile,
   requestServerResponse,
@@ -39,6 +38,7 @@ import {
   runWorkflowOverServer,
   setMarkerServerAddress,
   subscribeServerEvents,
+  toWebSocketUrl,
   warnServerReloadNeeded,
   writeRemoteIndicator,
 } from "./remote_run.ts";
@@ -299,12 +299,12 @@ Deno.test("resetMarkerServerAddress: clears the cached value", () => {
   }
 });
 
-Deno.test("normalizeServerUrl: accepts ws/wss and maps http/https", () => {
-  assertEquals(normalizeServerUrl("ws://h:1"), "ws://h:1/");
-  assertEquals(normalizeServerUrl("http://h:1"), "ws://h:1/");
-  assertEquals(normalizeServerUrl("https://h:1"), "wss://h:1/");
-  assertThrows(() => normalizeServerUrl("ftp://h"), UserError);
-  assertThrows(() => normalizeServerUrl("not a url"), UserError);
+Deno.test("toWebSocketUrl: accepts ws/wss and maps http/https", () => {
+  assertEquals(toWebSocketUrl("ws://h:1"), "ws://h:1/");
+  assertEquals(toWebSocketUrl("http://h:1"), "ws://h:1/");
+  assertEquals(toWebSocketUrl("https://h:1"), "wss://h:1/");
+  assertThrows(() => toWebSocketUrl("ftp://h"), UserError);
+  assertThrows(() => toWebSocketUrl("not a url"), UserError);
 });
 
 Deno.test({
@@ -620,12 +620,12 @@ Deno.test("resolveServerToken: falls back to credential repo", async () => {
   assertEquals(result, "stored.credential");
 });
 
-Deno.test("resolveServerToken: converts ws URL to http for credential lookup", async () => {
+Deno.test("resolveServerToken: ws URL is resolved by credential repo normalization", async () => {
   const mockRepo: ServerCredentialRepository = {
     get: (url: string): Promise<ServerCredential | null> => {
-      if (url === "http://localhost:9090") {
+      if (url === "ws://localhost:9090") {
         return Promise.resolve({
-          serverUrl: url,
+          serverUrl: "http://localhost:9090",
           tokenName: "stored",
           token: "stored.ws-lookup",
           principalId: "user:test",

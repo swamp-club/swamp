@@ -28,9 +28,13 @@
 export function normalizeServerUrl(url: string): string {
   const parsed = new URL(url);
 
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+  if (parsed.protocol === "ws:") {
+    parsed.protocol = "http:";
+  } else if (parsed.protocol === "wss:") {
+    parsed.protocol = "https:";
+  } else if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new TypeError(
-      `Unsupported protocol: ${parsed.protocol} (expected http: or https:)`,
+      `Unsupported protocol: ${parsed.protocol} (expected http:, https:, ws: or wss:)`,
     );
   }
 
