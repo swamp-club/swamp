@@ -20,27 +20,89 @@
 import { assertEquals } from "@std/assert";
 import { getTerminalDimensions } from "./useTerminalSize.ts";
 
-Deno.test("getTerminalDimensions: falls back to stdout properties when Deno.consoleSize() throws", () => {
+/** A console-size probe that fails, as it does when no console is attached. */
+const noConsole = () => {
+  throw new TypeError("The handle is invalid.");
+};
+
+Deno.test("getTerminalDimensions: prefers the console size over stdout properties", () => {
   const fakeStdout = {
     columns: 120,
     rows: 40,
   } as unknown as NodeJS.WriteStream;
-  // In test environments Deno.consoleSize() throws (no TTY), so the function
-  // should fall back to stdout properties.
-  const size = getTerminalDimensions(fakeStdout);
-  assertEquals(size.width, 120);
-  assertEquals(size.height, 40);
+
+  const size = getTerminalDimensions(fakeStdout, () => ({
+    columns: 200,
+    rows: 50,
+  }));
+
+  assertEquals(size, { width: 200, height: 50 });
+});
+
+Deno.test("getTerminalDimensions: falls back to stdout properties when the console size is unavailable", () => {
+  const fakeStdout = {
+    columns: 120,
+    rows: 40,
+  } as unknown as NodeJS.WriteStream;
+
+  const size = getTerminalDimensions(fakeStdout, noConsole);
+
+  assertEquals(size, { width: 120, height: 40 });
 });
 
 Deno.test("getTerminalDimensions: falls back to defaults when stdout is undefined", () => {
-  const size = getTerminalDimensions(undefined);
-  assertEquals(size.width, 80);
-  assertEquals(size.height, 24);
+  const size = getTerminalDimensions(undefined, noConsole);
+
+  assertEquals(size, { width: 80, height: 24 });
 });
 
 Deno.test("getTerminalDimensions: falls back to defaults when stdout has no columns/rows", () => {
   const fakeStdout = {} as unknown as NodeJS.WriteStream;
-  const size = getTerminalDimensions(fakeStdout);
-  assertEquals(size.width, 80);
-  assertEquals(size.height, 24);
+
+  const size = getTerminalDimensions(fakeStdout, noConsole);
+
+  assertEquals(size, { width: 80, height: 24 });
+});
+
+Deno.test("getTerminalDimensions: default probe returns a size in either environment", () => {
+  // Exercises the real Deno.consoleSize() default. Both branches are valid
+  // here — attached to a console it reports the pane, under a pipe it falls
+  // back — so assert only what holds in both: a usable pair of dimensions.
+  const size = getTerminalDimensions({
+    columns: 120,
+    rows: 40,
+  } as unknown as NodeJS.WriteStream);
+
+  assertEquals(typeof size.width, "number");
+  assertEquals(typeof size.height, "number");
+});
+
+Deno.test("getTerminalDimensions: treats a 0x0 console as unavailable", () => {
+  // A pty with no attached window reports 0x0 without throwing. Zero is not a
+  // usable width — callers divide by it and pass it to String.repeat.
+  const fakeStdout = {
+    columns: 120,
+    rows: 40,
+  } as unknown as NodeJS.WriteStream;
+
+  const size = getTerminalDimensions(fakeStdout, () => ({
+    columns: 0,
+    rows: 0,
+  }));
+
+  assertEquals(size, { width: 120, height: 40 });
+});
+
+Deno.test("getTerminalDimensions: falls back to defaults when both console and stdout are zero", () => {
+  const fakeStdout = {
+    columns: 0,
+    rows: 0,
+  } as unknown as NodeJS.WriteStream;
+
+  const size = getTerminalDimensions(fakeStdout, () => ({
+    columns: 0,
+    rows: 0,
+  }));
+
+  assertEquals(size, { width: 80, height: 24 });
 });

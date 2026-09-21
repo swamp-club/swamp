@@ -90,7 +90,13 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
  */
 async function initializeRepo(dir: string): Promise<void> {
   const repoPath = RepoPath.create(dir);
-  const service = new RepoService(VERSION);
+  // Keep the global skill install inside `dir` — the ambient HOME is shared
+  // with every other test file in the process.
+  const homeDir = join(dir, "test-home");
+  const service = new RepoService(VERSION, {
+    homeDir,
+    configDir: join(homeDir, ".config", "swamp"),
+  });
   await service.init(repoPath);
 }
 

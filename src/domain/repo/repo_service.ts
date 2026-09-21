@@ -45,8 +45,14 @@ import { removeSupersededSkills } from "./superseded_skills.ts";
 import { assertPathContained, type ToolConfig } from "./custom_tool.ts";
 import { ToolResolver } from "./tool_resolver.ts";
 import { readCustomTools } from "../../infrastructure/persistence/custom_tools_repository.ts";
-import { BuiltInToolSkillDirsRepository } from "../../infrastructure/persistence/builtin_tool_skill_dirs_repository.ts";
-import { CustomToolSkillDirsRepository } from "../../infrastructure/persistence/custom_tool_skill_dirs_repository.ts";
+import {
+  BUILTIN_TOOL_SKILL_DIRS_FILE,
+  BuiltInToolSkillDirsRepository,
+} from "../../infrastructure/persistence/builtin_tool_skill_dirs_repository.ts";
+import {
+  CUSTOM_TOOL_SKILL_DIRS_FILE,
+  CustomToolSkillDirsRepository,
+} from "../../infrastructure/persistence/custom_tool_skill_dirs_repository.ts";
 import { readUpstreamExtensions } from "../../infrastructure/persistence/upstream_extensions.ts";
 
 const logger = getLogger(["swamp", "repo", "service"]);
@@ -242,17 +248,43 @@ export interface RepoUpgradeOptions {
 }
 
 /**
+ * User-level directories that init and upgrade write to outside the repo.
+ *
+ * Both default to the ambient environment (`HOME` / `XDG_CONFIG_HOME`).
+ * Callers that must keep those writes inside a directory they own — tests
+ * above all, since the suite shares one process and one `Deno.env` — pass
+ * them explicitly instead of repointing the environment.
+ */
+export interface RepoServiceUserDirs {
+  /** Home directory that global skill installs are rooted in. */
+  homeDir?: string;
+  /** Config directory holding the skill-dir registries. */
+  configDir?: string;
+}
+
+/**
  * RepoService handles repository initialization and upgrade operations.
  */
 export class RepoService {
   private readonly markerRepo: RepoMarkerRepository;
   private readonly skillAssets: SkillAssets;
   private readonly currentVersion: SwampVersion;
+  private readonly userDirs: RepoServiceUserDirs;
 
-  constructor(version: string) {
+  constructor(version: string, userDirs: RepoServiceUserDirs = {}) {
     this.markerRepo = new RepoMarkerRepository();
     this.skillAssets = new SkillAssets();
     this.currentVersion = SwampVersion.create(version);
+    this.userDirs = userDirs;
+  }
+
+  /**
+   * Resolves `name` inside an injected config dir, or `undefined` to leave the
+   * callee on its own environment-resolved default.
+   */
+  private userConfigPath(name: string): string | undefined {
+    const { configDir } = this.userDirs;
+    return configDir ? join(configDir, name) : undefined;
   }
 
   /**
@@ -574,7 +606,7 @@ export class RepoService {
   ): Promise<string[]> {
     let globalDirs: string[];
     try {
-      globalDirs = resolveUniqueGlobalSkillsDirs(tools);
+      globalDirs = resolveUniqueGlobalSkillsDirs(tools, this.userDirs.homeDir);
     } catch {
       // HOME/USERPROFILE not set — skip global installation
       logger.warn`Skipping global skill install: home directory not available`;
@@ -582,7 +614,9 @@ export class RepoService {
     }
 
     try {
-      const builtInRepo = new BuiltInToolSkillDirsRepository();
+      const builtInRepo = new BuiltInToolSkillDirsRepository(
+        this.userConfigPath(BUILTIN_TOOL_SKILL_DIRS_FILE),
+      );
       if (globalDirs.length > 0) {
         await builtInRepo.addDirs(globalDirs);
       } else if (!await builtInRepo.exists()) {
@@ -617,7 +651,9 @@ export class RepoService {
 
     let customToolDirsRepo: CustomToolSkillDirsRepository;
     try {
-      customToolDirsRepo = new CustomToolSkillDirsRepository();
+      customToolDirsRepo = new CustomToolSkillDirsRepository(
+        this.userConfigPath(CUSTOM_TOOL_SKILL_DIRS_FILE),
+      );
     } catch {
       logger
         .warn`Skipping custom tool global skill install: config directory not available`;
@@ -627,7 +663,7 @@ export class RepoService {
     for (const config of customConfigs) {
       let home: string;
       try {
-        home = homeDirectory();
+        home = this.userDirs.homeDir ?? homeDirectory();
       } catch {
         logger
           .warn`Skipping global skill install for ${config.name}: home directory not available`;
@@ -2460,7 +2496,10 @@ export default function swampAudit(pi) {
   ): Promise<void> {
     if (marker.telemetryDisabled === true) return;
     try {
-      await migrateRepoTelemetryToGlobal(repoPath.value);
+      await migrateRepoTelemetryToGlobal(
+        repoPath.value,
+        this.userConfigPath(SWAMP_SUBDIRS.telemetry),
+      );
     } catch {
       // Best-effort — never break an upgrade over telemetry.
     }

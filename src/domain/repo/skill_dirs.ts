@@ -79,11 +79,18 @@ export function resolveSkillsDir(
 /**
  * Resolves the absolute global skill directory for a tool, rooted in the
  * user's home directory. Returns null for "none" or unknown tools.
+ *
+ * `homeDir` overrides the ambient home directory. Callers that own a home
+ * directory (tests, sandboxed installs) pass it explicitly so the write
+ * target never depends on the process-wide `HOME`.
  */
-export function resolveGlobalSkillsDir(tool: string): string | null {
+export function resolveGlobalSkillsDir(
+  tool: string,
+  homeDir?: string,
+): string | null {
   const rel = GLOBAL_SKILL_DIRS[tool];
   if (!rel) return null;
-  return join(homeDirectory(), rel);
+  return join(homeDir ?? homeDirectory(), rel);
 }
 
 /**
@@ -123,11 +130,12 @@ export function resolveUniqueLocalSkillsDirs(
  */
 export function resolveUniqueGlobalSkillsDirs(
   tools: readonly string[],
+  homeDir?: string,
 ): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
   for (const tool of tools) {
-    const dir = resolveGlobalSkillsDir(tool);
+    const dir = resolveGlobalSkillsDir(tool, homeDir);
     if (dir && !seen.has(dir)) {
       seen.add(dir);
       result.push(dir);

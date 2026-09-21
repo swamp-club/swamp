@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { getTerminalColumns } from "./terminal_size.ts";
 
 Deno.test("getTerminalColumns: returns a positive integer", () => {
@@ -26,5 +26,23 @@ Deno.test("getTerminalColumns: returns a positive integer", () => {
   assert(
     Number.isInteger(columns),
     `Expected integer columns, got ${columns}`,
+  );
+});
+
+Deno.test("getTerminalColumns: uses the console width when it is positive", () => {
+  assertEquals(getTerminalColumns(() => ({ columns: 204, rows: 50 })), 204);
+});
+
+Deno.test("getTerminalColumns: falls back to 80 when the console reports zero", () => {
+  // A pty with no attached window reports 0 columns without throwing.
+  assertEquals(getTerminalColumns(() => ({ columns: 0, rows: 0 })), 80);
+});
+
+Deno.test("getTerminalColumns: falls back to 80 when no console is attached", () => {
+  assertEquals(
+    getTerminalColumns(() => {
+      throw new TypeError("The handle is invalid.");
+    }),
+    80,
   );
 });

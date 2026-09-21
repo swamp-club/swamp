@@ -33,6 +33,20 @@ import {
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { writeCustomTools } from "../../infrastructure/persistence/custom_tools_repository.ts";
 
+// init/upgrade install bundled skills into the user's home and config
+// directories. Test files share one process and one `Deno.env`, so a write
+// rooted in the ambient HOME both clobbers the developer's real
+// ~/.claude/skills and races with tests that repoint HOME at a temp
+// directory they are about to delete. Root those writes in the caller's
+// temp directory instead.
+function testService(version: string, tempDir: string): RepoService {
+  const homeDir = join(tempDir, "test-home");
+  return new RepoService(version, {
+    homeDir,
+    configDir: join(homeDir, ".config", "swamp"),
+  });
+}
+
 // Helper to create a temp directory for testing
 async function withTempDir(
   fn: (dir: string) => Promise<void>,
@@ -53,7 +67,7 @@ async function withTempDir(
 
 Deno.test("RepoService.init creates marker file", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.init(repoPath);
@@ -71,7 +85,7 @@ Deno.test("RepoService.init creates marker file", async () => {
 
 Deno.test("RepoService.init creates CLAUDE.md with section markers", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.init(repoPath);
@@ -96,7 +110,7 @@ Deno.test("RepoService.init merges managed section into existing CLAUDE.md", asy
     const claudeMdPath = join(tempDir, "CLAUDE.md");
     await Deno.writeTextFile(claudeMdPath, "# Existing Content\n");
 
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.init(repoPath);
@@ -116,7 +130,7 @@ Deno.test("RepoService.init merges managed section into existing CLAUDE.md", asy
 
 Deno.test("RepoService.init copies skills", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.init(repoPath);
@@ -133,9 +147,32 @@ Deno.test("RepoService.init copies skills", async () => {
   });
 });
 
+Deno.test("RepoService.init roots global skills in the injected user dirs", async () => {
+  await withTempDir(async (tempDir) => {
+    const homeDir = join(tempDir, "test-home");
+    const configDir = join(homeDir, ".config", "swamp");
+    const service = new RepoService("0.1.0", { homeDir, configDir });
+
+    await service.init(RepoPath.create(tempDir), { tools: ["claude"] });
+
+    const globalSkillsDir = join(homeDir, ".claude", "skills");
+    const skill = await Deno.stat(join(globalSkillsDir, "swamp", "SKILL.md"));
+    assertEquals(skill.isFile, true);
+
+    // The registry records only the injected dir. If the ambient HOME leaked
+    // in, this is where it would show up — and the suite shares one process
+    // and one Deno.env, so an ambient-home write races every test that
+    // repoints HOME at a temp directory it is about to delete.
+    const registry = JSON.parse(
+      await Deno.readTextFile(join(configDir, "builtin-tool-skill-dirs.json")),
+    );
+    assertEquals(registry, [globalSkillsDir]);
+  });
+});
+
 Deno.test("RepoService.init creates data directory structure", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath);
@@ -179,7 +216,7 @@ Deno.test("RepoService.init creates data directory structure", async () => {
 
 Deno.test("RepoService.init throws if already initialized without force", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     // First init succeeds
@@ -196,7 +233,7 @@ Deno.test("RepoService.init throws if already initialized without force", async 
 
 Deno.test("RepoService.init succeeds with force on existing repo", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     // First init
@@ -211,7 +248,7 @@ Deno.test("RepoService.init succeeds with force on existing repo", async () => {
 
 Deno.test("RepoService.init creates directory if not exists", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const newDir = join(tempDir, "new-repo");
     const repoPath = RepoPath.create(newDir);
 
@@ -224,7 +261,7 @@ Deno.test("RepoService.init creates directory if not exists", async () => {
 
 Deno.test("RepoService.isInitialized returns false for empty dir", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.isInitialized(repoPath);
@@ -235,7 +272,7 @@ Deno.test("RepoService.isInitialized returns false for empty dir", async () => {
 
 Deno.test("RepoService.isInitialized returns true after init", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath);
@@ -247,7 +284,7 @@ Deno.test("RepoService.isInitialized returns true after init", async () => {
 
 Deno.test("RepoService.upgrade throws on non-initialized repo", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await assertRejects(
@@ -261,12 +298,12 @@ Deno.test("RepoService.upgrade throws on non-initialized repo", async () => {
 Deno.test("RepoService.upgrade updates version", async () => {
   await withTempDir(async (tempDir) => {
     // Init with old version
-    const oldService = new RepoService("0.1.0");
+    const oldService = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await oldService.init(repoPath);
 
     // Upgrade with new version
-    const newService = new RepoService("0.2.0");
+    const newService = testService("0.2.0", tempDir);
     const result = await newService.upgrade(repoPath);
 
     assertEquals(result.previousVersion, "0.1.0");
@@ -277,7 +314,7 @@ Deno.test("RepoService.upgrade updates version", async () => {
 
 Deno.test("RepoService.getMarker returns null for non-initialized", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     const marker = await service.getMarker(repoPath);
@@ -288,7 +325,7 @@ Deno.test("RepoService.getMarker returns null for non-initialized", async () => 
 
 Deno.test("RepoService.getMarker returns data after init", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath);
@@ -301,7 +338,7 @@ Deno.test("RepoService.getMarker returns data after init", async () => {
 
 Deno.test("RepoService.init creates settings.local.json for claude", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.init(repoPath);
@@ -335,7 +372,7 @@ Deno.test("RepoService.init does not overwrite existing settings.local.json", as
       JSON.stringify(existingSettings, null, 2),
     );
 
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.init(repoPath);
@@ -352,7 +389,7 @@ Deno.test("RepoService.init does not overwrite existing settings.local.json", as
 Deno.test("RepoService.upgrade merges new permissions into existing settings", async () => {
   await withTempDir(async (tempDir) => {
     // Init first
-    const oldService = new RepoService("0.1.0");
+    const oldService = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await oldService.init(repoPath);
 
@@ -369,7 +406,7 @@ Deno.test("RepoService.upgrade merges new permissions into existing settings", a
     );
 
     // Upgrade
-    const newService = new RepoService("0.2.0");
+    const newService = testService("0.2.0", tempDir);
     const result = await newService.upgrade(repoPath);
 
     assertEquals(result.settingsUpdated, true);
@@ -394,7 +431,7 @@ Deno.test("RepoService.upgrade merges new permissions into existing settings", a
 Deno.test("RepoService.upgrade creates settings if they do not exist", async () => {
   await withTempDir(async (tempDir) => {
     // Init first
-    const oldService = new RepoService("0.1.0");
+    const oldService = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await oldService.init(repoPath);
 
@@ -403,7 +440,7 @@ Deno.test("RepoService.upgrade creates settings if they do not exist", async () 
     await Deno.remove(settingsPath);
 
     // Upgrade
-    const newService = new RepoService("0.2.0");
+    const newService = testService("0.2.0", tempDir);
     const result = await newService.upgrade(repoPath);
 
     assertEquals(result.settingsUpdated, true);
@@ -418,12 +455,12 @@ Deno.test("RepoService.upgrade creates settings if they do not exist", async () 
 Deno.test("RepoService.upgrade returns false if settings unchanged", async () => {
   await withTempDir(async (tempDir) => {
     // Init first
-    const oldService = new RepoService("0.1.0");
+    const oldService = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await oldService.init(repoPath);
 
     // Upgrade immediately (settings already have all permissions)
-    const newService = new RepoService("0.2.0");
+    const newService = testService("0.2.0", tempDir);
     const result = await newService.upgrade(repoPath);
 
     assertEquals(result.settingsUpdated, false);
@@ -432,11 +469,11 @@ Deno.test("RepoService.upgrade returns false if settings unchanged", async () =>
 
 Deno.test("RepoService.upgrade includes .swamp.yaml in changedFiles", async () => {
   await withTempDir(async (tempDir) => {
-    const oldService = new RepoService("0.1.0");
+    const oldService = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await oldService.init(repoPath);
 
-    const newService = new RepoService("0.2.0");
+    const newService = testService("0.2.0", tempDir);
     const result = await newService.upgrade(repoPath);
 
     assertEquals(result.changedFiles.includes(".swamp.yaml"), true);
@@ -445,14 +482,14 @@ Deno.test("RepoService.upgrade includes .swamp.yaml in changedFiles", async () =
 
 Deno.test("RepoService.upgrade includes CLAUDE.md in changedFiles when instructions change", async () => {
   await withTempDir(async (tempDir) => {
-    const oldService = new RepoService("0.1.0");
+    const oldService = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await oldService.init(repoPath);
 
     // Remove CLAUDE.md so the upgrade recreates it
     await Deno.remove(join(tempDir, "CLAUDE.md"));
 
-    const newService = new RepoService("0.2.0");
+    const newService = testService("0.2.0", tempDir);
     const result = await newService.upgrade(repoPath);
 
     assertEquals(result.instructionsUpdated, true);
@@ -462,14 +499,14 @@ Deno.test("RepoService.upgrade includes CLAUDE.md in changedFiles when instructi
 
 Deno.test("RepoService.upgrade includes settings file in changedFiles when settings change", async () => {
   await withTempDir(async (tempDir) => {
-    const oldService = new RepoService("0.1.0");
+    const oldService = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await oldService.init(repoPath);
 
     // Remove settings so the upgrade recreates them
     await Deno.remove(join(tempDir, ".claude", "settings.local.json"));
 
-    const newService = new RepoService("0.2.0");
+    const newService = testService("0.2.0", tempDir);
     const result = await newService.upgrade(repoPath);
 
     assertEquals(result.settingsUpdated, true);
@@ -482,11 +519,11 @@ Deno.test("RepoService.upgrade includes settings file in changedFiles when setti
 
 Deno.test("RepoService.upgrade omits settings from changedFiles when unchanged", async () => {
   await withTempDir(async (tempDir) => {
-    const oldService = new RepoService("0.1.0");
+    const oldService = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await oldService.init(repoPath);
 
-    const newService = new RepoService("0.2.0");
+    const newService = testService("0.2.0", tempDir);
     const result = await newService.upgrade(repoPath);
 
     assertEquals(
@@ -498,16 +535,16 @@ Deno.test("RepoService.upgrade omits settings from changedFiles when unchanged",
 
 Deno.test("RepoService.upgrade includes .gitignore in changedFiles when managed", async () => {
   await withTempDir(async (tempDir) => {
-    const oldService = new RepoService("0.1.0");
+    const oldService = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await oldService.init(repoPath);
 
     // Enable gitignore management via first upgrade, then remove the file
-    const midService = new RepoService("0.1.1");
+    const midService = testService("0.1.1", tempDir);
     await midService.upgrade(repoPath, { includeGitignore: true });
     await Deno.remove(join(tempDir, ".gitignore"));
 
-    const newService = new RepoService("0.2.0");
+    const newService = testService("0.2.0", tempDir);
     const result = await newService.upgrade(repoPath);
 
     assertEquals(result.changedFiles.includes(".gitignore"), true);
@@ -516,7 +553,7 @@ Deno.test("RepoService.upgrade includes .gitignore in changedFiles when managed"
 
 Deno.test("RepoService.init generates CLAUDE.md with skills section", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath);
@@ -532,7 +569,7 @@ Deno.test("RepoService.init generates CLAUDE.md with skills section", async () =
 
 Deno.test("RepoService.init generates CLAUDE.md with extension search guidance", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath);
@@ -548,7 +585,7 @@ Deno.test("RepoService.init generates CLAUDE.md with extension search guidance",
 
 Deno.test("RepoService.init generates CLAUDE.md disambiguating workflow to swamp workflow", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath);
@@ -564,7 +601,7 @@ Deno.test("RepoService.init generates CLAUDE.md disambiguating workflow to swamp
 
 Deno.test("RepoService.init generates CLAUDE.md with anti-bypass guidance", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath);
@@ -584,7 +621,7 @@ Deno.test("RepoService.init generates CLAUDE.md with anti-bypass guidance", asyn
 
 Deno.test("RepoService.init always creates .gitignore with managed section", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.init(repoPath);
@@ -615,7 +652,7 @@ Deno.test("RepoService.init always creates .gitignore with managed section", asy
 
 Deno.test("RepoService.init sets gitignoreManaged in marker", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath);
@@ -635,7 +672,7 @@ Deno.test("RepoService.init appends managed section to existing .gitignore", asy
       "# My existing gitignore\nnode_modules/\n",
     );
 
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.init(repoPath);
@@ -657,7 +694,7 @@ Deno.test("RepoService.init appends managed section to existing .gitignore", asy
 
 Deno.test("RepoService.init with force returns unchanged when section is current", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     // First init creates .gitignore with managed section
@@ -676,7 +713,7 @@ Deno.test("RepoService.init with force returns unchanged when section is current
 
 Deno.test("RepoService.init with cursor creates .cursor/skills/ and .cursor/rules/swamp.mdc", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.init(repoPath, { tools: ["cursor"] });
@@ -725,7 +762,7 @@ Deno.test("RepoService.init with cursor creates .cursor/skills/ and .cursor/rule
 
 Deno.test("RepoService.init with opencode creates .agents/skills/ and AGENTS.md", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.init(repoPath, { tools: ["opencode"] });
@@ -755,7 +792,7 @@ Deno.test("RepoService.init with opencode creates .agents/skills/ and AGENTS.md"
 
 Deno.test("RepoService.init with codex creates .agents/skills/ and AGENTS.md", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.init(repoPath, { tools: ["codex"] });
@@ -777,7 +814,7 @@ Deno.test("RepoService.init with codex creates .agents/skills/ and AGENTS.md", a
 
 Deno.test("RepoService.init with copilot creates .agents/skills/, AGENTS.md, and .github/hooks/", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.init(repoPath, { tools: ["copilot"] });
@@ -825,7 +862,7 @@ Deno.test("RepoService.init with copilot creates .agents/skills/, AGENTS.md, and
 
 Deno.test("RepoService.init stores tool in marker", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath, { tools: ["cursor"] });
@@ -837,7 +874,7 @@ Deno.test("RepoService.init stores tool in marker", async () => {
 
 Deno.test("RepoService.init stores serverAddress in marker", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath, {
@@ -851,7 +888,7 @@ Deno.test("RepoService.init stores serverAddress in marker", async () => {
 
 Deno.test("RepoService.init omits serverAddress when not provided", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath);
@@ -863,14 +900,14 @@ Deno.test("RepoService.init omits serverAddress when not provided", async () => 
 
 Deno.test("RepoService.upgrade reads tool from marker", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     // Init with cursor
     await service.init(repoPath, { tools: ["cursor"] });
 
     // Upgrade without specifying tool
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath);
 
     assertEquals(result.tools[0], "cursor");
@@ -882,14 +919,14 @@ Deno.test("RepoService.upgrade reads tool from marker", async () => {
 
 Deno.test("RepoService.upgrade allows switching tool via --tool", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     // Init with claude (default)
     await service.init(repoPath);
 
     // Upgrade with tool switch to cursor
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath, {
       tools: ["cursor"],
     });
@@ -915,14 +952,14 @@ Deno.test("RepoService.upgrade allows switching tool via --tool", async () => {
 
 Deno.test("RepoService.upgrade creates AGENTS.md when switching to codex", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     // Init with claude (default)
     await service.init(repoPath);
 
     // Upgrade with tool switch to codex
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath, { tools: ["codex"] });
 
     assertEquals(result.tools[0], "codex");
@@ -939,14 +976,14 @@ Deno.test("RepoService.upgrade creates AGENTS.md when switching to codex", async
 
 Deno.test("RepoService.upgrade creates AGENTS.md when switching to copilot", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     // Init with claude (default)
     await service.init(repoPath);
 
     // Upgrade with tool switch to copilot
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath, {
       tools: ["copilot"],
     });
@@ -965,7 +1002,7 @@ Deno.test("RepoService.upgrade creates AGENTS.md when switching to copilot", asy
 
 Deno.test("RepoService.upgrade prepends managed section when file has no swamp content", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     // Init with claude
@@ -976,7 +1013,7 @@ Deno.test("RepoService.upgrade prepends managed section when file has no swamp c
     await Deno.writeTextFile(instructionsPath, "# Old content\n");
 
     // Upgrade — should prepend managed section
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath);
 
     assertEquals(result.instructionsUpdated, true);
@@ -1000,14 +1037,14 @@ Deno.test("RepoService.upgrade prepends managed section when file has no swamp c
 
 Deno.test("RepoService.upgrade returns instructionsUpdated false when content is current", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     // Init with claude — instructions file is created with markers
     await service.init(repoPath);
 
     // Upgrade with same version — managed section hasn't changed
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath);
 
     assertEquals(result.instructionsUpdated, false);
@@ -1024,7 +1061,7 @@ Deno.test("RepoService.upgrade returns instructionsUpdated false when content is
 
 Deno.test("RepoService.upgrade defaults to claude for pre-existing repos without tool", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     // Init with default (claude) - simulate old marker without tool field
@@ -1037,7 +1074,7 @@ Deno.test("RepoService.upgrade defaults to claude for pre-existing repos without
     await Deno.writeTextFile(markerPath, updatedMarker);
 
     // Upgrade without specifying tool
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath);
 
     assertEquals(result.tools[0], "claude");
@@ -1046,12 +1083,12 @@ Deno.test("RepoService.upgrade defaults to claude for pre-existing repos without
 
 Deno.test("RepoService.upgrade skips settings for non-claude tools", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath, { tools: ["cursor"] });
 
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath);
 
     assertEquals(result.settingsUpdated, false);
@@ -1060,13 +1097,13 @@ Deno.test("RepoService.upgrade skips settings for non-claude tools", async () =>
 
 Deno.test("RepoService.upgrade manages .gitignore when marker has gitignoreManaged from init", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     // Init always sets gitignoreManaged: true
     await service.init(repoPath);
 
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath);
 
     assertEquals(result.gitignoreAction, "unchanged");
@@ -1075,7 +1112,7 @@ Deno.test("RepoService.upgrade manages .gitignore when marker has gitignoreManag
 
 Deno.test("RepoService.upgrade creates .gitignore when marker has gitignoreManaged", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     // Init creates .gitignore and sets marker
@@ -1084,7 +1121,7 @@ Deno.test("RepoService.upgrade creates .gitignore when marker has gitignoreManag
     await Deno.remove(gitignorePath);
 
     // Upgrade should recreate .gitignore because marker has gitignoreManaged
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath);
 
     assertEquals(result.gitignoreAction, "created");
@@ -1102,14 +1139,14 @@ Deno.test("RepoService.upgrade creates .gitignore when marker has gitignoreManag
 
 Deno.test("RepoService.upgrade returns unchanged when section is current", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     // Init creates .gitignore with managed section
     await service.init(repoPath);
 
     // Upgrade — section already matches (marker has gitignoreManaged: true)
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath);
 
     assertEquals(result.gitignoreAction, "unchanged");
@@ -1118,7 +1155,7 @@ Deno.test("RepoService.upgrade returns unchanged when section is current", async
 
 Deno.test("RepoService.init cursor instructions have MDC frontmatter at byte 0 with managed section", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath, { tools: ["cursor"] });
@@ -1139,7 +1176,7 @@ Deno.test("RepoService.init cursor instructions have MDC frontmatter at byte 0 w
 Deno.test("RepoService.init includes tool-specific gitignore entries", async () => {
   // Claude has tool-specific gitignore entries for local config files
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await service.init(repoPath, { tools: ["claude"] });
     const content = await Deno.readTextFile(join(tempDir, ".gitignore"));
@@ -1166,7 +1203,7 @@ Deno.test("RepoService.init includes tool-specific gitignore entries", async () 
   ];
   for (const tool of toolsWithNoSkillsIgnore) {
     await withTempDir(async (tempDir) => {
-      const service = new RepoService("0.1.0");
+      const service = testService("0.1.0", tempDir);
       const repoPath = RepoPath.create(tempDir);
 
       await service.init(repoPath, { tools: [tool] });
@@ -1196,7 +1233,7 @@ Deno.test("RepoService.init preserves user content before managed section", asyn
     const gitignorePath = join(tempDir, ".gitignore");
     await Deno.writeTextFile(gitignorePath, "node_modules/\ndist/\n");
 
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath);
@@ -1214,7 +1251,7 @@ Deno.test("RepoService.init preserves user content before managed section", asyn
 
 Deno.test("RepoService.init replaces managed section on tool switch", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     // Init with claude
@@ -1241,7 +1278,7 @@ Deno.test("RepoService.init replaces managed section on tool switch", async () =
 
 Deno.test("RepoService.upgrade updates managed section on tool switch", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     // Init with claude
@@ -1253,7 +1290,7 @@ Deno.test("RepoService.upgrade updates managed section on tool switch", async ()
     await Deno.writeTextFile(gitignorePath, original + "*.log\n");
 
     // Upgrade with tool switch to cursor (marker has gitignoreManaged: true)
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath, {
       tools: ["cursor"],
     });
@@ -1274,7 +1311,7 @@ Deno.test("RepoService.init handles .gitignore without trailing newline", async 
     const gitignorePath = join(tempDir, ".gitignore");
     await Deno.writeTextFile(gitignorePath, "node_modules/"); // no trailing newline
 
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.init(repoPath);
@@ -1312,7 +1349,7 @@ Deno.test("RepoService.init migrates legacy gitignore format", async () => {
 `;
     await Deno.writeTextFile(gitignorePath, legacyContent);
 
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.init(repoPath);
@@ -1355,7 +1392,7 @@ build/
 `;
     await Deno.writeTextFile(gitignorePath, legacyContent);
 
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.init(repoPath);
@@ -1381,13 +1418,13 @@ build/
 
 Deno.test("RepoService.upgrade with includeGitignore true opts in and persists", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath);
 
     // Upgrade with explicit opt-in
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath, {
       includeGitignore: true,
     });
@@ -1402,14 +1439,14 @@ Deno.test("RepoService.upgrade with includeGitignore true opts in and persists",
 
 Deno.test("RepoService.upgrade with includeGitignore false opts out and persists", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     // Init (always sets gitignoreManaged: true)
     await service.init(repoPath);
 
     // Upgrade with explicit opt-out
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath, {
       includeGitignore: false,
     });
@@ -1424,14 +1461,14 @@ Deno.test("RepoService.upgrade with includeGitignore false opts out and persists
 
 Deno.test("RepoService.upgrade without flag honors marker gitignoreManaged true", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     // Init (always sets gitignoreManaged: true)
     await service.init(repoPath);
 
     // Upgrade without specifying flag — should honor marker
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath);
 
     assertEquals(result.gitignoreAction, "unchanged");
@@ -1440,14 +1477,14 @@ Deno.test("RepoService.upgrade without flag honors marker gitignoreManaged true"
 
 Deno.test("RepoService.upgrade without flag honors marker from init", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     // Init always sets gitignoreManaged: true
     await service.init(repoPath);
 
     // Upgrade without specifying flag — should honor marker and manage gitignore
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath);
 
     assertEquals(result.gitignoreAction, "unchanged");
@@ -1458,7 +1495,7 @@ Deno.test("RepoService.upgrade without flag honors marker from init", async () =
 
 Deno.test("RepoService.init with kiro creates steering file with name-based skill references", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.init(repoPath, { tools: ["kiro"] });
@@ -1502,14 +1539,14 @@ Deno.test("RepoService.init with kiro creates steering file with name-based skil
 
 Deno.test("RepoService.upgrade allows switching to kiro and creates steering file", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     // Init with claude (default)
     await service.init(repoPath);
 
     // Upgrade with tool switch to kiro
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath, { tools: ["kiro"] });
 
     assertEquals(result.tools[0], "kiro");
@@ -1545,7 +1582,7 @@ Deno.test("RepoService.upgrade allows switching to kiro and creates steering fil
 
 Deno.test("RepoService.init with kiro does not create claude settings", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath, { tools: ["kiro"] });
@@ -1569,7 +1606,7 @@ Deno.test("RepoService.init with kiro does not create claude settings", async ()
 
 Deno.test("RepoService.init kiro gitignore does not include skills", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath, { tools: ["kiro"] });
@@ -1585,7 +1622,7 @@ Deno.test("RepoService.init kiro gitignore does not include skills", async () =>
 
 Deno.test("RepoService.init with cursor creates .cursor/hooks.json", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.init(repoPath, { tools: ["cursor"] });
@@ -1610,7 +1647,7 @@ Deno.test("RepoService.init with cursor creates .cursor/hooks.json", async () =>
 
 Deno.test("RepoService.init with cursor force reinit merges hooks", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     // First init creates hooks
@@ -1641,12 +1678,12 @@ Deno.test("RepoService.init with cursor force reinit merges hooks", async () => 
 
 Deno.test("RepoService.upgrade with cursor updates hooks", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath, { tools: ["cursor"] });
 
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath, {
       tools: ["cursor"],
     });
@@ -1667,7 +1704,7 @@ Deno.test("RepoService.upgrade with cursor updates hooks", async () => {
 
 Deno.test("RepoService.init with kiro creates .kiro/hooks/swamp-audit.kiro.hook", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.init(repoPath, { tools: ["kiro"] });
@@ -1700,12 +1737,12 @@ Deno.test("RepoService.init with kiro creates .kiro/hooks/swamp-audit.kiro.hook"
 
 Deno.test("RepoService.upgrade with kiro updates hooks", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath, { tools: ["kiro"] });
 
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath, { tools: ["kiro"] });
 
     assertEquals(result.tools[0], "kiro");
@@ -1727,7 +1764,7 @@ Deno.test("RepoService.upgrade with kiro updates hooks", async () => {
 
 Deno.test("RepoService.upgrade with kiro removes old swamp-audit.json hook file", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath, { tools: ["kiro"] });
@@ -1736,7 +1773,7 @@ Deno.test("RepoService.upgrade with kiro removes old swamp-audit.json hook file"
     const oldHookPath = join(tempDir, ".kiro", "hooks", "swamp-audit.json");
     await Deno.writeTextFile(oldHookPath, "{}");
 
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     await upgradeService.upgrade(repoPath, { tools: ["kiro"] });
 
     // Old .json hook file should be removed
@@ -1762,7 +1799,7 @@ Deno.test("RepoService.upgrade with kiro removes old swamp-audit.json hook file"
 
 Deno.test("RepoService.init with kiro creates .kiro/agents/swamp.json", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath, { tools: ["kiro"] });
@@ -1792,12 +1829,12 @@ Deno.test("RepoService.init with kiro creates .kiro/agents/swamp.json", async ()
 
 Deno.test("RepoService.upgrade with kiro updates agent config", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath, { tools: ["kiro"] });
 
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     await upgradeService.upgrade(repoPath, { tools: ["kiro"] });
 
     const configPath = join(tempDir, ".kiro", "agents", "swamp.json");
@@ -1814,7 +1851,7 @@ Deno.test("RepoService.upgrade with kiro updates agent config", async () => {
 
 Deno.test("RepoService.init with kiro produces hook, agent, and cli.json together", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath, { tools: ["kiro"] });
@@ -1848,7 +1885,7 @@ Deno.test("RepoService.init with kiro merges existing cli.json preserving unrela
       JSON.stringify({ "some.unrelated.setting": 42 }, null, 2) + "\n",
     );
 
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await service.init(repoPath, { tools: ["kiro"] });
 
@@ -1869,7 +1906,7 @@ Deno.test("RepoService.init with kiro leaves existing non-swamp defaultAgent alo
         "\n",
     );
 
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await service.init(repoPath, { tools: ["kiro"] });
 
@@ -1882,7 +1919,7 @@ Deno.test("RepoService.init with kiro leaves existing non-swamp defaultAgent alo
 
 Deno.test("RepoService.init with opencode creates .opencode/plugins/swamp-audit.ts", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.init(repoPath, { tools: ["opencode"] });
@@ -1902,12 +1939,12 @@ Deno.test("RepoService.init with opencode creates .opencode/plugins/swamp-audit.
 
 Deno.test("RepoService.upgrade with opencode updates plugin", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath, { tools: ["opencode"] });
 
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath, {
       tools: ["opencode"],
     });
@@ -1923,7 +1960,7 @@ Deno.test("RepoService.upgrade with opencode updates plugin", async () => {
 
 Deno.test("RepoService.init with opencode force reinit overwrites plugin", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     // First init
@@ -1946,7 +1983,7 @@ Deno.test("RepoService.init with opencode force reinit overwrites plugin", async
 
 Deno.test("RepoService.upgrade with markers preserves user content before and after section", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath);
@@ -1959,7 +1996,7 @@ Deno.test("RepoService.upgrade with markers preserves user content before and af
     await Deno.writeTextFile(claudeMdPath, withUserContent);
 
     // Upgrade — should replace only managed section
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath);
 
     // Content hasn't actually changed in the managed section, so no update
@@ -1978,7 +2015,7 @@ Deno.test("RepoService.upgrade with markers preserves user content before and af
 
 Deno.test("RepoService.upgrade with markers replaces only managed section when template changes", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath);
@@ -1997,7 +2034,7 @@ Deno.test("RepoService.upgrade with markers replaces only managed section when t
     await Deno.writeTextFile(claudeMdPath, tampered);
 
     // Upgrade — should replace managed section, preserve user content
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath);
 
     assertEquals(result.instructionsUpdated, true);
@@ -2016,7 +2053,7 @@ Deno.test("RepoService.upgrade with markers replaces only managed section when t
 
 Deno.test("RepoService.upgrade migrates legacy content (template-only) to markers", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath);
@@ -2046,7 +2083,7 @@ Use \`swamp --help\` to see available commands.
     await Deno.writeTextFile(claudeMdPath, legacyContent);
 
     // Upgrade — should migrate to markers
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath);
 
     assertEquals(result.instructionsUpdated, true);
@@ -2064,7 +2101,7 @@ Use \`swamp --help\` to see available commands.
 
 Deno.test("RepoService.upgrade migrates legacy content and preserves user additions after template", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath);
@@ -2085,7 +2122,7 @@ Always write tests.
 `;
     await Deno.writeTextFile(claudeMdPath, legacyWithUserContent);
 
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath);
 
     assertEquals(result.instructionsUpdated, true);
@@ -2103,7 +2140,7 @@ Always write tests.
 
 Deno.test("RepoService.upgrade migrates legacy content and preserves user additions before template", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath);
@@ -2124,7 +2161,7 @@ Use \`swamp --help\` to see available commands.
 `;
     await Deno.writeTextFile(claudeMdPath, legacyWithUserBefore);
 
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath);
 
     assertEquals(result.instructionsUpdated, true);
@@ -2142,7 +2179,7 @@ Use \`swamp --help\` to see available commands.
 
 Deno.test("RepoService.upgrade cursor uses shared mode with managed section markers", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath, { tools: ["cursor"] });
@@ -2156,7 +2193,7 @@ Deno.test("RepoService.upgrade cursor uses shared mode with managed section mark
       original + "\n## My Custom Rules\n\nUse TypeScript strict mode.\n",
     );
 
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath, {
       tools: ["cursor"],
     });
@@ -2178,7 +2215,7 @@ Deno.test("RepoService.upgrade cursor uses shared mode with managed section mark
 
 Deno.test("RepoService.upgrade kiro uses shared mode with managed section markers", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath, { tools: ["kiro"] });
@@ -2197,7 +2234,7 @@ Deno.test("RepoService.upgrade kiro uses shared mode with managed section marker
       original + "\n## My Custom Rules\n\nUse TypeScript strict mode.\n",
     );
 
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath, { tools: ["kiro"] });
 
     assertEquals(result.instructionsUpdated, false);
@@ -2217,7 +2254,7 @@ Deno.test("RepoService.upgrade kiro uses shared mode with managed section marker
 
 Deno.test("RepoService.init with opencode creates AGENTS.md with markers", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath, { tools: ["opencode"] });
@@ -2235,7 +2272,7 @@ Deno.test("RepoService.init with opencode creates AGENTS.md with markers", async
 
 Deno.test("RepoService.upgrade recovers when END marker is missing from CLAUDE.md", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath);
@@ -2250,7 +2287,7 @@ Deno.test("RepoService.upgrade recovers when END marker is missing from CLAUDE.m
     await Deno.writeTextFile(claudeMdPath, corrupted);
 
     // Upgrade should recover — falls through to prepend
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath);
 
     assertEquals(result.instructionsUpdated, true);
@@ -2284,7 +2321,7 @@ Deno.test("RepoService.upgrade recovers when END marker is missing from CLAUDE.m
 
 Deno.test("RepoService.upgrade legacy migration with partial template match preserves user content", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath);
@@ -2305,7 +2342,7 @@ User content here.
 `;
     await Deno.writeTextFile(claudeMdPath, legacyWithEditedEnd);
 
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath);
 
     assertEquals(result.instructionsUpdated, true);
@@ -2345,7 +2382,7 @@ User content here.
 
 Deno.test("RepoService.upgrade with duplicate managed sections throws clear error", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath);
@@ -2356,7 +2393,7 @@ Deno.test("RepoService.upgrade with duplicate managed sections throws clear erro
     const duplicated = original + "\n" + original;
     await Deno.writeTextFile(claudeMdPath, duplicated);
 
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     await assertRejects(
       () => upgradeService.upgrade(repoPath),
       Error,
@@ -2367,7 +2404,7 @@ Deno.test("RepoService.upgrade with duplicate managed sections throws clear erro
 
 Deno.test("RepoService.upgrade with duplicate END markers throws clear error", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath);
@@ -2379,7 +2416,7 @@ Deno.test("RepoService.upgrade with duplicate END markers throws clear error", a
       "\n<!-- END swamp managed section -->\n";
     await Deno.writeTextFile(claudeMdPath, withDuplicateEnd);
 
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     await assertRejects(
       () => upgradeService.upgrade(repoPath),
       Error,
@@ -2392,7 +2429,7 @@ Deno.test("RepoService.upgrade with duplicate END markers throws clear error", a
 
 Deno.test("RepoService.init with tool none creates core structure but skips skills and instructions", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.init(repoPath, { tools: [] });
@@ -2441,14 +2478,14 @@ Deno.test("RepoService.init with tool none creates core structure but skips skil
 
 Deno.test("RepoService.upgrade with tool none skips skills and instructions", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     // Init with none first
     await service.init(repoPath, { tools: [] });
 
     // Upgrade
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath, { tools: [] });
 
     assertEquals(result.tools, []);
@@ -2460,7 +2497,7 @@ Deno.test("RepoService.upgrade with tool none skips skills and instructions", as
 
 Deno.test("RepoService.init with multiple tools writes scaffolding for each", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.init(repoPath, {
@@ -2487,7 +2524,7 @@ Deno.test("RepoService.init with multiple tools writes scaffolding for each", as
 
 Deno.test("RepoService.init with duplicate --tool values dedupes", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.init(repoPath, {
@@ -2500,7 +2537,7 @@ Deno.test("RepoService.init with duplicate --tool values dedupes", async () => {
 
 Deno.test("RepoService.init with shared-dir tools (opencode + codex) does not gitignore skills", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath, { tools: ["opencode", "codex", "copilot"] });
@@ -2513,11 +2550,11 @@ Deno.test("RepoService.init with shared-dir tools (opencode + codex) does not gi
 
 Deno.test("RepoService.upgrade with no tool flag preserves marker.tools", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await service.init(repoPath, { tools: ["claude", "kiro"] });
 
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath, {});
 
     assertEquals(result.tools, ["claude", "kiro"]);
@@ -2529,11 +2566,11 @@ Deno.test("RepoService.upgrade with no tool flag preserves marker.tools", async 
 
 Deno.test("RepoService.upgrade replacing the tool list computes the diff", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await service.init(repoPath, { tools: ["claude", "kiro"] });
 
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath, {
       tools: ["claude", "opencode"],
     });
@@ -2546,11 +2583,11 @@ Deno.test("RepoService.upgrade replacing the tool list computes the diff", async
 
 Deno.test("RepoService.upgrade clears the tool list when given an empty tools array", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await service.init(repoPath, { tools: ["claude", "kiro"] });
 
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath, { tools: [] });
 
     assertEquals(result.tools, []);
@@ -2561,7 +2598,7 @@ Deno.test("RepoService.upgrade clears the tool list when given an empty tools ar
 
 Deno.test("RepoService.upgrade adding a tool flags pulled extensions to reinstall", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await service.init(repoPath, { tools: ["claude"] });
 
@@ -2573,7 +2610,7 @@ Deno.test("RepoService.upgrade adding a tool flags pulled extensions to reinstal
       "# pulled extension",
     );
 
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath, {
       tools: ["claude", "kiro"],
     });
@@ -2587,7 +2624,7 @@ Deno.test("RepoService.upgrade adding a tool flags pulled extensions to reinstal
 
 Deno.test("RepoService.upgrade walks the OLD primary skills dir when primary changes", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await service.init(repoPath, { tools: ["claude"] });
 
@@ -2602,7 +2639,7 @@ Deno.test("RepoService.upgrade walks the OLD primary skills dir when primary cha
     // Replace claude entirely with kiro — primary becomes kiro after the
     // upgrade, but the walk must still hit .claude/skills/ to find the
     // existing pulled extension.
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath, {
       tools: ["kiro"],
     });
@@ -2617,7 +2654,7 @@ Deno.test("RepoService.upgrade walks the OLD primary skills dir when primary cha
 
 Deno.test("RepoService.upgrade suppresses extensions warning for shared skills dir", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await service.init(repoPath, { tools: ["opencode"] });
 
@@ -2630,7 +2667,7 @@ Deno.test("RepoService.upgrade suppresses extensions warning for shared skills d
 
     // opencode and codex share `.agents/skills/`, so adding codex should
     // not emit a reinstall warning — the extension is already there.
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath, {
       tools: ["opencode", "codex"],
     });
@@ -2642,11 +2679,11 @@ Deno.test("RepoService.upgrade suppresses extensions warning for shared skills d
 
 Deno.test("RepoService.upgrade adding a tool with no pulled extensions emits no warning", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await service.init(repoPath, { tools: ["claude"] });
 
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     const result = await upgradeService.upgrade(repoPath, {
       tools: ["claude", "kiro"],
     });
@@ -2688,7 +2725,7 @@ Deno.test("hasOrphanedSwampDir: returns true when .swamp/ exists without .swamp.
   await withTempDir(async (tempDir) => {
     await ensureDir(join(tempDir, ".swamp"));
 
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     assertEquals(await service.hasOrphanedSwampDir(repoPath), true);
@@ -2697,7 +2734,7 @@ Deno.test("hasOrphanedSwampDir: returns true when .swamp/ exists without .swamp.
 
 Deno.test("hasOrphanedSwampDir: returns false when neither .swamp/ nor .swamp.yaml exist", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     assertEquals(await service.hasOrphanedSwampDir(repoPath), false);
@@ -2706,7 +2743,7 @@ Deno.test("hasOrphanedSwampDir: returns false when neither .swamp/ nor .swamp.ya
 
 Deno.test("hasOrphanedSwampDir: returns true even when fully initialized (caller gates on isInitialized first)", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await service.init(repoPath);
 
@@ -2718,7 +2755,7 @@ Deno.test("upgrade: throws orphan-specific error when .swamp/ exists without mar
   await withTempDir(async (tempDir) => {
     await ensureDir(join(tempDir, ".swamp"));
 
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     const error = await assertRejects(
@@ -2822,7 +2859,7 @@ Deno.test("removeLocalBundledSkills: no-op when directory already gone", async (
 
 Deno.test("RepoService.upgrade: returns untrusted collectives from lockfile", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await service.init(repoPath);
 
@@ -2837,7 +2874,7 @@ Deno.test("RepoService.upgrade: returns untrusted collectives from lockfile", as
       }),
     );
 
-    const newService = new RepoService("0.2.0");
+    const newService = testService("0.2.0", tempDir);
     const result = await newService.upgrade(repoPath);
 
     assertEquals(result.untrustedCollectives, ["acme"]);
@@ -2846,7 +2883,7 @@ Deno.test("RepoService.upgrade: returns untrusted collectives from lockfile", as
 
 Deno.test("RepoService.upgrade: returns empty when all collectives are trusted", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await service.init(repoPath);
 
@@ -2867,7 +2904,7 @@ Deno.test("RepoService.upgrade: returns empty when all collectives are trusted",
       }),
     );
 
-    const newService = new RepoService("0.2.0");
+    const newService = testService("0.2.0", tempDir);
     const result = await newService.upgrade(repoPath);
 
     assertEquals(result.untrustedCollectives, []);
@@ -2876,7 +2913,7 @@ Deno.test("RepoService.upgrade: returns empty when all collectives are trusted",
 
 Deno.test("RepoService.upgrade: skips untrusted warning when trustMemberCollectives is on", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await service.init(repoPath);
 
@@ -2896,7 +2933,7 @@ Deno.test("RepoService.upgrade: skips untrusted warning when trustMemberCollecti
       }),
     );
 
-    const newService = new RepoService("0.2.0");
+    const newService = testService("0.2.0", tempDir);
     const result = await newService.upgrade(repoPath);
 
     assertEquals(result.untrustedCollectives, []);
@@ -2905,11 +2942,11 @@ Deno.test("RepoService.upgrade: skips untrusted warning when trustMemberCollecti
 
 Deno.test("RepoService.upgrade: returns empty when no lockfile exists", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await service.init(repoPath);
 
-    const newService = new RepoService("0.2.0");
+    const newService = testService("0.2.0", tempDir);
     const result = await newService.upgrade(repoPath);
 
     assertEquals(result.untrustedCollectives, []);
@@ -2926,7 +2963,7 @@ Deno.test("RepoService.init: custom tool with relative skillsDir gets skills cop
       skillReferenceStyle: "path",
     }]);
 
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     const result = await service.init(repoPath, { tools: ["windsurf"] });
 
@@ -2949,7 +2986,7 @@ Deno.test("RepoService.init: custom tool with nested relative skillsDir gets ski
       skillReferenceStyle: "path",
     }]);
 
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     const result = await service.init(repoPath, { tools: ["myagent"] });
 
@@ -2977,11 +3014,11 @@ Deno.test("RepoService.upgrade: custom tool with relative skillsDir gets skills 
       skillReferenceStyle: "path",
     }]);
 
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await service.init(repoPath, { tools: ["windsurf"] });
 
-    const newService = new RepoService("0.2.0");
+    const newService = testService("0.2.0", tempDir);
     const result = await newService.upgrade(repoPath);
 
     assertEquals(result.skillsUpdated.includes("swamp"), true);
@@ -2994,7 +3031,7 @@ Deno.test("RepoService.upgrade: custom tool with relative skillsDir gets skills 
 
 Deno.test("RepoService.init with tool amp creates .amp/settings.json", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     const result = await service.init(repoPath, { tools: ["amp"] });
 
@@ -3012,7 +3049,7 @@ Deno.test("RepoService.init with tool amp creates .amp/settings.json", async () 
 
 Deno.test("RepoService.upgrade with tool amp preserves existing .amp/settings.json entries", async () => {
   await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
+    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
     await service.init(repoPath, { tools: ["amp"] });
 
@@ -3022,7 +3059,7 @@ Deno.test("RepoService.upgrade with tool amp preserves existing .amp/settings.js
     existing["amp.ui"] = { theme: "dark" };
     await Deno.writeTextFile(settingsPath, JSON.stringify(existing, null, 2));
 
-    const upgradeService = new RepoService("0.2.0");
+    const upgradeService = testService("0.2.0", tempDir);
     await upgradeService.upgrade(repoPath);
 
     const updated = JSON.parse(await Deno.readTextFile(settingsPath));
@@ -3030,5 +3067,35 @@ Deno.test("RepoService.upgrade with tool amp preserves existing .amp/settings.js
     assertEquals(updated["amp.commands"].allowlist.includes("git *"), true);
     assertEquals(updated["amp.commands"].strict, true);
     assertEquals(updated["amp.ui"].theme, "dark");
+  });
+});
+
+Deno.test("RepoService.upgrade drains the legacy telemetry spool into the injected config dir", async () => {
+  await withTempDir(async (tempDir) => {
+    const homeDir = join(tempDir, "test-home");
+    const configDir = join(homeDir, ".config", "swamp");
+    const service = new RepoService("0.1.0", { homeDir, configDir });
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath, { tools: [] });
+
+    // Seed a legacy repo-local spool entry, as a pre-migration repo has.
+    const legacyDir = join(tempDir, ".swamp", "telemetry");
+    await ensureDir(legacyDir);
+    await Deno.writeTextFile(
+      join(legacyDir, "telemetry-1.json"),
+      JSON.stringify({ command: "repo" }),
+    );
+
+    const upgrader = new RepoService("0.2.0", { homeDir, configDir });
+    await upgrader.upgrade(repoPath);
+
+    // The entry lands in the injected config dir. Migration is deliberately
+    // not gated on SWAMP_NO_TELEMETRY — it is gated on the repo's own
+    // telemetryDisabled marker — so the ambient config dir is the one thing
+    // standing between a test run and the developer's real spool.
+    const migrated = await Deno.readTextFile(
+      join(configDir, "telemetry", "telemetry-1.json"),
+    );
+    assertEquals(JSON.parse(migrated), { command: "repo" });
   });
 });

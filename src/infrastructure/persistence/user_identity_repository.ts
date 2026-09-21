@@ -33,6 +33,18 @@ const IDENTITY_FILE = "identity.json";
  * Lazy-creates the file and directory on first access.
  */
 export class UserIdentityRepository {
+  readonly #configDir: string | undefined;
+
+  /**
+   * @param configDir Directory holding `identity.json`. Defaults to the
+   * environment-resolved swamp config dir; callers that own a directory
+   * (tests above all) pass it explicitly rather than repointing `HOME` or
+   * `XDG_CONFIG_HOME`, which are process-global and shared across the suite.
+   */
+  constructor(configDir?: string) {
+    this.#configDir = configDir;
+  }
+
   /**
    * Returns the user's persistent userId.
    * Lazy-creates the identity file if it doesn't exist.
@@ -40,7 +52,7 @@ export class UserIdentityRepository {
    */
   async getUserId(): Promise<string | null> {
     try {
-      const configDir = getSwampConfigDir();
+      const configDir = this.#configDir ?? getSwampConfigDir();
       const identityPath = join(configDir, IDENTITY_FILE);
 
       // Try to read existing identity
