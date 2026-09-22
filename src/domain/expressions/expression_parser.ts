@@ -38,6 +38,43 @@ const EXPRESSION_PATTERN = /\$\{\{\s*(.+?)\s*\}\}/gs;
 const SINGLE_EXPRESSION_PATTERN = /^(\$\{\{(?:(?!\}\})[\s\S])+?\}\})\s*$/;
 
 /**
+ * Every accessor the CEL `data.*` namespace exposes as an expression-callable
+ * function, in the order they are declared on `DataNamespace`.
+ *
+ * This is the namespace's *callable* surface, not a convenience list, and that
+ * distinction decides membership. `DataNamespace` in `model_resolver.ts`
+ * declares a seventh member, the optional no-op `invalidateLatest`, which is
+ * absent here because it returns void, is not supplied by
+ * `buildDataNamespace`, and is never registered with cel-js — so no
+ * expression can call it.
+ *
+ * Two places derive their patterns from this list rather than restating it:
+ * the workflow-path expression validator, and the data-function detection
+ * predicate in `dependency_extractor.ts`. A third pattern in that module
+ * stays deliberately narrower; see the comment on `DATA_FUNCTION_PATTERN`.
+ *
+ * `integration/expression_accessors_rules_test.ts` pins this list against both
+ * surfaces that define the namespace, so an accessor added to one without the
+ * other fails a test rather than silently failing validation later.
+ */
+export const DATA_NAMESPACE_ACCESSORS = [
+  "version",
+  "latest",
+  "listVersions",
+  "findByTag",
+  "findBySpec",
+  "query",
+] as const;
+
+/**
+ * The accessor names as a regex alternation, for patterns that mean "any data
+ * accessor". Callers supply their own anchoring and argument matching.
+ */
+export function dataAccessorAlternation(): string {
+  return DATA_NAMESPACE_ACCESSORS.join("|");
+}
+
+/**
  * Transforms model references with hyphenated names to bracket notation.
  *
  * CEL interprets hyphens as subtraction operators, so `model.deploy-vpc.resource`

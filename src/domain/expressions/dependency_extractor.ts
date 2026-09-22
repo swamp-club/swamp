@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { parseNamespacedModelName } from "../data/namespace.ts";
-import { extractExpressions } from "./expression_parser.ts";
+import {
+  dataAccessorAlternation,
+  extractExpressions,
+} from "./expression_parser.ts";
 
 /**
  * Type of model reference in an expression.
@@ -58,8 +61,21 @@ const MODEL_REF_PATTERN =
   /model\.([a-zA-Z0-9_-]+)\.(input|resource|file|execution|definition)/g;
 
 /**
- * Pattern to match data function calls in CEL expressions.
+ * Pattern to match data function calls whose first argument names a model.
  * Matches: data.version('model', 'data', N), data.latest('model', 'data'), data.listVersions('model', 'data')
+ *
+ * This list is deliberately NARROWER than DATA_NAMESPACE_ACCESSORS and
+ * must not be "fixed" to match it. The capture group takes the first quoted
+ * argument as a model name, which is what mints a dependency edge. That is
+ * true of version, latest, listVersions and findBySpec; it is false of query,
+ * whose first argument is a predicate, and of findByTag, whose first argument
+ * is a tag key. Adding either would extract a predicate string as if it were a
+ * model name.
+ *
+ * The consequence is real and is documented for users in the workflow
+ * data-chaining reference: a step reading data with `query` gets no implicit
+ * ordering, so it needs an explicit `dependsOn` where a `latest` call would
+ * not have.
  */
 const DATA_FUNCTION_PATTERN =
   /data\.(version|latest|listVersions|findBySpec)\s*\(\s*['"]([^'"]+)['"]/g;
@@ -275,7 +291,16 @@ export function extractDataFunctionDependencies(expression: string): string[] {
  * @returns True if the expression contains any data.* function call
  */
 export function hasDataFunctionDependency(expression: string): boolean {
-  return /data\.(version|latest|listVersions|findBySpec|query|findByTag)\s*\(/
+  // Derived from DATA_NAMESPACE_ACCESSORS rather than restated, so this cannot
+  // drift the way the validator's copy did.
+  //
+  // Note for anyone reading this as the live detection path: it is not one.
+  // This function has no caller outside its own tests, and neither does
+  // extractDataFunctionDependencies below. Dependency edges are minted by
+  // extractDependencies, which uses the narrower DATA_FUNCTION_PATTERN. The
+  // rebuild here is hygiene — a stale copy left behind is how the next drift
+  // starts — not a behaviour fix.
+  return new RegExp(`data\\.(${dataAccessorAlternation()})\\s*\\(`)
     .test(expression);
 }
 

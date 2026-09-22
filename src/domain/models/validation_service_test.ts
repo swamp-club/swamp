@@ -24,6 +24,7 @@ import {
   DefaultModelValidationService,
   ValidationResult,
 } from "./validation_service.ts";
+import { DATA_NAMESPACE_ACCESSORS } from "../expressions/expression_parser.ts";
 import { Definition, type DefinitionId } from "../definitions/definition.ts";
 import {
   defineModel,
@@ -2028,4 +2029,73 @@ Deno.test("validateModel: check receives unresolvedMethodArgs with method argume
   const checkResult = results.find((r) => r.name === "Check: spec-valid");
   assertEquals(checkResult?.passed, true);
   assertEquals(capturedArgs?.spec, "19090:localhost:22");
+});
+
+// Regression tests for issue #2295: every accessor the CEL data namespace
+// exposes must be accepted in a model global argument. The validator's
+// allow-list was hand-written and fell behind the namespace, so `data.query`
+// and `data.findBySpec` were rejected in global arguments long after they
+// worked everywhere else — the reporter hit this and worked around it by
+// writing a list as one resource and reading it back with `data.latest`.
+//
+// The table is driven from DATA_NAMESPACE_ACCESSORS rather than listing names,
+// so an accessor added to the namespace without a case here is impossible.
+Deno.test("validateModel accepts every data namespace accessor in a global argument", async () => {
+  const callFor: Record<string, string> = {
+    version: "data.version('my-model', 'output', 1)",
+    latest: "data.latest('my-model', 'output')",
+    listVersions: "data.listVersions('my-model', 'output')",
+    findByTag: "data.findByTag('env', 'prod')",
+    findBySpec: "data.findBySpec('my-model', 'output')",
+    query: `data.query('specName == "output"')`,
+  };
+
+  for (const accessor of DATA_NAMESPACE_ACCESSORS) {
+    const call = callFor[accessor];
+    assertEquals(
+      typeof call,
+      "string",
+      `no probe expression for accessor "${accessor}" — add one`,
+    );
+
+    const definition = Definition.create({
+      name: "test-definition",
+      globalArguments: { message: `\${{ ${call} }}` },
+    });
+    const mockRepo = createMockDefinitionRepo([
+      { name: "test-definition", type: "test/expr-validation", definition },
+    ]);
+
+    const { results } = await new DefaultModelValidationService().validateModel(
+      definition,
+      testExprModel,
+      mockRepo,
+    );
+
+    const exprResult = results.find((r) => r.name === "Expression paths");
+    assertEquals(
+      exprResult?.passed,
+      true,
+      `data.${accessor} must be valid in a global argument, got: ${exprResult?.error}`,
+    );
+  }
+});
+
+Deno.test("validateModel still rejects a global argument referencing nothing valid", async () => {
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "${{ my-vpc.VpcId }}" },
+  });
+  const mockRepo = createMockDefinitionRepo([
+    { name: "test-definition", type: "test/expr-validation", definition },
+  ]);
+
+  const { results } = await new DefaultModelValidationService().validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
+
+  const exprResult = results.find((r) => r.name === "Expression paths");
+  assertEquals(exprResult?.passed, false);
 });
