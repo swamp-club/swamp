@@ -23,7 +23,7 @@ import {
   assertNotEquals,
   assertStringIncludes,
 } from "@std/assert";
-import { RunFileSink } from "./run_file_sink.ts";
+import { RUN_ID_PROPERTY, RunFileSink } from "./run_file_sink.ts";
 import { SecretRedactor } from "../../domain/secrets/mod.ts";
 import { join } from "@std/path";
 
@@ -46,6 +46,7 @@ function makeRecord(
   category: string[],
   message: string,
   level: "info" | "warning" | "error" = "info",
+  properties: Record<string, unknown> = {},
 ) {
   return {
     category,
@@ -53,7 +54,7 @@ function makeRecord(
     message: [message],
     rawMessage: message,
     timestamp: Date.now(),
-    properties: {},
+    properties,
   };
 }
 
@@ -475,5 +476,158 @@ Deno.test("RunFileSink.redactActive: passes text through unchanged when no redac
     );
     assertEquals(sink.redactActive("still untouched"), "still untouched");
     sink.unregister(handle);
+  });
+});
+
+// --- runId filtering (swamp-club#2305) ---
+
+Deno.test("RunFileSink: writer with runId captures only records with matching swampRunId", async () => {
+  await withTempDir(async (dir) => {
+    const sink = new RunFileSink();
+    const pathA = join(dir, "run-a.log");
+    const pathB = join(dir, "run-b.log");
+
+    const handleA = await sink.register([], pathA, undefined, undefined, {
+      runId: "run-aaa",
+    });
+    const handleB = await sink.register([], pathB, undefined, undefined, {
+      runId: "run-bbb",
+    });
+
+    const sinkFn = sink.sink;
+    sinkFn(
+      makeRecord(
+        ["model", "method", "run", "m1", "do"],
+        "belongs to A",
+        "info",
+        {
+          [RUN_ID_PROPERTY]: "run-aaa",
+        },
+      ),
+    );
+    sinkFn(
+      makeRecord(
+        ["model", "method", "run", "m2", "do"],
+        "belongs to B",
+        "info",
+        {
+          [RUN_ID_PROPERTY]: "run-bbb",
+        },
+      ),
+    );
+    sinkFn(
+      makeRecord(
+        ["model", "method", "run", "m3", "do"],
+        "belongs to neither",
+        "info",
+        {
+          [RUN_ID_PROPERTY]: "run-ccc",
+        },
+      ),
+    );
+
+    const contentA = await Deno.readTextFile(pathA);
+    const contentB = await Deno.readTextFile(pathB);
+
+    assertStringIncludes(contentA, "belongs to A");
+    assertEquals(contentA.includes("belongs to B"), false);
+    assertEquals(contentA.includes("belongs to neither"), false);
+
+    assertStringIncludes(contentB, "belongs to B");
+    assertEquals(contentB.includes("belongs to A"), false);
+    assertEquals(contentB.includes("belongs to neither"), false);
+
+    sink.unregister(handleA);
+    sink.unregister(handleB);
+  });
+});
+
+Deno.test("RunFileSink: writer without runId captures all records regardless of swampRunId", async () => {
+  await withTempDir(async (dir) => {
+    const sink = new RunFileSink();
+    const logPath = join(dir, "all.log");
+
+    const handle = await sink.register([], logPath);
+    const sinkFn = sink.sink;
+
+    sinkFn(makeRecord(["workflow", "run", "wf1"], "tagged", "info", {
+      [RUN_ID_PROPERTY]: "run-xyz",
+    }));
+    sinkFn(makeRecord(["workflow", "run", "wf1"], "untagged"));
+
+    const content = await Deno.readTextFile(logPath);
+    assertStringIncludes(content, "tagged");
+    assertStringIncludes(content, "untagged");
+
+    sink.unregister(handle);
+  });
+});
+
+Deno.test("RunFileSink: writer with runId skips records that have no swampRunId property", async () => {
+  await withTempDir(async (dir) => {
+    const sink = new RunFileSink();
+    const logPath = join(dir, "scoped.log");
+
+    const handle = await sink.register([], logPath, undefined, undefined, {
+      runId: "run-xyz",
+    });
+    const sinkFn = sink.sink;
+
+    sinkFn(makeRecord(["workflow", "run", "wf1"], "no run id tag"));
+
+    const content = await Deno.readTextFile(logPath);
+    assertEquals(content, "");
+
+    sink.unregister(handle);
+  });
+});
+
+Deno.test("RunFileSink: mixed scoped and unscoped writers route correctly", async () => {
+  await withTempDir(async (dir) => {
+    const sink = new RunFileSink();
+    const scopedPath = join(dir, "scoped.log");
+    const unscopedPath = join(dir, "unscoped.log");
+
+    const scopedHandle = await sink.register(
+      [],
+      scopedPath,
+      undefined,
+      undefined,
+      { runId: "run-123" },
+    );
+    const unscopedHandle = await sink.register([], unscopedPath);
+
+    const sinkFn = sink.sink;
+
+    sinkFn(
+      makeRecord(
+        ["model", "method", "run", "m1", "do"],
+        "scoped record",
+        "info",
+        {
+          [RUN_ID_PROPERTY]: "run-123",
+        },
+      ),
+    );
+    sinkFn(
+      makeRecord(["model", "method", "run", "m2", "do"], "other run", "info", {
+        [RUN_ID_PROPERTY]: "run-456",
+      }),
+    );
+    sinkFn(makeRecord(["workflow", "run", "wf1"], "bare record"));
+
+    const scopedContent = await Deno.readTextFile(scopedPath);
+    const unscopedContent = await Deno.readTextFile(unscopedPath);
+
+    assertStringIncludes(scopedContent, "scoped record");
+    assertEquals(scopedContent.includes("other run"), false);
+    assertEquals(scopedContent.includes("bare record"), false);
+
+    assertStringIncludes(unscopedContent, "scoped record");
+    assertStringIncludes(unscopedContent, "other run");
+    assertStringIncludes(unscopedContent, "bare record");
+
+    sink.unregister(scopedHandle);
+    sink.unregister(unscopedHandle);
   });
 });

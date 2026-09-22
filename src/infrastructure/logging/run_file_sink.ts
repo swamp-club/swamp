@@ -43,11 +43,15 @@ function categoryMatchesPrefix(
   return true;
 }
 
+/** Property key set on LogRecords via logger.with() to scope them to a run. */
+export const RUN_ID_PROPERTY = "swampRunId";
+
 interface FileWriter {
   fd: Deno.FsFile;
   encoder: TextEncoder;
   prefix: string[];
   redactor?: SecretRedactor;
+  runId?: string;
 }
 
 /**
@@ -91,7 +95,7 @@ export class RunFileSink {
     filePath: string,
     redactor?: SecretRedactor,
     boundary?: string,
-    options?: { append?: boolean },
+    options?: { append?: boolean; runId?: string },
   ): Promise<string> {
     // Validate the file path stays within the expected boundary
     if (boundary) {
@@ -117,6 +121,7 @@ export class RunFileSink {
       encoder: new TextEncoder(),
       prefix: categoryPrefix,
       redactor,
+      runId: options?.runId,
     });
     return handle;
   }
@@ -171,16 +176,21 @@ export class RunFileSink {
       const line = formatted.endsWith("\n") ? formatted : formatted + "\n";
 
       for (const writer of this.writers.values()) {
-        if (categoryMatchesPrefix(record.category, writer.prefix)) {
-          try {
-            const redactedLine = writer.redactor?.hasSecrets
-              ? writer.redactor.redact(line)
-              : line;
-            writer.fd.writeSync(writer.encoder.encode(redactedLine));
-          } catch {
-            // Logging infrastructure must not throw — a broken log file
-            // should never crash a running workflow.
-          }
+        if (!categoryMatchesPrefix(record.category, writer.prefix)) continue;
+        if (
+          writer.runId &&
+          record.properties[RUN_ID_PROPERTY] !== writer.runId
+        ) {
+          continue;
+        }
+        try {
+          const redactedLine = writer.redactor?.hasSecrets
+            ? writer.redactor.redact(line)
+            : line;
+          writer.fd.writeSync(writer.encoder.encode(redactedLine));
+        } catch {
+          // Logging infrastructure must not throw — a broken log file
+          // should never crash a running workflow.
         }
       }
     };
