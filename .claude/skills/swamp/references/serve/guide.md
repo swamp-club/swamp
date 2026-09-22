@@ -247,6 +247,21 @@ laptop.
 swamp auth server-login --server wss://swamp.example.com
 ```
 
+## Remote-Only Mode
+
+Disable local (loopback) execution so every user step must be dispatched to a
+remote worker. Steps without placement (`target`, `labels`, or `platform`) fail
+immediately instead of running on the orchestrator.
+
+| Flag / env var      | Default | Description                         |
+| ------------------- | ------- | ----------------------------------- |
+| `--remote-only`     | `false` | Require placement on all user steps |
+| `SWAMP_REMOTE_ONLY` | `false` | Env var equivalent                  |
+
+Also settable as `remote-only: true` in the serve config YAML. See the
+[remote-execution guide](../workflow/references/remote-execution.md#remote-only-mode)
+for the error message, the fix, and the control-plane exemption.
+
 ## When to Use What
 
 | Scenario                           | Approach                  |
