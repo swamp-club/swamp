@@ -29,6 +29,7 @@
  */
 
 import { SkillAssets } from "../src/infrastructure/assets/skill_assets.ts";
+import { loadVerifyEnv } from "./verify_env.ts";
 
 const THRESHOLD = 0.9;
 
@@ -172,6 +173,10 @@ function buildSummaryTable(scores: SkillScore[], allPassed: boolean): string {
 }
 
 async function main(): Promise<void> {
+  // The error below names this file as the remedy, so read it before deciding
+  // the token is absent — otherwise following the instruction does not help.
+  loadVerifyEnv(["TESSL_TOKEN"]);
+
   if (!Deno.env.get("TESSL_TOKEN")) {
     console.error(
       "TESSL_TOKEN environment variable is not set. " +

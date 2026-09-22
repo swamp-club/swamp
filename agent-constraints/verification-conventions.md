@@ -17,6 +17,19 @@ SWAMP_WORKFLOWS_DIR=verification swamp workflow run submit-change \
 One run covers all three groups, so `VerificationResultSchema.workflowRunId`
 names the whole verification rather than one third of it.
 
+### Toolchain
+
+Shell steps run `./scripts/toolchain.sh <command>`, which routes through
+`mise exec` when mise is present so the command uses the version
+`.tool-versions` pins. Without it the steps inherit whatever the launcher had
+on PATH: nothing (every step exits 127) or, worse, a different deno, which
+would verify against an unpinned toolchain and record that version in the
+attestation as though it were intended.
+
+A `preflight` step in `start-verification` fails the run in about a second
+when deno cannot be resolved or its version does not match the pin, rather than
+letting twelve steps fail identically several minutes later.
+
 ### Targeted re-run
 
 Each group has a boolean input defaulting to `true`. Deselecting one skips its
@@ -161,15 +174,20 @@ against a branch you know touches the guarded paths and check the step status is
 The claude CLI authenticates via one of two methods:
 
 1. **`~/.config/swamp/verify.env`** — if this file exists with
-   `ANTHROPIC_API_KEY=sk-ant-...`, export it before running the workflow.
+   `ANTHROPIC_API_KEY=sk-ant-...`, the steps that need it read it directly.
+   No export required: `scripts/verify_env.ts` loads the named variables when
+   they are not already set, so the launching shell no longer has to carry
+   them. An exported value still wins, so an explicit override works.
 2. **claude.ai login** — if no env file exists, the CLI uses your existing
    claude.ai login. No additional setup needed.
 
 The skill verification workflow also needs:
 
 - **`TESSL_TOKEN`** — for `deno task review-skills` (calls `npx tessl`). Add it
-  to `verify.env`. If missing, skill review **fails** (exit 1) — an incomplete
-  verification is not a valid attestation.
+  to `verify.env` and it is picked up from there. If genuinely absent, skill
+  review **fails** (exit 1) — an incomplete verification is not a valid
+  attestation. A sub-second failure from this step means the credential, not
+  the review.
 - **`ANTHROPIC_API_KEY`** — for `deno task eval-skill-triggers` (calls the
   Anthropic API). Already available from `verify.env` or claude.ai login. If
   missing, trigger evals are skipped gracefully (exit 0).

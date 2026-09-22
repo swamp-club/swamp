@@ -223,6 +223,50 @@ async function capture(
  * A failure here is not fatal: with no priors nothing carries forward, which
  * fails closed rather than open.
  */
+/**
+ * Pick the ids of earlier runs from a `workflow history search --json`
+ * payload, newest first, excluding the current run.
+ *
+ * Exported so the shape contract is testable without spawning the CLI. That
+ * matters more than it looks: `workflow history search` names the run
+ * `runId` while `workflow history get` names it `id`, and reading `id`
+ * from a search result yields undefined for every row. The filter then drops
+ * all of them and no evidence is ever carried forward — silently, because the
+ * payload parsed fine, so the caller's "could not list earlier runs" warning
+ * never fires. The only symptom is every group reporting `evidenceFrom: null`,
+ * which surfaces much later as a gate that fails with zero failed steps.
+ *
+ * `id` is accepted as a fallback so this keeps working if the two commands are
+ * ever reconciled on one name.
+ */
+export function selectPriorRunIds(
+  listing: string,
+  currentRunId: string,
+): string[] {
+  let results: Array<{ runId?: string; id?: string; startedAt?: string }> = [];
+  try {
+    results = (JSON.parse(listing).results ?? []) as typeof results;
+  } catch {
+    return [];
+  }
+
+  const ids = results
+    .map((r) => ({ id: r.runId ?? r.id, startedAt: r.startedAt }))
+    .filter((r) => r.id && r.id !== currentRunId)
+    .sort((a, b) => (b.startedAt ?? "").localeCompare(a.startedAt ?? ""))
+    .map((r) => r.id!);
+
+  if (results.length > 0 && ids.length === 0) {
+    console.error(
+      `::warning::found ${results.length} earlier run(s) for this commit but ` +
+        "could not read a run id from any of them; no evidence will be " +
+        "carried forward",
+    );
+  }
+
+  return ids;
+}
+
 async function fetchPriorRuns(
   commit: string,
   currentRunId: string,
@@ -251,17 +295,7 @@ async function fetchPriorRuns(
     return [];
   }
 
-  let results: Array<{ id?: string; startedAt?: string }> = [];
-  try {
-    results = (JSON.parse(listing).results ?? []) as typeof results;
-  } catch {
-    return [];
-  }
-
-  const ids = results
-    .filter((r) => r.id && r.id !== currentRunId)
-    .sort((a, b) => (b.startedAt ?? "").localeCompare(a.startedAt ?? ""))
-    .map((r) => r.id!);
+  const ids = selectPriorRunIds(listing, currentRunId);
 
   const runs: RunRecord[] = [];
   for (const id of ids) {

@@ -35,6 +35,7 @@
 
 import { parseArgs } from "@std/cli/parse-args";
 import { join } from "@std/path";
+import { loadVerifyEnv } from "./verify_env.ts";
 
 const API_KEY_ENV: Record<string, string> = {
   "sonnet": "ANTHROPIC_API_KEY",
@@ -333,6 +334,10 @@ function summarizePhase(
 }
 
 async function main(): Promise<void> {
+  // Without the key this eval skips and still reports success, so a run
+  // launched without it looks green while having checked nothing.
+  loadVerifyEnv(["ANTHROPIC_API_KEY"]);
+
   const args = parseArgs(Deno.args, {
     string: ["model", "concurrency", "threshold"],
     default: { model: "opus", concurrency: "20", threshold: "0.9" },

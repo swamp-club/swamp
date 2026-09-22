@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import {
   type AttestationEnvironment,
   buildAttestation,
+  selectPriorRunIds,
   type RunRecord,
   type WorkflowDef,
 } from "./build_attestation.ts";
@@ -501,4 +502,73 @@ Deno.test("buildAttestation: a path-guard skip still counts as the group having 
   assertEquals(skills.ran, true);
   assertEquals(skills.carriedForward, undefined);
   assertEquals((att.gate as Record<string, unknown>).allPassed, true);
+});
+
+// Regression tests for the carry-forward that never carried anything.
+//
+// `workflow history search --json` names the run `runId`; `workflow history
+// get --json` names it `id`. The prior-run lookup read `id` from search
+// results, so every row was dropped and no group's evidence was ever carried
+// forward — the targeted re-run documented in verification-conventions.md
+// could not work. The payload below is the real shape, captured from
+// `swamp workflow history search --workflow submit-change --input commit=...`.
+const SEARCH_PAYLOAD = JSON.stringify({
+  query: "",
+  results: [
+    {
+      runId: "ccc97d61-d8d7-4572-9916-a256af0909a5",
+      workflowId: "c7841e84-7343-43b9-a537-eb3718f7da44",
+      workflowName: "submit-change",
+      status: "succeeded",
+      startedAt: "2026-09-22T13:22:58.281Z",
+    },
+    {
+      runId: "2c938637-0e4e-4dca-96b0-aae26d0302d6",
+      workflowId: "c7841e84-7343-43b9-a537-eb3718f7da44",
+      workflowName: "submit-change",
+      status: "failed",
+      startedAt: "2026-09-22T13:21:00.410Z",
+    },
+    {
+      runId: "0d11fc95-6b55-4351-954e-e7df90fd9741",
+      workflowId: "c7841e84-7343-43b9-a537-eb3718f7da44",
+      workflowName: "submit-change",
+      status: "failed",
+      startedAt: "2026-09-22T13:14:33.959Z",
+    },
+  ],
+});
+
+Deno.test("selectPriorRunIds reads runId from a real search payload, newest first", () => {
+  assertEquals(
+    selectPriorRunIds(SEARCH_PAYLOAD, "no-such-run"),
+    [
+      "ccc97d61-d8d7-4572-9916-a256af0909a5",
+      "2c938637-0e4e-4dca-96b0-aae26d0302d6",
+      "0d11fc95-6b55-4351-954e-e7df90fd9741",
+    ],
+  );
+});
+
+Deno.test("selectPriorRunIds excludes the current run", () => {
+  const ids = selectPriorRunIds(
+    SEARCH_PAYLOAD,
+    "ccc97d61-d8d7-4572-9916-a256af0909a5",
+  );
+  assertEquals(ids.includes("ccc97d61-d8d7-4572-9916-a256af0909a5"), false);
+  assertEquals(ids.length, 2);
+});
+
+Deno.test("selectPriorRunIds still accepts an id-named field", () => {
+  // `workflow history get` uses `id`. If the two commands are ever reconciled
+  // on one name, this keeps working either way.
+  const payload = JSON.stringify({
+    results: [{ id: "abc", startedAt: "2026-09-22T13:00:00.000Z" }],
+  });
+  assertEquals(selectPriorRunIds(payload, "other"), ["abc"]);
+});
+
+Deno.test("selectPriorRunIds returns nothing for an unparseable or empty payload", () => {
+  assertEquals(selectPriorRunIds("not json", "x"), []);
+  assertEquals(selectPriorRunIds(JSON.stringify({ results: [] }), "x"), []);
 });
