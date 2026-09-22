@@ -224,6 +224,45 @@ async function resolveRecordExpression(
 }
 
 /**
+ * Resolves a whole-field scalar expression that survived
+ * `resolveAvailableExpressions` — the task target, deferred past run-start
+ * evaluation when it reads step output or when its step carries a guard.
+ *
+ * The record sibling above cannot serve: a target evaluates to a name, not a
+ * record. Provenance is checked the same way, so a target assembled out of
+ * substituted data is refused rather than executed.
+ */
+async function resolveScalarExpression(
+  value: string | undefined,
+  fieldName: string,
+  expressionContext: Record<string, unknown> | undefined,
+  authored: AuthoredExpressions,
+): Promise<string | undefined> {
+  if (value === undefined) return undefined;
+  const cel = extractCelExpression(value);
+  if (!cel) return value;
+  if (!expressionContext) {
+    throw new UserError(
+      `${fieldName} expression "$\{{ ${cel} }}" could not be resolved: no expression context available`,
+    );
+  }
+  if (partitionAuthored(extractExpressions(value), authored).length !== 1) {
+    throw new UserError(`${fieldName} must be an authored expression`);
+  }
+  const celEvaluator = new CelEvaluator();
+  const resolved = await celEvaluator.evaluateAsync(cel, expressionContext);
+  if (resolved === null || resolved === undefined) return "";
+  if (typeof resolved === "object") {
+    throw new UserError(
+      `${fieldName} expression "$\{{ ${cel} }}" evaluated to ${
+        Array.isArray(resolved) ? "an array" : "an object"
+      }, expected a name`,
+    );
+  }
+  return String(resolved);
+}
+
+/**
  * Extracts a human-readable reason from an AbortSignal. Returns the
  * Error message when the reason is an Error, or "aborted" otherwise.
  */
@@ -760,6 +799,28 @@ export class DefaultStepExecutor implements StepExecutor {
         ctx.expressionContext,
         ctx.authoredExpressions,
       ) as typeof selectors,
+    };
+
+    // The task target survives resolveAvailableExpressions when it was
+    // deferred past run-start evaluation — a target reading step output, or
+    // any dynamic target on a guarded step. Resolve it here, after the guard
+    // has already decided: runStep returns early on a guarded skip and never
+    // reaches this executor, so a step that will not run never resolves the
+    // target it would have used.
+    task = {
+      ...task,
+      modelIdOrName: await resolveScalarExpression(
+        task.modelIdOrName,
+        "task.modelIdOrName",
+        ctx.expressionContext,
+        ctx.authoredExpressions,
+      ),
+      modelName: await resolveScalarExpression(
+        task.modelName,
+        "task.modelName",
+        ctx.expressionContext,
+        ctx.authoredExpressions,
+      ),
     };
 
     // Resolve whole-field expression strings for inputs/globalArgs that survived

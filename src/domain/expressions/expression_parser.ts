@@ -255,6 +255,24 @@ export function isTaskInputsPath(path: string): boolean {
 }
 
 /**
+ * Checks if an expression path names what a step executes — the task target.
+ *
+ * `modelIdOrName` selects an existing definition; `modelType` + `modelName`
+ * name a definition to auto-create. `modelName` is included because the
+ * direct-execution form fails the same way when its name resolves to empty,
+ * and because a run-id-based name like `build-lint-${{ run.id }}` carries no
+ * step-output dependency — without this it would never reach the deferral
+ * rule at all.
+ *
+ * @param path - The expression path (e.g. "jobs[0].steps[1].task.modelIdOrName")
+ * @returns True if the path is a step's task target
+ */
+export function isTaskTargetPath(path: string): boolean {
+  return path.endsWith(".task.modelIdOrName") ||
+    path.endsWith(".task.modelName");
+}
+
+/**
  * Checks if an expression path is at or within a step's task.globalArgs.
  *
  * @param path - The expression path

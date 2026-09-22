@@ -495,6 +495,35 @@ The `--last-evaluated` flag preserves this behavior: deferred expressions saved
 as raw `${{ }}` in the evaluated workflow are resolved at step execution time
 against the current data store.
 
+### Task-target deferral
+
+A step's **task target** — `task.modelIdOrName`, or `task.modelName` in the
+direct-execution form — names what the step executes. It defers for either of
+two independent reasons:
+
+- **It reads step output.** The data it names does not exist at run start, the
+  same reason `task.inputs` defers.
+- **Its step carries a guard.** A guarded step may not run at all, and
+  resolving a target for a step that will skip is what made swamp-club#2304
+  fail: an empty result failed `StepTask` validation while the evaluated
+  workflow was rebuilt, killing the run before any step executed — and
+  recording no run at all, so there was nothing to inspect afterwards.
+
+An unguarded target with no step-output dependency still resolves at run start.
+Deferral buys nothing for a step that is going to run, so a mistyped name keeps
+failing where the error is cheapest.
+
+Deferral is decided per path, while substitution is keyed on the raw expression
+text. Two steps can carry the identical expression, so the paths that deferred
+are recorded and skipped during substitution — otherwise a plain step's
+evaluated value would be written into a guarded step's deferred target and
+silently undo the deferral.
+
+Deferred targets are resolved in `executeModelMethod`, after the guard has
+decided. `runStep` returns early on a guarded skip and never reaches the
+executor, so a step that does not run never resolves the target it would have
+used.
+
 ## Sensitive Data
 
 Vault secrets are read with `vault.get('<vault-name>', '<key>')` — the only
