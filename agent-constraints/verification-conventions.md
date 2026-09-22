@@ -47,7 +47,8 @@ The workflow:
    review type with different prompt files and models
 5. Review diffs use `git merge-base origin/main HEAD` so only the branch's own
    changes are reviewed — the setup step fetches `origin main` first to ensure
-   the diff base is current regardless of local branch state
+   the diff base is current regardless of local branch state, retrying once
+   because parallel verifications race to update the shared ref
 6. Cleans up the worktree regardless of pass/fail
 
 ### Guards
