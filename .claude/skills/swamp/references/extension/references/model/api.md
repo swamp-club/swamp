@@ -429,7 +429,10 @@ const created = await context.runModel!({
   arguments: { cidrBlock: "10.0.0.0/16" },
 });
 
-if (!result.ok) throw new Error(result.error.message);
+// Check every result — runModel reports failure in the value, it does not throw
+for (const r of [result, created]) {
+  if (!r.ok) throw new Error(r.error.message);
+}
 // result.resources: DataHandle[] written by the target
 ```
 
