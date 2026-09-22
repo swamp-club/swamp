@@ -656,7 +656,7 @@ jobs:
               # Resolve the toolchain .tool-versions pins; see Toolchain in
               # agent-constraints/verification-conventions.md.
               command -v mise >/dev/null 2>&1 && eval "$(mise env -s bash)" || true
-              deno task eval-skill-triggers
+              deno task eval-skill-triggers --require-key
             workingDir: "/tmp/swamp-verify-skills-${{ run.id }}"
 
   # ══ Attestation ════════════════════════════════════════════════════════════

@@ -196,8 +196,13 @@ The skill verification workflow also needs:
   attestation. A sub-second failure from this step means the credential, not
   the review.
 - **`ANTHROPIC_API_KEY`** — for `deno task eval-skill-triggers` (calls the
-  Anthropic API). Already available from `verify.env` or claude.ai login. If
-  missing, trigger evals are skipped gracefully (exit 0).
+  Anthropic API), picked up from `verify.env`. The verification workflow
+  passes `--require-key`, so a missing key **fails** the step rather than
+  skipping it: exiting 0 would record the step as `succeeded` and let the
+  attestation claim trigger evals passed when they never ran. Without that flag
+  the script still skips gracefully (exit 0), which is what the multi-model CI
+  workflow needs — it runs a matrix across providers whose secrets are absent
+  on fork pull requests.
 
 To create the env file (optional):
 

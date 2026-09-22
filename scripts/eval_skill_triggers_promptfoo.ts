@@ -344,7 +344,13 @@ async function main(): Promise<void> {
 
   const args = parseArgs(Deno.args, {
     string: ["model", "concurrency", "threshold"],
-    default: { model: "opus", concurrency: "20", threshold: "0.9" },
+    boolean: ["require-key"],
+    default: {
+      model: "opus",
+      concurrency: "20",
+      threshold: "0.9",
+      "require-key": false,
+    },
   });
 
   const model = args.model;
@@ -362,11 +368,29 @@ async function main(): Promise<void> {
   const projectRoot = findProjectRoot();
   const configDir = join(projectRoot, "evals", "promptfoo");
 
-  // Check for required API key — gracefully skip if missing
+  // Check for the required API key. Skipping is the right default: the
+  // multi-model CI workflow runs a matrix across providers whose secrets are
+  // absent on fork pull requests, and a missing key there is not a defect.
+  //
+  // It is the wrong default when the result feeds an attestation. This exits
+  // 0, so the step is recorded as `succeeded` and the attestation claims the
+  // trigger evals passed when they never ran — a check that no-ops reads
+  // exactly like a check that succeeded. `--require-key` is how the
+  // verification workflow says an unrunnable check must fail instead, matching
+  // the stance skill review already takes: an incomplete verification is not a
+  // valid attestation.
   const requiredKeyEnv = API_KEY_ENV[model];
   if (!Deno.env.get(requiredKeyEnv)) {
     const message =
       `Skipping ${model} eval: ${requiredKeyEnv} environment variable is not set.`;
+    if (args["require-key"]) {
+      console.error(
+        `${requiredKeyEnv} is not set and --require-key was passed. Add it to ` +
+          "~/.config/swamp/verify.env so the eval can run; refusing to report " +
+          "a skipped eval as a pass.",
+      );
+      Deno.exit(1);
+    }
     console.warn(message);
 
     // Write skip status to GitHub Actions summary
