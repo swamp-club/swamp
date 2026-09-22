@@ -206,6 +206,7 @@ export function buildModelMethodRunDeps(
           undefined,
           repoContext.autoDefinitionsDir,
           false,
+          repoContext.markDirty,
         );
         await autoDefRepo.save(type, definition);
       }

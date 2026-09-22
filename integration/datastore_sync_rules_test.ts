@@ -17,8 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join, relative, SEPARATOR } from "@std/path";
+import { walk } from "@std/fs/walk";
 
 const ROOT = join(import.meta.dirname!, "..");
 const PERSISTENCE_DIR = join(
@@ -93,5 +94,69 @@ Deno.test("per-path-wired repos must not call bare notifyDirty()", async () => {
       "deletions (swamp-club#2273). Use the directory path being " +
       "removed as the argument.\n\nViolations:\n" +
       violations.join("\n"),
+  );
+});
+
+// Auto-definition repos that save to autoDefinitionsDir must pass markDirty
+// so the sync service knows about the new file. Without it, pushChanged's
+// fast-path skips the file and it is never pushed to the remote datastore —
+// causing definition loss on restart (swamp-club#2275).
+const AUTO_DEF_REPO_PATTERN =
+  /new YamlDefinitionRepository\(\s*\n?\s*[\w.]+,\s*\n?\s*[\w.]+,\s*\n?\s*[\w.]+,\s*\n?\s*false,?\s*\n?\s*\)/;
+
+const SRC_DIR = join(ROOT, "src");
+
+Deno.test("auto-definition repos must pass markDirtyHook (swamp-club#2275)", async () => {
+  const violations: string[] = [];
+
+  for await (
+    const entry of walk(SRC_DIR, {
+      exts: [".ts"],
+      skip: [/_test\.ts$/],
+    })
+  ) {
+    const content = await Deno.readTextFile(entry.path);
+    if (!content.includes("autoDefRepo")) continue;
+    if (!content.includes("new YamlDefinitionRepository(")) continue;
+    const rel = normalise(relative(ROOT, entry.path));
+
+    // Extract each auto-def repo construction and check for the 5th
+    // parameter (markDirtyHook). The pattern matches constructions with
+    // exactly 4 args (missing the hook).
+    const lines = content.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      if (!lines[i].includes("autoDefRepo")) continue;
+      // Grab a window of lines around the construction
+      const window = lines.slice(i, i + 8).join("\n");
+      if (
+        window.includes("new YamlDefinitionRepository(") &&
+        AUTO_DEF_REPO_PATTERN.test(window)
+      ) {
+        violations.push(`${rel}:${i + 1}`);
+      }
+    }
+  }
+
+  assertEquals(
+    violations,
+    [],
+    "Auto-definition YamlDefinitionRepository constructions must pass " +
+      "markDirtyHook as the 5th parameter. Without it, pushChanged's " +
+      "fast-path skips the saved file and it is never synced to the " +
+      "remote datastore (swamp-club#2275).\n\nViolations:\n" +
+      violations.join("\n"),
+  );
+});
+
+Deno.test("serve startup pullChanged must include auto-definitions subdir", async () => {
+  const serveFile = join(ROOT, "src", "cli", "commands", "serve.ts");
+  const content = await Deno.readTextFile(serveFile);
+
+  assertStringIncludes(
+    content,
+    '"auto-definitions"',
+    "The early startup pullChanged in serve.ts must include " +
+      '"auto-definitions" in its subdirs list so auto-definitions are ' +
+      "available before the serve accepts connections (swamp-club#2275).",
   );
 });

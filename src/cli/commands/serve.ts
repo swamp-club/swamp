@@ -1677,12 +1677,14 @@ export const serveCommand = new Command()
       dataPlane.releaseDispatch(dispatchId)
     );
 
-    // When managedConfig is active, pull the config prefix from the
-    // datastore BEFORE loading extensions. This ensures .swamp/config/
-    // is populated so extension loaders can scan the managed dirs.
+    // When managedConfig is active, pull the config and auto-definitions
+    // prefixes from the datastore BEFORE loading extensions. config/ is
+    // needed so extension loaders can scan managed dirs; auto-definitions/
+    // is needed so model resolution finds definitions created by prior
+    // serve instances (enrollment tokens, server tokens, grants).
     if (repoMarker?.datastore?.managedConfig && syncService) {
       await syncService.pullChanged({
-        subdirs: ["config"],
+        subdirs: ["config", "auto-definitions"],
         namespace: isCustomDatastoreConfig(datastoreConfig)
           ? datastoreConfig.namespace
           : undefined,
@@ -2438,6 +2440,7 @@ export const serveCommand = new Command()
       undefined,
       autoDefDir,
       false,
+      repoContext.markDirty,
     );
     const adminGrantStore = createAdminGrantStore(
       repoContext.definitionRepo,

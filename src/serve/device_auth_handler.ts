@@ -50,7 +50,7 @@ import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_p
 import { YamlDefinitionRepository } from "../infrastructure/persistence/yaml_definition_repository.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
-import { join } from "@std/path";
+
 import { type SyncGate, withSyncGate } from "./sync_gate.ts";
 
 const logger = getSwampLogger(["serve", "device-auth"]);
@@ -373,19 +373,12 @@ async function mintServerTokenImpl(
       type: SERVER_TOKEN_MODEL_TYPE.normalized,
       name: tokenName,
     });
-    const defPath = join(
-      repoContext.autoDefinitionsDir,
-      SERVER_TOKEN_MODEL_TYPE.toDirectoryPath(),
-      `${def.id}.yaml`,
-    );
-    if (repoContext.markDirty) {
-      await repoContext.markDirty(defPath);
-    }
     const autoDefRepo = new YamlDefinitionRepository(
       repoDir,
       repoContext.eventBus,
       repoContext.autoDefinitionsDir,
       false,
+      repoContext.markDirty,
     );
     await autoDefRepo.save(SERVER_TOKEN_MODEL_TYPE, def);
   }

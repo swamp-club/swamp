@@ -122,6 +122,7 @@ export async function createServerTokenRunDeps(
         repoContext.eventBus,
         repoContext.autoDefinitionsDir,
         false,
+        repoContext.markDirty,
       );
       await autoDefRepo.save(type, definition);
     },
