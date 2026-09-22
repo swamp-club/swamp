@@ -261,14 +261,7 @@ export class DataPlaneClient {
   }
 }
 
-/**
- * The fetch a dispatch runner's data-plane client uses. With CA certificates
- * every request goes through one HTTP client that trusts them — the same
- * trust `swamp worker connect --ca-cert` gives the control socket. Without
- * them it is plain `baseFetch`.
- *
- * `createClient` and `baseFetch` are injected only for tests.
- */
+/** Data-plane fetch that trusts the worker's `--ca-cert` certificates, if any. */
 export function createDataPlaneFetch(
   caCerts: string[] | undefined,
   createClient: (options: Deno.CreateHttpClientOptions) => Deno.HttpClient =
