@@ -201,6 +201,10 @@ export interface WorkflowGetPayload {
 
 export interface WorkflowSearchPayload {
   query?: string;
+  /** Page size; omitted returns every authorized workflow. */
+  limit?: number;
+  /** Number of authorized workflows to skip before the page. */
+  offset?: number;
 }
 
 export interface WorkflowHistoryGetPayload {
@@ -226,7 +230,10 @@ export interface WorkflowRunSearchPayload {
   workflow?: string;
   tags?: Record<string, string>;
   inputs?: Record<string, string>;
+  /** Page size; the server applies a default of 500 when omitted. */
   limit?: number;
+  /** Number of authorized runs to skip before the page. */
+  offset?: number;
 }
 
 export interface WorkflowSchemaPayload {
