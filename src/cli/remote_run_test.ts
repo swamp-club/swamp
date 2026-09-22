@@ -42,6 +42,7 @@ import {
   warnServerReloadNeeded,
   writeRemoteIndicator,
 } from "./remote_run.ts";
+import { gzipSync } from "node:zlib";
 import type { ServerCredential } from "../domain/auth/server_credential.ts";
 import type { ServerCredentialRepository } from "../domain/auth/server_credential.ts";
 
@@ -55,11 +56,18 @@ function scriptedServer(
     reply: (frame: Record<string, unknown>) => void,
     socket: WebSocket,
   ) => void,
-): { url: string; shutdown: () => Promise<void>; received: unknown[] } {
+): {
+  url: string;
+  shutdown: () => Promise<void>;
+  received: unknown[];
+  upgradeUrls: string[];
+} {
   const received: unknown[] = [];
+  const upgradeUrls: string[] = [];
   const server = Deno.serve(
     { port: 0, hostname: "127.0.0.1", onListen: () => {} },
     (req) => {
+      upgradeUrls.push(req.url);
       const { socket, response } = Deno.upgradeWebSocket(req);
       socket.onmessage = (event) => {
         const parsed = JSON.parse(event.data as string);
@@ -81,6 +89,7 @@ function scriptedServer(
     url: `ws://127.0.0.1:${server.addr.port}`,
     shutdown: () => server.shutdown(),
     received,
+    upgradeUrls,
   };
 }
 
@@ -501,6 +510,64 @@ Deno.test({
         { type: "access.grant.list" },
       );
       assertEquals(result.grants.length, 1);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "requestServerResponse: opts into compression and decodes a gzip binary frame",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const results = Array.from({ length: 50 }, (_, i) => ({ name: `wf-${i}` }));
+    const server = scriptedServer((request, _reply, socket) => {
+      const json = JSON.stringify({
+        type: "workflow.search",
+        id: request.id,
+        payload: { data: { results } },
+      });
+      socket.send(gzipSync(new TextEncoder().encode(json)));
+    });
+    try {
+      const result = await requestServerResponse<
+        { data: { results: unknown[] } }
+      >(
+        { server: server.url },
+        { type: "workflow.search" },
+      );
+      assertEquals(result.data.results, results);
+      assertEquals(
+        new URL(server.upgradeUrls[0]).searchParams.get("compress"),
+        "gzip",
+      );
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "requestServerResponse: rejects with UserError on an undecodable binary frame",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = scriptedServer((_request, _reply, socket) => {
+      socket.send(new Uint8Array([1, 2, 3, 4]));
+    });
+    try {
+      await assertRejects(
+        () =>
+          requestServerResponse(
+            { server: server.url },
+            { type: "workflow.search" },
+          ),
+        UserError,
+        "Could not decode a compressed response",
+      );
     } finally {
       await server.shutdown();
     }

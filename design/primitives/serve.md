@@ -122,7 +122,7 @@ table (`src/cli/commands/serve.ts`, request handler).
 
 | Transport   | Route(s)                                                                         | Auth                                              | Purpose                                                                                                |
 | ----------- | -------------------------------------------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| WebSocket   | any path with `Upgrade: websocket`                                               | token (bearer header, `bearer.<token>` subprotocol, or `?token=`) unless mode `none` | The serve protocol: 107 request types in `ServerRequest` (`src/serve/protocol.ts`), handled in `src/serve/connection.ts` and `src/serve/handlers/*` |
+| WebSocket   | any path with `Upgrade: websocket`                                               | token (bearer header, `bearer.<token>` subprotocol, or `?token=`) unless mode `none` | The serve protocol: 117 request types in `ServerRequest` (`src/serve/protocol.ts`), handled in `src/serve/connection.ts` and `src/serve/handlers/*` |
 | HTTP        | `/data/*`, `/bundle/*`                                                           | worker session bearer                             | Remote-execution data plane (`src/serve/data_plane.ts`); see [remote-execution §Data plane](../enablers/remote-execution.md#data-plane-two-transports) |
 | HTTP POST   | configured webhook routes                                                        | HMAC per scheme                                   | `src/serve/webhook.ts`                                                                                 |
 | HTTP POST   | `/api/v1/cancel/{workflow-run\|method-run}/{id}`, `/api/v1/cancel` (bulk)         | token + admin (IP burst and per-token rate limits) | `cancelExecution` (see below)                                                                          |
@@ -151,6 +151,23 @@ with `invalid_request`. `src/serve/connection_schema_parity_test.ts` enforces
 both at compile time, with the intentional exceptions pinned there (client
 `groups` on `access.check`/`access.can-i`, which the handlers take from the
 authenticated connection instead).
+
+`cluster.instances` and `serve.config` require `admin` on `access:*` over
+WebSocket, the same as their REST routes.
+
+Deno's `upgradeWebSocket` cannot negotiate `permessage-deflate`, so a client
+opts into message-level compression with `?compress=gzip` on the upgrade URL.
+On such a connection `send()` gzips any frame of 16 KiB or more and sends it
+as a binary frame; smaller frames, clients without the parameter, worker
+transport frames and audit stream frames stay text
+(`src/serve/handlers/shared.ts`). The dashboard and the CLI's single-request
+client (`requestServerResponse`) opt in.
+
+`workflow.search` and `workflow.run.search` accept `offset` and `limit` and
+return `total` beside `data`. Paging is applied after the per-workflow
+authorization filter, so `total` counts only what the principal may read.
+`workflow.run.search` defaults to a limit of 500; `workflow.search` has no
+default because the CLI's interactive picker needs the full list.
 
 ## Identity and access
 

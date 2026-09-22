@@ -20,11 +20,20 @@
 import { assertEquals } from "@std/assert";
 import {
   applyTriggerOverrides,
+  handleWorkflowRunSearch,
+  handleWorkflowSearch,
   resolveWorkflowFields,
+  WORKFLOW_RUN_SEARCH_DEFAULT_LIMIT,
 } from "./workflow_handlers.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { ConnectionContext } from "./shared.ts";
+import type { ServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
+import type { Principal } from "../../domain/access/principal.ts";
+import { PolicySnapshot } from "../../domain/access/policy_snapshot.ts";
+import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
+import type { Grant } from "../../domain/models/access/grant_model.ts";
+import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
 import type { ServeConfigFile } from "../serve_config.ts";
 import type { TriggerOverride } from "../../libswamp/mod.ts";
 
@@ -179,4 +188,205 @@ Deno.test("applyTriggerOverrides: catches and logs errors from updateTriggerOver
   await applyTriggerOverrides(ctx, {
     triggers: { w: { schedule: "* * * * *" } },
   });
+});
+
+// ── workflow.search / workflow.run.search pagination ─────────────────────
+
+interface SentFrame {
+  type: string;
+  payload?: {
+    data: { results?: Array<Record<string, unknown>> };
+    total?: number;
+  };
+  error?: { code: string };
+}
+
+function makeSearchSocket(): { socket: WebSocket; frames: SentFrame[] } {
+  const frames: SentFrame[] = [];
+  const socket = {
+    readyState: WebSocket.OPEN,
+    send: (data: string) => frames.push(JSON.parse(data)),
+  } as unknown as WebSocket;
+  return { socket, frames };
+}
+
+const searchAuthBase: Omit<ServeAuthConfig, "mode"> = {
+  admins: [],
+  allowedCollectives: [],
+  allowedUsers: [],
+  oauthProvider: "",
+  groupsField: "",
+  restrictedModelTypes: [],
+  restrictedCommands: [],
+};
+
+const searchPrincipal: Principal = { kind: "user", id: "reader" };
+
+function readGrant(id: string, pattern: string): Grant {
+  return {
+    id,
+    effect: "allow",
+    state: "active",
+    source: "method",
+    subject: { kind: "user", name: "reader" },
+    actions: ["read"],
+    resource: { kind: "workflow", pattern },
+    createdBy: { kind: "user", id: "admin" },
+    createdAt: "2026-01-01T00:00:00Z",
+  };
+}
+
+/**
+ * Five workflows, wf-0 (newest runs) … wf-4, `runsPerWorkflow` runs each.
+ * With `grants` the context enforces token-mode authorization; without,
+ * mode none.
+ */
+function makeSearchCtx(
+  grants?: Grant[],
+  runsPerWorkflow = 1,
+): ConnectionContext {
+  const workflows = [0, 1, 2, 3, 4].map((i) => ({
+    id: crypto.randomUUID(),
+    name: `wf-${i}`,
+    jobs: [{}],
+  }));
+  const ctx: Record<string, unknown> = {
+    authConfig: { ...searchAuthBase, mode: grants ? "token" : "none" },
+    repoContext: {
+      workflowRepo: { findAll: () => Promise.resolve(workflows) },
+      workflowRunRepo: {
+        findAllSummariesFromIndex: (workflowId: string) => {
+          const i = workflows.findIndex((w) => w.id === workflowId);
+          return Promise.resolve(
+            Array.from({ length: runsPerWorkflow }, (_, r) => ({
+              id: crypto.randomUUID(),
+              workflowId,
+              workflowName: workflows[i].name,
+              status: "succeeded",
+              startedAt: new Date(Date.UTC(2026, 0, 10 - i, 0, 0, r)),
+              tags: {},
+              inputs: {},
+            })),
+          );
+        },
+      },
+    },
+  };
+  if (grants) {
+    const snapshot = new PolicySnapshot(grants, []);
+    ctx.policySnapshotLoader = {
+      snapshot,
+      decisionService: new GrantBasedAccessDecisionService(snapshot),
+    } as unknown as PolicySnapshotLoader;
+  }
+  return ctx as unknown as ConnectionContext;
+}
+
+function names(frame: SentFrame, key: string): unknown[] {
+  return (frame.payload?.data.results ?? []).map((r) => r[key]);
+}
+
+Deno.test("handleWorkflowSearch: pages with offset and limit and reports total", async () => {
+  const { socket, frames } = makeSearchSocket();
+  await handleWorkflowSearch(
+    socket,
+    makeSearchCtx(),
+    "req-1",
+    new AbortController(),
+    null,
+    { offset: 1, limit: 2 },
+  );
+
+  assertEquals(frames.length, 1);
+  assertEquals(names(frames[0], "name"), ["wf-1", "wf-2"]);
+  assertEquals(frames[0].payload?.total, 5);
+});
+
+Deno.test("handleWorkflowSearch: returns every workflow when no limit is sent", async () => {
+  const { socket, frames } = makeSearchSocket();
+  await handleWorkflowSearch(
+    socket,
+    makeSearchCtx(),
+    "req-2",
+    new AbortController(),
+    null,
+  );
+
+  assertEquals(names(frames[0], "name").length, 5);
+  assertEquals(frames[0].payload?.total, 5);
+});
+
+Deno.test("handleWorkflowSearch: pages after authorization so hidden workflows do not shorten a page", async () => {
+  const { socket, frames } = makeSearchSocket();
+  // wf-1 is not granted; a page of two must still hold two readable items.
+  const ctx = makeSearchCtx([
+    readGrant("g0", "wf-0"),
+    readGrant("g2", "wf-2"),
+    readGrant("g3", "wf-3"),
+  ]);
+  await handleWorkflowSearch(
+    socket,
+    ctx,
+    "req-3",
+    new AbortController(),
+    searchPrincipal,
+    { offset: 0, limit: 2 },
+  );
+
+  assertEquals(names(frames[0], "name"), ["wf-0", "wf-2"]);
+  assertEquals(frames[0].payload?.total, 3);
+});
+
+Deno.test("handleWorkflowRunSearch: pages newest-first runs and reports total beside data", async () => {
+  const { socket, frames } = makeSearchSocket();
+  await handleWorkflowRunSearch(
+    socket,
+    makeSearchCtx(),
+    "req-4",
+    new AbortController(),
+    null,
+    { offset: 2, limit: 2 },
+  );
+
+  assertEquals(frames.length, 1);
+  assertEquals(names(frames[0], "workflowName"), ["wf-2", "wf-3"]);
+  assertEquals(frames[0].payload?.total, 5);
+  assertEquals("total" in (frames[0].payload?.data ?? {}), false);
+});
+
+Deno.test("handleWorkflowRunSearch: pages after authorization", async () => {
+  const { socket, frames } = makeSearchSocket();
+  const ctx = makeSearchCtx([
+    readGrant("g1", "wf-1"),
+    readGrant("g3", "wf-3"),
+    readGrant("g4", "wf-4"),
+  ]);
+  await handleWorkflowRunSearch(
+    socket,
+    ctx,
+    "req-5",
+    new AbortController(),
+    searchPrincipal,
+    { offset: 1, limit: 5 },
+  );
+
+  assertEquals(names(frames[0], "workflowName"), ["wf-3", "wf-4"]);
+  assertEquals(frames[0].payload?.total, 3);
+});
+
+Deno.test("handleWorkflowRunSearch: applies the default limit when none is sent", async () => {
+  const { socket, frames } = makeSearchSocket();
+  await handleWorkflowRunSearch(
+    socket,
+    makeSearchCtx(undefined, 101),
+    "req-6",
+    new AbortController(),
+    null,
+  );
+
+  assertEquals(
+    names(frames[0], "runId").length,
+    WORKFLOW_RUN_SEARCH_DEFAULT_LIMIT,
+  );
+  assertEquals(frames[0].payload?.total, 505);
 });

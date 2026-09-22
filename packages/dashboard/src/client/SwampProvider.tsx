@@ -51,7 +51,15 @@ const TOKEN_KEY = "swamp-dashboard-token";
 
 function getWsUrl(): string {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  return `${proto}//${location.host}/`;
+  // Ask serve to send large responses as gzip binary frames.
+  return `${proto}//${location.host}/?compress=gzip`;
+}
+
+async function gunzipFrame(data: ArrayBuffer): Promise<string> {
+  const stream = new Blob([data]).stream().pipeThrough(
+    new DecompressionStream("gzip"),
+  );
+  return await new Response(stream).text();
 }
 
 export function SwampProvider({ children }: { children: ReactNode }) {
@@ -91,13 +99,14 @@ export function SwampProvider({ children }: { children: ReactNode }) {
 
     const protocols = authToken ? [`bearer.${authToken}`] : undefined;
     const ws = new WebSocket(getWsUrl(), protocols);
+    ws.binaryType = "arraybuffer";
 
     ws.onopen = () => {
       socketRef.current = ws;
       setConnected(true);
     };
 
-    ws.onmessage = (event) => {
+    const handleFrame = (text: string) => {
       let msg: {
         type: string;
         id: string;
@@ -106,7 +115,7 @@ export function SwampProvider({ children }: { children: ReactNode }) {
         event?: { kind: string; [k: string]: unknown };
       };
       try {
-        msg = JSON.parse(event.data as string);
+        msg = JSON.parse(text);
       } catch {
         return;
       }
@@ -124,6 +133,24 @@ export function SwampProvider({ children }: { children: ReactNode }) {
         pendingRef.current.delete(msg.id);
         pending.resolve(msg.payload);
       }
+    };
+
+    // Every frame goes through one chain so a text frame never overtakes an
+    // earlier compressed frame that is still being decoded.
+    let frameChain: Promise<void> = Promise.resolve();
+    ws.onmessage = (event) => {
+      const data: unknown = event.data;
+      frameChain = frameChain
+        .then(async () => {
+          handleFrame(
+            typeof data === "string"
+              ? data
+              : await gunzipFrame(data as ArrayBuffer),
+          );
+        })
+        .catch((err: unknown) => {
+          console.error("swamp: dropped an undecodable frame", err);
+        });
     };
 
     ws.onclose = () => {

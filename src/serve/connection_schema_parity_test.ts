@@ -61,11 +61,9 @@ type SchemaLessTypes = Exclude<
 >;
 
 // Request types in the protocol with no zod schema: validateServerRequest
-// rejects them outright with invalid_request. Tracked in swamp-club#2361.
-const _schemaLessTypes: MutuallyAssignable<
-  SchemaLessTypes,
-  "doctor.datastores" | "cluster.instances" | "serve.config"
-> = true;
+// would reject them outright with invalid_request. Every type has one
+// (swamp-club#2347 closed the last gaps, tracked in swamp-club#2361).
+const _schemaLessTypes: MutuallyAssignable<SchemaLessTypes, never> = true;
 void _schemaLessTypes;
 
 // ── 2. Field parity ──────────────────────────────────────────────────────

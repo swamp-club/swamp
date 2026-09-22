@@ -47,6 +47,16 @@ export function extractArray<T>(payload: unknown): T[] {
 }
 
 /**
+ * Extract the server-side match count from a paged search response
+ * (`{ data, total }`). Returns null when the server did not report one.
+ */
+export function extractTotal(payload: unknown): number | null {
+  if (!payload || typeof payload !== "object") return null;
+  const total = (payload as Record<string, unknown>).total;
+  return typeof total === "number" ? total : null;
+}
+
+/**
  * Extract a single object from a WS response payload.
  */
 export function extractObject<T>(payload: unknown): T | null {
