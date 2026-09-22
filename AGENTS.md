@@ -71,13 +71,14 @@ During development, use these commands for quick feedback:
 4. `deno run test` - Tests (or `deno run test src/path/to_test.ts` for a single
    file)
 
-Before opening a PR, run the verification workflow in the container sandbox
-instead of these commands individually — it runs all checks (lint, fmt, test,
-compile, deps audit, agent reviews) as a DAG and produces an attestation. See
-`agent-constraints/verification-conventions.md` for the docker command. Do not
-run `deno check`, `deno lint`, `deno fmt`, `deno run test`, or
-`deno run compile` as a pre-PR gate — the verification workflow covers all of
-them.
+Before opening a PR, run the verification workflows instead of these commands
+individually. They run on the host, each in a fresh `git worktree` at the
+verified commit: `verify-build` (lint, fmt, type check, test, deps audit,
+compile), `verify-reviews` (agent reviews), and `verify-skills` (skill review
+and trigger evals). Their results produce the attestation. See
+`agent-constraints/verification-conventions.md` for the commands. Do not run
+`deno check`, `deno lint`, `deno fmt`, `deno run test`, or `deno run compile` as
+a pre-PR gate — the verification workflows cover all of them.
 
 ## Source Control & Pull Requests
 

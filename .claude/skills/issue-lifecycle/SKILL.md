@@ -159,8 +159,8 @@ repository root. If these files exist, they customize how each phase works:
   criteria
 - `agent-constraints/implementation-conventions.md` — build, verify, and PR
   conventions
-- `agent-constraints/verification-conventions.md` — container sandbox and
-  verification workflow configuration
+- `agent-constraints/verification-conventions.md` — verification workflow
+  configuration
 
 If these files do not exist, the skill uses generic defaults documented in each
 reference file.
@@ -224,9 +224,9 @@ justification.
 
 Read [references/verification.md](references/verification.md) **after code
 conformance review is complete.** This runs the same checks as CI (lint, test,
-compile, agent reviews) inside a container sandbox before the PR opens. The
-agent iterates — fixing failures and re-verifying — until all steps pass. Only
-then can a PR be created.
+compile, agent reviews) as host workflows before the PR opens. The agent
+iterates — fixing failures and re-verifying — until all steps pass. Only then
+can a PR be created.
 
 ### Phase 5: Contributor Notification
 

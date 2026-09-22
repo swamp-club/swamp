@@ -52,14 +52,6 @@ const EXPECTED_SETUP_STEPS: Record<string, number> = {
 const EXPECTED_SETUP_TOTAL = Object.values(EXPECTED_SETUP_STEPS)
   .reduce((sum, count) => sum + count, 0);
 
-/**
- * `verification/container/` is intentionally not checked here. It is dead code
- * still pinned at deno 2.8.3, being removed under swamp-club#2271 along with
- * the stale AGENTS.md instruction that points at it. Delete this note and the
- * exclusion together with that directory — do not "fix" it by adding those
- * pins to this test.
- */
-
 /** The deno version `.tool-versions` pins, parsed as setup-deno parses it. */
 async function readPinnedVersion(): Promise<string> {
   const contents = await Deno.readTextFile(TOOL_VERSIONS);
