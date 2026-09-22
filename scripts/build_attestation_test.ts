@@ -21,8 +21,8 @@ import { assertEquals } from "@std/assert";
 import {
   type AttestationEnvironment,
   buildAttestation,
-  selectPriorRunIds,
   type RunRecord,
+  selectPriorRunIds,
   type WorkflowDef,
 } from "./build_attestation.ts";
 
@@ -30,15 +30,24 @@ const WORKFLOW: WorkflowDef = {
   jobs: [
     {
       name: "build-setup",
-      steps: [{ name: "checkout", task: { modelName: "build-setup-${{ run.id }}" } }],
+      steps: [{
+        name: "checkout",
+        task: { modelName: "build-setup-${{ run.id }}" },
+      }],
     },
     {
       name: "build-static-analysis",
-      steps: [{ name: "lint", task: { modelName: "build-lint-${{ run.id }}" } }],
+      steps: [{
+        name: "lint",
+        task: { modelName: "build-lint-${{ run.id }}" },
+      }],
     },
     {
       name: "reviews-setup",
-      steps: [{ name: "checkout", task: { modelName: "review-setup-${{ run.id }}" } }],
+      steps: [{
+        name: "checkout",
+        task: { modelName: "review-setup-${{ run.id }}" },
+      }],
     },
     {
       name: "reviews",
@@ -47,26 +56,36 @@ const WORKFLOW: WorkflowDef = {
           name: "code-review",
           task: {
             modelName: "review-code-${{ run.id }}",
-            inputs: { run: "claude -p - --model claude-opus-4-6 --allowedTools Read" },
+            inputs: {
+              run: "claude -p - --model claude-opus-4-6 --allowedTools Read",
+            },
           },
         },
         {
           name: "ux-review",
           task: {
             modelName: "review-ux-${{ run.id }}",
-            inputs: { run: "claude -p - --model claude-sonnet-4-6 --allowedTools Read" },
+            inputs: {
+              run: "claude -p - --model claude-sonnet-4-6 --allowedTools Read",
+            },
           },
         },
       ],
     },
     {
       name: "skills-setup",
-      steps: [{ name: "checkout", task: { modelName: "skills-setup-${{ run.id }}" } }],
+      steps: [{
+        name: "checkout",
+        task: { modelName: "skills-setup-${{ run.id }}" },
+      }],
     },
     {
       name: "skills",
       steps: [
-        { name: "skill-review", task: { modelName: "skills-review-${{ run.id }}" } },
+        {
+          name: "skill-review",
+          task: { modelName: "skills-review-${{ run.id }}" },
+        },
       ],
     },
     {

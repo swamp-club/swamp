@@ -140,7 +140,7 @@ async function main() {
     console.log(`Git SHA: ${sha}`);
   }
 
-  let originalContent: string | null = preStampContent;
+  const originalContent: string | null = preStampContent;
   if (options.version) {
     console.log(`Version: ${options.version}`);
     await stampVersion(options.version);
@@ -178,9 +178,7 @@ async function main() {
       "resources/deno",
       // Dashboard dist is included only when pre-built (CI runs
       // `npm run build` in packages/dashboard before compile).
-      ...(dashboardDistExists
-        ? ["--include", "packages/dashboard/dist"]
-        : []),
+      ...(dashboardDistExists ? ["--include", "packages/dashboard/dist"] : []),
       // Exclude development-only directories from the binary
       "--exclude",
       "agent-constraints",

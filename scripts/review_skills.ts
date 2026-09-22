@@ -217,7 +217,9 @@ async function main(): Promise<void> {
       }
 
       console.log(
-        `    ${name}: ${(averageScore * 100).toFixed(0)}% (desc=${(descriptionScore * 100).toFixed(0)}%, content=${(contentScore * 100).toFixed(0)}%)`,
+        `    ${name}: ${(averageScore * 100).toFixed(0)}% (desc=${
+          (descriptionScore * 100).toFixed(0)
+        }%, content=${(contentScore * 100).toFixed(0)}%)`,
       );
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);

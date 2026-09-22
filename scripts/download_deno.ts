@@ -39,7 +39,6 @@ const TARGET_ARTIFACT_MAP: Record<string, string> = {
   "x86_64-pc-windows-msvc": "deno-x86_64-pc-windows-msvc.zip",
 };
 
-
 /** Maps Deno.build.os + Deno.build.arch to a target triple. */
 function detectCurrentTarget(): string {
   const os = Deno.build.os;
@@ -214,7 +213,9 @@ async function main() {
   const artifact = TARGET_ARTIFACT_MAP[target];
   if (!artifact) {
     console.error(`Unknown target: ${target}`);
-    console.error(`Supported targets: ${Object.keys(TARGET_ARTIFACT_MAP).join(", ")}`);
+    console.error(
+      `Supported targets: ${Object.keys(TARGET_ARTIFACT_MAP).join(", ")}`,
+    );
     Deno.exit(1);
   }
 

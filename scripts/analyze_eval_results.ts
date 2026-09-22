@@ -195,7 +195,11 @@ async function main(): Promise<void> {
   for (const s of summaries) {
     const status = s.passRate >= 0.9 ? "PASS" : "FAIL";
     console.log(
-      `  ${status} ${s.model}: ${s.passed}/${s.total} (${(s.passRate * 100).toFixed(1)}%) — ${s.tokens.toLocaleString()} tokens, ${formatDuration(s.durationMs)}`,
+      `  ${status} ${s.model}: ${s.passed}/${s.total} (${
+        (s.passRate * 100).toFixed(1)
+      }%) — ${s.tokens.toLocaleString()} tokens, ${
+        formatDuration(s.durationMs)
+      }`,
     );
   }
 
@@ -237,7 +241,11 @@ async function main(): Promise<void> {
   // Overall verdict
   const allPassed = summaries.every((s) => s.passRate >= 0.9);
   console.log(
-    `\nVerdict: ${allPassed ? "ALL MODELS PASS" : "ACTION REQUIRED — some models below 90% threshold"}`,
+    `\nVerdict: ${
+      allPassed
+        ? "ALL MODELS PASS"
+        : "ACTION REQUIRED — some models below 90% threshold"
+    }`,
   );
 
   // GitHub Actions summary
@@ -247,12 +255,17 @@ async function main(): Promise<void> {
 
     // Summary table
     md += "### Results\n\n";
-    md += "| Model | Pass Rate | Passed | Failed | Tokens | Duration | Status |\n";
-    md += "|-------|-----------|--------|--------|--------|----------|--------|\n";
+    md +=
+      "| Model | Pass Rate | Passed | Failed | Tokens | Duration | Status |\n";
+    md +=
+      "|-------|-----------|--------|--------|--------|----------|--------|\n";
     for (const s of summaries) {
       const status = s.passRate >= 0.9 ? "✅ Pass" : "❌ Fail";
-      md +=
-        `| ${s.model} | ${(s.passRate * 100).toFixed(1)}% | ${s.passed} | ${s.failed} | ${s.tokens.toLocaleString()} | ${formatDuration(s.durationMs)} | ${status} |\n`;
+      md += `| ${s.model} | ${
+        (s.passRate * 100).toFixed(1)
+      }% | ${s.passed} | ${s.failed} | ${s.tokens.toLocaleString()} | ${
+        formatDuration(s.durationMs)
+      } | ${status} |\n`;
     }
 
     // Cross-model failures
@@ -264,8 +277,9 @@ async function main(): Promise<void> {
       md += "|------|---------------|-------|\n";
       for (const [desc, models] of multiModelFailures) {
         const escapedDesc = desc.replace(/\|/g, "\\|");
-        md +=
-          `| ${escapedDesc} | ${models.join(", ")} | ${models.length}/${summaries.length} |\n`;
+        md += `| ${escapedDesc} | ${
+          models.join(", ")
+        } | ${models.length}/${summaries.length} |\n`;
       }
     }
 
@@ -288,7 +302,8 @@ async function main(): Promise<void> {
       md += "✅ **All models pass** the 90% threshold.\n";
     } else {
       const failing = summaries.filter((s) => s.passRate < 0.9);
-      md += "❌ **Action required** — the following models are below the 90% threshold:\n\n";
+      md +=
+        "❌ **Action required** — the following models are below the 90% threshold:\n\n";
       for (const s of failing) {
         md += `- **${s.model}**: ${(s.passRate * 100).toFixed(1)}%\n`;
       }

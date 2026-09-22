@@ -21,11 +21,7 @@
 // excluded from `deno fmt` and `deno lint` in deno.json, and `deno task check`
 // only type-checks the main.ts graph.
 
-import {
-  assertEquals,
-  assertStringIncludes,
-  assertThrows,
-} from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import {
   checkVersionAgainstPin,
   parsePinnedDenoVersion,

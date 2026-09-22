@@ -123,7 +123,9 @@ async function preflightCheck(model: string): Promise<void> {
   if (!resp.ok) {
     const body = await resp.text();
     console.error(
-      `Preflight failed for ${model} (HTTP ${resp.status}): ${body.slice(0, 300)}`,
+      `Preflight failed for ${model} (HTTP ${resp.status}): ${
+        body.slice(0, 300)
+      }`,
     );
     if (resp.status === 429) {
       console.error(
@@ -300,7 +302,9 @@ function summarizePhase(
   const failures = data.results.results.filter((r) => !r.success);
 
   console.log(
-    `\n${name} (${model}): ${stats.successes}/${total} passed (${(rate * 100).toFixed(1)}%)`,
+    `\n${name} (${model}): ${stats.successes}/${total} passed (${
+      (rate * 100).toFixed(1)
+    }%)`,
   );
   console.log(
     `Tokens: ${stats.tokenUsage.total} (${stats.tokenUsage.prompt} prompt, ${stats.tokenUsage.completion} completion)`,
@@ -313,9 +317,9 @@ function summarizePhase(
       const desc = f.testCase?.description ?? f.testCase?.vars?.query ??
         "unknown";
       const rawOutput = f.response?.output ?? "";
-      const output = (typeof rawOutput === "string"
-        ? rawOutput
-        : JSON.stringify(rawOutput)).slice(0, 100);
+      const output =
+        (typeof rawOutput === "string" ? rawOutput : JSON.stringify(rawOutput))
+          .slice(0, 100);
       console.log(`  FAIL: ${desc}`);
       console.log(`    → ${output}`);
     }
@@ -346,7 +350,9 @@ async function main(): Promise<void> {
   const model = args.model;
   if (!VALID_MODELS.includes(model)) {
     console.error(
-      `Error: unknown model "${model}". Valid models: ${VALID_MODELS.join(", ")}`,
+      `Error: unknown model "${model}". Valid models: ${
+        VALID_MODELS.join(", ")
+      }`,
     );
     Deno.exit(1);
   }
@@ -443,7 +449,9 @@ async function main(): Promise<void> {
 
   console.log(`\n━━━ Combined Results (${model}) ━━━`);
   console.log(
-    `Overall: ${totalPassed}/${totalTests} passed (${(combinedRate * 100).toFixed(1)}%)`,
+    `Overall: ${totalPassed}/${totalTests} passed (${
+      (combinedRate * 100).toFixed(1)
+    }%)`,
   );
   console.log(`Total cost: $${totalCost.toFixed(2)}`);
 
@@ -453,11 +461,13 @@ async function main(): Promise<void> {
     let md = `## Skill Eval Results (${model})\n\n`;
     md += "| Phase | Passed | Total | Rate | Cost |\n|---|---|---|---|---|\n";
     for (const r of [triggerResult, routingResult, sufficiencyResult]) {
-      md +=
-        `| ${r.name} | ${r.passed} | ${r.total} | ${(r.rate * 100).toFixed(1)}% | $${r.cost.toFixed(2)} |\n`;
+      md += `| ${r.name} | ${r.passed} | ${r.total} | ${
+        (r.rate * 100).toFixed(1)
+      }% | $${r.cost.toFixed(2)} |\n`;
     }
-    md +=
-      `| **Combined** | **${totalPassed}** | **${totalTests}** | **${(combinedRate * 100).toFixed(1)}%** | **$${totalCost.toFixed(2)}** |\n\n`;
+    md += `| **Combined** | **${totalPassed}** | **${totalTests}** | **${
+      (combinedRate * 100).toFixed(1)
+    }%** | **$${totalCost.toFixed(2)}** |\n\n`;
 
     const allFailures = [
       ...triggerResult.failures,
@@ -471,12 +481,14 @@ async function main(): Promise<void> {
         const desc = (f.testCase?.description ?? f.testCase?.vars?.query ??
           "unknown").replace(/\|/g, "\\|");
         const rawOut = f.response?.output ?? "";
-        const output = (typeof rawOut === "string"
-          ? rawOut
-          : JSON.stringify(rawOut)).slice(0, 80).replace(
-          /\|/g,
-          "\\|",
-        ).replace(/\n/g, " ");
+        const output =
+          (typeof rawOut === "string" ? rawOut : JSON.stringify(rawOut)).slice(
+            0,
+            80,
+          ).replace(
+            /\|/g,
+            "\\|",
+          ).replace(/\n/g, " ");
         md += `| ${desc} | ${output} |\n`;
       }
     }
@@ -486,7 +498,9 @@ async function main(): Promise<void> {
   // Check threshold against combined rate
   if (combinedRate < passThreshold) {
     console.error(
-      `\nFAIL (${model}): Combined pass rate ${(combinedRate * 100).toFixed(1)}% is below ${(passThreshold * 100).toFixed(0)}% threshold`,
+      `\nFAIL (${model}): Combined pass rate ${
+        (combinedRate * 100).toFixed(1)
+      }% is below ${(passThreshold * 100).toFixed(0)}% threshold`,
     );
     Deno.exit(1);
   }

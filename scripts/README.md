@@ -43,8 +43,8 @@ A license is resolved for every component:
   to the npm registry if a package isn't cached locally.
 - **JSR** — fetched from the JSR per-version API
   (`api.jsr.io/scopes/{scope}/packages/{name}/versions/{version}`) and persisted
-  to `scripts/jsr_license_cache.json`. Repeat runs and CI read from the cache and
-  never hit the network for already-seen versions. `@std/*` packages that
+  to `scripts/jsr_license_cache.json`. Repeat runs and CI read from the cache
+  and never hit the network for already-seen versions. `@std/*` packages that
   declare no license resolve to MIT (the Deno standard library license).
 
 A component with no resolvable license is emitted as `NOASSERTION`, and the
@@ -82,6 +82,6 @@ view the report in the FOSSA web app, to inspect violations.
 ## Related
 
 - `scripts/audit_deps.ts` (`deno run audit`) — the separate OSV-based
-  vulnerability audit, which scans the same dependency set for known CVEs.
-  Note: `design/surfaces/audit.md` documents the AI agent activity audit, not the OSV
+  vulnerability audit, which scans the same dependency set for known CVEs. Note:
+  `design/surfaces/audit.md` documents the AI agent activity audit, not the OSV
   scanner.
