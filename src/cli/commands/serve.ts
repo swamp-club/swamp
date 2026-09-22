@@ -1921,6 +1921,7 @@ export const serveCommand = new Command()
           syncService,
           syncGate,
           catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+          extensionSubdirs: ["config/pulled-extensions"],
           extensionReloader: async () => {
             const result = await performServeReload(
               resolvedRepoDir,

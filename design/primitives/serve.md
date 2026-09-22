@@ -305,11 +305,13 @@ executing it; the control plane records _where_ it is, not _what happened_.
 Grants replicate as data, but each instance loads its own snapshot on its own
 poll, so a grant change is visible on different instances up to 30 s apart.
 Extension registries are indexed at startup. When `managedConfig` is active, the
-config poller triggers `performServeReload` after syncing new extension files,
-which re-indexes existing extensions and discovers newly-arrived ones via
-`createExtensionDiscoverer` (`src/serve/extension_reload.ts`). Extensions that
-arrive via config sync are registered automatically without a restart or manual
-SIGHUP.
+config poller pulls extension files (`config/pulled-extensions/`) separately
+from definition files (`config/models/`, `config/vaults/`, etc.) and only
+triggers `performServeReload` when extension files have changed. Definition-only
+changes (e.g. a model YAML edit) invalidate catalogs but do not reload extension
+registries. Newly-arrived extensions are discovered via
+`createExtensionDiscoverer` (`src/serve/extension_reload.ts`) and registered
+automatically without a restart or manual SIGHUP.
 
 **Rolling restart.** On SIGTERM an instance stops accepting triggers, drains
 active runs for 30 s, aborts what remains and waits 5 s more, marks those
@@ -354,9 +356,10 @@ is handled by the reconciliation loop after `--stale-ttl`.
   datastore-only state without `kubectl exec`, `--hot-reload` is recommended.
   Without it, `swamp serve reload --server` fails and the only way to pick up
   newly installed extensions is a full pod restart. The `ConfigPoller` refreshes
-  definitions (models, workflows, vaults) every 30 s, but extension type
-  registries are not reloaded by the poller — that requires the SIGHUP-based
-  hot-reload path. See
+  definitions (models, workflows, vaults) every 30 s and reloads extension
+  type registries only when extension files under `config/pulled-extensions/`
+  change — definition-only changes do not trigger a reload. SIGHUP-based
+  hot-reload (`swamp serve reload`) remains available for manual reloads. See
   [datastores §Managed Config](../enablers/datastores.md#managed-config-deployment-architecture)
   for the full deployment guide.
 - **Graceful shutdown.** SIGINT/SIGTERM run the sequence above, then stop the

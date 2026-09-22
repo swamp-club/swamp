@@ -29,27 +29,36 @@ import { waitFor } from "@swamp-club/swamp-testing";
 interface MockSyncService extends DatastoreSyncService {
   pullCalls: DatastoreSyncOptions[];
   pullResult: number | void;
+  pullResultFn?: (options: DatastoreSyncOptions) => number | void;
   pullDelay: number;
   pullError: Error | null;
 }
 
 function createMockSyncService(
   overrides: Partial<
-    Pick<MockSyncService, "pullResult" | "pullDelay" | "pullError">
+    Pick<
+      MockSyncService,
+      "pullResult" | "pullDelay" | "pullError" | "pullResultFn"
+    >
   > = {},
 ): MockSyncService {
   const mock: MockSyncService = {
     pullCalls: [],
     pullResult: overrides.pullResult ?? 0,
+    pullResultFn: overrides.pullResultFn,
     pullDelay: overrides.pullDelay ?? 0,
     pullError: overrides.pullError ?? null,
     async pullChanged(options?: DatastoreSyncOptions): Promise<number | void> {
-      mock.pullCalls.push(options ?? {});
+      const opts = options ?? {};
+      mock.pullCalls.push(opts);
       if (mock.pullDelay > 0) {
         await new Promise<void>((r) => setTimeout(r, mock.pullDelay));
       }
       if (mock.pullError) {
         throw mock.pullError;
+      }
+      if (mock.pullResultFn) {
+        return mock.pullResultFn(opts);
       }
       return mock.pullResult;
     },
@@ -132,7 +141,7 @@ Deno.test("ConfigPoller: namespace is passed through to pullChanged", async () =
   assertEquals(sync.pullCalls[0].namespace, "test-namespace");
 });
 
-Deno.test("ConfigPoller: invalidates both catalogs when pullChanged returns count > 0", async () => {
+Deno.test("ConfigPoller: invalidates catalogs when pullChanged returns count > 0", async () => {
   const sync = createMockSyncService({ pullResult: 3 });
   const { state, catalogInvalidate, extensionReloader } =
     createCallbackTrackers();
@@ -152,11 +161,7 @@ Deno.test("ConfigPoller: invalidates both catalogs when pullChanged returns coun
   await poller.stop();
 
   assertGreater(state.catalogInvalidateCalls, 0);
-  assertGreater(state.extensionReloaderCalls, 0);
-  assertEquals(
-    state.catalogInvalidateCalls,
-    state.extensionReloaderCalls,
-  );
+  assertEquals(state.extensionReloaderCalls, 0);
 });
 
 Deno.test("ConfigPoller: does not invalidate catalogs when pullChanged returns 0", async () => {
@@ -410,12 +415,13 @@ Deno.test("ConfigPoller: pull holds the sync gate, so it cannot interleave a mut
   assertEquals(typeof sync.pullCalls[0].signal, "object");
 });
 
-Deno.test("ConfigPoller: awaits async extensionReloader when files change", async () => {
+Deno.test("ConfigPoller: awaits async extensionReloader when extension files change", async () => {
   const sync = createMockSyncService({ pullResult: 2 });
   let reloaderCompleted = false;
   const poller = new ConfigPoller({
     syncService: sync,
     catalogInvalidate: () => {},
+    extensionSubdirs: ["config/pulled-extensions"],
     extensionReloader: async () => {
       await new Promise<void>((r) => setTimeout(r, 20));
       reloaderCompleted = true;
@@ -436,6 +442,7 @@ Deno.test("ConfigPoller: survives extensionReloader throwing an error", async ()
   const poller = new ConfigPoller({
     syncService: sync,
     catalogInvalidate: () => {},
+    extensionSubdirs: ["config/pulled-extensions"],
     extensionReloader: () => {
       reloaderCalls++;
       return Promise.reject(new Error("reload failed"));
@@ -451,4 +458,88 @@ Deno.test("ConfigPoller: survives extensionReloader throwing an error", async ()
   await poller.stop();
 
   assertGreater(reloaderCalls, 1);
+});
+
+Deno.test("ConfigPoller: does not call extensionReloader when only definition files change", async () => {
+  const sync = createMockSyncService({
+    pullResultFn: (options) => {
+      const subdirs = options.subdirs as readonly string[] | undefined;
+      if (subdirs?.includes("config/pulled-extensions")) return 0;
+      return 3;
+    },
+  });
+  const { state, catalogInvalidate, extensionReloader } =
+    createCallbackTrackers();
+
+  const poller = new ConfigPoller({
+    syncService: sync,
+    catalogInvalidate,
+    extensionSubdirs: ["config/pulled-extensions"],
+    extensionReloader,
+    pollIntervalMs: 30,
+  });
+
+  poller.start();
+  await waitFor(
+    () => state.catalogInvalidateCalls >= 1,
+    "catalog invalidation",
+  );
+  await poller.stop();
+
+  assertGreater(state.catalogInvalidateCalls, 0);
+  assertEquals(state.extensionReloaderCalls, 0);
+});
+
+Deno.test("ConfigPoller: calls extensionReloader only when extension subdirs have changes", async () => {
+  const sync = createMockSyncService({
+    pullResultFn: (options) => {
+      const subdirs = options.subdirs as readonly string[] | undefined;
+      if (subdirs?.includes("config/pulled-extensions")) return 2;
+      return 0;
+    },
+  });
+  const { state, catalogInvalidate, extensionReloader } =
+    createCallbackTrackers();
+
+  const poller = new ConfigPoller({
+    syncService: sync,
+    catalogInvalidate,
+    extensionSubdirs: ["config/pulled-extensions"],
+    extensionReloader,
+    pollIntervalMs: 30,
+  });
+
+  poller.start();
+  await waitFor(
+    () => state.extensionReloaderCalls >= 1,
+    "extension reloader called",
+  );
+  await poller.stop();
+
+  assertGreater(state.catalogInvalidateCalls, 0);
+  assertGreater(state.extensionReloaderCalls, 0);
+});
+
+Deno.test("ConfigPoller: pulls extension subdirs before config subdirs", async () => {
+  const sync = createMockSyncService({ pullResult: 0 });
+  const { catalogInvalidate, extensionReloader } = createCallbackTrackers();
+
+  const poller = new ConfigPoller({
+    syncService: sync,
+    catalogInvalidate,
+    extensionSubdirs: ["config/pulled-extensions"],
+    extensionReloader,
+    pollIntervalMs: 30,
+  });
+
+  poller.start();
+  // Two pulls per tick: extension subdirs first, then config
+  await waitFor(() => sync.pullCalls.length >= 2, "at least two pulls");
+  await poller.stop();
+
+  assertEquals(
+    sync.pullCalls[0].subdirs,
+    ["config/pulled-extensions"],
+  );
+  assertEquals(sync.pullCalls[1].subdirs, ["config"]);
 });

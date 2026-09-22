@@ -19,7 +19,12 @@
 
 import { getLogger } from "@logtape/logtape";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
-import { gatedPull, type SyncGate } from "./sync_gate.ts";
+import {
+  POLLER_PULL_TIMEOUT_MS,
+  type SyncGate,
+  withSyncGate,
+} from "./sync_gate.ts";
+import { runBoundedSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 
 const logger = getLogger(["swamp", "serve", "config-poller"]);
 
@@ -30,6 +35,7 @@ export interface ConfigPollerOptions {
   syncGate?: SyncGate;
   catalogInvalidate: () => void;
   extensionReloader: () => Promise<void>;
+  extensionSubdirs?: readonly string[];
   pollIntervalMs?: number;
   namespace?: string;
 }
@@ -39,6 +45,7 @@ export class ConfigPoller {
   readonly #syncGate?: SyncGate;
   readonly #catalogInvalidate: () => void;
   readonly #extensionReloader: () => Promise<void>;
+  readonly #extensionSubdirs: readonly string[];
   readonly #pollIntervalMs: number;
   readonly #namespace?: string;
   #timer: ReturnType<typeof setInterval> | null = null;
@@ -50,6 +57,7 @@ export class ConfigPoller {
     this.#syncGate = options.syncGate;
     this.#catalogInvalidate = options.catalogInvalidate;
     this.#extensionReloader = options.extensionReloader;
+    this.#extensionSubdirs = options.extensionSubdirs ?? [];
     this.#pollIntervalMs = options.pollIntervalMs ??
       DEFAULT_CONFIG_POLL_INTERVAL_MS;
     this.#namespace = options.namespace;
@@ -82,28 +90,50 @@ export class ConfigPoller {
   async #pullAndInvalidate(): Promise<void> {
     this.#pulling = true;
     try {
-      const result = await gatedPull(
+      let extensionCount = 0;
+      let definitionCount = 0;
+
+      await withSyncGate(
         this.#syncGate,
-        "config poller",
-        (signal) =>
-          this.#syncService.pullChanged({
-            signal,
-            subdirs: ["config"],
-            namespace: this.#namespace,
-          }),
+        () =>
+          runBoundedSync(
+            "config poller",
+            "pull",
+            POLLER_PULL_TIMEOUT_MS,
+            async (signal) => {
+              if (this.#extensionSubdirs.length > 0) {
+                const extResult = await this.#syncService.pullChanged({
+                  signal,
+                  subdirs: this.#extensionSubdirs,
+                  namespace: this.#namespace,
+                });
+                extensionCount = typeof extResult === "number" ? extResult : 0;
+              }
+
+              const defResult = await this.#syncService.pullChanged({
+                signal,
+                subdirs: ["config"],
+                namespace: this.#namespace,
+              });
+              definitionCount = typeof defResult === "number" ? defResult : 0;
+            },
+          ),
       );
-      const count = typeof result === "number" ? result : 0;
-      if (count > 0) {
+
+      const totalCount = extensionCount + definitionCount;
+      if (totalCount > 0) {
         logger
-          .info`Config poller: ${count} file(s) updated, invalidating catalogs`;
+          .info`Config poller: ${totalCount} file(s) updated, invalidating catalogs`;
         this.#catalogInvalidate();
-        try {
-          await this.#extensionReloader();
-        } catch (error) {
-          logger
-            .warn`Config poller extension reload failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`;
+        if (extensionCount > 0) {
+          try {
+            await this.#extensionReloader();
+          } catch (error) {
+            logger
+              .warn`Config poller extension reload failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`;
+          }
         }
       }
     } catch (error) {
