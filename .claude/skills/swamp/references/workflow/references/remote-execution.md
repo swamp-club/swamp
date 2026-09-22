@@ -114,6 +114,52 @@ the job. If the pinned worker disconnects mid-group, steps fail with a
 contract is preserved. Validation warns when `affinity: true` is set without any
 placement fields (a no-op).
 
+## Remote-only mode
+
+By default, steps without placement run locally on the orchestrator. Enable
+**remote-only mode** to forbid local execution entirely — every user step must
+declare placement and be dispatched to a worker. Steps that lack a `target`,
+`labels`, or `platform` block fail immediately instead of falling back to
+in-process execution.
+
+Enable via any of:
+
+| Mechanism           | Value                    |
+| ------------------- | ------------------------ |
+| CLI flag            | `--remote-only`          |
+| Serve config (YAML) | `remote-only: true`      |
+| Environment var     | `SWAMP_REMOTE_ONLY=true` |
+
+When an unplaced step runs in remote-only mode, swamp raises a `UserError`:
+
+```
+Step 'train' on model '@acme/ml-pipeline' has no placement but the server is
+running in remote-only mode. Add a placement block (target, labels, or platform)
+to the workflow step, job, or workflow so it can be dispatched to a remote worker.
+```
+
+The fix is a workflow-level or job-level placement default so all steps inherit
+it:
+
+```yaml
+name: deploy-pipeline
+labels:
+  pool: gke
+jobs:
+  - name: build
+    steps:
+      - name: compile
+        task: ... # inherits workflow labels — dispatched to a worker
+```
+
+Built-in control-plane models (`swamp/*` — server tokens, enrollment tokens,
+workers, step leases) are exempt: they always run on the orchestrator regardless
+of remote-only mode.
+
+Placement moves **method bodies** only. The orchestrator still evaluates guards,
+resolves data references, and performs all data I/O — workers hold no
+credentials or repository state.
+
 ## Running workflows through the orchestrator
 
 `swamp serve` is the orchestrator, so placed workflows must run through it. From
