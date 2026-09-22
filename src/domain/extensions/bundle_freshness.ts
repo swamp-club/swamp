@@ -75,14 +75,21 @@ export interface FreshnessCatalogRow {
  * - `trusted-pulled` — a pulled extension's on-disk bundle was reused
  *   without attempting a rebundle. Nothing failed.
  * - `rebundle-failed` — `deno bundle` threw and the previous bundle was
- *   reused. `bundleWithCache` has already logged the failure.
+ *   reused. `bundleWithCache` has already logged the failure: at warn when
+ *   it was unexpected, at debug when `expectedFailure` is true.
  */
 export type BundleResult =
   | { readonly js: string; readonly fromCache: false }
   | {
     readonly js: string;
     readonly fromCache: true;
-    readonly cacheReason: "trusted-pulled" | "rebundle-failed";
+    readonly cacheReason: "trusted-pulled";
+  }
+  | {
+    readonly js: string;
+    readonly fromCache: true;
+    readonly cacheReason: "rebundle-failed";
+    readonly expectedFailure: boolean;
   };
 
 /**

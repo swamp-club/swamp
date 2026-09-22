@@ -35,6 +35,7 @@ import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import { withMockedCommand } from "@swamp-club/swamp-testing";
 
 /** W1b/(a-2): construct an ExtensionRepository wrapping a test catalog. */
 function makeRepoForCatalog(
@@ -2880,14 +2881,29 @@ export const model = {
   }
 });
 
-Deno.test("UserModelLoader buildIndex: pulled extension reusing its bundle after a source change logs no warning (swamp-club#2354)", async () => {
+/**
+ * Runs buildIndex twice over one model file whose bundle already exists:
+ * once to populate the catalog, then again after the source changes, so the
+ * second pass takes the reconcile path (rebundleAndUpdateCatalog). Every
+ * `deno bundle` attempt fails through a mocked Deno.Command, so no process
+ * is spawned. Only the second pass's logs are captured.
+ */
+async function reconcileAfterSourceChange(args: {
+  pulled: boolean;
+  addBareImport: boolean;
+}): Promise<{
+  records: LogRecord[];
+  failed: string[];
+  bundleCalls: number;
+  fingerprintBefore?: string;
+  fingerprintAfter?: string;
+}> {
   const ts = crypto.randomUUID().slice(0, 8);
-  const typeId = `@user/trusted-pulled-${ts}`;
   const v1 = `
 import { z } from "npm:zod@4";
 
 export const model = {
-  type: "${typeId}",
+  type: "@user/reconcile-${ts}",
   version: "2026.02.09.1",
   methods: {
     run: {
@@ -2898,26 +2914,35 @@ export const model = {
   },
 };
 `;
-  // A bare specifier with no deno.json is an expected bundle failure, so
-  // the loader reuses the pulled extension's bundle without rebundling.
-  const v2 = `import { helper } from "bare-helper-${ts}";\n${v1}`;
+  // A bare specifier with no deno.json makes the failure an expected one.
+  const v2 = args.addBareImport
+    ? `import { helper } from "bare-helper-${ts}";\n${v1}`
+    : `${v1}// changed\n`;
 
   const repoDir = await Deno.makeTempDir({ prefix: "swamp_2354_repo_" });
-  const modelsDir = join(
-    repoDir,
-    ".swamp",
-    "pulled-extensions",
-    "@test",
-    "ext",
-    "models",
-  );
+  const modelsDir = args.pulled
+    ? join(repoDir, ".swamp", "pulled-extensions", "@test", "ext", "models")
+    : join(repoDir, "extensions", "models");
   const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
   const sourcePath = join(modelsDir, "model.ts");
   const records: LogRecord[] = [];
+  const failBundle = () => ({
+    stdout: "",
+    stderr: "simulated bundle failure",
+    code: 1,
+  });
 
   try {
     await Deno.mkdir(modelsDir, { recursive: true });
     await Deno.writeTextFile(sourcePath, v1);
+    const bundleDir = join(
+      repoDir,
+      ".swamp",
+      "bundles",
+      bundleNamespace(modelsDir, repoDir),
+    );
+    await Deno.mkdir(bundleDir, { recursive: true });
+    await Deno.writeTextFile(join(bundleDir, "model.js"), v1);
 
     const catalog1 = new ExtensionCatalogStore(dbPath);
     const loader1 = new ExtensionLoader(
@@ -2927,11 +2952,10 @@ export const model = {
       undefined,
       makeRepoForCatalog(catalog1, repoDir),
     );
-    await loader1.buildIndex(modelsDir);
+    await withMockedCommand(failBundle, () => loader1.buildIndex(modelsDir));
     const fingerprintBefore = catalog1.findBySourcePath(sourcePath)
       ?.source_fingerprint;
     catalog1.close();
-    assertNotEquals(fingerprintBefore, undefined);
 
     await Deno.writeTextFile(sourcePath, v2);
 
@@ -2956,28 +2980,21 @@ export const model = {
       undefined,
       makeRepoForCatalog(catalog2, repoDir),
     );
-    const result = await loader2.buildIndex(modelsDir);
+    const { result, calls } = await withMockedCommand(
+      failBundle,
+      () => loader2.buildIndex(modelsDir),
+    );
     const fingerprintAfter = catalog2.findBySourcePath(sourcePath)
       ?.source_fingerprint;
     catalog2.close();
 
-    assertEquals(result.failed, []);
-    assertEquals(
-      fingerprintAfter,
+    return {
+      records,
+      failed: result.failed.map((f) => f.file),
+      bundleCalls: calls.length,
       fingerprintBefore,
-      "reused bundle must keep the stored fingerprint",
-    );
-    assertEquals(
-      records
-        .filter((r) => r.level === "warning")
-        .map((r) => r.message.map(String).join("")),
-      [],
-      "reusing a pulled extension's bundle is not a failure",
-    );
-    const preserved = records.filter((r) =>
-      r.message.map(String).join("").includes("source fingerprint preserved")
-    );
-    assertEquals(preserved.map((r) => r.level), ["debug"]);
+      fingerprintAfter,
+    };
   } finally {
     await reset();
     if (Deno.build.os === "windows") {
@@ -2986,6 +3003,61 @@ export const model = {
       await Deno.remove(repoDir, { recursive: true });
     }
   }
+}
+
+function warningTexts(records: LogRecord[]): string[] {
+  return records
+    .filter((r) => r.level === "warning")
+    .map((r) => r.message.map(String).join(""));
+}
+
+Deno.test("UserModelLoader buildIndex: pulled extension reusing its bundle after a source change logs no warning (swamp-club#2354)", async () => {
+  const run = await reconcileAfterSourceChange({
+    pulled: true,
+    addBareImport: true,
+  });
+
+  assertEquals(run.failed, []);
+  assertEquals(run.bundleCalls, 0, "no rebundle is attempted");
+  assertNotEquals(run.fingerprintBefore, undefined);
+  assertEquals(run.fingerprintAfter, run.fingerprintBefore);
+  assertEquals(warningTexts(run.records), []);
+  const preserved = run.records.filter((r) =>
+    r.message.map(String).join("").includes("source fingerprint preserved")
+  );
+  assertEquals(preserved.map((r) => r.level), ["debug"]);
+});
+
+Deno.test("UserModelLoader buildIndex: unexpected rebundle failure warns once, with the error (swamp-club#2354)", async () => {
+  const run = await reconcileAfterSourceChange({
+    pulled: false,
+    addBareImport: false,
+  });
+
+  assertEquals(run.failed, []);
+  assertEquals(run.bundleCalls, 1);
+  assertNotEquals(run.fingerprintBefore, undefined);
+  assertEquals(run.fingerprintAfter, run.fingerprintBefore);
+  const warnings = warningTexts(run.records);
+  assertEquals(warnings.length, 1, "exactly one warning per failed rebundle");
+  assertStringIncludes(warnings[0], "Rebundle failed for");
+  assertStringIncludes(warnings[0], "simulated bundle failure");
+});
+
+Deno.test("UserModelLoader buildIndex: expected rebundle failure warns once that the bundle could not be regenerated (swamp-club#2354)", async () => {
+  const run = await reconcileAfterSourceChange({
+    pulled: false,
+    addBareImport: true,
+  });
+
+  assertEquals(run.failed, []);
+  assertEquals(run.bundleCalls, 1);
+  assertNotEquals(run.fingerprintBefore, undefined);
+  assertEquals(run.fingerprintAfter, run.fingerprintBefore);
+  const warnings = warningTexts(run.records);
+  assertEquals(warnings.length, 1, "exactly one warning per failed rebundle");
+  assertStringIncludes(warnings[0], "could not be regenerated");
+  assertStringIncludes(warnings[0], "will retry on next command");
 });
 
 Deno.test("UserModelLoader buildIndex: unchanged content does not rebundle even with new mtime", async () => {

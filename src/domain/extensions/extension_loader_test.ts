@@ -19,6 +19,7 @@
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { withMockedCommand } from "@swamp-club/swamp-testing";
 import { join } from "@std/path";
 import { toFileUrl } from "@std/path";
 import { findStaleFiles, type FreshnessCatalog } from "./bundle_freshness.ts";
@@ -803,7 +804,7 @@ for (const indexOnly of [true, false]) {
 async function loadWithExistingBundle(args: {
   pulled: boolean;
   indexOnly: boolean;
-}): Promise<{ records: LogRecord[]; failed: string[] }> {
+}): Promise<{ records: LogRecord[]; failed: string[]; bundleCalls: number }> {
   const dir = await Deno.makeTempDir({ prefix: "swamp_2354_" });
   const records: LogRecord[] = [];
   try {
@@ -835,21 +836,21 @@ async function loadWithExistingBundle(args: {
       reset: true,
     });
 
-    // A deno binary that does not exist makes any rebundle attempt fail
-    // the same way on every platform.
-    const missingDenoRuntime: DenoRuntime = {
-      ensureDeno: () => Promise.resolve(join(dir, "no-such-deno")),
-      getDenoEnv: () => Deno.env.toObject(),
-    };
     const loader = new ExtensionLoader(
-      missingDenoRuntime,
+      stubDenoRuntime,
       makeStubAdapter(new Set<string>()),
       dir,
     );
-    const result = await loader.load(modelsDir, {
-      indexOnly: args.indexOnly,
-    });
-    return { records, failed: result.failed.map((f) => f.file) };
+    // Any rebundle attempt fails, without spawning a process.
+    const { result, calls } = await withMockedCommand(
+      () => ({ stdout: "", stderr: "simulated bundle failure", code: 1 }),
+      () => loader.load(modelsDir, { indexOnly: args.indexOnly }),
+    );
+    return {
+      records,
+      failed: result.failed.map((f) => f.file),
+      bundleCalls: calls.length,
+    };
   } finally {
     await reset();
     await Deno.remove(dir, { recursive: true }).catch(() => {});
@@ -864,12 +865,13 @@ function warningTexts(records: LogRecord[]): string[] {
 
 for (const indexOnly of [true, false]) {
   Deno.test(`load: pulled extension with an existing bundle logs no warning (indexOnly=${indexOnly})`, async () => {
-    const { records, failed } = await loadWithExistingBundle({
+    const { records, failed, bundleCalls } = await loadWithExistingBundle({
       pulled: true,
       indexOnly,
     });
 
     assertEquals(failed, [], "trusted pulled bundle must load");
+    assertEquals(bundleCalls, 0, "no rebundle is attempted");
     assertEquals(
       warningTexts(records),
       [],
@@ -884,15 +886,16 @@ for (const indexOnly of [true, false]) {
   });
 
   Deno.test(`load: failed rebundle with an existing bundle warns once with the error (indexOnly=${indexOnly})`, async () => {
-    const { records, failed } = await loadWithExistingBundle({
+    const { records, failed, bundleCalls } = await loadWithExistingBundle({
       pulled: false,
       indexOnly,
     });
 
     assertEquals(failed, [], "cached bundle must be used after the failure");
+    assertEquals(bundleCalls, 1, "one rebundle is attempted");
     const warnings = warningTexts(records);
     assertEquals(warnings.length, 1, "exactly one warning per failed rebundle");
     assertStringIncludes(warnings[0], "Rebundle failed for");
-    assertStringIncludes(warnings[0], "using cached bundle:");
+    assertStringIncludes(warnings[0], "simulated bundle failure");
   });
 }

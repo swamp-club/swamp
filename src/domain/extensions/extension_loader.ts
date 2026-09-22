@@ -1032,9 +1032,18 @@ export class ExtensionLoader {
       const existing = catalog.findBySourcePath(absolutePath);
       if (existing?.source_fingerprint) {
         if (existing.source_fingerprint !== sourceFingerprint) {
-          if (bundled.cacheReason === "rebundle-failed") {
+          // An unexpected rebundle failure was already warned about, with
+          // its error, inside bundleWithCache. An expected one was only
+          // logged at debug there, so this is its one warning.
+          if (
+            bundled.cacheReason === "rebundle-failed" &&
+            bundled.expectedFailure
+          ) {
             this.logger
               .warn`Bundle could not be regenerated for ${relativePath} — source fingerprint preserved, will retry on next command`;
+          } else if (bundled.cacheReason === "rebundle-failed") {
+            this.logger
+              .debug`Bundle could not be regenerated for ${relativePath} — source fingerprint preserved, will retry on next command`;
           } else {
             this.logger
               .debug`Using trusted bundle for pulled extension ${relativePath} — source fingerprint preserved`;
@@ -1278,6 +1287,7 @@ export class ExtensionLoader {
               js: cached,
               fromCache: true,
               cacheReason: "rebundle-failed",
+              expectedFailure: expected,
             };
           } catch {
             // Cache file was removed between stat and read — treat as no cache.
