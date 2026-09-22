@@ -23,7 +23,7 @@ inputs:
 
 reports:
   require:
-    - "@swamp/verification-attestation"
+    - "@swamp/verification-summary"
 
 concurrency: 4
 

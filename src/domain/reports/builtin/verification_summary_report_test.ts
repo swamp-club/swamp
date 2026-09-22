@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { verificationAttestationReport } from "./verification_attestation_report.ts";
+import { verificationSummaryReport } from "./verification_summary_report.ts";
 import type { WorkflowReportContext } from "../report_context.ts";
 import { createDataId } from "../../data/data_id.ts";
 
@@ -63,7 +63,7 @@ function makeWorkflowContext(
   };
 }
 
-Deno.test("verificationAttestationReport: all steps pass — markdown shows checkmarks and gate passed", async () => {
+Deno.test("verificationSummaryReport: all steps pass — markdown shows checkmarks and gate passed", async () => {
   const ctx = makeWorkflowContext({
     stepExecutions: [
       makeStepExecution({ jobName: "static-analysis", stepName: "lint" }),
@@ -72,7 +72,7 @@ Deno.test("verificationAttestationReport: all steps pass — markdown shows chec
     ],
   });
 
-  const result = await verificationAttestationReport.execute(ctx);
+  const result = await verificationSummaryReport.execute(ctx);
 
   assertStringIncludes(result.markdown, "# Verification Attestation");
   assertStringIncludes(result.markdown, "`abc123`");
@@ -83,7 +83,7 @@ Deno.test("verificationAttestationReport: all steps pass — markdown shows chec
   assertStringIncludes(result.markdown, "**Gate:** 3/3 passed, 0 skipped");
 });
 
-Deno.test("verificationAttestationReport: failed step shows cross and retrieval commands", async () => {
+Deno.test("verificationSummaryReport: failed step shows cross and retrieval commands", async () => {
   const ctx = makeWorkflowContext({
     workflowStatus: "failed",
     stepExecutions: [
@@ -110,7 +110,7 @@ Deno.test("verificationAttestationReport: failed step shows cross and retrieval 
     ],
   });
 
-  const result = await verificationAttestationReport.execute(ctx);
+  const result = await verificationSummaryReport.execute(ctx);
 
   assertStringIncludes(result.markdown, "1 passed · 1 failed · 0 skipped");
   assertStringIncludes(result.markdown, "✓ **static-analysis**");
@@ -122,7 +122,7 @@ Deno.test("verificationAttestationReport: failed step shows cross and retrieval 
   );
 });
 
-Deno.test("verificationAttestationReport: skipped step shows circle icon", async () => {
+Deno.test("verificationSummaryReport: skipped step shows circle icon", async () => {
   const ctx = makeWorkflowContext({
     stepExecutions: [
       makeStepExecution({ jobName: "static-analysis", stepName: "lint" }),
@@ -135,20 +135,20 @@ Deno.test("verificationAttestationReport: skipped step shows circle icon", async
     ],
   });
 
-  const result = await verificationAttestationReport.execute(ctx);
+  const result = await verificationSummaryReport.execute(ctx);
 
   assertStringIncludes(result.markdown, "1 passed · 0 failed · 1 skipped");
   assertStringIncludes(result.markdown, "○ review");
   assertStringIncludes(result.markdown, "**Gate:** 1/2 passed, 1 skipped");
 });
 
-Deno.test("verificationAttestationReport: inputs default to unknown when missing", async () => {
+Deno.test("verificationSummaryReport: inputs default to unknown when missing", async () => {
   const ctx = makeWorkflowContext({
     inputs: undefined,
     stepExecutions: [],
   });
 
-  const result = await verificationAttestationReport.execute(ctx);
+  const result = await verificationSummaryReport.execute(ctx);
 
   assertStringIncludes(result.markdown, "`unknown`");
   const json = result.json as Record<string, Record<string, string>>;
@@ -156,18 +156,18 @@ Deno.test("verificationAttestationReport: inputs default to unknown when missing
   assertEquals(json.subject.branch, "unknown");
 });
 
-Deno.test("verificationAttestationReport: JSON structure matches attestation schema", async () => {
+Deno.test("verificationSummaryReport: JSON structure matches attestation schema", async () => {
   const ctx = makeWorkflowContext({
     stepExecutions: [
       makeStepExecution({ status: "succeeded" }),
     ],
   });
 
-  const result = await verificationAttestationReport.execute(ctx);
+  const result = await verificationSummaryReport.execute(ctx);
   const json = result.json;
 
   assertEquals(json.version, "1");
-  assertEquals(json.type, "verification-attestation");
+  assertEquals(json.type, "verification-summary");
   assertEquals(json.workflowRunId, "run-1");
   assertEquals(json.workflowId, "wf-1");
   assertEquals(json.workflowName, "verify-changes");
@@ -186,7 +186,7 @@ Deno.test("verificationAttestationReport: JSON structure matches attestation sch
   assertEquals(json.failures, undefined);
 });
 
-Deno.test("verificationAttestationReport: JSON includes failures array when steps fail", async () => {
+Deno.test("verificationSummaryReport: JSON includes failures array when steps fail", async () => {
   const ctx = makeWorkflowContext({
     workflowStatus: "failed",
     stepExecutions: [
@@ -213,7 +213,7 @@ Deno.test("verificationAttestationReport: JSON includes failures array when step
     ],
   });
 
-  const result = await verificationAttestationReport.execute(ctx);
+  const result = await verificationSummaryReport.execute(ctx);
   const json = result.json;
 
   const gate = json.gate as Record<string, unknown>;
@@ -234,7 +234,7 @@ Deno.test("verificationAttestationReport: JSON includes failures array when step
   ]);
 });
 
-Deno.test("verificationAttestationReport: multi-job grouping with mixed statuses", async () => {
+Deno.test("verificationSummaryReport: multi-job grouping with mixed statuses", async () => {
   const ctx = makeWorkflowContext({
     workflowStatus: "failed",
     stepExecutions: [
@@ -267,7 +267,7 @@ Deno.test("verificationAttestationReport: multi-job grouping with mixed statuses
     ],
   });
 
-  const result = await verificationAttestationReport.execute(ctx);
+  const result = await verificationSummaryReport.execute(ctx);
 
   assertStringIncludes(result.markdown, "4 passed · 1 failed · 0 skipped");
   assertStringIncludes(result.markdown, "✓ **static-analysis**");
@@ -277,7 +277,7 @@ Deno.test("verificationAttestationReport: multi-job grouping with mixed statuses
   assertStringIncludes(result.markdown, "**Gate:** 4/5 passed, 0 skipped");
 });
 
-Deno.test("verificationAttestationReport: failed step without data handles omits retrieval commands", async () => {
+Deno.test("verificationSummaryReport: failed step without data handles omits retrieval commands", async () => {
   const ctx = makeWorkflowContext({
     workflowStatus: "failed",
     stepExecutions: [
@@ -288,7 +288,7 @@ Deno.test("verificationAttestationReport: failed step without data handles omits
     ],
   });
 
-  const result = await verificationAttestationReport.execute(ctx);
+  const result = await verificationSummaryReport.execute(ctx);
 
   assert(!result.markdown.includes("→"));
   assertEquals(result.json.failures, undefined);
@@ -297,7 +297,7 @@ Deno.test("verificationAttestationReport: failed step without data handles omits
   assertEquals(steps[0].retrievalCommands, []);
 });
 
-Deno.test("verificationAttestationReport: job with all skipped steps shows checkmark", async () => {
+Deno.test("verificationSummaryReport: job with all skipped steps shows checkmark", async () => {
   const ctx = makeWorkflowContext({
     stepExecutions: [
       makeStepExecution({
@@ -308,13 +308,13 @@ Deno.test("verificationAttestationReport: job with all skipped steps shows check
     ],
   });
 
-  const result = await verificationAttestationReport.execute(ctx);
+  const result = await verificationSummaryReport.execute(ctx);
 
   assertStringIncludes(result.markdown, "✓ **ux-review**");
   assertStringIncludes(result.markdown, "○ review");
 });
 
-Deno.test("verificationAttestationReport: failed assert step appears in attestation", async () => {
+Deno.test("verificationSummaryReport: failed assert step appears in attestation", async () => {
   const ctx = makeWorkflowContext({
     workflowStatus: "failed",
     stepExecutions: [
@@ -340,7 +340,7 @@ Deno.test("verificationAttestationReport: failed assert step appears in attestat
     ],
   });
 
-  const result = await verificationAttestationReport.execute(ctx);
+  const result = await verificationSummaryReport.execute(ctx);
 
   assertStringIncludes(result.markdown, "1 passed · 1 failed · 0 skipped");
   assertStringIncludes(result.markdown, "✗ **validate**");
@@ -370,7 +370,7 @@ Deno.test("verificationAttestationReport: failed assert step appears in attestat
   );
 });
 
-Deno.test("verificationAttestationReport: a guard skip and a deselected group are distinguishable", async () => {
+Deno.test("verificationSummaryReport: a guard skip and a deselected group are distinguishable", async () => {
   const ctx = makeWorkflowContext({
     stepExecutions: [
       makeStepExecution({ jobName: "build", stepName: "lint" }),
@@ -398,7 +398,7 @@ Deno.test("verificationAttestationReport: a guard skip and a deselected group ar
     ],
   });
 
-  const result = await verificationAttestationReport.execute(ctx);
+  const result = await verificationSummaryReport.execute(ctx);
 
   assertStringIncludes(result.markdown, "guard: changedFiles.size() == 0");
   assertStringIncludes(result.markdown, "guard: !inputs.runSkills");
@@ -416,7 +416,7 @@ Deno.test("verificationAttestationReport: a guard skip and a deselected group ar
   assertEquals(gate.skippedByKind, { guarded: 2, job_skipped: 1 });
 });
 
-Deno.test("verificationAttestationReport: a skip with no recorded reason says so", async () => {
+Deno.test("verificationSummaryReport: a skip with no recorded reason says so", async () => {
   const ctx = makeWorkflowContext({
     stepExecutions: [
       makeStepExecution({
@@ -427,7 +427,7 @@ Deno.test("verificationAttestationReport: a skip with no recorded reason says so
     ],
   });
 
-  const result = await verificationAttestationReport.execute(ctx);
+  const result = await verificationSummaryReport.execute(ctx);
 
   assertStringIncludes(result.markdown, "reason not recorded");
 

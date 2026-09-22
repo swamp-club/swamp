@@ -53,16 +53,34 @@ function describeSkipReason(reason: StepSkipReasonInfo | undefined): string {
   }
 }
 
-export const verificationAttestationReport: ReportDefinition = {
+/**
+ * Per-run summary of a verification workflow: every step, its result, and why
+ * anything was skipped.
+ *
+ * This used to be called `@swamp/verification-attestation` and label its JSON
+ * `type: "verification-attestation"`, which claimed more than it delivered.
+ * The attestation is a specific document — it binds a commit, pins the hashes
+ * of the files that shaped the verification, and spans all three verify-*
+ * workflows — and this report is none of those things: it is `scope:
+ * "workflow"`, so it only ever sees one run, and it hashes nothing. With two
+ * producers of attestation-shaped JSON in the tree, the one that could not
+ * actually produce an attestation had the better claim to the name.
+ *
+ * The real thing is built by `scripts/build_attestation.ts` and typed by
+ * `AttestationSchema`. That one lives in the repo rather than here on purpose:
+ * which files get hashed and what a review verdict means are this repository's
+ * verification policy, not something swamp should ship to everyone.
+ */
+export const verificationSummaryReport: ReportDefinition = {
   description:
-    "Structured attestation of a verification workflow run — captures every step, its result, and the environment for CI validation.",
+    "Built-in summary of a verification workflow run — every step, its result, why anything was skipped, and how to retrieve a failure's output.",
   scope: "workflow",
-  labels: ["verification", "attestation"],
+  labels: ["verification", "summary"],
 
   execute(context: ReportContext): Promise<ReportResult> {
     if (!isWorkflowContext(context)) {
       throw new Error(
-        "verification-attestation report requires workflow scope context",
+        "verification-summary report requires workflow scope context",
       );
     }
 
@@ -180,7 +198,7 @@ export const verificationAttestationReport: ReportDefinition = {
     // -- JSON: structured attestation for CI validation --
     const json: Record<string, unknown> = {
       version: "1",
-      type: "verification-attestation",
+      type: "verification-summary",
       workflowRunId,
       workflowId,
       workflowName,
