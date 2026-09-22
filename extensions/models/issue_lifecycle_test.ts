@@ -330,8 +330,145 @@ Deno.test("model: exposes the new post_attestation method definition", () => {
   );
 });
 
-Deno.test("model: version is 2026.09.21.1", () => {
-  assertEquals(model.version, "2026.09.21.1");
+Deno.test("model: version is 2026.09.22.1", () => {
+  assertEquals(model.version, "2026.09.22.1");
+});
+
+// ---------------------------------------------------------------------------
+// post_attestation — schema validation
+// ---------------------------------------------------------------------------
+
+/** A document that satisfies AttestationSchema, as the generator writes one. */
+function validAttestation(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    version: "1",
+    type: "verification-attestation",
+    generatedBy: "script",
+    subject: { commit: "a".repeat(40), branch: "some-branch" },
+    environment: { denoVersion: "2.9.7", os: "linux" },
+    configIntegrity: { claudeMd: "hash" },
+    steps: [{ job: "static-analysis", step: "lint", status: "succeeded" }],
+    gate: {
+      allPassed: true,
+      stepsCompleted: 1,
+      stepsTotal: 1,
+      stepsSkipped: 0,
+    },
+    timing: { completedAt: "2026-09-22T12:00:00.000Z" },
+    ...overrides,
+  };
+}
+
+Deno.test("post_attestation: rejects a document with no subject", async () => {
+  const { context, restore } = await buildTestContext(42);
+  try {
+    const { subject: _dropped, ...noSubject } = validAttestation();
+
+    const error = await assertRejects(
+      () =>
+        model.methods.post_attestation.execute(
+          { attestation: JSON.stringify(noSubject) },
+          context,
+        ),
+      Error,
+    );
+
+    // This is the case that used to post cleanly and log commit=undefined,
+    // leaving CI to notice the mismatch after the PR was public.
+    assertStringIncludes(error.message, "AttestationSchema");
+    assertStringIncludes(error.message, "subject");
+  } finally {
+    await restore();
+  }
+});
+
+Deno.test("post_attestation: rejects a gate verdict that is not a boolean", async () => {
+  const { context, restore } = await buildTestContext(42);
+  try {
+    const error = await assertRejects(
+      () =>
+        model.methods.post_attestation.execute(
+          {
+            attestation: JSON.stringify(
+              validAttestation({
+                gate: {
+                  allPassed: "true",
+                  stepsCompleted: 1,
+                  stepsTotal: 1,
+                  stepsSkipped: 0,
+                },
+              }),
+            ),
+          },
+          context,
+        ),
+      Error,
+    );
+
+    assertStringIncludes(error.message, "gate.allPassed");
+  } finally {
+    await restore();
+  }
+});
+
+Deno.test("post_attestation: rejects an unknown attestation version", async () => {
+  const { context, restore } = await buildTestContext(42);
+  try {
+    const error = await assertRejects(
+      () =>
+        model.methods.post_attestation.execute(
+          { attestation: JSON.stringify(validAttestation({ version: "2" })) },
+          context,
+        ),
+      Error,
+    );
+
+    assertStringIncludes(error.message, "version");
+  } finally {
+    await restore();
+  }
+});
+
+Deno.test("post_attestation: rejects input that is not JSON", async () => {
+  const { context, restore } = await buildTestContext(42);
+  try {
+    const error = await assertRejects(
+      () =>
+        model.methods.post_attestation.execute(
+          { attestation: "not json at all" },
+          context,
+        ),
+      Error,
+    );
+
+    assertStringIncludes(error.message, "not valid JSON");
+  } finally {
+    await restore();
+  }
+});
+
+Deno.test("post_attestation: a valid document gets as far as needing swamp-club", async () => {
+  const { context, restore } = await buildTestContext(42);
+  try {
+    const error = await assertRejects(
+      () =>
+        model.methods.post_attestation.execute(
+          { attestation: JSON.stringify(validAttestation()) },
+          context,
+        ),
+      Error,
+    );
+
+    // buildTestContext leaves no credentials, so reaching the client is how a
+    // schema-valid document announces itself. The point of the assertion is
+    // the absence of a schema complaint: validation happens before any
+    // network call, so a rejected document never gets this far.
+    assertStringIncludes(error.message, "swamp-club is not reachable");
+  } finally {
+    await restore();
+  }
 });
 
 // ---------------------------------------------------------------------------

@@ -229,138 +229,50 @@ To construct this checklist:
    ```
    The `history get` output includes per-step `duration` (in ms) and status.
 
-3. For each step, extract: job name, step name, model name, duration, and
-   status (succeeded/failed/skipped). For review steps that ran, include the
-   verdict — read it from the `GATE_VERDICT:` line the verdict script writes to
-   the review log, not from the reviewer's prose. That line is what actually
-   gated the step; the reviewer's own marker is only an input to it, and the two
-   can differ (a marker mentioned mid-sentence is not a verdict).
+3. For each step, extract: job name, step name, duration and status. For a
+   review step that ran, the verdict is the step's status —
+   `check_review_verdict.ts` decides both, so the reviewer's own prose is the
+   input to that decision rather than the decision itself.
 
-   **Timing**: Each step in the `history get` output has a `duration` field
-   in milliseconds — use it directly as `durationMs`. For `totalDurationMs`,
-   use the run's top-level `duration` field. Do NOT estimate or omit timing
-   — the attestation must carry actual measured durations from the workflow
-   run.
+   **Timing**: each step in the `history get` output has a `duration` field in
+   milliseconds. Use it directly; never estimate.
 
-4. **NEVER reuse or edit a previous attestation.** Every attestation must be
-   built from scratch using the actual data from the workflow runs for the
-   current commit. Editing an old attestation to swap the commit SHA, run IDs,
-   or any other field is a trust chain violation — the attestation would claim
-   durations, timestamps, and config hashes from a different run against a
-   different commit. Always query `workflow history get <run-id> --json` for
-   each workflow, extract the real step durations and statuses, recompute
-   config integrity hashes from the files at the verified commit
-   (`sha256sum`), and construct a fresh JSON object.
+4. Build the attestation with the generator. Do NOT assemble it by hand:
 
-5. Construct the combined attestation JSON:
-
-   ```json
-   {
-     "version": "1",
-     "type": "verification-attestation",
-     "subject": {
-       "commit": "<full SHA>",
-       "branch": "<branch name>"
-     },
-     "environment": {
-       "denoVersion": "2.9.7",
-       "os": "<platform>",
-       "swampVersion": "<version>"
-     },
-     "configIntegrity": {
-       "claudeMd": "<sha256 of CLAUDE.md>",
-       "agentsMd": "<sha256 of AGENTS.md>",
-       "prompts": {
-         "code-review": "<sha256 of verification/review-prompts/code-review.md>",
-         "adversarial-review": "<sha256 of verification/review-prompts/adversarial-review.md>",
-         "ux-review": "<sha256 of verification/review-prompts/ux-review.md>",
-         "ci-security-review": "<sha256 of verification/review-prompts/ci-security-review.md>"
-       },
-       "workflows": {
-         "verify-build": "<sha256 of verification/workflow-verify-build.yaml>",
-         "verify-reviews": "<sha256 of verification/workflow-verify-reviews.yaml>",
-         "verify-skills": "<sha256 of verification/workflow-verify-skills.yaml>"
-       },
-       "scripts": {
-         "review-skills": "<sha256 of scripts/review_skills.ts>",
-         "eval-skill-triggers": "<sha256 of evals/promptfoo/package.json>",
-         "check-review-verdict": "<sha256 of scripts/check_review_verdict.ts>"
-       }
-     },
-     "reviewConfig": {
-       "code-review": { "model": "claude-opus-4-6", "ran": true },
-       "adversarial-review": { "model": "claude-opus-4-6", "ran": false, "reason": "guard" },
-       "ux-review": { "model": "claude-sonnet-4-6", "ran": false, "reason": "guard" },
-       "ci-security-review": { "model": "claude-opus-4-6", "ran": false, "reason": "guard" }
-     },
-     "steps": [
-       {
-         "job": "static-analysis",
-         "step": "lint",
-         "model": "build-lint",
-         "status": "succeeded",
-         "durationMs": 2100
-       },
-       {
-         "job": "reviews",
-         "step": "code-review",
-         "model": "review-code",
-         "status": "succeeded",
-         "durationMs": 87000,
-         "verdict": "pass",
-         "findings": 0
-       },
-       {
-         "job": "reviews",
-         "step": "ux-review",
-         "model": "review-ux",
-         "status": "skipped",
-         "reason": "guard: no UX changes"
-       },
-       {
-         "job": "skills",
-         "step": "skill-review",
-         "model": "skills-review",
-         "status": "succeeded",
-         "durationMs": 5200
-       },
-       {
-         "job": "skills",
-         "step": "skill-trigger-eval",
-         "model": "skills-trigger-eval",
-         "status": "succeeded",
-         "durationMs": 42000
-       }
-     ],
-     "gate": {
-       "allPassed": true,
-       "stepsCompleted": 10,
-       "stepsTotal": 13,
-       "stepsSkipped": 3
-     },
-     "timing": {
-       "startedAt": "<ISO 8601>",
-       "completedAt": "<ISO 8601>",
-       "totalDurationMs": 135000
-     },
-     "runs": {
-       "build": "<workflow-run-id>",
-       "reviews": "<workflow-run-id>",
-       "skills": "<workflow-run-id>"
-     }
-   }
+   ```
+   deno run build-attestation \
+     --run <build-run-id> --run <reviews-run-id> --run <skills-run-id> \
+     --commit <SHA> --branch <branch> > /tmp/attestation.json
    ```
 
-   The `configIntegrity` section proves the review prompts, workflows, skill
-   scripts, and CLAUDE.md used match the versions at the verified commit.
-   Anyone can checkout that commit, hash the files, and verify they match.
-   Compute hashes with:
+   The three run ids may be given in any order — the generator reads each
+   record's own `workflowName` to tell them apart, so mislabelling one is not
+   a mistake you can make. It projects every field from what the runs
+   recorded: step statuses and durations, each review's model and why a
+   skipped one did not run, and SHA-256 of every file that shaped the
+   verification read at the verified commit with `git show`. It refuses to
+   write anything when a run examined a different commit than the one being
+   attested to, and validates its own output against `AttestationSchema`
+   before it prints.
 
-   ```bash
-   sha256sum CLAUDE.md verification/review-prompts/*.md verification/workflow-verify-*.yaml \
-     scripts/review_skills.ts evals/promptfoo/package.json \
-     scripts/check_review_verdict.ts
-   ```
+   This replaces roughly seventy lines of instructions that used to live here,
+   telling you how to read the records, hash the files, work out which reviews
+   were guarded out, and assemble the JSON. Reconstructed from prose each
+   time, it came out slightly different each time. The shape now lives in
+   `AttestationSchema` (`extensions/models/_lib/schemas.ts`), and both the
+   generator and `post_attestation` enforce it.
+
+   What the generator does not do is make the attestation trustworthy: it runs
+   wherever you run it, and nothing yet stops a document being posted that it
+   did not write. `post_attestation` will reject one that does not match the
+   schema, which is a check on shape, not on provenance.
+
+5. **NEVER reuse or edit a previous attestation.** Re-run the generator
+   against the current commit's runs. Editing an old attestation to swap the
+   commit SHA or run ids is a trust chain violation — the document would claim
+   durations, timestamps and config hashes from a different run against a
+   different tree. The generator's commit binding catches the obvious form of
+   this; hand-editing its output defeats it.
 
 6. Present the checklist AND the workflow run file paths to the user so they
    can inspect the full details:
@@ -391,8 +303,13 @@ To construct this checklist:
 
    ```
    swamp model @swamp/issue-lifecycle method run post_attestation issue-<N> \
-     --input attestation='<attestation JSON string>'
+     --input attestation="$(cat /tmp/attestation.json)"
    ```
+
+   The method validates the document against `AttestationSchema` before it
+   dials out, so a malformed one fails here rather than in CI after the PR is
+   public. If it reports a schema mismatch, re-run the generator — do not
+   patch the JSON to satisfy the error.
 
    The method uses the CLI's existing auth credentials (Bearer token from
    `~/.config/swamp/auth.json`). It throws on failure — if it fails, fix the

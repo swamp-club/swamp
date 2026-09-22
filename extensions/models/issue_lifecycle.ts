@@ -22,6 +22,7 @@ import {
   AdversarialFindingSchema,
   type AdversarialReviewData,
   AdversarialReviewSchema,
+  AttestationSchema,
   ClassificationSchema,
   type CodeConformanceReviewData,
   CodeConformanceReviewSchema,
@@ -102,7 +103,7 @@ export function buildNotifyMessage(
 
 export const model = {
   type: "@swamp/issue-lifecycle",
-  version: "2026.09.21.1",
+  version: "2026.09.22.1",
   globalArguments: GlobalArgsSchema,
 
   upgrades: [
@@ -261,6 +262,18 @@ export const model = {
         "mistake is caught early instead of discovered at link_pr. " +
         "resolve_findings now also allowed from approved. " +
         "No globalArguments changes.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.09.22.1",
+      description:
+        "post_attestation validates its input against AttestationSchema " +
+        "instead of posting whatever parsed as JSON. The document's shape " +
+        "was previously enforced only by jq in CI, after the PR was public, " +
+        "so an attestation missing `subject` posted cleanly and logged " +
+        "commit=undefined. It is rejected at the boundary now; build the " +
+        "document with `deno run build-attestation` rather than by hand. " +
+        "No resources and no globalArguments changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
@@ -2215,8 +2228,10 @@ export const model = {
         "attestation — this is a hard gate.",
       arguments: z.object({
         attestation: z.string().min(1).describe(
-          "The verification attestation JSON as a string. Must include " +
-            "version, subject, gate, configIntegrity, steps, and timing.",
+          "The verification attestation JSON as a string, as " +
+            "`deno run build-attestation` writes it. Validated against " +
+            "AttestationSchema before it is posted — build it with the " +
+            "generator rather than by hand.",
         ),
       }),
       execute: async (
@@ -2229,6 +2244,37 @@ export const model = {
           };
         },
       ) => {
+        // Validated before the client is built, so a malformed document
+        // fails without dialing out. The shape used to be enforced nowhere:
+        // this method posted whatever parsed, and `.github/workflows/ci.yml`
+        // read the fields it needed with `jq` once the PR was already public.
+        // An attestation missing `subject` posted cleanly and logged
+        // `commit=undefined`. Checking here moves that contract to the moment
+        // before the document leaves the machine, where the failure is still
+        // cheap and the operator is still standing in front of it.
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(args.attestation);
+        } catch {
+          throw new Error("attestation input is not valid JSON");
+        }
+
+        const validated = AttestationSchema.safeParse(parsed);
+        if (!validated.success) {
+          const issues = validated.error.issues
+            .map((issue) =>
+              `  ${issue.path.join(".") || "(root)"}: ${issue.message}`
+            )
+            .join("\n");
+          throw new Error(
+            "attestation does not match AttestationSchema:\n" + issues +
+              "\n\nBuild it with `deno run build-attestation` rather than by " +
+              "hand — the generator projects every field from the " +
+              "verification run records.",
+          );
+        }
+        const attestation = validated.data;
+
         const sc = await createSwampClubClient(
           context.globalArgs,
           context.logger,
@@ -2240,14 +2286,7 @@ export const model = {
           );
         }
 
-        let parsed: Record<string, unknown>;
-        try {
-          parsed = JSON.parse(args.attestation) as Record<string, unknown>;
-        } catch {
-          throw new Error("attestation input is not valid JSON");
-        }
-
-        const result = await sc.postAttestation(parsed);
+        const result = await sc.postAttestation(attestation);
 
         context.logger.info(
           "Attestation posted to swamp-club: id={id} postedBy={postedBy}",
@@ -2271,8 +2310,8 @@ export const model = {
             emoji: "\u{1F4DC}",
             payload: {
               attestationId: result.id,
-              commit: (parsed.subject as Record<string, unknown>)?.commit,
-              gatePassed: (parsed.gate as Record<string, unknown>)?.allPassed,
+              commit: attestation.subject.commit,
+              gatePassed: attestation.gate.allPassed,
             },
             isVerbose: false,
           });

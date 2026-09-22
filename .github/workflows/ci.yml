@@ -49,6 +49,11 @@ jobs:
               # entries below.
               - 'scripts/check_review_verdict.ts'
               - 'scripts/review_skills.ts'
+              # The generator decides what the attestation says. Hash-pinning
+              # it without review is the exact hole the comment above
+              # describes, and a worse one: this script is what every other
+              # hash in the document is reported by.
+              - 'scripts/build_attestation.ts'
 
   claude-ci-security-review:
     name: CI Security Review
@@ -671,6 +676,12 @@ jobs:
           check_hash "review-skills script" '.configIntegrity.scripts."review-skills"' "scripts/review_skills.ts"
           check_hash "eval-skill-triggers config" '.configIntegrity.scripts."eval-skill-triggers"' "evals/promptfoo/package.json"
           check_hash "check-review-verdict script" '.configIntegrity.scripts."check-review-verdict"' "scripts/check_review_verdict.ts"
+          # The generator attests to its own source. Every other hash here
+          # proves the inputs to verification were what the commit says; this
+          # one proves the thing that projected them was too, so a document
+          # produced by an edited generator stops matching at the commit it
+          # names.
+          check_hash "build-attestation script" '.configIntegrity.scripts."build-attestation"' "scripts/build_attestation.ts"
 
           # -- 6. Steps summary table --
           {

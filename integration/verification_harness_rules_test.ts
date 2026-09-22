@@ -46,6 +46,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { parse as parseYaml } from "@std/yaml";
 import { join } from "@std/path";
 import { repoRelative, ROOT } from "./arch_fitness_helpers.ts";
+import { CONFIG_FILES } from "../scripts/build_attestation.ts";
 
 const PROMPTS_DIR = join(ROOT, "verification", "review-prompts");
 const REVIEWS_WORKFLOW = join(
@@ -217,5 +218,99 @@ Deno.test("verify-reviews: no step infers a verdict when the marker is absent", 
     [],
     "verify-reviews must not infer a verdict from output that carries no " +
       `VERDICT marker. Offending text: ${violations.join("; ")}`,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Attestation generator ↔ CI config integrity
+// ---------------------------------------------------------------------------
+//
+// The attestation pins a hash per file that shaped the verification, and CI
+// re-hashes the same files at the same commit and compares. Two lists, in two
+// languages, that have to name the same files: `CONFIG_FILES` in
+// scripts/build_attestation.ts and the `check_hash` calls in
+// .github/workflows/ci.yml.
+//
+// Drift is silent in the direction that matters. A file the generator stops
+// hashing makes CI warn "not in attestation" and carry on, so the pin quietly
+// stops covering it — which is how a review prompt could be edited after the
+// run without anything failing.
+//
+// The generator's side is imported rather than parsed: half its entries are
+// computed from the workflow table, so a regex over the source would read
+// `jsonPath: ["workflows", w.name]` literally and compare a placeholder.
+
+const CI_WORKFLOW = join(ROOT, ".github", "workflows", "ci.yml");
+
+/** The configIntegrity path each `check_hash` call in CI reads. */
+function ciJsonPaths(source: string): string[] {
+  return [
+    ...source.matchAll(
+      /check_hash\s+"[^"]*"\s+'\.configIntegrity\.([^']+)'/g,
+    ),
+  ]
+    .map((m) => m[1].replaceAll('"', ""))
+    .sort();
+}
+
+Deno.test("attestation: the generator hashes exactly the files CI re-hashes", async () => {
+  const ci = await Deno.readTextFile(CI_WORKFLOW);
+
+  const generated = CONFIG_FILES.map((f) => f.jsonPath.join(".")).sort();
+  const checked = ciJsonPaths(ci);
+
+  // Load-bearing: a regex that quietly stopped matching would turn the
+  // comparison below into an assertion that [] equals [].
+  assertEquals(
+    checked.length > 0,
+    true,
+    "No check_hash calls parsed out of .github/workflows/ci.yml.",
+  );
+
+  assertEquals(
+    generated,
+    checked,
+    "scripts/build_attestation.ts and .github/workflows/ci.yml disagree " +
+      "about which files the attestation pins. A file only the generator " +
+      "hashes is never verified; a file only CI checks is reported as " +
+      "missing and waved through with a warning.",
+  );
+});
+
+Deno.test("attestation: every hashed script is also agent-reviewed", async () => {
+  const ci = await Deno.readTextFile(CI_WORKFLOW);
+
+  const hashedScripts = CONFIG_FILES
+    .map((f) => f.path)
+    .filter((path) => path.startsWith("scripts/"))
+    .sort();
+
+  const trustRoot = ci.match(/trust_root:\n([\s\S]*?)\n\n/);
+  if (!trustRoot) {
+    throw new Error(
+      "No trust_root path filter in .github/workflows/ci.yml — it was " +
+        "renamed, which would make this rule a vacuous pass.",
+    );
+  }
+
+  assertEquals(
+    hashedScripts.length > 0,
+    true,
+    "No scripts/ paths in CONFIG_FILES.",
+  );
+
+  const unreviewed = hashedScripts.filter((path) =>
+    !trustRoot[1].includes(`'${path}'`)
+  );
+
+  // A checksummed file that matches no trust-root pattern is hash-pinned
+  // without ever being agent-reviewed — the hole that left
+  // scripts/review_skills.ts outside the gate.
+  assertEquals(
+    unreviewed,
+    [],
+    "These scripts are hash-pinned in the attestation but are not in the " +
+      "trust_root path filter, so a change to them opens a PR without the " +
+      "review-integrity check ever running.",
   );
 });
