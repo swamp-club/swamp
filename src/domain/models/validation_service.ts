@@ -26,6 +26,7 @@ import { DefinitionSchema } from "../definitions/definition.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import type { DataQueryService } from "../data/data_query_service.ts";
 import {
+  dataAccessorAlternation,
   extractExpressions,
   stripExpressionFields,
   valueContainsExpression,
@@ -722,9 +723,14 @@ export class DefaultModelValidationService implements ModelValidationService {
       return null;
     }
 
-    // Check if it's a valid data function expression
-    const dataFunctionPattern =
-      /^data\.(version|latest|listVersions|findByTag)\(.*\)/;
+    // Check if it's a valid data function expression. The alternation is
+    // derived from DATA_NAMESPACE_ACCESSORS rather than restated: this list
+    // was hand-written and fell behind when query and findBySpec joined the
+    // namespace, which rejected them in global arguments long after they
+    // worked everywhere else.
+    const dataFunctionPattern = new RegExp(
+      `^data\\.(${dataAccessorAlternation()})\\(.*\\)`,
+    );
     if (dataFunctionPattern.test(celExpression)) {
       return null;
     }

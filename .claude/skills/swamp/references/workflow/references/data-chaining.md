@@ -81,12 +81,33 @@ your intent matches — `data.latest("m", "n")` reads more clearly than the
 equivalent predicate. Reach for `data.query()` when you need a multi-field
 predicate, a projection, or history access.
 
-| Expression                            | Sees current-run data?       | Sees prior-run data? | Status         |
-| ------------------------------------- | ---------------------------- | -------------------- | -------------- |
-| `data.query('<predicate>')`           | **Yes** — sync catalog query | **Yes**              | **Primary**    |
-| `data.latest("<name>", "<spec>")`     | **Yes** — shortcut for query | **Yes**              | **Shortcut**   |
-| `data.version("<name>", "<spec>", N)` | **Yes** — shortcut for query | **Yes**              | **Shortcut**   |
-| `model.<name>.resource.<spec>`        | **Yes** — eagerly populated  | **Yes**              | **Deprecated** |
+| Expression                            | Sees current-run data?       | Sees prior-run data? | Implicit dependency? | Status         |
+| ------------------------------------- | ---------------------------- | -------------------- | -------------------- | -------------- |
+| `data.query('<predicate>')`           | **Yes** — sync catalog query | **Yes**              | **No**               | **Primary**    |
+| `data.latest("<name>", "<spec>")`     | **Yes** — shortcut for query | **Yes**              | **Yes**              | **Shortcut**   |
+| `data.version("<name>", "<spec>", N)` | **Yes** — shortcut for query | **Yes**              | **Yes**              | **Shortcut**   |
+| `model.<name>.resource.<spec>`        | **Yes** — eagerly populated  | **Yes**              | **Yes**              | **Deprecated** |
+
+### Implicit dependencies and ordering
+
+"Sees current-run data" is about visibility, not ordering — the two are
+separate, and only the shortcuts give you both.
+
+An accessor whose **first argument names a model** contributes an implicit
+dependency, so the step is ordered after that model's data exists. That covers
+`data.latest`, `data.version`, `data.listVersions` and `data.findBySpec`.
+
+`data.query` and `data.findByTag` contribute **no** implicit dependency. Their
+first argument is a predicate or a tag key, not a model name, so there is
+nothing to resolve to a producer — a predicate can match data from any model,
+including data no step has written yet.
+
+**When a step queries data that another step in the same run produces, an
+explicit `dependsOn` is required, not merely advisable.** Without it the query
+runs against whatever happens to exist at evaluation time, which is a race
+rather than a reliable empty result. This is the one behavioural difference to
+watch when replacing a `data.latest` call with the equivalent `data.query`
+predicate: the read keeps working, the ordering guarantee does not come with it.
 
 ### When to use each
 
