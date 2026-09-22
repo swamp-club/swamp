@@ -569,8 +569,8 @@ plus the data-plane routes (`src/serve/data_plane.ts`):
 
 | Operation          | Backed by                                                                  | Transport | Notes                                  |
 | ------------------ | -------------------------------------------------------------------------- | --------- | -------------------------------------- |
-| `getData`          | repo reads (`findByName`/`findById`/`getContent`/`stream`), `context.readResource`, `readModelData` | ws + h2   | ws resolves `latest`→version; `GET /data/{type}/{modelId}/{dataName}/{version}` streams bytes |
-| `queryData`        | `dataQueryService` / `context.queryData`, attribute loading (`select` projection rejected — bypasses denylist) | ws        | CEL predicate over the catalog; always live |
+| `getData`          | repo reads (`findByName`/`findById`/`getContent`/`stream`), `context.readResource` | ws + h2   | ws resolves `latest`→version; `GET /data/{type}/{modelId}/{dataName}/{version}` streams bytes |
+| `queryData`        | `dataQueryService` / `context.queryData` / `context.readModelData`, attribute loading (`select` projection rejected — bypasses denylist) | ws        | CEL predicate over the catalog; always live |
 | `listVersions`     | `repo.listVersions`                                                        | ws        | Version history for one data item. The only verb without a dispatch-scope assertion |
 | `deleteData`       | `repo.delete`, `repo.removeLatestMarker`                                   | ws        | Lifecycle/GC-aware methods use these   |
 | `resolveSecret`    | `vaultService.get` / `getAnnotation`                                       | ws        | Authorized per step: infrastructure denylist + expression-based allowlist from the dispatched step's args (allowlist disabled when the step has dynamic vault references) |

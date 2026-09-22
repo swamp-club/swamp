@@ -257,6 +257,9 @@ Models have the richest API surface. For model-specific guidance:
 - **Execute function** (`context.writeResource`, `readResource`,
   `createFileWriter`, `dataRepository`, `extensionFile`):
   [references/model/api.md](references/model/api.md)
+- **Cross-model reads and calls** (`readModelData`, `queryData`, `runModel`) —
+  never shell out to `swamp` from a method:
+  [references/model/api.md](references/model/api.md#cross-model-access)
 - **Factory models**: multiple outputs from one spec —
   [references/model/scenarios.md](references/model/scenarios.md#scenario-3-factory-model-for-discovery)
 - **CRUD lifecycle**: create/update/delete/sync patterns —

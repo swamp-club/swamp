@@ -475,10 +475,14 @@ Users can bypass checks at runtime using CLI flags on `model method run`:
 1. **Value/policy validation** — inspect `context.globalArgs` for invalid or
    disallowed values. No I/O. Always fast.
 
-2. **Cross-model validation** — use `context.readModelData(modelName)` to read
-   stored state from another model instance by name and verify a dependency
-   exists or is in the right state. Note: `context.dataRepository` methods
-   (`findAllForModel`, `getContent`) require a UUID, not a model name.
+2. **Cross-model validation** — use `context.dataRepository.getContent` or
+   `findAllForModel` to read stored state from another model instance and
+   verify a dependency exists or is in the right state. Both accept the
+   definition name or its UUID: `buildMethodContext`
+   (`src/domain/models/method_context.ts`) wraps the repository so names
+   resolve to IDs. Checks do not receive `context.readModelData`,
+   `context.queryData` or `context.runModel` — only `InProcessExecutor` binds
+   those, for method execution.
 
 3. **Live API checks** — call an external API to verify quota, existence, or
    reachability. Label these `live` so users can skip them in offline
