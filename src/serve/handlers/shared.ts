@@ -731,13 +731,13 @@ export function authorizeAnyOrReject(
 export function send(socket: WebSocket, message: ServerMessage): void {
   if (socket.readyState !== WebSocket.OPEN) return;
   const json = JSON.stringify(message);
-  if (
-    connectionCompression.get(socket) === "gzip" &&
-    json.length >= COMPRESSION_THRESHOLD_BYTES
-  ) {
-    // Synchronous so frames keep their order; ~9 ms for a 1.7 MB frame.
-    socket.send(gzipSync(new TextEncoder().encode(json)));
-    return;
+  if (connectionCompression.get(socket) === "gzip") {
+    const bytes = new TextEncoder().encode(json);
+    if (bytes.byteLength >= COMPRESSION_THRESHOLD_BYTES) {
+      // Synchronous so frames keep their order; ~9 ms for a 1.7 MB frame.
+      socket.send(gzipSync(bytes));
+      return;
+    }
   }
   socket.send(json);
 }
