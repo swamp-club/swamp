@@ -17,141 +17,100 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+  assertStrictEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { join } from "@std/path";
 import { toFileUrl } from "@std/path";
 import { findStaleFiles, type FreshnessCatalog } from "./bundle_freshness.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import type { ExtensionTypeRow } from "../../infrastructure/persistence/extension_catalog_store.ts";
-import { ExtensionLoader } from "./extension_loader.ts";
+import { bundleImportUrl, ExtensionLoader } from "./extension_loader.ts";
 import type { KindAdapter } from "./kind_adapter.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 
-Deno.test("importBundleByPath: non-empty fingerprint appends ?fp= to import URL", async () => {
-  const dir = await Deno.makeTempDir({ prefix: "swamp_fp_url_" });
+// -- Content-addressed bundle import URLs (swamp-club#1140, #2340) -------
+
+Deno.test("bundleImportUrl: identical content produces the same URL", async () => {
+  const js = 'export const v = "V1";\n';
+  const first = await bundleImportUrl("/tmp/bundle.js", js, "abc");
+  const second = await bundleImportUrl("/tmp/bundle.js", js, "abc");
+  assertEquals(first, second);
+});
+
+Deno.test("bundleImportUrl: different content produces a different URL", async () => {
+  const v1 = await bundleImportUrl(
+    "/tmp/bundle.js",
+    'export const v = "V1";\n',
+  );
+  const v2 = await bundleImportUrl(
+    "/tmp/bundle.js",
+    'export const v = "V2";\n',
+  );
+  assertNotEquals(v1, v2);
+});
+
+Deno.test("bundleImportUrl: includes fp= when a fingerprint is given", async () => {
+  const url = await bundleImportUrl("/tmp/bundle.js", "export {};\n", "abc123");
+  assertStringIncludes(url, "?fp=abc123&h=");
+});
+
+Deno.test("bundleImportUrl: omits fp= when the fingerprint is empty", async () => {
+  const url = await bundleImportUrl("/tmp/bundle.js", "export {};\n", "");
+  assertEquals(url.includes("fp="), false);
+  assertStringIncludes(url, "?h=");
+});
+
+Deno.test("importBundleByPath: unchanged bundle reuses the cached module", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_import_reuse_" });
   try {
-    const bundlePath = join(dir, "fp_present.js");
-    await Deno.writeTextFile(
-      bundlePath,
-      'export const model = { name: "test" };\n',
-    );
-
-    const baseUrl = toFileUrl(bundlePath).href;
-    const fpUrl = `${baseUrl}?fp=abc123`;
-
-    const mod = await import(fpUrl);
-    assertEquals(mod.model.name, "test");
-    assertStringIncludes(fpUrl, "?fp=abc123");
-  } finally {
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
-  }
-});
-
-Deno.test("importBundleByPath: empty fingerprint produces bare URL without ?fp=", async () => {
-  const dir = await Deno.makeTempDir({ prefix: "swamp_fp_empty_url_" });
-  try {
-    const bundlePath = join(dir, "fp_empty.js");
-    await Deno.writeTextFile(
-      bundlePath,
-      'export const model = { name: "legacy" };\n',
-    );
-
-    const fingerprint = "";
-    const baseUrl = toFileUrl(bundlePath).href;
-    const importUrl = fingerprint ? `${baseUrl}?fp=${fingerprint}` : baseUrl;
-
-    assertEquals(importUrl.includes("?fp="), false);
-
-    const mod = await import(importUrl);
-    assertEquals(mod.model.name, "legacy");
-  } finally {
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
-  }
-});
-
-Deno.test("importBundleByPath: undefined fingerprint produces bare URL without ?fp=", async () => {
-  const dir = await Deno.makeTempDir({ prefix: "swamp_fp_undef_url_" });
-  try {
-    const bundlePath = join(dir, "fp_undef.js");
-    await Deno.writeTextFile(
-      bundlePath,
-      'export const model = { name: "no-fp" };\n',
-    );
-
-    const fingerprint: string | undefined = undefined;
-    const baseUrl = toFileUrl(bundlePath).href;
-    const importUrl = fingerprint ? `${baseUrl}?fp=${fingerprint}` : baseUrl;
-
-    assertEquals(importUrl.includes("?fp="), false);
-
-    const mod = await import(importUrl);
-    assertEquals(mod.model.name, "no-fp");
-  } finally {
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
-  }
-});
-
-function buildImportUrl(
-  baseUrl: string,
-  fingerprint?: string,
-  generation = 0,
-): string {
-  const params = [
-    fingerprint ? `fp=${fingerprint}` : "",
-    generation > 0 ? `gen=${generation}` : "",
-  ].filter(Boolean).join("&");
-  return params ? `${baseUrl}?${params}` : baseUrl;
-}
-
-// -- incrementReloadGeneration / URL cache busting (swamp-club#1140) ------
-
-import { incrementReloadGeneration } from "./extension_loader.ts";
-
-Deno.test("incrementReloadGeneration: import URL includes gen= after increment", () => {
-  incrementReloadGeneration();
-  const url = buildImportUrl("file:///bundle.js", "abc", 1);
-  assertStringIncludes(url, "gen=1");
-  assertStringIncludes(url, "fp=abc");
-  assertEquals(url, "file:///bundle.js?fp=abc&gen=1");
-});
-
-Deno.test("incrementReloadGeneration: gen=0 omitted from URL", () => {
-  const url = buildImportUrl("file:///bundle.js", "abc", 0);
-  assertEquals(url, "file:///bundle.js?fp=abc");
-  assertEquals(url.includes("gen="), false);
-});
-
-Deno.test("incrementReloadGeneration: gen-only URL when no fingerprint", () => {
-  const url = buildImportUrl("file:///bundle.js", undefined, 2);
-  assertEquals(url, "file:///bundle.js?gen=2");
-});
-
-Deno.test("incrementReloadGeneration: bare URL when no fingerprint and gen=0", () => {
-  const url = buildImportUrl("file:///bundle.js", undefined, 0);
-  assertEquals(url, "file:///bundle.js");
-  assertEquals(url.includes("?"), false);
-});
-
-Deno.test("importBundleByPath: different gen= values bust Deno import cache", async () => {
-  const dir = await Deno.makeTempDir({ prefix: "swamp_gen_bust_" });
-  try {
-    const bundlePath = join(dir, "gen_test.js");
+    const bundlePath = join(dir, "reuse.js");
     await Deno.writeTextFile(bundlePath, 'export const v = "V1";\n');
+    const loader = new ExtensionLoader(
+      stubDenoRuntime,
+      makeStubAdapter(new Set()),
+      dir,
+    );
+    const paths = { bundlePath, sourcePath: join(dir, "reuse.ts") };
 
-    const baseUrl = toFileUrl(bundlePath).href;
-    const mod1 = await import(`${baseUrl}?gen=1`);
-    assertEquals(mod1.v, "V1");
+    const first = await loader.importBundleByPath(paths);
+    const second = await loader.importBundleByPath(paths);
+
+    assertStrictEquals(second, first);
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("importBundleByPath: changed bundle imports the new code", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_import_change_" });
+  try {
+    const bundlePath = join(dir, "change.js");
+    await Deno.writeTextFile(bundlePath, 'export const v = "V1";\n');
+    const loader = new ExtensionLoader(
+      stubDenoRuntime,
+      makeStubAdapter(new Set()),
+      dir,
+    );
+    const paths = { bundlePath, sourcePath: join(dir, "change.ts") };
+
+    const v1 = await loader.importBundleByPath(paths);
+    assertEquals(v1.v, "V1");
 
     await Deno.writeTextFile(bundlePath, 'export const v = "V2";\n');
+    const v2 = await loader.importBundleByPath(paths);
+    assertEquals(v2.v, "V2");
 
-    const mod1again = await import(`${baseUrl}?gen=1`);
-    assertEquals(mod1again.v, "V1", "same gen= must return cached module");
-
-    const mod2 = await import(`${baseUrl}?gen=2`);
-    assertEquals(mod2.v, "V2", "different gen= must return fresh module");
+    await Deno.writeTextFile(bundlePath, 'export const v = "V1";\n');
+    const v1Again = await loader.importBundleByPath(paths);
+    assertStrictEquals(v1Again, v1);
   } finally {
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
@@ -263,20 +222,19 @@ Deno.test("discovery: _test.ts files included from additional dir discovery", as
   }
 });
 
-Deno.test("fingerprint URL guard: distinct fingerprints produce distinct URLs", () => {
-  const baseUrl = "file:///tmp/bundle.js";
+Deno.test("fingerprint URL guard: distinct fingerprints produce distinct URLs", async () => {
+  const js = "export {};\n";
 
-  const url1 = buildImportUrl(baseUrl, "fp-aaa");
-  const url2 = buildImportUrl(baseUrl, "fp-bbb");
-  const url3 = buildImportUrl(baseUrl, "");
-  const url4 = buildImportUrl(baseUrl, undefined);
+  const url1 = await bundleImportUrl("/tmp/bundle.js", js, "fp-aaa");
+  const url2 = await bundleImportUrl("/tmp/bundle.js", js, "fp-bbb");
+  const url3 = await bundleImportUrl("/tmp/bundle.js", js, "");
+  const url4 = await bundleImportUrl("/tmp/bundle.js", js, undefined);
 
   assertStringIncludes(url1, "?fp=fp-aaa");
   assertStringIncludes(url2, "?fp=fp-bbb");
-  assertEquals(url3, baseUrl);
-  assertEquals(url3.includes("?fp="), false);
-  assertEquals(url4, baseUrl);
-  assertEquals(url4.includes("?fp="), false);
+  assertNotEquals(url1, url2);
+  assertEquals(url3.includes("fp="), false);
+  assertEquals(url4, url3);
 });
 
 // -- BundleBuildFailed stale-entry preservation (swamp-club#894) -----------

@@ -28,6 +28,7 @@ import {
   sanitizeDataUrlError,
   uint8ArrayToBase64,
 } from "../models/bundle.ts";
+import { computeChecksum } from "../models/checksum.ts";
 import {
   type BundleResult,
   computeSourceFingerprint,
@@ -65,16 +66,29 @@ import {
 } from "./source_failure_recorder.ts";
 import { makeSourceLocation } from "./source_location.ts";
 
-let reloadGeneration = 0;
-
 /**
- * Increment the reload generation counter so the next dynamic
- * import() uses a new URL and bypasses the ES module cache.
- * Call this before re-importing pulled extension bundles during
- * serve hot-reload.
+ * Build the dynamic import() URL for a bundle file, keyed on the bundle's
+ * content. The ES module registry keys modules by URL and never evicts
+ * them, so identical bundle bytes must map to one URL: re-importing an
+ * unchanged bundle (e.g. on serve hot-reload) then reuses the cached
+ * module instead of retaining a new copy, while a changed bundle gets a
+ * new URL and its new code executes (swamp-club#1140, swamp-club#2340).
+ *
+ * `bundleJs` must be exactly the text on disk at `bundlePath`.
  */
-export function incrementReloadGeneration(): void {
-  reloadGeneration++;
+export async function bundleImportUrl(
+  bundlePath: string,
+  bundleJs: string,
+  sourceFingerprint?: string,
+): Promise<string> {
+  const contentHash = await computeChecksum(
+    new TextEncoder().encode(bundleJs),
+  );
+  const params = [
+    sourceFingerprint ? `fp=${sourceFingerprint}` : "",
+    `h=${contentHash}`,
+  ].filter(Boolean).join("&");
+  return `${toFileUrl(bundlePath).href}?${params}`;
 }
 
 /**
@@ -847,12 +861,11 @@ export class ExtensionLoader {
       js = fixed;
       await Deno.writeTextFile(paths.bundlePath, js);
     }
-    const baseUrl = toFileUrl(paths.bundlePath).href;
-    const params = [
-      paths.sourceFingerprint ? `fp=${paths.sourceFingerprint}` : "",
-      reloadGeneration > 0 ? `gen=${reloadGeneration}` : "",
-    ].filter(Boolean).join("&");
-    const importUrl = params ? `${baseUrl}?${params}` : baseUrl;
+    const importUrl = await bundleImportUrl(
+      paths.bundlePath,
+      js,
+      paths.sourceFingerprint,
+    );
     return await import(importUrl);
   }
 
@@ -1310,12 +1323,11 @@ export class ExtensionLoader {
           cachedJs = fixed;
           await Deno.writeTextFile(bundlePath, cachedJs);
         }
-        const baseUrl = toFileUrl(bundlePath).href;
-        const params = [
-          sourceFingerprint ? `fp=${sourceFingerprint}` : "",
-          reloadGeneration > 0 ? `gen=${reloadGeneration}` : "",
-        ].filter(Boolean).join("&");
-        importUrl = params ? `${baseUrl}?${params}` : baseUrl;
+        importUrl = await bundleImportUrl(
+          bundlePath,
+          cachedJs,
+          sourceFingerprint,
+        );
       } catch (error) {
         this.logger.debug`Bundle file not available for ${relativePath}: ${
           String(error).substring(0, 200)
