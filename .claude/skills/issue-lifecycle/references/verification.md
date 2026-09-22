@@ -1,11 +1,11 @@
 # Verification Flow
 
 Read this after code conformance review is complete and all deviations are
-justified. The verification loop runs the same checks as CI in a container
-sandbox **before** opening a PR.
+justified. The verification loop runs the same checks as CI as host workflows
+**before** opening a PR.
 
-Read `agent-constraints/verification-conventions.md` for repo-specific container
-and workflow configuration.
+Read `agent-constraints/verification-conventions.md` for repo-specific workflow
+configuration.
 
 ## 1. Start Verification
 
@@ -19,8 +19,7 @@ swamp model @swamp/issue-lifecycle method run verify issue-<N> \
 
 ## 2. Run Verification
 
-Launch build verification and agent reviews in parallel. The container must be
-built first (`./verification/container/build.sh`).
+Launch build verification and agent reviews in parallel.
 
 **Build** (host workflow):
 

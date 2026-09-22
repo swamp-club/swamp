@@ -33,8 +33,8 @@ issue-lifecycle skill, verification is already enforced — the `link_pr` method
 requires a passing attestation.
 
 If working outside the issue lifecycle (e.g. a quick fix), run the verification
-workflow in the container sandbox before submitting. See
-`agent-constraints/verification-conventions.md` for the docker command.
+workflows (`verify-build`, `verify-reviews`, `verify-skills`) before submitting.
+See `agent-constraints/verification-conventions.md` for the commands.
 
 Do not run lint/test/fmt manually as a pre-PR gate — the verification workflow
 covers all checks.

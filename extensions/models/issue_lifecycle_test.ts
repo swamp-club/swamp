@@ -330,8 +330,8 @@ Deno.test("model: exposes the new post_attestation method definition", () => {
   );
 });
 
-Deno.test("model: version is 2026.09.22.1", () => {
-  assertEquals(model.version, "2026.09.22.1");
+Deno.test("model: version is 2026.09.23.1", () => {
+  assertEquals(model.version, "2026.09.23.1");
 });
 
 // ---------------------------------------------------------------------------

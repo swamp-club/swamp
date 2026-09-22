@@ -45,9 +45,9 @@ approved plan. All deviations must be justified before proceeding.
 ## 3b. Verification Loop
 
 **After code conformance review**, read [verification.md](verification.md) and
-run the verification workflow in the container sandbox. This runs lint, test,
-compile, and agent reviews — the same checks as CI — before a PR is opened. The
-agent iterates until all steps pass.
+run the verification workflows on the host. These run lint, test, compile, and
+agent reviews — the same checks as CI — before a PR is opened. The agent
+iterates until all steps pass.
 
 Do NOT proceed to create a PR until verification passes.
 

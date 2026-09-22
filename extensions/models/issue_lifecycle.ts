@@ -103,7 +103,7 @@ export function buildNotifyMessage(
 
 export const model = {
   type: "@swamp/issue-lifecycle",
-  version: "2026.09.22.1",
+  version: "2026.09.23.1",
   globalArguments: GlobalArgsSchema,
 
   upgrades: [
@@ -273,6 +273,14 @@ export const model = {
         "so an attestation missing `subject` posted cleanly and logged " +
         "commit=undefined. It is rejected at the boundary now; build the " +
         "document with `deno run build-attestation` rather than by hand. " +
+        "No resources and no globalArguments changes.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.09.23.1",
+      description:
+        "verify's description no longer mentions a container sandbox; " +
+        "verification runs as host workflows. Description-only change. " +
         "No resources and no globalArguments changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
@@ -2001,7 +2009,7 @@ export const model = {
       rollbackOnFailure: true,
       description:
         "Start verification — transitions to verifying phase. The agent " +
-        "runs the verification workflow in a container sandbox.",
+        "runs the verification workflows on the host.",
       arguments: z.object({
         commit: z.string().describe("Commit SHA being verified"),
         branch: z.string().describe("Branch being verified"),
