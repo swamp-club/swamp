@@ -66,6 +66,18 @@ export interface ApprovalView {
   approvalDuration?: number;
 }
 
+/**
+ * Why a step did not run, as the read model exposes it.
+ *
+ * Mirrors the domain's `StepSkipReasonData`. Present only on steps whose
+ * `status` is `skipped`, and absent on runs persisted before skip reasons
+ * were recorded.
+ */
+export interface StepSkipReasonView {
+  kind: "dependency" | "guarded" | "job_skipped";
+  expression?: string;
+}
+
 export interface StepRunView {
   name: string;
   status:
@@ -94,6 +106,8 @@ export interface StepRunView {
   approval?: ApprovalView;
   /** Step outputs (resource attributes from model methods) */
   outputs?: Record<string, unknown>;
+  /** Why the step was skipped. Only set when `status` is `skipped`. */
+  skipReason?: StepSkipReasonView;
 }
 
 export interface JobRunView {

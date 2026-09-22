@@ -116,6 +116,20 @@ export interface ModelReportContext extends BaseReportContext {
 }
 
 /**
+ * Why a step did not run, as reports see it.
+ *
+ * Structurally identical to `StepSkipReasonData`, which the workflows
+ * bounded context owns. It is restated here rather than imported because
+ * workflows already depends on reports, and the reverse edge would close a
+ * cycle the architecture ratchet rejects — this is the published language
+ * between the two, not a second definition of the concept.
+ */
+export interface StepSkipReasonInfo {
+  kind: "dependency" | "guarded" | "job_skipped";
+  expression?: string;
+}
+
+/**
  * Context provided to workflow-scope reports.
  */
 export interface WorkflowReportContext extends BaseReportContext {
@@ -138,6 +152,12 @@ export interface WorkflowReportContext extends BaseReportContext {
     modelId: string;
     globalArgs: Record<string, unknown>;
     errorMessage?: string;
+    /**
+     * Why the step did not run. Populated only when `status` is `skipped`;
+     * a report that prints a bare skip count cannot tell a guard-excluded
+     * step from a deselected one without it.
+     */
+    skipReason?: StepSkipReasonInfo;
   }>;
 }
 

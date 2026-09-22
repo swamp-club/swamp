@@ -20,7 +20,10 @@
 import { green, red, yellow } from "@std/fmt/colors";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
-import type { WorkflowRunView } from "../../libswamp/mod.ts";
+import type {
+  StepSkipReasonView,
+  WorkflowRunView,
+} from "../../libswamp/mod.ts";
 
 export function renderWorkflowRunDisplay(
   data: WorkflowRunView,
@@ -65,6 +68,28 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
 
       if (step.error) {
         writeOutput(`      -> ${red(step.error)}`);
+      }
+
+      if (step.status === "skipped" && step.skipReason) {
+        // Word for word what the verification report says for the same
+        // fact, so a reader comparing the two surfaces never has to work out
+        // whether they mean the same thing.
+        //
+        // A switch rather than a chain of ternaries: the chain ended in an
+        // else that swallowed anything unrecognised, so a fourth `kind`
+        // would have been silently labelled "job was skipped". Here the
+        // string return type makes a missing case a compile error.
+        const detail = ((r: StepSkipReasonView): string => {
+          switch (r.kind) {
+            case "guarded":
+              return r.expression ? `guard: ${r.expression}` : "guard";
+            case "dependency":
+              return "dependency condition not met";
+            case "job_skipped":
+              return "job was skipped";
+          }
+        })(step.skipReason);
+        writeOutput(`      -> skipped (${detail})`);
       }
 
       if (step.approval) {
