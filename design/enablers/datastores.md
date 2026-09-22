@@ -458,7 +458,9 @@ triggering a remote pull.
 
 Three background pollers address this for serve:
 
-- **ConfigPoller** (`subdirs: ["config"]`) — refreshes managed configuration.
+- **ConfigPoller** — refreshes managed configuration. Pulls extension files
+  (`config/pulled-extensions/`) separately from definitions (`config/`), so
+  extension registry reloads only trigger when extension files change.
 - **AccessDataPoller** (`subdirs: ["data/swamp/grant", ...]`) — refreshes
   access-control grants and groups, then reloads the policy snapshot.
 - **RuntimeDataPoller** (`subdirs: ["data"]`) — refreshes the `data/` subtree
@@ -1808,10 +1810,12 @@ When a pod boots and logs "N pulled extension(s) have missing source files":
 
 ### Extension auto-reload via config poller
 
-With `managedConfig`, the config poller automatically detects new or updated
-extension files synced from the remote datastore and triggers
-`performServeReload` to re-index and register them. This means extensions that
-arrive after boot (via another instance's `extension install --server` or
-`extension pull`) are discovered and loaded without a restart or manual SIGHUP.
-`--hot-reload` is still useful for trigger-override and workflow reloading via
-`swamp serve reload`, but extension registration no longer requires it.
+With `managedConfig`, the config poller pulls `config/pulled-extensions/`
+separately from the rest of `config/` and only triggers `performServeReload`
+when extension files have changed. Definition-only changes (model, vault, or
+workflow YAML edits) invalidate catalogs without reloading extension registries.
+Extensions that arrive after boot (via another instance's
+`extension install --server` or `extension pull`) are discovered and loaded
+without a restart or manual SIGHUP. `--hot-reload` is still useful for
+trigger-override and workflow reloading via `swamp serve reload`, but extension
+registration no longer requires it.
