@@ -173,6 +173,17 @@ export class ExtensionLoader {
     return this.repository;
   }
 
+  /**
+   * Discovered files without the kind's export are helper modules imported
+   * by entry points (e.g. `models/foo/lib/*.ts`). Skipping them is expected,
+   * so the message says what the file is rather than implying a failure.
+   */
+  private logHelperModuleSkip(file: string): void {
+    const kind = this.adapter.kind;
+    this.logger
+      .debug`Treating ${file} as a helper module (no ${kind} export, so not a ${kind} entry point)`;
+  }
+
   async load(
     dir: string,
     options?: {
@@ -214,8 +225,7 @@ export class ExtensionLoader {
           const absolutePath = resolve(baseDir, file);
           const source = await Deno.readTextFile(absolutePath);
           if (!this.adapter.exportRegex.test(source)) {
-            this.logger
-              .debug`Skipping ${file} (no ${this.adapter.kind} export found)`;
+            this.logHelperModuleSkip(file);
             continue;
           }
 
@@ -260,8 +270,7 @@ export class ExtensionLoader {
         const absolutePath = resolve(baseDir, file);
         const source = await Deno.readTextFile(absolutePath);
         if (!this.adapter.exportRegex.test(source)) {
-          this.logger
-            .debug`Skipping ${file} (no ${this.adapter.kind} export found)`;
+          this.logHelperModuleSkip(file);
           continue;
         }
 
