@@ -29,7 +29,7 @@ import { FileServerCredentialRepository } from "../../infrastructure/persistence
 import { normalizeServerUrl } from "../../domain/auth/server_url.ts";
 import { splitServerToken } from "../../serve/token_auth.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
-import { bold, green, yellow } from "@std/fmt/colors";
+import { bold, dim, green, yellow } from "@std/fmt/colors";
 import { createServerLoginDeps, serverLogin } from "../../libswamp/mod.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -146,6 +146,7 @@ async function handleOAuthFlow(
     : undefined;
   const deps = createServerLoginDeps({ httpClient });
   const input = { serverUrl: rawUrl, signal: AbortSignal.timeout(300_000) };
+  let waitingShown = false;
 
   for await (const event of serverLogin(deps, input)) {
     switch (event.kind) {
@@ -195,6 +196,10 @@ async function handleOAuthFlow(
         }
         break;
       case "polling":
+        if (cliCtx.outputMode !== "json" && !waitingShown) {
+          waitingShown = true;
+          writeOutput(dim("Waiting for authorization in your browser..."));
+        }
         break;
       case "completed":
         if (cliCtx.outputMode === "json") {

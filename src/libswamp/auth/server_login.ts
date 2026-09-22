@@ -120,6 +120,71 @@ function wsToHttp(url: string): string {
 }
 
 /**
+ * Send a request to the serve instance, turning a failed request into a
+ * UserError that names the server and endpoint. The underlying reason is kept
+ * in the message so TLS hints still match. Aborts pass through unchanged so
+ * the login flow can tell a timeout from a failed request.
+ */
+async function fetchFromServer(
+  serverUrl: string,
+  method: string,
+  path: string,
+  init: RequestInit & { signal: AbortSignal },
+): Promise<Response> {
+  try {
+    return await fetch(`${serverUrl}${path}`, { ...init, method });
+  } catch (err) {
+    if (init.signal.aborted) throw err;
+    throw new UserError(
+      `Could not reach ${serverUrl} (${method} ${path}): ${
+        describeCauses(err)
+      }`,
+    );
+  }
+}
+
+/**
+ * Join an error's message with those of its causes. Deno's fetch rejects
+ * with "fetch failed" and puts the reason (connection refused, TLS failure)
+ * in `cause`.
+ */
+function describeCauses(err: unknown): string {
+  const parts: string[] = [];
+  let current: unknown = err;
+  while (current instanceof Error && parts.length < 5) {
+    parts.push(current.message);
+    current = current.cause;
+  }
+  if (current !== undefined && !(current instanceof Error)) {
+    parts.push(String(current));
+  }
+  return parts.join(": ");
+}
+
+/**
+ * Parse a serve instance's JSON response, turning a body that is not JSON
+ * into a UserError. That usually means --server points at something other
+ * than swamp serve, such as a proxy login page.
+ */
+async function readServerJson<T>(
+  resp: Response,
+  serverUrl: string,
+  method: string,
+  path: string,
+  signal: AbortSignal,
+): Promise<T> {
+  try {
+    return await resp.json() as T;
+  } catch (err) {
+    if (signal.aborted) throw err;
+    throw new UserError(
+      `${serverUrl} returned a response that is not JSON to ${method} ${path} ` +
+        `(HTTP ${resp.status}). Check that --server points at a swamp serve instance.`,
+    );
+  }
+}
+
+/**
  * Create production dependencies for server login. When an httpClient
  * is provided (e.g. one carrying custom CA certs from `--ca-cert`), it
  * is used for all REST calls to the serve instance.
@@ -136,7 +201,7 @@ export function createServerLoginDeps(
       signal: AbortSignal,
     ): Promise<AuthDiscovery> => {
       const httpUrl = wsToHttp(serverUrl);
-      const resp = await fetch(`${httpUrl}/auth/info`, {
+      const resp = await fetchFromServer(httpUrl, "GET", "/auth/info", {
         signal,
         ...clientOpts,
       });
@@ -145,7 +210,13 @@ export function createServerLoginDeps(
           `Failed to discover auth mode: ${resp.status} ${resp.statusText}`,
         );
       }
-      return await resp.json() as AuthDiscovery;
+      return await readServerJson<AuthDiscovery>(
+        resp,
+        httpUrl,
+        "GET",
+        "/auth/info",
+        signal,
+      );
     },
 
     startDeviceAuth: async (
@@ -153,8 +224,7 @@ export function createServerLoginDeps(
       signal: AbortSignal,
     ): Promise<DeviceAuthResponse> => {
       const httpUrl = wsToHttp(serverUrl);
-      const resp = await fetch(`${httpUrl}/auth/device`, {
-        method: "POST",
+      const resp = await fetchFromServer(httpUrl, "POST", "/auth/device", {
         signal,
         ...clientOpts,
       });
@@ -163,7 +233,13 @@ export function createServerLoginDeps(
           `Failed to start device authorization: ${resp.status} ${resp.statusText}`,
         );
       }
-      return await resp.json() as DeviceAuthResponse;
+      return await readServerJson<DeviceAuthResponse>(
+        resp,
+        httpUrl,
+        "POST",
+        "/auth/device",
+        signal,
+      );
     },
 
     pollDeviceToken: async (
@@ -172,13 +248,17 @@ export function createServerLoginDeps(
       signal: AbortSignal,
     ): Promise<DeviceTokenResponse> => {
       const httpUrl = wsToHttp(serverUrl);
-      const resp = await fetch(`${httpUrl}/auth/device/token`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ deviceCode }),
-        signal,
-        ...clientOpts,
-      });
+      const resp = await fetchFromServer(
+        httpUrl,
+        "POST",
+        "/auth/device/token",
+        {
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ deviceCode }),
+          signal,
+          ...clientOpts,
+        },
+      );
       if (resp.status === 202) {
         throw new DeviceAuthPendingError();
       }
@@ -193,7 +273,13 @@ export function createServerLoginDeps(
           `Failed to poll device token: ${resp.status} ${resp.statusText}`,
         );
       }
-      return await resp.json() as DeviceTokenResponse;
+      return await readServerJson<DeviceTokenResponse>(
+        resp,
+        httpUrl,
+        "POST",
+        "/auth/device/token",
+        signal,
+      );
     },
 
     openBrowser: async (url: string): Promise<boolean> => {
@@ -229,10 +315,24 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+/** True when the login signal was aborted by its timeout, not cancelled. */
+function timedOut(signal: AbortSignal): boolean {
+  return signal.aborted && signal.reason instanceof DOMException &&
+    signal.reason.name === "TimeoutError";
+}
+
+function authorizationTimedOut(): UserError {
+  return new UserError(
+    "Device authorization timed out before it was approved. " +
+      "Run 'swamp auth server-login' again to get a new code.",
+  );
+}
+
 /**
  * Authenticate with a swamp serve instance via the OAuth device code flow.
  *
  * Yields events as the flow progresses so the CLI can render status updates.
+ * If the signal times out, yields an error event carrying a UserError.
  */
 export async function* serverLogin(
   deps: ServerLoginDeps,
@@ -242,7 +342,27 @@ export async function* serverLogin(
   const serverUrl = deps.normalizeServerUrl(
     wsToHttp(input.serverUrl),
   );
+  const progress = { codeIssued: false };
 
+  try {
+    yield* deviceFlow(deps, serverUrl, signal, progress);
+  } catch (err) {
+    if (!timedOut(signal)) throw err;
+    yield {
+      kind: "error",
+      error: progress.codeIssued
+        ? authorizationTimedOut()
+        : new UserError(`Timed out waiting for ${serverUrl} to respond.`),
+    };
+  }
+}
+
+async function* deviceFlow(
+  deps: ServerLoginDeps,
+  serverUrl: string,
+  signal: AbortSignal,
+  progress: { codeIssued: boolean },
+): AsyncGenerator<ServerLoginEvent> {
   // Step 1: Discover auth mode
   yield { kind: "discovering" };
   const discovery = await deps.discoverAuthMode(serverUrl, signal);
@@ -256,6 +376,10 @@ export async function* serverLogin(
 
   // Step 2: Start device authorization
   const deviceAuth = await deps.startDeviceAuth(serverUrl, signal);
+  progress.codeIssued = true;
+  // The code expires relative to when the server issued it, so start the
+  // clock now rather than after the browser opens.
+  const deadline = Date.now() + deviceAuth.expiresIn * 1000;
 
   yield {
     kind: "device_verification",
@@ -279,7 +403,6 @@ export async function* serverLogin(
 
   // Step 4: Poll for token
   const intervalMs = (deviceAuth.interval > 0 ? deviceAuth.interval : 5) * 1000;
-  const deadline = Date.now() + deviceAuth.expiresIn * 1000;
 
   while (Date.now() < deadline) {
     yield { kind: "polling" };
@@ -316,6 +439,7 @@ export async function* serverLogin(
         await delay(intervalMs, signal);
         continue;
       }
+      if (timedOut(signal)) throw err;
       yield {
         kind: "error",
         error: err instanceof Error ? err : new Error(String(err)),
@@ -326,6 +450,6 @@ export async function* serverLogin(
 
   yield {
     kind: "error",
-    error: new UserError("Device authorization timed out"),
+    error: authorizationTimedOut(),
   };
 }

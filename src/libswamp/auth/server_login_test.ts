@@ -17,8 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
 import {
+  assertEquals,
+  assertInstanceOf,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
+import { withMockedFetch } from "@swamp-club/swamp-testing";
+import {
+  createServerLoginDeps,
   DeviceAuthPendingError,
   serverLogin,
   type ServerLoginDeps,
@@ -261,4 +268,194 @@ Deno.test("serverLogin: normalizes server URL before use", async () => {
   await collect(serverLogin(deps, input));
 
   assertEquals(discoveredUrl, "https://swamp.acme.internal:9090");
+});
+
+function timeoutError(): DOMException {
+  return new DOMException("Signal timed out.", "TimeoutError");
+}
+
+function lastError(events: ServerLoginEvent[]): Error {
+  const last = events[events.length - 1];
+  if (last.kind !== "error") {
+    throw new Error(`expected a final error event, got ${last.kind}`);
+  }
+  return last.error;
+}
+
+Deno.test("serverLogin: a timeout between polls yields a UserError to run the login again", async () => {
+  const controller = new AbortController();
+  const deps = makeDeps({
+    pollDeviceToken: () => {
+      controller.abort(timeoutError());
+      return Promise.reject(new DeviceAuthPendingError());
+    },
+  });
+
+  const events = await collect(
+    serverLogin(deps, makeInput({ signal: controller.signal })),
+  );
+
+  const error = lastError(events);
+  assertInstanceOf(error, UserError);
+  assertStringIncludes(error.message, "swamp auth server-login");
+});
+
+Deno.test("serverLogin: a token poll that times out yields a UserError to run the login again", async () => {
+  const controller = new AbortController();
+  const deps = makeDeps({
+    pollDeviceToken: () => {
+      controller.abort(timeoutError());
+      return Promise.reject(controller.signal.reason);
+    },
+  });
+
+  const events = await collect(
+    serverLogin(deps, makeInput({ signal: controller.signal })),
+  );
+
+  const error = lastError(events);
+  assertInstanceOf(error, UserError);
+  assertStringIncludes(error.message, "swamp auth server-login");
+});
+
+Deno.test("serverLogin: a timeout before the code is issued names the server", async () => {
+  const controller = new AbortController();
+  const deps = makeDeps({
+    discoverAuthMode: () => {
+      controller.abort(timeoutError());
+      return Promise.reject(controller.signal.reason);
+    },
+  });
+
+  const events = await collect(
+    serverLogin(deps, makeInput({ signal: controller.signal })),
+  );
+
+  const error = lastError(events);
+  assertInstanceOf(error, UserError);
+  assertStringIncludes(error.message, "https://swamp.acme.internal:9090");
+  assertEquals(events.some((e) => e.kind === "device_verification"), false);
+});
+
+Deno.test("serverLogin: a cancelled signal is passed through unchanged", async () => {
+  const controller = new AbortController();
+  const deps = makeDeps({
+    pollDeviceToken: () => {
+      controller.abort();
+      return Promise.reject(controller.signal.reason);
+    },
+  });
+
+  const events = await collect(
+    serverLogin(deps, makeInput({ signal: controller.signal })),
+  );
+
+  const error = lastError(events);
+  assertInstanceOf(error, DOMException);
+  assertEquals(error.name, "AbortError");
+});
+
+Deno.test("serverLogin: an expired device code times out without polling", async () => {
+  let polls = 0;
+  const deps = makeDeps({
+    startDeviceAuth: () =>
+      Promise.resolve({
+        deviceCode: "device-abc-123",
+        userCode: "ABCD-1234",
+        verificationUri: "https://swamp-club.com/device",
+        expiresIn: 0,
+        interval: 0.001,
+      }),
+    pollDeviceToken: () => {
+      polls++;
+      return Promise.reject(new DeviceAuthPendingError());
+    },
+  });
+
+  const events = await collect(serverLogin(deps, makeInput()));
+
+  assertEquals(polls, 0);
+  const error = lastError(events);
+  assertInstanceOf(error, UserError);
+  assertStringIncludes(error.message, "swamp auth server-login");
+});
+
+const SERVE_URL = "http://serve.test:9090";
+
+/** Calls each serve endpoint through the production deps. */
+function callEndpoint(
+  endpoint: "info" | "device" | "token",
+  signal: AbortSignal,
+): Promise<unknown> {
+  const deps = createServerLoginDeps();
+  switch (endpoint) {
+    case "info":
+      return deps.discoverAuthMode(SERVE_URL, signal);
+    case "device":
+      return deps.startDeviceAuth(SERVE_URL, signal);
+    case "token":
+      return deps.pollDeviceToken(SERVE_URL, "device-abc-123", signal);
+  }
+}
+
+const ENDPOINTS = [
+  { endpoint: "info", label: "GET /auth/info" },
+  { endpoint: "device", label: "POST /auth/device" },
+  { endpoint: "token", label: "POST /auth/device/token" },
+] as const;
+
+Deno.test("createServerLoginDeps: a failed request names the server and endpoint and keeps the cause", async () => {
+  for (const { endpoint, label } of ENDPOINTS) {
+    await withMockedFetch(() => {
+      // Deno's fetch reports the reason in `cause`, not in the message.
+      throw new TypeError("fetch failed", {
+        cause: new Error(
+          "error sending request: invalid peer certificate: UnknownIssuer",
+        ),
+      });
+    }, async () => {
+      const err = await assertRejects(
+        () => callEndpoint(endpoint, new AbortController().signal),
+        UserError,
+      );
+      assertStringIncludes(err.message, SERVE_URL);
+      assertStringIncludes(err.message, label);
+      assertStringIncludes(err.message, "invalid peer certificate");
+    });
+  }
+});
+
+Deno.test("createServerLoginDeps: a response that is not JSON names the server and endpoint", async () => {
+  for (const { endpoint, label } of ENDPOINTS) {
+    await withMockedFetch(
+      () =>
+        new Response("<html>Sign in</html>", {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        }),
+      async () => {
+        const err = await assertRejects(
+          () => callEndpoint(endpoint, new AbortController().signal),
+          UserError,
+        );
+        assertStringIncludes(err.message, SERVE_URL);
+        assertStringIncludes(err.message, label);
+        assertStringIncludes(err.message, "not JSON");
+      },
+    );
+  }
+});
+
+Deno.test("createServerLoginDeps: an aborted request is not wrapped", async () => {
+  const controller = new AbortController();
+  controller.abort(timeoutError());
+  await withMockedFetch(() => {
+    throw controller.signal.reason;
+  }, async () => {
+    const err = await assertRejects(
+      () => callEndpoint("token", controller.signal),
+      DOMException,
+    );
+    assertEquals(err.name, "TimeoutError");
+  });
 });
