@@ -3010,6 +3010,117 @@ Deno.test("validateServerRequest: workflow.resume accepts request without trace 
   assertEquals(typeof result, "object");
 });
 
+// ── validateServerRequest: payload fields survive validation ────────────
+//
+// zod strips unknown keys, so a field missing from a schema is dropped
+// silently. Assert the whole validated request, not just that one came back.
+
+Deno.test("validateServerRequest: workflow.resume keeps from", () => {
+  const input = {
+    type: "workflow.resume" as const,
+    id: "req-resume-from",
+    payload: { workflowIdOrName: "deploy", runId: "run-1", from: "triage" },
+  };
+  assertEquals(validateServerRequest(input), input);
+});
+
+Deno.test("validateServerRequest: workflow.run keeps noSupersede", () => {
+  const input = {
+    type: "workflow.run" as const,
+    id: "req-run-no-supersede",
+    payload: { workflowIdOrName: "deploy", noSupersede: true },
+  };
+  assertEquals(validateServerRequest(input), input);
+});
+
+Deno.test("validateServerRequest: model.search keeps includeInternal", () => {
+  const input = {
+    type: "model.search" as const,
+    id: "req-model-search-all",
+    payload: { query: "shell", includeInternal: true },
+  };
+  assertEquals(validateServerRequest(input), input);
+});
+
+Deno.test("validateServerRequest: vault.audit-trail keeps action", () => {
+  const input = {
+    type: "vault.audit-trail" as const,
+    id: "req-audit-action",
+    payload: { vaultName: "prod", action: "put" },
+  };
+  assertEquals(validateServerRequest(input), input);
+});
+
+// ── handleMessage: workflow.resume routing on from (swamp-club#2356) ────
+
+/** A ctx whose repos hold one workflow and one run in the given status. */
+function makeResumeCtx(runId: string, runStatus: string): ConnectionContext {
+  const workflow = { id: "wf-1", name: "deploy", tags: {} };
+  return {
+    ...makeCtx(modeNoneConfig),
+    repoContext: {
+      ...stubRepoContext,
+      workflowRepo: {
+        findByName: () => Promise.resolve(workflow),
+        findById: () => Promise.resolve(workflow),
+      },
+      workflowRunRepo: {
+        findById: () => Promise.resolve({ id: runId, status: runStatus }),
+      },
+    } as unknown as ConnectionContext["repoContext"],
+  };
+}
+
+Deno.test("handleMessage: workflow.resume with from reaches the failed-run resolver", async () => {
+  const mock = createMockSocket();
+  const runId = crypto.randomUUID();
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    makeResumeCtx(runId, "succeeded"),
+    new Map<string, AbortController>(),
+    makeEvent(JSON.stringify({
+      type: "workflow.resume",
+      id: "resume-from",
+      payload: { workflowIdOrName: "deploy", runId, from: "step2" },
+    })),
+    null,
+  );
+
+  await waitFor(() => mock.sent.length >= 1, "workflow.resume error sent");
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  const error = msg.error as Record<string, unknown>;
+  assertEquals(error.code, "workflow_resume_failed");
+  // Only resolveResumableRun reports this. When the schema stripped `from`,
+  // the handler fell back to resolveSuspendedRun ("is not suspended").
+  assertStringIncludes(String(error.message), "--from requires a failed run");
+});
+
+Deno.test("handleMessage: workflow.resume without from uses the suspended-run resolver", async () => {
+  const mock = createMockSocket();
+  const runId = crypto.randomUUID();
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    makeResumeCtx(runId, "succeeded"),
+    new Map<string, AbortController>(),
+    makeEvent(JSON.stringify({
+      type: "workflow.resume",
+      id: "resume-no-from",
+      payload: { workflowIdOrName: "deploy", runId },
+    })),
+    null,
+  );
+
+  await waitFor(() => mock.sent.length >= 1, "workflow.resume error sent");
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  const error = msg.error as Record<string, unknown>;
+  assertEquals(error.code, "workflow_resume_failed");
+  assertStringIncludes(String(error.message), "is not suspended");
+});
+
 // ── validateServerRequest: new command types (issue #1531) ─────────────
 
 Deno.test("validateServerRequest accepts access.token.list", () => {

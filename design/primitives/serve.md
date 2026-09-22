@@ -143,6 +143,15 @@ back to IP when the token is malformed); the key is cleared on success
 `MAX_ACTIVE_REQUESTS` in-flight requests and rejects a request whose id is
 already active with `duplicate_id` (`src/serve/connection.ts`).
 
+Every WebSocket request is validated against a zod schema in
+`src/serve/connection.ts` before dispatch. zod strips unknown keys, so each
+`ServerRequest` payload field needs a matching schema field or the handler
+silently receives `undefined`; a request type with no schema at all is refused
+with `invalid_request`. `src/serve/connection_schema_parity_test.ts` enforces
+both at compile time, with the intentional exceptions pinned there (client
+`groups` on `access.check`/`access.can-i`, which the handlers take from the
+authenticated connection instead).
+
 ## Identity and access
 
 Serve has three auth modes (`src/domain/access/serve_auth_config.ts`):
