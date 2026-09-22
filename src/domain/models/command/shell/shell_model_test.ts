@@ -480,6 +480,78 @@ posixOnlyTest(
   },
 );
 
+// -- Output on the failure path (swamp-club#2364) -------------------------
+//
+// The writes used to sit below the throw, under a comment reading "Only
+// persist data for successful executions", so a step that failed produced no
+// log at all. A red verification gate arrived as `Command exited with code 1`
+// and nothing else: a review that genuinely voted to reject looked exactly
+// like one whose CLI had crashed, and a failing test suite named no failing
+// test. These tests exist because the success path alone left that ordering
+// free to be wrong.
+
+posixOnlyTest(
+  "shellModel.methods.execute persists the log when the command fails",
+  async () => {
+    const args: ShellInputAttributes = {
+      run: "echo saying-something; echo and-failing >&2; exit 3",
+    };
+
+    const { context, getResults } = createTestContext();
+    await assertRejects(
+      () => shellModel.methods.execute.execute(args, context),
+      Error,
+      "Command exited with code 3",
+    );
+
+    const logContent = getOutputLogContent(getResults());
+    assertStringIncludes(logContent, "saying-something");
+    assertStringIncludes(logContent, "and-failing");
+  },
+);
+
+posixOnlyTest(
+  "shellModel.methods.execute persists the result attributes when the command fails",
+  async () => {
+    const args: ShellInputAttributes = { run: "exit 42" };
+
+    const { context, getResults } = createTestContext();
+    await assertRejects(
+      () => shellModel.methods.execute.execute(args, context),
+      Error,
+    );
+
+    const attrs = getResultAttributes(getResults(), "result");
+    assertEquals(attrs?.exitCode, 42);
+  },
+);
+
+posixOnlyTest(
+  "shellModel.methods.execute attaches the data handles to the thrown error",
+  async () => {
+    const args: ShellInputAttributes = { run: "echo before-failing; exit 1" };
+
+    const { context } = createTestContext();
+    const error = await assertRejects(
+      () => shellModel.methods.execute.execute(args, context),
+      Error,
+    );
+
+    // Writing the data is not enough on its own: the execution service reads
+    // `dataHandles` off the error to turn them into artifacts on the failed
+    // step, which is what puts a `swamp data get` within reach of whoever is
+    // looking at the failure.
+    const handles = (error as Error & { dataHandles?: DataHandle[] })
+      .dataHandles;
+    assertEquals(handles?.length, 2);
+    assertEquals(
+      handles?.some((h) => h.specName === "log"),
+      true,
+      "the log handle must reach the failed step",
+    );
+  },
+);
+
 posixOnlyTest(
   "shellModel.methods.execute throws on command failure",
   async () => {
@@ -810,7 +882,7 @@ posixOnlyTest(
 );
 
 posixOnlyTest(
-  "shellModel.methods.execute does not persist data on failure",
+  "shellModel.methods.execute persists data on failure (swamp-club#2364)",
   async () => {
     const args: ShellInputAttributes = {
       run: "echo 'some output' && exit 1",
@@ -823,8 +895,12 @@ posixOnlyTest(
       "Command exited with code 1",
     );
 
-    // No data should be written for a failed command
-    assertEquals(getResults().length, 0);
+    // This assertion used to read `length, 0`, under a comment saying no data
+    // should be written for a failed command. Withholding it cost more than
+    // it saved: the output is the only account of what went wrong, and the
+    // step that failed is the one whose account anyone needs.
+    assertEquals(getResults().length, 2);
+    assertStringIncludes(getOutputLogContent(getResults()), "some output");
   },
 );
 
@@ -1249,7 +1325,7 @@ windowsOnlyTest(
 );
 
 windowsOnlyTest(
-  "shellModel.methods.execute (powershell): does not persist data on failure",
+  "shellModel.methods.execute (powershell): persists data on failure (swamp-club#2364)",
   async () => {
     const args: ShellInputAttributes = {
       run: `Write-Output 'some output'; exit 1`,
@@ -1262,6 +1338,7 @@ windowsOnlyTest(
       "Command exited with code 1",
     );
 
-    assertEquals(getResults().length, 0);
+    assertEquals(getResults().length, 2);
+    assertStringIncludes(getOutputLogContent(getResults()), "some output");
   },
 );

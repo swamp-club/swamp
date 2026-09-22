@@ -20,6 +20,7 @@
 import { z } from "zod";
 import { ModelType } from "../../model_type.ts";
 import {
+  type DataHandle,
   defineModel,
   type MethodContext,
   type MethodResult,
@@ -155,11 +156,12 @@ async function executeCommand(
     exitCode = -1;
   }
 
-  if (exitCode !== 0 && !args.ignoreExitCode) {
-    throw new Error(`Command exited with code ${exitCode}`);
-  }
-
-  // Only persist data for successful executions
+  // Persisted before the exit code is judged, not after. The output is the
+  // only account of what the command did, and a command that failed is the one
+  // whose account is worth having: a red gate used to arrive as
+  // `Command exited with code 1` and nothing else, so a review that genuinely
+  // voted to reject and a review whose CLI crashed were indistinguishable, and
+  // a failing test suite named no failing test.
   const resultAttributes = {
     exitCode,
     executedAt: new Date().toISOString(),
@@ -187,6 +189,21 @@ async function executeCommand(
 
   const logWriter = context.createFileWriter!("log", "log");
   const logHandle = await logWriter.writeText(outputLogContent);
+
+  if (exitCode !== 0 && !args.ignoreExitCode) {
+    // The handles ride along on the error. The execution service looks for
+    // exactly this and turns them into data artifacts on the failed step, so
+    // `swamp data get` reaches the output of a step that failed — the same
+    // route a model that writes data and then throws on a FAIL verdict
+    // already takes.
+    const failure = new Error(`Command exited with code ${exitCode}`) as
+      & Error
+      & {
+        dataHandles?: DataHandle[];
+      };
+    failure.dataHandles = [resultHandle, logHandle];
+    throw failure;
+  }
 
   return { dataHandles: [resultHandle, logHandle] };
 }
