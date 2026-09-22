@@ -411,7 +411,9 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    Deno.env.set("SWAMP_TEST_2172_AUTHORED", "authored-value");
+    // Distinct from cel_data_access_test.ts's variable: test files run in
+    // parallel in one process, so a shared name races on set/delete.
+    Deno.env.set("SWAMP_TEST_2172_WEBHOOK_AUTHORED", "authored-value");
     try {
       await withRepo(async (repoDir) => {
         const workflow = Workflow.create({
@@ -432,7 +434,10 @@ Deno.test({
                     "command/shell",
                     "webhook-authored-shell",
                     "execute",
-                    { run: 'echo "VALUE=${{ env.SWAMP_TEST_2172_AUTHORED }}"' },
+                    {
+                      run:
+                        'echo "VALUE=${{ env.SWAMP_TEST_2172_WEBHOOK_AUTHORED }}"',
+                    },
                   ),
                 }),
               ],
@@ -455,7 +460,7 @@ Deno.test({
         );
       });
     } finally {
-      Deno.env.delete("SWAMP_TEST_2172_AUTHORED");
+      Deno.env.delete("SWAMP_TEST_2172_WEBHOOK_AUTHORED");
     }
   },
 });
