@@ -351,10 +351,6 @@ function setIn(
   node[path[path.length - 1]] = value;
 }
 
-function groupFor(jobName: string) {
-  return GROUPS.find((g) => jobName.startsWith(g.jobPrefix));
-}
-
 type Group = typeof GROUPS[number];
 
 /** Every step of every job belonging to this group, with its job name. */
